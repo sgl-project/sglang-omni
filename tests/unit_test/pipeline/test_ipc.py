@@ -255,8 +255,6 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.join_count += 1
 
     class FakeGroup:
-        is_ready = False
-
         def __init__(self, stage_name: str, *, fail_spawn: bool = False) -> None:
             self.stage_name = stage_name
             self.fail_spawn = fail_spawn
@@ -450,6 +448,7 @@ async def run_launcher_with_fake_runner(
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
             }
+            self.stage_http_routes = []
             self.started = False
             self.stopped = False
             # launcher._run_server reads .prep.placement_plan / .process_plan
@@ -1077,6 +1076,7 @@ def test_launcher_cleans_up_before_passing_on_sigterm(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {}
+            self.stage_http_routes = []
             self.prep = SimpleNamespace(
                 placement_plan=SimpleNamespace(gpus={}),
                 process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),

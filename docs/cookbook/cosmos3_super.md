@@ -11,7 +11,7 @@ Both configs pin `nvidia/Cosmos3-Super@fe77b66696d645f663b8f27e942b3b43e4629e23`
 | [cosmos3_super_generation.yaml](../../examples/configs/cosmos3_super_generation.yaml) | Images, video, sound, actions | Two native workers; TP=1; transformer layerwise offload with 24 resident layers per stack |
 | [cosmos3_super_reasoner.yaml](../../examples/configs/cosmos3_super_reasoner.yaml) | Text/image/video understanding | TP=2; 32,768-token context; memory fraction 0.6; up to 8 concurrent requests |
 
-`runtime_gpu_ids` selects the GPUs. Stage `tp_size: 1` means one Omni owner; `factory.server_args_overrides` goes to the native runtime. Generation leaves Ulysses and CFG placement at native defaults. Request-time `guidance_scale` and `negative_prompt` still control CFG.
+`runtime_gpu_ids` selects the GPUs. Stage `tp_size: 1` means one Omni owner; generation uses `factory.server_args_overrides`, while Reasoner uses `engine` for native settings. Generation leaves Ulysses and CFG placement at native defaults. Request-time `guidance_scale` and `negative_prompt` still control CFG.
 
 ### Why generation offloads weights
 
@@ -36,7 +36,7 @@ SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
 
 This serves `/v1/chat/completions`. Add `--model-path /models/Cosmos3-Super` to use an existing local snapshot instead of the pinned Hub download.
 
-**Generation HTTP has an additional native prerequisite.** The benchmark commit lacks `AsyncSchedulerClient.initialize(..., worker_failure=...)`; Omni rejects it before startup. The [media foundation #2048](https://github.com/sgl-project/sglang-omni/pull/2048) requires that API and propagation of `app.state.scheduler_failure`. Once those native lifecycle changes are installed, launch the media routes with:
+The refreshed [media foundation #2048](https://github.com/sgl-project/sglang-omni/pull/2048) serves native media routes inside the generation stage and relays them through Omni over a Unix socket. SDK and HTTP share that stage's native runtime and resolved checkpoint. It monitors scheduler socket failure directly, so `AsyncSchedulerClient.initialize(..., worker_failure=...)` is no longer required. Use the native SGLang version pinned by this checkout (currently `v0.5.21`) with Super support, and launch the media routes with:
 
 ```bash
 SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
@@ -55,7 +55,7 @@ SDK/HTTP generation, and Reasoner accuracy tests sequentially. Set
 with `bash` from this checkout. It defaults to GPUs 0–1 and both transports,
 and saves logs, JUnit reports, and model artifacts in a new directory per run.
 
-Use the runtime above, plus pytest, pytest-asyncio, psutil, Pillow, NumPy and PyAV.
+Use this checkout's native runtime dependency, plus pytest, pytest-asyncio, psutil, Pillow, NumPy and PyAV. The historical scores above predate the refreshed foundation; rerun qualification before comparing quality or performance.
 Run sequentially, without pytest-xdist:
 
 ```bash
@@ -88,8 +88,7 @@ both HTTP and the in-process Omni SDK. `COSMOS3_SUPER_TRANSPORTS=sdk` or `http`
 selects one; the default `sdk,http` runs both sequentially. No GPU jobs run unless
 `COSMOS3_SUPER_RUN_GPU=1` is explicitly set.
 
-On an otherwise idle four-H100 machine, with a native runtime satisfying the
-HTTP lifecycle prerequisite above and the benchmark dependencies installed:
+On an otherwise idle four-H100 machine, with the native runtime required by this checkout and the benchmark dependencies installed:
 
 ```bash
 export COSMOS3_SUPER_RUN_GPU=1

@@ -1658,11 +1658,19 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
 
 
 def test_result_resources_survive_partial_fanout():
+    released, sent = [], []
+
+    class OwningScheduler(FakeScheduler):
+        def claim_result(self, result, *, terminal):
+            return True
+
+        def release_result(self, result, *, delivered):
+            released.append(delivered)
+
     async def run():
-        stage_obj = make_stage(get_next=lambda request_id, result: ["first", "second"])
-        released, sent = [], []
-        stage_obj.scheduler.release_result = (
-            lambda result, *, delivered: released.append(delivered)
+        stage_obj = make_stage(
+            get_next=lambda request_id, result: ["first", "second"],
+            scheduler=OwningScheduler(),
         )
 
         async def send(request_id, target, result, **kwargs):

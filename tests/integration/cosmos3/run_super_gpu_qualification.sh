@@ -3,9 +3,9 @@
 # Run from an idle GPU sandbox with the project's dependencies installed.
 # Default allocation: 2 x H100 80GB, with the committed layerwise-offload recipe.
 # Export HF_TOKEN for the gated checkpoint (or populate the model cache first).
-# Native SGLang must register Super and support the generation HTTP lifecycle:
-# AsyncSchedulerClient.initialize(..., worker_failure=...) and scheduler_failure.
-# The historical 4e9e407 runtime does not satisfy that HTTP prerequisite.
+# Install this checkout's native SGLang dependency (currently v0.5.21), with
+# Super registered. Media HTTP routes now run inside the generation stage;
+# worker_failure support on AsyncSchedulerClient is no longer a prerequisite.
 #
 # Example:
 #   export COSMOS3_SUPER_NATIVE_REVISION=<installed-native-git-sha>
@@ -32,9 +32,19 @@ git status --short > "$campaign_dir/worktree-status.txt"
 python -m pip freeze > "$campaign_dir/packages.txt"
 nvidia-smi > "$campaign_dir/gpus.txt"
 
+# CPU tests whose OS/CUDA assumptions cannot run on the macOS merge host.
+python -m pytest -v -m 'not accelerator and not benchmark' \
+  tests/unit_test/utils/test_cpu.py \
+  tests/unit_test/utils/test_ipc_weights.py \
+  tests/unit_test/scheduling/test_streaming_vocoder.py \
+  tests/unit_test/serve/test_mps_dp_support.py \
+  --junitxml="$campaign_dir/linux-cpu.xml" \
+  2>&1 | tee "$campaign_dir/linux-cpu.log"
+
 # Shared runtime accelerator checks: IPC, stream routing, and worker placement.
 python -m pytest -v -s -m 'accelerator and not benchmark' \
   tests/unit_test/pipeline tests/unit_test/config tests/unit_test/mps \
+  tests/unit_test/scheduling tests/unit_test/utils \
   --junitxml="$campaign_dir/shared-accelerator.xml" \
   2>&1 | tee "$campaign_dir/shared-accelerator.log"
 
@@ -66,8 +76,4 @@ python -m pytest -v -s tests/test_model/test_cosmos3_super_reasoner_ci.py \
 # 28/50; compare like-for-like prompts, runtime, checkpoint, and sampling settings.
 # Native-rank failure, partial-rank startup recovery, and matched native quality
 # comparisons remain separate, unqualified work; these commands do not cover them.
-# Additional upstream CUDA-MPS preflight, to check separately on this GPU host:
-# python -m pytest -v \
-#   tests/unit_test/serve/test_mps_dp_support.py::TestLaunchFailsClosedBeforeResources::test_unpinned_kv_budget_leaves_no_state
-# That test also fails on unmodified main on a Mac without nvidia-smi.
 printf 'Qualification finished. Review artifacts in %s\n' "$campaign_dir"

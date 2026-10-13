@@ -147,7 +147,7 @@ async def reasoner_accuracy(client, tmp_path):
             repo_id=DATASETS["videomme-ci-50"],
             # The Cosmos3 reasoner rejects top-level video_* processing
             # options ("Use native chat content for media and its processing
-            # options", reasoner.py); let native preprocessing use defaults.
+            # options", native_chat_scheduler.py); let native preprocessing use defaults.
             timeout_s=500,
         ),
         task_label="Video-MME",

@@ -4,6 +4,29 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def resolve_native_checkpoint(kwargs: dict[str, object]) -> dict[str, object]:
+    """Resolve an Omni revision pin while preserving native model metadata."""
+    resolved = dict(kwargs)
+    model_path = resolved["model_path"]
+    if not isinstance(model_path, str):
+        raise ValueError("The native model_path must be a string")
+    else:
+        pass
+    is_local = Path(model_path).is_dir()
+    if is_local or "@" in model_path:
+        resolved["model_path"] = str(Path(resolve_checkpoint(model_path)).resolve())
+    else:
+        pass
+    if resolved.get("served_model_name") is None:
+        resolved["served_model_name"] = (
+            model_path if is_local else model_path.partition("@")[0]
+        )
+    else:
+        pass
+    return resolved
 
 
 def resolve_checkpoint(checkpoint: str) -> str:

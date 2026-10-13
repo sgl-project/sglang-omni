@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from tests.integration.cosmos3.super_harness import SuperClient, write_config
 from tests.integration.cosmos3.test_super_gpu import build_config
 
@@ -26,8 +27,8 @@ def test_http_config_preserves_placement_and_residency(
     assert restored.model_path == "local-snapshot"
     assert restored.stages[0].runtime_gpu_ids == [0, 1, 2, 3]
     assert (
-        restored.stages[0].factory.server_args_overrides
-        == config.stages[0].factory.server_args_overrides
+        resolve_stage_typed_kwargs(restored.stages[0])["server_args_overrides"]
+        == resolve_stage_typed_kwargs(config.stages[0])["server_args_overrides"]
     )
     if resident and kind == "generation":
         assert (

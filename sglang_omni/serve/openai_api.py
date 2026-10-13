@@ -1186,7 +1186,7 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         explicit_generation_params(req),
     )
 
-    extra_params: dict[str, object] = dict(req.model_extra or {})
+    extra_params: dict[str, int | float] = {}
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1427,9 +1427,7 @@ def build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(
-        text=result.text, audio=audio, media=result.media, meta_info=meta_info
-    )
+    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
 
 def realtime_unavailable_response(message: str) -> JSONResponse:

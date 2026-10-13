@@ -7,13 +7,14 @@ These tests do not load weights or qualify native execution/partial rank startup
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 
-from sglang_omni.models.cosmos3 import checkpoint, media, reasoner, stages
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.models.cosmos3 import stages
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+from sglang_omni.scheduling import native_chat_scheduler
+from sglang_omni.utils import checkpoint
 
 
 @pytest.fixture
@@ -67,46 +68,51 @@ def test_local_path_containing_at_is_not_split(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["generation", "reasoner"])
-def test_invalid_placement_fails_before_download_or_native_start(monkeypatch, kind):
+def test_invalid_placement_fails_before_download_or_native_start(
+    monkeypatch, native, kind
+):
     def unexpected(*args):
         pytest.fail("Invalid placement attempted a checkpoint download")
 
     monkeypatch.setattr(checkpoint, "resolve_checkpoint", unexpected)
-    factory = (
-        stages.create_generation_scheduler
-        if kind == "generation"
-        else reasoner.create_reasoner_scheduler
-    )
+    if kind == "generation":
+        factory = stages.create_generation_scheduler
+        kwargs = {}
+    else:
+        factory = native_chat_scheduler.create_native_chat_scheduler
+        kwargs = {"stage_name": "reasoner"}
     with pytest.raises(ValueError, match="placement"):
-        factory("nvidia/Cosmos3-Super@revision", gpu_id=0, runtime_gpu_ids=[1, 2])
+        factory(
+            "nvidia/Cosmos3-Super@revision", gpu_id=0, runtime_gpu_ids=[1, 2], **kwargs
+        )
+    assert not native.generation and not native.reasoner
 
 
 @pytest.mark.parametrize("concurrency", [0, -1, True, 1.5])
-def test_invalid_concurrency_fails_before_native_import(concurrency):
+def test_invalid_concurrency_fails_before_native_start(native, concurrency):
     with pytest.raises(ValueError, match="positive integer"):
-        reasoner.create_reasoner_scheduler(
-            "nvidia/Cosmos3-Super", max_concurrency=concurrency
+        native_chat_scheduler.create_native_chat_scheduler(
+            "nvidia/Cosmos3-Super", stage_name="reasoner", max_concurrency=concurrency
         )
+    assert not native.reasoner
 
 
 @pytest.mark.parametrize("kind", ["generation", "reasoner"])
 def test_adapter_construction_failure_releases_runtime_and_allows_retry(
     native, snapshot, tmp_path, monkeypatch, kind
 ):
-    owner = stages if kind == "generation" else reasoner
-    name = (
-        "NativeGenerationScheduler"
-        if kind == "generation"
-        else "NativeReasonerScheduler"
-    )
-    factory = (
-        stages.create_generation_scheduler
-        if kind == "generation"
-        else reasoner.create_reasoner_scheduler
-    )
-    kwargs = {"output_dir": str(tmp_path / "outputs")} if kind == "generation" else {}
+    if kind == "generation":
+        owner = stages
+        name = "NativeGenerationScheduler"
+        factory = stages.create_generation_scheduler
+        kwargs = {"output_dir": str(tmp_path / "outputs")}
+    else:
+        owner = native_chat_scheduler
+        name = "NativeChatScheduler"
+        factory = native_chat_scheduler.create_native_chat_scheduler
+        kwargs = {"stage_name": "reasoner"}
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError("adapter initialization failed")
 
     with monkeypatch.context() as patch:
@@ -114,86 +120,65 @@ def test_adapter_construction_failure_releases_runtime_and_allows_retry(
         with pytest.raises(RuntimeError, match="adapter initialization failed"):
             factory(str(snapshot), runtime_gpu_ids=[0, 1], **kwargs)
     assert native.shutdown == [kind]
-    # Retry obtains a new native owner; no failed adapter is returned to serve.
-    monkeypatch.setattr(owner, name, lambda *args: args[0])
+    monkeypatch.setattr(owner, name, lambda *args, **kwargs: args[0])
     runtime = factory(str(snapshot), runtime_gpu_ids=[0, 1], **kwargs)
     runtime.shutdown()
     assert native.shutdown == [kind, kind]
 
 
-def test_http_and_sdk_share_one_snapshot_even_if_hub_revision_moves(
-    native, snapshot, tmp_path, monkeypatch
+@pytest.mark.parametrize("stage_override", [False, True])
+def test_http_and_sdk_share_one_snapshot_and_native_owner(
+    native, snapshot, tmp_path, monkeypatch, stage_override
 ):
     resolutions = []
 
     def resolve(value):
         resolutions.append(value)
-        if Path(value).is_dir():
-            return value
         assert len(resolutions) == 1, "Hub revision was resolved a second time"
         return str(snapshot)
 
     monkeypatch.setattr(checkpoint, "resolve_checkpoint", resolve)
-    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
     config = Cosmos3PipelineConfig(model_path="nvidia/Cosmos3-Super@campaign")
     stage = config.stages[0]
     stage.runtime_gpu_ids = [0, 1, 2, 3]
     stage.factory.output_dir = str(tmp_path / "outputs")
-    media.prepare_native_media_app(config, host="127.0.0.1", port=8000)
-    from sglang_omni.config.runtime import resolve_stage_typed_kwargs
-
-    # The same resolver used by the runner must pass the frontend's snapshot.
+    if stage_override:
+        stage.factory.model_path = "nvidia/Cosmos3-Super@stage-pin"
+        stage.factory.server_args_overrides = {"served_model_name": "super-local"}
     kwargs = resolve_stage_typed_kwargs(stage)
+    kwargs.setdefault("model_path", config.model_path)
     scheduler = stages.create_generation_scheduler(
         **kwargs, runtime_gpu_ids=stage.runtime_gpu_ids
     )
     try:
-        frontend, worker = native.apps[0], native.generation[0]
-        assert frontend.model_path == worker.model_path == str(snapshot)
-        assert (
-            frontend.served_model_name
-            == worker.served_model_name
-            == "nvidia/Cosmos3-Super"
+        frontend = scheduler.http_app()
+        worker = native.generation[0]
+        assert frontend.server_args is worker
+        assert worker.model_path == str(snapshot)
+        assert worker.served_model_name == (
+            "super-local" if stage_override else "nvidia/Cosmos3-Super"
         )
-        assert frontend.gpu_ids == worker.gpu_ids == [0, 1, 2, 3]
-        assert frontend.scheduler_port == worker.scheduler_port
+        assert worker.gpu_ids == [0, 1, 2, 3]
+        assert resolutions == [
+            "nvidia/Cosmos3-Super@stage-pin" if stage_override else config.model_path
+        ]
         assert config.model_path == "nvidia/Cosmos3-Super@campaign"
     finally:
         scheduler.stop()
 
 
-def test_failed_frontend_does_not_publish_partial_factory_state(
+def test_chat_factory_resolves_pin_and_preserves_native_defaults(
     native, snapshot, monkeypatch
 ):
-    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
-    module = native.modules["sglang.multimodal_gen.runtime.entrypoints.http_server"]
-    original_create = module.create_app
-
-    def fail(args):
-        raise RuntimeError("frontend failed")
-
-    monkeypatch.setattr(module, "create_app", fail)
-    config = Cosmos3PipelineConfig(model_path=str(snapshot))
-    before = config.model_dump()
-    with pytest.raises(RuntimeError, match="frontend failed"):
-        media.prepare_native_media_app(config, host="127.0.0.1", port=8000)
-    assert config.model_dump() == before
-    assert native.generation == []
-    monkeypatch.setattr(module, "create_app", original_create)
-    assert isinstance(
-        media.prepare_native_media_app(config, host="127.0.0.1", port=8000), FastAPI
+    monkeypatch.setattr(checkpoint, "resolve_checkpoint", lambda model: str(snapshot))
+    monkeypatch.setattr(
+        native_chat_scheduler, "NativeChatScheduler", lambda *args, **kwargs: args[0]
     )
-
-
-def test_frontend_honors_stage_checkpoint_and_explicit_alias(
-    native, snapshot, monkeypatch
-):
-    monkeypatch.setattr(media, "unused_port", lambda excluded: max(excluded) + 10)
-    config = Cosmos3PipelineConfig(model_path="unused-root-checkpoint")
-    config.stages[0].factory.model_path = str(snapshot)
-    config.stages[0].factory.server_args_overrides = {
-        "served_model_name": "super-local"
-    }
-    media.prepare_native_media_app(config, host="127.0.0.1", port=8000)
-    assert native.apps[0].model_path == str(snapshot)
-    assert native.apps[0].served_model_name == "super-local"
+    runtime = native_chat_scheduler.create_native_chat_scheduler(
+        "nvidia/Cosmos3-Super@campaign", stage_name="reasoner", runtime_gpu_ids=[0, 1]
+    )
+    assert native.reasoner[0]["model_path"] == str(snapshot)
+    assert native.reasoner[0]["served_model_name"] == "nvidia/Cosmos3-Super"
+    assert "context_length" not in native.reasoner[0]
+    assert "mem_fraction_static" not in native.reasoner[0]
+    runtime.shutdown()

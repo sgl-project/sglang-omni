@@ -48,9 +48,9 @@ class ChatCompletionAudio(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible chat request with backend-validated extensions."""
+    """OpenAI-compatible chat completion request."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(populate_by_name=True)
 
     model: str | None = None
     messages: list[ChatMessage]
@@ -329,7 +329,6 @@ class GenerateResponse(BaseModel):
 
     text: str = ""
     audio: GenerateAudio | None = None
-    media: list[dict[str, object]] | None = None
     meta_info: GenerateMetaInfo
 
 

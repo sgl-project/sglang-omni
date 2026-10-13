@@ -53,10 +53,6 @@ from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
-from sglang_omni.serve.native_media import (
-    mount_native_media_app,
-    prepare_native_media_app,
-)
 from sglang_omni.serve.openai_api import ServerStatus, create_app
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -64,6 +60,7 @@ from sglang_omni.serve.protocol import (
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.serve.stage_routes import StageRoutes, export_server_port
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
@@ -174,7 +171,6 @@ def find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:
@@ -569,8 +565,7 @@ async def run_server(
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
-
-    native_media_app = prepare_native_media_app(pipeline_config, host=host, port=port)
+    export_server_port(port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -659,6 +654,14 @@ async def run_server(
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        # Added last, so Omni's own routes keep their paths.
+        for stage_name, prefixes, socket_path in mp_runner.stage_http_routes:
+            app.router.routes.append(StageRoutes(stage_name, prefixes, socket_path))
+            logger.info(
+                "Stage %s serves %s from its own process",
+                stage_name,
+                ", ".join(prefixes),
+            )
         app.state.server_status = ServerStatus.STARTING
 
         config = uvicorn.Config(
@@ -669,13 +672,6 @@ async def run_server(
             timeout_keep_alive=120,
         )
         server = PipelineUvicornServer(config)
-        runtime_failure = asyncio.create_task(mp_runner.wait_failed())
-        if native_media_app is not None:
-            mount_native_media_app(
-                app, native_media_app, runtime_failure=runtime_failure
-            )
-        else:
-            pass
         # note (ratish): a wildcard bind address is not a destination, so the
         # server reaches itself on loopback.
         if not host or host == "0.0.0.0":
@@ -695,14 +691,8 @@ async def run_server(
             )
         )
         try:
-            await serve_with_failure_watch(server, [runtime_failure])
+            await serve_with_failure_watch(server, [mp_runner.wait_failed()])
         finally:
-            if not runtime_failure.done():
-                runtime_failure.cancel()
-            else:
-                pass
-            with suppress(asyncio.CancelledError, Exception):
-                await runtime_failure
             warmup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await warmup_task

@@ -12,7 +12,9 @@ import pytest
 from sglang_omni.client.client import Client
 from sglang_omni.models.cosmos3.stages import NativeGenerationScheduler
 from sglang_omni.pipeline.control_plane import PushSocket, StageControlPlane
+from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, StagePayload
+from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 from tests.unit_test.pipeline.helpers import RecordingStageControlPlane, make_stage
 
 
@@ -20,7 +22,9 @@ class SavedGenerator:
     local_scheduler_process = None
 
     def generate(self, *, sampling_params_kwargs):
-        target = Path(sampling_params_kwargs["output_path"]) / "image.png"
+        # Native names the output after the request's output_file_name.
+        name = sampling_params_kwargs["output_file_name"]
+        target = Path(sampling_params_kwargs["output_path"]) / f"{name}.png"
         target.write_bytes(b"native result")
         return SimpleNamespace(
             output_file_path=str(target),
@@ -73,7 +77,7 @@ def test_queued_result_drop_releases_only_its_owned_files(tmp_path, drop):
             scheduler.stop()
         await asyncio.wait_for(stage.drain_outbox(), 2)
         assert stage.control_plane.completions == []
-        assert not path.parent.exists()
+        assert not path.exists()
         assert list(tmp_path.iterdir()) == [keep]
         assert keep.read_text() == "keep"
         assert scheduler.native_requests == {}
@@ -81,17 +85,61 @@ def test_queued_result_drop_releases_only_its_owned_files(tmp_path, drop):
     asyncio.run(run())
 
 
-def test_successful_stage_delivery_transfers_saved_output_to_client(tmp_path):
+class BlockingAbortControlPlane(RecordingCoordinatorControlPlane):
+    def __init__(self):
+        super().__init__()
+        self.abort_started = asyncio.Event()
+        self.release_abort = asyncio.Event()
+
+    async def broadcast_abort(self, msg):
+        await super().broadcast_abort(msg)
+        self.abort_started.set()
+        await self.release_abort.wait()
+
+
+@pytest.mark.parametrize("order", [None, "completion_first", "abort_first"])
+def test_delivered_media_belongs_to_whoever_receives_the_completion(tmp_path, order):
     async def run():
         scheduler, stage, path, keep = queued_result(tmp_path)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="generation",
+            terminal_stages=["generation"],
+        )
+        coordinator.control_plane = BlockingAbortControlPlane()
+        coordinator.register_stage("generation", "inproc://generation")
+        await coordinator.submit_request("request", "image")
+        future = coordinator.completion_futures["request"]
         await asyncio.wait_for(stage.drain_outbox(), 2)
         message = stage.control_plane.completions[0]
-        chunk = Client.default_result_builder(message.request_id, message.result)
-        assert Path(chunk.media[0]["path"]).read_bytes() == b"native result"
         assert scheduler.native_requests == {}
-        stage.on_abort("request")
+        if order is None:
+            await coordinator.handle_completion(message)
+        else:
+            # The abort broadcast reaches the stage after it delivered.
+            abort = asyncio.create_task(coordinator.abort("request"))
+            await asyncio.wait_for(coordinator.control_plane.abort_started.wait(), 2)
+            stage.on_abort("request")
+            if order == "completion_first":
+                await coordinator.handle_completion(message)
+                coordinator.control_plane.release_abort.set()
+                assert await abort is False
+            else:
+                coordinator.control_plane.release_abort.set()
+                assert await abort is True
+                await coordinator.handle_completion(message)
         scheduler.stop()
-        assert path.read_bytes() == b"native result"
+        if order == "abort_first":
+            # The coordinator drops the completion, so no caller owns it.
+            with pytest.raises(asyncio.CancelledError):
+                await future
+            assert not path.exists()
+            assert list(tmp_path.iterdir()) == [keep]
+        else:
+            chunk = Client.default_result_builder("request", future.result())
+            assert Path(chunk.media[0]["path"]) == path
+            assert path.read_bytes() == b"native result"
         assert keep.read_text() == "keep"
 
     asyncio.run(run())
@@ -107,7 +155,7 @@ def test_failed_result_route_releases_owned_output(tmp_path):
         stage.control_plane.send_complete = fail_send
         with pytest.raises(RuntimeError, match="completion transport failed"):
             await asyncio.wait_for(stage.drain_outbox(), 2)
-        assert not path.parent.exists()
+        assert not path.exists()
         assert list(tmp_path.iterdir()) == [keep]
         assert scheduler.native_requests == {}
 
@@ -154,14 +202,12 @@ def test_in_flight_result_owns_files_until_routing_settles(
                 else:
                     await asyncio.wait_for(pending, 2)
                     result = stage.control_plane.completions[0].result
-                    assert (
-                        Path(result["media"][0]["path"]).read_bytes()
-                        == b"native result"
-                    )
+                    assert Path(result["media"][0]["path"]) == path
         finally:
             if not pending.done():
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+        # Media the transport accepted may already be with a caller.
         assert path.exists() is (outcome == "delivered")
         assert scheduler.native_requests == {}
         assert keep.read_text() == "keep"
@@ -258,7 +304,7 @@ def test_old_result_release_cannot_delete_new_request_output(tmp_path):
     newer = scheduler.generate(StagePayload("request", OmniRequest("new image"), None))
     new_path = Path(newer.data["media"][0]["path"])
     scheduler.release_result(old, delivered=False)
-    assert not old_path.parent.exists()
+    assert not old_path.exists()
     assert new_path.read_bytes() == b"native result"
     scheduler.stop()
     assert list(tmp_path.iterdir()) == [keep]

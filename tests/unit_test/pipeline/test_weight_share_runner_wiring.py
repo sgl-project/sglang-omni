@@ -107,8 +107,6 @@ class FakeProcess:
 
 
 class FakeGroup:
-    is_ready = False
-
     process_count = 1
 
     def __init__(

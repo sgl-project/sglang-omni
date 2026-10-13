@@ -11,7 +11,10 @@ from unittest.mock import Mock
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.cosmos3.stages import NativeGenerationScheduler
+from sglang_omni.models.cosmos3.stages import (
+    COMMON_REQUEST_FIELDS,
+    NativeGenerationScheduler,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -49,7 +52,12 @@ def action_runtime(monkeypatch, native):
 def test_invalid_action_dispatch_is_rejected_before_native_call(
     action_runtime, tmp_path, inputs
 ):
-    scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
+    scheduler = NativeGenerationScheduler(
+        action_runtime.generator,
+        str(tmp_path),
+        COMMON_REQUEST_FIELDS | {"action_mode", "action"},
+        cancellation_mode="native",
+    )
     request = payload()
     request.request.inputs.update(inputs)
     with pytest.raises(ValueError):
@@ -62,14 +70,19 @@ def test_invalid_action_dispatch_is_rejected_before_native_call(
 def test_action_json_crosses_client_boundary_and_survives_delivery(
     action_runtime, tmp_path, mode
 ):
-    scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
+    scheduler = NativeGenerationScheduler(
+        action_runtime.generator,
+        str(tmp_path),
+        COMMON_REQUEST_FIELDS | {"action_mode", "action"},
+        cancellation_mode="native",
+    )
     result = scheduler.generate(
         payload(" " + mode.upper() + " ", num_frames=17, guidance_scale=1.0, seed=0)
     )
     chunk = Client.default_result_builder(result.request_id, result.data)
     assert chunk.media[0]["modality"] == "action"
     path = Path(chunk.media[0]["path"])
-    assert path.parent.parent == tmp_path
+    assert path.parent == tmp_path
     assert json.loads(path.read_text()) == action_runtime.response
     kwargs = action_runtime.generator.generate_action.call_args.kwargs
     assert "cancellation_event" not in kwargs
@@ -97,8 +110,14 @@ def test_forward_dynamics_keeps_native_video_path(action_runtime, tmp_path):
         peak_memory_mb=1,
         metrics={},
     )
+    Path(result.output_file_path).write_bytes(b"video")
     action_runtime.generator.generate = lambda **kwargs: calls.append(kwargs) or result
-    scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
+    scheduler = NativeGenerationScheduler(
+        action_runtime.generator,
+        str(tmp_path),
+        COMMON_REQUEST_FIELDS | {"action_mode", "action"},
+        cancellation_mode="native",
+    )
     actions = [[0.0] * 9] * 16
     output = scheduler.generate(
         payload("forward_dynamics", action=actions, image_path="input.png")
@@ -113,7 +132,12 @@ def test_forward_dynamics_keeps_native_video_path(action_runtime, tmp_path):
 def test_failed_action_removes_only_its_owned_output(action_runtime, tmp_path, failure):
     keep = tmp_path / "input.png"
     keep.write_bytes(b"user input")
-    scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
+    scheduler = NativeGenerationScheduler(
+        action_runtime.generator,
+        str(tmp_path),
+        COMMON_REQUEST_FIELDS | {"action_mode", "action"},
+        cancellation_mode="native",
+    )
     if failure == "native":
 
         def fail(**kwargs):
@@ -143,7 +167,12 @@ def test_active_action_cancel_waits_for_native_settlement(action_runtime, tmp_pa
         return {"actions": [[0.5]]}
 
     action_runtime.generator.generate_action = blocking_action
-    scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
+    scheduler = NativeGenerationScheduler(
+        action_runtime.generator,
+        str(tmp_path),
+        COMMON_REQUEST_FIELDS | {"action_mode", "action"},
+        cancellation_mode="native",
+    )
 
     def run():
         try:

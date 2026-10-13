@@ -41,6 +41,8 @@ def write_config(config, directory):
         runtime_gpu_ids=stage.runtime_gpu_ids,
         factory=stage.factory.model_dump(mode="json", exclude_none=True),
     )
+    if stage.engine is not None:
+        data["stages"][kind]["engine"] = stage.engine.overrides()
     path = directory / "deployment.yaml"
     path.write_text(yaml.safe_dump(data))
     return path

@@ -82,8 +82,8 @@ def build_config(kind, model, devices, output):
     config.model_path = model
     stage = config.stages[0]
     stage.gpu, stage.runtime_gpu_ids = devices[0], devices
-    overrides = stage.factory.server_args_overrides
     if kind == "generation":
+        overrides = stage.factory.server_args_overrides
         stage.factory.output_dir = str(output)
         overrides.update(
             use_fsdp_inference=len(devices) > 1, hsdp_shard_dim=len(devices)
@@ -97,9 +97,8 @@ def build_config(kind, model, devices, output):
                 layerwise_resident_layers={"transformer": 1},
             )
     else:
-        overrides.update(
-            tp_size=len(devices), mem_fraction_static=0.9 if len(devices) == 1 else 0.6
-        )
+        stage.engine.tp_size = len(devices)
+        stage.engine.mem_fraction_static = 0.9 if len(devices) == 1 else 0.6
     residency = os.environ.get("COSMOS3_SUPER_RESIDENCY", "layerwise-offload")
     if residency not in ("resident", "layerwise-offload"):
         raise ValueError(
@@ -200,8 +199,6 @@ def generation_case(mode, directory):
         "width": 832,
         "height": 480,
         "num_frames": frames,
-        # Keep the same workload across GPU counts; retain native VAE frame validation.
-        "adjust_frames": False,
         "fps": 5 if action else 24,
         "seed": 0,
         "num_inference_steps": 4,
