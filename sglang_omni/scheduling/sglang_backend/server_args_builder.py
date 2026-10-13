@@ -79,7 +79,7 @@ def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
 
 def build_sglang_server_args(
     model_path: str,
-    context_length: int,
+    context_length: int | None,
     *,
     chunked_prefill_size: int | None = None,
     max_prefill_tokens: int = 16384,

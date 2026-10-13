@@ -52,17 +52,18 @@ print(message.audio.transcript or message.content)
 
 ```bash
 python -m sglang_omni.cli serve \
-  --config examples/full_duplex/minicpmo.yaml \
   --model-path openbmb/MiniCPM-o-4_5 \
+  --variant session \
   --enable-realtime --port 8000
 ```
 
-We provide two demonstrative config files.
+`--variant session` selects the full-duplex pipeline. The defaults below match the MiniCPM-o demo. Change any of them with a flag of the same name, for example `--max_sessions 4` or `--sampling.temperature 0.5`. To print the whole configuration:
 
-| Config | Use it for |
-|---|---|
-| `examples/full_duplex/minicpmo.yaml` | Normal serving. Sampling matches the MiniCPM-o demo |
-| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs in greedy sampling, `top_k: 100`, and running the thinker and talker without CUDA graphs |
+```bash
+sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
+```
+
+For repeatable output in regression and parity recordings, add `--sampling.greedy true --sampling.top_k 100 --thinker.engine.disable_cuda_graph true --talker.engine.disable_cuda_graph true`.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -73,8 +74,8 @@ We provide two demonstrative config files.
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 10 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
-| `sampling` | see the config | Default sampling when a session does not set its own |
-| `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
+| `sampling` | printed by `config resolve` | Default sampling when a session does not set its own |
+| `vision` | printed by `config resolve` | Camera-frame limits per unit (1 s of audio) |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
@@ -89,7 +90,7 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":4194304,"max_output_events":256,"max_history_chars":65536,"cleanup_timeout_s":30}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":4194304,"max_output_events":256,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60}}#
 ```
 
 The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.
@@ -113,7 +114,7 @@ The settings panel switches between English and Chinese, changes the voice and a
 
 Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 audio in `input_audio_buffer.append`; the server returns 24 kHz audio in `response.output_audio.delta` and text in `response.output_audio_transcript.delta`. The model decides once per second of audio whether to keep listening or to speak.
 
-1. After `session.created`, send `session.update` and wait for `session.updated`.
+1. After `session.created`, send `session.update` and wait for `session.updated`. If the session is still not open 60 seconds after `session.created`, and no `session.update` is being processed at that moment, the server closes the connection with `session_update_timeout`. The deadline includes the upload: an update with two full-size reference clips is about 2.8 MB, which needs an uplink of roughly 0.4 Mbit/s.
 2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
 3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
 
@@ -124,7 +125,7 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Setting | Field | Notes |
 |---|---|---|
 | Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
-| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the defaults in `examples/full_duplex/minicpmo.yaml` |
+| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults |
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.

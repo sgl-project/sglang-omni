@@ -28,6 +28,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     UNIT_SAMPLES,
     LogMelFilterBank,
     MiniCPMOPerceptionState,
+    PreparedImageFeatures,
     StreamingAudioProcessor,
     audio_feature_batch,
 )
@@ -157,21 +158,24 @@ class PerceptionHooks(BatchedSessionHooks):
                 else:
                     pcm, encoded_images = chunk.payload, ()
                 # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
-                image_embeds = []
+                prepared_image_features: list[PreparedImageFeatures] = []
                 for encoded_image in encoded_images:
                     try:
-                        image_embeds.append(state.encode_image(encoded_image))
+                        prepared_image_features.append(
+                            state.prepare_image(encoded_image)
+                        )
                     except (OSError, ValueError, Image.DecompressionBombError) as exc:
                         logger.warning(
                             f"Dropping undecodable frame of unit {chunk.seq}: {exc}"
                         )
+                image_embeds = state.encode_images(tuple(prepared_image_features))
                 waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
                 pending_mel_units.append(
                     PendingMelUnit(
                         payload=payload,
                         state=state,
                         mel_window=state.prepare_audio(waveform),
-                        image_embeds=tuple(image_embeds),
+                        image_embeds=image_embeds,
                     )
                 )
         windows: dict[int, list[PendingMelUnit]] = defaultdict(list)
@@ -481,6 +485,9 @@ def create_speech_scheduler(
         prompt_wav=reference_audio,
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_variable_length=False,
+        enable_flow_cuda_graph=False,
+        flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,

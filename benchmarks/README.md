@@ -18,8 +18,6 @@ benchmarks/
 └── results/        # (gitignored) evaluation outputs
 ```
 
-PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
-
 ## Quick Start
 
 ```bash
@@ -574,8 +572,8 @@ The recorder also saves append-send completion receipts in
 `input-send-receipts.json` and waits until the complete input duration has
 elapsed before sending EOS, so offline analysis can verify the input window.
 
-Start a compatible MiniCPM-o server using its full-duplex example configuration,
-then record all v1.5 pairs:
+Start a MiniCPM-o server with `--variant session --enable-realtime`, then record
+all v1.5 pairs:
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v15 record \
@@ -596,69 +594,11 @@ profile does not change their definitions or imply paper-identical evaluation.
 
 ## Full-Duplex-Bench v1.5 overlap scenarios
 
-`benchmark_duplex_v15.py` runs the four v1.5 overlap subsets
-(`user_interruption`, `user_backchannel`, `talking_to_other`,
-`background_speech`) against the same native endpoint. Each sample is a pair:
-`input.wav` (with the overlapping event) and `clean_input.wav` (without it),
-each sent in a fresh `continuous` session. `response.cancel` is never sent; any
-stop or resume is the model's own behavior. The public [MIT-licensed dataset](https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/v1_v1.5/dataset/README.md) is
-acquired separately; no audio is vendored here. Use the
-[reference evaluation workflow](duplex/REFERENCE.md) for v1.5 scoring. It uses
-reference ASR with pinned external timing and behavior code; source and license
-requirements are documented there. Prosody/UTMOS evaluation is outside this workflow.
-
-```bash
-# Record: full dataset by default; --max-per-subset N or repeated --sample-id for a smoke run
-python -m benchmarks.eval.benchmark_duplex_v15 record \
-    --dataset-root data/full-duplex-bench-v1.5 \
-    --url ws://127.0.0.1:8097/v1/realtime \
-    --output results/fdb15-run \
-    --server-revision <full server commit SHA> \
-    --model <served model path or ID> \
-    --dataset-revision <release or archive digest> \
-    --sample-id user_backchannel/1 --sample-id user_interruption/1
-
-# Optional diagnostic Whisper transcripts; reference scoring uses its own Parakeet ASR
-python -m benchmarks.eval.benchmark_duplex_v15 transcribe \
-    --run results/fdb15-run --output results/fdb15-asr \
-    --model-path /models/whisper/large-v3.pt --device cuda
-```
-
-Each variant records an input pacing map: every append's client send time
-against its source offset `t_start_ms`. A variant whose maximum absolute send
-deviation exceeds 80 ms (one native packet) fails reconstruction and is not
-qualified. This gate bounds input cadence only; it is not total timing
-accuracy — packet granularity, VAD boundaries and network delay add further
-uncertainty to every latency.
-
-`record` prints declared (499) versus available pairs — the released
-backchannel archive holds 98 of the declared 99 — plus selected pairs,
-attempted variants and every non-passing variant. It exits 0 only when every
-selected variant passes. Invalid samples, errors and protocol failures stay in
-the selected denominator; only passing variants feed qualified protocol metrics.
-Reference export separately determines whether each fixed observation window is
-eligible for speech scoring.
-
-Each variant directory keeps the sent `input.pcm`/`input.wav`, the raw
-`continuous.jsonl` trace, `report.json`, the concatenated model audio
-`output-media.wav`, `output-playout.wav` and `transcript.json`.
-`output-playout.wav` is a *simulated* zero-buffer client playout: each audio
-delta starts at the later of its receipt time or the preceding chunk's end,
-so initial delay, gaps and queued playback are kept. It is not
-acoustic timing and not paper-identical latency. `transcript.json` holds the
-server's own generated text deltas and is not ASR.
-
-`transcribe` remains available for diagnostic Whisper transcripts of the generated
-audio, using a local checkpoint and retaining raw responses and model identity.
-These transcripts are not inputs to reference scoring: that workflow uses
-Parakeet for all four input/output roles across overlap and clean runs.
-
-Follow [reference evaluation](duplex/REFERENCE.md) to export the recording, run
-ASR and timing, optionally judge behavior, and summarize the results. Each phase
-preserves the selected population, technical exclusions and pending labels.
-The former event-anchored `benchmark_duplex_v15 score` command is removed;
-reference intervals have different definitions, so retain historical
-`fdb-v15-event-v1` results under their original version rather than relabeling them.
+`benchmark_duplex_v15.py` records the four v1.5 overlap subsets against the same native
+endpoint; `benchmark_duplex_reference.py` scores them with the official ASR, timing and
+behavior code. Follow the
+[Full-Duplex-Bench v1.5 runbook](../docs/developer_reference/full_duplex_bench.md)
+for setup, the copy-paste commands, measurement definitions and results.
 
 ## Full-Duplex-Bench v1.0 turn-taking tasks (VoiceChat)
 
@@ -672,16 +612,16 @@ endpoint, one `continuous` session per sample (no clean variant):
 | `synthetic_user_interruption` | user interruption | `interrupt.json` (span plus `context`/`interrupt` text) |
 | `icc_backchannel` | backchannel | none |
 
-It reuses the v1.5 runner, pacing gate, output reconstruction and
-`transcribe` step, so recording, qualification and the selected-denominator
-rules above apply unchanged. The dataset is acquired separately.
+It reuses the v1.5 runner, the 80 ms input pacing gate, output reconstruction and
+the `transcribe` step. Non-passing samples stay in the selected denominator, and
+`record` exits 0 only when every selected sample passes. The dataset is acquired separately.
 
 v1.0 transcribes with Parakeet (`nvidia/parakeet-tdt-0.6b-v2`, the upstream
 ASR) by default. Whisper invents words such as "Thank you." on silent output
 and stretches their timestamps across the whole file, which turns a model that
 correctly stayed quiet into a takeover; pause handling is the task most hurt.
-Parakeet needs NeMo, so run `transcribe` in the reference scoring environment
-described in [duplex/REFERENCE.md](duplex/REFERENCE.md) with a local `.nemo`
+Parakeet needs NeMo, so run `transcribe` in the scoring venv that the
+[v1.5 runbook](../docs/developer_reference/full_duplex_bench.md) sets up, with a local `.nemo`
 checkpoint. `--asr whisper` remains for diagnostics.
 
 ```bash

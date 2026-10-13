@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
-import socket
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -46,10 +45,12 @@ from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
     StageWorkerProcessSpec,
+    stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
-from sglang_omni.utils.cpu import effective_cpu_count
+from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class StageLaunchKwargs(TypedDict):
     route_fn: str | None
     is_terminal: bool
     env_defaults: dict[str, str]
+    written_env: frozenset[str]
     wait_for: list[str] | None
     wait_for_fn: str | None
     merge_fn: str | None
@@ -201,6 +203,8 @@ def build_stage_groups(
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
             env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
+            written_env=frozenset(config.env_defaults)
+            | frozenset(config.stage_named(logical_stage_name).env),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -297,13 +301,27 @@ def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
     process_count = len(process_specs)
     threads_per_process = max(1, cpu_budget // process_count)
     plan = {}
+    # note (Richard Wang): CPU-only processes stay near the GPUs the pipeline
+    # uses, not every visible one, and are left alone when it uses none.
+    pipeline_gpu_ids = sorted(
+        {gpu_id for spec in process_specs for gpu_id in stage_gpu_ids(spec.stage_specs)}
+    )
     for spec in process_specs:
-        spec.cpu_threads = threads_per_process
-        plan[spec.process_name] = threads_per_process
+        # note (Richard Wang): a process bound near its GPUs gets at most one
+        # thread per bound CPU, so a share of the whole host cannot oversubscribe.
+        gpu_ids = stage_gpu_ids(spec.stage_specs) or pipeline_gpu_ids
+        spec.cpu_affinity = gpu_local_affinity(gpu_ids) if gpu_ids else None
+        spec.cpu_threads = (
+            threads_per_process
+            if spec.cpu_affinity is None
+            else min(threads_per_process, len(spec.cpu_affinity))
+        )
+        plan[spec.process_name] = spec.cpu_threads
 
     allocations = {
         spec.process_name: {
             "fallback_threads": spec.cpu_threads,
+            "cpus": len(spec.cpu_affinity) if spec.cpu_affinity else None,
             "stages": [stage.stage_name for stage in spec.stage_specs],
         }
         for spec in process_specs
@@ -537,22 +555,20 @@ def resolve_comm_config(
 
 
 class NcclPortAllocator:
-    """Allocate unique NCCL ports for per-stage TP groups."""
+    """Allocate unique NCCL ports for per-stage TP groups.
 
-    def __init__(self, base_port: int = 29500) -> None:
+    Claims are exclusive across processes, so two servers started together
+    do not pick the same port.
+    """
+
+    def __init__(self, base_port: int = NCCL_PORT_BASE) -> None:
         self.next = base_port
 
     def allocate(self) -> int:
-        """Return an available port, incrementing the counter."""
-        while True:
-            port = self.next
-            self.next += 1
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("127.0.0.1", port))
-                    return port
-            except OSError:
-                continue
+        """Return an available port and advance past it."""
+        port = claim_tcp_port(self.next, NCCL_PORT_SPAN)
+        self.next = port + 1
+        return port
 
 
 async def finish_despite_cancellation(coro) -> None:

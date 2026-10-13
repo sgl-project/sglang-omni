@@ -19,18 +19,20 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 class TraceFormat(str, Enum):
     PCM16 = "realtime-pcm16-v1"
-    FLOAT32 = "realtime-f32-v1"
+    LEGACY_PCM16 = "realtime-legacy-pcm16-v1"
 
 
-def resolve_trace_format(engine: str, trace_format: str | None) -> TraceFormat:
-    if trace_format is not None:
-        return TraceFormat(trace_format)
-    elif engine == "sglang":
+AUDIO_DELTA = {
+    TraceFormat.PCM16: "response.output_audio.delta",
+    TraceFormat.LEGACY_PCM16: "response.audio.delta",
+}
+
+
+def resolve_trace_format(trace_format: str | None) -> TraceFormat:
+    if trace_format is None:
         return TraceFormat.PCM16
-    elif engine == "vllm":
-        return TraceFormat.FLOAT32
     else:
-        raise ValueError(f"--trace-format is required for engine {engine!r}")
+        return TraceFormat(trace_format)
 
 
 class TraceRow(BaseModel):
@@ -39,7 +41,6 @@ class TraceRow(BaseModel):
     direction: str
     time_s: float
     event: dict[str, JsonValue]
-    client_source: dict[str, JsonValue] | None = None
 
 
 @dataclass(kw_only=True)
@@ -88,7 +89,6 @@ def read_trace(trace: TextIO) -> Iterator[CaptureRecord]:
                 direction=direction,
                 time_s=time_s,
                 event=event,
-                client_source=record.get("client_source"),
             )
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             yield CaptureRecord(
@@ -102,10 +102,16 @@ def read_trace(trace: TextIO) -> Iterator[CaptureRecord]:
 
 
 def parse_pcm16_trace(
-    trace: TextIO, samples: NDArray[np.int16], packet_samples: int
+    trace: TextIO,
+    samples: NDArray[np.int16],
+    packet_samples: int,
+    trace_format: TraceFormat = TraceFormat.PCM16,
+    profile_rate: int | None = None,
 ) -> Iterator[CaptureRecord]:
+    """profile_rate is the recorded profile's output rate; the legacy format needs it
+    because its session.updated declares no audio format."""
     index = 0
-    output_rate = None
+    output_rate = profile_rate if trace_format is TraceFormat.LEGACY_PCM16 else None
     for record in read_trace(trace):
         if record.row is None:
             yield record
@@ -136,7 +142,11 @@ def parse_pcm16_trace(
                     raise ValueError("serialized PCM16 differs from input.pcm")
                 else:
                     pass
-            elif row.direction == "receive" and kind == "session.updated":
+            elif (
+                row.direction == "receive"
+                and kind == "session.updated"
+                and trace_format is TraceFormat.PCM16
+            ):
                 session = event.get("session") or {}
                 audio = session.get("audio") or {}
                 output = audio.get("output") or {}
@@ -149,81 +159,8 @@ def parse_pcm16_trace(
                 output_rate = rate if type(rate) is int else None
                 record.declares_output_rate = True
                 record.output_rate = output_rate
-            elif row.direction == "receive" and kind == "response.output_audio.delta":
+            elif row.direction == "receive" and kind == AUDIO_DELTA[trace_format]:
                 record.output_rate = output_rate
-                record.output_pcm = decode_b64(event.get("delta"))
-            else:
-                pass
-        except ValueError as exc:
-            record.payload_error = str(exc)
-        if row.direction == "send" and kind == "input_audio_buffer.append":
-            index += 1
-        else:
-            pass
-        yield record
-
-
-def parse_float32_trace(
-    trace: TextIO, samples: NDArray[np.int16], packet_samples: int, sample_rate: int
-) -> Iterator[CaptureRecord]:
-    index = 0
-    for record in read_trace(trace):
-        if record.row is None:
-            yield record
-            continue
-        else:
-            row = record.row
-        event = row.event
-        kind = event.get("type")
-        try:
-            if row.direction == "send" and kind == "input_audio_buffer.append":
-                source = row.client_source or {}
-                expected = samples[
-                    index * packet_samples : (index + 1) * packet_samples
-                ]
-                valid = len(expected)
-                if (
-                    source.get("index"),
-                    source.get("valid_samples"),
-                    source.get("padded_samples"),
-                ) != (index, valid, packet_samples - valid):
-                    raise ValueError("append client_source index/valid/padded mismatch")
-                elif (event.get("format"), event.get("sample_rate_hz")) != (
-                    "pcm_f32le",
-                    sample_rate,
-                ):
-                    raise ValueError("append is not pcm_f32le at 16 kHz")
-                else:
-                    pass
-                start = source.get("start_s")
-                if type(start) not in (int, float):
-                    raise ValueError("append source start is not index * 80 ms")
-                else:
-                    pass
-                audio = decode_b64(event.get("audio"))
-                record.source_start_s = start
-                if len(audio) != 4 * packet_samples:
-                    raise ValueError("serialized frame is not 1280 float32 samples")
-                else:
-                    pass
-                scaled = np.frombuffer(audio, "<f4").astype(np.float64) * 32768
-                if (
-                    not np.isfinite(scaled).all()
-                    or not np.array_equal(scaled[:valid], expected.astype(np.float64))
-                    or np.any(scaled[valid:])
-                ):
-                    raise ValueError(
-                        "serialized float32 frame differs from input.pcm/zero padding"
-                    )
-                else:
-                    pass
-            elif row.direction == "receive" and kind == "response.output_audio.delta":
-                if event.get("format") != "pcm16":
-                    raise ValueError("audio delta is not pcm16")
-                else:
-                    pass
-                rate = event.get("sample_rate_hz")
-                record.output_rate = rate if type(rate) is int else None
                 record.output_pcm = decode_b64(event.get("delta"))
             else:
                 pass

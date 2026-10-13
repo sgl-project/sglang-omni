@@ -5,9 +5,11 @@ from __future__ import annotations
 
 from array import array
 from collections.abc import Mapping
+from typing import Literal
 
 import torch
 from sglang.srt.dllm.config import DllmConfig
+from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.llada2_uni.components.preprocessor import (
@@ -24,7 +26,23 @@ from sglang_omni.models.llada2_uni.payload_types import (
     ThinkerOutput,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    DllmRequest,
+    SGLangDLLMRequestData,
+)
+
+
+class LLaDA2UniRequest(DllmRequest):
+    """LLaDA generation settings shared by request building and unmasking."""
+
+    _dllm_steps: int | None = None  # noqa: leading-underscore  # DLLM protocol
+    _task_kind: Literal["chat", "t2i", "edit", "interleaved"] = (
+        "chat"  # noqa: leading-underscore  # DLLM protocol
+    )
+    _is_thinking_phase1: bool = False  # noqa: leading-underscore  # DLLM protocol
+    _cfg_scale: float = 4.0  # noqa: leading-underscore  # DLLM protocol
+    _cfg_image_scale: float = 0.0  # noqa: leading-underscore  # DLLM protocol
+    _cfg_rescale: float = 0.7  # noqa: leading-underscore  # DLLM protocol
 
 
 def build_encoder_request(
@@ -130,9 +148,6 @@ def build_dllm_thinker_request(
     request_id: str | None = None,
 ) -> SGLangDLLMRequestData:
     """Build SGLangDLLMRequestData for the LLaDA2-Uni thinker."""
-    from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.sampling.sampling_params import SamplingParams
-
     prompt = state.prompt
     if not isinstance(prompt, dict):
         raise TypeError("prompt missing for thinker request")
@@ -161,11 +176,11 @@ def build_dllm_thinker_request(
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
 
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    eos_token_id = tokenizer.eos_token_id
     eos_token_ids = {eos_token_id} if eos_token_id is not None else None
 
     rid = request_id or "req-0"
-    req = Req(
+    req = LLaDA2UniRequest(
         rid=rid,
         origin_input_text="",
         origin_input_ids=input_ids_array,

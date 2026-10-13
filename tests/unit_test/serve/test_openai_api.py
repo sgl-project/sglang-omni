@@ -10,12 +10,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.client import extract_inputs
+from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
@@ -26,15 +27,18 @@ from sglang_omni.proto import (
 )
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    ServerStatus,
     _ClosableStreamingResponse,
     await_speech_response,
     build_chat_generate_request,
+    chat_non_stream,
     chat_stream,
     speech_audio_response,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
+from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
 from sglang_omni.serve.transcriptions import (
     _first_transcription_chunk,
     _transcription_stream,
@@ -173,6 +177,11 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            usage=UsageInfo(
+                prompt_tokens=5,
+                completion_tokens=2,
+                total_tokens=7,
+            ),
             finish_reason=self.finish_reason,
         )
 
@@ -362,6 +371,25 @@ class BlockingNonStreamingSpeechClient:
         allow_format_fallback: bool = True,
     ):
         del request, request_id, response_format, speed, allow_format_fallback
+        self.started.set()
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class BlockingCompletionClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.aborted: list[str] = []
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> None:
         self.started.set()
         await asyncio.Future()
 
@@ -912,6 +940,11 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
     assert response.headers["x-finish-reason"] == "length"
+    assert response.headers["x-prompt-tokens"] == "5"
+    assert response.headers["x-completion-tokens"] == "2"
+    assert response.headers["x-sglang-omni-input-tokens"] == "5"
+    assert response.headers["x-sglang-omni-output-tokens"] == "2"
+    assert response.headers["x-sglang-omni-total-tokens"] == "7"
     assert response.headers["x-request-id"].startswith("speech-")
     assert speech_client.speech_requests[0].model == "tts"
     assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
@@ -926,6 +959,24 @@ def test_create_app_passes_model_specific_speech_input_limit() -> None:
     )
 
     assert app.state.speech_service.max_speech_input_chars is None
+
+
+def test_health_reports_starting_until_the_launcher_marks_the_server_up() -> None:
+    client, coordinator, _ = streaming_client()
+    app = create_app(client)
+    http_client = TestClient(app)
+
+    coordinator.running = True
+    app.state.server_status = ServerStatus.STARTING
+    starting = http_client.get("/health")
+    app.state.server_status = ServerStatus.UP
+    healthy = http_client.get("/health")
+    coordinator.running = False
+    stopped = http_client.get("/health")
+
+    assert (starting.status_code, starting.json()["status"]) == (503, "starting")
+    assert (healthy.status_code, healthy.json()["status"]) == (200, "healthy")
+    assert (stopped.status_code, stopped.json()["status"]) == (503, "unhealthy")
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1119,6 +1170,107 @@ def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
         "type": "server_error",
         "code": 500,
     }
+
+
+class TextDeltaCoordinator:
+    """Answer chat with fixed text: whole when buffered, as deltas when streamed.
+
+    A None delta is an audio chunk that finishes the audio.
+    """
+
+    def __init__(self, deltas: list[str | None]) -> None:
+        self.deltas = deltas
+
+    async def submit(self, request_id: str, omni_request: OmniRequest) -> object:
+        text = "".join(delta for delta in self.deltas if delta is not None)
+        return {"text": text, "finish_reason": "stop"}
+
+    async def stream(
+        self, request_id: str, omni_request: OmniRequest
+    ) -> AsyncIterator[StreamMessage]:
+        for index, delta in enumerate(self.deltas):
+            modality = "audio" if delta is None else "text"
+            chunk: dict[str, object] = {"modality": modality}
+            if delta is not None:
+                chunk["text"] = delta
+            else:
+                pass
+            if delta is None or index == len(self.deltas) - 1:
+                chunk["finish_reason"] = "stop"
+            else:
+                pass
+            yield StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk=chunk,
+                stage_name="decode",
+                modality=modality,
+            )
+
+
+def test_chat_answer_excludes_the_matched_stop_string() -> None:
+    coordinator = TextDeltaCoordinator(["1, 2", ", 3"])
+    app = create_app(Client(coordinator), model_name="qwen3-omni")
+    body = {"messages": [{"role": "user", "content": "count"}], "stop": [", 3"]}
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "1, 2"
+
+
+@pytest.mark.parametrize(
+    ("deltas", "stop", "expected"),
+    [
+        pytest.param(["1, 2", ", 3"], [", 3"], "1, 2", id="whole"),
+        pytest.param(["a", "\n", "b\n", "\nc"], ["\n\n"], "a\nb", id="across-deltas"),
+        pytest.param(["a", "\n"], ["\n\n"], "a\n", id="never-completed"),
+        pytest.param(["a", "\n", None, "\nb"], ["\n\n"], "a", id="audio-ends-mid-stop"),
+        pytest.param(["a", "\n", None], ["\n\n"], "a\n", id="text-never-ends"),
+    ],
+)
+def test_chat_stream_never_sends_a_stop_string(
+    deltas: list[str | None], stop: list[str], expected: str
+) -> None:
+    app = create_app(Client(TextDeltaCoordinator(deltas)), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "count"}],
+        "stop": stop,
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    content = [
+        choice["delta"]["content"]
+        for event in events
+        for choice in event["choices"]
+        if choice["delta"].get("content")
+    ]
+
+    assert "".join(content) == expected
+    assert events[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_stream_stop_check_is_bounded_by_the_held_text() -> None:
+    class CountingStop(str):
+        prefixes = 0
+
+        def __getitem__(self, key: object) -> str:
+            CountingStop.prefixes += 1
+            return super().__getitem__(key)
+
+    trimmer = StreamedStopTrimmer(stop=[CountingStop("x" * 10_000)])
+    deltas = ["ab", "cd", "ef"]
+
+    released = "".join(trimmer.push(delta) for delta in deltas) + trimmer.finish()
+
+    assert released == "abcdef"
+    assert CountingStop.prefixes <= sum(len(delta) for delta in deltas)
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
@@ -1412,20 +1564,32 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
 
 
 @pytest.mark.parametrize("use_audio_in_video", [True, False])
-def test_chat_request_forwards_embedded_video_audio_flag(
+@pytest.mark.parametrize(
+    ("content", "videos"),
+    [
+        ("hello", ["clip.mp4"]),
+        ([{"type": "video_url", "video_url": {"url": "clip.mp4"}}], None),
+    ],
+)
+def test_chat_request_forwards_video_options(
+    content: str | list[dict[str, object]],
+    videos: list[str] | None,
     use_audio_in_video: bool,
 ) -> None:
     req = ChatCompletionRequest(
         model="qwen3-omni",
-        messages=[{"role": "user", "content": "hello"}],
-        videos=["clip.mp4"],
+        messages=[{"role": "user", "content": content}],
+        videos=videos,
         use_audio_in_video=use_audio_in_video,
+        video_fps=4.0,
+        video_max_frames=8,
     )
 
-    gen_req = build_chat_generate_request(req)
+    inputs = extract_inputs(build_chat_generate_request(req))
 
-    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
-    assert extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
+    assert inputs["use_audio_in_video"] is use_audio_in_video
+    assert inputs["video_fps"] == 4.0
+    assert inputs["video_max_frames"] == 8
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:
@@ -1796,6 +1960,56 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+def test_buffered_chat_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            chat_non_stream(
+                request=request,
+                client=client,
+                gen_req=GenerateRequest(model="qwen3-omni", prompt="hello"),
+                request_id="req-1",
+                response_id="chatcmpl-req-1",
+                created=0,
+                model="qwen3-omni",
+                req=ChatCompletionRequest(
+                    messages=[{"role": "user", "content": "hello"}]
+                ),
+                audio_format="wav",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+def test_speech_to_text_completion_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            complete_speech_to_text_request(
+                request,
+                client,
+                GenerateRequest(model="moss-td", prompt="hello"),
+                request_id="transcription-1",
+                error_log_message="Error transcribing audio for request %s",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["transcription-1"]
 
     asyncio.run(drive())
 

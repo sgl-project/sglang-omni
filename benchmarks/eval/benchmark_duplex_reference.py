@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument(
         "--trace-format",
         choices=[trace_format.value for trace_format in TraceFormat],
-        help="Capture encoding (legacy sglang/vllm labels select their existing format)",
+        help="Capture encoding (default: realtime-pcm16-v1)",
     )
     export.add_argument("--run", type=Path, action="append", required=True)
     export.add_argument("--out", type=Path, required=True)
@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
             custom.add_argument("--api-key-env", default="CUSTOM_JUDGE_API_KEY")
             custom.add_argument("--timeout-s", type=float, default=120.0)
             custom.add_argument("--retry-sleep-s", type=float, default=5.0)
+            custom.add_argument(
+                "--concurrency",
+                type=int,
+                default=16,
+                help="Judge requests in flight at once (default: 16)",
+            )
         else:
             pass
     for command in work_commands:
@@ -186,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     else:
         pass
-    for name in ("limit", "bootstrap"):
+    for name in ("limit", "bootstrap", "concurrency"):
         value = vars(args).get(name)
         if value is not None and value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")

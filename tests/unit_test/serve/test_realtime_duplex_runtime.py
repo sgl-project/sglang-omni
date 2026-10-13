@@ -23,6 +23,7 @@ from sglang_omni.serve.realtime.types import (
     Envelope,
     InteractionAdapter,
     OutputSink,
+    ProtocolError,
     RuntimeLimits,
     Unit,
 )
@@ -32,6 +33,7 @@ SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
+UPDATE_DEADLINE_S = 600.0
 
 
 class GatedAdapter(InteractionAdapter):
@@ -60,6 +62,33 @@ class GatedAdapter(InteractionAdapter):
 
     async def close(self) -> None:
         pass
+
+
+class SlowAdmissionAdapter(GatedAdapter):
+    """Reports when admission starts and holds it until released."""
+
+    async def open(
+        self, session_id: str, config: SessionConfiguration, emit: OutputSink
+    ) -> None:
+        self.has_started.set()
+        await self.release.wait()
+        await super().open(session_id, config, emit)
+
+
+@pytest.fixture
+def deadline_reached(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Holds the update deadline's sleep until the test sets the returned event."""
+    is_reached = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep_until_reached(delay_s: float) -> None:
+        if delay_s == UPDATE_DEADLINE_S:
+            await is_reached.wait()
+        else:
+            await real_sleep(delay_s)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep_until_reached)
+    return is_reached
 
 
 async def open_runtime(adapter: GatedAdapter) -> SessionRuntime:
@@ -160,6 +189,59 @@ async def test_unit_failure_closes_session_and_logs_once(
     assert len(runtime_records) == 1
     assert runtime_records[0].levelno == logging.ERROR
     assert (runtime_records[0].exc_info is not None) == has_traceback
+
+
+@pytest.mark.asyncio
+async def test_update_deadline_does_not_cut_off_an_admission_in_progress(
+    deadline_reached: asyncio.Event,
+) -> None:
+    adapter = SlowAdmissionAdapter([])
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(),
+        lambda: adapter,
+        RuntimeLimits(session_update_timeout_s=UPDATE_DEADLINE_S),
+    )
+    runtime.notify_created()
+    update_task = asyncio.create_task(runtime.update({}, "update"))
+    await adapter.has_started.wait()
+    deadline_reached.set()
+    await asyncio.sleep(0)
+    adapter.release.set()
+    await asyncio.wait_for(update_task, 5)
+    await asyncio.sleep(0)
+    await runtime.close("client_closed")
+    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+
+    assert [
+        entry.event for entry in envelopes if isinstance(entry.event, Failure)
+    ] == []
+    assert envelopes[-1].event == Closed("client_closed")
+
+
+@pytest.mark.asyncio
+async def test_update_after_the_deadline_is_rejected_without_admission(
+    deadline_reached: asyncio.Event,
+) -> None:
+    adapter = SlowAdmissionAdapter([])
+    adapter.release.set()
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(),
+        lambda: adapter,
+        RuntimeLimits(session_update_timeout_s=UPDATE_DEADLINE_S),
+    )
+    runtime.notify_created()
+    deadline_reached.set()
+    await asyncio.sleep(0)
+
+    with pytest.raises(ProtocolError, match="closing"):
+        await runtime.update({}, "update")
+    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+
+    assert not adapter.has_started.is_set()
+    failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
+    assert [failure.code for failure in failures] == ["session_update_timeout"]
 
 
 def test_output_budget_counts_outbound_events_only() -> None:

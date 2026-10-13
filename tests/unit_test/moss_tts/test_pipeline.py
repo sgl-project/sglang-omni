@@ -864,7 +864,12 @@ def test_moss_tts_preprocessing_loads_separate_codec(
             audio_tokenizer_name_or_path="codec-from-model-config",
         ),
     )
-    encoder = SimpleNamespace()
+    encoder = SimpleNamespace(
+        sample_rate=24000,
+        number_channels=1,
+        device="cpu",
+        model=SimpleNamespace(encoder_dtype=torch.float32),
+    )
     loaded: list[tuple[str, str, torch.dtype | None]] = []
 
     def load_encoder(
@@ -894,9 +899,9 @@ def test_moss_tts_preprocessing_loads_separate_codec(
         assert context is not None
         assert context.processor is processor
         assert context.processor.audio_tokenizer is None
-        assert context.reference_encoder.audio_encoder is encoder
-        assert context.reference_encoder.n_vq == 32
-        assert isinstance(context.reference_encoder, stages.BatchedReferenceEncoder)
+        assert context.reference_encoder.hook.audio_encoder is encoder
+        assert context.reference_encoder.hook.n_vq == 32
+        assert isinstance(context.reference_encoder, stages.MossReferenceEncoder)
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -917,7 +922,12 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
             audio_tokenizer_name_or_path="codec",
         ),
     )
-    encoder = SimpleNamespace()
+    encoder = SimpleNamespace(
+        sample_rate=24000,
+        number_channels=1,
+        device="cpu",
+        model=SimpleNamespace(encoder_dtype=torch.float32),
+    )
     loaded: list[tuple[str, str, torch.dtype | None]] = []
 
     def load_encoder(
@@ -945,7 +955,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
             rb._QUEUE.snapshot().context
         )  # noqa: leading-underscore  # production name
         assert context is not None
-        assert isinstance(context.reference_encoder, stages.BatchedReferenceEncoder)
+        assert isinstance(context.reference_encoder, stages.MossReferenceEncoder)
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -987,7 +997,12 @@ def test_moss_tts_preprocessing_reference_cache_toggles(
             audio_tokenizer_name_or_path="codec",
         ),
     )
-    encoder = SimpleNamespace(sample_rate=24000, device="cpu", model=None)
+    encoder = SimpleNamespace(
+        sample_rate=24000,
+        number_channels=1,
+        device="cpu",
+        model=SimpleNamespace(encoder_dtype=torch.float32),
+    )
     monkeypatch.setattr(stages, "load_moss_processor", lambda model_path: processor)
     monkeypatch.setattr(stages, "load_moss_audio_encoder", lambda *a, **k: encoder)
 
@@ -999,14 +1014,14 @@ def test_moss_tts_preprocessing_reference_cache_toggles(
         )
         assert isinstance(
             rb._QUEUE.snapshot().context.reference_encoder,  # noqa: leading-underscore  # production name
-            stages.BatchedReferenceEncoder,
+            stages.MossReferenceEncoder,
         )
 
         monkeypatch.setenv("MOSS_REF_AUDIO_CACHE", "0")
         stages.create_preprocessing_executor("model", device="cpu")
         assert isinstance(
             rb._QUEUE.snapshot().context.reference_encoder,  # noqa: leading-underscore  # production name
-            stages.BatchedReferenceEncoder,
+            stages.MossReferenceEncoder,
         )
 
         monkeypatch.delenv("MOSS_REF_AUDIO_CACHE")
@@ -1014,8 +1029,9 @@ def test_moss_tts_preprocessing_reference_cache_toggles(
         cached = (
             rb._QUEUE.snapshot().context.reference_encoder
         )  # noqa: leading-underscore  # production name
-        assert isinstance(cached, stages.MossTTSReferenceEncoder)
-        assert cached.service.cache.max_size == 8192
+        assert isinstance(cached, stages.MossReferenceEncoder)
+        assert cached.hook.cache_enabled
+        assert cached.cache.max_size == 8192
     finally:
         rb.clear_moss_tts_preprocessing_context()
 

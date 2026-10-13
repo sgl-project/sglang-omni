@@ -82,7 +82,11 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
-from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import (
+    IncomingMessage,
+    OutgoingMessage,
+    put_messages,
+)
 from sglang_omni.scheduling.metrics_snapshot import (
     SchedulerMetricsSnapshot,
     backend_metrics_snapshot,
@@ -473,7 +477,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.max_queued_requests = server_args.max_queued_requests
         effective_max_total_num_tokens = mr.effective_max_total_num_tokens
         self.max_req_len = min(
-            server_args.context_length - 1,
+            model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         self.max_req_input_len = self.max_req_len - 1
@@ -528,6 +532,8 @@ class OmniScheduler(Generic[RequestDataT]):
         self._engine_paused = False  # noqa: leading-underscore
         self.admin_lock = threading.Lock()
         self.admin_queue = _queue_mod.Queue()
+        self.tp_admin_waiters: deque[_queue_mod.Queue[AdminActionResult]] = deque()
+        self.tp_admin_results: deque[AdminActionResult] = deque()
         self.scheduler_thread_id: int | None = None
         self.last_pause_mode: str | None = None
 
@@ -1033,6 +1039,10 @@ class OmniScheduler(Generic[RequestDataT]):
         for msg in recv_msgs:
             if msg.type == "abort":
                 self.abort(msg.request_id)
+                continue
+            elif msg.type == "admin":
+                self.tp_admin_results.append(self.run_admin_action_safely(*msg.data))
+                self.answer_tp_admin_waiters()
                 continue
             else:
                 pass
@@ -1629,7 +1639,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 if session_unit is not None:
                     error = ContextExhaustedError(
                         f"{ContextExhaustedError.CODE}: the session reached the "
-                        f"thinker context length of {self.server_args.context_length} "
+                        f"thinker context length of {self.model_config.context_len} "
                         f"tokens (the next unit needs {len(req.origin_input_ids)} "
                         f"tokens, limit {self.max_req_input_len}). "
                         "Start a new session."
@@ -2041,6 +2051,7 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
+        step_messages: list[OutgoingMessage] = []
         for sched_req in sched_output.requests:
             rid = sched_req.request_id
             if rid in skip_rids or rid in self.aborted_request_ids:
@@ -2056,27 +2067,33 @@ class OmniScheduler(Generic[RequestDataT]):
                 messages = self.stream_output_builder(rid, sched_req.data, req_output)
             else:
                 continue
-            self.put_stream_messages(rid, messages)
+            self.stage_stream_messages(rid, messages, step_messages)
+        put_messages(self.outbox, step_messages)
+
+    def stage_stream_messages(
+        self,
+        request_id: str,
+        messages: Iterable[OutgoingMessage],
+        staged: list[OutgoingMessage],
+    ) -> None:
+        staged_count = len(staged)
+        staged.extend(messages)
+        if len(staged) > staged_count and request_id not in self.first_emit_done:
+            self.first_emit_done.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=None,
+                event_name="scheduler_first_emit",
+            )
+        else:
+            pass
 
     def put_stream_messages(
         self, request_id: str, messages: Iterable[OutgoingMessage]
     ) -> None:
-        emitted_any = False
-        for msg in messages:
-            if not emitted_any:
-                if request_id not in self.first_emit_done:
-                    self.first_emit_done.add(request_id)
-                    _emit_event(
-                        request_id=request_id,
-                        stage=None,
-                        event_name="scheduler_first_emit",
-                    )
-                else:
-                    pass
-                emitted_any = True
-            else:
-                pass
-            self.outbox.put(msg)
+        staged: list[OutgoingMessage] = []
+        self.stage_stream_messages(request_id, messages, staged)
+        put_messages(self.outbox, staged)
 
     def flush_stream_output(self, request_id: str, req_data: ARRequestData) -> None:
         session_unit = self.active_session_unit(request_id)
@@ -2640,18 +2657,42 @@ class OmniScheduler(Generic[RequestDataT]):
                 action, payload, response_queue = self.admin_queue.get_nowait()
             except _queue_mod.Empty:
                 break
-            try:
-                response = self.run_admin_action(action, payload)
-            except Exception as exc:
-                logger.exception("OmniScheduler admin operation failed: %s", action)
-                response = {
-                    "success": False,
-                    "message": str(exc),
-                    "error": str(exc),
-                }
-            response_queue.put(response)
+            if self.tp_size > 1:
+                # note (Richard Wang): every TP rank must apply an admin action in
+                # the same pass, or one rank waits on a step the other never runs.
+                # The entry rank broadcast carries it, and each rank answers its
+                # own caller in order once applied.
+                self.tp_admin_waiters.append(response_queue)
+                if self.is_entry_rank:
+                    self.inbox.put(
+                        IncomingMessage(
+                            request_id="", type="admin", data=(action, payload)
+                        )
+                    )
+                else:
+                    pass
+                self.answer_tp_admin_waiters()
+            else:
+                response_queue.put(self.run_admin_action_safely(action, payload))
             processed += 1
         return processed
+
+    def run_admin_action_safely(
+        self, action: str, payload: dict[str, object]
+    ) -> AdminActionResult:
+        try:
+            return self.run_admin_action(action, payload)
+        except Exception as exc:
+            logger.exception("OmniScheduler admin operation failed: %s", action)
+            return {
+                "success": False,
+                "message": str(exc),
+                "error": str(exc),
+            }
+
+    def answer_tp_admin_waiters(self) -> None:
+        while self.tp_admin_waiters and self.tp_admin_results:
+            self.tp_admin_waiters.popleft().put(self.tp_admin_results.popleft())
 
     def run_admin_action(
         self, action: str, payload: dict[str, object] | None = None
@@ -2760,8 +2801,10 @@ class OmniScheduler(Generic[RequestDataT]):
             self.last_pause_mode = mode
             self.resolve_pending_async()
             num_paused = 0
+            aborted_request_ids: list[str] = []
             if mode == "abort":
-                num_paused = self.abort_all_requests()
+                aborted_request_ids = self.abort_all_requests()
+                num_paused = len(aborted_request_ids)
             elif mode == "retract":
                 num_paused = self.retract_running_requests()
             else:
@@ -2772,6 +2815,7 @@ class OmniScheduler(Generic[RequestDataT]):
             "data": {
                 "mode": mode,
                 "num_paused_requests": num_paused,
+                "aborted_request_ids": aborted_request_ids,
                 "engine_paused": self._engine_paused,  # noqa: leading-underscore
             },
         }
@@ -2831,7 +2875,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 num_paused = 0
                 abort_all_requests = bool(payload.get("abort_all_requests", False))
                 if abort_all_requests:
-                    num_paused = self.abort_all_requests()
+                    num_paused = len(self.abort_all_requests())
                 else:
                     active_request_ids = self.active_request_ids()
                     if active_request_ids and not self.can_update_active_requests(
@@ -2982,7 +3026,7 @@ class OmniScheduler(Generic[RequestDataT]):
             data = self.model_worker.weights_checker(action)
         return {"success": True, "message": "ok", "data": data}
 
-    def abort_all_requests(self) -> int:
+    def abort_all_requests(self) -> list[str]:
         request_ids = self.active_request_ids()
         for request_id in request_ids:
             self.abort(request_id, defer_running_cleanup=False)
@@ -2999,7 +3043,7 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
         self.chunked_req = None
-        return len(request_ids)
+        return request_ids
 
     def active_request_ids(self) -> list[str]:
         request_ids: set[str] = set()

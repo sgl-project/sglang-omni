@@ -56,6 +56,7 @@ def personaplex_stages_factory() -> list[StageConfig]:
             name=CODE2WAV_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_code2wav_executor",
+            factory=FactoryArgs(num_decode_slots=8, max_graph_frames=1),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,

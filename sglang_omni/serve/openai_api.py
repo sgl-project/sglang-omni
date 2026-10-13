@@ -28,6 +28,7 @@ import time
 import uuid
 from contextlib import aclosing, suppress
 from dataclasses import asdict
+from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
 
 from fastapi import (
@@ -138,6 +139,7 @@ from sglang_omni.serve.speech_limits import (
 )
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
+from sglang_omni.serve.speech_to_text import complete_unless_disconnected
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
 from sglang_omni.serve.streaming import STREAM_DONE_SENTINEL
@@ -153,6 +155,13 @@ from sglang_omni.serve.translations import register_translations
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
+
+
+class ServerStatus(Enum):
+    """Readiness the launcher holds at STARTING until its warmup requests complete."""
+
+    STARTING = "starting"
+    UP = "up"
 
 
 class RequestBodyTooLarge(Exception):
@@ -291,6 +300,7 @@ def create_app(
 
     # Store references in app state for access from route handlers
     app.state.client = client
+    app.state.server_status = ServerStatus.UP
     app.state.model_name = model_name or "sglang-omni"
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.supports_audio_translation = supports_audio_translation
@@ -502,14 +512,15 @@ def register_health(app: FastAPI) -> None:
         """Health check endpoint (includes filesystem browse info)."""
         client: Client = app.state.client
         info = client.health()
-        is_running = info.get("running", False)
-        status_code = 200 if is_running else 503
+        if app.state.server_status is ServerStatus.STARTING:
+            status = "starting"
+        elif info.get("running", False):
+            status = "healthy"
+        else:
+            status = "unhealthy"
         return JSONResponse(
-            content={
-                "status": "healthy" if is_running else "unhealthy",
-                **info,
-            },
-            status_code=status_code,
+            content={"status": status, **info},
+            status_code=200 if status == "healthy" else 503,
         )
 
 
@@ -767,7 +778,9 @@ def common_model_info_value(
 
 def register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
-    async def chat_completions(req: ChatCompletionRequest) -> Response:
+    async def chat_completions(
+        req: ChatCompletionRequest, request: Request
+    ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
 
@@ -803,6 +816,7 @@ def register_chat_completions(app: FastAPI) -> None:
             pass
 
         return await chat_non_stream(
+            request,
             client,
             gen_req,
             request_id,
@@ -815,6 +829,7 @@ def register_chat_completions(app: FastAPI) -> None:
 
 
 async def chat_non_stream(
+    request: Request,
     client: Client,
     gen_req: GenerateRequest,
     request_id: str,
@@ -826,10 +841,13 @@ async def chat_non_stream(
 ) -> JSONResponse:
     """Handle non-streaming chat completions."""
     try:
-        result = await client.completion(
-            gen_req,
+        result = await complete_unless_disconnected(
+            request,
+            client,
+            client.completion(
+                gen_req, request_id=request_id, audio_format=audio_format
+            ),
             request_id=request_id,
-            audio_format=audio_format,
         )
     except ClientError as exc:
         raise HTTPException(
@@ -1635,14 +1653,25 @@ def register_speech(app: FastAPI) -> None:
             "X-Finish-Reason": result.finish_reason,
         }
         if result.usage is not None:
-            if result.usage.prompt_tokens is not None:
-                headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
-            else:
-                pass
-            if result.usage.completion_tokens is not None:
-                headers["X-Completion-Tokens"] = str(result.usage.completion_tokens)
-            else:
-                pass
+            headers.update(
+                {
+                    name: str(tokens)
+                    for name, tokens in (
+                        ("X-Prompt-Tokens", result.usage.prompt_tokens),
+                        ("X-Completion-Tokens", result.usage.completion_tokens),
+                        (
+                            "X-SGLang-Omni-Input-Tokens",
+                            result.usage.prompt_tokens,
+                        ),
+                        (
+                            "X-SGLang-Omni-Output-Tokens",
+                            result.usage.completion_tokens,
+                        ),
+                        ("X-SGLang-Omni-Total-Tokens", result.usage.total_tokens),
+                    )
+                    if tokens is not None
+                }
+            )
             if result.usage.engine_time_s is not None:
                 headers["X-Engine-Time"] = str(result.usage.engine_time_s)
             else:

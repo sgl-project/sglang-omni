@@ -184,7 +184,7 @@ def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 8192
+        assert context_length is None
         assert overrides["sampling_backend"] == "pytorch"
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
@@ -428,7 +428,7 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 8192
+        assert context_length is None
         build_calls.append(dict(overrides))
         return SimpleNamespace(
             mem_fraction_static=0.85,
@@ -495,7 +495,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 4096
+        assert context_length is None
         build_calls.append(dict(overrides))
         return SimpleNamespace(
             mem_fraction_static=0.55,

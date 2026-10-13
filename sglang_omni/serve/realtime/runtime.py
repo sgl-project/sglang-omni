@@ -85,6 +85,7 @@ class SessionRuntime:
         self.input_ready = asyncio.Event()
         self.output_buffer = OutputBuffer(limits)
         self.pump_task: asyncio.Task[None] | None = None
+        self.update_deadline_task: asyncio.Task[None] | None = None
         self.close_task: asyncio.Task[None] | None = None
         self.processing_unit: ContextVar[Unit | None] = ContextVar(
             "realtime_unit", default=None
@@ -99,6 +100,22 @@ class SessionRuntime:
 
     def notify_created(self) -> None:
         self.notify(Created(self.session_id, self.model, "realtime"))
+        self.update_deadline_task = asyncio.create_task(self.expire_without_update())
+
+    async def expire_without_update(self) -> None:
+        """Free the connection slot of a session that never opens; cancelled on OPEN."""
+        await asyncio.sleep(self.limits.session_update_timeout_s)
+        async with self.command_lock:
+            if self.state == "CREATED":
+                # Note (Yucheng Hu): Fence under the lock so a late session.update is
+                # rejected instead of starting an admission before run_close runs.
+                self.state = "CLOSING"
+                self.fail(
+                    f"session not opened within {self.limits.session_update_timeout_s:g} s",
+                    "session_update_timeout",
+                )
+            else:
+                pass
 
     async def outputs(self) -> AsyncIterator[Envelope]:
         while True:
@@ -169,6 +186,10 @@ class SessionRuntime:
                     pass
                 self.state = "OPEN"
                 self.pump_task = asyncio.create_task(self.pump())
+                if self.update_deadline_task is not None:
+                    self.update_deadline_task.cancel()
+                else:
+                    pass
             else:
                 pass
             self.config, self.granted = candidate, granted
@@ -462,7 +483,8 @@ class SessionRuntime:
         finally:
             try:
                 await cancel_local_tasks(
-                    [self.pump_task], self.limits.cleanup_timeout_s
+                    [self.pump_task, self.update_deadline_task],
+                    self.limits.cleanup_timeout_s,
                 )
             except Exception as exc:
                 cleanup_error = cleanup_error or exc

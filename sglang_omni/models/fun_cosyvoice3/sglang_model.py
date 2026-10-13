@@ -15,6 +15,8 @@ from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from torch import nn
 from transformers import Qwen2Config
 
+from sglang_omni.platforms import current_platform
+
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
 
@@ -92,7 +94,14 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         else:
             pass
 
-        logits = self.llm_decoder(hidden_states)
+        if current_platform.is_cuda():
+            # note (ratish): the sampler applies the temperature and the softmax in place
+            # in the logits' dtype, so the head writes float32 logits.
+            logits = torch.mm(
+                hidden_states, self.llm_decoder.weight.T, out_dtype=torch.float32
+            )
+        else:
+            logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
             next_token_logits=logits, hidden_states=hidden_states
         )

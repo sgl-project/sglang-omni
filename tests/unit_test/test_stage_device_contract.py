@@ -591,10 +591,11 @@ def config_with_one_replicated_process(config_cls, model):
     )
     stages_cfg = list(config.stages)
     if len(gpu_members) > 1:
+        stage_memory_fraction = 0.9 / len(gpu_members)
         member_names = {stage.name for stage in gpu_members}
         stages_cfg = [
             (
-                stage.model_copy(update={"gpu_memory_fraction": 0.3})
+                stage.model_copy(update={"gpu_memory_fraction": stage_memory_fraction})
                 if stage.name in member_names
                 else stage
             )

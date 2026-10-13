@@ -32,7 +32,11 @@ from sglang.srt.runtime_context import get_context
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.message import (
+    IncomingMessage,
+    OutgoingMessage,
+    put_messages,
+)
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -1408,6 +1412,98 @@ def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
     assert scheduler.outbox.empty()
 
 
+def test_put_messages_wakes_the_consumer_once_every_message_is_queued() -> None:
+    outbox: Queue[OutgoingMessage] = Queue()
+    queued_at_notify: list[int] = []
+    notify = outbox.not_empty.notify
+
+    def recording_notify(count: int = 1) -> None:
+        queued_at_notify.append(len(outbox.queue))
+        notify(count)
+
+    outbox.not_empty.notify = recording_notify
+    messages = [
+        OutgoingMessage(request_id=f"req-{index}", type="stream", data=index)
+        for index in range(3)
+    ]
+
+    put_messages(outbox, messages)
+
+    assert queued_at_notify == [3]
+    assert [outbox.get_nowait() for _ in messages] == messages
+    for _ in messages:
+        outbox.task_done()
+    outbox.join()
+
+
+def test_put_messages_wakes_a_blocked_consumer() -> None:
+    outbox: Queue[OutgoingMessage] = Queue()
+    received: list[OutgoingMessage] = []
+    waiting = threading.Event()
+    woken: list[bool] = []
+    wait = outbox.not_empty.wait
+
+    def recording_wait(timeout: float | None = None) -> bool:
+        waiting.set()
+        woken.append(wait(timeout))
+        return woken[-1]
+
+    outbox.not_empty.wait = recording_wait
+
+    def consume() -> None:
+        received.append(outbox.get(timeout=10.0))
+        received.append(outbox.get_nowait())
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    assert waiting.wait(timeout=10.0)
+    messages = [
+        OutgoingMessage(request_id="req", type="stream", data=index)
+        for index in range(2)
+    ]
+
+    put_messages(outbox, messages)
+    consumer.join()
+
+    assert woken == [True]
+    assert received == messages
+
+
+def test_omni_scheduler_emit_stream_output_enqueues_the_step_together(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.session_bridge = None
+    scheduler.stream_output_builder = lambda rid, data, output: [
+        OutgoingMessage(request_id=rid, type="stream", data=frame, target="vocoder")
+        for frame in range(2)
+    ]
+    enqueued: list[list[str]] = []
+
+    def recording_put_messages(outbox, messages) -> None:
+        enqueued.append(
+            [f"{message.request_id}:{message.data}" for message in messages]
+        )
+        put_messages(outbox, messages)
+
+    monkeypatch.setattr(omni_scheduler_module, "put_messages", recording_put_messages)
+    sched_output = SimpleNamespace(
+        requests=[
+            SimpleNamespace(request_id="req-a", data=None),
+            SimpleNamespace(request_id="req-b", data=None),
+        ]
+    )
+    mr_output = SimpleNamespace(outputs={"req-a": object(), "req-b": object()})
+
+    scheduler.emit_stream_output(sched_output, mr_output)
+
+    assert enqueued == [["req-a:0", "req-a:1", "req-b:0", "req-b:1"]]
+    assert scheduler.first_emit_done == {"req-a", "req-b"}
+
+
 def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     init_terminal_output_state(scheduler)
@@ -2223,6 +2319,46 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
     assert all(scheduler.inbox.empty() for scheduler in ranks)
 
 
+@pytest.mark.parametrize("late_follower", [False, True])
+def test_tp_admin_action_lands_on_every_rank_in_one_pass(
+    monkeypatch: pytest.MonkeyPatch, late_follower: bool
+) -> None:
+    """Ranks get an admin action at different times but apply it in one pass."""
+    install_tp_broadcast(monkeypatch)
+    ranks = [tp_rank_scheduler(rank, 2, "waiting") for rank in range(2)]
+    applied: list[int] = []
+    waiters = [Queue(maxsize=1) for _ in ranks]
+    for rank, scheduler in enumerate(ranks):
+        scheduler.admin_queue = Queue()
+        scheduler.tp_admin_waiters = deque()
+        scheduler.tp_admin_results = deque()
+        scheduler.run_admin_action = lambda action, payload, rank=rank: (
+            applied.append(rank) or {"success": True, "message": action}
+        )
+
+    def queue_admin(rank: int) -> None:
+        ranks[rank].admin_queue.put(("pause_generation", {}, waiters[rank]))
+        ranks[rank].process_admin_requests()
+
+    queue_admin(0)
+    if not late_follower:
+        queue_admin(1)
+    else:
+        pass
+    assert applied == []
+    for scheduler in ranks:
+        scheduler.recv_requests()
+    if late_follower:
+        queue_admin(1)
+    else:
+        pass
+
+    assert applied == [0, 1]
+    assert [waiter.get_nowait()["message"] for waiter in waiters] == [
+        "pause_generation"
+    ] * 2
+
+
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_LIMIT", 3)
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_RETAINED", 2)
@@ -2613,7 +2749,7 @@ def construct_omni_scheduler(
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(context_len=128),
         **kwargs,
     )
 
@@ -2866,7 +3002,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(context_len=128),
         model_runner=None if bind_late else model_runner,
         enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,

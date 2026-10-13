@@ -16,15 +16,14 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 
 from benchmarks.duplex import reference_audio
-from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
+from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.eval.benchmark_duplex_reference import main
 
 SAMPLE_RATE = 16000
 TRACE_ORIGIN_S = 1000.0
-EngineFormat = Literal["sglang", "vllm"]
 VariantName = Literal["overlap", "clean"]
-TraceDirection = Literal["send", "receive", "sent", "mark", "error"]
+TraceDirection = Literal["send", "receive", "error"]
 
 
 def make_input_pcm(sample_count: int) -> bytes:
@@ -44,7 +43,6 @@ def make_constant_pcm(
 
 def make_session_trace(
     input_pcm: bytes,
-    engine: EngineFormat,
     *,
     audio_deltas: Sequence[tuple[float, bytes | str]] = (),
     output_sample_rate: int = SAMPLE_RATE,
@@ -54,57 +52,30 @@ def make_session_trace(
     append_delays_s: dict[int, float] | None = None,
     omit_last_append: bool = False,
     corrupted_append_index: int | None = None,
-    include_window_mark: bool | None = None,
-    include_sent_records: bool | None = None,
     created_response_ids: Sequence[str] = ("r1",),
     completed_response_ids: Sequence[str] = (),
-    send_completion_delays_s: dict[int, float] | None = None,
-    window_mark_offset_s: float | None = None,
 ) -> str:
     """Records in time order; deltas are (elapsed_s, bytes or raw base64 string)."""
     input_samples = np.frombuffer(input_pcm, "<i2")
     window_s = len(input_samples) / SAMPLE_RATE
-    rows: list[
-        tuple[float, TraceDirection, dict[str, JsonValue], dict[str, JsonValue]]
-    ] = []
+    rows: list[tuple[float, TraceDirection, dict[str, JsonValue]]] = []
     append_delays_s = append_delays_s or {}
-    send_completion_delays_s = send_completion_delays_s or {}
-    include_window_mark = (
-        engine == "vllm" if include_window_mark is None else include_window_mark
-    )
-    include_sent_records = (
-        engine == "vllm" if include_sent_records is None else include_sent_records
-    )
-    if engine == "sglang":
-        rows.append(
-            (
-                TRACE_ORIGIN_S - 0.01,
-                "receive",
-                {
-                    "type": "session.updated",
-                    "session": {
-                        "audio": {
-                            "output": {
-                                "format": {
-                                    "type": "audio/pcm",
-                                    "rate": output_sample_rate,
-                                }
-                            }
+    rows.append(
+        (
+            TRACE_ORIGIN_S - 0.01,
+            "receive",
+            {
+                "type": "session.updated",
+                "session": {
+                    "audio": {
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": output_sample_rate}
                         }
-                    },
+                    }
                 },
-                {},
-            )
+            },
         )
-    else:
-        rows.append(
-            (
-                TRACE_ORIGIN_S - 0.01,
-                "receive",
-                {"type": "session.created", "session": {}},
-                {},
-            )
-        )
+    )
     frame_indexes = range(-(-len(input_samples) // 1280))
     for index in frame_indexes:
         if omit_last_append and index == frame_indexes[-1]:
@@ -112,72 +83,30 @@ def make_session_trace(
         else:
             pass
         input_chunk = input_samples[index * 1280 : (index + 1) * 1280]
-        send_start_s = TRACE_ORIGIN_S + index * 0.08 + append_delays_s.get(index, 0.0)
-        event_id = f"a{index}"
-        if engine == "sglang":
-            audio_payload = (
-                input_chunk.tobytes()
-                if corrupted_append_index != index
-                else (input_chunk + 1).tobytes()
+        audio_payload = (
+            input_chunk.tobytes()
+            if corrupted_append_index != index
+            else (input_chunk + 1).tobytes()
+        )
+        event = {
+            "type": "input_audio_buffer.append",
+            "event_id": f"a{index}",
+            "audio": encode_audio(audio_payload),
+            "sglang": {"seq": index, "t_start_ms": index * 1280 / SAMPLE_RATE * 1000},
+        }
+        rows.append(
+            (
+                TRACE_ORIGIN_S + index * 0.08 + append_delays_s.get(index, 0.0),
+                "send",
+                event,
             )
-            event = {
-                "type": "input_audio_buffer.append",
-                "event_id": event_id,
-                "audio": encode_audio(audio_payload),
-                "sglang": {
-                    "seq": index,
-                    "t_start_ms": index * 1280 / SAMPLE_RATE * 1000,
-                },
-            }
-            rows.append((send_start_s, "send", event, {}))
-        else:
-            padded_frame = np.zeros(1280, "<f4")
-            padded_frame[: len(input_chunk)] = input_chunk.astype(np.float32) / 32768
-            if corrupted_append_index == index:
-                padded_frame[-1] = 0.5
-            else:
-                pass
-            event = {
-                "type": "input_audio_buffer.append",
-                "event_id": event_id,
-                "audio": encode_audio(padded_frame.tobytes()),
-                "format": "pcm_f32le",
-                "sample_rate_hz": SAMPLE_RATE,
-            }
-            rows.append(
-                (
-                    send_start_s,
-                    "send",
-                    event,
-                    {
-                        "client_source": {
-                            "index": index,
-                            "start_s": index * 1280 / SAMPLE_RATE,
-                            "valid_samples": len(input_chunk),
-                            "padded_samples": 1280 - len(input_chunk),
-                        }
-                    },
-                )
-            )
-        if include_sent_records:
-            completion_delay_s = send_completion_delays_s.get(index, 1e-4)
-            rows.append(
-                (
-                    send_start_s + completion_delay_s,
-                    "sent",
-                    {"event_id": event_id, "type": event["type"]},
-                    {},
-                )
-            )
-        else:
-            pass
+        )
     for response_id in created_response_ids:
         rows.append(
             (
                 TRACE_ORIGIN_S + 0.01,
                 "receive",
                 {"type": "response.created", "response": {"id": response_id}},
-                {},
             )
         )
     for elapsed_s, audio_payload in audio_deltas:
@@ -190,11 +119,7 @@ def make_session_trace(
                 else encode_audio(audio_payload)
             ),
         }
-        if engine == "vllm":
-            event.update(format="pcm16", sample_rate_hz=output_sample_rate)
-        else:
-            pass
-        rows.append((TRACE_ORIGIN_S + elapsed_s, "receive", event, {}))
+        rows.append((TRACE_ORIGIN_S + elapsed_s, "receive", event))
     for response_id in completed_response_ids:
         rows.append(
             (
@@ -204,7 +129,6 @@ def make_session_trace(
                     "type": "response.done",
                     "response": {"id": response_id, "status": "completed"},
                 },
-                {},
             )
         )
     for elapsed_s in server_error_offsets_s:
@@ -213,48 +137,48 @@ def make_session_trace(
                 TRACE_ORIGIN_S + elapsed_s,
                 "receive",
                 {"type": "error", "error": {"message": "boom"}},
-                {},
             )
         )
     for elapsed_s in client_error_offsets_s:
         rows.append(
-            (TRACE_ORIGIN_S + elapsed_s, "error", {"message": "client failure"}, {})
+            (TRACE_ORIGIN_S + elapsed_s, "error", {"message": "client failure"})
         )
-    if include_window_mark:
-        rows.append(
-            (
-                TRACE_ORIGIN_S
-                + (window_s if window_mark_offset_s is None else window_mark_offset_s),
-                "mark",
-                {"type": "observation_window.end", "receiver_alive": True},
-                {},
-            )
-        )
-    else:
-        pass
     if close_offset_s is None:
         close_offset_s = window_s + 0.6
     else:
         pass
     if close_offset_s is not False:
         rows.append(
-            (TRACE_ORIGIN_S + close_offset_s, "receive", {"type": "session.closed"}, {})
+            (TRACE_ORIGIN_S + close_offset_s, "receive", {"type": "session.closed"})
         )
     else:
         pass
     rows.sort(key=lambda row: row[0])
     return "".join(
-        json.dumps(
-            {
-                "direction": direction,
-                "time_s": time_s,
-                "event": event,
-                **client_source,
-            }
-        )
-        + "\n"
-        for time_s, direction, event, client_source in rows
+        json.dumps({"direction": direction, "time_s": time_s, "event": event}) + "\n"
+        for time_s, direction, event in rows
     )
+
+
+def make_send_receipts(
+    trace_text: str, completion_delays_s: dict[int, float] | None = None
+) -> list[dict[str, JsonValue]]:
+    """One completed send receipt per append, 0.1 ms after its start unless overridden."""
+    completion_delays_s = completion_delays_s or {}
+    appends = [
+        record
+        for record in map(json.loads, trace_text.splitlines())
+        if record["direction"] == "send"
+    ]
+    return [
+        {
+            "event_id": append["event"]["event_id"],
+            "seq": append["event"]["sglang"]["seq"],
+            "start_s": append["time_s"],
+            "completed_s": append["time_s"] + completion_delays_s.get(index, 1e-4),
+        }
+        for index, append in enumerate(appends)
+    ]
 
 
 class AudioFixture(unittest.TestCase):
@@ -296,76 +220,66 @@ class AudioFixture(unittest.TestCase):
 
     def analyze(
         self,
-        engine: EngineFormat,
         input_pcm: bytes,
         trace_text: str,
         expected_input_sha256: str | None = None,
+        send_receipts: list[dict[str, JsonValue]] | None = None,
     ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
         variant_directory = self.root / f"v{len(list(self.root.iterdir()))}"
         variant_directory.mkdir()
         (variant_directory / "input.pcm").write_bytes(input_pcm)
         (variant_directory / "continuous.jsonl").write_text(trace_text)
+        if send_receipts is not None:
+            (variant_directory / reference_audio.SEND_RECEIPTS).write_text(
+                json.dumps({"appends": send_receipts})
+            )
+        else:
+            pass
         expected_input_sha256 = (
             hashlib.sha256(input_pcm).hexdigest()
             if expected_input_sha256 is None
             else expected_input_sha256
         )
         return reference_audio.analyze_variant(
-            variant_directory, resolve_trace_format(engine, None), expected_input_sha256
+            variant_directory, TraceFormat.PCM16, expected_input_sha256
         )
 
 
 class WindowEligibility(AudioFixture):
     pcm = make_input_pcm(8000)
 
-    def test_capture_formats_preserve_equivalent_audio_and_evidence(self) -> None:
+    def test_capture_preserves_audio_and_send_evidence(self) -> None:
         pcm = make_input_pcm(7681)
-        captures = []
-        for engine in ("sglang", "vllm"):
-            trace = make_session_trace(
-                pcm,
-                engine,
-                audio_deltas=[
-                    (0.1, make_constant_pcm(0.08, 24000)),
-                    (0.46, make_constant_pcm(0.1, 24000, 2000)),
-                    (0.50, make_constant_pcm(0.1, 24000, 3000)),
-                ],
-                output_sample_rate=24000,
-                include_sent_records=True,
-                include_window_mark=True,
-                append_delays_s=dict.fromkeys(range(1, 7), 0.001),
-            )
-            record, input_pcm, audio = self.analyze(engine, pcm, trace)
-            self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-            self.assertEqual(input_pcm, pcm)
-            self.assertEqual(
-                record["source"]["trace_sha256"],
-                hashlib.sha256(trace.encode()).hexdigest(),
-            )
-            self.assertEqual(
-                record["source"]["input_pcm_sha256"], hashlib.sha256(pcm).hexdigest()
-            )
-            captures.append((record, audio))
-        for field in (
-            "input",
-            "window",
-            "input_check",
-            "lifecycle",
-            "output",
-            "boundary",
-        ):
-            self.assertEqual(captures[0][0][field], captures[1][0][field], field)
-        np.testing.assert_array_equal(captures[0][1], captures[1][1])
-        self.assertEqual(captures[0][0]["input_check"]["append_completions_after_T"], 1)
-        self.assertTrue(captures[0][0]["boundary"]["playout_active_at_T"])
+        trace = make_session_trace(
+            pcm,
+            audio_deltas=[
+                (0.1, make_constant_pcm(0.08, 24000)),
+                (0.46, make_constant_pcm(0.1, 24000, 2000)),
+                (0.50, make_constant_pcm(0.1, 24000, 3000)),
+            ],
+            output_sample_rate=24000,
+            append_delays_s=dict.fromkeys(range(1, 7), 0.001),
+        )
+        record, input_pcm, audio = self.analyze(
+            pcm, trace, send_receipts=make_send_receipts(trace)
+        )
+        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
+        self.assertEqual(input_pcm, pcm)
+        self.assertEqual(
+            record["source"]["trace_sha256"], hashlib.sha256(trace.encode()).hexdigest()
+        )
+        self.assertEqual(
+            record["source"]["input_pcm_sha256"], hashlib.sha256(pcm).hexdigest()
+        )
+        self.assertEqual(len(audio), 7681)
+        self.assertEqual(record["input_check"]["append_completions_after_T"], 1)
+        self.assertTrue(record["boundary"]["playout_active_at_T"])
 
     def test_missing_terminal_is_lifecycle_only(self) -> None:
         record, pcm, out = self.analyze(
-            "vllm",
             self.pcm,
             make_session_trace(
                 self.pcm,
-                "vllm",
                 audio_deltas=[(0.1, make_constant_pcm(0.08, 22050))],
                 output_sample_rate=22050,
                 created_response_ids=("r1", "r2"),
@@ -382,10 +296,10 @@ class WindowEligibility(AudioFixture):
         for kwargs, expect in (
             ({"server_error_offsets_s": [0.2]}, "native server error"),
             ({"client_error_offsets_s": [0.3]}, "client error"),
-            ({"close_offset_s": 0.3, "include_window_mark": False}, "session.closed"),
+            ({"close_offset_s": 0.3}, "session.closed"),
         ):
             record, _, out = self.analyze(
-                "vllm", self.pcm, make_session_trace(self.pcm, "vllm", **kwargs)
+                self.pcm, make_session_trace(self.pcm, **kwargs)
             )
             self.assertFalse(record["window"]["valid"])
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
@@ -393,9 +307,7 @@ class WindowEligibility(AudioFixture):
 
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(
-            "sglang",
-            self.pcm,
-            make_session_trace(self.pcm, "sglang", close_offset_s=False),
+            self.pcm, make_session_trace(self.pcm, close_offset_s=False)
         )
         self.assertIn(
             "receiver liveness after window end unproven", record["window"]["reasons"]
@@ -403,11 +315,9 @@ class WindowEligibility(AudioFixture):
 
     def test_post_window_error_keeps_window_audio(self) -> None:
         record, _, out = self.analyze(
-            "vllm",
             self.pcm,
             make_session_trace(
                 self.pcm,
-                "vllm",
                 audio_deltas=[(0.1, make_constant_pcm(0.1, SAMPLE_RATE)), (0.9, "!!!")],
                 server_error_offsets_s=[0.8],
                 client_error_offsets_s=[0.85],
@@ -418,22 +328,16 @@ class WindowEligibility(AudioFixture):
         self.assertEqual(int(np.count_nonzero(out)), 1600)
 
     def test_healthy_silence_is_valid(self) -> None:
-        for engine in ("vllm", "sglang"):
-            record, _, out = self.analyze(
-                engine, self.pcm, make_session_trace(self.pcm, engine)
-            )
-            self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-            self.assertTrue(record["output"]["silent"])
-            self.assertEqual(out.tolist(), [0] * 8000)
+        record, _, out = self.analyze(self.pcm, make_session_trace(self.pcm))
+        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
+        self.assertTrue(record["output"]["silent"])
+        self.assertEqual(out.tolist(), [0] * 8000)
 
     def test_audio_after_window_is_excluded_not_backdated(self) -> None:
         record, _, out = self.analyze(
-            "vllm",
             self.pcm,
             make_session_trace(
-                self.pcm,
-                "vllm",
-                audio_deltas=[(0.5001, make_constant_pcm(0.2, SAMPLE_RATE))],
+                self.pcm, audio_deltas=[(0.5001, make_constant_pcm(0.2, SAMPLE_RATE))]
             ),
         )
         self.assertTrue(record["window"]["valid"])
@@ -442,11 +346,9 @@ class WindowEligibility(AudioFixture):
 
     def test_fifo_backlog_is_cropped_at_window_end(self) -> None:
         record, _, out = self.analyze(
-            "vllm",
             self.pcm,
             make_session_trace(
                 self.pcm,
-                "vllm",
                 audio_deltas=[
                     (0.05, make_constant_pcm(0.3, SAMPLE_RATE, 1)),
                     (0.06, make_constant_pcm(0.3, SAMPLE_RATE, 2)),
@@ -463,11 +365,9 @@ class WindowEligibility(AudioFixture):
     def test_native_rate_resampled_to_exact_input_count(self) -> None:
         pcm = make_input_pcm(7999)
         record, _, out = self.analyze(
-            "sglang",
             pcm,
             make_session_trace(
                 pcm,
-                "sglang",
                 audio_deltas=[(0.0, make_constant_pcm(0.6, 22050))],
                 output_sample_rate=22050,
             ),
@@ -482,18 +382,14 @@ class WindowEligibility(AudioFixture):
     def test_malformed_output_in_window_invalidates(self) -> None:
         for bad in ("!!!", encode_audio(b"\x01"), ""):
             record, _, out = self.analyze(
-                "vllm",
-                self.pcm,
-                make_session_trace(self.pcm, "vllm", audio_deltas=[(0.1, bad)]),
+                self.pcm, make_session_trace(self.pcm, audio_deltas=[(0.1, bad)])
             )
             self.assertFalse(record["window"]["valid"])
             self.assertIsNone(out)
         record, _, _ = self.analyze(
-            "vllm",
             self.pcm,
             make_session_trace(
                 self.pcm,
-                "vllm",
                 audio_deltas=[(0.1, make_constant_pcm(0.08, SAMPLE_RATE))],
                 output_sample_rate=24000,
             ),
@@ -503,87 +399,39 @@ class WindowEligibility(AudioFixture):
 
     def test_malformed_input_hash_and_frames_invalidate(self) -> None:
         cases = [
+            ({"corrupted_append_index": 6}, None, "serialized PCM16 differs"),
+            ({"corrupted_append_index": 2}, None, "serialized PCM16 differs"),
+            ({}, "0" * 64, "sha256 differs from run.json"),
             (
-                "vllm",
-                {"corrupted_append_index": 6},
-                None,
-                "differs from input.pcm/zero padding",
-            ),
-            (
-                "vllm",
-                {"corrupted_append_index": 1},
-                None,
-                "differs from input.pcm/zero padding",
-            ),
-            ("sglang", {"corrupted_append_index": 2}, None, "serialized PCM16 differs"),
-            ("vllm", {}, "0" * 64, "sha256 differs from run.json"),
-            (
-                "vllm",
                 {"append_delays_s": dict.fromkeys(range(3, 7), 0.09)},
                 None,
                 "pacing deviation",
             ),
-            (
-                "sglang",
-                {"omit_last_append": True},
-                None,
-                "incomplete append population",
-            ),
-            (
-                "vllm",
-                {"include_sent_records": False},
-                None,
-                "send completion not recorded",
-            ),
+            ({"omit_last_append": True}, None, "incomplete append population"),
         ]
-        for engine, kwargs, expected, message in cases:
+        for kwargs, expected, message in cases:
             record, _, _ = self.analyze(
-                engine,
-                self.pcm,
-                make_session_trace(self.pcm, engine, **kwargs),
-                expected,
+                self.pcm, make_session_trace(self.pcm, **kwargs), expected
             )
-            self.assertFalse(record["window"]["valid"], (engine, kwargs))
+            self.assertFalse(record["window"]["valid"], kwargs)
             self.assertIn(message, " ".join(record["window"]["reasons"]))
+
+    def test_missing_send_completion_invalidates(self) -> None:
+        trace = make_session_trace(self.pcm)
+        receipts = make_send_receipts(trace)
+        receipts[3]["completed_s"] = None
+        record, _, _ = self.analyze(self.pcm, trace, send_receipts=receipts)
+        self.assertFalse(record["window"]["valid"])
+        self.assertIn(
+            "send completion not recorded", " ".join(record["window"]["reasons"])
+        )
 
 
 class TraceClock(AudioFixture):
     pcm = make_input_pcm(8000)
 
-    def test_append_send_completion_after_window_invalidates(self) -> None:
-        record, _, _ = self.analyze(
-            "vllm",
-            self.pcm,
-            make_session_trace(self.pcm, "vllm", send_completion_delays_s={6: 0.3}),
-        )
-        self.assertFalse(record["window"]["valid"])
-        self.assertIn(
-            "completed after v2 deadline", " ".join(record["window"]["reasons"])
-        )
-
-    def test_early_mark_is_not_liveness(self) -> None:
-        record, _, _ = self.analyze(
-            "vllm",
-            self.pcm,
-            make_session_trace(
-                self.pcm, "vllm", window_mark_offset_s=0.01, close_offset_s=False
-            ),
-        )
-        self.assertFalse(record["window"]["valid"])
-        self.assertIn(
-            "window mark before window end", " ".join(record["window"]["reasons"])
-        )
-
-    def test_new_format_requires_mark(self) -> None:
-        record, _, _ = self.analyze(
-            "vllm",
-            self.pcm,
-            make_session_trace(self.pcm, "vllm", include_window_mark=False),
-        )
-        self.assertIn("window mark missing", " ".join(record["window"]["reasons"]))
-
     def test_malformed_or_nonmonotonic_clock_invalidates(self) -> None:
-        lines = make_session_trace(self.pcm, "vllm").splitlines(keepends=True)
+        lines = make_session_trace(self.pcm).splitlines(keepends=True)
         for bad in ("NaN", "Infinity", '"1001.0"', "true"):
             text = lines[:]
             row = json.loads(text[5])
@@ -591,92 +439,101 @@ class TraceClock(AudioFixture):
                 f'"time_s": {row["time_s"]}', f'"time_s": {bad}'
             )
             text[5] += "\n"
-            record, _, _ = self.analyze("vllm", self.pcm, "".join(text))
+            record, _, _ = self.analyze(self.pcm, "".join(text))
             self.assertFalse(record["window"]["valid"], bad)
             self.assertIn("clock", " ".join(record["window"]["reasons"]))
         text = lines[:]
         text[4], text[5] = text[5], text[4]
-        record, _, _ = self.analyze("vllm", self.pcm, "".join(text))
+        record, _, _ = self.analyze(self.pcm, "".join(text))
         self.assertIn(
             "trace clock not monotonic", " ".join(record["window"]["reasons"])
         )
 
     def test_legacy_trace_inference_is_tagged(self) -> None:
-        for engine, kwargs in (
-            ("vllm", {"include_sent_records": False, "include_window_mark": False}),
-            ("sglang", {}),
-        ):
-            record, _, _ = self.analyze(
-                engine, self.pcm, make_session_trace(self.pcm, engine, **kwargs)
-            )
-            self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-            self.assertTrue(record["input_check"]["legacy_inference"])
-            self.assertIn("legacy", record["input_check"]["send_completion_evidence"])
+        trace = make_session_trace(self.pcm)
+        record, _, _ = self.analyze(self.pcm, trace)
+        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
+        self.assertTrue(record["input_check"]["legacy_inference"])
+        self.assertIn("legacy", record["input_check"]["send_completion_evidence"])
         record, _, _ = self.analyze(
-            "vllm", self.pcm, make_session_trace(self.pcm, "vllm")
+            self.pcm, trace, send_receipts=make_send_receipts(trace)
         )
         self.assertFalse(record["input_check"]["legacy_inference"])
 
+    def test_completion_grace_accepts_tiny_tail_but_rejects_stall(self) -> None:
+        pcm = make_input_pcm(7681)
+        trace = make_session_trace(
+            pcm, append_delays_s=dict.fromkeys(range(1, 7), 0.001)
+        )
+        record, _, audio = self.analyze(
+            pcm, trace, send_receipts=make_send_receipts(trace)
+        )
+        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
+        self.assertEqual(len(audio), 7681)
+        self.assertEqual(record["input_check"]["append_completions_after_T"], 1)
+        record, _, audio = self.analyze(
+            pcm, trace, send_receipts=make_send_receipts(trace, {6: 0.3})
+        )
+        self.assertFalse(record["window"]["valid"])
+        self.assertIn(
+            "completed after v2 deadline", " ".join(record["window"]["reasons"])
+        )
+        self.assertIsNone(audio)
+
 
 class ReferenceExport(AudioFixture):
-    def test_explicit_trace_format_makes_engine_label_metadata_only(self) -> None:
+    def test_engine_label_is_metadata_only(self) -> None:
         pcm = make_input_pcm(7681)
-        for engine, trace_format in (
-            ("sglang", TraceFormat.PCM16),
-            ("vllm", TraceFormat.FLOAT32),
-        ):
-            run = self.make_run(
-                {
-                    variant: (pcm, make_session_trace(pcm, engine))
-                    for variant in ("overlap", "clean")
-                }
-            )
-            original = export_runs([run], self.root / f"original-{engine}", engine)
-            relabeled_output = self.root / f"relabeled-{engine}"
-            self.assertEqual(
-                main(
-                    [
-                        "export",
-                        "--engine",
-                        "other-engine",
-                        "--trace-format",
-                        trace_format.value,
-                        "--run",
-                        str(run),
-                        "--out",
-                        str(relabeled_output),
-                    ]
-                ),
-                0,
-            )
-            relabeled = json.loads(
-                (relabeled_output / "reference-manifest.json").read_text()
-            )
-            self.assertEqual(relabeled["engine"], "other-engine")
-            self.assertEqual(relabeled["trace_format"], trace_format.value)
-            self.assertEqual(original["samples"], relabeled["samples"])
-            self.assertEqual(original["counts"], relabeled["counts"])
-            shutil.rmtree(run)
+        run = self.make_run(
+            {
+                variant: (pcm, make_session_trace(pcm))
+                for variant in ("overlap", "clean")
+            }
+        )
+        original = export_runs([run], self.root / "original", "sglang")
+        relabeled_output = self.root / "relabeled"
+        self.assertEqual(
+            main(
+                [
+                    "export",
+                    "--engine",
+                    "other-engine",
+                    "--trace-format",
+                    TraceFormat.PCM16.value,
+                    "--run",
+                    str(run),
+                    "--out",
+                    str(relabeled_output),
+                ]
+            ),
+            0,
+        )
+        relabeled = json.loads(
+            (relabeled_output / "reference-manifest.json").read_text()
+        )
+        self.assertEqual(relabeled["engine"], "other-engine")
+        self.assertEqual(relabeled["trace_format"], TraceFormat.PCM16.value)
+        self.assertEqual(original["samples"], relabeled["samples"])
+        self.assertEqual(original["counts"], relabeled["counts"])
 
-    def test_unknown_format_or_unmapped_engine_is_rejected_before_export(self) -> None:
-        for extra_args in (
-            ["--engine", "other-engine"],
-            ["--engine", "sglang", "--trace-format", "unknown"],
-        ):
-            output = self.root / "export"
-            with self.assertRaises(SystemExit) as error:
-                main(
-                    [
-                        "export",
-                        *extra_args,
-                        "--run",
-                        str(self.root / "missing"),
-                        "--out",
-                        str(output),
-                    ]
-                )
-            self.assertEqual(error.exception.code, 2)
-            self.assertFalse(output.exists())
+    def test_unknown_format_is_rejected_before_export(self) -> None:
+        output = self.root / "export"
+        with self.assertRaises(SystemExit) as error:
+            main(
+                [
+                    "export",
+                    "--engine",
+                    "sglang",
+                    "--trace-format",
+                    "unknown",
+                    "--run",
+                    str(self.root / "missing"),
+                    "--out",
+                    str(output),
+                ]
+            )
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(output.exists())
         with self.assertRaises(ValueError):
             export_runs(
                 [], self.root / "unknown", "other-engine", trace_format="unknown"
@@ -685,7 +542,7 @@ class ReferenceExport(AudioFixture):
 
     def test_declared_send_receipts_cannot_fall_back_to_legacy(self) -> None:
         pcm = make_input_pcm(8000)
-        text = make_session_trace(pcm, "sglang")
+        text = make_session_trace(pcm)
         run = self.make_run({v: (pcm, text) for v in ("overlap", "clean")})
         path = run / "manifest.json"
         manifest = json.loads(path.read_text())
@@ -703,7 +560,6 @@ class ReferenceExport(AudioFixture):
         input_pcm = make_input_pcm(7681)
         capture_trace = make_session_trace(
             input_pcm,
-            "sglang",
             append_delays_s={6: 0.001},
             audio_deltas=[
                 (0.46, make_constant_pcm(0.1, SAMPLE_RATE, 1000)),
@@ -719,17 +575,7 @@ class ReferenceExport(AudioFixture):
             "transport": {"input_send_receipts": reference_audio.SEND_RECEIPTS}
         }
         manifest_path.write_text(json.dumps(manifest))
-        records = [json.loads(line) for line in capture_trace.splitlines()]
-        appends = [record for record in records if record["direction"] == "send"]
-        receipts = [
-            {
-                "event_id": append_record["event"]["event_id"],
-                "seq": append_record["event"]["sglang"]["seq"],
-                "start_s": append_record["time_s"],
-                "completed_s": append_record["time_s"] + 0.0001,
-            }
-            for append_record in appends
-        ]
+        receipts = make_send_receipts(capture_trace)
         window_s = 7681 / SAMPLE_RATE
         receipts[-1]["completed_s"] = TRACE_ORIGIN_S + window_s + 0.04
         receipt_bytes = json.dumps({"appends": receipts}).encode()
@@ -792,7 +638,7 @@ class ReferenceExport(AudioFixture):
         input_pcm = make_input_pcm(8000)
         run = self.make_run(
             {
-                variant: (input_pcm, make_session_trace(input_pcm, "sglang"))
+                variant: (input_pcm, make_session_trace(input_pcm))
                 for variant in ("overlap", "clean")
             }
         )
@@ -863,7 +709,6 @@ class ReferenceExport(AudioFixture):
         input_pcm = make_input_pcm(8000)
         first_trace = make_session_trace(
             input_pcm,
-            "sglang",
             audio_deltas=[(0.1, make_constant_pcm(0.1, SAMPLE_RATE, 500))],
         )
         first_run = self.make_run(
@@ -875,7 +720,6 @@ class ReferenceExport(AudioFixture):
         first_run_path.write_text(json.dumps(first_document))
         retry_trace = make_session_trace(
             input_pcm,
-            "sglang",
             audio_deltas=[(0.1, make_constant_pcm(0.1, SAMPLE_RATE, 2000))],
         )
         retry_run = self.make_run(
@@ -907,7 +751,7 @@ class ReferenceExport(AudioFixture):
         input_pcm = make_input_pcm(8000)
         run = self.make_run(
             {
-                variant: (input_pcm, make_session_trace(input_pcm, "sglang"))
+                variant: (input_pcm, make_session_trace(input_pcm))
                 for variant in ("overlap", "clean")
             }
         )
@@ -924,7 +768,6 @@ class ReferenceExport(AudioFixture):
         pcm = make_input_pcm(8000)
         text = make_session_trace(
             pcm,
-            "sglang",
             output_sample_rate=24000,
             audio_deltas=[(0.1, make_constant_pcm(0.2, 24000))],
         )
@@ -967,7 +810,7 @@ class ReferenceExport(AudioFixture):
     def test_export_cli_accepts_valid_silence(self) -> None:
         pcm = make_input_pcm(8000)
         run = self.make_run(
-            {v: (pcm, make_session_trace(pcm, "sglang")) for v in ("overlap", "clean")},
+            {v: (pcm, make_session_trace(pcm)) for v in ("overlap", "clean")},
         )
         out = self.root / "export"
         self.assertEqual(
@@ -978,17 +821,3 @@ class ReferenceExport(AudioFixture):
         )
         audio, _ = soundfile.read(out / "user_interruption/1/output.wav")
         self.assertEqual(np.count_nonzero(audio), 0)
-
-    def test_completion_grace_accepts_tiny_tail_but_rejects_stall(self) -> None:
-        pcm = make_input_pcm(7681)
-        text = make_session_trace(
-            pcm, "vllm", append_delays_s=dict.fromkeys(range(1, 7), 0.001)
-        )
-        record, _, audio = self.analyze("vllm", pcm, text)
-        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-        self.assertEqual(len(audio), 7681)
-        self.assertEqual(record["input_check"]["append_completions_after_T"], 1)
-        stalled = make_session_trace(pcm, "vllm", send_completion_delays_s={6: 0.3})
-        record, _, audio = self.analyze("vllm", pcm, stalled)
-        self.assertFalse(record["window"]["valid"])
-        self.assertIsNone(audio)
