@@ -105,6 +105,7 @@ Supported Models
    cookbook/higgs_tts.md
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
+   cookbook/fishaudio_drama3.md
    cookbook/qwen3_tts.md
    cookbook/ming_tts.md
    cookbook/moss_tts.md

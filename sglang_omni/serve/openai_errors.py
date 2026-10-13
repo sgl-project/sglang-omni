@@ -47,6 +47,7 @@ _BAD_REQUEST_MARKERS = (
     "PersonaPlex sampling parameters must be",
     "PersonaPlex takes one caller recording",
     "Unsupported PersonaPlex audio input",
+    "Drama 3 request:",
     "; packaged voices:",
 )
 _BAD_REQUEST_PATTERNS = (

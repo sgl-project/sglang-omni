@@ -133,6 +133,7 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
 ) -> None:
     runner = object.__new__(SGLModelRunner)
     runner.model_arch_override = architecture
+    runner.prefill_graph_runner_class = None
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -176,6 +177,7 @@ def test_prefill_runner_dispatch_selects_by_instance(
 
     runner = object.__new__(SGLModelRunner)
     runner.model_arch_override = "WhisperForConditionalGeneration"
+    runner.prefill_graph_runner_class = None
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(

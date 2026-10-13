@@ -9,8 +9,12 @@ import pytest
 import torch
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.runtime_context import get_context
 
+from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
 )
@@ -90,10 +94,6 @@ def test_eviction_trace_matches_stock():
 
 
 def test_factory_selects_evict_heap_only_for_lru():
-    from sglang.srt.runtime_context import get_context
-
-    from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
-
     def build(policy):
         with get_context().override_server_args(
             disable_radix_cache=False,
@@ -108,10 +108,6 @@ def test_factory_selects_evict_heap_only_for_lru():
 
 
 def test_factory_passes_the_eviction_policy_config_to_the_strategy():
-    from sglang.srt.runtime_context import get_context
-
-    from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
-
     if "eviction_policy_config" not in {
         field.name for field in dataclasses.fields(CacheInitParams)
     }:
@@ -128,6 +124,30 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy():
         cache = create_tree_cache(None, MockAllocator(), 1)
 
     assert cache.eviction_strategy.protected_threshold == 4
+
+
+@pytest.mark.parametrize("eviction_policy", ["lru", "fifo"])
+def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> None:
+    """A radix hit restores attention KV but never the linear-attention state."""
+    hybrid_pool = object.__new__(HybridReqToTokenPool)
+    with get_context().override_server_args(
+        disable_radix_cache=False,
+        chunked_prefill_size=None,
+        radix_eviction_policy=eviction_policy,
+    ):
+        with pytest.raises(ValueError, match="disable_radix_cache"):
+            create_tree_cache(hybrid_pool, MockAllocator(), 1)
+
+
+def test_factory_keeps_chunk_cache_for_hybrid_state_pools() -> None:
+    hybrid_pool = object.__new__(HybridReqToTokenPool)
+    with get_context().override_server_args(
+        disable_radix_cache=True,
+        chunked_prefill_size=100,
+    ):
+        cache = create_tree_cache(hybrid_pool, MockAllocator(), 1)
+
+    assert type(cache) is ChunkCache
 
 
 def test_heap_stays_bounded_and_recovers():

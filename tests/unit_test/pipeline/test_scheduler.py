@@ -12,6 +12,7 @@ import weakref
 from array import array
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from queue import Empty, Queue
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -756,6 +757,147 @@ def test_retracted_request_with_model_owned_data_is_requeued(
     assert scheduler.waiting_queue == [retracted]
     assert retracted.omni_data.decode_input_embeds == []
     assert retracted.omni_data.prefill_input_embeds is None
+
+
+def retractable_request(
+    request_id: str, *, is_finished: bool = False
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=request_id,
+        priority=None,
+        is_retracted=False,
+        omni_data=SGLangARRequestData(),
+        time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
+        finished=lambda: is_finished,
+    )
+
+
+@dataclass
+class RunningBatchStub:
+    """The ScheduleBatch surface a retract reads, its pools included."""
+
+    reqs: list[SimpleNamespace]
+    req_to_token_pool: Mock
+    token_to_kv_pool_allocator: Mock
+    tree_cache: Mock
+    batch_is_full: bool = True
+    hisparse_coordinator: None = None
+    forward_mode: ForwardMode = ForwardMode.DECODE
+
+    def is_empty(self) -> bool:
+        return not self.reqs
+
+    def filter_batch(self) -> None:
+        self.reqs = [request for request in self.reqs if not request.finished()]
+
+
+def retract_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    running_requests: list[SimpleNamespace],
+    last_batch: SimpleNamespace | None,
+    chunked_request: SimpleNamespace | None,
+) -> tuple[OmniScheduler, list[list[SimpleNamespace]]]:
+    """A scheduler whose retract_all records each released batch instead of freeing."""
+    released_batches: list[list[SimpleNamespace]] = []
+    scheduler = requeue_scheduler()
+
+    def record_retract(
+        *,
+        reqs: list[SimpleNamespace],
+        req_to_token_pool: Mock,
+        token_to_kv_pool_allocator: Mock,
+        tree_cache: Mock,
+        hisparse_coordinator: None,
+    ) -> None:
+        assert req_to_token_pool is scheduler.req_to_token_pool
+        assert token_to_kv_pool_allocator is scheduler.token_to_kv_pool_allocator
+        assert tree_cache is scheduler.tree_cache
+        assert hisparse_coordinator is None
+        released_batches.append(list(reqs))
+
+    monkeypatch.setattr(omni_scheduler_module, "retract_all", record_retract)
+    scheduler.req_to_token_pool = Mock()
+    scheduler.token_to_kv_pool_allocator = Mock()
+    scheduler.tree_cache = Mock()
+    scheduler.hisparse_coordinator = None
+    scheduler.running_batch = RunningBatchStub(
+        reqs=running_requests,
+        req_to_token_pool=scheduler.req_to_token_pool,
+        token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+        tree_cache=scheduler.tree_cache,
+    )
+    scheduler.last_batch = last_batch
+    scheduler.chunked_req = chunked_request
+    return scheduler, released_batches
+
+
+def test_retract_releases_a_request_cut_between_its_extends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Between its two extends, a chunked request is only in last_batch and chunked_req."""
+    chunked_request = retractable_request("chunked")
+    scheduler, released_batches = retract_scheduler(
+        monkeypatch,
+        running_requests=[],
+        last_batch=SimpleNamespace(
+            reqs=[chunked_request], forward_mode=ForwardMode.EXTEND
+        ),
+        chunked_request=chunked_request,
+    )
+
+    assert OmniScheduler.retract_running_requests(scheduler) == 1
+
+    assert released_batches == [[chunked_request]]
+    assert scheduler.waiting_queue == [chunked_request]
+    assert scheduler.last_batch is None
+    assert scheduler.chunked_req is None
+
+
+def test_retract_releases_and_requeues_each_unfinished_request_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoding_request = retractable_request("decoding")
+    finished_request = retractable_request("finished", is_finished=True)
+    prefilled_request = retractable_request("prefilled")
+    chunked_request = retractable_request("chunked")
+    scheduler, released_batches = retract_scheduler(
+        monkeypatch,
+        running_requests=[decoding_request, finished_request],
+        last_batch=SimpleNamespace(
+            reqs=[prefilled_request, chunked_request], forward_mode=ForwardMode.EXTEND
+        ),
+        chunked_request=chunked_request,
+    )
+
+    assert OmniScheduler.retract_running_requests(scheduler) == 3
+
+    retracted_requests = [decoding_request, prefilled_request, chunked_request]
+    assert released_batches == [retracted_requests]
+    assert scheduler.waiting_queue == retracted_requests
+    assert scheduler.running_batch.reqs == []
+    assert not scheduler.running_batch.batch_is_full
+    assert scheduler.last_batch is None
+    assert scheduler.chunked_req is None
+
+
+def test_retract_takes_only_the_running_batch_after_a_decode_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoding_request = retractable_request("decoding")
+    scheduler, released_batches = retract_scheduler(
+        monkeypatch,
+        running_requests=[decoding_request],
+        last_batch=None,
+        chunked_request=None,
+    )
+    scheduler.last_batch = scheduler.running_batch
+
+    assert OmniScheduler.retract_running_requests(scheduler) == 1
+
+    assert released_batches == [[decoding_request]]
+    assert scheduler.waiting_queue == [decoding_request]
+    assert scheduler.last_batch is None
 
 
 def enqueue_limit_scheduler(monkeypatch):
