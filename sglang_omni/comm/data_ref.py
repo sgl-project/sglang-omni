@@ -9,14 +9,9 @@ from typing import Annotated, TypeVar
 
 import msgspec
 
+from sglang_omni.platforms.interface import TransportKind
+
 DataRefValueT = TypeVar("DataRefValueT")
-
-
-class TransportKind(str, Enum):
-    LOCAL_OBJECT = "local_object"
-    CUDA_IPC = "cuda_ipc"
-    SHM = "shm"
-    MOONCAKE = "mooncake"
 
 
 class DataKind(str, Enum):

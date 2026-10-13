@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
+from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -15,12 +16,21 @@ if TYPE_CHECKING:
     import torch
     from torch.nn.attention import SDPBackend
 
-    from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
     from sglang_omni.profiler.torch_profiler import TorchProfiler
 else:
     pass
+
+
+class TransportKind(str, Enum):
+    """How a payload moves between stage processes; here so platforms skip comm."""
+
+    LOCAL_OBJECT = "local_object"
+    CUDA_IPC = "cuda_ipc"
+    LEVEL_ZERO_IPC = "level_zero_ipc"
+    SHM = "shm"
+    MOONCAKE = "mooncake"
 
 
 # Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
@@ -61,8 +71,6 @@ class OmniPlatform(DeviceMixin):
 
     def get_intra_node_transport(self) -> TransportKind:
         """Get TransportKind between devices on the same node"""
-        from sglang_omni.comm.data_ref import TransportKind
-
         return TransportKind.SHM
 
     def get_fused_qk_norm_rope(self):
