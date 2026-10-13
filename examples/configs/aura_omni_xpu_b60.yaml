@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# AURA Omni on three Intel Arc Pro B60 cards (24 GB each).
+#
+#   sgl-omni serve --config examples/configs/aura_omni_xpu_b60.yaml
+#
+# AURA's 16.5 GiB of BF16 weights fill most of a card, and SGLang's automatic
+# budget on XPU then leaves the KV pool no room, so its fraction is pinned.
+
+config_cls: AuraOmniPipelineConfig
+name: aura-omni-xpu-b60
+model_path: aurateam/AURA
+
+stages:
+  asr:
+    gpu: 0
+
+  aura:
+    gpu: 1
+    engine:
+      mem_fraction_static: 0.85
+
+  # Talker and vocoder share card 2.
+  vocoder:
+    gpu: 2
+  tts_engine:
+    gpu: 2
