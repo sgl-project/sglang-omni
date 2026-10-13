@@ -101,6 +101,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+firered-asr2 = ["kaldi-native-fbank>=1.20.0"]
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
