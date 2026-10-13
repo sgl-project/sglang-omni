@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factories: preprocessing, Mimi encode, the LM engine, decode and code2wav."""
+"""Stage factories: preprocessing, Mimi encode, the LM engine, decode and code2wav,
+for recordings and for full-duplex calls."""
 
 from __future__ import annotations
 
@@ -7,7 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from sentencepiece import SentencePieceProcessor
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.models.personaplex.architecture import MIMI_WEIGHTS_GLOB, SAMPLE_RATE
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
@@ -19,7 +22,10 @@ from sglang_omni.models.personaplex.components.mimi import (
     resolve_mimi_weights,
 )
 from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
-from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
+from sglang_omni.models.personaplex.engine_builder import (
+    PersonaPlexEngineBuilder,
+    PersonaPlexRealtimeEngineBuilder,
+)
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
@@ -34,13 +40,21 @@ from sglang_omni.models.personaplex.prompts import (
     tokenize_text_prompt,
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
+from sglang_omni.models.personaplex.session_hooks import (
+    Code2WavSessionHooks,
+    MimiEncodeSessionHooks,
+    PromptPreparer,
+    PromptSessionHooks,
+    encode_waveform,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.transcription import (
     police_request_audio,
     resolve_audio_source,
 )
-from sglang_omni.proto.request import StagePayload
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache, value_size_bytes
@@ -77,11 +91,10 @@ def caller_audio_source(payload: StagePayload) -> str | bytes:
     return resolve_audio_source(payload)
 
 
-def create_preprocessing_executor(
-    model_path: str, **_
-) -> SimpleScheduler[StagePayload, StagePayload]:
-    model_dir = Path(resolve_model_path(model_path))
-    tokenizer = load_text_tokenizer(model_dir)
+def prompt_preparer(
+    model_dir: Path, tokenizer: SentencePieceProcessor
+) -> PromptPreparer:
+    """The role prompt and voice a request asks for, as the LM's prompt state."""
 
     def voice_prompt_size(prompt: VoicePrompt) -> int:
         return value_size_bytes((prompt.embeddings, prompt.tail_codes, prompt.waveform))
@@ -91,19 +104,9 @@ def create_preprocessing_executor(
         size_fn=voice_prompt_size,
     )
 
-    def preprocess(payload: StagePayload) -> StagePayload:
-        params = stage_request_params(payload.request.params, PREPROCESSING_STAGE)
-        # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
-        # agent is on channel 1.
-        channels = load_channels(
-            police_request_audio(caller_audio_source(payload)),
-            source_name="PersonaPlex",
-        )
-        caller = torch.as_tensor(channels[0], dtype=torch.float32)
-
-        state = PersonaPlexState.from_dict(payload.data)
-        state.num_samples = int(caller.shape[-1])
-        state.waveform = pad_to_whole_frames(caller)
+    def prepare_prompt(request: OmniRequest) -> PersonaPlexState:
+        params = stage_request_params(request.params, PREPROCESSING_STAGE)
+        state = PersonaPlexState()
         text_prompt = params.get(
             "text_prompt", params.get("instructions", DEFAULT_TEXT_PROMPT)
         )
@@ -129,10 +132,43 @@ def create_preprocessing_executor(
             state.voice_waveform = prompt.waveform
         else:
             pass
+        return state
+
+    return prepare_prompt
+
+
+def create_preprocessing_executor(
+    model_path: str, **_
+) -> SimpleScheduler[StagePayload, StagePayload]:
+    model_dir = Path(resolve_model_path(model_path))
+    prepare_prompt = prompt_preparer(model_dir, load_text_tokenizer(model_dir))
+
+    def preprocess(payload: StagePayload) -> StagePayload:
+        # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
+        # agent is on channel 1.
+        channels = load_channels(
+            police_request_audio(caller_audio_source(payload)),
+            source_name="PersonaPlex",
+        )
+        caller = torch.as_tensor(channels[0], dtype=torch.float32)
+
+        state = prepare_prompt(payload.request)
+        state.num_samples = int(caller.shape[-1])
+        state.waveform = pad_to_whole_frames(caller)
         payload.data = state.to_dict()
         return payload
 
     return SimpleScheduler(preprocess)
+
+
+def create_realtime_preprocessing_executor(
+    model_path: str, *, max_sessions: int, **_
+) -> SessionScheduler:
+    model_dir = Path(resolve_model_path(model_path))
+    return SessionScheduler(
+        PromptSessionHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
+        max_open_sessions=max_sessions,
+    )
 
 
 def load_codec(
@@ -148,21 +184,15 @@ def create_mimi_encode_executor(
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
 
-    def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
-        codes = codec.encode(
-            waveform.to(device=device, dtype=torch.float32).view(1, 1, -1)
-        )
-        return codes[0].T.cpu()
-
     def encode(payload: StagePayload) -> StagePayload:
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
-            state.user_codes = encode_waveform(state.waveform)
+            state.user_codes = encode_waveform(codec, device, state.waveform)
             state.waveform = None
         else:
             pass
         if state.voice_waveform is not None:
-            state.voice_codes = encode_waveform(state.voice_waveform)
+            state.voice_codes = encode_waveform(codec, device, state.voice_waveform)
             state.voice_waveform = None
         else:
             pass
@@ -170,6 +200,48 @@ def create_mimi_encode_executor(
         return payload
 
     return SimpleScheduler(encode)
+
+
+def create_realtime_mimi_encode_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
+) -> SessionScheduler:
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    return SessionScheduler(
+        MimiEncodeSessionHooks(codec, device),
+        max_open_sessions=max_sessions,
+        max_concurrency=1,
+    )
+
+
+def start_lm_engine(
+    builder_type: type[PersonaPlexEngineBuilder],
+    model_path: str,
+    *,
+    max_running_requests: int,
+    dtype: str | None,
+    device: str | None,
+    gpu_id: int | None,
+    context_length: int | None,
+    server_args_overrides: dict[str, object],
+) -> OmniScheduler[SGLangARRequestData]:
+    # Note (wilsonzheng0327): The shim config is written before the engine reads its
+    # overrides, so an engine context_length must reach the builder too.
+    context_length = server_args_overrides.get("context_length", context_length)
+    builder = builder_type(
+        max_running_requests=max_running_requests, context_length=context_length
+    )
+    return builder.build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype or "bfloat16",
+        server_args_overrides=server_args_overrides or None,
+    )
 
 
 def create_lm_executor(
@@ -182,19 +254,41 @@ def create_lm_executor(
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
-    server_args_overrides = {**overrides, **(server_args_overrides or {})}
-    # Note (wilsonzheng0327): The shim config is written before the engine reads its
-    # overrides, so an engine context_length must reach the builder too.
-    context_length = server_args_overrides.get("context_length", context_length)
-    builder = PersonaPlexEngineBuilder(
-        max_running_requests=1, context_length=context_length
-    )
-    return builder.build(
+    return start_lm_engine(
+        PersonaPlexEngineBuilder,
         model_path,
+        max_running_requests=1,
+        dtype=dtype,
         device=device,
         gpu_id=gpu_id,
-        dtype=dtype or "bfloat16",
-        server_args_overrides=server_args_overrides or None,
+        context_length=context_length,
+        server_args_overrides={**overrides, **(server_args_overrides or {})},
+    )
+
+
+def create_realtime_lm_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    context_length: int | None = None,
+    server_args_overrides: dict[str, object] | None = None,
+    **overrides: object,
+) -> OmniScheduler[SGLangARRequestData]:
+    return start_lm_engine(
+        PersonaPlexRealtimeEngineBuilder,
+        model_path,
+        # Note (wilsonzheng0327): The session bridge admits a call's first unit
+        # only while these slots stay free for calls already holding KV.
+        max_running_requests=max_sessions
+        + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
+        dtype=dtype,
+        device=device,
+        gpu_id=gpu_id,
+        context_length=context_length,
+        server_args_overrides={**overrides, **(server_args_overrides or {})},
     )
 
 
@@ -250,10 +344,31 @@ def create_code2wav_executor(
     return PersonaPlexCode2WavScheduler(decode_slots, compute_fn=decode)
 
 
+def create_realtime_code2wav_executor(
+    model_path: str,
+    *,
+    max_sessions: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
+) -> SessionScheduler:
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    tokenizer = load_text_tokenizer(resolve_model_path(model_path))
+    return SessionScheduler(
+        Code2WavSessionHooks(codec, device, tokenizer),
+        max_open_sessions=max_sessions,
+        max_concurrency=1,
+    )
+
+
 __all__ = [
     "create_code2wav_executor",
     "create_decode_executor",
     "create_lm_executor",
     "create_mimi_encode_executor",
     "create_preprocessing_executor",
+    "create_realtime_code2wav_executor",
+    "create_realtime_lm_executor",
+    "create_realtime_mimi_encode_executor",
+    "create_realtime_preprocessing_executor",
 ]

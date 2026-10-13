@@ -148,6 +148,7 @@ class Timeline:
             codebook of output frame P-1.
         forced_agent_at_start: [8] agent codebooks at position P that
             the prompt already fixed (delayed streams), UNKNOWN where sampled.
+        user_frames: [P+U, 8] user-stream frames: the prompt's, then the caller's.
         user_rows: [P+U, 8] user codebooks for every position.
         num_prompt_positions: P.
         num_frames: U, the caller's audio frames and the decode budget.
@@ -158,13 +159,23 @@ class Timeline:
     prefill_embedding_positions: list[int]
     agent_row_before_start: torch.Tensor
     forced_agent_at_start: torch.Tensor
+    user_frames: torch.Tensor
     user_rows: torch.Tensor
     num_prompt_positions: int
     num_frames: int
 
-    def input_position(self, forward_index: int) -> int:
-        """Position of the row forward j consumes (j = 0: last prefill row)."""
-        return self.num_prompt_positions - 1 + forward_index
+    def append_caller_frames(self, codes_FK: torch.Tensor) -> None:
+        """Extend the caller's side by frames heard after the timeline was built.
+
+        Rows already laid out are unchanged, so a copy of them stays valid.
+        """
+        self.user_frames = torch.cat([self.user_frames, codes_FK.to(torch.long)])
+        self.user_rows = delay_user_frames(self.user_frames)
+        self.num_frames += int(codes_FK.shape[0])
+
+
+def delay_user_frames(user_frames_FK: torch.Tensor) -> torch.Tensor:
+    return delay_stream(user_frames_FK, DELAYS[USER_STREAM_OFFSET:], AUDIO_INITIAL_ID)
 
 
 def build_timeline(
@@ -194,11 +205,10 @@ def build_timeline(
         pass
 
     agent_delays = DELAYS[AGENT_STREAM_OFFSET:USER_STREAM_OFFSET]
-    user_delays = DELAYS[USER_STREAM_OFFSET:]
     text_rows = delay_stream(prompt.text[:, None], DELAYS[:1], TEXT_INITIAL_ID)
     agent_rows = delay_stream(agent, agent_delays, AUDIO_INITIAL_ID)
     user_frames = torch.cat([prompt.user, user_codes_UK], dim=0)
-    user_rows = delay_stream(user_frames, user_delays, AUDIO_INITIAL_ID)
+    user_rows = delay_user_frames(user_frames)
 
     prefill_tokens = torch.cat([text_rows, agent_rows, user_rows[:num_prompt]], dim=1)
     embedding_positions: list[int] = []
@@ -239,6 +249,7 @@ def build_timeline(
         prefill_embedding_positions=embedding_positions,
         agent_row_before_start=agent_rows[num_prompt - 1].clone(),
         forced_agent_at_start=forced,
+        user_frames=user_frames,
         user_rows=user_rows,
         num_prompt_positions=num_prompt,
         num_frames=num_frames,
