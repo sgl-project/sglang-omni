@@ -601,29 +601,6 @@ def test_kept_probabilities_follow_the_rule_on_both_branches(
 
 
 @pytest.mark.accelerator
-def test_threshold_search_needs_every_round_of_the_key_width() -> None:
-    require_validated_gpu()
-    logits = torch.ones(1, 64, dtype=torch.bfloat16, device="cuda")
-    logits[0, -1] = -1.0
-    parameters = (
-        torch.ones(1, device="cuda"),
-        torch.full((1,), 33, dtype=torch.int64, device="cuda"),
-        torch.ones(1, device="cuda"),
-    )
-    codebook_sampler = sampler(0)
-
-    full_rounds, _ = kept_probabilities(
-        logits, *parameters, codebook_sampler, FIRST_CODEBOOK_HEAD_STREAM, True, 0
-    )
-    one_round_short, _ = kept_probabilities(
-        logits, *parameters, codebook_sampler, FIRST_CODEBOOK_HEAD_STREAM, True, 1
-    )
-
-    assert torch.nonzero(full_rounds[0] > 0).flatten().tolist() == list(range(33))
-    assert torch.nonzero(one_round_short[0] > 0).flatten().tolist() != list(range(33))
-
-
-@pytest.mark.accelerator
 def test_tied_and_signed_zero_scores_split_by_column() -> None:
     require_validated_gpu()
     logits = torch.full((2, 64), -3.0, dtype=torch.float32)

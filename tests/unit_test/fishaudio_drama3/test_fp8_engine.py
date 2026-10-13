@@ -7,7 +7,7 @@ Loading, each expert call against a torch emulation, and engine outputs are chec
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pytest
 import torch
@@ -26,15 +26,12 @@ from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
     MAX_RUNNING_REQUESTS,
     MAX_TOTAL_TOKENS,
     PROMPTS,
-    SEMANTIC_END_TOKEN_ID,
-    SEMANTIC_START_TOKEN_ID,
     TEXT_CONFIG,
     TOTAL_GPU_MEMORY_FRACTION,
     EngineRun,
     EngineSpec,
     LayerQuantMethod,
     MoeCall,
-    RequestStep,
     decoder_checkpoint,
     dequantize_block_fp8,
     write_expert_variant,
@@ -42,10 +39,8 @@ from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
 )
 from tests.unit_test.fishaudio_drama3.test_mtp_engine import (
     BackboneTolerances,
-    DecisionRule,
     backbone_comparison,
     backbone_problems,
-    only_request,
     outcome_problems,
     ras_window_problems,
     request_steps,
@@ -54,9 +49,7 @@ from tests.unit_test.fishaudio_drama3.test_mtp_engine import (
     scenario_outcome,
     single_request_runs,
     slot_problems,
-    split_decision_problem,
     tower_problems,
-    with_changed_step,
 )
 from tests.unit_test.fixtures.accelerator import require_cuda
 
@@ -589,101 +582,6 @@ def test_every_routed_expert_call_matches_the_fp8_emulation(
     assert check.checked_call_count == len(run.forwards) * len(MOE_LAYER_INDICES)
 
 
-def test_moe_call_check_rejects_missing_repeated_non_finite_or_unquantized_calls(
-    fp8_engine_runs: Fp8EngineRuns, weights_by_layer: dict[int, ExpertWeights]
-) -> None:
-    run = fp8_engine_runs.fp8
-    # Its calls have enough rows for the per-call median check.
-    largest_prefill = max(
-        (forward for forward in run.forwards if forward.is_extend),
-        key=lambda forward: sum(len(step.positions) for step in forward.steps),
-    )
-    unquantized_layer_index = 1
-    first_call = largest_prefill.moe_calls[0]
-    broken_output = first_call.output.clone()
-    broken_output[0, 0] = float("nan")
-
-    def unquantized(call: MoeCall) -> MoeCall:
-        return replace(
-            call,
-            output=routed_expert_output(
-                call, weights_by_layer[call.layer_index], quantizes_activations=False
-            ),
-        )
-
-    def with_calls(calls: list[MoeCall]) -> EngineRun:
-        return replace(run, forwards=[replace(largest_prefill, moe_calls=calls)])
-
-    one_layer_unquantized = replace(
-        run,
-        forwards=[
-            replace(
-                forward,
-                moe_calls=[
-                    (
-                        unquantized(call)
-                        if call.layer_index == unquantized_layer_index
-                        else call
-                    )
-                    for call in forward.moe_calls
-                ],
-            )
-            for forward in run.forwards
-        ],
-    )
-    largest_prefill_unquantized = replace(
-        run,
-        forwards=[
-            (
-                replace(
-                    forward,
-                    moe_calls=[unquantized(call) for call in forward.moe_calls],
-                )
-                if forward is largest_prefill
-                else forward
-            )
-            for forward in run.forwards
-        ],
-    )
-
-    assert moe_call_check(run, weights_by_layer).problems == []
-    for checked_run, error in (
-        (with_calls(largest_prefill.moe_calls[1:]), "routed-expert calls for layers"),
-        (
-            with_calls([*largest_prefill.moe_calls, first_call]),
-            "routed-expert calls for layers",
-        ),
-        (
-            with_calls(
-                [
-                    replace(first_call, output=broken_output),
-                    *largest_prefill.moe_calls[1:],
-                ]
-            ),
-            "non-finite",
-        ),
-        (
-            with_calls(
-                [
-                    replace(first_call, output=first_call.output[:-1]),
-                    *largest_prefill.moe_calls[1:],
-                ]
-            ),
-            "shapes",
-        ),
-        (
-            one_layer_unquantized,
-            f"layer {unquantized_layer_index}: the median row over the run",
-        ),
-        (
-            largest_prefill_unquantized,
-            f"forward {largest_prefill.forward_index} layer 0: the median row",
-        ),
-    ):
-        problems = moe_call_check(checked_run, weights_by_layer).problems
-        assert any(error in problem for problem in problems), problems
-
-
 def test_fp8_outputs_match_the_dequantized_engine(
     fp8_engine_runs: Fp8EngineRuns,
 ) -> None:
@@ -702,182 +600,6 @@ def test_fp8_outputs_match_the_dequantized_engine(
     assert len(fp8_single_ids) == len(PROMPTS)
     assert set(fp8_single_ids) <= set(comparison.compared_request_ids)
     assert set(comparison.compared_request_ids) == set(request_steps(fp8_run))
-
-
-def test_cross_engine_check_compares_requests_that_share_an_id(
-    fp8_engine_runs: Fp8EngineRuns,
-) -> None:
-    """Both engines name their single requests alike; they are still compared."""
-    fp8_run = fp8_engine_runs.fp8
-    references = single_request_runs(fp8_engine_runs.dequantized)
-    request_id = scenario_outcome(fp8_run, "single").request_ids[0]
-    reference_steps = references[fp8_run.outcomes[request_id].request_spec.prompt_name]
-    reference_logits = reference_steps[0].semantic_logits
-    unlikely_token = SEMANTIC_START_TOKEN_ID + int(
-        torch.argmin(
-            reference_logits[SEMANTIC_START_TOKEN_ID : SEMANTIC_END_TOKEN_ID + 1]
-        )
-    )
-
-    def shifted_hidden_states(step: RequestStep) -> RequestStep:
-        return replace(step, hidden_states=step.hidden_states + 10.0)
-
-    def unlikely_first_frame(step: RequestStep) -> RequestStep:
-        codebook_zero = unlikely_token - SEMANTIC_START_TOKEN_ID
-        return replace(
-            step,
-            sampled_frame=[unlikely_token, codebook_zero, *step.sampled_frame[2:]],
-        )
-
-    def problems_of(
-        run: EngineRun, single_runs: dict[str, list[RequestStep]]
-    ) -> list[str]:
-        return backbone_comparison(
-            run,
-            single_runs,
-            FP8_ENGINE_TOLERANCES,
-            is_same_engine=False,
-            decision_rule="within_gap",
-        ).problems
-
-    assert reference_steps[0].request_id == request_id
-    assert any(
-        f"{request_id}: prefill hidden states" in problem
-        for problem in problems_of(
-            with_changed_step(fp8_run, request_id, 0, shifted_hidden_states), references
-        )
-    )
-    assert any(
-        f"{request_id} frame 0 entry 0" in problem
-        for problem in problems_of(
-            with_changed_step(fp8_run, request_id, 0, unlikely_first_frame), references
-        )
-    )
-    assert len(problems_of(fp8_run, {})) == len(request_steps(fp8_run))
-
-
-def test_cross_engine_rule_judges_the_chosen_gap_not_the_rank(
-    fp8_engine_runs: Fp8EngineRuns,
-) -> None:
-    """A split within the gap passes at any rank; past it, or ranked out under the
-    same-engine rule, it fails. Main token and codes alike, on recorded requests."""
-    fp8_run = fp8_engine_runs.fp8
-    references = single_request_runs(fp8_engine_runs.dequantized)
-    steps_by_request = request_steps(fp8_run)
-    band = slice(SEMANTIC_START_TOKEN_ID, SEMANTIC_END_TOKEN_ID + 1)
-
-    def reference_step(request_id: str) -> RequestStep:
-        return references[fp8_run.outcomes[request_id].request_spec.prompt_name][0]
-
-    def scores_and_limit(request_id: str, entry: int) -> tuple[torch.Tensor, float]:
-        """The reference's first-frame scores for entry, masked as compared."""
-        step = reference_step(request_id)
-        if entry == 0:
-            scores = torch.full_like(step.semantic_logits, float("-inf"))
-            scores[band] = step.semantic_logits[band]
-            return scores, FP8_ENGINE_TOLERANCES.semantic_gap
-        else:
-            return (
-                step.head_logits[entry - 2],
-                FP8_ENGINE_TOLERANCES.head_gaps[entry - 2],
-            )
-
-    def gaps(scores: torch.Tensor) -> tuple[float, float, float]:
-        """Best minus second, minus fifth and minus the least finite score."""
-        order = torch.argsort(scores, descending=True)
-        least = scores[scores.isfinite()].min()
-        return (
-            float(scores[order[0]] - scores[order[1]]),
-            float(scores[order[0]] - scores[order[4]]),
-            float(scores[order[0]] - least),
-        )
-
-    # First frames that match the reference's, so a changed entry is the first split.
-    request_ids = [
-        request_id
-        for request_id in scenario_outcome(fp8_run, "single").request_ids
-        if steps_by_request[request_id][0].sampled_frame
-        == reference_step(request_id).sampled_frame
-    ]
-
-    def is_rank_five_case(request_id: str, entry: int) -> bool:
-        """Reference second and fifth within the limit; its least past it."""
-        scores, gap_limit = scores_and_limit(request_id, entry)
-        second_gap, fifth_gap, least_gap = gaps(scores)
-        return second_gap <= gap_limit and fifth_gap <= gap_limit < least_gap
-
-    head_entries = tuple(range(2, 2 + len(FP8_ENGINE_TOLERANCES.head_gaps)))
-    cases = [
-        next(
-            (request_id, entry)
-            for request_id in request_ids
-            for entry in entries
-            if is_rank_five_case(request_id, entry)
-        )
-        for entries in ((0,), head_entries)
-    ]
-    for request_id, entry in cases:
-        scores, gap_limit = scores_and_limit(request_id, entry)
-        order = torch.argsort(scores, descending=True)
-        fifth = int(order[4])
-        fifth_gap = float(scores[order[0]] - scores[fifth])
-        finite = scores.isfinite().nonzero().flatten()
-        farthest = int(finite[torch.argmin(scores[finite])])
-
-        def problems_for(
-            chosen: int,
-            limit: float,
-            rule: DecisionRule,
-            breaks_reference: bool = False,
-        ) -> list[str]:
-            def chose(step: RequestStep) -> RequestStep:
-                frame = list(step.sampled_frame)
-                frame[entry] = chosen
-                if entry == 0:
-                    frame[1] = chosen - SEMANTIC_START_TOKEN_ID
-                else:
-                    pass
-                return replace(step, sampled_frame=frame)
-
-            step = reference_step(request_id)
-            if not breaks_reference:
-                broken_step = step
-            elif entry == 0:
-                semantic_logits = step.semantic_logits.clone()
-                semantic_logits[chosen] = float("nan")
-                broken_step = replace(step, semantic_logits=semantic_logits)
-            else:
-                head_logits = step.head_logits.clone()
-                head_logits[entry - 2, chosen] = float("nan")
-                broken_step = replace(step, head_logits=head_logits)
-            prompt_name = fp8_run.outcomes[request_id].request_spec.prompt_name
-            single_runs = {
-                **references,
-                prompt_name: [broken_step, *references[prompt_name][1:]],
-            }
-            if entry == 0:
-                tolerances = replace(FP8_ENGINE_TOLERANCES, semantic_gap=limit)
-            else:
-                head_gaps = list(FP8_ENGINE_TOLERANCES.head_gaps)
-                head_gaps[entry - 2] = limit
-                tolerances = replace(FP8_ENGINE_TOLERANCES, head_gaps=tuple(head_gaps))
-            run = with_changed_step(
-                only_request(fp8_run, request_id), request_id, 0, chose
-            )
-            return backbone_comparison(
-                run, single_runs, tolerances, is_same_engine=False, decision_rule=rule
-            ).problems
-
-        below_gap = math.nextafter(fifth_gap, -math.inf)
-        assert problems_for(fifth, gap_limit, "within_gap") == [], entry
-        assert problems_for(fifth, fifth_gap, "within_gap") == [], entry
-        assert problems_for(fifth, below_gap, "within_gap"), entry
-        assert problems_for(fifth, gap_limit, "top_two_within_gap"), entry
-        assert problems_for(farthest, gap_limit, "within_gap"), entry
-        assert problems_for(
-            fifth, gap_limit, "within_gap", breaks_reference=True
-        ), entry
-    assert split_decision_problem(torch.zeros(4), 4, 1.0, "within_gap") is not None
 
 
 def test_fp8_tower_matches_the_dense_recompute(

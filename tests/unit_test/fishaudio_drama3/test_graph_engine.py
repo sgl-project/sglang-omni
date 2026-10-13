@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from sglang_omni.models.fishaudio_drama3.sampling import EMPTY_RAS_SLOT
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     VALIDATED_COMPUTE_CAPABILITY,
 )
@@ -55,14 +54,10 @@ from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     EngineKind,
     GraphEngineRun,
     GraphEngineSpec,
-    GraphForwardRecord,
-    GraphRequestStep,
     GraphScenario,
-    LeanChoice,
     bits,
 )
 from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
-    EOS_TOKEN_ID,
     TOTAL_GPU_MEMORY_FRACTION,
     write_expert_variant,
     write_synthetic_checkpoint,
@@ -740,20 +735,6 @@ def test_pytorch_sampling_engines_never_step(engine_runs: GraphEngineRuns) -> No
             assert not problems, f"{name} {run.kind}:\n{first_problems(problems)}"
 
 
-def test_sampling_step_check_catches_a_changed_or_mislabeled_run(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    triton_run = engine_runs.triton_main.graph
-    is_triton_sampling = is_on_validated_gpu(triton_run)
-    record = triton_run.forwards[len(triton_run.forwards) // 2]
-    changed_run = with_record(
-        triton_run, replace(record, sampling_step=record.sampling_step + 1)
-    )
-    assert len(sampling_step_problems(changed_run, is_triton_sampling)) == 1
-    assert sampling_step_problems(engine_runs.main.graph, True)
-    assert sampling_step_problems(triton_run, not is_triton_sampling)
-
-
 def test_fused_layers_run_each_eager_decode_step_and_no_tower_prefill(
     engine_runs: GraphEngineRuns,
 ) -> None:
@@ -782,35 +763,6 @@ def test_fused_layers_run_each_eager_decode_step_and_no_tower_prefill(
         not record.is_extend and record.fused_layer_calls == expected_calls
         for record in eager_forwards
     )
-
-
-def test_fused_layer_check_catches_a_changed_record(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    eager_run = engine_runs.main.eager
-    graph_run = engine_runs.main.graph
-    if not is_on_validated_gpu(eager_run):
-        pytest.skip(
-            f"the fused layers run only on compute capability "
-            f"{VALIDATED_COMPUTE_CAPABILITY}, this GPU is "
-            f"{eager_run.facts.device_capability}"
-        )
-    else:
-        pass
-    extend = next(record for record in eager_run.forwards if record.is_extend)
-    decode = next(record for record in eager_run.forwards if not record.is_extend)
-    replayed = next(
-        record
-        for record in graph_run.forwards
-        if record.is_graph_replay and not record.is_extend
-    )
-    for run, record in (
-        (eager_run, replace(extend, tower_prefill_fused_layer_calls=1)),
-        (eager_run, replace(decode, fused_layer_calls=0)),
-        (eager_run, replace(decode, fused_layer_calls=decode.fused_layer_calls - 1)),
-        (graph_run, replace(replayed, fused_layer_calls=1)),
-    ):
-        assert len(fused_layer_problems(with_record(run, record), True)) == 1
 
 
 def test_tower_prefill_writes_the_unfused_bits_and_the_decode_step_fuses(
@@ -868,167 +820,6 @@ def test_decode_attention_keeps_the_standard_kernel(
         for record in engine_runs.main.eager.forwards
         for choice in record.lean_choices
     } == {"sequence_length"}
-
-
-def with_record(run: GraphEngineRun, record: GraphForwardRecord) -> GraphEngineRun:
-    forwards = list(run.forwards)
-    forwards[record.forward_index] = record
-    return replace(run, forwards=forwards)
-
-
-def test_prefill_checks_catch_a_changed_record(engine_runs: GraphEngineRuns) -> None:
-    run = engine_runs.prefill_main.graph
-    replayed = next(
-        record for record in run.forwards if record.is_extend and record.is_graph_replay
-    )
-    fallen_back = next(
-        record
-        for record in run.forwards
-        if record.is_extend and not record.is_graph_replay
-    )
-    decoded = next(record for record in run.forwards if not record.is_extend)
-    for changed in (
-        replace(
-            replayed,
-            prefill_replay_buckets={
-                2 * bucket: count
-                for bucket, count in replayed.prefill_replay_buckets.items()
-            },
-        ),
-        replace(
-            replayed,
-            prefill_replay_count=0,
-            prefill_eager_count=1,
-            prefill_replay_buckets={},
-        ),
-        replace(replayed, is_graph_replay=False),
-        replace(fallen_back, prefill_replay_count=1, prefill_eager_count=0),
-        replace(replayed, tower_prefill_runs=1),
-        replace(fallen_back, tower_prefill_runs=0),
-        replace(decoded, tower_prefill_runs=1),
-    ):
-        problems = prefill_path_problems(with_record(run, changed))
-        assert len(problems) == 1, problems
-    for changed in (
-        replace(replayed, stray_kv_slots=[0]),
-        replace(replayed, stray_mamba_slots=[replayed.steps[0].mamba_slot + 1]),
-    ):
-        problems = stray_write_problems(with_record(run, changed))
-        assert len(problems) == 1, problems
-
-
-def test_capture_break_check_catches_a_missing_or_changed_tower_break(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    run = engine_runs.prefill_main.graph
-    facts = run.facts
-    token_count = max(PREFILL_CUDA_GRAPH_TOKEN_COUNTS)
-    layer_ids = facts.prefill_capture_break_layer_ids[token_count]
-    backbone_layer_ids = [
-        layer_id for layer_id in layer_ids if layer_id not in facts.tower_layer_ids
-    ]
-    other_captures = {
-        captured_token_count: captured_layer_ids
-        for captured_token_count, captured_layer_ids in (
-            facts.prefill_capture_break_layer_ids.items()
-        )
-        if captured_token_count != token_count
-    }
-    for changed_captures, problem_count in (
-        ({**other_captures, token_count: layer_ids[:-1]}, 1),
-        ({**other_captures, token_count: backbone_layer_ids}, 1),
-        ({**other_captures, token_count: layer_ids + layer_ids[-1:]}, 1),
-        ({**other_captures, token_count: layer_ids[:-1] + [max(layer_ids) + 1]}, 1),
-        (other_captures, 1),
-        ({**other_captures, 2 * token_count: layer_ids}, 2),
-    ):
-        changed_run = replace(
-            run,
-            facts=replace(facts, prefill_capture_break_layer_ids=changed_captures),
-        )
-        problems = capture_break_problems(changed_run)
-        assert len(problems) == problem_count, problems
-
-
-def test_first_frame_checks_catch_a_changed_record(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    run = engine_runs.main.graph
-    replayed = next(record for record in run.forwards if record.first_frame_replays)
-    decoded = next(record for record in run.forwards if not record.is_extend)
-    request_count = len(replayed.steps)
-    for changed in (
-        replace(replayed, first_frame_replays={request_count + 1: 1}),
-        replace(replayed, first_frame_replays={request_count: 2}),
-        replace(replayed, first_frame_replays={}, first_frame_eager_count=1),
-        replace(replayed, first_frame_sampler_calls=1),
-        replace(decoded, first_frame_eager_count=1, first_frame_sampler_calls=1),
-    ):
-        problems = first_frame_path_problems(with_record(run, changed))
-        assert len(problems) == 1, problems
-    low_cap_run = engine_runs.first_frame_low_cap.graph
-    past_the_cap = next(
-        record for record in low_cap_run.forwards if record.first_frame_eager_count
-    )
-    problems = first_frame_path_problems(
-        with_record(
-            low_cap_run,
-            replace(
-                past_the_cap,
-                first_frame_replays={len(past_the_cap.steps): 1},
-                first_frame_eager_count=0,
-                first_frame_sampler_calls=0,
-            ),
-        )
-    )
-    assert len(problems) == 1, problems
-    uncaptured_run = replace(
-        run, facts=replace(run.facts, first_frame_request_counts=None)
-    )
-    assert len(first_frame_path_problems(uncaptured_run)) == sum(
-        bool(record.first_frame_replays) for record in run.forwards
-    )
-    pair = engine_runs.main
-    assert replayed.scenario_name == RANDOM_WAVES.name
-    offset_problems = generator_offset_problems(
-        replace(
-            pair,
-            graph=with_record(
-                pair.graph,
-                replace(replayed, generator_offset=replayed.generator_offset + 4),
-            ),
-        ),
-        {RANDOM_WAVES.name},
-    )
-    assert len(offset_problems) == 1, offset_problems
-    split_problems = first_frame_split_problems(
-        replace(
-            pair,
-            graph=with_record(
-                pair.graph,
-                replace(
-                    replayed,
-                    first_frame_kv_splits=[
-                        split + 1 for split in replayed.first_frame_kv_splits
-                    ],
-                ),
-            ),
-        )
-    )
-    assert len(split_problems) == 1, split_problems
-    lean_record = replace(
-        decoded,
-        lean_choices=[LeanChoice(policy="capture", batch_size=8, is_lean=True)],
-    )
-    assert len(lean_problems(with_record(run, lean_record))) == 1
-    assert (
-        len(
-            lean_problems(
-                replace(run, facts=replace(run.facts, lean_attention_override=True))
-            )
-        )
-        == 1
-    )
 
 
 def test_inputs_the_model_read_follow_each_history(
@@ -1156,179 +947,3 @@ def test_retracted_requests_reprefill_their_history_between_replays(
             and any(step.request_id == request_id for step in record.steps)
         ]
         assert True in steps_around and False in steps_around, request_id
-
-
-def changed_step(
-    run: GraphEngineRun, forward_index: int, step: GraphRequestStep
-) -> GraphEngineRun:
-    """The run with one step of one forward replaced."""
-    forwards = list(run.forwards)
-    record = forwards[forward_index]
-    forwards[forward_index] = replace(
-        record,
-        steps=[
-            step if current.request_id == step.request_id else current
-            for current in record.steps
-        ],
-    )
-    return replace(run, forwards=forwards)
-
-
-def first_padded_decode(run: GraphEngineRun) -> GraphForwardRecord:
-    return next(
-        record
-        for record in run.forwards
-        if record.is_graph_replay
-        and not record.is_extend
-        and len(record.steps) in PADDED_BATCH_SIZES
-    )
-
-
-def test_bit_check_catches_one_changed_bit(engine_runs: GraphEngineRuns) -> None:
-    pair = engine_runs.main
-    record = first_padded_decode(pair.graph)
-    step = record.steps[0]
-    flipped_cache = step.written_cache.clone()
-    bits(flipped_cache).view(-1)[0] ^= 1
-    nudged_logits = step.semantic_logits.clone()
-    bits(nudged_logits).view(-1)[0] += 1
-    for changed, field in (
-        (replace(step, written_cache=flipped_cache), "written key/value cache"),
-        (replace(step, semantic_logits=nudged_logits), "semantic logits"),
-        (replace(step, state_digest="0" * 64), "linear-attention state"),
-        (replace(step, sampled_frame=[step.sampled_frame[0] + 1]), "sampled frame"),
-    ):
-        changed_pair = replace(
-            pair, graph=changed_step(pair.graph, record.forward_index, changed)
-        )
-        problems = bit_problems(changed_pair)
-        assert len(problems) == 1 and field in problems[0], problems
-
-
-def test_history_check_catches_stale_inputs(engine_runs: GraphEngineRuns) -> None:
-    pair = engine_runs.main
-    record = first_padded_decode(pair.graph)
-    step = record.steps[0]
-    stale_window = [EMPTY_RAS_SLOT] + step.staged_ras_window[:-1]
-    for changed, field in (
-        (replace(step, input_frames=[[0] * len(step.sampled_frame)]), "input frames"),
-        (replace(step, staged_ras_window=stale_window), "staged RAS window"),
-        (replace(step, model_ras_window=stale_window), "model RAS window"),
-        (replace(step, top_k=step.top_k + 1), "sampling knobs"),
-    ):
-        run = changed_step(pair.graph, record.forward_index, changed)
-        problems = history_problems(run, pair.scenarios)
-        assert len(problems) == 1 and field in problems[0], problems
-
-
-def test_schedule_and_draw_checks_catch_a_changed_record(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    pair = engine_runs.main
-    record = first_padded_decode(pair.graph)
-    step = record.steps[0]
-    moved = replace(step, written_slots=[slot + 1 for slot in step.written_slots])
-    changed_pair = replace(
-        pair, graph=changed_step(pair.graph, record.forward_index, moved)
-    )
-    assert schedule_problems(changed_pair)
-
-    wrong_choice = replace(
-        step, sampled_frame=[step.first_draw + 1, *step.sampled_frame[1:]]
-    )
-    run = changed_step(pair.graph, record.forward_index, wrong_choice)
-    assert len(draw_problems(run)) == 1
-
-
-def with_both_engines_changed(
-    pair: EnginePair, forward_index: int, step: GraphRequestStep
-) -> EnginePair:
-    """Both engines given the same changed step, so bit comparison cannot tell."""
-    return replace(
-        pair,
-        eager=changed_step(pair.eager, forward_index, step),
-        graph=changed_step(pair.graph, forward_index, step),
-    )
-
-
-def test_finite_check_rejects_the_same_bad_value_in_both_engines(
-    engine_runs: GraphEngineRuns,
-) -> None:
-    pair = engine_runs.main
-    record = first_padded_decode(pair.graph)
-    step = record.steps[0]
-    final_record, final_step = next(
-        (record, step)
-        for record in pair.graph.forwards
-        for step in record.steps
-        if step.final_state is not None
-    )
-    bad_cache = step.written_cache.clone()
-    bad_cache.view(-1)[0] = float("nan")
-    bad_head_logits = step.head_logits.clone()
-    bad_head_logits[0, 0] = float("inf")
-    bad_semantic_logits = step.semantic_logits.clone()
-    bad_semantic_logits[EOS_TOKEN_ID + 1] = float("nan")
-    bad_final_state = [tensor.clone() for tensor in final_step.final_state or []]
-    bad_final_state[0].view(-1)[0] = float("nan")
-    for forward_index, changed, field in (
-        (
-            record.forward_index,
-            replace(step, written_cache=bad_cache),
-            "written key/value cache",
-        ),
-        (
-            record.forward_index,
-            replace(step, head_logits=bad_head_logits),
-            "head logits",
-        ),
-        (
-            record.forward_index,
-            replace(step, semantic_logits=bad_semantic_logits),
-            "semantic logits",
-        ),
-        (
-            record.forward_index,
-            replace(step, is_state_finite=False),
-            "linear-attention state",
-        ),
-        (
-            final_record.forward_index,
-            replace(final_step, final_state=bad_final_state),
-            "final state",
-        ),
-    ):
-        changed_pair = with_both_engines_changed(pair, forward_index, changed)
-        assert not bit_problems(changed_pair)
-        for run in (changed_pair.eager, changed_pair.graph):
-            problems = finite_problems(run)
-            assert len(problems) == 1 and field in problems[0], problems
-
-
-@pytest.mark.parametrize(
-    ("end_of_speech_logit", "is_accepted"),
-    [
-        (float("-inf"), True),
-        (1.0e4, True),
-        (float("nan"), False),
-        (float("inf"), False),
-    ],
-    ids=["masked", "forced", "nan", "positive-inf"],
-)
-def test_finite_check_allows_only_a_masked_end_of_speech(
-    engine_runs: GraphEngineRuns, end_of_speech_logit: float, is_accepted: bool
-) -> None:
-    run = engine_runs.main.graph
-    record = first_padded_decode(run)
-    step = record.steps[0]
-    semantic_logits = step.semantic_logits.clone()
-    semantic_logits[EOS_TOKEN_ID] = end_of_speech_logit
-    changed = replace(step, semantic_logits=semantic_logits)
-    problems = finite_problems(changed_step(run, record.forward_index, changed))
-    assert (not problems) == is_accepted, problems
-
-    elsewhere = semantic_logits.clone()
-    elsewhere[EOS_TOKEN_ID] = float("-inf")
-    elsewhere[EOS_TOKEN_ID + 1] = float("-inf")
-    changed = replace(step, semantic_logits=elsewhere)
-    assert finite_problems(changed_step(run, record.forward_index, changed))

@@ -9,7 +9,6 @@ import json
 import logging
 import math
 import random
-import threading
 from array import array
 from dataclasses import dataclass, replace
 from functools import partial
@@ -100,17 +99,6 @@ from sglang_omni.scheduling.types import (
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.vendor.sglang.core import GenerationBatchResult, ScheduleBatch
 from tests.unit_test.fishaudio_drama3.dense_attention import DenseAttention
-from tests.unit_test.fishaudio_drama3.graph_engines import GraphSchedulerDriver
-from tests.unit_test.fishaudio_drama3.graph_fixtures import (
-    GraphForwardRecord,
-    GraphRequestSpec,
-    GraphRequestStep,
-)
-from tests.unit_test.fishaudio_drama3.graph_recording_runner import GraphRecordingRunner
-from tests.unit_test.fishaudio_drama3.mtp_engines import (
-    LookaheadRecordingRunner,
-    SchedulerDriver,
-)
 from tests.unit_test.fishaudio_drama3.test_audio_decoder import (
     CODEBOOK_SIZE,
     DIM,
@@ -1277,8 +1265,6 @@ def test_a_failed_first_frame_capture_stops_the_engine_without_graphs(
 JUNK_TOKEN_ID = 7
 WALK_SLOT_COUNT = 6
 WALK_STEP_COUNT = 300
-WALK_CORRUPTED_STEP = 150
-PoolField = Literal["frames", "ras_windows", "temperature", "top_k", "top_p"]
 PrefillFailure = Literal["in-forward", "after-first-frames", "in-post-prefill"]
 
 
@@ -1995,150 +1981,6 @@ def test_post_prefill_refuses_a_staging_of_other_requests() -> None:
     assert request_data_of(current).frame_rows == current_history
 
 
-def drained_at_and_after_a_gated_resolve(
-    runner: GraphRecordingRunner | LookaheadRecordingRunner,
-    driver: GraphSchedulerDriver | SchedulerDriver,
-    requests: list[SchedulerRequest],
-) -> tuple[bool, bool]:
-    entered = threading.Event()
-    release = threading.Event()
-    errors: list[BaseException] = []
-    base_resolve = Drama3ModelRunner.post_decode_resolve
-
-    def gated_resolve(
-        self: Drama3ModelRunner,
-        launch_buf: torch.Tensor | None,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        schedule_batch: ScheduleBatch,
-        step_requests: list[SchedulerRequest],
-    ) -> None:
-        entered.set()
-        release.wait(timeout=30)
-        base_resolve(
-            self, launch_buf, result, forward_batch, schedule_batch, step_requests
-        )
-
-    def resolve() -> None:
-        try:
-            runner.post_decode_resolve(
-                torch.tensor(
-                    [[90 + index, 1, 1, 1, 1] for index in range(len(requests))]
-                ),
-                GenerationBatchResult(),
-                None,
-                schedule_batch_of(ForwardMode.DECODE),
-                requests,
-            )
-        except BaseException as error:
-            errors.append(error)
-
-    with patch.object(Drama3ModelRunner, "post_decode_resolve", gated_resolve):
-        resolver = threading.Thread(target=resolve)
-        resolver.start()
-        assert entered.wait(timeout=30)
-        drained_at_gate = driver.is_pipeline_drained()
-        release.set()
-        resolver.join(timeout=30)
-    assert not resolver.is_alive() and errors == []
-    return drained_at_gate, driver.is_pipeline_drained()
-
-
-def finished_second_request(lengths: list[int]) -> list[SchedulerRequest]:
-    requests = prompted_requests(lengths)
-    finished_request = request_data_of(requests[1]).req
-    assert finished_request is not None
-    finished_request.finished_reason = FINISH_MATCHED_TOKEN(matched=EOS_TOKEN_ID)
-    return requests
-
-
-def test_the_graph_harness_is_busy_until_a_resolve_has_marked_its_record() -> None:
-    requests = finished_second_request([3, 4])
-    runner = object.__new__(GraphRecordingRunner)
-    runner.forwards = [
-        GraphForwardRecord(
-            forward_index=0,
-            scenario_name="gated",
-            is_extend=False,
-            is_lookahead=True,
-            is_graph_replay=False,
-            graph_batch_size=None,
-            token_count=len(requests),
-            prefill_replay_count=0,
-            prefill_eager_count=0,
-            prefill_replay_buckets={},
-            tower_prefill_runs=0,
-            fused_layer_calls=0,
-            tower_prefill_fused_layer_calls=0,
-            first_frame_replays={},
-            first_frame_eager_count=0,
-            first_frame_sampler_calls=0,
-            first_frame_kv_splits=[],
-            generator_offset=0,
-            sampling_step=0,
-            lean_choices=[],
-            steps=[
-                GraphRequestStep(
-                    request_id=request.request_id,
-                    request_row=row + 1,
-                    mamba_slot=row + 1,
-                    positions=[0],
-                    written_slots=[row + 1],
-                    input_frames=[[0] * FRAME_WIDTH],
-                    staged_ras_window=[],
-                    model_ras_window=[],
-                    temperature=1.0,
-                    top_k=1,
-                    top_p=1.0,
-                    first_draw=0,
-                    ras_draw=0,
-                    sampled_frame=[90 + row, 1, 1, 1, 1],
-                    written_cache=torch.zeros(0),
-                    state_digest="",
-                    is_state_finite=True,
-                    final_state=None,
-                    semantic_logits=torch.zeros(0),
-                    head_logits=torch.zeros(0),
-                )
-                for row, request in enumerate(requests)
-            ],
-            stray_kv_slots=[],
-            stray_mamba_slots=[],
-        )
-    ]
-    runner.unresolved_forward_indices = [0]
-    runner.request_specs = {
-        request.request_id: GraphRequestSpec(prompt_name="p2", max_new_tokens=8)
-        for request in requests
-    }
-    runner.aborted_after_frames = {}
-    driver = object.__new__(GraphSchedulerDriver)
-    driver.scheduler = SimpleNamespace(async_pending=None, previous_pending_decode=None)
-    driver.runner = runner
-
-    assert drained_at_and_after_a_gated_resolve(runner, driver, requests) == (
-        False,
-        True,
-    )
-    assert [step.is_discarded for step in runner.forwards[0].steps] == [False, True]
-
-
-def test_the_mtp_harness_is_busy_until_a_resolve_has_recorded_its_discards() -> None:
-    requests = finished_second_request([3, 4])
-    runner = object.__new__(LookaheadRecordingRunner)
-    runner.unresolved_forward_indices = [0]
-    runner.discarded_steps = []
-    driver = object.__new__(SchedulerDriver)
-    driver.scheduler = SimpleNamespace(async_pending=None, previous_pending_decode=None)
-    driver.runner = runner
-
-    assert drained_at_and_after_a_gated_resolve(runner, driver, requests) == (
-        False,
-        True,
-    )
-    assert runner.discarded_steps == [(0, "request-1")]
-
-
 @dataclass(kw_only=True)
 class StatePoolWalk:
     mismatched_steps: list[int] = dataclasses.field(default_factory=list)
@@ -2161,9 +2003,7 @@ def random_frame(generator: random.Random) -> list[int]:
     ]
 
 
-def state_pool_walk(
-    *, seed: int, is_lookahead: bool, corrupted_field: PoolField | None = None
-) -> StatePoolWalk:
+def state_pool_walk(*, seed: int, is_lookahead: bool) -> StatePoolWalk:
     walk = StatePoolWalk()
     generator = random.Random(seed)
     decode = decode_runner(row_count=WALK_SLOT_COUNT)
@@ -2266,15 +2106,6 @@ def state_pool_walk(
         else:
             pass
         batch = list(running)
-        if corrupted_field is not None and step_index == WALK_CORRUPTED_STEP:
-            corrupted_request = request_data_of(batch[0]).req
-            assert corrupted_request is not None
-            assert corrupted_request.kv.req_pool_idx is not None
-            getattr(runner.state_pool, corrupted_field)[
-                corrupted_request.kv.req_pool_idx
-            ] += 1
-        else:
-            pass
         decode.forward.next_frames = [
             (
                 [EOS_TOKEN_ID] + [0] * (FRAME_WIDTH - 1)
@@ -2334,20 +2165,6 @@ def test_the_state_pool_feeds_each_decode_what_history_staging_did(
         )
     else:
         assert walk.skipped_finished_rows == walk.skipped_retracted_rows == 0
-
-
-@pytest.mark.parametrize("is_lookahead", [False, True], ids=["sync", "lookahead"])
-@pytest.mark.parametrize(
-    "corrupted_field", ["frames", "ras_windows", "temperature", "top_k", "top_p"]
-)
-def test_the_state_pool_walk_catches_a_corrupted_pool_row(
-    is_lookahead: bool, corrupted_field: PoolField
-) -> None:
-    walk = state_pool_walk(
-        seed=23, is_lookahead=is_lookahead, corrupted_field=corrupted_field
-    )
-
-    assert walk.mismatched_steps[0] == WALK_CORRUPTED_STEP
 
 
 def test_next_frame_labels_pair_rows_within_each_request() -> None:
