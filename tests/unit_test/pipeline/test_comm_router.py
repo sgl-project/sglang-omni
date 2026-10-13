@@ -299,10 +299,10 @@ def test_a_non_cuda_platform_never_runs_the_cuda_peer_probe(monkeypatch) -> None
         stage_gpu_ids={"vocoder": (1,)},
     )
 
-    def fail(target):
-        raise AssertionError(f"peer probe ran for {target!r} off CUDA")
+    def fail(target, device_kind):
+        raise AssertionError(f"{device_kind} peer probe ran for {target!r} off CUDA")
 
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", fail)
+    monkeypatch.setattr(router, "device_ipc_peer_available", fail)
 
     assert router.outbound("vocoder") is TransportKind.SHM
     assert router.inbound("vocoder") is TransportKind.SHM
@@ -327,8 +327,160 @@ def test_a_cuda_platform_still_falls_back_when_peers_cannot_talk(monkeypatch) ->
         stage_gpu_ids={"vocoder": (1,)},
     )
 
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", lambda target: False)
+    monkeypatch.setattr(
+        router, "device_ipc_peer_available", lambda target, device_kind: False
+    )
     assert router.outbound("vocoder") is TransportKind.SHM
 
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", lambda target: True)
+    monkeypatch.setattr(
+        router, "device_ipc_peer_available", lambda target, device_kind: True
+    )
     assert router.outbound("vocoder") is TransportKind.CUDA_IPC
+
+
+def pin_level_zero_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    pin_non_cuda_platform(monkeypatch)
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_intra_node_transport",
+        lambda: TransportKind.LEVEL_ZERO_IPC,
+        raising=False,
+    )
+
+
+def level_zero_router(**comm_config: int) -> CommRouter:
+    return CommRouter(
+        stage_name="talker_ar",
+        gpu_id=0,
+        placement_gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"code2wav"},
+        stage_gpu_ids={"code2wav": (1,)},
+        comm_config=comm_config,
+    )
+
+
+def accelerator_bytes(num_bytes: int) -> torch.Tensor:
+    return torch.empty(num_bytes, dtype=torch.uint8, device=ACCEL)
+
+
+def test_level_zero_edges_ask_the_xpu_runtime_for_peer_access_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pin_level_zero_platform(monkeypatch)
+    calls: list[tuple[int, int]] = []
+
+    def can_access(target: int, source: int) -> bool:
+        calls.append((target, source))
+        return True
+
+    def cuda_probe(target: int, source: int) -> bool:
+        raise AssertionError("an XPU edge queried the CUDA peer namespace")
+
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.xpu, "can_device_access_peer", can_access)
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", cuda_probe)
+    router = level_zero_router()
+
+    payload = {"hidden": accelerator_bytes(2 << 20)}
+    assert router.outbound_payload("code2wav", payload) is TransportKind.LEVEL_ZERO_IPC
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes(2 << 20))
+        is TransportKind.LEVEL_ZERO_IPC
+    )
+    assert calls == [(1, 0)]
+
+
+def test_level_zero_edges_fall_back_to_shm_when_xpu_peers_cannot_talk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pin_level_zero_platform(monkeypatch)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 2)
+    monkeypatch.setattr(
+        torch.xpu, "can_device_access_peer", lambda target, source: False
+    )
+    router = level_zero_router()
+
+    payload = {"hidden": accelerator_bytes(2 << 20)}
+    assert router.outbound_payload("code2wav", payload) is TransportKind.SHM
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes(2 << 20))
+        is TransportKind.SHM
+    )
+
+
+def test_level_zero_ipc_leaves_paged_kv_on_the_path_it_takes_without_the_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paged KV routes by edge alone and supports only cuda_ipc, so it must see
+    shm, as on main, rather than a Level-Zero relay nothing has sized."""
+    pin_level_zero_platform(monkeypatch)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 2)
+    monkeypatch.setattr(
+        torch.xpu, "can_device_access_peer", lambda target, source: True
+    )
+    router = level_zero_router()
+
+    assert router.outbound("code2wav") is TransportKind.SHM
+    assert router.inbound("code2wav") is TransportKind.SHM
+    payload = {"hidden": accelerator_bytes(2 << 20)}
+    assert router.outbound_payload("code2wav", payload) is TransportKind.LEVEL_ZERO_IPC
+
+
+def test_level_zero_ipc_carries_only_transfers_between_the_minimum_and_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Small and oversized transfers stay on shm; the pool limit counts the packed
+    payload, which can overflow even when every tensor fits on its own."""
+    pin_level_zero_platform(monkeypatch)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 2)
+    monkeypatch.setattr(
+        torch.xpu, "can_device_access_peer", lambda target, source: True
+    )
+    router = level_zero_router(
+        level_zero_ipc_slot_size_kb=64,
+        level_zero_ipc_pool_size_mb=4,
+        level_zero_ipc_min_transfer_kb=256,
+    )
+
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes(4096)) is TransportKind.SHM
+    )
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes(256 << 10))
+        is TransportKind.LEVEL_ZERO_IPC
+    )
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes(4 << 20))
+        is TransportKind.LEVEL_ZERO_IPC
+    )
+    assert (
+        router.outbound_stream("code2wav", accelerator_bytes((4 << 20) + 1))
+        is TransportKind.SHM
+    )
+    split_payload = {"a": accelerator_bytes(3 << 20), "b": accelerator_bytes(3 << 20)}
+    assert router.outbound_payload("code2wav", split_payload) is TransportKind.SHM
+
+
+def test_level_zero_ipc_carries_only_stream_chunks_without_metadata_tensors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata tensors would take slots of their own, so such a chunk stays on shm."""
+    pin_level_zero_platform(monkeypatch)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: 2)
+    monkeypatch.setattr(
+        torch.xpu, "can_device_access_peer", lambda target, source: True
+    )
+    router = level_zero_router(
+        level_zero_ipc_slot_size_kb=64,
+        level_zero_ipc_pool_size_mb=4,
+        level_zero_ipc_min_transfer_kb=256,
+    )
+    chunk = accelerator_bytes(1 << 20)
+
+    plain = {"stream": True, "chunk_index": 3}
+    assert (
+        router.outbound_stream("code2wav", chunk, plain) is TransportKind.LEVEL_ZERO_IPC
+    )
+    with_tensor = {"lengths": torch.ones(4, dtype=torch.int64)}
+    assert router.outbound_stream("code2wav", chunk, with_tensor) is TransportKind.SHM

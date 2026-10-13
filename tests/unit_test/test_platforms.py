@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import subprocess
 import sys
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
@@ -23,6 +24,8 @@ from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+IMPORT_PROBE_TIMEOUT_S = 120
 
 
 class VendorDeviceMixin(DeviceMixin):
@@ -266,6 +269,30 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("opt_in", "available", "expected"),
+    [
+        (None, True, "shm"),
+        ("0", True, "shm"),
+        ("1", False, "shm"),
+        ("1", True, "level_zero_ipc"),
+    ],
+)
+def test_xpu_uses_level_zero_ipc_only_when_opted_in_and_available(
+    monkeypatch: pytest.MonkeyPatch,
+    opt_in: str | None,
+    available: bool,
+    expected: str,
+) -> None:
+    if opt_in is None:
+        monkeypatch.delenv(xpu_platform.LEVEL_ZERO_IPC_ENV, raising=False)
+    else:
+        monkeypatch.setenv(xpu_platform.LEVEL_ZERO_IPC_ENV, opt_in)
+    monkeypatch.setattr(xpu_platform, "is_level_zero_ipc_available", lambda: available)
+
+    assert XPUOmniPlatform().get_intra_node_transport().value == expected
+
+
 def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
     backend = xpu_platform.XPUOmniPlatform().get_decode_cuda_graph_backend()
 
@@ -468,3 +495,25 @@ def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> 
         assert (
             type(platform).get_available_memory is not DeviceMixin.get_available_memory
         ), platform_type
+
+
+@pytest.mark.parametrize(
+    "first_import", ["sglang_omni.platforms", "sglang_omni.comm", "sglang_omni.relay"]
+)
+def test_comm_and_the_platforms_import_in_either_order(first_import: str) -> None:
+    """The platforms return TransportKind and comm consumes it, so neither package
+    may need the other half-initialized. Each order runs in a fresh interpreter."""
+    probe = (
+        f"import {first_import}\n"
+        "from sglang_omni.comm import CommEngine, CommRouter\n"
+        "from sglang_omni.comm.data_ref import TransportKind as CommTransportKind\n"
+        "from sglang_omni.platforms.xpu import TransportKind\n"
+        "assert TransportKind is CommTransportKind\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=IMPORT_PROBE_TIMEOUT_S,
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
