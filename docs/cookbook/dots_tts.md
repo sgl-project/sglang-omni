@@ -21,19 +21,25 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Flow matching. Single request at a time (`max_running_requests=1`) with CFG, `num_steps=10`. `examples/configs/dots_tts_soar.yaml` |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Flow matching, same as SOAR. Serve it with `examples/configs/dots_tts_soar.yaml` and `--model-path dots-studio/dots.tts-base` |
 
+For Intel GPUs, follow the [dots.tts XPU recipe](../get_started/installation_xpu.md#dotstts-text-to-speech-single-xpu).
+
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download and launch the server:
 
 ```bash
-hf download dots-studio/dots.tts-mf
+hf download dots-studio/dots.tts-mf --revision c28105adc8228143392b4e346994ff613ee48a06
 
 sgl-omni serve \
-  --model-path dots-studio/dots.tts-mf \
   --config examples/configs/dots_tts.yaml \
   --allowed-local-media-path docs/_static/audio \
   --port 8000
 ```
+
+`examples/configs/dots_tts.yaml` pins the checkpoint to the snapshot it was
+validated against, so the launch above takes `model_path` from the config.
+`--model-path` overrides that pin, pass it only to serve a different checkpoint
+or revision.
 
 To serve SOAR instead, swap both the checkpoint and the config:
 
@@ -64,7 +70,7 @@ patch_capacity = max_generate_length + 1
 dit_cache_tokens = patch_capacity × (hidden_patch_size + latent_patch_size)   # MF: ×5
 ```
 
-Pool bytes scale roughly as `max_running_requests × patch_capacity` and include DiT KV (per NFE), semantic-encoder KV, scratch K/V, masks, window, and AdaLN mods. Startup logs the estimated breakdown and free CUDA memory, then refuses to allocate when free VRAM is below the estimate plus a 15% headroom for graphs and workspace.
+Pool bytes scale roughly as `max_running_requests × patch_capacity` and include DiT KV (per NFE), semantic-encoder KV, scratch K/V, masks, window, and AdaLN mods. On CUDA and XPU, startup logs the estimated breakdown and free memory, then refuses to allocate when free VRAM is below the estimate plus a 15% headroom for graphs and workspace.
 
 `mem_fraction_static` (default `0.20` in `examples/configs/dots_tts.yaml`) only budgets the **SGLang backbone** KV cache. Acoustic-tail pools are separate and are **not** covered by that fraction.
 

@@ -74,10 +74,14 @@ class VisionProjector(nn.Module):
         for name, loaded_weight in weights:
             if not name.startswith("proj."):
                 name = f"proj.{name}"
+            else:
+                pass
 
             if name not in params_dict:
                 logger.debug("Skipping unknown projector weight: %s", name)
                 continue
+            else:
+                pass
 
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)

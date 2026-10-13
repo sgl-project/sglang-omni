@@ -15,6 +15,7 @@ from sglang_omni.comm.kv_transfer import (
     KVBufferRegion,
     KVPageDestination,
     KVPageLease,
+    KVPageTransfer,
     KVPool,
     KVReceiver,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "KVBufferRegion",
     "KVPageDestination",
     "KVPageLease",
+    "KVPageTransfer",
     "KVPool",
     "KVReceiver",
     "CommRouter",

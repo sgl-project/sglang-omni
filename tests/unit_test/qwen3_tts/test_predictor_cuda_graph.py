@@ -11,31 +11,46 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 from __future__ import annotations
 
 import ast
+import contextlib
+import copy
 import gc
 import weakref
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
+from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.runtime_context import get_context
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
+from sglang_omni.vendor.sglang.models import apply_qk_norm
 
 
 @pytest.fixture(autouse=True)
-def _stub_qk_norm(monkeypatch: pytest.MonkeyPatch):
+def stub_qk_norm(monkeypatch: pytest.MonkeyPatch):
     # apply_qk_norm reads global server args (unset in unit tests); the norm
     # ops themselves are covered by the real RMSNorm layer norms.
     monkeypatch.setattr(sglang_model_module, "apply_qk_norm", lambda q, k, **_: (q, k))
 
 
 @pytest.fixture(autouse=True)
-def _require_cuda_for_accelerator_tests(request: pytest.FixtureRequest):
+def require_cuda_for_accelerator_tests(request: pytest.FixtureRequest):
     if request.node.get_closest_marker("accelerator") and not torch.cuda.is_available():
         pytest.skip("predictor CUDA graph needs CUDA")
 
@@ -49,9 +64,15 @@ PRED_VOCAB = 16
 MAX_BS = 16
 BUCKETS = (1, 2, 4, 8, 16)
 DTYPE = torch.bfloat16
+BF16_GEMM_ROUNDING = {"atol": 2**-6, "rtol": 2**-7}
+BF16_UNIT_ROUNDOFF = 2**-8
+FP32_UNIT_ROUNDOFF = 2**-24
+CHECKPOINT_HIDDEN = 2048
+CHECKPOINT_PREDICTOR_HIDDEN = 1024
+CHECKPOINT_VOCAB = 2048
 
 
-class _TupleLinear(nn.Module):
+class TupleLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
@@ -70,7 +91,7 @@ class _TupleLinear(nn.Module):
         return self.proj(hidden_states), None
 
 
-class _IdentityRotary(nn.Module):
+class IdentityRotary(nn.Module):
     def forward(
         self,
         positions: torch.Tensor,
@@ -82,11 +103,18 @@ class _IdentityRotary(nn.Module):
         return q, k
 
 
-def _build_talker(device: torch.device) -> Qwen3TTSTalker:
+def build_talker(device: torch.device) -> Qwen3TTSTalker:
     torch.manual_seed(7)
     predictor_len = NUM_CODE_GROUPS + 1
     talker = object.__new__(Qwen3TTSTalker)
     talker.training = False
+    # The lightweight fixture bypasses Talker.__init__, but the graph gate reads
+    # the production device property through model.codec_embedding.
+    talker.model = SimpleNamespace(
+        codec_embedding=SimpleNamespace(
+            weight=SimpleNamespace(device=device),
+        )
+    )
     talker.config = SimpleNamespace(
         num_code_groups=NUM_CODE_GROUPS,
         code_predictor_config=SimpleNamespace(
@@ -95,45 +123,58 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         ),
     )
     positions = torch.arange(predictor_len, device=device, dtype=torch.long)
-    talker._predictor_positions = positions
-    talker._predictor_position_rows = (
+    talker.predictor_positions = positions
+    talker.predictor_position_rows = (
         positions[:, None].expand(predictor_len, MAX_BS).contiguous()
     )
-    talker._predictor_k_cache = torch.zeros(
-        1, MAX_BS, NUM_KV_HEADS, predictor_len, HEAD_DIM, device=device, dtype=DTYPE
+    talker.predictor_cache_slots = (
+        torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * predictor_len
+        + positions[:, None]
+    ).contiguous()
+    talker.predictor_pair_positions = positions[:2].repeat(MAX_BS)
+    talker.predictor_pair_cache_slots = talker.predictor_cache_slots[:2].t().reshape(-1)
+    talker.predictor_k_cache = torch.zeros(
+        1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
     )
-    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    talker._output_codes = torch.zeros(
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_device = talker.predictor_k_cache.device
+    talker.predictor_device_module = torch.get_device_module(
+        talker.predictor_k_cache.device
+    )
+    talker.predictor_rope_stores_kv = False
+    talker.predictor_fused_layers = None
+    talker.output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
     )
-    talker._output_embeds = torch.zeros(MAX_BS, HIDDEN, device=device, dtype=DTYPE)
-    talker._predictor_embedding_buffer = torch.empty(
+    talker.output_embeds = torch.zeros(MAX_BS, HIDDEN, device=device, dtype=DTYPE)
+    talker.predictor_embedding_buffer = torch.empty(
         MAX_BS, HIDDEN, device=device, dtype=DTYPE
     )
-    talker._sampled_token_ids = torch.zeros(MAX_BS, dtype=torch.long, device=device)
+    talker.predictor_projected_embeddings = None
+    talker.predictor_projected_buffer = None
+    talker.sampled_token_ids = torch.zeros(MAX_BS, dtype=torch.long, device=device)
 
-    talker._sub_batch_size = 0
-    talker._sub_temperature_tensor = torch.full(
+    talker.sub_batch_size = 0
+    talker.sub_temperature_tensor = torch.full(
         (MAX_BS,), 0.9, device=device, dtype=torch.float32
     )
-    talker._sub_top_p_tensor = torch.ones(MAX_BS, device=device, dtype=torch.float32)
-    talker._sub_top_k_tensor = torch.full(
-        (MAX_BS,), 50, device=device, dtype=torch.long
-    )
-    talker._semantic_sampling_seed_tensor = torch.zeros(
+    talker.sub_top_p_tensor = torch.ones(MAX_BS, device=device, dtype=torch.float32)
+    talker.sub_top_k_tensor = torch.full((MAX_BS,), 50, device=device, dtype=torch.long)
+    talker.semantic_sampling_seed_tensor = torch.zeros(
         MAX_BS, device=device, dtype=torch.long
     )
-    talker._sub_sampling_seed_tensor = torch.zeros(
+    talker.sub_sampling_seed_tensor = torch.zeros(
         MAX_BS, device=device, dtype=torch.long
     )
-    talker._sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
-    talker._sub_identity_row_indices_tensor = torch.arange(
-        MAX_BS, device=device, dtype=torch.long
+    talker.sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
+    talker.sub_seed_offsets = torch.arange(
+        1, NUM_CODE_GROUPS, device=device, dtype=torch.long
     )
-    talker._sub_has_sampled_rows = False
-    talker._sub_sampled_has_top_p = False
-    talker._sub_sampled_max_top_k = 0
-    talker._sub_sampled_has_unbounded_top_k = False
+    talker.sub_has_sampled_rows = False
+    talker.sub_has_argmax_rows = False
+    talker.sub_sampled_has_top_p = False
+    talker.sub_sampled_max_top_k = 0
+    talker.sub_sampled_has_unbounded_top_k = False
 
     layer = SimpleNamespace(
         input_layernorm=RMSNorm(HIDDEN, eps=1e-6).to(device, DTYPE),
@@ -149,11 +190,11 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         q_norm=RMSNorm(HEAD_DIM, eps=1e-6).to(device, DTYPE),
         k_norm=RMSNorm(HEAD_DIM, eps=1e-6).to(device, DTYPE),
         alt_stream=None,
-        qkv_proj=_TupleLinear(HIDDEN, (NUM_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM).to(
+        qkv_proj=TupleLinear(HIDDEN, (NUM_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM).to(
             device, DTYPE
         ),
-        o_proj=_TupleLinear(NUM_HEADS * HEAD_DIM, HIDDEN).to(device, DTYPE),
-        rotary_emb=_IdentityRotary(),
+        o_proj=TupleLinear(NUM_HEADS * HEAD_DIM, HIDDEN).to(device, DTYPE),
+        rotary_emb=IdentityRotary(),
     )
     projection = nn.Linear(HIDDEN, HIDDEN, bias=True).to(device, DTYPE)
     talker.code_predictor = SimpleNamespace(
@@ -169,7 +210,7 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         ),
         lm_head=nn.ModuleList(
             [
-                _TupleLinear(HIDDEN, PRED_VOCAB).to(device, DTYPE)
+                TupleLinear(HIDDEN, PRED_VOCAB).to(device, DTYPE)
                 for _ in range(NUM_CODE_GROUPS - 1)
             ]
         ),
@@ -178,20 +219,21 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     layer0_embedding = nn.Embedding(PRED_VOCAB, HIDDEN).to(device, DTYPE)
     talker.get_input_embeddings = lambda: layer0_embedding
 
-    talker._predictor_graphs = {}
-    talker._predictor_graph_disabled = set()
-    talker._predictor_graph_batch_sizes = BUCKETS
-    talker._predictor_graph_enabled = True
-    talker._predictor_graph_failure_count = 0
-    talker._predictor_graph_capacity_fallback_count = 0
-    talker._predictor_graph_capacity_warned = False
-    talker._predictor_graph_capture_count = 0
-    talker._predictor_graph_pool = None
-    talker._predictor_capture_stream = None
+    talker.predictor_graphs = {}
+    talker.predictor_graph_disabled = set()
+    talker.predictor_graph_batch_sizes = BUCKETS
+    talker.predictor_graph_enabled = True
+    talker.predictor_graph_failure_count = 0
+    talker.predictor_graph_capacity_fallback_count = 0
+    talker.predictor_graph_capacity_warned = False
+    talker.predictor_graph_capture_count = 0
+    talker.predictor_graph_startup_count = 0
+    talker.predictor_graph_pool = None
+    talker.predictor_capture_stream = None
     return talker
 
 
-def _request(
+def make_request(
     *,
     dosample: bool = True,
     temperature: float = 0.9,
@@ -212,14 +254,14 @@ def _request(
     )
 
 
-def _uniform_requests(batch_size: int, **kwargs) -> list[SimpleNamespace]:
+def uniform_requests(batch_size: int, **kwargs) -> list[SimpleNamespace]:
     return [
-        _request(sub_seed=1000 + idx, semantic_seed=2000 + idx, **kwargs)
+        make_request(sub_seed=1000 + idx, semantic_seed=2000 + idx, **kwargs)
         for idx in range(batch_size)
     ]
 
 
-def _step_inputs(batch_size: int, device: torch.device, *, step: int = 0):
+def step_inputs(batch_size: int, device: torch.device, *, step: int = 0):
     generator = torch.Generator(device="cpu").manual_seed(31 * batch_size + step)
     layer0 = torch.randint(
         0, PRED_VOCAB, (batch_size, 1), generator=generator, dtype=torch.long
@@ -233,21 +275,39 @@ def _step_inputs(batch_size: int, device: torch.device, *, step: int = 0):
     return layer0, hidden, positions
 
 
-def _run_eager(talker, layer0, hidden, positions):
+def run_eager(talker, layer0, hidden, positions):
     with torch.no_grad():
-        codes, embeds = talker._code_predictor_forward_incremental(
+        codes, embeds = talker.code_predictor_forward_incremental(
             layer0, hidden, semantic_positions=positions
         )
     return codes.detach().clone(), embeds.detach().clone()
 
 
-def _run_forward(talker, layer0, hidden, positions):
+def run_forward(talker, layer0, hidden, positions):
     with torch.no_grad():
         codes, embeds = talker.code_predictor_forward(
             layer0, hidden, semantic_positions=positions
         )
         torch.cuda.synchronize()
     return codes.detach().clone(), embeds.detach().clone()
+
+
+@pytest.mark.accelerator
+def test_greedy_prediction_reads_no_seed_state():
+    device = torch.device("cuda")
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(3, dosample=False))
+    layer0, hidden, positions = step_inputs(3, device)
+    expected_codes, expected_embeds = run_eager(talker, layer0, hidden, positions)
+
+    talker.sub_seed_offsets = None
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
+
+    assert torch.equal(eager_codes, expected_codes)
+    assert torch.equal(eager_embeds, expected_embeds)
+    assert torch.equal(graph_codes, expected_codes)
+    assert torch.equal(graph_embeds, expected_embeds)
 
 
 @pytest.mark.accelerator
@@ -263,14 +323,14 @@ def _run_forward(talker, layer0, hidden, positions):
 )
 def test_graph_bit_identity_sampled(batch_size: int, sampling_kwargs: dict):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(batch_size, **sampling_kwargs))
-    layer0, hidden, positions = _step_inputs(batch_size, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(batch_size, **sampling_kwargs))
+    layer0, hidden, positions = step_inputs(batch_size, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert talker._predictor_graphs, "no predictor graph captured"
+    assert talker.predictor_graphs, "no predictor graph captured"
     assert torch.equal(graph_codes, eager_codes), (
         f"codes not bit-identical (bs={batch_size}): "
         f"mismatches={(graph_codes != eager_codes).sum().item()}"
@@ -285,14 +345,14 @@ def test_graph_bit_identity_sampled(batch_size: int, sampling_kwargs: dict):
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 def test_graph_bit_identity_argmax(batch_size: int):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(batch_size, dosample=False))
-    layer0, hidden, positions = _step_inputs(batch_size, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(batch_size, dosample=False))
+    layer0, hidden, positions = step_inputs(batch_size, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert talker._predictor_graphs
+    assert talker.predictor_graphs
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -301,16 +361,16 @@ def test_graph_bit_identity_argmax(batch_size: int):
 def test_missing_embedding_buffer_uses_original_graph_path():
     """The captured fused path must retain the original embedding operation."""
     device = torch.device("cuda")
-    fused_talker = _build_talker(device)
-    fallback_talker = _build_talker(device)
-    requests = _uniform_requests(4)
+    fused_talker = build_talker(device)
+    fallback_talker = build_talker(device)
+    requests = uniform_requests(4)
     fused_talker.prepare_decode_buffers(requests)
     fallback_talker.prepare_decode_buffers(requests)
-    object.__delattr__(fallback_talker, "_predictor_embedding_buffer")
-    layer0, hidden, positions = _step_inputs(4, device)
+    object.__delattr__(fallback_talker, "predictor_embedding_buffer")
+    layer0, hidden, positions = step_inputs(4, device)
 
-    fused_codes, fused_embeds = _run_forward(fused_talker, layer0, hidden, positions)
-    fallback_codes, fallback_embeds = _run_forward(
+    fused_codes, fused_embeds = run_forward(fused_talker, layer0, hidden, positions)
+    fallback_codes, fallback_embeds = run_forward(
         fallback_talker, layer0, hidden, positions
     )
 
@@ -318,31 +378,332 @@ def test_missing_embedding_buffer_uses_original_graph_path():
     assert torch.equal(fused_embeds, fallback_embeds)
 
 
+def with_projected_tables(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
+    device = talker.predictor_k_cache.device
+    talker.predictor_projected_embeddings = torch.empty(
+        NUM_CODE_GROUPS - 2, PRED_VOCAB, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.predictor_projected_buffer = torch.empty(
+        MAX_BS, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.post_load_weights()
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 4, 16])
+def test_projected_tables_graph_matches_eager_and_the_unfused_gather(batch_size: int):
+    device = torch.device("cuda")
+    fused_talker = with_projected_tables(build_talker(device))
+    unfused_talker = with_projected_tables(build_talker(device))
+    object.__delattr__(unfused_talker, "predictor_embedding_buffer")
+    requests = uniform_requests(batch_size, top_k=5, top_p=0.9)
+    fused_talker.prepare_decode_buffers(requests)
+    unfused_talker.prepare_decode_buffers(requests)
+
+    for step in range(3):
+        layer0, hidden, positions = step_inputs(batch_size, device, step=step)
+        eager_codes, eager_embeds = run_eager(fused_talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(fused_talker, layer0, hidden, positions)
+        unfused_codes, unfused_embeds = run_forward(
+            unfused_talker, layer0, hidden, positions
+        )
+        assert torch.equal(graph_codes, eager_codes), f"step={step}"
+        assert torch.equal(graph_embeds, eager_embeds), f"step={step}"
+        assert torch.equal(unfused_codes, eager_codes), f"step={step}"
+        assert torch.equal(unfused_embeds, eager_embeds), f"step={step}"
+
+    assert len(fused_talker.predictor_graphs) == 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_projected_tables_decode_the_codes_the_projection_decodes(batch_size: int):
+    device = torch.device("cuda")
+    table_talker = with_projected_tables(build_talker(device))
+    projection_talker = build_talker(device)
+    requests = uniform_requests(batch_size, dosample=False)
+    table_talker.prepare_decode_buffers(requests)
+    projection_talker.prepare_decode_buffers(requests)
+    layer0, hidden, positions = step_inputs(batch_size, device)
+
+    table_codes, table_embeds = run_eager(table_talker, layer0, hidden, positions)
+    projection_codes, projection_embeds = run_eager(
+        projection_talker, layer0, hidden, positions
+    )
+
+    assert torch.equal(table_codes, projection_codes)
+    assert torch.equal(table_embeds, projection_embeds)
+
+
+@pytest.mark.accelerator
+def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction", False
+    )
+    device = torch.device("cuda")
+    talker = build_talker(device)
+    projection = nn.Linear(
+        CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
+    ).to(device, DTYPE)
+    embeddings = nn.ModuleList(
+        [
+            nn.Embedding(CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(device, DTYPE)
+            for _ in range(3)
+        ]
+    )
+    talker.code_predictor.model.codec_embedding = embeddings
+    talker.code_predictor.project_input = projection
+    talker.predictor_projected_embeddings = torch.empty(
+        len(embeddings) - 1,
+        CHECKPOINT_VOCAB,
+        CHECKPOINT_PREDICTOR_HIDDEN,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.post_load_weights()
+
+    codes = torch.tensor([0, CHECKPOINT_VOCAB - 1, 1024, 1024, 7], device=device)
+    weight = projection.weight.float()
+    bias = projection.bias.float()
+    accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
+    accumulation = accumulation / (1 - accumulation)
+    for index, table in enumerate(talker.predictor_projected_embeddings):
+        rows = embeddings[index].weight[codes].float()
+        reference = torch.nn.functional.linear(rows, weight, bias)
+        magnitude = rows.abs() @ weight.abs().T + bias.abs()
+        rounding_bound = (
+            BF16_UNIT_ROUNDOFF * reference.abs() + 2 * accumulation * magnitude
+        )
+        assert (
+            (table[codes].float() - reference).abs() <= rounding_bound
+        ).all(), f"codebook={index}"
+
+
 @pytest.mark.accelerator
 def test_eager_predictor_leaves_the_talker_hidden_untouched_for_an_identity_projection():
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     talker.code_predictor.project_input = lambda hidden: hidden
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
     hidden_before = hidden.clone()
 
-    _run_eager(talker, layer0, hidden, positions)
+    run_eager(talker, layer0, hidden, positions)
 
     assert torch.equal(hidden, hidden_before)
+
+
+def with_predictor_layers(talker: Qwen3TTSTalker, num_layers: int) -> Qwen3TTSTalker:
+    """Deep copy the fixture layer so the predictor has num_layers of them."""
+    model = talker.code_predictor.model
+    first = model.layers[0]
+    model.layers = [first] + [copy.deepcopy(first) for _ in range(num_layers - 1)]
+    cache = talker.predictor_k_cache
+    talker.predictor_k_cache = torch.zeros(
+        num_layers, *cache.shape[1:], device=cache.device, dtype=cache.dtype
+    )
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    return talker
+
+
+def predictor_one_token_out_of_place(
+    talker: Qwen3TTSTalker, token_embeds: torch.Tensor, *, cache_len: int
+) -> torch.Tensor:
+    """The predictor layer stack in the residual form without aliasing.
+
+    Same calls as the talker's forward. The three calls that overwrite an
+    operand, the fused add and norm, the o_proj epilogue and the final fused
+    norm, get clones, so no tensor is ever read after it was overwritten."""
+    batch_size, _, hidden_size = token_embeds.shape
+    positions = talker.predictor_position_rows[cache_len, :batch_size]
+    residual = token_embeds
+    mlp_out = None
+    for layer_idx, layer in enumerate(talker.code_predictor.model.layers):
+        if mlp_out is None:
+            normed = layer.input_layernorm(residual.reshape(-1, hidden_size))
+        else:
+            normed, residual = layer.input_layernorm(
+                mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+            )
+            residual = residual.reshape(batch_size, 1, hidden_size)
+        attn_input = talker.predictor_cached_self_attention(
+            layer_idx=layer_idx,
+            attn=layer.self_attn,
+            hidden_states=normed.reshape(batch_size, 1, hidden_size),
+            positions=positions,
+            cache_slots=talker.predictor_cache_slots[cache_len, :batch_size],
+            cache_len=cache_len,
+        )
+        residual = talker.predictor_o_proj_add_residual(
+            layer.self_attn.o_proj, attn_input, residual.clone()
+        )
+        normed = layer.post_attention_layernorm(residual.reshape(-1, hidden_size))
+        mlp_out = layer.mlp(normed)
+    normed, _ = talker.code_predictor.model.norm(
+        mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+    )
+    return normed.reshape(batch_size, 1, hidden_size)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("num_layers, batch_size", [(1, 1), (3, 2), (3, 16)])
+def test_eager_predictor_in_place_residual_norms_match_the_out_of_place_form(
+    num_layers: int, batch_size: int
+):
+    device = torch.device("cuda")
+    in_place = with_predictor_layers(build_talker(device), num_layers)
+    reference = with_predictor_layers(build_talker(device), num_layers)
+    generator = torch.Generator(device="cpu").manual_seed(num_layers * 100 + batch_size)
+    embeds = torch.randn(
+        batch_size, 1, HIDDEN, generator=generator, dtype=torch.float32
+    ).to(device, DTYPE)
+
+    with torch.no_grad():
+        expected = predictor_one_token_out_of_place(
+            reference, embeds.clone(), cache_len=0
+        )
+        actual = in_place.predictor_forward_tokens(
+            token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
+        )
+
+    assert actual.shape == (batch_size, 1, HIDDEN)
+    assert actual.dtype == DTYPE
+    assert torch.equal(actual, expected)
+    assert torch.equal(in_place.predictor_k_cache, reference.predictor_k_cache)
+    assert torch.equal(in_place.predictor_v_cache, reference.predictor_v_cache)
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_adds_each_residual_inside_the_norm_that_follows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    talker = with_predictor_layers(build_talker(device), 3)
+    layers = talker.code_predictor.model.layers
+    hidden_norms = {
+        id(module)
+        for layer in layers
+        for module in (layer.input_layernorm, layer.post_attention_layernorm)
+    } | {id(talker.code_predictor.model.norm)}
+    calls: list[tuple[int, bool]] = []
+    original_forward = RMSNorm.forward
+
+    def recording_forward(self, x, residual=None, *args, **kwargs):
+        if id(self) in hidden_norms:
+            calls.append((x.dim(), residual is not None))
+        return original_forward(self, x, residual, *args, **kwargs)
+
+    monkeypatch.setattr(RMSNorm, "forward", recording_forward)
+    embeds = torch.randn(2, 1, HIDDEN, device=device, dtype=DTYPE)
+    with torch.no_grad():
+        talker.predictor_forward_tokens(token_embeds=embeds, batch_size=2, cache_len=0)
+
+    assert all(dim == 2 for dim, _ in calls)
+    fused_calls = [fused for _, fused in calls]
+    assert fused_calls == [False, False] + [True, False] * (len(layers) - 1) + [True]
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_output_survives_the_next_token():
+    device = torch.device("cuda")
+    talker = with_predictor_layers(build_talker(device), 2)
+    generator = torch.Generator(device="cpu").manual_seed(5)
+    embeds = [
+        torch.randn(2, 1, HIDDEN, generator=generator, dtype=torch.float32).to(
+            device, DTYPE
+        )
+        for _ in range(2)
+    ]
+
+    with torch.no_grad():
+        first = talker.predictor_forward_tokens(
+            token_embeds=embeds[0], batch_size=2, cache_len=0
+        )
+        snapshot = first.clone()
+        second = talker.predictor_forward_tokens(
+            token_embeds=embeds[1], batch_size=2, cache_len=1
+        )
+
+    assert torch.equal(first, snapshot)
+    assert second.data_ptr() != first.data_ptr()
+    assert not torch.equal(second, first)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 3, 16])
+def test_the_pair_pass_matches_two_one_token_passes(batch_size: int):
+    device = torch.device("cuda")
+    pair = with_predictor_layers(build_talker(device), 2)
+    serial = with_predictor_layers(build_talker(device), 2)
+    generator = torch.Generator(device="cpu").manual_seed(batch_size)
+    embeds = torch.randn(
+        batch_size, 2, HIDDEN, generator=generator, dtype=torch.float32
+    ).to(device, DTYPE)
+
+    with torch.no_grad():
+        from_pair = pair.predictor_forward_tokens(
+            token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
+        )
+        first = serial.predictor_forward_tokens(
+            token_embeds=embeds[:, :1].clone(), batch_size=batch_size, cache_len=0
+        )
+        second = serial.predictor_forward_tokens(
+            token_embeds=embeds[:, 1:].clone(), batch_size=batch_size, cache_len=1
+        )
+
+    torch.testing.assert_close(
+        from_pair, torch.cat((first, second), dim=1), **BF16_GEMM_ROUNDING
+    )
+    torch.testing.assert_close(
+        pair.predictor_k_cache[:, :batch_size, :2],
+        serial.predictor_k_cache[:, :batch_size, :2],
+        **BF16_GEMM_ROUNDING,
+    )
+    torch.testing.assert_close(
+        pair.predictor_v_cache[:, :batch_size, :2],
+        serial.predictor_v_cache[:, :batch_size, :2],
+        **BF16_GEMM_ROUNDING,
+    )
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_accepts_a_strided_input_and_leaves_its_neighbours():
+    device = torch.device("cuda")
+    strided_talker = with_predictor_layers(build_talker(device), 2)
+    contiguous_talker = with_predictor_layers(build_talker(device), 2)
+    wide = torch.randn(2, 1, 2 * HIDDEN, device=device, dtype=DTYPE)
+    strided = wide[:, :, :HIDDEN]
+    assert not strided.is_contiguous()
+    neighbours_before = wide[:, :, HIDDEN:].clone()
+    contiguous = strided.clone()
+
+    with torch.no_grad():
+        from_strided = strided_talker.predictor_forward_tokens(
+            token_embeds=strided, batch_size=2, cache_len=0
+        )
+        from_contiguous = contiguous_talker.predictor_forward_tokens(
+            token_embeds=contiguous, batch_size=2, cache_len=0
+        )
+
+    torch.testing.assert_close(from_strided, from_contiguous)
+    assert torch.equal(wide[:, :, HIDDEN:], neighbours_before)
 
 
 @pytest.mark.accelerator
 def test_graph_bit_identity_argmax_none_positions():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2, dosample=False))
-    layer0, hidden, _ = _step_inputs(2, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(2, dosample=False))
+    layer0, hidden, _ = step_inputs(2, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, None)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, None)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, None)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, None)
 
-    assert talker._predictor_graphs
+    assert talker.predictor_graphs
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -351,15 +712,15 @@ def test_graph_bit_identity_argmax_none_positions():
 def test_graph_padded_bucket_bit_identity():
     """Live bs=3 replays through the bucket-4 graph with padded rows."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(3))
-    layer0, hidden, positions = _step_inputs(3, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(3))
+    layer0, hidden, positions = step_inputs(3, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert any(key[0] == 4 for key in talker._predictor_graphs)
-    assert not any(key[0] == 3 for key in talker._predictor_graphs)
+    assert any(key[0] == 4 for key in talker.predictor_graphs)
+    assert not any(key[0] == 3 for key in talker.predictor_graphs)
     assert graph_codes.shape == eager_codes.shape
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
@@ -369,33 +730,33 @@ def test_graph_padded_bucket_bit_identity():
 def test_mixed_padded_bucket_bit_identity_and_reuse():
     """Mixed live bs=3 replays through one bucket-4 graph across row masks."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
 
     requests = [
-        _request(dosample=True),
-        _request(dosample=False),
-        _request(dosample=True),
+        make_request(dosample=True),
+        make_request(dosample=False),
+        make_request(dosample=True),
     ]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(3, device)
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    layer0, hidden, positions = step_inputs(3, device)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert any(key[0] == 4 and key[1] == "sampled" for key in talker._predictor_graphs)
+    assert any(key[0] == 4 and key[1] == "sampled" for key in talker.predictor_graphs)
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
     requests = [
-        _request(dosample=False),
-        _request(dosample=True),
-        _request(dosample=True),
+        make_request(dosample=False),
+        make_request(dosample=True),
+        make_request(dosample=True),
     ]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(3, device, step=1)
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    layer0, hidden, positions = step_inputs(3, device, step=1)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert len(talker._predictor_graphs) == 1
+    assert len(talker.predictor_graphs) == 1
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -404,17 +765,17 @@ def test_mixed_padded_bucket_bit_identity_and_reuse():
 def test_graph_multi_step_replay_bit_identity():
     """Consecutive steps reuse one captured graph and stay bit-identical."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(4))
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(4))
 
     for step in range(3):
-        layer0, hidden, positions = _step_inputs(4, device, step=step)
-        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        layer0, hidden, positions = step_inputs(4, device, step=step)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
         assert torch.equal(graph_codes, eager_codes), f"step={step}"
         assert torch.equal(graph_embeds, eager_embeds), f"step={step}"
 
-    assert len(talker._predictor_graphs) == 1
+    assert len(talker.predictor_graphs) == 1
 
 
 @pytest.mark.accelerator
@@ -422,31 +783,33 @@ def test_mixed_sampled_argmax_rows_use_graph_bit_identity(
     monkeypatch: pytest.MonkeyPatch,
 ):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    requests = [_request(dosample=True), _request(dosample=False)]
+    talker = build_talker(device)
+    requests = [make_request(dosample=True), make_request(dosample=False)]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(2, device)
+    layer0, hidden, positions = step_inputs(2, device)
 
-    real_seeded = Qwen3TTSTalker._sample_subtalker_token_seeded
+    real_seeded = Qwen3TTSTalker.sample_subtalker_token_seeded
 
-    def _sentinel_seeded(self, logits, layer_idx, *, row_indices, semantic_positions):
-        del self, layer_idx, row_indices, semantic_positions
+    def sentinel_seeded(self, logits, *, sub_positions):
+        del self, sub_positions
         return (torch.argmax(logits, dim=-1) + 1) % PRED_VOCAB
 
     monkeypatch.setattr(
-        Qwen3TTSTalker, "_sample_subtalker_token_seeded", _sentinel_seeded
+        Qwen3TTSTalker, "sample_subtalker_token_seeded", sentinel_seeded
     )
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert talker._predictor_graphs, "mixed batch did not capture a graph"
+    assert talker.predictor_graphs, "mixed batch did not capture a graph"
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
-    monkeypatch.setattr(Qwen3TTSTalker, "_sample_subtalker_token_seeded", real_seeded)
-    talker.prepare_decode_buffers([_request(dosample=False), _request(dosample=False)])
-    argmax_codes, _ = talker._code_predictor_forward_incremental(
+    monkeypatch.setattr(Qwen3TTSTalker, "sample_subtalker_token_seeded", real_seeded)
+    talker.prepare_decode_buffers(
+        [make_request(dosample=False), make_request(dosample=False)]
+    )
+    argmax_codes, _ = talker.code_predictor_forward_incremental(
         layer0, hidden, semantic_positions=positions
     )
 
@@ -461,16 +824,20 @@ def test_mixed_sampled_argmax_rows_use_graph_bit_identity(
 @pytest.mark.accelerator
 def test_mixed_sampled_argmax_rows_preserve_argmax_tie_break():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers([_request(dosample=True), _request(dosample=False)])
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(
+        [make_request(dosample=True), make_request(dosample=False)]
+    )
     logits = torch.full((2, PRED_VOCAB), -10.0, device=device)
     logits[0, 3] = 9.0
     logits[1, 5] = 9.0
     logits[1, 7] = 9.0
 
-    tokens = talker._sample_subtalker_token(
+    tokens = talker.sample_subtalker_token(
         logits,
-        semantic_positions=torch.zeros(2, dtype=torch.long, device=device),
+        sub_positions=talker.sub_seed_positions(
+            torch.zeros(2, dtype=torch.long, device=device)
+        )[0],
     )
 
     assert tokens[1].item() == torch.argmax(logits[1]).item() == 5
@@ -479,73 +846,75 @@ def test_mixed_sampled_argmax_rows_preserve_argmax_tie_break():
 @pytest.mark.accelerator
 def test_mixed_sampling_masks_reuse_one_graph():
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
 
     requests = [
-        _request(dosample=True),
-        _request(dosample=False),
-        _request(dosample=True),
-        _request(dosample=False),
+        make_request(dosample=True),
+        make_request(dosample=False),
+        make_request(dosample=True),
+        make_request(dosample=False),
     ]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(4, device)
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    layer0, hidden, positions = step_inputs(4, device)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
     requests = [
-        _request(dosample=False),
-        _request(dosample=True),
-        _request(dosample=False),
-        _request(dosample=True),
+        make_request(dosample=False),
+        make_request(dosample=True),
+        make_request(dosample=False),
+        make_request(dosample=True),
     ]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(4, device, step=1)
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    layer0, hidden, positions = step_inputs(4, device, step=1)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert len(talker._predictor_graphs) == 1
+    assert len(talker.predictor_graphs) == 1
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
 
 @pytest.mark.accelerator
-def test_all_sampled_and_mixed_batches_share_one_graph():
+def test_all_sampled_and_mixed_batches_capture_separate_graphs():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    layer0, hidden, positions = _step_inputs(4, device)
+    talker = build_talker(device)
+    layer0, hidden, positions = step_inputs(4, device)
 
-    talker.prepare_decode_buffers(_uniform_requests(4))
-    _run_forward(talker, layer0, hidden, positions)
+    talker.prepare_decode_buffers(uniform_requests(4))
+    run_forward(talker, layer0, hidden, positions)
 
     talker.prepare_decode_buffers(
         [
-            _request(dosample=True),
-            _request(dosample=False),
-            _request(dosample=True),
-            _request(dosample=False),
+            make_request(dosample=True),
+            make_request(dosample=False),
+            make_request(dosample=True),
+            make_request(dosample=False),
         ]
     )
-    _run_forward(talker, layer0, hidden, positions)
+    run_forward(talker, layer0, hidden, positions)
 
-    modes = {key[1] for key in talker._predictor_graphs}
-    assert modes == {"sampled"}
-    assert len(talker._predictor_graphs) == 1
+    keys = sorted(talker.predictor_graphs)
+    assert len(keys) == 2
+    assert len({key[:-1] for key in keys}) == 1
+    assert {key[1] for key in keys} == {"sampled"}
+    assert {key[-1] for key in keys} == {False, True}
 
 
 @pytest.mark.accelerator
 def test_kill_switch_disables_graph_path():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker._predictor_graph_enabled = False
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    talker = build_talker(device)
+    talker.predictor_graph_enabled = False
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert not talker._predictor_graphs
+    assert not talker.predictor_graphs
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -553,15 +922,196 @@ def test_kill_switch_disables_graph_path():
 def test_env_switch_parsing(monkeypatch: pytest.MonkeyPatch):
     env = sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV
     monkeypatch.delenv(env, raising=False)
-    assert sglang_model_module._predictor_graph_env_enabled() is True
+    assert sglang_model_module.predictor_graph_env_override() is None
     monkeypatch.setenv(env, "0")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module.predictor_graph_env_override() is False
     monkeypatch.setenv(env, "false")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module.predictor_graph_env_override() is False
     monkeypatch.setenv(env, "no")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module.predictor_graph_env_override() is False
     monkeypatch.setenv(env, "1")
-    assert sglang_model_module._predictor_graph_env_enabled() is True
+    assert sglang_model_module.predictor_graph_env_override() is True
+
+
+def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Both startup captures read the resolved flag, not the operator's field."""
+    import sys
+    import types
+
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
+    from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    contexts: list[dict] = []
+    captures: list[tuple] = []
+
+    class FakeTalker:
+        device = torch.device("cpu")
+
+        def load_speech_tokenizer(self, tokenizer) -> None:
+            del tokenizer
+
+        def capture_predictor_graphs(self, **kwargs) -> int:
+            captures.append(tuple(sorted(kwargs)))
+            return 0
+
+    qwen_tts_module = types.ModuleType("qwen_tts")
+    qwen_tts_module.Qwen3TTSModel = lambda **kwargs: SimpleNamespace(
+        _merge_generate_kwargs=lambda: {}
+    )
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
+    monkeypatch.setattr(
+        qwen3_stages, "load_qwen3_tts_tokenizer", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "load_qwen3_tts_generate_defaults", lambda path: {}
+    )
+    monkeypatch.setattr(
+        AutoProcessor, "from_pretrained", staticmethod(lambda *a, **k: object())
+    )
+    monkeypatch.setattr(
+        engine_builder_mod.request_builders,
+        "set_qwen3_tts_preprocessing_context",
+        lambda **kwargs: contexts.append(kwargs),
+    )
+
+    builder = Qwen3TtsEngineBuilder(leading_silence_mask_frames=0)
+    builder.dtype = "bfloat16"
+    builder.before_memory_pool(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace(model=FakeTalker())),
+        checkpoint_dir="/ckpt",
+        device="cpu",
+        gpu_id=0,
+        server_args=SimpleNamespace(
+            disable_cuda_graph=False,
+            _resolved_overrides=(("_handle_dwdp", {"disable_cuda_graph": True}),),
+        ),
+    )
+
+    assert contexts[0]["reference_encoder_graph_bucket_frames"] == ()
+    assert captures == []
+
+
+def test_a_graph_signature_is_reachable_off_cuda():
+    """The signature gate must admit the device the predictor cache is on."""
+    talker = build_talker(torch.device("cpu"))
+    talker.prepare_decode_buffers(uniform_requests(2))
+    positions = torch.zeros(2, dtype=torch.long)
+
+    assert talker.sub_has_sampled_rows is True
+    assert talker.predictor_graph_signature(2, positions) is not None
+    elsewhere = torch.zeros(2, dtype=torch.long, device="meta")
+    assert talker.predictor_graph_signature(2, elsewhere) is None
+
+
+def test_both_gates_reject_another_card_of_the_same_kind() -> None:
+    """The gates compare the whole device, not its kind."""
+    talker = build_talker(torch.device("cpu"))
+    talker.prepare_decode_buffers(uniform_requests(2))
+    talker.sub_batch_size = 2
+    talker.predictor_device = torch.device("xpu", 0)
+
+    same_card = SimpleNamespace(device=torch.device("xpu", 0), ndim=1, shape=(2,))
+    other_card = SimpleNamespace(device=torch.device("xpu", 1), ndim=1, shape=(2,))
+    assert talker.predictor_graph_signature(2, same_card) is not None
+    assert talker.predictor_graph_signature(2, other_card) is None
+
+    elsewhere = SimpleNamespace(
+        device=torch.device("xpu", 1), dtype=torch.long, shape=(2, 1)
+    )
+    assert talker.predictor_forward_graphed(elsewhere, elsewhere, None) is None
+
+
+def test_a_capture_that_fails_after_the_graph_exists_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cleanup path resets only what capture yielded."""
+    resets: list[int] = []
+
+    class FakeGraph:
+        def reset(self) -> None:
+            resets.append(1)
+
+    class FailingBackend:
+        @contextmanager
+        def capture(self, **kwargs):
+            yield FakeGraph()
+            raise RuntimeError("simulated capture_end failure")
+
+    class FakeModule:
+        def Event(self):  # noqa: N802 - mirrors the torch spelling
+            return None
+
+        def Stream(self, device=None):  # noqa: N802 - ditto
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        def current_stream(self, device=None):
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        @contextmanager
+        def stream(self, stream):
+            yield
+
+        def device(self, device):
+            return contextlib.nullcontext()
+
+        def graph_pool_handle(self):
+            return "pool"
+
+    talker = build_talker(torch.device("cpu"))
+    talker.predictor_device_module = FakeModule()
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda device: FailingBackend(),
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "graph_capture_attention",
+        lambda: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        Qwen3TTSTalker,
+        "code_predictor_forward_incremental",
+        lambda self, *a, **k: (talker.output_codes[:2], talker.output_embeds[:2]),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated capture_end failure"):
+        talker.capture_predictor_graph(2, ("argmax", 0, False, False, False))
+
+    assert resets == [1]
+
+
+def test_a_step_on_a_device_without_a_graph_backend_stays_eager(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A device with no graph backend must stay eager."""
+    talker = build_talker(torch.device("cpu"))
+    talker.predictor_graph_enabled = None
+    talker.prepare_decode_buffers(uniform_requests(2))
+    talker.sub_batch_size = 2
+    monkeypatch.setattr(
+        sglang_model_module,
+        "get_exec",
+        lambda: SimpleNamespace(graph=SimpleNamespace(disable_cuda_graph=False)),
+    )
+    monkeypatch.setattr(
+        sglang_model_module, "get_parallel", lambda: SimpleNamespace(tp_size=1)
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "enable_tts_predictor_graph",
+        lambda: True,
+    )
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    layer0, hidden, positions = step_inputs(2, torch.device("cpu"))
+
+    assert talker.predictor_forward_graphed(layer0, hidden, positions) is None
+    assert not talker.predictor_graphs
 
 
 @pytest.mark.accelerator
@@ -569,62 +1119,62 @@ def test_capture_failure_disables_key_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
 
     calls = []
 
-    class _BoomGraph:
+    class BoomGraph:
         def __init__(self, *args, **kwargs) -> None:
             calls.append(1)
             raise RuntimeError("simulated capture failure")
 
-    monkeypatch.setattr(sglang_model_module, "_PredictorDecodeGraph", _BoomGraph)
+    monkeypatch.setattr(sglang_model_module, "PredictorDecodeGraph", BoomGraph)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
     assert len(calls) == 1
-    assert talker._predictor_graph_disabled, "failed key must be disabled"
+    assert talker.predictor_graph_disabled, "failed key must be disabled"
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
-    _run_forward(talker, layer0, hidden, positions)
+    run_forward(talker, layer0, hidden, positions)
     assert len(calls) == 1, "disabled key must not retry capture"
 
 
 @pytest.mark.accelerator
 def test_capture_failure_restores_live_sub_state(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     talker.prepare_decode_buffers(
         [
-            _request(dosample=True, sub_seed=1000, semantic_seed=2000),
-            _request(dosample=False, sub_seed=1001, semantic_seed=2001),
+            make_request(dosample=True, sub_seed=1000, semantic_seed=2000),
+            make_request(dosample=False, sub_seed=1001, semantic_seed=2001),
         ]
     )
-    layer0, hidden, positions = _step_inputs(2, device)
+    layer0, hidden, positions = step_inputs(2, device)
 
-    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
+    real_forward = Qwen3TTSTalker.code_predictor_forward_incremental
 
-    def _boom_forward(self, *args, **kwargs):
+    def boom_forward(self, *args, **kwargs):
         if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
             raise RuntimeError("simulated capture failure")
         return real_forward(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Qwen3TTSTalker, "_code_predictor_forward_incremental", _boom_forward
+        Qwen3TTSTalker, "code_predictor_forward_incremental", boom_forward
     )
-    _run_forward(talker, layer0, hidden, positions)
+    run_forward(talker, layer0, hidden, positions)
 
-    assert talker._predictor_graph_disabled
-    assert talker._sub_batch_size == 2
-    assert talker._sub_has_sampled_rows is True
-    assert talker._sub_do_sample_tensor[:2].tolist() == [True, False]
+    assert talker.predictor_graph_disabled
+    assert talker.sub_batch_size == 2
+    assert talker.sub_has_sampled_rows is True
+    assert talker.sub_do_sample_tensor[:2].tolist() == [True, False]
 
 
-class _NoHostReadbackTensor(torch.Tensor):
+class NoHostReadbackTensor(torch.Tensor):
     """Tensor whose host-materialization entry points fail the test."""
 
     def cpu(self, *args, **kwargs):
@@ -661,18 +1211,18 @@ class _NoHostReadbackTensor(torch.Tensor):
 def test_no_host_readback_on_graph_dispatch_and_replay():
     """Live per-step inputs must reach the graph via device-side copies only."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
-    guarded_layer0 = layer0.as_subclass(_NoHostReadbackTensor)
-    guarded_hidden = hidden.as_subclass(_NoHostReadbackTensor)
-    guarded_positions = positions.as_subclass(_NoHostReadbackTensor)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
+    guarded_layer0 = layer0.as_subclass(NoHostReadbackTensor)
+    guarded_hidden = hidden.as_subclass(NoHostReadbackTensor)
+    guarded_positions = positions.as_subclass(NoHostReadbackTensor)
 
     with torch.no_grad():
         talker.code_predictor_forward(
             guarded_layer0, guarded_hidden, semantic_positions=guarded_positions
         )
-        assert talker._predictor_graphs, "expected graph capture"
+        assert talker.predictor_graphs, "expected graph capture"
         talker.code_predictor_forward(
             guarded_layer0, guarded_hidden, semantic_positions=guarded_positions
         )
@@ -683,15 +1233,15 @@ def test_no_host_readback_on_graph_dispatch_and_replay():
 def test_no_host_readback_in_eager_chain():
     """The captured body itself must be free of host materialization."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
 
     with torch.no_grad():
-        talker._code_predictor_forward_incremental(
-            layer0.as_subclass(_NoHostReadbackTensor),
-            hidden.as_subclass(_NoHostReadbackTensor),
-            semantic_positions=positions.as_subclass(_NoHostReadbackTensor),
+        talker.code_predictor_forward_incremental(
+            layer0.as_subclass(NoHostReadbackTensor),
+            hidden.as_subclass(NoHostReadbackTensor),
+            semantic_positions=positions.as_subclass(NoHostReadbackTensor),
         )
         torch.cuda.synchronize()
 
@@ -705,41 +1255,39 @@ def test_capture_uses_thread_local_error_mode():
         / "sglang_model.py"
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    graph_calls = [
+    capture_calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "graph"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "cuda"
+        and node.func.attr == "capture"
     ]
-    assert graph_calls, "Qwen3-TTS predictor CUDA graph capture call not found"
+    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
     assert any(
-        keyword.arg == "capture_error_mode"
+        keyword.arg == "thread_local_errors"
         and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value == "thread_local"
-        for call in graph_calls
+        and keyword.value.value is True
+        for call in capture_calls
         for keyword in call.keywords
     )
 
 
 def test_normalize_predictor_graph_batch_sizes():
-    normalize = Qwen3TTSTalker._normalize_predictor_graph_batch_sizes
+    normalize = Qwen3TTSTalker.normalize_predictor_graph_batch_sizes
 
-    def _args(bs):
+    def args(bs):
         return SimpleNamespace(
             cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=bs))
         )
 
-    assert normalize(_args(None), max_batch_size=16) == (1, 2, 4, 8, 12, 16)
-    assert normalize(_args([4, 2, 2, 64]), max_batch_size=16) == (2, 4, 16)
-    assert normalize(_args([1, 3, 7]), max_batch_size=8) == (1, 3, 7, 8)
-    assert normalize(_args(None), max_batch_size=2) == (1, 2)
+    assert normalize(args(None), max_batch_size=16) == (1, 2, 4, 8, 12, 16)
+    assert normalize(args([4, 2, 2, 64]), max_batch_size=16) == (2, 4, 16)
+    assert normalize(args([1, 3, 7]), max_batch_size=8) == (1, 3, 7, 8)
+    assert normalize(args(None), max_batch_size=2) == (1, 2)
 
 
 def test_quantize_predictor_top_k_ladder():
-    quantize = sglang_model_module._quantize_predictor_top_k
+    quantize = sglang_model_module.quantize_predictor_top_k
     assert quantize(1, 2048) == 4
     assert quantize(37, 2048) == 50
     assert quantize(50, 2048) == 50
@@ -755,19 +1303,19 @@ def test_quantize_predictor_top_k_ladder():
 def test_graph_key_shared_across_request_top_k_values():
     """top_k=5 and top_k=7 land in the same ladder bucket and share one graph."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
 
     for top_k in (5, 7):
-        talker.prepare_decode_buffers(_uniform_requests(2, top_k=top_k))
-        layer0, hidden, positions = _step_inputs(2, device, step=top_k)
-        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        talker.prepare_decode_buffers(uniform_requests(2, top_k=top_k))
+        layer0, hidden, positions = step_inputs(2, device, step=top_k)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
         assert torch.equal(graph_codes, eager_codes), f"top_k={top_k}"
         assert torch.equal(graph_embeds, eager_embeds), f"top_k={top_k}"
 
-    assert len(talker._predictor_graphs) == 1, (
+    assert len(talker.predictor_graphs) == 1, (
         "distinct request top_k values within one ladder bucket must share "
-        f"one graph, got keys {sorted(talker._predictor_graphs)}"
+        f"one graph, got keys {sorted(talker.predictor_graphs)}"
     )
 
 
@@ -775,20 +1323,20 @@ def test_graph_key_shared_across_request_top_k_values():
 def test_row_top_k_below_bucket_width_bit_identity():
     """Rows with k below the captured bucket width stay bit-identical to eager."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     requests = [
-        _request(top_k=3, sub_seed=1000, semantic_seed=2000),
-        _request(top_k=5, sub_seed=1001, semantic_seed=2001),
+        make_request(top_k=3, sub_seed=1000, semantic_seed=2000),
+        make_request(top_k=5, sub_seed=1001, semantic_seed=2001),
     ]
     talker.prepare_decode_buffers(requests)
-    layer0, hidden, positions = _step_inputs(2, device)
+    layer0, hidden, positions = step_inputs(2, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
     assert any(
-        key[2] == 8 for key in talker._predictor_graphs
-    ), f"expected capture at ladder width 8, got keys {sorted(talker._predictor_graphs)}"
+        key[2] == 8 for key in talker.predictor_graphs
+    ), f"expected capture at ladder width 8, got keys {sorted(talker.predictor_graphs)}"
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -798,7 +1346,7 @@ def test_replay_tracks_per_step_sampling_params():
     """One graph key, three replays with fresh temps/top_p/top_k/seeds per step;
     stale captured params would break bit-identity."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     step_params = [
         {"temperature": 0.9, "top_p": 0.8, "top_k": 5},
         {"temperature": 1.1, "top_p": 0.95, "top_k": 7},
@@ -807,51 +1355,51 @@ def test_replay_tracks_per_step_sampling_params():
 
     for step, params in enumerate(step_params):
         requests = [
-            _request(
+            make_request(
                 sub_seed=5000 + 10 * step + idx, semantic_seed=6000 + idx, **params
             )
             for idx in range(4)
         ]
         talker.prepare_decode_buffers(requests)
-        layer0, hidden, positions = _step_inputs(4, device, step=step)
-        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        layer0, hidden, positions = step_inputs(4, device, step=step)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
         assert torch.equal(graph_codes, eager_codes), f"step={step} params={params}"
         assert torch.equal(graph_embeds, eager_embeds), f"step={step} params={params}"
 
-    assert len(talker._predictor_graphs) == 1
+    assert len(talker.predictor_graphs) == 1
 
 
 @pytest.mark.accelerator
 def test_global_disable_after_max_capture_failures(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     calls = []
 
-    class _BoomGraph:
+    class BoomGraph:
         def __init__(self, *args, **kwargs) -> None:
             calls.append(1)
             raise RuntimeError("simulated capture failure")
 
-    monkeypatch.setattr(sglang_model_module, "_PredictorDecodeGraph", _BoomGraph)
+    monkeypatch.setattr(sglang_model_module, "PredictorDecodeGraph", BoomGraph)
 
     compositions = [(bs, True) for bs in (1, 2, 4, 8, 16)] + [
         (bs, False) for bs in (1, 2, 4)
     ]
     for batch_size, dosample in compositions:
-        talker.prepare_decode_buffers(_uniform_requests(batch_size, dosample=dosample))
-        layer0, hidden, positions = _step_inputs(batch_size, device)
-        _run_forward(talker, layer0, hidden, positions)
+        talker.prepare_decode_buffers(uniform_requests(batch_size, dosample=dosample))
+        layer0, hidden, positions = step_inputs(batch_size, device)
+        run_forward(talker, layer0, hidden, positions)
 
     assert len(calls) == 8
-    assert talker._predictor_graph_enabled is False, (
+    assert talker.predictor_graph_enabled is False, (
         "predictor graphs must self-disable after "
         f"{len(compositions)} distinct capture failures"
     )
 
-    talker.prepare_decode_buffers(_uniform_requests(8, dosample=False))
-    layer0, hidden, positions = _step_inputs(8, device)
-    _run_forward(talker, layer0, hidden, positions)
+    talker.prepare_decode_buffers(uniform_requests(8, dosample=False))
+    layer0, hidden, positions = step_inputs(8, device)
+    run_forward(talker, layer0, hidden, positions)
     assert len(calls) == 8, "globally disabled graphs must not attempt new captures"
 
 
@@ -859,7 +1407,7 @@ def test_global_disable_after_max_capture_failures(monkeypatch: pytest.MonkeyPat
 def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
     """A failed capture must release its CUDA graph (pool) via reset()."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     reset_calls = []
     original_reset = torch.cuda.CUDAGraph.reset
 
@@ -869,17 +1417,21 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(torch.cuda.CUDAGraph, "reset", spy_reset)
 
-    @contextmanager
-    def boom_capture_state(bucket_size, signature):
-        raise RuntimeError("simulated capture failure")
-        yield
+    real_forward = Qwen3TTSTalker.code_predictor_forward_incremental
 
-    talker._predictor_graph_capture_state = boom_capture_state
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
-    _run_forward(talker, layer0, hidden, positions)
+    def boom_forward(self, *args, **kwargs):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("simulated capture failure")
+        return real_forward(self, *args, **kwargs)
 
-    assert talker._predictor_graph_disabled, "failed key must be disabled"
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "code_predictor_forward_incremental", boom_forward
+    )
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
+    run_forward(talker, layer0, hidden, positions)
+
+    assert talker.predictor_graph_disabled, "failed key must be disabled"
     assert reset_calls, "failed capture must reset() its CUDAGraph"
 
 
@@ -887,20 +1439,17 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
 def test_widened_top_k_masked_ranks_never_sampled():
     """Ranks past a row's true k remain impossible after log conversion."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     logits = torch.linspace(2.0, -2.0, PRED_VOCAB, device=device).unsqueeze(0)
     allowed = set(torch.topk(logits[0], 2).indices.tolist())
-    row_indices = torch.zeros(1, dtype=torch.long, device=device)
     positions = torch.zeros(1, dtype=torch.long, device=device)
 
     for seed in range(100):
         # top_k=2 quantizes to ladder width 4, leaving ranks 2-3 masked
-        talker.prepare_decode_buffers([_request(top_k=2, sub_seed=seed)])
-        token = talker._sample_subtalker_token_seeded(
+        talker.prepare_decode_buffers([make_request(top_k=2, sub_seed=seed)])
+        token = talker.sample_subtalker_token_seeded(
             logits,
-            0,
-            row_indices=row_indices,
-            semantic_positions=positions,
+            sub_positions=talker.sub_seed_positions(positions)[0],
         )
         assert token.item() in allowed, (
             f"seed={seed} sampled rank outside the request's top_k=2: "
@@ -912,28 +1461,28 @@ def test_widened_top_k_masked_ranks_never_sampled():
 def test_graph_keys_share_memory_pool(monkeypatch: pytest.MonkeyPatch):
     """Distinct graph keys must capture into one model-owned memory pool."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     pools = []
     real_graph = torch.cuda.graph
 
-    class _SpyGraph(real_graph):
+    class SpyGraph(real_graph):
         def __init__(self, cuda_graph, pool=None, **kwargs):
             pools.append(pool)
             super().__init__(cuda_graph, pool=pool, **kwargs)
 
-    monkeypatch.setattr(torch.cuda, "graph", _SpyGraph)
+    monkeypatch.setattr(torch.cuda, "graph", SpyGraph)
 
-    layer0, hidden, positions = _step_inputs(2, device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    _run_forward(talker, layer0, hidden, positions)
-    talker.prepare_decode_buffers(_uniform_requests(2, dosample=False))
-    _run_forward(talker, layer0, hidden, positions)
+    layer0, hidden, positions = step_inputs(2, device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    run_forward(talker, layer0, hidden, positions)
+    talker.prepare_decode_buffers(uniform_requests(2, dosample=False))
+    run_forward(talker, layer0, hidden, positions)
 
-    assert len(talker._predictor_graphs) == 2
+    assert len(talker.predictor_graphs) == 2
     assert len(pools) == 2
     assert pools[0] is not None
     assert pools[0] == pools[1]
-    assert pools[0] == talker._predictor_graph_pool
+    assert pools[0] == talker.predictor_graph_pool
 
 
 @pytest.mark.accelerator
@@ -941,49 +1490,46 @@ def test_graph_key_cache_capacity_fallback_without_eviction(
     monkeypatch: pytest.MonkeyPatch,
 ):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    layer0, hidden, positions = _step_inputs(2, device)
-    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_KEYS", 2)
+    talker = build_talker(device)
+    layer0, hidden, positions = step_inputs(2, device)
+    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_LAZY_KEYS", 2)
 
     def assert_graph_matches(requests) -> None:
         talker.prepare_decode_buffers(requests)
-        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
         assert torch.equal(graph_codes, eager_codes)
         assert torch.equal(graph_embeds, eager_embeds)
 
-    sampled = _uniform_requests(2)
-    argmax = _uniform_requests(2, dosample=False)
-    other_sampled = _uniform_requests(2, top_k=3)
+    sampled = uniform_requests(2)
+    argmax = uniform_requests(2, dosample=False)
+    other_sampled = uniform_requests(2, top_k=3)
 
     assert_graph_matches(sampled)
     assert_graph_matches(argmax)
     assert_graph_matches(other_sampled)
 
-    assert {key[1] for key in talker._predictor_graphs} == {"sampled", "argmax"}
-    assert len(talker._predictor_graphs) == 2
-    assert talker._predictor_graph_capture_count == 2
-    assert talker._predictor_graph_capacity_fallback_count == 1
+    assert {key[1] for key in talker.predictor_graphs} == {"sampled", "argmax"}
+    assert len(talker.predictor_graphs) == 2
+    assert talker.predictor_graph_capture_count == 2
+    assert talker.predictor_graph_capacity_fallback_count == 1
 
 
 @pytest.mark.accelerator
 def test_top_p_removed_ranks_never_sampled():
     """Nucleus-removed ranks must be impossible, same rationale as the top-k mask."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     logits = torch.zeros(1, PRED_VOCAB, device=device)
     logits[0, 3] = 4.0
-    row_indices = torch.zeros(1, dtype=torch.long, device=device)
     positions = torch.zeros(1, dtype=torch.long, device=device)
 
     for seed in range(100):
         # rank 0 alone holds ~0.97 mass, so top_p=0.5 removes ranks 1-3
-        talker.prepare_decode_buffers([_request(top_k=4, top_p=0.5, sub_seed=seed)])
-        token = talker._sample_subtalker_token_seeded(
+        talker.prepare_decode_buffers([make_request(top_k=4, top_p=0.5, sub_seed=seed)])
+        token = talker.sample_subtalker_token_seeded(
             logits,
-            0,
-            row_indices=row_indices,
-            semantic_positions=positions,
+            sub_positions=talker.sub_seed_positions(positions)[0],
         )
         assert (
             token.item() == 3
@@ -993,71 +1539,104 @@ def test_top_p_removed_ranks_never_sampled():
 def test_capture_state_body_failure_restores_state():
     """An exception inside capture must restore the live sampling state."""
     device = torch.device("cpu")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(3, dosample=False))
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(3, dosample=False))
     saved = (
-        talker._sub_batch_size,
-        talker._sub_has_sampled_rows,
-        talker._sub_sampled_has_top_p,
-        talker._sub_sampled_max_top_k,
-        talker._sub_sampled_has_unbounded_top_k,
+        talker.sub_batch_size,
+        talker.sub_has_sampled_rows,
+        talker.sub_has_argmax_rows,
+        talker.sub_sampled_has_top_p,
+        talker.sub_sampled_max_top_k,
+        talker.sub_sampled_has_unbounded_top_k,
     )
 
     with pytest.raises(RuntimeError, match="simulated capture failure"):
-        with talker._predictor_graph_capture_state(4, ("sampled", 8, True, False)):
-            assert talker._sub_batch_size == 4
-            assert talker._sub_has_sampled_rows is True
-            assert talker._sub_sampled_has_top_p is True
-            assert talker._sub_sampled_max_top_k == 8
-            assert talker._sub_sampled_has_unbounded_top_k is False
+        with talker.predictor_graph_capture_state(4, ("sampled", 8, True, False, True)):
+            assert talker.sub_batch_size == 4
+            assert talker.sub_has_sampled_rows is True
+            assert talker.sub_has_argmax_rows is True
+            assert talker.sub_sampled_has_top_p is True
+            assert talker.sub_sampled_max_top_k == 8
+            assert talker.sub_sampled_has_unbounded_top_k is False
             raise RuntimeError("simulated capture failure")
 
     assert (
-        talker._sub_batch_size,
-        talker._sub_has_sampled_rows,
-        talker._sub_sampled_has_top_p,
-        talker._sub_sampled_max_top_k,
-        talker._sub_sampled_has_unbounded_top_k,
+        talker.sub_batch_size,
+        talker.sub_has_sampled_rows,
+        talker.sub_has_argmax_rows,
+        talker.sub_sampled_has_top_p,
+        talker.sub_sampled_max_top_k,
+        talker.sub_sampled_has_unbounded_top_k,
     ) == saved
 
 
 def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     talker = object.__new__(Qwen3TTSTalker)
-    args = SimpleNamespace(disable_cuda_graph=False, tp_size=1)
-    monkeypatch.setattr(sglang_model_module, "get_global_server_args", lambda: args)
+    talker.predictor_device = torch.device("cuda")
+    graph = SimpleNamespace(disable_cuda_graph=False)
+    parallel = SimpleNamespace(tp_size=1)
+    platform = {"enabled": True, "backend": object()}
+    monkeypatch.setattr(
+        sglang_model_module, "get_exec", lambda: SimpleNamespace(graph=graph)
+    )
+    monkeypatch.setattr(sglang_model_module, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "enable_tts_predictor_graph",
+        lambda: platform["enabled"],
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda device: platform["backend"],
+    )
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
 
-    assert talker._resolve_predictor_graph_enabled() is True
-    args.disable_cuda_graph = True
-    assert talker._resolve_predictor_graph_enabled() is False
-    args.disable_cuda_graph = False
-    args.tp_size = 2
-    assert talker._resolve_predictor_graph_enabled() is False
-    args.tp_size = 1
+    assert talker.resolve_predictor_graph_enabled() is True
+    graph.disable_cuda_graph = True
+    assert talker.resolve_predictor_graph_enabled() is False
+    graph.disable_cuda_graph = False
+    parallel.tp_size = 2
+    assert talker.resolve_predictor_graph_enabled() is False
+    parallel.tp_size = 1
     monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "0")
-    assert talker._resolve_predictor_graph_enabled() is False
+    assert talker.resolve_predictor_graph_enabled() is False
+
+    platform["enabled"] = False
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    assert talker.resolve_predictor_graph_enabled() is False
+    monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "1")
+    assert talker.resolve_predictor_graph_enabled() is True
+
+    platform.update(enabled=True, backend=None)
+    assert talker.resolve_predictor_graph_enabled() is False
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    assert talker.resolve_predictor_graph_enabled() is False
 
 
 @pytest.mark.accelerator
 def test_server_disable_cuda_graph_gates_predictor(monkeypatch: pytest.MonkeyPatch):
     """server_args.disable_cuda_graph must gate the lazily resolved graph path."""
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker._predictor_graph_enabled = None
+    talker = build_talker(device)
+    talker.predictor_graph_enabled = None
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
     monkeypatch.setattr(
         sglang_model_module,
-        "get_global_server_args",
-        lambda: SimpleNamespace(disable_cuda_graph=True, tp_size=1),
+        "get_exec",
+        lambda: SimpleNamespace(graph=SimpleNamespace(disable_cuda_graph=True)),
     )
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    monkeypatch.setattr(
+        sglang_model_module, "get_parallel", lambda: SimpleNamespace(tp_size=1)
+    )
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert not talker._predictor_graphs
-    assert talker._predictor_graph_enabled is False
+    assert not talker.predictor_graphs
+    assert talker.predictor_graph_enabled is False
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
@@ -1065,53 +1644,98 @@ def test_server_disable_cuda_graph_gates_predictor(monkeypatch: pytest.MonkeyPat
 @pytest.mark.accelerator
 def test_failed_capture_restores_the_current_stream(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
+    talker = build_talker(device)
+    real_forward = Qwen3TTSTalker.code_predictor_forward_incremental
 
-    def _sync_inside_capture(self, *args, **kwargs):
+    def sync_inside_capture(self, *args, **kwargs):
         if torch.cuda.is_current_stream_capturing():
             torch.cuda.synchronize()
         return real_forward(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Qwen3TTSTalker, "_code_predictor_forward_incremental", _sync_inside_capture
+        Qwen3TTSTalker, "code_predictor_forward_incremental", sync_inside_capture
     )
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
 
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
     assert torch.cuda.current_stream(device) == torch.cuda.default_stream(device)
     assert gc.isenabled()
-    assert not talker._predictor_graphs
-    assert talker._predictor_graph_failure_count == 1
+    assert not talker.predictor_graphs
+    assert talker.predictor_graph_failure_count == 1
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
 
 @pytest.mark.accelerator
-@pytest.mark.accelerator
-def test_startup_capture_builds_the_ladder_for_one_signature():
+def test_startup_capture_builds_the_ladder_for_both_sampled_signatures():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    signature = ("sampled", 8, False, False)
+    talker = build_talker(device)
+    all_sampled = ("sampled", 8, False, False, False)
+    mixed = ("sampled", 8, False, False, True)
+    expected_keys = {(bucket, *all_sampled) for bucket in BUCKETS} | {
+        (bucket, *mixed) for bucket in BUCKETS if bucket >= 2
+    }
 
     assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == len(
-        BUCKETS
+        expected_keys
     )
-    assert set(talker._predictor_graphs) == {(bucket, *signature) for bucket in BUCKETS}
+    assert set(talker.predictor_graphs) == expected_keys
+    assert talker.predictor_graph_startup_count == len(expected_keys)
     assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == 0
+    assert talker.predictor_graph_startup_count == len(expected_keys)
 
     for batch_size in BUCKETS:
-        talker.prepare_decode_buffers(_uniform_requests(batch_size, top_k=5))
-        layer0, hidden, positions = _step_inputs(batch_size, device)
-        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        talker.prepare_decode_buffers(uniform_requests(batch_size, top_k=5))
+        layer0, hidden, positions = step_inputs(batch_size, device)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
         assert torch.equal(graph_codes, eager_codes)
         assert torch.equal(graph_embeds, eager_embeds)
 
-    assert len(talker._predictor_graphs) == len(BUCKETS)
+    talker.prepare_decode_buffers([make_request(top_k=5), make_request(dosample=False)])
+    layer0, hidden, positions = step_inputs(2, device)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
+    assert torch.equal(graph_codes, eager_codes)
+    assert torch.equal(graph_embeds, eager_embeds)
+
+    assert len(talker.predictor_graphs) == len(expected_keys)
+
+
+@pytest.mark.accelerator
+def test_startup_set_stays_outside_the_lazy_capture_budget(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    talker = build_talker(device)
+    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_LAZY_KEYS", 1)
+    startup = talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0)
+    assert startup > 1
+    layer0, hidden, positions = step_inputs(2, device)
+
+    def assert_graph_matches(requests) -> None:
+        talker.prepare_decode_buffers(requests)
+        eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
+        assert torch.equal(graph_codes, eager_codes)
+        assert torch.equal(graph_embeds, eager_embeds)
+
+    assert_graph_matches(uniform_requests(2, top_k=3))
+    assert len(talker.predictor_graphs) == startup + 1
+    assert talker.predictor_graph_capacity_fallback_count == 0
+
+    assert_graph_matches(uniform_requests(2, dosample=False))
+    assert len(talker.predictor_graphs) == startup + 1
+    assert talker.predictor_graph_capacity_fallback_count == 1
+
+    assert_graph_matches(uniform_requests(2, top_k=5))
+    assert_graph_matches([make_request(top_k=5), make_request(dosample=False)])
+    assert len(talker.predictor_graphs) == startup + 1
+    assert talker.predictor_graph_capture_count == startup + 1
+    assert talker.predictor_graph_capacity_fallback_count == 1
 
 
 @pytest.mark.accelerator
@@ -1119,37 +1743,37 @@ def test_startup_capture_failure_raises_and_restores_state(
     monkeypatch: pytest.MonkeyPatch,
 ):
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
+    talker = build_talker(device)
+    real_forward = Qwen3TTSTalker.code_predictor_forward_incremental
 
-    def _boom_forward(self, *args, **kwargs):
+    def boom_forward(self, *args, **kwargs):
         if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
             raise RuntimeError("simulated capture failure")
         return real_forward(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Qwen3TTSTalker, "_code_predictor_forward_incremental", _boom_forward
+        Qwen3TTSTalker, "code_predictor_forward_incremental", boom_forward
     )
 
     with pytest.raises(RuntimeError, match="simulated capture failure"):
         talker.capture_predictor_graphs(do_sample=True, top_k=8, top_p=1.0)
 
-    assert not talker._predictor_graphs
-    assert talker._sub_batch_size == 0
+    assert not talker.predictor_graphs
+    assert talker.sub_batch_size == 0
     assert gc.isenabled()
 
 
 def test_signature_rule_is_shared_by_batch_and_startup_paths(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    talker = _build_talker(torch.device("cpu"))
+    talker = build_talker(torch.device("cpu"))
     startup_keys: list[tuple] = []
 
-    def _record_capture(self, bucket_size, signature):
+    def record_capture(self, bucket_size, signature):
         startup_keys.append((bucket_size, *signature))
         return object()
 
-    monkeypatch.setattr(Qwen3TTSTalker, "_capture_predictor_graph", _record_capture)
+    monkeypatch.setattr(Qwen3TTSTalker, "capture_predictor_graph", record_capture)
     cases = [
         (True, 5, 1.0),
         (True, 5, 0.9),
@@ -1162,36 +1786,44 @@ def test_signature_rule_is_shared_by_batch_and_startup_paths(
     ]
     for dosample, top_k, top_p in cases:
         talker.prepare_decode_buffers(
-            _uniform_requests(3, dosample=dosample, top_k=top_k, top_p=top_p)
+            uniform_requests(3, dosample=dosample, top_k=top_k, top_p=top_p)
         )
-        if talker._sub_has_sampled_rows:
-            expected = (
+        if talker.sub_has_sampled_rows:
+            batch_terms = (
                 "sampled",
-                talker._sub_sampled_max_top_k,
-                talker._sub_sampled_has_top_p,
-                talker._sub_sampled_has_unbounded_top_k,
+                talker.sub_sampled_max_top_k,
+                talker.sub_sampled_has_top_p,
+                talker.sub_sampled_has_unbounded_top_k,
             )
+            expected = {batch_terms + (mixed,) for mixed in (False, True)}
         else:
-            expected = ("argmax", 0, False, False)
-        talker._predictor_graphs.clear()
+            expected = {("argmax", 0, False, False, False)}
+        talker.predictor_graphs.clear()
+        startup_keys.clear()
         talker.capture_predictor_graphs(do_sample=dosample, top_k=top_k, top_p=top_p)
-        assert startup_keys[-1][1:] == expected, (dosample, top_k, top_p)
+        assert {key[1:] for key in startup_keys} == expected, (dosample, top_k, top_p)
+
+    talker.prepare_decode_buffers(
+        [make_request(dosample=True), make_request(dosample=False)]
+    )
+    assert talker.sub_has_argmax_rows is True
+    assert talker.sub_has_sampled_rows is True
 
 
 @pytest.mark.accelerator
 def test_graph_object_holds_no_reference_to_the_talker():
     device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
-    _run_forward(talker, layer0, hidden, positions)
-    (graph,) = talker._predictor_graphs.values()
+    talker = build_talker(device)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
+    run_forward(talker, layer0, hidden, positions)
+    (graph,) = talker.predictor_graphs.values()
 
     assert all(value is not talker for value in vars(graph).values())
     assert talker not in gc.get_referents(graph)
 
     graph_ref = weakref.ref(graph)
-    talker._predictor_graphs.clear()
+    talker.predictor_graphs.clear()
     del graph
     assert graph_ref() is None
 
@@ -1209,26 +1841,514 @@ def test_sglang_gemm_overrides_keep_the_eager_gemm_on_both_paths(
     monkeypatch: pytest.MonkeyPatch, sglang_gemm_override
 ):
     device = torch.device("cuda")
-    talker = _build_talker(device)
+    talker = build_talker(device)
     monkeypatch.setattr(sglang_model_module, *sglang_gemm_override)
     original_addmm = torch.addmm
     calls = []
 
-    def _record_addmm(*args, **kwargs):
+    def record_addmm(*args, **kwargs):
         calls.append(None)
         return original_addmm(*args, **kwargs)
 
-    monkeypatch.setattr(torch, "addmm", _record_addmm)
-    talker.prepare_decode_buffers(_uniform_requests(2))
-    layer0, hidden, positions = _step_inputs(2, device)
+    monkeypatch.setattr(torch, "addmm", record_addmm)
+    talker.prepare_decode_buffers(uniform_requests(2))
+    layer0, hidden, positions = step_inputs(2, device)
 
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+    eager_codes, eager_embeds = run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = run_forward(talker, layer0, hidden, positions)
 
-    assert talker._predictor_graphs
+    assert talker.predictor_graphs
     assert not calls
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
+
+
+ROPE_HEAD_DIM = 128
+ROPE_NUM_HEADS = 16
+ROPE_NUM_KV_HEADS = 8
+ROPE_HIDDEN = 1024
+ROPE_PREDICTOR_LEN = 17
+
+
+def rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
+    predictor_len = ROPE_PREDICTOR_LEN
+    talker = object.__new__(Qwen3TTSTalker)
+    positions = torch.arange(predictor_len, device=device, dtype=torch.long)
+    talker.predictor_position_rows = (
+        positions[:, None].expand(predictor_len, MAX_BS).contiguous()
+    )
+    talker.predictor_k_cache = torch.zeros(
+        1,
+        MAX_BS,
+        predictor_len,
+        ROPE_NUM_KV_HEADS,
+        ROPE_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_k_rows = [
+        layer.view(MAX_BS * predictor_len, -1) for layer in talker.predictor_k_cache
+    ]
+    talker.predictor_v_rows = [
+        layer.view(MAX_BS * predictor_len, -1) for layer in talker.predictor_v_cache
+    ]
+    talker.predictor_cache_slots = (
+        torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * predictor_len
+        + positions[:, None]
+    ).contiguous()
+    talker.predictor_pair_positions = positions[:2].repeat(MAX_BS)
+    talker.predictor_pair_cache_slots = talker.predictor_cache_slots[:2].t().reshape(-1)
+    talker.predictor_rope_stores_kv = stores
+    return talker
+
+
+def rope_attention(device: torch.device) -> SimpleNamespace:
+    return SimpleNamespace(
+        q_size=ROPE_NUM_HEADS * ROPE_HEAD_DIM,
+        kv_size=ROPE_NUM_KV_HEADS * ROPE_HEAD_DIM,
+        num_heads=ROPE_NUM_HEADS,
+        num_kv_heads=ROPE_NUM_KV_HEADS,
+        head_dim=ROPE_HEAD_DIM,
+        q_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        k_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        alt_stream=None,
+        qkv_proj=TupleLinear(
+            ROPE_HIDDEN, (ROPE_NUM_HEADS + 2 * ROPE_NUM_KV_HEADS) * ROPE_HEAD_DIM
+        ).to(device, DTYPE),
+        # A fresh rotary resolves this fixture's dispatch instead of reusing
+        # get_rope's process-wide cache from another parameterized case.
+        rotary_emb=RotaryEmbedding(
+            ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000, True, DTYPE
+        ).to(device),
+        compatible_with_fused_kv_buffer=True,
+    )
+
+
+def rope_copy_reference(
+    attn: SimpleNamespace,
+    hidden: torch.Tensor,
+    positions: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    cache_len: int,
+) -> torch.Tensor:
+    """Plain RoPE followed by the former [batch, head, slot, dim] cache writes."""
+    batch_size = hidden.shape[0]
+    qkv, _ = attn.qkv_proj(hidden.reshape(batch_size, -1))
+    q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
+    q, k = apply_qk_norm(
+        q, k, attn.q_norm, attn.k_norm, attn.head_dim, alt_stream=attn.alt_stream
+    )
+    q, k = attn.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=None)
+    k_cache[:batch_size, :, cache_len : cache_len + 1].copy_(
+        k.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+    )
+    v_cache[:batch_size, :, cache_len : cache_len + 1].copy_(
+        v.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+    )
+    output = torch.nn.functional.scaled_dot_product_attention(
+        q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2),
+        k_cache[:batch_size, :, : cache_len + 1],
+        v_cache[:batch_size, :, : cache_len + 1],
+        is_causal=False,
+        enable_gqa=True,
+    )
+    return output.transpose(1, 2).reshape(batch_size, -1)
+
+
+@pytest.fixture(params=["cuda", "torch"])
+def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
+    mode = request.param
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            prefill=PhaseConfig(backend=Backend.DISABLED)
+        ),
+    ):
+        previous_backend = get_fused_op_backend()
+        try:
+            set_fused_op_backend(KernelBackend.TORCH if mode == "torch" else None)
+            yield mode
+        finally:
+            set_fused_op_backend(previous_backend)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_rope_store_writes_the_cache_the_copy_path_writes(
+    batch_size: int,
+    predictor_rope_dispatch: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Compare cache rows and attention against the former layout, then replay
+    the fused path with fresh inputs to check that captured stores overwrite."""
+    device = torch.device("cuda")
+    torch.manual_seed(11)
+    # Other tests isolate the graph machinery with a stub; this test covers
+    # the actual normalized Q/K tensors handed to the upstream rotary.
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
+    attn = rope_attention(device)
+    stores = Qwen3TTSTalker.resolve_predictor_rope_store(attn, device=device)
+    stored = rope_store_talker(device, stores=stores)
+    copied = rope_store_talker(device, stores=False)
+    # Allocate the old layout independently, not as another view of the new cache.
+    reference_k = torch.zeros(
+        MAX_BS,
+        ROPE_NUM_KV_HEADS,
+        ROPE_PREDICTOR_LEN,
+        ROPE_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    reference_v = torch.zeros_like(reference_k)
+    hidden_steps = torch.randn(
+        ROPE_PREDICTOR_LEN, batch_size, 1, ROPE_HIDDEN, device=device, dtype=DTYPE
+    )
+
+    def run_attention(talker: Qwen3TTSTalker) -> torch.Tensor:
+        return torch.stack(
+            [
+                talker.predictor_cached_self_attention(
+                    layer_idx=0,
+                    attn=attn,
+                    hidden_states=hidden_steps[slot],
+                    positions=talker.predictor_position_rows[slot, :batch_size],
+                    cache_slots=talker.predictor_cache_slots[slot, :batch_size],
+                    cache_len=slot,
+                )
+                for slot in range(ROPE_PREDICTOR_LEN)
+            ]
+        )
+
+    def run_reference() -> torch.Tensor:
+        return torch.stack(
+            [
+                rope_copy_reference(
+                    attn,
+                    hidden_steps[slot],
+                    stored.predictor_position_rows[slot, :batch_size],
+                    reference_k,
+                    reference_v,
+                    slot,
+                )
+                for slot in range(ROPE_PREDICTOR_LEN)
+            ]
+        )
+
+    def assert_matches_reference(output: torch.Tensor) -> None:
+        expected = run_reference()
+        torch.cuda.synchronize()
+        assert torch.equal(output, expected)
+        assert torch.equal(stored.predictor_k_cache[0].transpose(1, 2), reference_k)
+        assert torch.equal(stored.predictor_v_cache[0].transpose(1, 2), reference_v)
+
+    with torch.no_grad():
+        output = run_attention(stored)
+        assert torch.equal(output, run_attention(copied))
+        assert torch.equal(stored.predictor_k_cache, copied.predictor_k_cache)
+        assert torch.equal(stored.predictor_v_cache, copied.predictor_v_cache)
+        assert_matches_reference(output)
+        assert stores == (predictor_rope_dispatch == "cuda")
+        if not stores:
+            return
+
+        stream = torch.cuda.Stream(device=device)
+        current_stream = torch.cuda.current_stream(device)
+        stream.wait_stream(current_stream)
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                run_attention(stored)
+        current_stream.wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            replay_output = run_attention(stored)
+
+        # The same graph must consume changed inputs and replace the prior frame.
+        for _ in range(2):
+            hidden_steps.normal_()
+            graph.replay()
+            assert_matches_reference(replay_output)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_rope_store_writes_the_pair_where_the_copy_path_writes(
+    batch_size: int,
+    predictor_rope_dispatch: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    torch.manual_seed(13)
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
+    attn = rope_attention(device)
+    stores = Qwen3TTSTalker.resolve_predictor_rope_store(attn, device=device)
+    stored = rope_store_talker(device, stores=stores)
+    copied = rope_store_talker(device, stores=False)
+    hidden = torch.randn(batch_size, 2, ROPE_HIDDEN, device=device, dtype=DTYPE)
+
+    def run_pair(talker: Qwen3TTSTalker) -> torch.Tensor:
+        return talker.predictor_cached_self_attention(
+            layer_idx=0,
+            attn=attn,
+            hidden_states=hidden,
+            positions=talker.predictor_pair_positions[: 2 * batch_size],
+            cache_slots=talker.predictor_pair_cache_slots[: 2 * batch_size],
+            cache_len=0,
+        )
+
+    with torch.no_grad():
+        output = run_pair(stored)
+        expected = run_pair(copied)
+
+    assert stores == (predictor_rope_dispatch == "cuda")
+    assert torch.equal(output, expected)
+    assert torch.equal(stored.predictor_k_cache, copied.predictor_k_cache)
+    assert torch.equal(stored.predictor_v_cache, copied.predictor_v_cache)
+
+
+FUSED_LAYERS = 5
+FUSED_ERROR_BOUND = 1.1
+FUSED_ROPE_THETA = 1000000
+FUSED_HIDDEN = 1024
+FUSED_INTERMEDIATE = 3072
+FUSED_NUM_HEADS = 16
+FUSED_NUM_KV_HEADS = 8
+FUSED_HEAD_DIM = 128
+FUSED_PREDICTOR_LEN = 17
+FUSED_MAX_BS = 64
+
+
+class GatedMLP(nn.Module):
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
+        super().__init__()
+        self.gate_up_proj = TupleLinear(hidden_size, 2 * intermediate_size)
+        self.down_proj = TupleLinear(intermediate_size, hidden_size)
+        self.act_fn = SiluAndMul()
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(self.act_fn(self.gate_up_proj(hidden_states)[0]))[0]
+
+
+def real_shape_norm(size: int, device: torch.device) -> RMSNorm:
+    norm = RMSNorm(size, eps=1e-6).to(device, DTYPE)
+    with torch.no_grad():
+        norm.weight.normal_(1.0, 0.1)
+    return norm
+
+
+def real_shape_layer(device: torch.device) -> SimpleNamespace:
+    attention = SimpleNamespace(
+        hidden_size=FUSED_HIDDEN,
+        q_size=FUSED_NUM_HEADS * FUSED_HEAD_DIM,
+        kv_size=FUSED_NUM_KV_HEADS * FUSED_HEAD_DIM,
+        num_heads=FUSED_NUM_HEADS,
+        num_kv_heads=FUSED_NUM_KV_HEADS,
+        head_dim=FUSED_HEAD_DIM,
+        q_norm=real_shape_norm(FUSED_HEAD_DIM, device),
+        k_norm=real_shape_norm(FUSED_HEAD_DIM, device),
+        alt_stream=None,
+        qkv_proj=TupleLinear(
+            FUSED_HIDDEN, (FUSED_NUM_HEADS + 2 * FUSED_NUM_KV_HEADS) * FUSED_HEAD_DIM
+        ).to(device, DTYPE),
+        o_proj=TupleLinear(FUSED_NUM_HEADS * FUSED_HEAD_DIM, FUSED_HIDDEN).to(
+            device, DTYPE
+        ),
+        rotary_emb=RotaryEmbedding(
+            FUSED_HEAD_DIM, FUSED_HEAD_DIM, 64, FUSED_ROPE_THETA, True, DTYPE
+        ).to(device),
+    )
+    return SimpleNamespace(
+        input_layernorm=real_shape_norm(FUSED_HIDDEN, device),
+        post_attention_layernorm=real_shape_norm(FUSED_HIDDEN, device),
+        self_attn=attention,
+        mlp=GatedMLP(FUSED_HIDDEN, FUSED_INTERMEDIATE).to(device, DTYPE),
+    )
+
+
+def real_shape_talker(
+    device: torch.device,
+    layers: list[SimpleNamespace],
+    final_norm: RMSNorm,
+    *,
+    fused: bool,
+) -> Qwen3TTSTalker:
+    """A predictor at the checkpoint's shapes; fused runs the Triton layer launches."""
+    talker = object.__new__(Qwen3TTSTalker)
+    talker.training = False
+    positions = torch.arange(FUSED_PREDICTOR_LEN, device=device, dtype=torch.long)
+    talker.predictor_position_rows = (
+        positions[:, None].expand(FUSED_PREDICTOR_LEN, FUSED_MAX_BS).contiguous()
+    )
+    talker.predictor_cache_slots = (
+        torch.arange(FUSED_MAX_BS, device=device, dtype=torch.long)[None, :]
+        * FUSED_PREDICTOR_LEN
+        + positions[:, None]
+    ).contiguous()
+    talker.predictor_pair_positions = positions[:2].repeat(FUSED_MAX_BS)
+    talker.predictor_pair_cache_slots = talker.predictor_cache_slots[:2].t().reshape(-1)
+    talker.predictor_k_cache = torch.zeros(
+        len(layers),
+        FUSED_MAX_BS,
+        FUSED_PREDICTOR_LEN,
+        FUSED_NUM_KV_HEADS,
+        FUSED_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_rope_stores_kv = False
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(layers=layers, norm=final_norm)
+    )
+    if fused:
+        talker.predictor_fused_layers = resolve_fused_predictor_layers(
+            talker.code_predictor, FUSED_PREDICTOR_LEN, FUSED_MAX_BS, device, DTYPE
+        )
+        assert talker.predictor_fused_layers is not None
+    else:
+        talker.predictor_fused_layers = None
+    return talker
+
+
+def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
+    return float((actual.float() - expected.float()).norm() / expected.float().norm())
+
+
+def fp32_rmsnorm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * weight.float()
+
+
+def fp32_rotate(x: torch.Tensor, cos_sin: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    cos, sin = cos_sin[..., None, :half], cos_sin[..., None, half:]
+    first, second = x[..., :half], x[..., half:]
+    return torch.cat((first * cos - second * sin, first * sin + second * cos), -1)
+
+
+def fp32_predictor_pass(
+    layers: list[SimpleNamespace],
+    final_norm: RMSNorm,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    token_embeds: torch.Tensor,
+    cache_len: int,
+) -> torch.Tensor:
+    """The predictor layers in fp32 from the bf16 weights; the caches are (layer,
+    row, slot, kv head, head dim) like the predictor's."""
+    batch_size, num_tokens, _ = token_embeds.shape
+    end = cache_len + num_tokens
+    positions = torch.arange(cache_len, end, device=token_embeds.device)
+    x = token_embeds.float()
+    for index, layer in enumerate(layers):
+        attention = layer.self_attn
+        cos_sin = attention.rotary_emb.cos_sin_cache[positions].float()
+        normed = fp32_rmsnorm(x, layer.input_layernorm.weight)
+        q, k, v = (normed @ attention.qkv_proj.weight.float().t()).split(
+            [attention.q_size, attention.kv_size, attention.kv_size], -1
+        )
+        q = q.reshape(batch_size, num_tokens, FUSED_NUM_HEADS, FUSED_HEAD_DIM)
+        k = k.reshape(batch_size, num_tokens, FUSED_NUM_KV_HEADS, FUSED_HEAD_DIM)
+        v = v.reshape(batch_size, num_tokens, FUSED_NUM_KV_HEADS, FUSED_HEAD_DIM)
+        q = fp32_rotate(fp32_rmsnorm(q, attention.q_norm.weight), cos_sin)
+        k = fp32_rotate(fp32_rmsnorm(k, attention.k_norm.weight), cos_sin)
+        k_cache[index, :, cache_len:end] = k
+        v_cache[index, :, cache_len:end] = v
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(1, 2),
+            k_cache[index, :, :end].transpose(1, 2),
+            v_cache[index, :, :end].transpose(1, 2),
+            is_causal=num_tokens > 1,
+            enable_gqa=True,
+        )
+        attended = attended.transpose(1, 2).reshape(batch_size, num_tokens, -1)
+        x = x + attended @ attention.o_proj.weight.float().t()
+        normed = fp32_rmsnorm(x, layer.post_attention_layernorm.weight)
+        gate, up = (normed @ layer.mlp.gate_up_proj.weight.float().t()).chunk(2, -1)
+        x = (
+            x
+            + (torch.nn.functional.silu(gate) * up)
+            @ layer.mlp.down_proj.weight.float().t()
+        )
+    return fp32_rmsnorm(x, final_norm.weight)
+
+
+def fused_and_plain_errors_to_fp32(
+    batch_size: int, seed: int
+) -> dict[str, tuple[float, float]]:
+    """Each path's relative error to the fp32 pass over the opening pair and the
+    fourteen single-token passes: (outputs, K and V cache rows)."""
+    device = torch.device("cuda")
+    torch.manual_seed(seed)
+    layers = [real_shape_layer(device) for _ in range(FUSED_LAYERS)]
+    final_norm = real_shape_norm(FUSED_HIDDEN, device)
+    steps = [torch.randn(batch_size, 2, FUSED_HIDDEN, device=device, dtype=DTYPE)]
+    steps += [
+        torch.randn(batch_size, 1, FUSED_HIDDEN, device=device, dtype=DTYPE)
+        for _ in range(FUSED_PREDICTOR_LEN - 3)
+    ]
+    end = sum(step.shape[1] for step in steps)
+    cache_shape = (
+        FUSED_LAYERS,
+        batch_size,
+        FUSED_PREDICTOR_LEN,
+        FUSED_NUM_KV_HEADS,
+        FUSED_HEAD_DIM,
+    )
+    k_cache = torch.zeros(cache_shape, device=device)
+    v_cache = torch.zeros(cache_shape, device=device)
+    outputs = {"plain": [], "fused": [], "fp32": []}
+    with (
+        get_context().override_server_args(
+            cuda_graph_config=CudaGraphConfig(
+                prefill=PhaseConfig(backend=Backend.DISABLED)
+            ),
+        ),
+        torch.no_grad(),
+    ):
+        talkers = {
+            "plain": real_shape_talker(device, layers, final_norm, fused=False),
+            "fused": real_shape_talker(device, layers, final_norm, fused=True),
+        }
+        cache_len = 0
+        for step in steps:
+            for name, talker in talkers.items():
+                outputs[name].append(
+                    talker.predictor_forward_tokens(
+                        token_embeds=step.clone(),
+                        batch_size=batch_size,
+                        cache_len=cache_len,
+                    ).clone()
+                )
+            outputs["fp32"].append(
+                fp32_predictor_pass(
+                    layers, final_norm, k_cache, v_cache, step, cache_len
+                )
+            )
+            cache_len += step.shape[1]
+    reference = torch.cat(outputs["fp32"], 1)
+    reference_cache = torch.cat((k_cache, v_cache))[:, :, :end]
+    errors = {}
+    for name, talker in talkers.items():
+        cache = torch.cat((talker.predictor_k_cache, talker.predictor_v_cache))
+        errors[name] = (
+            relative_error(torch.cat(outputs[name], 1), reference),
+            relative_error(cache[:, :batch_size, :end], reference_cache),
+        )
+    return errors
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 5, 64])
+def test_fused_predictor_layers_are_as_close_to_fp32_as_the_plain_layers(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int
+) -> None:
+    """Over a whole predictor sequence the Triton launches' outputs and K and V cache
+    rows are no further from an fp32 pass than the plain layers'."""
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
+    errors = fused_and_plain_errors_to_fp32(batch_size, seed=0)
+
+    assert errors["fused"][0] <= FUSED_ERROR_BOUND * errors["plain"][0]
+    assert errors["fused"][1] <= FUSED_ERROR_BOUND * errors["plain"][1]
 
 
 if __name__ == "__main__":

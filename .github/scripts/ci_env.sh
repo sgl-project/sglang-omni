@@ -10,6 +10,7 @@ export HF_HUB_DISABLE_XET=0
 export UV_INDEX_URL="${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 export UV_CACHE_DIR=/github/home/.cache/uv
 export TORCHINDUCTOR_CACHE_DIR="${OMNI_CI_HOME}/.torchinductor"
+export SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0
 export FLASHINFER_DISABLE_VERSION_CHECK=1
 export FLASHINFER_JIT_DEBUG=0
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"

@@ -15,6 +15,8 @@ def zonos2_producer_first_flush_rows(initial_chunk_frames: int) -> int:
     chunk_frames = int(initial_chunk_frames)
     if chunk_frames <= 0:
         chunk_frames = DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES
+    else:
+        pass
     chunk_frames = max(
         chunk_frames,
         DEFAULT_ZONOS2_STREAM_OVERLAP_FRAMES + 1,

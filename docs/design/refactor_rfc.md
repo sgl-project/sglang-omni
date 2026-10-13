@@ -638,9 +638,9 @@ The refactor should consolidate this into one canonical mechanism: a typed, stag
 
 #### Stage placement — same-GPU co-location
 
-Stages may share GPUs. Earlier topologies hard-rejected same-GPU speech-stage placement, which left Talker on H200 at <2% utilization long-term. Informed by Ratish's vLLM-Omni investigation (vLLM co-locates thinker + talker on a single device via per-stage memory budgeting + NVML accounting), the placement model now treats "any stage on any GPU" as first-class, with budgeting that accounts for co-tenants rather than rejecting the topology. See [Design Decision History § PR #430](#2026-05-12--pr-430-colocated-stage-execution-colocation) for the typed runtime config + placement planner that shipped this.
+Stages may share GPUs. Earlier topologies hard-rejected same-GPU speech-stage placement, which left Talker on H200 at <2% utilization long-term. The placement model now treats "any stage on any GPU" as first-class, with per-stage memory budgeting and NVML accounting that account for co-tenants rather than rejecting the topology. See [Design Decision History § PR #430](#2026-05-12--pr-430-colocated-stage-execution-colocation) for the typed runtime config + placement planner that shipped this.
 
-Memory-fraction semantics have also been pinned down: vLLM's `gpu_memory_utilization` is a fraction of total VRAM, while SGLang's `mem_fraction_static` is a fraction of remaining VRAM after weights load — more principled for single-stage LLM, but ambiguous for omni where stages load sequentially and "remaining" depends on load order. The placement model now uses one explicit semantics rather than inheriting the ambiguity.
+Memory-fraction semantics have also been pinned down: SGLang's `mem_fraction_static` is a fraction of remaining VRAM after weights load — principled for single-stage LLM, but ambiguous for omni where stages load sequentially and "remaining" depends on load order. The placement model now uses one explicit semantics rather than inheriting the ambiguity.
 
 Whether `factory` and `factory_args` should collapse into a single field is tracked in [#538 §2.2](https://github.com/sgl-project/sglang-omni/issues/538).
 
@@ -834,6 +834,8 @@ Introduced the V1 pipeline as an opt-in path via `--version v1`, and published t
 
 **Why it matters:** The discoverability anchor for the V0 → V1 cutover. Names individual owners per work item so contributors can pick up threads independently; several follow-up issues and PRs in this history root back to this trackboard.
 
+<a id="2026-05-04--pr-385-openai-realtime-websocket-endpoint-v1-feature"></a>
+
 ### [2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]](https://github.com/sgl-project/sglang-omni/pull/385)
 
 _State: MERGED 2026-05-18. Disabled by default; opt in with `--enable-realtime`._
@@ -901,6 +903,8 @@ Argued that the V1 single-process launcher is just the multi-process launcher wi
 
 **Why it matters:** Captures the rationale that drove the launcher consolidation. The diagnosis and bugfix informed #447 and downstream cleanups even though no commits from this branch shipped — kept here to attribute both the design decision and the double-launch bugfix correctly.
 
+<a id="2026-05-12--pr-430-colocated-stage-execution-colocation"></a>
+
 ### [2026-05-12 — PR #430: Colocated Stage Execution [Colocation]](https://github.com/sgl-project/sglang-omni/pull/430)
 
 _State: MERGED 2026-05-16. Follows colocation RFC + #329 / #376._
@@ -914,6 +918,8 @@ Implements the colocated-stage execution path for Omni V1, making Qwen3-Omni spe
 - **Qwen3-Omni placement policy:** rejects unsupported topologies (standalone `code_predictor`, unsupported thinker / talker TP); admits same-GPU thinker / talker only via `Qwen3OmniSpeechColocatedPipelineConfig`
 
 **Why it matters:** The biggest single deployment-shape win in the V1 refactor. Lets a thinker + talker speech model run as one process on one GPU rather than two separate stages, dramatically reducing the resource footprint for inference clusters that don't need horizontal stage parallelism.
+
+<a id="2026-05-15--pr-447-unify-serving-on-multiprocess-runner-rfc"></a>
 
 ### [2026-05-15 — PR #447: Unify serving on multiprocess runner [RFC]](https://github.com/sgl-project/sglang-omni/pull/447)
 

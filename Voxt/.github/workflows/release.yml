@@ -1,0 +1,1332 @@
+name: Release
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag: stable vX.Y.Z or beta vX.Y.Z-beta.N"
+        required: true
+        default: "v1.11.6-beta.1"
+      draft_release:
+        description: "Create or keep release as draft"
+        required: true
+        default: true
+        type: boolean
+      update_appcast:
+        description: "Publish update metadata and regenerate the selected appcast"
+        required: true
+        default: false
+        type: boolean
+      skip_if_assets_exist:
+        description: "Skip run when release already has assets"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_skip: ${{ steps.release_state.outputs.should_skip }}
+      tag: ${{ steps.version_dispatch.outputs.tag || steps.version_push.outputs.tag }}
+      version: ${{ steps.version_dispatch.outputs.version || steps.version_push.outputs.version }}
+      channel: ${{ steps.version_dispatch.outputs.channel || steps.version_push.outputs.channel }}
+      release_build_number: ${{ steps.version_dispatch.outputs.release_build_number || steps.version_push.outputs.release_build_number }}
+      draft_release: ${{ steps.flags_dispatch.outputs.draft_release || steps.flags_push.outputs.draft_release }}
+      update_appcast: ${{ steps.flags_dispatch.outputs.update_appcast || steps.flags_push.outputs.update_appcast }}
+      skip_if_assets_exist: ${{ steps.flags_dispatch.outputs.skip_if_assets_exist || steps.flags_push.outputs.skip_if_assets_exist }}
+    steps:
+      - name: Resolve runtime flags (dispatch)
+        id: flags_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          echo "draft_release=${{ github.event.inputs.draft_release }}" >> "$GITHUB_OUTPUT"
+          echo "update_appcast=${{ github.event.inputs.update_appcast }}" >> "$GITHUB_OUTPUT"
+          echo "skip_if_assets_exist=${{ github.event.inputs.skip_if_assets_exist }}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve runtime flags (push)
+        id: flags_push
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          echo "draft_release=false" >> "$GITHUB_OUTPUT"
+          echo "update_appcast=true" >> "$GITHUB_OUTPUT"
+          echo "skip_if_assets_exist=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag and extract version (dispatch)
+        id: version_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-beta\.([0-9]+))?$ ]]; then
+            echo "::error::Manual tag must be stable vX.Y.Z or beta vX.Y.Z-beta.N, got: $TAG"
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          BETA_NUMBER="${BASH_REMATCH[5]:-}"
+          VERSION="${TAG#v}"
+          RELEASE_BUILD_BASE="$((10#$MAJOR * 100000000 + 10#$MINOR * 100000 + 10#$PATCH * 100))"
+          if [ -n "$BETA_NUMBER" ]; then
+            if (( 10#$BETA_NUMBER < 1 || 10#$BETA_NUMBER > 98 )); then
+              echo "::error::Beta release number must be between 1 and 98, got: $BETA_NUMBER"
+              exit 1
+            fi
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "release_build_number=$((RELEASE_BUILD_BASE + 10#$BETA_NUMBER))" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "release_build_number=$((RELEASE_BUILD_BASE + 99))" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag and extract version (push)
+        id: version_push
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-beta\.([0-9]+))?$ ]]; then
+            echo "::error::Tag must be stable vX.Y.Z or beta vX.Y.Z-beta.N, got: $TAG"
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          BETA_NUMBER="${BASH_REMATCH[5]:-}"
+          VERSION="${TAG#v}"
+          RELEASE_BUILD_BASE="$((10#$MAJOR * 100000000 + 10#$MINOR * 100000 + 10#$PATCH * 100))"
+          if [ -n "$BETA_NUMBER" ]; then
+            if (( 10#$BETA_NUMBER < 1 || 10#$BETA_NUMBER > 98 )); then
+              echo "::error::Beta release number must be between 1 and 98, got: $BETA_NUMBER"
+              exit 1
+            fi
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "release_build_number=$((RELEASE_BUILD_BASE + 10#$BETA_NUMBER))" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "release_build_number=$((RELEASE_BUILD_BASE + 99))" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release assets
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version_dispatch.outputs.tag || steps.version_push.outputs.tag }}
+          SKIP_IF_ASSETS_EXIST: ${{ steps.flags_dispatch.outputs.skip_if_assets_exist || steps.flags_push.outputs.skip_if_assets_exist }}
+        run: |
+          set -euo pipefail
+          if [ "$SKIP_IF_ASSETS_EXIST" != "true" ]; then
+            echo "skip_if_assets_exist=false, forcing run."
+            echo "should_skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ASSETS="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | length' 2>/dev/null || echo "0")"
+          if [[ "$ASSETS" =~ ^[0-9]+$ ]] && [ "$ASSETS" -gt 0 ]; then
+            echo "Release $TAG already has $ASSETS assets, skipping."
+            echo "should_skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build_sign_notarize:
+    name: Build, Sign, Notarize
+    runs-on: macos-26
+    needs: [preflight]
+    if: needs.preflight.outputs.should_skip != 'true'
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      CHANNEL: ${{ needs.preflight.outputs.channel }}
+      RELEASE_BUILD_NUMBER: ${{ needs.preflight.outputs.release_build_number }}
+      UPDATE_APPCAST: ${{ needs.preflight.outputs.update_appcast }}
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+      DEVELOPER_ID_APP_CERT_P12: ${{ secrets.DEVELOPER_ID_APP_CERT_P12 }}
+      DEVELOPER_ID_APP_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_APP_CERT_PASSWORD }}
+      DEVELOPER_ID_INSTALLER_CERT_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_P12 }}
+      DEVELOPER_ID_INSTALLER_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_PASSWORD }}
+      DEVELOPER_ID_PROVISIONING_PROFILE: ${{ secrets.DEVELOPER_ID_PROVISIONING_PROFILE }}
+      DEVELOPER_ID_APP_IDENTITY: ${{ secrets.DEVELOPER_ID_APP_IDENTITY }}
+      DEVELOPER_ID_INSTALLER_IDENTITY: ${{ secrets.DEVELOPER_ID_INSTALLER_IDENTITY }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_NOTARIZATION_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
+      APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+      APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+      NOTARY_PROFILE_NAME: ${{ secrets.NOTARY_PROFILE_NAME }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure consistent build and MLX JIT toolchain
+        run: source tools/configure_xcode.sh --select-system
+
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Audit committed dependency graph
+        run: |
+          python3 tools/audit_model_stack.py --resolved Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+      - name: Resolve Xcode compilation cache key
+        id: compilation_cache_key
+        run: |
+          set -euo pipefail
+          PACKAGE_RESOLVED="Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+          PACKAGE_HASH="$(shasum -a 256 "$PACKAGE_RESOLVED" | awk '{print $1}')"
+          XCODE_VERSION="$(xcodebuild -version | tr '\n' '-' | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/-+$//')"
+          CACHE_PREFIX="xcode-compilation-${RUNNER_OS}-${RUNNER_ARCH}-${XCODE_VERSION}-release-universal-v1"
+          echo "key=${CACHE_PREFIX}-${PACKAGE_HASH}" >> "$GITHUB_OUTPUT"
+          echo "restore_prefix=${CACHE_PREFIX}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Xcode compilation cache
+        id: compilation_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: build/DerivedData/CompilationCache.noindex
+          key: ${{ steps.compilation_cache_key.outputs.key }}
+          restore-keys: |
+            ${{ steps.compilation_cache_key.outputs.restore_prefix }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.16"
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          for key in \
+            DEVELOPER_ID_APP_CERT_P12 \
+            DEVELOPER_ID_APP_CERT_PASSWORD \
+            DEVELOPER_ID_INSTALLER_CERT_P12 \
+            DEVELOPER_ID_INSTALLER_CERT_PASSWORD \
+            DEVELOPER_ID_PROVISIONING_PROFILE \
+            DEVELOPER_ID_APP_IDENTITY \
+            DEVELOPER_ID_INSTALLER_IDENTITY \
+            KEYCHAIN_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              echo "::error::Missing required secret: $key"
+              exit 1
+            fi
+          done
+
+          HAS_API_KEY_AUTH=0
+          if [ -n "${APPLE_NOTARIZATION_ISSUER:-}" ] && [ -n "${APPLE_NOTARIZATION_KEY_ID:-}" ] && [ -n "${APPLE_NOTARIZATION_KEY:-}" ]; then
+            HAS_API_KEY_AUTH=1
+          fi
+
+          HAS_APPLE_ID_AUTH=0
+          if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+            HAS_APPLE_ID_AUTH=1
+          fi
+
+          if [ "$HAS_API_KEY_AUTH" -eq 0 ] && [ "$HAS_APPLE_ID_AUTH" -eq 0 ]; then
+            echo "::error::Missing notarization credentials: provide API key (APPLE_NOTARIZATION_ISSUER/KEY_ID/KEY) or Apple ID credentials (APPLE_ID/APPLE_TEAM_ID/APPLE_APP_SPECIFIC_PASSWORD)."
+            exit 1
+          fi
+
+          if [ "${UPDATE_APPCAST:-false}" = "true" ] && [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "::error::Missing required secret for Sparkle appcast signing: SPARKLE_PRIVATE_KEY"
+            exit 1
+          fi
+
+      - name: Validate MARKETING_VERSION matches tag
+        run: |
+          set -euo pipefail
+          MARKETING_VERSIONS="$(
+            awk -F' = ' '
+              /^[[:space:]]*"?MARKETING_VERSION(\[[^]]+\])?"? = / {
+                value=$2
+                sub(/;.*/, "", value)
+                gsub(/"/, "", value)
+                print value
+              }
+            ' Voxt.xcodeproj/project.pbxproj | sort -u
+          )"
+          if [ -z "$MARKETING_VERSIONS" ]; then
+            echo "::error::Unable to read MARKETING_VERSION from Voxt.xcodeproj"
+            exit 1
+          fi
+          TAG_BASE_VERSION="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          if [ "$MARKETING_VERSIONS" != "$TAG_BASE_VERSION" ]; then
+            echo "::error::MARKETING_VERSION values($MARKETING_VERSIONS) do not match tag base version($TAG_BASE_VERSION)"
+            exit 1
+          fi
+
+      - name: Setup keychain and import certificates
+        run: |
+          set -euo pipefail
+          echo "$DEVELOPER_ID_APP_CERT_P12" | base64 --decode > app-cert.p12
+          echo "$DEVELOPER_ID_INSTALLER_CERT_P12" | base64 --decode > installer-cert.p12
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+
+          security import app-cert.p12 -k build.keychain -P "$DEVELOPER_ID_APP_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcodebuild > /dev/null
+          security import installer-cert.p12 -k build.keychain -P "$DEVELOPER_ID_INSTALLER_CERT_PASSWORD" \
+            -T /usr/bin/productbuild -T /usr/bin/security > /dev/null
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: -s -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s build.keychain
+
+      - name: Verify signing identities in keychain
+        run: |
+          set -euo pipefail
+          if ! security find-identity -v -p codesigning build.keychain | grep -F "$DEVELOPER_ID_APP_IDENTITY" >/dev/null; then
+            echo "::error::Developer ID Application identity not found in keychain: $DEVELOPER_ID_APP_IDENTITY"
+            exit 1
+          fi
+          if ! security find-identity -v -p basic build.keychain | grep -F "$DEVELOPER_ID_INSTALLER_IDENTITY" >/dev/null; then
+            echo "::error::Developer ID Installer identity not found in keychain: $DEVELOPER_ID_INSTALLER_IDENTITY"
+            exit 1
+          fi
+
+      - name: Decode Developer ID provisioning profile
+        run: |
+          set -euo pipefail
+          PROFILE_PATH="build/Voxt_Developer_ID.provisionprofile"
+          PROFILE_PLIST="build/Voxt_Developer_ID.plist"
+
+          mkdir -p build
+          printf '%s' "$DEVELOPER_ID_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+
+          PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST" 2>/dev/null || true)"
+          PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST" 2>/dev/null || true)"
+          PROFILE_PREFIX="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationIdentifierPrefix:0' "$PROFILE_PLIST" 2>/dev/null || true)"
+          PROFILE_TEAM_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST" 2>/dev/null || true)"
+          PROVISIONS_ALL_DEVICES="$(/usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$PROFILE_PLIST" 2>/dev/null || true)"
+          if [ -z "$PROFILE_NAME" ] || [ -z "$PROFILE_UUID" ] || [ -z "$PROFILE_PREFIX" ] || [ -z "$PROFILE_TEAM_IDENTIFIER" ]; then
+            echo "::error::Developer ID provisioning profile is missing Name, UUID, ApplicationIdentifierPrefix, or TeamIdentifier"
+            exit 1
+          fi
+          if [ "$PROVISIONS_ALL_DEVICES" != "true" ]; then
+            echo "::error::Provisioning profile is not a Developer ID distribution profile: $PROFILE_NAME"
+            exit 1
+          fi
+
+          EXPIRATION="$(plutil -extract ExpirationDate raw -o - "$PROFILE_PLIST" 2>/dev/null || true)"
+          EXPIRATION_EPOCH="$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$EXPIRATION" '+%s' 2>/dev/null || true)"
+          if [ -z "$EXPIRATION_EPOCH" ] || [ "$EXPIRATION_EPOCH" -le "$(date '+%s')" ]; then
+            echo "::error::Developer ID provisioning profile is expired or has an invalid expiration date: ${EXPIRATION:-<missing>}"
+            exit 1
+          fi
+
+          echo "Validated Developer ID provisioning profile: $PROFILE_NAME ($PROFILE_UUID)"
+
+      - name: Setup notarytool authentication mode
+        run: |
+          set -euo pipefail
+
+          PROFILE="${NOTARY_PROFILE_NAME:-notarytool-profile}"
+          echo "NOTARY_PROFILE_NAME=$PROFILE" >> "$GITHUB_ENV"
+
+          if [ -n "${APPLE_NOTARIZATION_ISSUER:-}" ] && [ -n "${APPLE_NOTARIZATION_KEY_ID:-}" ] && [ -n "${APPLE_NOTARIZATION_KEY:-}" ]; then
+            KEY_FILE="build/notary-api-key.p8"
+            mkdir -p build
+            printf '%s' "$APPLE_NOTARIZATION_KEY" > "$KEY_FILE"
+            xcrun notarytool store-credentials "$PROFILE" \
+              --key "$KEY_FILE" \
+              --key-id "$APPLE_NOTARIZATION_KEY_ID" \
+              --issuer "$APPLE_NOTARIZATION_ISSUER"
+            rm -f "$KEY_FILE"
+            echo "NOTARY_AUTH_MODE=profile" >> "$GITHUB_ENV"
+            echo "Using notary auth mode: profile"
+          else
+            echo "NOTARY_AUTH_MODE=apple-id" >> "$GITHUB_ENV"
+            echo "Using notary auth mode: apple-id"
+          fi
+
+      - name: Build app (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Voxt.xcodeproj \
+            -scheme Voxt \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath build/DerivedData \
+            -showBuildTimingSummary \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackagePluginValidation \
+            build \
+            CURRENT_PROJECT_VERSION="$RELEASE_BUILD_NUMBER" \
+            LD_GENERATE_MAP_FILE=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Audit model runtime artifacts
+        run: |
+          set -euo pipefail
+          MAP_ARGS=()
+          while IFS= read -r -d '' map; do
+            MAP_ARGS+=(--link-map "$map")
+          done < <(find build/DerivedData/Build -name '*LinkMap*.txt' -print0)
+          if [ ${#MAP_ARGS[@]} -eq 0 ]; then
+            echo "::error::Missing link maps for static runtime audit"
+            exit 1
+          fi
+          python3 tools/audit_model_stack.py \
+            --app build/DerivedData/Build/Products/Release/Voxt.app \
+            "${MAP_ARGS[@]}"
+          du -sk build/DerivedData/Build/Products/Release/Voxt.app
+
+      - name: Validate Xcode compilation cache
+        run: |
+          set -euo pipefail
+          test -f build/DerivedData/CompilationCache.noindex/builtin/v1.validation
+          du -sh build/DerivedData/CompilationCache.noindex
+
+      - name: Save Xcode compilation cache
+        if: steps.compilation_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: build/DerivedData/CompilationCache.noindex
+          key: ${{ steps.compilation_cache_key.outputs.key }}
+
+      - name: Validate Sparkle Info.plist keys
+        run: |
+          set -euo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release/Voxt.app"
+          PLIST_PATH="$APP_PATH/Contents/Info.plist"
+          if [ ! -f "$PLIST_PATH" ]; then
+            echo "::error::Info.plist not found at $PLIST_PATH"
+            exit 1
+          fi
+
+          require_bool_true() {
+            local key="$1"
+            local value
+            value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST_PATH" 2>/dev/null || true)"
+            if [ "$value" != "true" ]; then
+              echo "::error::$key must be true in $PLIST_PATH, got: ${value:-<missing>}"
+              exit 1
+            fi
+          }
+
+          require_non_empty_string() {
+            local key="$1"
+            local value
+            value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST_PATH" 2>/dev/null || true)"
+            if [ -z "$value" ]; then
+              echo "::error::$key must be a non-empty string in $PLIST_PATH"
+              exit 1
+            fi
+          }
+
+          require_bool_true "SUEnableInstallerLauncherService"
+          require_non_empty_string "SUFeedURL"
+          require_non_empty_string "SUPublicEDKey"
+          require_non_empty_string "CFBundleShortVersionString"
+          require_non_empty_string "CFBundleVersion"
+
+          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST_PATH" 2>/dev/null || true)"
+          if [ "$BUNDLE_VERSION" != "$RELEASE_BUILD_NUMBER" ]; then
+            echo "::error::CFBundleVersion($BUNDLE_VERSION) does not match release build number($RELEASE_BUILD_NUMBER)"
+            exit 1
+          fi
+          BUNDLE_SHORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_PATH" 2>/dev/null || true)"
+          TAG_BASE_VERSION="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          if [ "$BUNDLE_SHORT_VERSION" != "$TAG_BASE_VERSION" ]; then
+            echo "::error::CFBundleShortVersionString($BUNDLE_SHORT_VERSION) does not match tag base version($TAG_BASE_VERSION)"
+            exit 1
+          fi
+
+      - name: Sign Sparkle and app bundle with Developer ID
+        run: |
+          set -euo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release/Voxt.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Voxt.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          APP_BUNDLE_ID="$(
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Contents/Info.plist" 2>/dev/null || true
+          )"
+          if [ -z "${APP_BUNDLE_ID}" ]; then
+            APP_BUNDLE_ID="$(
+              xcodebuild -project Voxt.xcodeproj -scheme Voxt -configuration Release -showBuildSettings \
+                | awk -F' = ' '/ PRODUCT_BUNDLE_IDENTIFIER = / {print $2; exit}'
+            )"
+          fi
+          if [ -z "${APP_BUNDLE_ID}" ]; then
+            echo "::error::Unable to resolve app bundle identifier from either app Info.plist or build settings"
+            exit 1
+          fi
+
+          PROFILE_PATH="build/Voxt_Developer_ID.provisionprofile"
+          PROFILE_PLIST="build/Voxt_Developer_ID.plist"
+          if [ ! -f "$PROFILE_PATH" ] || [ ! -f "$PROFILE_PLIST" ]; then
+            echo "::error::Decoded Developer ID provisioning profile is missing"
+            exit 1
+          fi
+
+          PROFILE_PREFIX="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationIdentifierPrefix:0' "$PROFILE_PLIST" 2>/dev/null || true)"
+          PROFILE_TEAM_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST" 2>/dev/null || true)"
+          APP_IDENTIFIER="${PROFILE_PREFIX}.${APP_BUNDLE_ID}"
+          PROFILE_APP_IDENTIFIER="$(
+            /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$PROFILE_PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST" 2>/dev/null \
+              || true
+          )"
+          if [ "$PROFILE_APP_IDENTIFIER" != "$APP_IDENTIFIER" ]; then
+            echo "::error::Provisioning profile App ID($PROFILE_APP_IDENTIFIER) does not match expected App ID($APP_IDENTIFIER)"
+            exit 1
+          fi
+
+          PROFILE_ENTITLEMENT_TEAM_IDENTIFIER="$(
+            /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$PROFILE_PLIST" 2>/dev/null \
+              || true
+          )"
+          if [ "$PROFILE_ENTITLEMENT_TEAM_IDENTIFIER" != "$PROFILE_TEAM_IDENTIFIER" ]; then
+            echo "::error::Provisioning profile entitlement Team ID($PROFILE_ENTITLEMENT_TEAM_IDENTIFIER) does not match profile Team ID($PROFILE_TEAM_IDENTIFIER)"
+            exit 1
+          fi
+
+          PROFILE_KEYCHAIN_GROUPS="$(
+            /usr/libexec/PlistBuddy -c 'Print :Entitlements:keychain-access-groups' "$PROFILE_PLIST" 2>/dev/null || true
+          )"
+          if ! printf '%s\n' "$PROFILE_KEYCHAIN_GROUPS" | grep -F "$APP_IDENTIFIER" >/dev/null \
+            && ! printf '%s\n' "$PROFILE_KEYCHAIN_GROUPS" | grep -F "${PROFILE_PREFIX}.*" >/dev/null; then
+            echo "::error::Provisioning profile does not authorize Keychain access group: $APP_IDENTIFIER"
+            exit 1
+          fi
+
+          cp "$PROFILE_PATH" "$APP_PATH/Contents/embedded.provisionprofile"
+
+          SIGNING_ENTITLEMENTS="$(mktemp)"
+          SIGNED_ENTITLEMENTS="$(mktemp)"
+          trap 'rm -f "$SIGNING_ENTITLEMENTS" "$SIGNED_ENTITLEMENTS"' EXIT
+          sed \
+            -e "s#\\\$(PRODUCT_BUNDLE_IDENTIFIER)#${APP_BUNDLE_ID}#g" \
+            -e "s#\\\$(AppIdentifierPrefix)#${PROFILE_PREFIX}.#g" \
+            -e "s#\\\$(DEVELOPMENT_TEAM)#${PROFILE_TEAM_IDENTIFIER}#g" \
+            Voxt/Voxt.entitlements > "$SIGNING_ENTITLEMENTS"
+          if grep -q '\\$(' "$SIGNING_ENTITLEMENTS"; then
+            echo "::error::Failed to expand build settings in entitlements"
+            echo "Generated entitlements:"
+            cat "$SIGNING_ENTITLEMENTS"
+            exit 1
+          fi
+
+          SPARKLE_FRAMEWORK="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+          if [ ! -d "$SPARKLE_FRAMEWORK" ]; then
+            echo "::error::Sparkle.framework not found at $SPARKLE_FRAMEWORK"
+            exit 1
+          fi
+
+          # Sparkle sandboxed updater requires nested helpers/xpcs to be signed explicitly.
+          # Avoid --deep because it can sign nested code with wrong entitlements.
+          sign_if_exists() {
+            local target="$1"
+            if [ -e "$target" ]; then
+              echo "Signing: $target"
+              codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID_APP_IDENTITY" "$target"
+            fi
+          }
+
+          sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+          sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/InstallerLauncher.xpc"
+          sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+          sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
+          sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+          sign_if_exists "$SPARKLE_FRAMEWORK"
+
+          FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
+          if [ -d "$FRAMEWORKS_DIR" ]; then
+            while IFS= read -r -d '' embedded_code; do
+              sign_if_exists "$embedded_code"
+            done < <(
+              find "$FRAMEWORKS_DIR" -mindepth 1 -maxdepth 1 \
+                \( \( -type d -name "*.framework" \) -o \( -type f -name "*.dylib" \) \) \
+                ! -path "$SPARKLE_FRAMEWORK" \
+                -print0
+            )
+          fi
+
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp \
+            --entitlements "$SIGNING_ENTITLEMENTS" \
+            --sign "$DEVELOPER_ID_APP_IDENTITY" \
+            "$APP_PATH"
+
+          codesign --verify --strict --verbose=2 "$APP_PATH"
+
+          codesign --display --entitlements - --xml "$APP_PATH" > "$SIGNED_ENTITLEMENTS"
+          SIGNED_APP_IDENTIFIER="$(
+            /usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' "$SIGNED_ENTITLEMENTS" 2>/dev/null || true
+          )"
+          SIGNED_KEYCHAIN_GROUP="$(
+            /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$SIGNED_ENTITLEMENTS" 2>/dev/null || true
+          )"
+          SIGNED_ENTITLEMENT_TEAM_IDENTIFIER="$(
+            /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' "$SIGNED_ENTITLEMENTS" 2>/dev/null || true
+          )"
+          SIGNED_CERT_TEAM_IDENTIFIER="$(
+            codesign --display --verbose=4 "$APP_PATH" 2>&1 \
+              | awk -F= '/^TeamIdentifier=/{print $2; exit}'
+          )"
+          if [ "$SIGNED_APP_IDENTIFIER" != "$APP_IDENTIFIER" ]; then
+            echo "::error::Signed application identifier($SIGNED_APP_IDENTIFIER) does not match expected value($APP_IDENTIFIER)"
+            exit 1
+          fi
+          if [ "$SIGNED_KEYCHAIN_GROUP" != "$APP_IDENTIFIER" ]; then
+            echo "::error::Signed Keychain access group($SIGNED_KEYCHAIN_GROUP) does not match expected value($APP_IDENTIFIER)"
+            exit 1
+          fi
+          if [ "$SIGNED_ENTITLEMENT_TEAM_IDENTIFIER" != "$PROFILE_TEAM_IDENTIFIER" ]; then
+            echo "::error::Signed entitlement Team ID($SIGNED_ENTITLEMENT_TEAM_IDENTIFIER) does not match profile Team ID($PROFILE_TEAM_IDENTIFIER)"
+            exit 1
+          fi
+          if [ "$SIGNED_CERT_TEAM_IDENTIFIER" != "$PROFILE_TEAM_IDENTIFIER" ]; then
+            echo "::error::Signing certificate Team ID($SIGNED_CERT_TEAM_IDENTIFIER) does not match profile Team ID($PROFILE_TEAM_IDENTIFIER)"
+            exit 1
+          fi
+          if [ ! -f "$APP_PATH/Contents/embedded.provisionprofile" ]; then
+            echo "::error::Signed app does not contain embedded.provisionprofile"
+            exit 1
+          fi
+
+      - name: Build zip, dmg, and pkg artifacts
+        run: |
+          set -euo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release/Voxt.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Voxt.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          ZIP_PATH="build/Voxt-${VERSION}-macOS.zip"
+          DMG_PATH="build/Voxt-${VERSION}.dmg"
+          PKG_PATH="build/Voxt-${VERSION}.pkg"
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+          tools/build_dmg.sh "$APP_PATH" "$DMG_PATH"
+          productbuild \
+            --component "$APP_PATH" /Applications \
+            --sign "$DEVELOPER_ID_INSTALLER_IDENTITY" \
+            "$PKG_PATH"
+
+      - name: Notarize and staple release artifacts
+        run: |
+          set -euo pipefail
+          ZIP_PATH="build/Voxt-${VERSION}-macOS.zip"
+          DMG_PATH="build/Voxt-${VERSION}.dmg"
+          PKG_PATH="build/Voxt-${VERSION}.pkg"
+          TARGET_PATH=""
+          TARGET_KIND=""
+          NOTARY_LOG_FILE=""
+          SUBMIT_JSON=""
+          SUBMIT_ERR=""
+          INFO_JSON=""
+          INFO_ERR=""
+
+          classify_retryable() {
+            local err_file="$1"
+            if grep -Eq "HTTP status code: 5[0-9][0-9]|statusCode: 500|UNEXPECTED_ERROR|Internal Server Error" "$err_file"; then
+              return 0
+            fi
+            return 1
+          }
+
+          run_notarytool_submit() {
+            if [ "${NOTARY_AUTH_MODE:-apple-id}" = "profile" ]; then
+              xcrun notarytool submit "$TARGET_PATH" \
+                --keychain-profile "$NOTARY_PROFILE_NAME" \
+                --output-format json \
+                >"$SUBMIT_JSON" 2>"$SUBMIT_ERR"
+            else
+              xcrun notarytool submit "$TARGET_PATH" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --output-format json \
+                >"$SUBMIT_JSON" 2>"$SUBMIT_ERR"
+            fi
+          }
+
+          run_notarytool_info() {
+            local submission_id="$1"
+            if [ "${NOTARY_AUTH_MODE:-apple-id}" = "profile" ]; then
+              xcrun notarytool info "$submission_id" \
+                --keychain-profile "$NOTARY_PROFILE_NAME" \
+                --output-format json \
+                >"$INFO_JSON" 2>"$INFO_ERR"
+            else
+              xcrun notarytool info "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --output-format json \
+                >"$INFO_JSON" 2>"$INFO_ERR"
+            fi
+          }
+
+          fetch_notary_log() {
+            local submission_id="$1"
+            if [ "${NOTARY_AUTH_MODE:-apple-id}" = "profile" ]; then
+              xcrun notarytool log "$submission_id" \
+                --keychain-profile "$NOTARY_PROFILE_NAME" \
+                >"$NOTARY_LOG_FILE" 2>&1 || true
+            else
+              xcrun notarytool log "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                >"$NOTARY_LOG_FILE" 2>&1 || true
+            fi
+          }
+
+          notarize_file() {
+            local target_path="$1"
+            local target_kind="$2"
+            local assess_mode="$3"
+            local should_staple="$4"
+
+            TARGET_PATH="$target_path"
+            TARGET_KIND="$target_kind"
+            NOTARY_LOG_FILE="build/notary-log-${target_kind}-${VERSION}.json"
+            SUBMIT_JSON="build/notary-submit-${target_kind}.json"
+            SUBMIT_ERR="build/notary-submit-${target_kind}.err.log"
+            INFO_JSON="build/notary-info-${target_kind}.json"
+            INFO_ERR="build/notary-info-${target_kind}.err.log"
+
+            if [ ! -e "$TARGET_PATH" ]; then
+              echo "::error::Missing artifact for notarization: $TARGET_PATH"
+              exit 1
+            fi
+
+            SUBMISSION_ID=""
+            MAX_SUBMIT_ATTEMPTS=8
+            for attempt in $(seq 1 "$MAX_SUBMIT_ATTEMPTS"); do
+              echo "Notarization submit attempt $attempt for ${TARGET_KIND}..."
+              if run_notarytool_submit; then
+                SUBMISSION_ID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], "r", encoding="utf-8")).get("id", ""))' "$SUBMIT_JSON")"
+                if [ -z "$SUBMISSION_ID" ]; then
+                  echo "::error::notarytool submit succeeded but no submission id was returned for ${TARGET_KIND}"
+                  exit 1
+                fi
+                echo "Notary submission id for ${TARGET_KIND}: $SUBMISSION_ID"
+                break
+              fi
+
+              if classify_retryable "$SUBMIT_ERR"; then
+                if [ "$attempt" -eq "$MAX_SUBMIT_ATTEMPTS" ]; then
+                  echo "::error::Notarization submit failed after ${MAX_SUBMIT_ATTEMPTS} attempts for ${TARGET_KIND} (retryable server errors)"
+                  cat "$SUBMIT_ERR"
+                  exit 1
+                fi
+                BACKOFF=$((attempt * 30))
+                REQUEST_ID="$(grep -Eo "Request ID: [A-Z0-9.]+" "$SUBMIT_ERR" | head -n 1 || true)"
+                if [ -n "$REQUEST_ID" ]; then
+                  echo "Retryable Apple notary error for ${TARGET_KIND} ($REQUEST_ID). Retrying in ${BACKOFF}s..."
+                else
+                  echo "Retryable Apple notary error for ${TARGET_KIND}. Retrying in ${BACKOFF}s..."
+                fi
+                sleep "$BACKOFF"
+                continue
+              fi
+
+              echo "::error::Notarization submit failed with non-retryable error for ${TARGET_KIND}"
+              cat "$SUBMIT_ERR"
+              exit 1
+            done
+
+            if [ -z "$SUBMISSION_ID" ]; then
+              echo "::error::No notary submission id available for ${TARGET_KIND}"
+              exit 1
+            fi
+
+            POLL_INTERVAL=25
+            MAX_POLL_SECONDS=$((30 * 60))
+            START_TS="$(date +%s)"
+            ACCEPTED=0
+
+            while true; do
+              NOW_TS="$(date +%s)"
+              ELAPSED=$((NOW_TS - START_TS))
+              if [ "$ELAPSED" -ge "$MAX_POLL_SECONDS" ]; then
+                echo "::error::Notary polling timed out after ${MAX_POLL_SECONDS}s for ${TARGET_KIND} submission $SUBMISSION_ID"
+                fetch_notary_log "$SUBMISSION_ID"
+                exit 1
+              fi
+
+              if ! run_notarytool_info "$SUBMISSION_ID"; then
+                if classify_retryable "$INFO_ERR"; then
+                  echo "Retryable error while checking ${TARGET_KIND} notary status, continuing..."
+                  sleep "$POLL_INTERVAL"
+                  continue
+                fi
+                echo "::error::Failed to fetch notary status for ${TARGET_KIND} (non-retryable)"
+                cat "$INFO_ERR"
+                fetch_notary_log "$SUBMISSION_ID"
+                exit 1
+              fi
+
+              STATUS="$(python3 -c 'import json, sys; print((json.load(open(sys.argv[1], "r", encoding="utf-8")).get("status") or "").strip())' "$INFO_JSON")"
+              echo "Notary status for ${TARGET_KIND}: ${STATUS:-<empty>}"
+
+              if [ "$STATUS" = "Accepted" ]; then
+                ACCEPTED=1
+                break
+              fi
+
+              if [ "$STATUS" = "Invalid" ] || [ "$STATUS" = "Rejected" ]; then
+                echo "::error::Notary status is $STATUS for ${TARGET_KIND} submission $SUBMISSION_ID"
+                fetch_notary_log "$SUBMISSION_ID"
+                [ -f "$NOTARY_LOG_FILE" ] && tail -n 120 "$NOTARY_LOG_FILE" || true
+                exit 1
+              fi
+
+              sleep "$POLL_INTERVAL"
+            done
+
+            if [ "$ACCEPTED" -ne 1 ]; then
+              echo "::error::Notary status did not reach Accepted for ${TARGET_KIND}"
+              fetch_notary_log "$SUBMISSION_ID"
+              exit 1
+            fi
+
+            if [ "$should_staple" = "true" ]; then
+              xcrun stapler staple "$TARGET_PATH"
+              xcrun stapler validate "$TARGET_PATH"
+            fi
+
+            if [ "$assess_mode" = "install" ]; then
+              spctl -a -vv -t install "$TARGET_PATH"
+            elif [ "$assess_mode" = "execute" ]; then
+              spctl -a -vv "$TARGET_PATH"
+            fi
+          }
+
+          # Apple notarytool accepts release containers like ZIP, PKG, and DMG.
+          # ZIP archives cannot be stapled directly, so we notarize them without stapling.
+          notarize_file "$ZIP_PATH" "zip" "none" "false"
+          notarize_file "$PKG_PATH" "pkg" "install" "true"
+          notarize_file "$DMG_PATH" "dmg" "none" "true"
+
+      - name: Upload notarization diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarization-diagnostics-${{ needs.preflight.outputs.version }}
+          path: |
+            build/notary-*.log
+            build/notary-*.json
+          if-no-files-found: ignore
+
+      - name: Generate checksum
+        run: |
+          set -euo pipefail
+          ZIP_PATH="build/Voxt-${VERSION}-macOS.zip"
+          PKG_PATH="build/Voxt-${VERSION}.pkg"
+          ZIP_SHA_PATH="build/Voxt-${VERSION}-macOS.zip.sha256"
+          SHA_PATH="build/Voxt-${VERSION}.pkg.sha256"
+          shasum -a 256 "$ZIP_PATH" | awk '{print $1}' > "$ZIP_SHA_PATH"
+          shasum -a 256 "$PKG_PATH" | awk '{print $1}' > "$SHA_PATH"
+
+      - name: Generate Sparkle edSignature metadata
+        if: needs.preflight.outputs.update_appcast == 'true'
+        run: |
+          set -euo pipefail
+          ZIP_PATH="build/Voxt-${VERSION}-macOS.zip"
+          KEY_FILE="build/sparkle-private-key.pem"
+          SIG_ENV_FILE="build/sparkle-signature.env"
+
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "::error::Zip file missing: $ZIP_PATH"
+            exit 1
+          fi
+
+          if [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "::error::SPARKLE_PRIVATE_KEY is empty"
+            exit 1
+          fi
+
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          SIGN_UPDATE_BIN="$(find build/DerivedData/SourcePackages -path '*/Sparkle/bin/sign_update' -type f | head -n 1 || true)"
+          if [ -z "$SIGN_UPDATE_BIN" ]; then
+            echo "::error::Unable to locate Sparkle sign_update binary from SwiftPM checkout"
+            exit 1
+          fi
+
+          SIGN_OUTPUT="$("$SIGN_UPDATE_BIN" "$ZIP_PATH" --ed-key-file "$KEY_FILE" 2>/tmp/sign_update.err || true)"
+          if [ -z "$SIGN_OUTPUT" ]; then
+            SIGN_OUTPUT="$("$SIGN_UPDATE_BIN" "$ZIP_PATH" "$KEY_FILE" 2>>/tmp/sign_update.err || true)"
+          fi
+
+          SPARKLE_ED_SIGNATURE="$(printf '%s\n' "$SIGN_OUTPUT" | grep -Eo 'sparkle:edSignature="[^"]+"' | head -n 1 | sed -E 's/^[^"]*"([^"]+)".*$/\1/')"
+          SPARKLE_ED_LENGTH="$(printf '%s\n' "$SIGN_OUTPUT" | grep -Eo 'length="[0-9]+"' | head -n 1 | sed -E 's/^[^"]*"([0-9]+)".*$/\1/')"
+          if [ -z "$SPARKLE_ED_LENGTH" ]; then
+            SPARKLE_ED_LENGTH="$(stat -f%z "$ZIP_PATH")"
+          fi
+
+          if [ -z "$SPARKLE_ED_SIGNATURE" ]; then
+            echo "::error::Failed to parse sparkle:edSignature from sign_update output"
+            cat /tmp/sign_update.err || true
+            printf '%s\n' "$SIGN_OUTPUT"
+            exit 1
+          fi
+
+          if ! [[ "$SPARKLE_ED_LENGTH" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid Sparkle package length: $SPARKLE_ED_LENGTH"
+            exit 1
+          fi
+
+          {
+            printf 'SPARKLE_ED_SIGNATURE=%s\n' "$SPARKLE_ED_SIGNATURE"
+            printf 'SPARKLE_ED_LENGTH=%s\n' "$SPARKLE_ED_LENGTH"
+          } > "$SIG_ENV_FILE"
+
+          rm -f "$KEY_FILE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-${{ needs.preflight.outputs.version }}
+          path: |
+            build/Voxt-${{ needs.preflight.outputs.version }}-macOS.zip
+            build/Voxt-${{ needs.preflight.outputs.version }}-macOS.zip.sha256
+            build/Voxt-${{ needs.preflight.outputs.version }}.dmg
+            build/Voxt-${{ needs.preflight.outputs.version }}.pkg
+            build/Voxt-${{ needs.preflight.outputs.version }}.pkg.sha256
+            build/sparkle-signature.env
+
+  publish_release:
+    name: Publish GitHub Release Assets
+    runs-on: ubuntu-latest
+    needs: [preflight, build_sign_notarize]
+    if: needs.preflight.outputs.should_skip != 'true'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      CHANNEL: ${{ needs.preflight.outputs.channel }}
+      DRAFT_RELEASE: ${{ needs.preflight.outputs.draft_release }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-${{ needs.preflight.outputs.version }}
+          path: build
+
+      - name: Prepare release notes
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            GH_TOKEN="${{ github.token }}"
+            export GH_TOKEN
+          fi
+          NOTES_FILE="build/release-notes.md"
+          CHANGELOG_NOTES_FILE="build/changelog-release-notes.md"
+
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\] - " { in_section=1 }
+            /^## \[/ && in_section && $0 !~ "^## \\[" version "\\] - " { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$CHANGELOG_NOTES_FILE"
+
+          CHANGELOG_TRIMMED="$(tr -d '[:space:]' < "$CHANGELOG_NOTES_FILE")"
+
+          BODY="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq '.body // ""' 2>/dev/null || true)"
+          BODY_TRIMMED="$(printf '%s' "$BODY" | tr -d '[:space:]')"
+
+          if [ -n "$CHANGELOG_TRIMMED" ]; then
+            cp "$CHANGELOG_NOTES_FILE" "$NOTES_FILE"
+          elif [ -n "$BODY_TRIMMED" ]; then
+            printf '%s\n' "$BODY" > "$NOTES_FILE"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq '.body' > "$NOTES_FILE"
+          fi
+
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf '## Voxt %s\n' "$TAG" > "$NOTES_FILE"
+          fi
+
+      - name: Create or update release and upload assets
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            GH_TOKEN="${{ github.token }}"
+            export GH_TOKEN
+          fi
+          ZIP_PATH="build/Voxt-${VERSION}-macOS.zip"
+          DMG_PATH="build/Voxt-${VERSION}.dmg"
+          PKG_PATH="build/Voxt-${VERSION}.pkg"
+          SHA_PATH="build/Voxt-${VERSION}.pkg.sha256"
+          NOTES_FILE="build/release-notes.md"
+          PRERELEASE_ARGS=()
+          if [ "$CHANNEL" = "beta" ]; then
+            PRERELEASE_ARGS=(--prerelease)
+          fi
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "Voxt $TAG" \
+              --notes-file "$NOTES_FILE" \
+              "${PRERELEASE_ARGS[@]}" \
+              -R "$GITHUB_REPOSITORY"
+            if [ "$DRAFT_RELEASE" = "true" ]; then
+              gh release edit "$TAG" --draft -R "$GITHUB_REPOSITORY"
+            else
+              gh release edit "$TAG" --draft=false -R "$GITHUB_REPOSITORY"
+            fi
+            gh release upload "$TAG" "$ZIP_PATH" "$DMG_PATH" "$PKG_PATH" "$SHA_PATH" \
+              --clobber \
+              -R "$GITHUB_REPOSITORY"
+          else
+            if [ "$DRAFT_RELEASE" = "true" ]; then
+              gh release create "$TAG" "$ZIP_PATH" "$DMG_PATH" "$PKG_PATH" "$SHA_PATH" \
+                --draft \
+                --target "$GITHUB_SHA" \
+                --title "Voxt $TAG" \
+                --notes-file "$NOTES_FILE" \
+                "${PRERELEASE_ARGS[@]}" \
+                -R "$GITHUB_REPOSITORY"
+            else
+              gh release create "$TAG" "$ZIP_PATH" "$DMG_PATH" "$PKG_PATH" "$SHA_PATH" \
+                --target "$GITHUB_SHA" \
+                --title "Voxt $TAG" \
+                --notes-file "$NOTES_FILE" \
+                "${PRERELEASE_ARGS[@]}" \
+                -R "$GITHUB_REPOSITORY"
+            fi
+          fi
+
+  publish_to_voxt_api:
+    name: Publish App Update And Appcast To Voxt Service
+    runs-on: ubuntu-latest
+    needs: [preflight, build_sign_notarize, publish_release]
+    if: needs.preflight.outputs.should_skip != 'true' && needs.preflight.outputs.update_appcast == 'true'
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      CHANNEL: ${{ needs.preflight.outputs.channel }}
+      RELEASE_BUILD_NUMBER: ${{ needs.preflight.outputs.release_build_number }}
+      GH_TOKEN: ${{ github.token }}
+      VOXT_UPDATE_API_BASE: ${{ secrets.VOXT_UPDATE_API_BASE }}
+      VOXT_RELEASE_API_KEY: ${{ secrets.VOXT_RELEASE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-${{ needs.preflight.outputs.version }}
+          path: build
+
+      - name: Validate publish API secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${VOXT_UPDATE_API_BASE:-}" ]; then
+            echo "::error::Missing required secret: VOXT_UPDATE_API_BASE"
+            exit 1
+          fi
+          if [ -z "${VOXT_RELEASE_API_KEY:-}" ]; then
+            echo "::error::Missing required secret: VOXT_RELEASE_API_KEY"
+            exit 1
+          fi
+
+      - name: Upload app update metadata and trigger appcast
+        run: |
+          set -euo pipefail
+          API_BASE="${VOXT_UPDATE_API_BASE%/}"
+          ZIP_NAME="Voxt-${VERSION}-macOS.zip"
+          DMG_NAME="Voxt-${VERSION}.dmg"
+          ZIP_PATH="build/${ZIP_NAME}"
+          DMG_PATH="build/${DMG_NAME}"
+          SHA_PATH="build/${ZIP_NAME}.sha256"
+          SIG_ENV_FILE="build/sparkle-signature.env"
+          RELEASE_NOTES_BY_LOCALE_FILE="build/release-notes-by-locale.json"
+
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "::error::Zip file missing: $ZIP_PATH"
+            exit 1
+          fi
+          if [ ! -f "$DMG_PATH" ]; then
+            echo "::error::DMG file missing: $DMG_PATH"
+            exit 1
+          fi
+          if [ ! -f "$SHA_PATH" ]; then
+            echo "::error::Checksum file missing: $SHA_PATH"
+            exit 1
+          fi
+          if [ ! -f "$SIG_ENV_FILE" ]; then
+            echo "::error::Sparkle signature metadata file missing: $SIG_ENV_FILE"
+            exit 1
+          fi
+
+          set -a
+          . "$SIG_ENV_FILE"
+          set +a
+
+          if [ -z "${SPARKLE_ED_SIGNATURE:-}" ]; then
+            echo "::error::SPARKLE_ED_SIGNATURE is missing in $SIG_ENV_FILE"
+            exit 1
+          fi
+
+          if ! [[ "${SPARKLE_ED_LENGTH:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::SPARKLE_ED_LENGTH is invalid in $SIG_ENV_FILE: ${SPARKLE_ED_LENGTH:-}"
+            exit 1
+          fi
+
+          SHA256="$(cat "$SHA_PATH")"
+          if ! [[ "$SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Invalid sha256 in $SHA_PATH"
+            exit 1
+          fi
+
+          RELEASE_BODY="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq '.body // ""' 2>/dev/null || true)"
+          export RELEASE_BODY RELEASE_NOTES_BY_LOCALE_FILE
+          RELEASE_NOTES_HTML="$(
+            python3 .github/render_sparkle_release_notes.py \
+              --localized-output "$RELEASE_NOTES_BY_LOCALE_FILE"
+          )"
+
+          RELEASE_NOTES="$(printf '%s' "$RELEASE_NOTES_HTML")"
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="<p>Release ${VERSION}.</p>"
+          fi
+
+          RELEASE_NOTES_BY_LOCALE=""
+          if [ -f "$RELEASE_NOTES_BY_LOCALE_FILE" ]; then
+            RELEASE_NOTES_BY_LOCALE="$(cat "$RELEASE_NOTES_BY_LOCALE_FILE")"
+          fi
+
+          PUBLISHED_AT="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json publishedAt --jq '.publishedAt // ""' 2>/dev/null || true)"
+          if [ -z "$PUBLISHED_AT" ]; then
+            PUBLISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          fi
+
+          RELEASE_URL="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq '.url // ""' 2>/dev/null || true)"
+          if [ -z "$RELEASE_URL" ]; then
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          fi
+
+          SPARKLE_VERSION="$RELEASE_BUILD_NUMBER"
+          ZIP_CONTENT_TYPE="application/zip"
+          DMG_CONTENT_TYPE="application/x-apple-diskimage"
+          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
+          DMG_CONTENT_DISPOSITION="attachment; filename=\"${DMG_NAME}\""
+          curl_retry_args=(
+            --retry 6
+            --retry-all-errors
+            --retry-delay 10
+            --retry-max-time 180
+          )
+
+          PREPARE_RESPONSE="$(
+            jq -n \
+              --arg channel "$CHANNEL" \
+              --arg version "$VERSION" \
+              --arg assetFileName "$ZIP_NAME" \
+              --arg assetContentType "$ZIP_CONTENT_TYPE" \
+              --arg dmgFileName "$DMG_NAME" \
+              --arg dmgContentType "$DMG_CONTENT_TYPE" \
+              '{
+                action: "prepareUpload",
+                channel: $channel,
+                version: $version,
+                assetFileName: $assetFileName,
+                assetContentType: $assetContentType,
+                dmgFileName: $dmgFileName,
+                dmgContentType: $dmgContentType
+              }' |
+              curl --fail --silent --show-error \
+                "${curl_retry_args[@]}" \
+                -X POST "${API_BASE}/api/pkg/update" \
+                -H "Authorization: Bearer ${VOXT_RELEASE_API_KEY}" \
+                -H "X-Voxt-Source: github-actions" \
+                -H "Content-Type: application/json" \
+                --data-binary @-
+          )"
+
+          ZIP_UPLOAD_URL="$(printf '%s' "$PREPARE_RESPONSE" | jq -r '.data.uploads.zip.url // empty')"
+          DMG_UPLOAD_URL="$(printf '%s' "$PREPARE_RESPONSE" | jq -r '.data.uploads.dmg.url // empty')"
+          if [ -z "$ZIP_UPLOAD_URL" ] || [ -z "$DMG_UPLOAD_URL" ]; then
+            echo "::error::Failed to prepare direct R2 upload URLs"
+            echo "$PREPARE_RESPONSE"
+            exit 1
+          fi
+
+          curl --fail --silent --show-error \
+            "${curl_retry_args[@]}" \
+            -X PUT "$ZIP_UPLOAD_URL" \
+            -H "Content-Type: ${ZIP_CONTENT_TYPE}" \
+            -H "Cache-Control: ${IMMUTABLE_CACHE_CONTROL}" \
+            --upload-file "$ZIP_PATH"
+
+          curl --fail --silent --show-error \
+            "${curl_retry_args[@]}" \
+            -X PUT "$DMG_UPLOAD_URL" \
+            -H "Content-Type: ${DMG_CONTENT_TYPE}" \
+            -H "Cache-Control: ${IMMUTABLE_CACHE_CONTROL}" \
+            -H "Content-Disposition: ${DMG_CONTENT_DISPOSITION}" \
+            --upload-file "$DMG_PATH"
+
+          update_payload_args=(
+            --arg channel "$CHANNEL"
+            --arg version "$VERSION"
+            --arg sparkleVersion "$SPARKLE_VERSION"
+            --arg sha256 "$SHA256"
+            --arg size "$SPARKLE_ED_LENGTH"
+            --arg edSignature "$SPARKLE_ED_SIGNATURE"
+            --arg releaseNotes "$RELEASE_NOTES"
+            --arg releaseURL "$RELEASE_URL"
+            --arg publishedAt "$PUBLISHED_AT"
+            --arg assetFileName "$ZIP_NAME"
+            --arg assetContentType "$ZIP_CONTENT_TYPE"
+            --arg dmgFileName "$DMG_NAME"
+            --arg dmgContentType "$DMG_CONTENT_TYPE"
+          )
+          update_payload_filter='{
+            channel: $channel,
+            version: $version,
+            sparkleVersion: $sparkleVersion,
+            sha256: $sha256,
+            size: $size,
+            edSignature: $edSignature,
+            releaseNotes: $releaseNotes,
+            releaseURL: $releaseURL,
+            publishedAt: $publishedAt,
+            assetFileName: $assetFileName,
+            assetContentType: $assetContentType,
+            dmgFileName: $dmgFileName,
+            dmgContentType: $dmgContentType
+          }'
+          if [ -n "${RELEASE_NOTES_BY_LOCALE}" ] && [ "${RELEASE_NOTES_BY_LOCALE}" != "{}" ]; then
+            update_payload_args+=(--argjson releaseNotesByLocale "$RELEASE_NOTES_BY_LOCALE")
+            update_payload_filter="${update_payload_filter} + { releaseNotesByLocale: \$releaseNotesByLocale }"
+          fi
+          UPDATE_PAYLOAD="$(jq -n "${update_payload_args[@]}" "$update_payload_filter")"
+
+          printf '%s' "$UPDATE_PAYLOAD" | curl --fail --silent --show-error \
+            "${curl_retry_args[@]}" \
+            -X POST "${API_BASE}/api/pkg/update" \
+            -H "Authorization: Bearer ${VOXT_RELEASE_API_KEY}" \
+            -H "X-Voxt-Source: github-actions" \
+            -H "Content-Type: application/json" \
+            --data-binary @-
+
+          curl --fail --silent --show-error \
+            "${curl_retry_args[@]}" \
+            -X POST "${API_BASE}/api/pkg/appcast" \
+            -H "Authorization: Bearer ${VOXT_RELEASE_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"channel\":\"${CHANNEL}\",\"version\":\"${VERSION}\",\"mode\":\"replace-latest\"}"
+
+  sync_homebrew_tap:
+    name: Sync Homebrew tap cask
+    runs-on: ubuntu-latest
+    needs: [preflight, publish_release]
+    if: needs.preflight.outputs.should_skip != 'true' && !contains(needs.preflight.outputs.tag, '-')
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      HOMEBREW_TAP_REPO: hehehai/homebrew-tap
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Checkout homebrew tap
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::Missing secret HOMEBREW_TAP_TOKEN"
+            exit 1
+          fi
+          gh repo clone "${HOMEBREW_TAP_REPO}" homebrew-tap
+
+      - name: Update cask in tap
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+
+          ZIP_NAME="Voxt-${VERSION}-macOS.zip"
+          ZIP_DIGEST=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq ".assets[] | select(.name == \"${ZIP_NAME}\") | .digest")
+          if [ -z "${ZIP_DIGEST}" ]; then
+            echo "::error::Unable to locate release asset ${ZIP_NAME} for ${TAG}"
+            exit 1
+          fi
+
+          ZIP_SHA="${ZIP_DIGEST#sha256:}"
+          if ! [[ "${ZIP_SHA}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Invalid zip sha256: ${ZIP_SHA}"
+            exit 1
+          fi
+
+          mkdir -p Casks
+          cat > Casks/voxt.rb <<EOF2
+          cask "voxt" do
+            version "${VERSION}"
+            sha256 "${ZIP_SHA}"
+
+            url "https://github.com/hehehai/voxt/releases/download/v#{version}/Voxt-#{version}-macOS.zip"
+            name "Voxt"
+            desc "Voice input and translation menu bar app for macOS"
+            homepage "https://github.com/hehehai/voxt"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            auto_updates true
+            depends_on macos: :sequoia
+
+            app "Voxt.app"
+          end
+          EOF2
+
+          if git diff --quiet -- Casks/voxt.rb; then
+            echo "No cask changes for version ${VERSION}."
+            exit 0
+          fi
+
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add Casks/voxt.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "chore: sync voxt cask to ${VERSION}"
+          git push
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Homebrew tap sync attempted for tag ${TAG}."

@@ -14,9 +14,10 @@ import math
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
-from x_transformers.x_transformers import RotaryEmbedding
 
-from .modules import DiTBlock, FinalLayer
+from .execution import TalkerExecutionConfig
+from .modules import DiTBlock, FinalLayer, RMSNorm
+from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
@@ -84,6 +85,8 @@ class CondEmbedder(nn.Module):
         use_dropout = self.dropout_prob > 0
         if train and use_dropout:
             llm_cond = self.cond_drop(llm_cond)
+        else:
+            pass
 
         llm_cond = self.cond_embedder(llm_cond)
 
@@ -105,9 +108,24 @@ class DiT(nn.Module):
         llm_cond_dim=896,
         cfg_dropout_prob=0.1,
         grad_checkpointing=False,
+        *,
+        execution_config: TalkerExecutionConfig | None = None,
         **kwargs,
     ):
         super().__init__()
+        execution_config = execution_config or TalkerExecutionConfig()
+        validate_rotary_config(
+            execution_config.rope_kernel,
+            num_heads=num_heads,
+            qk_norm=kwargs.get("qk_norm"),
+            pe_attn_head=kwargs.get("pe_attn_head"),
+            grad_checkpointing=grad_checkpointing,
+        )
+        if execution_config.attn_backend is not None:
+            kwargs["attn_backend"] = execution_config.attn_backend
+        else:
+            pass
+        norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -123,15 +141,31 @@ class DiT(nn.Module):
             self.spk_embedder = None
         self.hidden_size = hidden_size
 
-        self.rotary_embed = RotaryEmbedding(hidden_size // num_heads)
+        self.rotary_embed = build_rotary_embedding(
+            hidden_size // num_heads,
+            kernel=execution_config.rope_kernel,
+            seq_len=execution_config.rope_seq_len,
+            max_batch_size=execution_config.rope_max_batch_size,
+        )
 
         self.blocks = nn.ModuleList(
             [
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **kwargs)
+                DiTBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    norm_layer=norm_layer,
+                    qkv_layer=execution_config.qkv_layer,
+                    **kwargs,
+                )
                 for _ in range(depth)
             ]
         )
-        self.final_layer = FinalLayer(hidden_size, self.out_channels)
+        self.final_layer = FinalLayer(
+            hidden_size,
+            self.out_channels,
+            norm_layer=norm_layer,
+        )
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -141,6 +175,10 @@ class DiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(_basic_init)
 
@@ -179,7 +217,7 @@ class DiT(nn.Module):
             x = torch.cat([y, x], dim=1)  # # (N, 1 + patch_size *2, D)
         else:
             x = torch.cat([self.spk_embedder(spk_emb), y, x], dim=1)
-        rope = self.rotary_embed.forward_from_seq_len(x.shape[1])
+        rope = get_rotary_inputs(self.rotary_embed, x.shape[0], x.shape[1])
 
         if self.grad_checkpointing:
             for block in self.blocks:
@@ -202,7 +240,11 @@ class DiT(nn.Module):
         c = torch.cat([c, fake_latent], dim=0)
         if t.ndim == 0:
             t = t.repeat(x.shape[0])
+        else:
+            pass
         if spk_emb is not None:
             spk_emb = torch.cat([spk_emb, spk_emb], dim=0)
+        else:
+            pass
         model_out = self.forward(x, t, c, latent_history, spk_emb)
         return model_out[:, -x.shape[1] :, :]

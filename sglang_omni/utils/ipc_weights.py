@@ -47,17 +47,20 @@ import stat
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import BinaryIO, Protocol, TypedDict
 
 import torch
+from typing_extensions import NotRequired, ReadOnly
 
 logger = logging.getLogger(__name__)
 
 ENV_WEIGHT_SHARE = "SGLANG_OMNI_WEIGHT_SHARE"
 ENV_WEIGHT_SHARE_TIMEOUT_S = "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S"
 ENV_WEIGHT_SHARE_RUN_ID = "SGLANG_OMNI_WEIGHT_SHARE_RUN_ID"
+ENV_WEIGHT_SHARE_COMPAT = "SGLANG_OMNI_WEIGHT_SHARE_COMPAT"
 DEFAULT_ATTACH_TIMEOUT_S = 1800.0
 # Note (Jiaxin Deng): version 2 added per-tensor share/private classification;
 # version-1 handles predate it and must not be attached.
@@ -81,12 +84,16 @@ class WeightShareConfig:
     run_id: str | None = None
 
 
-def get_weight_share_config(environ=None) -> WeightShareConfig | None:
+def get_weight_share_config(
+    environ: Mapping[str, str] | None = None,
+) -> WeightShareConfig | None:
     """Parse SGLANG_OMNI_WEIGHT_SHARE; None when unset or empty (off)."""
     env = os.environ if environ is None else environ
     raw = (env.get(ENV_WEIGHT_SHARE) or "").strip()
     if not raw:
         return None
+    else:
+        pass
     role, sep, dir_path = raw.partition(":")
     role = role.strip().lower()
     dir_path = dir_path.strip()
@@ -95,6 +102,8 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
             f"{ENV_WEIGHT_SHARE} must be 'leader:<dir>' or 'follower:<dir>', "
             f"got {raw!r}"
         )
+    else:
+        pass
     run_id = (env.get(ENV_WEIGHT_SHARE_RUN_ID) or "").strip() or None
     timeout_raw = (env.get(ENV_WEIGHT_SHARE_TIMEOUT_S) or "").strip()
     if timeout_raw:
@@ -107,6 +116,8 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
             ) from exc
         if timeout_s <= 0:
             raise ValueError(f"{ENV_WEIGHT_SHARE_TIMEOUT_S} must be > 0")
+        else:
+            pass
     else:
         timeout_s = DEFAULT_ATTACH_TIMEOUT_S
     return WeightShareConfig(
@@ -115,13 +126,49 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
 
 
 def prepare_weight_share_process_compat() -> None:
-    """Install UUID-safe CUDA reductions in every weight-sharing stage process."""
-    if get_weight_share_config() is None:
+    """Install UUID-safe CUDA reductions in every weight-sharing stage process.
+
+    # Note (Jiaxin Deng): a stage that only relays CUDA tensors never carries a
+    # weight-share role, yet it unpickles tensors reduced by a patched producer
+    # and dies without the same patch, so the whole pipeline is flagged through
+    # ENV_WEIGHT_SHARE_COMPAT rather than the sharing engines alone.
+    """
+    compat = (os.environ.get(ENV_WEIGHT_SHARE_COMPAT) or "").strip() == "1"
+    if get_weight_share_config() is None and not compat:
         return
+    else:
+        pass
 
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+    from torch.multiprocessing import reductions
 
     monkey_patch_torch_reductions()
+    # The NPU branch of the SGLang patch never installs a CUDA reducer.
+    original = getattr(
+        reductions, "_reduce_tensor_original", None
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    if original is None or hasattr(reductions, "_sglang_omni_cpu_reduce_original"):
+        return
+    else:
+        pass
+
+    # Note (Jiaxin Deng): the SGLang patch rewrites reduction argument 6 to a
+    # device UUID unconditionally, but a CPU tensor reduces to three arguments,
+    # so any CPU tensor crossing a multiprocessing queue (TP leader fanout)
+    # raised IndexError and the message was silently dropped. Keep the original
+    # reducer for anything that is not a CUDA tensor.
+    patched = reductions.reduce_tensor
+
+    def reduce_tensor(tensor: torch.Tensor, *args, **kwargs):
+        if tensor.device.type != "cuda":
+            return original(tensor, *args, **kwargs)
+        else:
+            pass
+        return patched(tensor, *args, **kwargs)
+
+    reductions._sglang_omni_cpu_reduce_original = original  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    reductions.reduce_tensor = reduce_tensor
+    reductions.init_reductions()
 
 
 def handle_file_for_model(dir_path: str, model: torch.nn.Module) -> str:
@@ -129,11 +176,13 @@ def handle_file_for_model(dir_path: str, model: torch.nn.Module) -> str:
     return os.path.join(dir_path, type(model).__name__ + _FILE_SUFFIX)
 
 
-def _gpu_uuid() -> str | None:
+def gpu_uuid() -> str | None:
     # Note (Jiaxin Deng): binds a publication to the physical GPU it was
     # exported from; None off CUDA so CPU tests stay lenient.
     if not torch.cuda.is_available():
         return None
+    else:
+        pass
     try:
         props = torch.cuda.get_device_properties(torch.cuda.current_device())
         return str(getattr(props, "uuid", "") or "") or None
@@ -146,13 +195,15 @@ def _gpu_uuid() -> str | None:
 _LEASE_FDS: list[int] = []
 
 
-def _claim_namespace(file_path: str, run_id: str | None) -> None:
+def claim_namespace(file_path: str, run_id: str | None) -> None:
     # Note (Jiaxin Deng): a non-blocking flock is the only race-free lease: a
     # second leader on one directory fails to acquire it instead of clobbering
     # the first leader's followers, and the kernel releases it when the owner
     # dies. POSIX only; the launcher's per-run dir covers non-POSIX.
     if not _FS_TRUST_ENFORCED:
         return
+    else:
+        pass
     import fcntl
 
     lock_path = file_path + ".lock"
@@ -170,7 +221,15 @@ def _claim_namespace(file_path: str, run_id: str | None) -> None:
     _LEASE_FDS.append(fd)
 
 
-class _SglangIpcSerializer:
+class WeightTensorSerializer(Protocol):
+    """Serializer contract for the named tensors in a weight-share handle."""
+
+    def serialize(self, obj: dict[str, torch.Tensor]) -> bytes: ...
+
+    def deserialize(self, data: bytes | bytearray) -> dict[str, torch.Tensor]: ...
+
+
+class SglangIpcSerializer:
     """CUDA-IPC (de)serialization via sglang's RLHF weight-update machinery.
 
     The torch-reductions monkey patch rewrites the reduced tensor's device
@@ -179,7 +238,7 @@ class _SglangIpcSerializer:
     """
 
     @staticmethod
-    def serialize(obj: Any) -> bytes:
+    def serialize(obj: dict[str, torch.Tensor]) -> bytes:
         from sglang.srt.utils.common import MultiprocessingSerializer
         from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 
@@ -187,7 +246,7 @@ class _SglangIpcSerializer:
         return MultiprocessingSerializer.serialize(obj)
 
     @staticmethod
-    def deserialize(data: bytes) -> Any:
+    def deserialize(data: bytes | bytearray) -> dict[str, torch.Tensor]:
         from sglang.srt.utils.common import MultiprocessingSerializer
         from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 
@@ -195,7 +254,7 @@ class _SglangIpcSerializer:
         return MultiprocessingSerializer.deserialize(data)
 
 
-def _named_shared_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+def named_shared_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     """All named parameters and buffers, deduplicated, name-collision checked.
 
     Deduplication folds tied parameters (e.g. Higgs modality_head.weight tied
@@ -209,11 +268,13 @@ def _named_shared_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
                 raise WeightShareError(
                     f"duplicate tensor name across parameters/buffers: {name!r}"
                 )
+            else:
+                pass
             tensors[name] = tensor
     return tensors
 
 
-def _manifest_hash(
+def manifest_hash(
     tensors: dict[str, torch.Tensor], private_names: frozenset[str]
 ) -> str:
     # Note (Jiaxin Deng): the classification is part of the manifest, so two
@@ -227,13 +288,13 @@ def _manifest_hash(
     return digest.hexdigest()
 
 
-def _tensor_to_value_bytes(tensor: torch.Tensor) -> bytes:
+def tensor_to_value_bytes(tensor: torch.Tensor) -> bytes:
     buf = io.BytesIO()
     torch.save(tensor.detach().cpu(), buf)
     return buf.getvalue()
 
 
-def _value_bytes_to_tensor(data: bytes) -> torch.Tensor:
+def value_bytes_to_tensor(data: bytes | bytearray) -> torch.Tensor:
     return torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
 
 
@@ -261,12 +322,12 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # Note (Jiaxin Deng): MOSS local stages per-request decode feedback into
     # this registered embedding every step; everything else is load-once.
     "MossTTSLocalSGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): MOSS delay stages decode feedback the same way MOSS
     # local does; its other registered tensors are load or init once.
     "MossTTSDelaySGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): the four ASR models carry no decode staging scratch;
     # every registered tensor is checkpoint-loaded or an init-computed constant.
@@ -285,7 +346,7 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # Note (Jiaxin Deng): Ming stages decode feedback like MOSS local; blocked
     # on VRAM (leader alone reaches the card edge on 80 GB).
     "MingTTSSGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): Voxtral keeps its decode staging in an unregistered
     # plain tensor; if that scratch is ever registered, this needs its name.
@@ -302,7 +363,7 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # dual-registered embedding, listed under its deduped canonical name; the
     # external speech tokenizer never enters the module tree.
     "Qwen3TTSTalker": WeightSharePolicy(
-        private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
+        private_tensor_names=frozenset({"model.decode_feedback_embedding.weight"})
     ),
     # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline; the
     # launcher only drives single-SGLang-engine pipelines, so these cannot
@@ -322,7 +383,7 @@ SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
 _FS_TRUST_ENFORCED = os.name == "posix"
 
 
-def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
+def validate_weight_share_architecture(architectures: object) -> WeightSharePolicy:
     """Fail fast unless the architecture is audited; return its share policy."""
     # Note (Jiaxin Deng): no normalizing away malformed entries; a config that
     # lists anything besides one nonblank architecture string must fail here.
@@ -331,6 +392,8 @@ def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
         raise WeightShareError(
             f"weight sharing requires exactly one model architecture, got {archs!r}"
         )
+    else:
+        pass
     arch = archs[0].strip()
     policy = WEIGHT_SHARE_POLICIES.get(arch)
     if policy is None:
@@ -341,60 +404,80 @@ def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
                 "mutation audit but no passing launcher end-to-end validation; "
                 f"support is in progress. Supported architectures: {supported}"
             )
+        else:
+            pass
         raise WeightShareError(
             f"weight sharing is unsupported for architecture {arch!r}; "
             f"supported architectures: {supported}. A model that writes "
             "per-request state in place into a shared parameter would corrupt "
             "co-located replicas"
         )
+    else:
+        pass
     return policy
 
 
-def _validate_secure_dir(dir_path: str) -> None:
+def validate_secure_dir(dir_path: str) -> None:
     """Reject a store dir another user could write; else they could plant a
     handle file the follower then unpickles. No-op off POSIX."""
     if not _FS_TRUST_ENFORCED:
         return
+    else:
+        pass
     st = os.lstat(dir_path)
     if not stat.S_ISDIR(st.st_mode):
         raise WeightShareError(f"weight-share store must be a directory: {dir_path}")
+    else:
+        pass
     if st.st_uid != os.geteuid():
         raise WeightShareError(
             f"weight-share store {dir_path} is owned by uid={st.st_uid}, expected "
             f"uid={os.geteuid()}"
         )
+    else:
+        pass
     if stat.S_IMODE(st.st_mode) & 0o077:
         raise WeightShareError(
             f"weight-share store {dir_path} must not grant group/world "
             f"permissions, got mode={stat.S_IMODE(st.st_mode):#o}"
         )
+    else:
+        pass
 
 
-def _check_private_stat(st: os.stat_result, file_path: str) -> None:
+def check_private_stat(st: os.stat_result, file_path: str) -> None:
     if not stat.S_ISREG(st.st_mode):
         raise WeightShareError(
             f"weight-share handle file must be a regular file: {file_path}"
         )
+    else:
+        pass
     if st.st_uid != os.geteuid():
         raise WeightShareError(
             f"weight-share handle file {file_path} is owned by uid={st.st_uid}, "
             f"expected uid={os.geteuid()}"
         )
+    else:
+        pass
     if stat.S_IMODE(st.st_mode) & 0o077:
         raise WeightShareError(
             f"weight-share handle file {file_path} must not grant group/world "
             f"permissions, got mode={stat.S_IMODE(st.st_mode):#o}"
         )
+    else:
+        pass
 
 
-def _prepare_secure_dir(dir_path: str) -> None:
+def prepare_secure_dir(dir_path: str) -> None:
     os.makedirs(dir_path, mode=0o700, exist_ok=True)
     if _FS_TRUST_ENFORCED:
         os.chmod(dir_path, 0o700)
-    _validate_secure_dir(dir_path)
+    else:
+        pass
+    validate_secure_dir(dir_path)
 
 
-def _proc_stat_fields(pid: int) -> list[str] | None:
+def proc_stat_fields(pid: int) -> list[str] | None:
     """The whitespace fields of /proc/<pid>/stat after the (comm) field.
 
     Index 0 is the state char, index 19 is starttime. comm can contain spaces
@@ -407,33 +490,39 @@ def _proc_stat_fields(pid: int) -> list[str] | None:
     closing_paren = stat_line.rfind(")")
     if closing_paren < 0:
         return None
+    else:
+        pass
     return stat_line[closing_paren + 1 :].split()
 
 
-def _is_zombie(pid: int) -> bool:
-    fields = _proc_stat_fields(pid)
+def is_zombie(pid: int) -> bool:
+    fields = proc_stat_fields(pid)
     # Note (guozhihao): Z still passes kill(pid, 0) until it is reaped.
     return bool(fields) and fields[0] == "Z"
 
 
-def _proc_start_time(pid: int) -> str | None:
+def proc_start_time(pid: int) -> str | None:
     """Process start time, which differs for a recycled pid (None off Linux)."""
-    fields = _proc_stat_fields(pid)
+    fields = proc_stat_fields(pid)
     if not fields or len(fields) <= 19:
         return None
+    else:
+        pass
     return fields[19]
 
 
 def pid_is_alive(pid: int) -> bool:
     if os.name != "posix" or pid <= 0:
         return pid > 0
+    else:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return not _is_zombie(pid)
+    return not is_zombie(pid)
 
 
 class LeaderLivenessMonitor:
@@ -456,44 +545,60 @@ class LeaderLivenessMonitor:
         self.leader_start_time = leader_start_time
         self.poll_interval_s = poll_interval_s
         self.exit_code = exit_code
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._stop = (
+            threading.Event()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.thread: threading.Thread | None = None
 
-    def _leader_present(self) -> bool:
+    def leader_present(self) -> bool:
         if not pid_is_alive(self.leader_pid):
             return False
+        else:
+            pass
         # Note (Jiaxin Deng): a recycled pid (leader died, pid reassigned) has
         # a different start time, so treat a mismatch as the leader being gone.
         if self.leader_start_time is not None:
-            return _proc_start_time(self.leader_pid) == self.leader_start_time
+            return proc_start_time(self.leader_pid) == self.leader_start_time
+        else:
+            pass
         return True
 
     def start(self) -> None:
-        if self._thread is not None or not self.leader_pid:
+        if self.thread is not None or not self.leader_pid:
             return
-        self._thread = threading.Thread(
-            target=self._run, name="weight-share-leader-liveness", daemon=True
+        else:
+            pass
+        self.thread = threading.Thread(
+            target=self.run, name="weight-share-leader-liveness", daemon=True
         )
-        self._thread.start()
+        self.thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        self._stop.set()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+        else:
+            pass
 
-    def _run(self) -> None:
-        while not self._stop.wait(self.poll_interval_s):
-            if self._leader_present():
+    def run(self) -> None:
+        while not self._stop.wait(
+            self.poll_interval_s
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if self.leader_present():
                 continue
+            else:
+                pass
             logger.critical(
                 "[weight-share] leader pid=%s is gone; terminating follower",
                 self.leader_pid,
             )
-            os._exit(self.exit_code)
+            os._exit(
+                self.exit_code
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
-def _atomic_write(file_path: str, data: bytes) -> None:
+def atomic_write(file_path: str, data: bytes) -> None:
     """Publish data to file_path via tmp, fsync, then atomic rename.
 
     Rename atomicity guarantees a polling follower never observes a partial
@@ -509,6 +614,8 @@ def _atomic_write(file_path: str, data: bytes) -> None:
         with os.fdopen(fd, "wb") as fh:
             if _FS_TRUST_ENFORCED:
                 os.fchmod(fh.fileno(), 0o600)
+            else:
+                pass
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
@@ -516,6 +623,8 @@ def _atomic_write(file_path: str, data: bytes) -> None:
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+        else:
+            pass
     try:
         dir_fd = os.open(dir_path, os.O_RDONLY)
         try:
@@ -527,7 +636,7 @@ def _atomic_write(file_path: str, data: bytes) -> None:
         pass
 
 
-def _resolve_private_names(
+def resolve_private_names(
     tensors: dict[str, torch.Tensor],
     private_names: frozenset[str],
     model: torch.nn.Module,
@@ -541,6 +650,8 @@ def _resolve_private_names(
             f"registered tensors of {type(model).__name__}; the policy and the "
             "model have diverged"
         )
+    else:
+        pass
     return private_names
 
 
@@ -548,7 +659,7 @@ def export_weights(
     model: torch.nn.Module,
     file_path: str,
     *,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     alias_predicate: Callable[[torch.Tensor], bool] | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
@@ -576,43 +687,51 @@ def export_weights(
             f"this process already exported weights to {abs_path}; a second "
             "export would invalidate handles held by attached followers"
         )
+    else:
+        pass
     if validate_secure:
-        _prepare_secure_dir(os.path.dirname(abs_path))
-        _claim_namespace(abs_path, run_id)
+        prepare_secure_dir(os.path.dirname(abs_path))
+        claim_namespace(abs_path, run_id)
+    else:
+        pass
     # Note (Jiaxin Deng): clear a previous run's stale export before publishing.
     if os.path.exists(abs_path):
         os.unlink(abs_path)
-    serializer = _SglangIpcSerializer if serializer is None else serializer
+    else:
+        pass
+    serializer = SglangIpcSerializer if serializer is None else serializer
     alias_predicate = (
         (lambda t: t.is_cuda) if alias_predicate is None else alias_predicate
     )
 
-    tensors = _named_shared_tensors(model)
+    tensors = named_shared_tensors(model)
     if not tensors:
         raise WeightShareError("model has no parameters or buffers to export")
-    private = _resolve_private_names(tensors, private_names, model)
+    else:
+        pass
+    private = resolve_private_names(tensors, private_names, model)
     ipc_tensors = {
         n: t for n, t in tensors.items() if n not in private and alias_predicate(t)
     }
     value_tensors = {n: t for n, t in tensors.items() if n not in ipc_tensors}
 
-    payload = {
+    payload: WeightSharePayload = {
         "format_version": _FORMAT_VERSION,
         "model_class": type(model).__name__,
-        "manifest_hash": _manifest_hash(tensors, private),
+        "manifest_hash": manifest_hash(tensors, private),
         "private_names": sorted(private),
         "torch_version": torch.__version__,
         "pid": os.getpid(),
-        "leader_start_time": _proc_start_time(os.getpid()),
+        "leader_start_time": proc_start_time(os.getpid()),
         "model_path": model_path,
         "model_revision": model_revision,
-        "gpu_uuid": _gpu_uuid(),
+        "gpu_uuid": gpu_uuid(),
         "run_id": run_id,
         "ipc_blob": serializer.serialize(ipc_tensors),
         "ipc_names": sorted(ipc_tensors),
-        "value_blobs": {n: _tensor_to_value_bytes(t) for n, t in value_tensors.items()},
+        "value_blobs": {n: tensor_to_value_bytes(t) for n, t in value_tensors.items()},
     }
-    _atomic_write(abs_path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    atomic_write(abs_path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
     _EXPORTED_FILES.add(abs_path)
 
     record = {
@@ -640,6 +759,8 @@ def wait_for_export(
                 f"[weight-share] timed out after {timeout_s:.0f}s waiting for "
                 f"leader handle file {file_path}; is the leader replica up?"
             )
+        else:
+            pass
         time.sleep(poll_interval_s)
 
 
@@ -662,13 +783,43 @@ def wait_for_any_export(
             entries = []
         if any(e.endswith(_FILE_SUFFIX) for e in entries):
             return
+        else:
+            pass
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"[weight-share] timed out after {timeout_s:.0f}s waiting for "
                 f"a leader handle file under {dir_path}; is the leader "
                 "replica up?"
             )
+        else:
+            pass
         time.sleep(poll_interval_s)
+
+
+class WeightSharePayload(TypedDict):
+    format_version: int
+    model_class: str
+    manifest_hash: str
+    private_names: list[str]
+    pid: int
+    ipc_blob: bytes | bytearray
+    ipc_names: list[str]
+    value_blobs: dict[str, bytes | bytearray]
+    torch_version: NotRequired[str]
+    leader_start_time: NotRequired[str | None]
+    model_path: NotRequired[str | None]
+    model_revision: NotRequired[str | None]
+    gpu_uuid: NotRequired[str | None]
+    run_id: NotRequired[str | None]
+
+
+class WeightShareMetadata(TypedDict):
+    pid: ReadOnly[NotRequired[int]]
+    leader_start_time: ReadOnly[NotRequired[str | None]]
+    model_path: ReadOnly[NotRequired[str | None]]
+    model_revision: ReadOnly[NotRequired[str | None]]
+    gpu_uuid: ReadOnly[NotRequired[str | None]]
+    run_id: ReadOnly[NotRequired[str | None]]
 
 
 # Note (Jiaxin Deng): a closed schema checked before deserialization, so a
@@ -685,7 +836,7 @@ _REQUIRED_PAYLOAD_FIELDS: dict[str, type | tuple[type, ...]] = {
 }
 
 
-def _safe_unpickle(fh: Any, file_path: str) -> Any:
+def safe_unpickle(fh: BinaryIO, file_path: str) -> object:
     try:
         return pickle.load(fh)
     except WeightShareError:
@@ -696,28 +847,36 @@ def _safe_unpickle(fh: Any, file_path: str) -> Any:
         ) from exc
 
 
-def _validate_payload_schema(payload: Any, file_path: str) -> None:
+def validate_payload_schema(payload: object, file_path: str) -> None:
     if not isinstance(payload, dict):
         raise WeightShareError(
             f"weight-share handle {file_path} is not a payload dict "
             f"(got {type(payload).__name__})"
         )
+    else:
+        pass
     version = payload.get("format_version")
     if version != _FORMAT_VERSION:
         raise WeightShareError(
             f"unsupported weight-share handle format in {file_path} "
             f"(got {version!r}, expected {_FORMAT_VERSION})"
         )
+    else:
+        pass
     for field, expected in _REQUIRED_PAYLOAD_FIELDS.items():
         if field not in payload:
             raise WeightShareError(
                 f"weight-share handle {file_path} is missing required field {field!r}"
             )
+        else:
+            pass
         if not isinstance(payload[field], expected):
             raise WeightShareError(
                 f"weight-share handle {file_path} field {field!r} has wrong type "
                 f"{type(payload[field]).__name__}"
             )
+        else:
+            pass
     for field in ("ipc_names", "private_names"):
         names = payload[field]
         if not all(isinstance(n, str) for n in names) or len(set(names)) != len(names):
@@ -725,21 +884,25 @@ def _validate_payload_schema(payload: Any, file_path: str) -> None:
                 f"weight-share handle {file_path} field {field!r} must hold "
                 "unique tensor names"
             )
+        else:
+            pass
     for key, blob in payload["value_blobs"].items():
         if not isinstance(key, str) or not isinstance(blob, (bytes, bytearray)):
             raise WeightShareError(
                 f"weight-share handle {file_path} value_blobs must map tensor "
                 "names to bytes"
             )
+        else:
+            pass
 
 
-def _load_payload(
+def load_payload(
     file_path: str, model: torch.nn.Module, *, validate_secure: bool = True
-) -> dict[str, Any]:
+) -> WeightSharePayload:
     if validate_secure and _FS_TRUST_ENFORCED:
         # Note (Jiaxin Deng): O_NOFOLLOW + fstat binds the check to the opened
         # inode before unpickling (an RCE surface).
-        _validate_secure_dir(os.path.dirname(os.path.abspath(file_path)))
+        validate_secure_dir(os.path.dirname(os.path.abspath(file_path)))
         try:
             fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as exc:
@@ -747,25 +910,29 @@ def _load_payload(
                 f"refusing to open weight-share handle {file_path}: {exc}"
             ) from exc
         try:
-            _check_private_stat(os.fstat(fd), file_path)
+            check_private_stat(os.fstat(fd), file_path)
         except Exception:
             os.close(fd)
             raise
         with os.fdopen(fd, "rb") as fh:
-            payload = _safe_unpickle(fh, file_path)
+            payload = safe_unpickle(fh, file_path)
     else:
         with open(file_path, "rb") as fh:
-            payload = _safe_unpickle(fh, file_path)
-    _validate_payload_schema(payload, file_path)
+            payload = safe_unpickle(fh, file_path)
+    validate_payload_schema(payload, file_path)
     if payload["model_class"] != type(model).__name__:
         raise WeightShareError(
             f"handle file {file_path} was exported for model class "
             f"{payload['model_class']!r}, follower model is {type(model).__name__!r}"
         )
+    else:
+        pass
     if payload["pid"] <= 0:
         raise WeightShareError(
             f"handle file {file_path} has an invalid leader pid {payload['pid']!r}"
         )
+    else:
+        pass
     return payload
 
 
@@ -775,7 +942,7 @@ def attach_weights(
     *,
     timeout_s: float = DEFAULT_ATTACH_TIMEOUT_S,
     poll_interval_s: float = 0.5,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
@@ -790,7 +957,7 @@ def attach_weights(
     or classification mismatch in either direction. Returns the attachment
     record for verify_attachment.
     """
-    record, _ = _attach_and_check(
+    record, _ = attach_and_check(
         model,
         file_path,
         timeout_s=timeout_s,
@@ -805,33 +972,33 @@ def attach_weights(
     return record
 
 
-def _attach_and_check(
+def attach_and_check(
     model: torch.nn.Module,
     file_path: str,
     *,
     timeout_s: float,
     poll_interval_s: float,
-    serializer: Any | None,
+    serializer: WeightTensorSerializer | None,
     validate_secure: bool,
     model_path: str | None,
     model_revision: str | None,
     run_id: str | None = None,
     private_names: frozenset[str] = frozenset(),
-) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], dict[str, Any]]:
-    serializer = _SglangIpcSerializer if serializer is None else serializer
+) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], WeightSharePayload]:
+    serializer = SglangIpcSerializer if serializer is None else serializer
     wait_for_export(file_path, timeout_s, poll_interval_s)
-    payload = _load_payload(file_path, model, validate_secure=validate_secure)
-    _check_model_identity(payload, model_path, model_revision, file_path, run_id=run_id)
-    _check_leader_alive(payload, "before attach")
-    record = _alias_from_payload(
+    payload = load_payload(file_path, model, validate_secure=validate_secure)
+    check_model_identity(payload, model_path, model_revision, file_path, run_id=run_id)
+    check_leader_alive(payload, "before attach")
+    record = alias_from_payload(
         model, payload, file_path, serializer, private_names=private_names
     )
-    _check_leader_alive(payload, "after attach")
+    check_leader_alive(payload, "after attach")
     return record, payload
 
 
-def _check_model_identity(
-    payload: dict[str, Any],
+def check_model_identity(
+    payload: WeightShareMetadata,
     model_path: str | None,
     model_revision: str | None,
     file_path: str,
@@ -846,63 +1013,79 @@ def _check_model_identity(
             f"handle file {file_path} was exported for model_path "
             f"{recorded_path!r}, follower is {model_path!r}"
         )
+    else:
+        pass
     recorded_rev = payload.get("model_revision")
     if recorded_rev is not None and recorded_rev != model_revision:
         raise WeightShareError(
             f"handle file {file_path} was exported for revision "
             f"{recorded_rev!r}, follower is {model_revision!r}"
         )
+    else:
+        pass
     # Note (Jiaxin Deng): fail closed when the follower has an identity to
     # match: a running GPU or a launcher run id must find an equal recorded
     # value, so a stale export missing the field cannot slip through.
-    own_uuid = _gpu_uuid()
+    own_uuid = gpu_uuid()
     if own_uuid is not None and payload.get("gpu_uuid") != own_uuid:
         raise WeightShareError(
             f"handle file {file_path} was exported from GPU "
             f"{payload.get('gpu_uuid')!r}, follower is on {own_uuid!r}"
         )
+    else:
+        pass
     if run_id is not None and payload.get("run_id") != run_id:
         raise WeightShareError(
             f"handle file {file_path} belongs to run {payload.get('run_id')!r}, "
             f"follower is run {run_id!r}"
         )
+    else:
+        pass
 
 
-def _check_leader_alive(payload: dict[str, Any], when: str) -> None:
+def check_leader_alive(payload: WeightShareMetadata, when: str) -> None:
     leader_pid = payload.get("pid")
     if not leader_pid:
         return
+    else:
+        pass
     if not pid_is_alive(int(leader_pid)):
         raise WeightShareError(
             f"weight-share leader pid={leader_pid} is not alive ({when}); "
             "refusing to serve on a dead leader's CUDA storage"
         )
+    else:
+        pass
     # Note (Jiaxin Deng): a recycled pid (new process) has a different start
     # time; require the recorded start time on Linux so this never fails open.
     recorded_start = payload.get("leader_start_time")
-    current_start = _proc_start_time(int(leader_pid))
+    current_start = proc_start_time(int(leader_pid))
     if _FS_TRUST_ENFORCED and recorded_start is None:
         raise WeightShareError(
             f"weight-share handle for pid={leader_pid} has no leader start time "
             f"({when}); refusing to skip the recycled-pid check"
         )
+    else:
+        pass
     if recorded_start is not None and current_start != recorded_start:
         raise WeightShareError(
             f"weight-share leader pid={leader_pid} was recycled ({when}); "
             "the original exporting process is gone"
         )
+    else:
+        pass
 
 
-def _alias_from_payload(
+def alias_from_payload(
     model: torch.nn.Module,
-    payload: dict[str, Any],
+    payload: WeightSharePayload,
     file_path: str,
-    serializer: Any,
+    serializer: WeightTensorSerializer,
     private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter/buffer onto the payload's shared storage."""
-    own_tensors = _named_shared_tensors(model)
-    private = _resolve_private_names(own_tensors, private_names, model)
+    own_tensors = named_shared_tensors(model)
+    private = resolve_private_names(own_tensors, private_names, model)
     if sorted(private) != payload["private_names"]:
         raise WeightShareError(
             f"weight-share classification mismatch for {file_path}: leader "
@@ -910,9 +1093,13 @@ def _alias_from_payload(
             f"follower's policy marks {sorted(private)!r}; the replicas are "
             "not running the same policy"
         )
-    own_hash = _manifest_hash(own_tensors, private)
+    else:
+        pass
+    own_hash = manifest_hash(own_tensors, private)
     if own_hash != payload["manifest_hash"]:
-        _raise_manifest_mismatch(model, payload, own_tensors, file_path)
+        raise_manifest_mismatch(model, payload, own_tensors, file_path)
+    else:
+        pass
 
     try:
         shared: dict[str, torch.Tensor] = serializer.deserialize(payload["ipc_blob"])
@@ -928,20 +1115,26 @@ def _alias_from_payload(
         raise WeightShareError(
             f"handle blob in {file_path} did not deserialize to a str->tensor mapping"
         )
+    else:
+        pass
     if sorted(shared) != payload["ipc_names"]:
         raise WeightShareError(
             f"handle blob in {file_path} deserialized to a different tensor "
             "set than its manifest declares"
         )
+    else:
+        pass
     leaked = sorted(private & set(shared))
     if leaked:
         raise WeightShareError(
             f"handle blob in {file_path} IPC-shares {leaked}, which this "
             "policy keeps replica-private; refusing to alias per-request state"
         )
+    else:
+        pass
     try:
         values = {
-            n: _value_bytes_to_tensor(b) for n, b in payload["value_blobs"].items()
+            n: value_bytes_to_tensor(b) for n, b in payload["value_blobs"].items()
         }
     except Exception as exc:
         raise WeightShareError(
@@ -953,12 +1146,16 @@ def _alias_from_payload(
             f"handle blob in {file_path} carries tensors this model does not "
             f"register (first 5): {extra[:5]}"
         )
+    else:
+        pass
     doubled = sorted(set(shared) & set(values))
     if doubled:
         raise WeightShareError(
             f"handle blob in {file_path} lists {doubled[:5]} both as IPC and "
             "by-value; the export is malformed"
         )
+    else:
+        pass
 
     params = dict(model.named_parameters())
     # Note (Jiaxin Deng): a buffer can be registered under several module paths,
@@ -981,12 +1178,16 @@ def _alias_from_payload(
             raise WeightShareError(
                 f"handle blob in {file_path} entry {name!r} is not a tensor"
             )
+        else:
+            pass
         if tuple(incoming.shape) != tuple(own.shape) or incoming.dtype != own.dtype:
             raise WeightShareError(
                 f"tensor {name!r} mismatch: leader "
                 f"{tuple(incoming.shape)}/{incoming.dtype}, follower "
                 f"{tuple(own.shape)}/{own.dtype}"
             )
+        else:
+            pass
         if incoming.is_cuda and incoming.device != own.device:
             # Note (Jiaxin Deng): a UUID-remap failure would otherwise surface
             # later as a mixed-device kernel error that never names weight sharing.
@@ -994,6 +1195,8 @@ def _alias_from_payload(
                 f"tensor {name!r} arrived on {incoming.device}, expected "
                 f"{own.device}: CUDA IPC handle mapped to the wrong device"
             )
+        else:
+            pass
         if name in shared:
             if name in params:
                 # Note (Jiaxin Deng): tied params are one Parameter object, so a
@@ -1001,13 +1204,15 @@ def _alias_from_payload(
                 params[name].data = incoming
             else:
                 for dotted in buffer_paths_by_id.get(id(own), [name]):
-                    _rebind_buffer(model, dotted, incoming)
+                    rebind_buffer(model, dotted, incoming)
             aliased_bytes += incoming.numel() * incoming.element_size()
+        else:
+            pass
 
     # Note (Jiaxin Deng): a tensor registered under both a shared and a private
     # name would have moved with the shared rebinds above; copying into it now
     # would write per-request state into the leader's storage, so check first.
-    moved_check = _named_shared_tensors(model)
+    moved_check = named_shared_tensors(model)
     for name in sorted(private):
         current = moved_check.get(name)
         if (
@@ -1020,6 +1225,8 @@ def _alias_from_payload(
                 "it is cross-registered with a shared tensor and cannot stay "
                 "replica-private"
             )
+        else:
+            pass
 
     for name, own in own_tensors.items():
         if name not in shared:
@@ -1028,9 +1235,11 @@ def _alias_from_payload(
             # address its CUDA graphs capture stays this replica's.
             with torch.no_grad():
                 own.copy_(values[name].to(own.device))
+        else:
+            pass
 
     record: dict[str, tuple[int, tuple[int, ...], torch.dtype]] = {}
-    for name, tensor in _named_shared_tensors(model).items():
+    for name, tensor in named_shared_tensors(model).items():
         if name in shared:
             expected = shared[name]
             if tensor.data_ptr() != expected.data_ptr():
@@ -1038,11 +1247,15 @@ def _alias_from_payload(
                     f"aliasing failed for {name!r}: module tensor does not "
                     "point at the shared storage after attach"
                 )
+            else:
+                pass
             record[name] = (tensor.data_ptr(), tuple(tensor.shape), tensor.dtype)
         elif name in private:
             # Note (Jiaxin Deng): recorded so verify_attachment also catches a
             # private tensor rebound (e.g. onto shared storage) after attach.
             record[name] = (tensor.data_ptr(), tuple(tensor.shape), tensor.dtype)
+        else:
+            pass
     private_count = sum(1 for name in record if name in private)
     logger.info(
         f"[weight-share] follower attached {len(record) - private_count} shared "
@@ -1052,21 +1265,27 @@ def _alias_from_payload(
     return record
 
 
-def _rebind_buffer(
+def rebind_buffer(
     model: torch.nn.Module, dotted_name: str, tensor: torch.Tensor
 ) -> None:
     module_path, _, leaf = dotted_name.rpartition(".")
     module = model.get_submodule(module_path) if module_path else model
-    if leaf not in module._buffers:
+    if (
+        leaf not in module._buffers
+    ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         raise WeightShareError(
             f"{dotted_name!r} is not a registered buffer on the follower model"
         )
-    module._buffers[leaf] = tensor
+    else:
+        pass
+    module._buffers[leaf] = (
+        tensor  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    )
 
 
-def _raise_manifest_mismatch(
+def raise_manifest_mismatch(
     model: torch.nn.Module,
-    payload: dict[str, Any],
+    payload: WeightSharePayload,
     own_tensors: dict[str, torch.Tensor],
     file_path: str,
 ) -> None:
@@ -1093,7 +1312,7 @@ def verify_attachment(
     step that re-created a parameter after attach (breaking the alias) turns
     into a hard error here instead of silently serving dummy weights.
     """
-    current = _named_shared_tensors(model)
+    current = named_shared_tensors(model)
     drifted = []
     for name, (ptr, shape, dtype) in record.items():
         tensor = current.get(name)
@@ -1103,18 +1322,22 @@ def verify_attachment(
             drifted.append(f"{name} (storage rebound after attach)")
         elif tuple(tensor.shape) != shape or tensor.dtype != dtype:
             drifted.append(f"{name} (shape/dtype changed after attach)")
+        else:
+            pass
     if drifted:
         raise WeightShareError(
             "weight-share attachment was broken after attach; offending "
             f"tensors (first 10): {drifted[:10]}"
         )
+    else:
+        pass
 
 
 def leader_export(
     model: torch.nn.Module,
     dir_path: str,
     *,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
@@ -1139,7 +1362,7 @@ def follower_attach(
     dir_path: str,
     *,
     timeout_s: float = DEFAULT_ATTACH_TIMEOUT_S,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
@@ -1151,7 +1374,7 @@ def follower_attach(
     Returns the attachment record and a started LeaderLivenessMonitor; the
     caller keeps a reference so the follower exits if the leader dies.
     """
-    record, payload = _attach_and_check(
+    record, payload = attach_and_check(
         model,
         handle_file_for_model(dir_path, model),
         timeout_s=timeout_s,

@@ -13,7 +13,7 @@ from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.proto import AdminResult, AdminResultMessage
 
 
-def _result(op_id: str) -> AdminResultMessage:
+def make_admin_result(op_id: str) -> AdminResultMessage:
     return AdminResultMessage(
         AdminResult(
             op_id=op_id,
@@ -37,12 +37,12 @@ def test_collect_admin_results_discards_result_from_timed_out_operation() -> Non
         with pytest.raises(queue.Empty):
             await fanout.collect_admin_results("op-1", timeout_s=0.01)
 
-        result_queue.put_nowait(_result("op-1"))
-        result_queue.put_nowait(_result("op-2"))
+        result_queue.put_nowait(make_admin_result("op-1"))
+        result_queue.put_nowait(make_admin_result("op-2"))
         results = await fanout.collect_admin_results("op-2", timeout_s=1.0)
         assert [msg.result.op_id for msg in results] == ["op-2"]
 
-        result_queue.put_nowait(_result("op-3"))
+        result_queue.put_nowait(make_admin_result("op-3"))
         results = await fanout.collect_admin_results("op-3", timeout_s=1.0)
         assert [msg.result.op_id for msg in results] == ["op-3"]
 
@@ -78,7 +78,7 @@ def test_collect_admin_results_keeps_deadline_after_stale_result() -> None:
             self.timeouts.append(timeout)
             if len(self.timeouts) == 1:
                 time.sleep(0.02)
-                return _result("op-1")
+                return make_admin_result("op-1")
             raise queue.Empty
 
     async def _run() -> None:
@@ -102,27 +102,27 @@ def test_collect_admin_results_keeps_deadline_after_stale_result() -> None:
 def test_invalid_result_does_not_leave_other_follower_collector_running() -> None:
     class GatedFirstGetQueue:
         def __init__(self) -> None:
-            self._items: queue.Queue = queue.Queue()
-            self._lock = threading.Lock()
-            self._calls = 0
+            self.results: queue.Queue = queue.Queue()
+            self.lock = threading.Lock()
+            self.get_call_count = 0
             self.first_get_started = threading.Event()
             self.release_first_get = threading.Event()
             self.first_get_finished = threading.Event()
 
         def put_nowait(self, item: AdminResultMessage) -> None:
-            self._items.put_nowait(item)
+            self.results.put_nowait(item)
 
         def get(self, *, timeout: float) -> AdminResultMessage:
-            with self._lock:
-                self._calls += 1
-                call_number = self._calls
+            with self.lock:
+                self.get_call_count += 1
+                call_number = self.get_call_count
             if call_number == 1:
                 self.first_get_started.set()
                 if not self.release_first_get.wait(timeout):
                     self.first_get_finished.set()
                     raise queue.Empty
             try:
-                return self._items.get(timeout=timeout)
+                return self.results.get(timeout=timeout)
             finally:
                 if call_number == 1:
                     self.first_get_finished.set()
@@ -150,8 +150,8 @@ def test_invalid_result_does_not_leave_other_follower_collector_running() -> Non
         ):
             await collection
 
-        invalid_queue.put_nowait(_result("op-2"))
-        gated_queue.put_nowait(_result("op-2"))
+        invalid_queue.put_nowait(make_admin_result("op-2"))
+        gated_queue.put_nowait(make_admin_result("op-2"))
         gated_queue.release_first_get.set()
         while not gated_queue.first_get_finished.is_set():
             await asyncio.sleep(0)

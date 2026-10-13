@@ -9,7 +9,7 @@ from sglang_omni.client.types import GenerateRequest
 from sglang_omni.proto import CompleteMessage, StreamMessage
 
 
-class _FakeCoordinator:
+class FakeCoordinator:
     async def stream(self, request_id, omni_request):
         del omni_request
         yield StreamMessage(
@@ -39,7 +39,7 @@ class _FakeCoordinator:
 
 
 def test_completion_stream_does_not_repeat_terminal_fun_asr_text() -> None:
-    client = Client(coordinator=_FakeCoordinator())
+    client = Client(coordinator=FakeCoordinator())
 
     async def collect():
         return [

@@ -8,9 +8,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sglang.srt.server_args import ServerArgs
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
+from typing_extensions import TypedDict, Unpack
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    GenerationStageDefaults,
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
@@ -18,7 +22,12 @@ from sglang_omni.scheduling.generation_batch_policy import (
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
-def _server_args(
+class AttentionBackendOverrides(TypedDict, total=False):
+    attention_backend: str
+    prefill_attention_backend: str
+
+
+def make_server_args(
     *,
     prefill_backend: str = "disabled",
     prefill_bs: Any = None,
@@ -27,9 +36,14 @@ def _server_args(
     chunked_prefill_size: int | None = 8192,
     max_prefill_tokens: int = 16384,
     disable_cuda_graph: bool = False,
+    attention_backend: str = "fa3",
+    prefill_attention_backend: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         max_running_requests=4,
+        attention_backend=attention_backend,
+        prefill_attention_backend=prefill_attention_backend,
+        decode_attention_backend=None,
         disable_cuda_graph=disable_cuda_graph,
         enable_torch_compile=False,
         torch_compile_max_bs=None,
@@ -53,10 +67,10 @@ def _server_args(
     )
 
 
-_PREFILL_BS_LOCKED = frozenset({("prefill", "bs")})
+PREFILL_BS_LOCKED = frozenset({("prefill", "bs")})
 
 
-def _validate(server_args: SimpleNamespace) -> None:
+def validate(server_args: SimpleNamespace) -> None:
     validate_generation_batch_policy(
         model_name="Test TTS",
         server_args=server_args,
@@ -65,9 +79,9 @@ def _validate(server_args: SimpleNamespace) -> None:
 
 
 def test_prefill_policy_accepts_disabled_and_declared_breakable() -> None:
-    _validate(_server_args())
-    _validate(
-        _server_args(
+    validate(make_server_args())
+    validate(
+        make_server_args(
             prefill_backend="breakable",
             prefill_bs=(128, 256, 512),
             prefill_max_bs=512,
@@ -77,8 +91,8 @@ def test_prefill_policy_accepts_disabled_and_declared_breakable() -> None:
 
 def test_breakable_requires_cuda_graphs_enabled() -> None:
     with pytest.raises(ValueError, match="require CUDA graphs enabled"):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(128,),
                 disable_cuda_graph=True,
@@ -86,19 +100,55 @@ def test_breakable_requires_cuda_graphs_enabled() -> None:
         )
 
 
-def test_non_breakable_prefill_backend_is_rejected() -> None:
-    for backend in ("full", "tc_piecewise"):
-        with pytest.raises(ValueError, match="must be 'breakable'"):
-            _validate(
-                _server_args(
-                    prefill_backend=backend,
+def test_full_prefill_backend_needs_the_model_to_declare_it() -> None:
+    # note (luojiaxuan): stages that build their own server args and call the
+    # validator directly, Qwen3-Omni thinker and talker_ar, never widen the set.
+    with pytest.raises(ValueError, match="must be one of 'breakable', 'disabled'"):
+        validate(make_server_args(prefill_backend="full", prefill_bs=(128,)))
+
+    validate_generation_batch_policy(
+        model_name="Test TTS",
+        server_args=make_server_args(prefill_backend="full", prefill_bs=(128,)),
+        allowed_prefill_backends=("breakable", "full"),
+    )
+
+
+def test_full_prefill_backend_needs_an_attention_backend_that_captures_it() -> None:
+    def full_policy(**attention: Unpack[AttentionBackendOverrides]) -> None:
+        validate_generation_batch_policy(
+            model_name="Test TTS",
+            server_args=make_server_args(
+                prefill_backend="full", prefill_bs=(128,), **attention
+            ),
+            allowed_prefill_backends=("breakable", "full"),
+        )
+
+    full_policy(attention_backend="fa3")
+    full_policy(attention_backend="flashinfer")
+    full_policy(attention_backend="triton", prefill_attention_backend="fa3")
+    for attention in (
+        {"attention_backend": "triton"},
+        {"attention_backend": "fa3", "prefill_attention_backend": "triton"},
+    ):
+        with pytest.raises(ValueError, match="need a prefill attention backend"):
+            full_policy(**attention)
+
+
+def test_piecewise_prefill_backend_is_rejected() -> None:
+    for allowed in (("breakable",), ("breakable", "full")):
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_generation_batch_policy(
+                model_name="Test TTS",
+                server_args=make_server_args(
+                    prefill_backend="tc_piecewise",
                     prefill_bs=(128,),
-                )
+                ),
+                allowed_prefill_backends=allowed,
             )
 
 
 def test_breakable_accepts_a_derived_ladder(caplog) -> None:
-    server_args = _server_args(
+    server_args = make_server_args(
         prefill_backend="breakable",
         prefill_bs=build_default_prefill_cuda_graph_bs(8192),
         prefill_max_bs=8192,
@@ -106,15 +156,15 @@ def test_breakable_accepts_a_derived_ladder(caplog) -> None:
     )
 
     with caplog.at_level(logging.INFO):
-        _validate(server_args)
+        validate(server_args)
 
     assert not caplog.records
 
 
 def test_breakable_rejects_non_increasing_buckets() -> None:
     with pytest.raises(ValueError, match="strictly increasing"):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(256, 128),
             )
@@ -126,8 +176,8 @@ def test_breakable_rejects_non_integral_bucket_types(
     buckets: tuple[Any, int],
 ) -> None:
     with pytest.raises(ValueError, match="sequence of positive integers"):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=buckets,
             )
@@ -136,8 +186,8 @@ def test_breakable_rejects_non_integral_bucket_types(
 
 def test_prefill_max_bs_above_the_top_bucket_is_accepted(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(128, 256),
                 prefill_max_bs=512,
@@ -148,14 +198,14 @@ def test_prefill_max_bs_above_the_top_bucket_is_accepted(caplog) -> None:
 
 
 def test_buckets_above_the_chunk_warn_and_stay(caplog) -> None:
-    server_args = _server_args(
+    server_args = make_server_args(
         prefill_backend="breakable",
         prefill_bs=(4096, 12288),
         chunked_prefill_size=8192,
     )
 
     with caplog.at_level(logging.WARNING):
-        _validate(server_args)
+        validate(server_args)
 
     assert server_args.cuda_graph_config.prefill.bs == (4096, 12288)
     assert "max=12288 exceeds chunked_prefill_size=8192" in caplog.text
@@ -188,15 +238,15 @@ def test_only_the_chunk_bounds_a_prefill_forward(
     server_args_kwargs: dict[str, Any], caplog
 ) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(_server_args(prefill_backend="breakable", **server_args_kwargs))
+        validate(make_server_args(prefill_backend="breakable", **server_args_kwargs))
 
     assert not caplog.records
 
 
 def test_top_bucket_equal_to_the_chunk_is_silent(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(2048, 4096),
                 prefill_max_bs=8192,
@@ -209,8 +259,8 @@ def test_top_bucket_equal_to_the_chunk_is_silent(caplog) -> None:
 
 def test_empty_derived_ladder_passes_with_a_warning(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=[],
                 prefill_max_bs=-1,
@@ -234,7 +284,7 @@ def test_empty_derived_ladder_passes_with_a_warning(caplog) -> None:
 def test_breakable_rejects_sglang_incompatible_features(
     incompatibility: dict[str, Any], match: str
 ) -> None:
-    server_args = _server_args(
+    server_args = make_server_args(
         prefill_backend="breakable",
         prefill_bs=(128, 256, 512),
         prefill_max_bs=512,
@@ -242,7 +292,7 @@ def test_breakable_rejects_sglang_incompatible_features(
     override_server_args(server_args, "test", **incompatibility)
 
     with pytest.raises(ValueError, match=match):
-        _validate(server_args)
+        validate(server_args)
 
 
 def test_nested_prefill_bs_composes_as_operator_buckets() -> None:
@@ -414,8 +464,8 @@ def test_conflicting_flat_and_nested_prefill_overrides_are_rejected() -> None:
 
 def test_breakable_accepts_disabled_chunked_prefill(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(4096, 8192),
                 prefill_max_bs=-1,
@@ -428,8 +478,8 @@ def test_breakable_accepts_disabled_chunked_prefill(caplog) -> None:
 
 def test_breakable_warns_on_padding_factor_gaps(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(64, 512),
             )
@@ -440,8 +490,8 @@ def test_breakable_warns_on_padding_factor_gaps(caplog) -> None:
 
 def test_padding_gap_warning_requires_a_non_empty_eager_range(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(64, 129),
             )
@@ -449,8 +499,8 @@ def test_padding_gap_warning_requires_a_non_empty_eager_range(caplog) -> None:
     assert not any("padding factor" in record.message for record in caplog.records)
 
     with caplog.at_level(logging.WARNING):
-        _validate(
-            _server_args(
+        validate(
+            make_server_args(
                 prefill_backend="breakable",
                 prefill_bs=(64, 131),
             )
@@ -458,23 +508,22 @@ def test_padding_gap_warning_requires_a_non_empty_eager_range(caplog) -> None:
     assert any("[(65, 65)]" in record.getMessage() for record in caplog.records)
 
 
-def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+def sglang_prefill_ladder(max_bs: int) -> list[int]:
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 @pytest.mark.parametrize("cap", [256, 512, 2048, 4096, 8192, 16384])
 def test_default_prefill_ladder_matches_the_sglang_generator_on_grid(
     cap: int,
 ) -> None:
-    assert build_default_prefill_cuda_graph_bs(cap) == _sglang_prefill_ladder(cap)
+    assert build_default_prefill_cuda_graph_bs(cap) == sglang_prefill_ladder(cap)
 
 
 @pytest.mark.parametrize("cap", [2, 100, 1000, 4592])
 def test_default_prefill_ladder_appends_the_off_grid_cap_sglang_omits(
     cap: int,
 ) -> None:
-    sglang_ladder = _sglang_prefill_ladder(cap)
+    sglang_ladder = sglang_prefill_ladder(cap)
 
     assert not sglang_ladder or sglang_ladder[-1] < cap
     assert build_default_prefill_cuda_graph_bs(cap) == [*sglang_ladder, cap]
@@ -504,7 +553,7 @@ def test_overrides_derive_prefill_max_bs_from_buckets() -> None:
 
 
 def test_disable_overrides_win_over_default_prefill_backend() -> None:
-    stage_defaults = {
+    stage_defaults: GenerationStageDefaults = {
         "cuda_graph_backend_prefill": "breakable",
         "cuda_graph_bs_prefill": [128, 256],
     }
@@ -539,33 +588,36 @@ def test_disable_overrides_win_over_default_prefill_backend() -> None:
 
 def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
-    attest_calls: list[tuple[Any, Any]] = []
-    backend_locks_seen: list[bool] = []
+    infra_prefill_backends: list[str] = []
+    attest_calls: list[tuple[Any, bool]] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
         prefill_backend = overrides.get("cuda_graph_backend_prefill", "disabled")
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
-        locked = set(_PREFILL_BS_LOCKED if prefill_bs else ())
+        locked = set(PREFILL_BS_LOCKED if prefill_bs else ())
         if "cuda_graph_backend_prefill" in overrides:
             locked.add(("prefill", "backend"))
-        return _server_args(
+        return make_server_args(
             prefill_backend=prefill_backend,
             prefill_bs=prefill_bs,
             prefill_max_bs=overrides.get("cuda_graph_max_bs_prefill"),
             locked=locked,
+            attention_backend=overrides.get("attention_backend", "fa3"),
+            prefill_attention_backend=overrides.get("prefill_attention_backend"),
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
         del gpu_id
         infra_kwargs_seen.append(dict(kwargs))
-        backend_locks_seen.append(
-            ("prefill", "backend") in server_args._cuda_graph_config_locked
-        )
+        infra_prefill_backends.append(server_args.cuda_graph_config.prefill.backend)
         model_runner = SimpleNamespace(
             model=SimpleNamespace(),
             init_cuda_graphs=lambda: None,
@@ -584,8 +636,8 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             "model_config",
         )
 
-    def fake_attest(model_runner, server_args) -> None:
-        attest_calls.append((model_runner, server_args))
+    def fake_attest(model_runner, *, operator_selected: bool) -> None:
+        attest_calls.append((model_runner, operator_selected))
 
     monkeypatch.setattr(
         sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
@@ -608,7 +660,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -635,26 +687,66 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     )
 
     assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
-    assert backend_locks_seen[-1] is True
+    assert attest_calls[-1][1] is True
     assert len(attest_calls) == 1
 
     PolicyBuilder().build("model")
 
     assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
-    assert backend_locks_seen[-1] is False
     assert len(attest_calls) == 1
+
+    class FullBuilder(PolicyBuilder):
+        supports_full_prefill_cuda_graph = True
+
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+            del dtype
+            return {
+                "max_running_requests": 4,
+                "cuda_graph_backend_prefill": "full",
+                "cuda_graph_bs_prefill": [128, 256],
+            }
+
+    FullBuilder().build("model")
+
+    assert infra_prefill_backends[-1] == "full"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): a default full on an attention backend that cannot
+    # capture it keeps the breakable graph, and its prefill embeds buffer.
+    FullBuilder().build("model", server_args_overrides={"attention_backend": "triton"})
+
+    assert infra_prefill_backends[-1] == "breakable"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): an explicit full the attention backend cannot capture
+    # fails the policy check, before any prefill graph is captured.
+    attests = len(attest_calls)
+    with pytest.raises(ValueError, match="need a prefill attention backend"):
+        FullBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
+                "prefill_attention_backend": "triton",
+            },
+        )
+    assert len(attest_calls) == attests
 
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
-        return _server_args(
-            prefill_backend="breakable",
+        return make_server_args(
+            prefill_backend=overrides.get("cuda_graph_backend_prefill", "breakable"),
             prefill_bs=overrides.get("cuda_graph_bs_prefill"),
-            locked=_PREFILL_BS_LOCKED,
+            locked=PREFILL_BS_LOCKED,
         )
 
     monkeypatch.setattr(
@@ -668,7 +760,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -688,6 +780,16 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
             "model",
             server_args_overrides={
                 "cuda_graph_backend_prefill": "breakable",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+        )
+
+    # note (luojiaxuan): the full backend is gated the same way.
+    with pytest.raises(RuntimeError, match="has not adopted the full prefill"):
+        NonAdoptingBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )

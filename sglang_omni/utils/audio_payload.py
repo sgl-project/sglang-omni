@@ -3,28 +3,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 import numpy as np
 import torch
+from numpy.typing import ArrayLike
 
 
-def audio_data_uri_from_reference(reference: dict[str, Any]) -> str | None:
+def audio_data_uri_from_reference(reference: Mapping[str, object]) -> str | None:
     data = reference.get("data")
     if data is None:
         return None
+    else:
+        pass
     media_type = reference.get("media_type") or "audio/wav"
     return f"data:{media_type};base64,{data}"
 
 
 def audio_waveform_payload(
-    audio: Any,
+    audio: ArrayLike | torch.Tensor,
     *,
     sample_rate: int | None = None,
     modality: str | None = None,
     source_hint: str = "audio",
     keep_channels: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, bytes | list[int] | str | int]:
     """Serialize a waveform into the relay payload format.
 
     With ``keep_channels`` a rank-2 ``[channels, samples]`` waveform keeps its
@@ -33,22 +36,30 @@ def audio_waveform_payload(
     """
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().float().cpu().numpy()
+    else:
+        pass
     try:
         array = np.asarray(audio, dtype=np.float32)
         if not (keep_channels and array.ndim == 2):
             array = array.reshape(-1)
+        else:
+            pass
     except (TypeError, ValueError) as exc:
         raise TypeError(
             f"Unsupported {source_hint} audio output type: {type(audio)}"
         ) from exc
     array = np.ascontiguousarray(array)
-    payload: dict[str, Any] = {
+    payload: dict[str, bytes | list[int] | str | int] = {
         "audio_waveform": array.tobytes(),
         "audio_waveform_shape": list(array.shape),
         "audio_waveform_dtype": "float32",
     }
     if sample_rate is not None:
         payload["sample_rate"] = int(sample_rate)
+    else:
+        pass
     if modality is not None:
         payload["modality"] = modality
+    else:
+        pass
     return payload

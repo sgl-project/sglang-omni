@@ -703,14 +703,11 @@ def launch_server(cmd_template: str, *, port: int, model: str,
     if gpus_csv:
         env["CUDA_VISIBLE_DEVICES"] = gpus_csv
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(log_path, "w")
-    try:
+    with open(log_path, "w") as log_fh:
         popen = subprocess.Popen(
             cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
             env=env, cwd=str(repo_root), start_new_session=True,
         )
-    finally:
-        log_fh.close()
     return ServerHandle(popen, port, log_path)
 
 
@@ -823,8 +820,7 @@ def launch_managed_router_server(
         "info",
     ]
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(log_path, "w")
-    try:
+    with open(log_path, "w") as log_fh:
         popen = subprocess.Popen(
             cmd,
             stdout=log_fh,
@@ -833,8 +829,6 @@ def launch_managed_router_server(
             cwd=str(repo_root),
             start_new_session=True,
         )
-    finally:
-        log_fh.close()
     try:
         _record_process_group(cleanup_manifest, os.getpgid(popen.pid))
     except Exception:
@@ -1302,13 +1296,12 @@ def _file_edit_lock(file_path: Path):
     """Cross-process advisory lock so parallel runners editing the same
     benchmark_*.py serialize cleanly. Lock file lives next to target."""
     lock_path = file_path.with_suffix(file_path.suffix + ".edit.lock")
-    fp = open(lock_path, "w")
-    try:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-        fp.close()
+    with open(lock_path, "w") as fp:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
 def _try_edit_inplace(row: dict, row_state: dict, root: Path,

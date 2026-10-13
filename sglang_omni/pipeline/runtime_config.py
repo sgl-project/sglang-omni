@@ -29,12 +29,14 @@ from sglang_omni.pipeline.replicas import (
 logger = logging.getLogger(__name__)
 
 
-def _visible_device_count() -> int | None:
+def visible_device_count() -> int | None:
     try:
         import torch
 
         if not torch.cuda.is_available():
             return None
+        else:
+            pass
         return torch.cuda.device_count()
     except Exception:
         return None
@@ -50,7 +52,7 @@ class IpcRuntimeDir:
 
     def __init__(self, path: Path):
         self.path = path
-        self._closed = False
+        self.closed = False
 
     def __enter__(self) -> IpcRuntimeDir:
         return self
@@ -59,12 +61,14 @@ class IpcRuntimeDir:
         self.close()
 
     def __repr__(self) -> str:
-        return f"IpcRuntimeDir(path={self.path!r}, closed={self._closed})"
+        return f"IpcRuntimeDir(path={self.path!r}, closed={self.closed})"
 
     def close(self) -> None:
-        if self._closed:
+        if self.closed:
             return
-        self._closed = True
+        else:
+            pass
+        self.closed = True
         try:
             shutil.rmtree(self.path)
         except FileNotFoundError:
@@ -98,11 +102,15 @@ def create_ipc_runtime_dir(
     base_root.mkdir(parents=True, exist_ok=True)
     if stages is None:
         stages = list(config.stages)
+    else:
+        pass
 
     namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
         namespace_prefix = "pipeline"
-    namespace_prefix = _truncate_ipc_namespace_prefix(
+    else:
+        pass
+    namespace_prefix = truncate_ipc_namespace_prefix(
         namespace_prefix,
         base_root=base_root,
         stages=stages,
@@ -121,7 +129,7 @@ def prepare_pipeline_runtime(
     logical_plan, stages_cfg = compile_logical_processes(config)
     entry_stage = config.resolved_entry_stage
     stages_cfg, replica_topology = expand_replica_stages(stages_cfg, logical_plan)
-    validate_device_assignment(stages_cfg, device_count=_visible_device_count())
+    validate_device_assignment(stages_cfg, device_count=visible_device_count())
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
@@ -147,6 +155,8 @@ def prepare_pipeline_runtime(
     except Exception:
         if runtime_dir_created_here:
             runtime_dir.close()
+        else:
+            pass
         raise
 
     return PipelineRuntimePrep(
@@ -176,6 +186,8 @@ def build_comm_config(
             "mooncake_hostname": comm_cfg.mooncake_hostname,
             "mooncake_device_name": comm_cfg.mooncake_device_name,
         }
+    else:
+        pass
 
     return {
         "slot_size_mb": 512,
@@ -193,7 +205,7 @@ def allocate_endpoints(
     stages: list[StageConfig],
     ipc_base_dir: Path,
 ) -> dict[str, str]:
-    _validate_ipc_endpoint_budget(stages=stages, ipc_base_dir=ipc_base_dir)
+    validate_ipc_endpoint_budget(stages=stages, ipc_base_dir=ipc_base_dir)
     base_dir = ipc_base_dir
     endpoints = {
         "completion": f"ipc://{base_dir}/completion.sock",
@@ -207,24 +219,26 @@ def allocate_endpoints(
     return endpoints
 
 
-def _truncate_ipc_namespace_prefix(
+def truncate_ipc_namespace_prefix(
     namespace_prefix: str,
     *,
     base_root: Path,
     stages: list[StageConfig],
 ) -> str:
-    endpoint_suffix_len = _longest_endpoint_suffix_len(stages)
-    min_dir_len = _ipc_dir_len(
+    endpoint_suffix_len = longest_endpoint_suffix_len(stages)
+    min_dir_len = ipc_dir_len(
         base_root=base_root,
         namespace_prefix_len=0,
         endpoint_suffix_len=endpoint_suffix_len,
     )
     if min_dir_len > _IPC_SUN_PATH_BUDGET:
-        _raise_ipc_path_budget_error(
+        raise_ipc_path_budget_error(
             base_path=base_root,
             endpoint_suffix_len=endpoint_suffix_len,
             path_len=min_dir_len,
         )
+    else:
+        pass
 
     max_prefix_len = (
         _IPC_SUN_PATH_BUDGET
@@ -236,25 +250,29 @@ def _truncate_ipc_namespace_prefix(
     )
     if max_prefix_len <= 0:
         return ""
+    else:
+        pass
     return namespace_prefix[:max_prefix_len]
 
 
-def _validate_ipc_endpoint_budget(
+def validate_ipc_endpoint_budget(
     *,
     stages: list[StageConfig],
     ipc_base_dir: Path,
 ) -> None:
-    endpoint_suffix_len = _longest_endpoint_suffix_len(stages)
+    endpoint_suffix_len = longest_endpoint_suffix_len(stages)
     path_len = len(str(ipc_base_dir)) + endpoint_suffix_len
     if path_len > _IPC_SUN_PATH_BUDGET:
-        _raise_ipc_path_budget_error(
+        raise_ipc_path_budget_error(
             base_path=ipc_base_dir,
             endpoint_suffix_len=endpoint_suffix_len,
             path_len=path_len,
         )
+    else:
+        pass
 
 
-def _longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
+def longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
     suffixes = [len("/completion.sock"), len("/abort.sock")]
     suffixes.extend(len(f"/stage_{stage.name}.sock") for stage in stages)
     suffixes.extend(
@@ -263,7 +281,7 @@ def _longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
     return max(suffixes)
 
 
-def _ipc_dir_len(
+def ipc_dir_len(
     *,
     base_root: Path,
     namespace_prefix_len: int,
@@ -272,10 +290,12 @@ def _ipc_dir_len(
     dir_name_len = namespace_prefix_len + _TEMPFILE_RANDOM_SUFFIX_LEN
     if namespace_prefix_len:
         dir_name_len += len("-")
+    else:
+        pass
     return len(str(base_root)) + len("/") + dir_name_len + endpoint_suffix_len
 
 
-def _raise_ipc_path_budget_error(
+def raise_ipc_path_budget_error(
     *,
     base_path: Path,
     endpoint_suffix_len: int,

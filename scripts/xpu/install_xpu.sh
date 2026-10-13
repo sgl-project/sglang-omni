@@ -35,7 +35,8 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_VERSION="v0.5.18"
+SGLANG_VERIFIED_VERSION="v0.5.21"
+WHISPER_VERSION="20250625"
 
 [[ -f "${PYPROJECT_XPU}" ]] || { echo "ERROR: ${PYPROJECT_XPU} not found" >&2; exit 1; }
 
@@ -94,6 +95,7 @@ if not hasattr(setuptools.build_meta, "build_editable"):
 PY
 NOISO="--no-build-isolation"
 INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
+WHISPER_CMD="${PYBIN} -m pip install --no-deps openai-whisper==${WHISPER_VERSION}"
 
 # Serialize the whole backup/swap/restore section. Without this the leftover-backup
 # check below is a TOCTOU guard: two runs both pass it, then the second overwrites the
@@ -135,6 +137,7 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "  cp pyproject.toml .pyproject.cuda.bak"
   echo "  cp pyproject_xpu.toml pyproject.toml"
   echo "  ${INSTALL_CMD}"
+  echo "  ${WHISPER_CMD}"
   echo "  # then restore pyproject.toml from backup"
   exit 0
 fi
@@ -158,6 +161,9 @@ echo "swapped in pyproject_xpu.toml"
 
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
+# note (Matrix Yao): --no-deps keeps openai-whisper from replacing triton-xpu.
+echo ">>> ${WHISPER_CMD}"
+${WHISPER_CMD}
 
 # Restore immediately (don't wait for EXIT) so verification below runs against a
 # clean tree and a setuptools editable .pth (not the swapped file).
@@ -197,6 +203,7 @@ else
   echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
   echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --extra-index-url ${XPU_INDEX}"
+  echo "           pip install --no-deps xgrammar==0.1.33"
 fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then

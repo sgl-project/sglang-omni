@@ -12,11 +12,12 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     get_decode_cuda_graph_bs,
     get_decode_cuda_graph_max_bs,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 
 
-def _server_args(**overrides: object) -> SimpleNamespace:
+def make_server_args(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "max_running_requests": 16,
         "disable_cuda_graph": False,
@@ -101,7 +102,7 @@ def test_build_generation_batch_overrides_reject_non_positive_values() -> None:
 def test_validate_generation_batch_policy_accepts_explicit_full_policy() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(),
+        server_args=make_server_args(),
         model_buffer_bs=16,
     )
 
@@ -110,7 +111,7 @@ def test_validate_generation_batch_policy_rejects_implicit_cuda_graph_bs() -> No
     with pytest.raises(ValueError, match="cuda_graph_bs must be explicit"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(cuda_graph_bs=None),
+            server_args=make_server_args(cuda_graph_bs=None),
         )
 
 
@@ -118,12 +119,12 @@ def test_validate_generation_batch_policy_rejects_mismatched_cuda_graph_max() ->
     with pytest.raises(ValueError, match=r"max\(cuda_graph_bs\) must match"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(cuda_graph_max_bs=32),
+            server_args=make_server_args(cuda_graph_max_bs=32),
         )
 
 
 def test_validate_generation_batch_policy_accepts_partial_compile_coverage() -> None:
-    undercovered_compile = _server_args(
+    undercovered_compile = make_server_args(
         max_running_requests=64,
         cuda_graph_max_bs=64,
         cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -138,7 +139,7 @@ def test_validate_generation_batch_policy_accepts_partial_compile_coverage() -> 
 def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(
+        server_args=make_server_args(
             max_running_requests=64,
             cuda_graph_max_bs=64,
             cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -150,7 +151,7 @@ def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> 
 def test_validate_generation_batch_policy_ignores_disabled_compile_cap() -> None:
     validate_generation_batch_policy(
         model_name="test-model",
-        server_args=_server_args(
+        server_args=make_server_args(
             max_running_requests=64,
             cuda_graph_max_bs=64,
             cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
@@ -164,7 +165,7 @@ def test_validate_generation_batch_policy_rejects_under_sized_model_buffer() -> 
     with pytest.raises(ValueError, match="model_buffer_bs must cover"):
         validate_generation_batch_policy(
             model_name="test-model",
-            server_args=_server_args(max_running_requests=4),
+            server_args=make_server_args(max_running_requests=4),
             model_buffer_bs=2,
         )
 
@@ -205,3 +206,31 @@ def test_build_generation_batch_overrides_rebinds_default_caps_when_max_changes(
     assert overrides["cuda_graph_max_bs"] == 32
     assert overrides["torch_compile_max_bs"] == 32
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+
+
+def test_a_null_flat_prefill_backend_override_is_not_a_selection() -> None:
+    """SGLang skips a None flat selector, so no backend lock exists for the
+    attestation to enforce.
+    """
+    assert not operator_selected_prefill_backend(None)
+    assert not operator_selected_prefill_backend({})
+    assert not operator_selected_prefill_backend({"cuda_graph_backend_prefill": None})
+    assert not operator_selected_prefill_backend({"cuda_graph_bs_prefill": []})
+
+
+def test_a_named_prefill_backend_override_is_a_selection() -> None:
+    assert operator_selected_prefill_backend(
+        {"cuda_graph_backend_prefill": "breakable"}
+    )
+    assert operator_selected_prefill_backend({"cuda_graph_backend_prefill": "disabled"})
+
+
+def test_a_nested_prefill_backend_key_is_a_selection_at_any_value() -> None:
+    """SGLang locks every key present in the nested JSON form."""
+    for backend in ("breakable", None):
+        overrides = {"cuda_graph_config": {"prefill": {"backend": backend}}}
+        assert operator_selected_prefill_backend(overrides)
+
+    assert not operator_selected_prefill_backend(
+        {"cuda_graph_config": {"prefill": {"bs": [4, 8]}}}
+    )

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
-from sglang_omni.models.dots_tts.codec import _DotsReferenceHook
+from sglang_omni.models.dots_tts.codec import DotsReferenceHook
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSBatchVocoder,
@@ -16,7 +16,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 
 
 def test_inline_reference_keys_are_content_sensitive() -> None:
-    hook = object.__new__(_DotsReferenceHook)
+    hook = object.__new__(DotsReferenceHook)
 
     first = hook.input_key("data:audio/wav;base64,AAAA")
     repeated = hook.input_key("data:audio/wav;base64,AAAA")

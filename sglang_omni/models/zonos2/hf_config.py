@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 
 from transformers import PretrainedConfig
 
 ARCHITECTURE = "Zonos2ForCausalLM"
 
 
-def _round_ffn(dim: int, multiplier: float, multiple_of: int) -> int:
+def round_ffn(dim: int, multiplier: float, multiple_of: int) -> int:
     """Intermediate size: dim * multiplier rounded up to multiple_of."""
     hidden = int(dim * multiplier)
     return multiple_of * ((hidden + multiple_of - 1) // multiple_of)
@@ -70,7 +69,7 @@ class Zonos2Config(PretrainedConfig):
         moe_start_from_layer: int = 3,
         moe_end_from_layer: int = 1,
         moe_balancing_strategy: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         # Native field names are kept verbatim for the weight loader.
         self.n_layers = n_layers
@@ -117,7 +116,7 @@ class Zonos2Config(PretrainedConfig):
         self.moe_end_from_layer = moe_end_from_layer
         self.moe_balancing_strategy = moe_balancing_strategy
 
-        self.intermediate_size = _round_ffn(dim, ffn_dim_multiplier, multiple_of)
+        self.intermediate_size = round_ffn(dim, ffn_dim_multiplier, multiple_of)
 
         # HF aliases so generic sglang/transformers code works.
         self.hidden_size = dim
@@ -144,13 +143,17 @@ class Zonos2Config(PretrainedConfig):
         return self.is_moe_layer(layer_id) and layer_id != self.moe_start_from_layer
 
 
-def _resolve_params_json(model_path: str) -> str:
+def resolve_params_json(model_path: str) -> str:
     """Return a local path to params.json for a dir, a json file, or an HF repo id."""
     local = os.path.join(model_path, "params.json")
     if os.path.isfile(local):
         return local
+    else:
+        pass
     if os.path.isfile(model_path) and model_path.endswith(".json"):
         return model_path
+    else:
+        pass
     from huggingface_hub import hf_hub_download
 
     return hf_hub_download(repo_id=model_path, filename="params.json")
@@ -158,6 +161,6 @@ def _resolve_params_json(model_path: str) -> str:
 
 def load_zonos2_pretrained_config(model_path: str) -> Zonos2Config:
     """Build a Zonos2Config from a model dir / json file / HF repo id."""
-    with open(_resolve_params_json(model_path), "r") as f:
+    with open(resolve_params_json(model_path), "r") as f:
         params = json.load(f)
     return Zonos2Config(**params)

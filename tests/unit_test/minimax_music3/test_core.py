@@ -13,7 +13,7 @@ from torch.nn import functional as F
 
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
-    _resolve_acoustic_dtype,
+    resolve_acoustic_dtype,
 )
 from sglang_omni.models.minimax_music3.chunking import chunk_windows
 from sglang_omni.models.minimax_music3.config import (
@@ -26,13 +26,30 @@ from sglang_omni.models.minimax_music3.dit import (
     Attention,
     MiniMaxMusic3DIT,
     RotaryEmbedding,
-    _apply_rope,
-    _resolve_attention_backend,
+    apply_rope,
+    resolve_attention_backend,
 )
-from sglang_omni.models.minimax_music3.model_runner import _HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
+
+
+def get_test_device_if_eligible() -> torch.device:
+    if current_platform.device_type not in ("cuda", "musa", "xpu"):
+        pytest.skip("Requires CUDA/MUSA/XPU device")
+    return current_platform.get_device(0)
+
+
+def rvq_graph_target() -> tuple[torch.device, DeviceGraphBackend]:
+    """The device and graph backend the RVQ capture tests run on."""
+    device = current_platform.get_device(0)
+    backend = current_platform.get_device_graph_backend(device)
+    if backend is None:
+        pytest.skip(f"{device.type} records no model-owned graphs")
+    return (device, backend)
 
 
 @pytest.mark.parametrize(
@@ -62,7 +79,7 @@ def test_chunk_windows_cover_boundaries(
 
 
 def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
-    buffer = _HiddenFrameBuffer()
+    buffer = HiddenFrameBuffer()
     for frame in range(201):
         buffer.append(torch.full((2,), frame, dtype=torch.float32))
 
@@ -78,15 +95,15 @@ def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     # A request's codes must not depend on which other requests share its
     # decode batch, so a row sampled alone must match the same row sampled
     # inside a larger batch with the same seed and position.
+    device = get_test_device_if_eligible()
     torch.manual_seed(0)
-    logits = torch.randn(3, 512, device="cuda")
-    seeds = torch.tensor([11, 22, 33], device="cuda")
-    positions = torch.tensor([7, 7, 7], device="cuda")
+    logits = torch.randn(3, 512, device=device)
+    seeds = torch.tensor([11, 22, 33], device=device)
+    positions = torch.tensor([7, 7, 7], device=device)
 
     batched = sample_topk_seeded(logits, seeds, positions)
     alone = torch.cat(
@@ -105,14 +122,14 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
+    device = get_test_device_if_eligible()
     torch.manual_seed(0)
-    logits = torch.randn(1, 512, device="cuda")
-    seed = torch.tensor([11], device="cuda")
+    logits = torch.randn(1, 512, device=device)
+    seed = torch.tensor([11], device=device)
 
     draws = {
-        int(sample_topk_seeded(logits, seed, torch.tensor([position], device="cuda")))
+        int(sample_topk_seeded(logits, seed, torch.tensor([position], device=device)))
         for position in range(16)
     }
 
@@ -130,13 +147,13 @@ def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
 def test_resolve_acoustic_dtype(
     value: str | torch.dtype, expected: torch.dtype
 ) -> None:
-    assert _resolve_acoustic_dtype(value) is expected
+    assert resolve_acoustic_dtype(value) is expected
 
 
 @pytest.mark.parametrize("value", ["float16", "int8", None])
 def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> None:
     with pytest.raises(ValueError, match="float32.*bfloat16|bfloat16.*float32"):
-        _resolve_acoustic_dtype(value)  # type: ignore[arg-type]
+        resolve_acoustic_dtype(value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -151,12 +168,12 @@ def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> Non
 def test_resolve_attention_backend(
     value: str, expected: AttentionBackendEnum | None
 ) -> None:
-    assert _resolve_attention_backend(value) is expected
+    assert resolve_attention_backend(value) is expected
 
 
 def test_resolve_attention_backend_rejects_unknown_value() -> None:
     with pytest.raises(ValueError, match="attention_backend"):
-        _resolve_attention_backend("flashinfer")
+        resolve_attention_backend("flashinfer")
 
 
 def test_minimax_music3_explicit_placements_ignore_the_machine(
@@ -168,8 +185,11 @@ def test_minimax_music3_explicit_placements_ignore_the_machine(
     two-GPU has to stay two-GPU even on a one-GPU box, or the file would not be
     describing anything.
     """
-    for visible in ("6", "6,7"):
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    for gpu_count in (1, 2):
+        monkeypatch.setattr(
+            "sglang_omni.models.minimax_music3.config.visible_gpu_count",
+            lambda count=gpu_count: count,
+        )
         dual = MiniMaxMusic3DualGPUPipelineConfig(model_path="/models/minimax")
         single = MiniMaxMusic3SingleGPUPipelineConfig(model_path="/models/minimax")
 
@@ -190,19 +210,19 @@ def test_minimax_music3_explicit_placements_ignore_the_machine(
 
 
 @pytest.mark.parametrize(
-    ("visible", "acoustic_gpu", "acoustic_dtype", "colocation_check"),
+    ("gpu_count", "acoustic_gpu", "acoustic_dtype", "colocation_check"),
     [
         # Colocated is float32 like the two-GPU layout: the bfloat16 DIT solve
         # measured 6.88 LTAS L1 and 9.3 dB of loudness from the d6169737
         # baseline, which is audible, so both layouts serve one arithmetic.
-        ("6", 0, "float32", False),
-        ("6,7", 1, "float32", True),
-        ("0,1,2,3", 1, "float32", True),
+        (1, 0, "float32", False),
+        (2, 1, "float32", True),
+        (4, 1, "float32", True),
     ],
 )
 def test_minimax_music3_default_follows_the_visible_gpus(
     monkeypatch: pytest.MonkeyPatch,
-    visible: str,
+    gpu_count: int,
     acoustic_gpu: int,
     acoustic_dtype: str,
     colocation_check: bool,
@@ -213,7 +233,10 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     every single-GPU user to pass a config file to say so. The default now
     matches the machine, which is the topology this model is usually served in.
     """
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.config.visible_gpu_count",
+        lambda: gpu_count,
+    )
     config = MiniMaxMusic3PipelineConfig(model_path="/models/minimax")
 
     stages = {stage.name: stage for stage in config.stages}
@@ -240,6 +263,21 @@ def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
     assert not any(".backend." in key for key in keys)
 
 
+def test_auto_attention_backend_accepts_the_platform_fallback(monkeypatch) -> None:
+    from sglang.multimodal_gen.runtime.layers.attention import selector
+    from sglang.multimodal_gen.runtime.layers.attention.backends.sdpa import SDPABackend
+
+    monkeypatch.setattr(selector, "_cached_get_attn_backend", lambda *_: SDPABackend)
+    with torch.device("meta"):
+        model = MiniMaxMusic3DIT(
+            compute_dtype=torch.float32,
+            attention_backend="auto",
+        )
+
+    attention = model.diffusion_transformer.transformer.layers[0].self_attn
+    assert attention.backend.backend is AttentionBackendEnum.TORCH_SDPA
+
+
 def test_dav_weight_norm_folding_preserves_output() -> None:
     torch.manual_seed(31)
     convolution = torch.nn.utils.weight_norm(
@@ -256,8 +294,8 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
+    device = get_test_device_if_eligible()
     torch.manual_seed(17)
     module = (
         Attention(
@@ -266,17 +304,17 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
             compute_dtype=torch.float32,
             attention_backend="torch_sdpa",
         )
-        .cuda()
+        .to(device)
         .eval()
     )
-    rotary = RotaryEmbedding(32).cuda()
+    rotary = RotaryEmbedding(32).to(device)
     freqs, _ = rotary.forward_from_seq_len(19)
-    x = torch.randn((2, 19, 128), device="cuda", dtype=torch.float32)
+    x = torch.randn((2, 19, 128), device=device, dtype=torch.float32)
 
     q, k, v = module.to_qkv(x).chunk(3, dim=-1)
     rope_cos, rope_sin = freqs.cos(), freqs.sin()
-    q = _apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
-    k = _apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    q = apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    k = apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
     v = v.view(2, 19, 2, 64).transpose(1, 2)
     expected = F.scaled_dot_product_attention(q, k, v, is_causal=False)
     expected = module.to_out(expected.transpose(1, 2).contiguous().view(2, 19, 128))
@@ -289,8 +327,10 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
+    device, backend = rvq_graph_target()
+    device_module = torch.get_device_module(device)
+
     def depth_forward(
         hidden: torch.Tensor,
         c0: torch.Tensor,
@@ -308,7 +348,8 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
 
     runner = RVQDepthCudaGraphRunner(
         forward=depth_forward,
-        device=torch.device("cuda"),
+        backend=backend,
+        device=device,
         dtype=torch.bfloat16,
         hidden_size=16,
         num_codebooks=8,
@@ -318,20 +359,20 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
 
     # A batch smaller than a bucket pads into it and must read back only its
     # own rows, matching what the eager path produces for those rows.
-    hidden = torch.randn((3, 16), device="cuda", dtype=torch.bfloat16)
-    c0 = torch.tensor((11, 12, 13), device="cuda")
-    seeds = torch.tensor((5, 6, 7), device="cuda")
-    positions = torch.tensor((1, 2, 3), device="cuda")
+    hidden = torch.randn((3, 16), device=device, dtype=torch.bfloat16)
+    c0 = torch.tensor((11, 12, 13), device=device)
+    seeds = torch.tensor((5, 6, 7), device=device)
+    positions = torch.tensor((1, 2, 3), device=device)
 
-    forced = torch.zeros((3, 8), dtype=torch.long, device="cuda")
-    no_replay = torch.zeros((), dtype=torch.bool, device="cuda")
+    forced = torch.zeros((3, 8), dtype=torch.long, device=device)
+    no_replay = torch.zeros((), dtype=torch.bool, device=device)
     expected_codes, expected_hidden, _ = depth_forward(
         hidden, c0, seeds, positions, forced, no_replay
     )
     actual_codes, actual_hidden, _ = runner(
         hidden, c0, seeds, positions, forced, no_replay
     )
-    torch.cuda.synchronize()
+    device_module.synchronize()
     assert actual_codes.shape[0] == 3
     assert torch.equal(actual_codes, expected_codes)
     assert torch.equal(actual_hidden, expected_hidden)
@@ -340,12 +381,14 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     # rewrite what an earlier one returned.
     preserved_codes = actual_codes.clone()
     runner(hidden + 1, c0 + 1, seeds, positions, forced, no_replay)
-    torch.cuda.synchronize()
+    device_module.synchronize()
     assert torch.equal(actual_codes, preserved_codes)
 
 
 @pytest.mark.accelerator
 def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
+    device, backend = rvq_graph_target()
+
     def depth_forward(hidden, c0, seeds, positions, forced, replay):
         del c0, seeds, positions, replay
         zeros = torch.zeros((hidden.shape[0], 8), device=hidden.device)
@@ -353,21 +396,22 @@ def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
 
     runner = RVQDepthCudaGraphRunner(
         forward=depth_forward,
-        device=torch.device("cuda"),
+        backend=backend,
+        device=device,
         dtype=torch.bfloat16,
         hidden_size=16,
         num_codebooks=8,
         buckets=[1, 2],
     )
 
-    oversized = torch.zeros((3, 16), device="cuda", dtype=torch.bfloat16)
-    zeros = torch.zeros((3,), dtype=torch.long, device="cuda")
-    forced = torch.zeros((3, 8), dtype=torch.long, device="cuda")
-    replay = torch.zeros((), dtype=torch.bool, device="cuda")
+    oversized = torch.zeros((3, 16), device=device, dtype=torch.bfloat16)
+    zeros = torch.zeros((3,), dtype=torch.long, device=device)
+    forced = torch.zeros((3, 8), dtype=torch.long, device=device)
+    replay = torch.zeros((), dtype=torch.bool, device=device)
     assert runner(oversized, zeros, zeros, zeros, forced, replay) is None
 
 
-class _TinyCacheBlock(torch.nn.Module):
+class TinyCacheBlock(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.proj = torch.nn.Linear(16, 16)
@@ -376,10 +420,10 @@ class _TinyCacheBlock(torch.nn.Module):
         return x + self.proj(x) * scale
 
 
-class _TinyCacheTransformer(torch.nn.Module):
+class TinyCacheTransformer(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.layers = torch.nn.ModuleList([_TinyCacheBlock() for _ in range(4)])
+        self.layers = torch.nn.ModuleList([TinyCacheBlock() for _ in range(4)])
 
     def forward(self, x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
@@ -387,18 +431,18 @@ class _TinyCacheTransformer(torch.nn.Module):
         return x
 
 
-class _TinyCacheDiffusion(torch.nn.Module):
+class TinyCacheDiffusion(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.transformer = _TinyCacheTransformer()
+        self.transformer = TinyCacheTransformer()
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
+    device = get_test_device_if_eligible()
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(model)
-    model.diffusion_transformer = _TinyCacheDiffusion().cuda().eval()
+    model.diffusion_transformer = TinyCacheDiffusion().to(device).eval()
     model.enable_cache_dit(
         num_steps=4,
         fn_compute_blocks=1,
@@ -408,37 +452,37 @@ def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
         max_continuous_cached_steps=1,
     )
 
-    x = torch.randn((2, 11, 16), device="cuda")
+    x = torch.randn((2, 11, 16), device=device)
     for step in range(4):
-        scale = torch.tensor(0.1 + step * 0.01, device="cuda")
+        scale = torch.tensor(0.1 + step * 0.01, device=device)
         x = model.diffusion_transformer.transformer(x, scale)
 
     assert x.shape == (2, 11, 16)
     assert torch.isfinite(x).all()
 
 
-class _ZeroDiffusionTransformer(torch.nn.Module):
+class ZeroDiffusionTransformer(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.calls = 0
 
-    def _transformer(
-        self, x: torch.Tensor, _t: torch.Tensor, _condition: torch.Tensor
+    def _transformer(  # noqa: leading-underscore  # production name
+        self, x: torch.Tensor, _t: torch.Tensor, condition: torch.Tensor
     ) -> torch.Tensor:
         self.calls += 1
         return torch.zeros_like(x)
 
 
-def _tiny_dit() -> MiniMaxMusic3DIT:
+def tiny_dit() -> MiniMaxMusic3DIT:
     dit = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(dit)
-    dit.diffusion_transformer = _ZeroDiffusionTransformer()
-    dit._bcg_runner = None
+    dit.diffusion_transformer = ZeroDiffusionTransformer()
+    dit.bcg_runner = None
     return dit
 
 
 def test_dit_step_count_is_configurable_without_changing_shape() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     align = torch.zeros((1, 2048, 3))
 
     latent = dit(
@@ -453,7 +497,7 @@ def test_dit_step_count_is_configurable_without_changing_shape() -> None:
 
 
 def test_dit_aligned_mel_length_matches_full_window_contract() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     dit.sr_input = 24_000
     dit.sr_output = 44_100
     dit.hop_size_input = 960
@@ -464,7 +508,7 @@ def test_dit_aligned_mel_length_matches_full_window_contract() -> None:
 
 
 def test_dit_abort_stops_before_the_next_euler_step() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     checks = iter((False, False, True))
 
     with pytest.raises(InterruptedError, match="aborted"):
@@ -497,7 +541,7 @@ def test_acoustic_scheduler_rejects_malformed_hidden_before_decode() -> None:
         scheduler.on_stream_chunk("req", item)
 
 
-class _FakeAcousticDecoder:
+class FakeAcousticDecoder:
     def __init__(self) -> None:
         self.hidden_shape: tuple[int, ...] | None = None
 
@@ -509,7 +553,7 @@ class _FakeAcousticDecoder:
 
 
 def test_acoustic_scheduler_accepts_the_relay_tensor_shape() -> None:
-    decoder = _FakeAcousticDecoder()
+    decoder = FakeAcousticDecoder()
     scheduler = MiniMaxMusic3AcousticScheduler(decoder=decoder)  # type: ignore[arg-type]
     item = StreamItem(
         chunk_id=0,
@@ -547,7 +591,7 @@ def test_backbone_config_rewrite_does_not_write_through_a_symlink(
     config_path = snapshot / "config.json"
     config_path.symlink_to(blob)
 
-    MiniMaxMusic3EngineBuilder._normalize_backbone_config(config_path)
+    MiniMaxMusic3EngineBuilder.normalize_backbone_config(config_path)
 
     assert json.loads(blob.read_text())["model_type"] == "mixtral"
     assert not config_path.is_symlink()

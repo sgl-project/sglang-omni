@@ -49,10 +49,12 @@ _unit_mapping = {
 }
 
 
-def _num_to_words(num_str):
+def num_to_words(num_str):
     """Convert a number string to words. Returns None on failure."""
     if not _HAS_INFLECT:
         return None
+    else:
+        pass
     try:
         is_negative = num_str.startswith("-")
         clean_num = num_str.lstrip("-") or "0"
@@ -63,6 +65,8 @@ def _num_to_words(num_str):
             decimal_part = parts[1]
             if not integer_part.isdigit() or not decimal_part.isdigit():
                 return None
+            else:
+                pass
             integer_word = (
                 _inflect.number_to_words(int(integer_part), andword="")
                 if integer_part != "0"
@@ -77,69 +81,85 @@ def _num_to_words(num_str):
         else:
             if not clean_num.isdigit():
                 return None
+            else:
+                pass
             num_word = _inflect.number_to_words(int(clean_num), andword="")
 
         if is_negative:
             num_word = f"minus {num_word}"
+        else:
+            pass
         return num_word
     except Exception:
         return None
 
 
-def _remove_commas(m):
+def remove_commas(m):
     return m.group(1).replace(",", "")
 
 
-def _expand_unit(m):
+def expand_unit(m):
     num_str, unit = m.group(1), m.group(2).lower()
     unit_word = _unit_mapping.get(unit, unit)
-    word = _num_to_words(num_str)
+    word = num_to_words(num_str)
     return f" {word} {unit_word} " if word else f" {num_str} {unit} "
 
 
-def _expand_percent(m):
-    word = _num_to_words(m.group(1))
+def expand_percent(m):
+    word = num_to_words(m.group(1))
     return f" {word} percent " if word else f" {m.group(1)} percent "
 
 
-def _expand_dollars(m):
+def expand_dollars(m):
     match = m.group(1)
-    word = _num_to_words(match)
+    word = num_to_words(match)
     if word:
         clean = match.lstrip("-") or "0"
         unit = "dollar" if abs(float(clean)) == 1.0 else "dollars"
         return f" {word} {unit} "
+    else:
+        pass
     return f" {match} dollars "
 
 
-def _expand_pounds(m):
+def expand_pounds(m):
     num_str = m.group(1)
-    word = _num_to_words(num_str)
+    word = num_to_words(num_str)
     if word:
         clean = num_str.lstrip("-") or "0"
         unit = "pound" if abs(float(clean)) == 1.0 else "pounds"
         return f" {word} {unit} "
+    else:
+        pass
     return f" {num_str} pounds "
 
 
-def _expand_fraction(m):
+def expand_fraction(m):
     if not _HAS_INFLECT:
         return m.group(0)
+    else:
+        pass
     try:
         n, d = int(m.group(1)), int(m.group(2))
         if n == 1 and d == 2:
             return " one half "
+        else:
+            pass
         if n == 1 and d == 4:
             return " one quarter "
+        else:
+            pass
         ordinal = _inflect.ordinal(_inflect.number_to_words(d))
         return f" {_inflect.number_to_words(n)} {ordinal} "
     except Exception:
         return m.group(0)
 
 
-def _expand_ordinal(m):
+def expand_ordinal(m):
     if not _HAS_INFLECT:
         return m.group(0)
+    else:
+        pass
     try:
         num = int(re.sub(r"(st|nd|rd|th)", "", m.group(0)))
         return f" {_inflect.number_to_words(num)} "
@@ -147,20 +167,24 @@ def _expand_ordinal(m):
         return m.group(0)
 
 
-def _expand_number(m):
-    word = _num_to_words(m.group(0))
+def expand_number(m):
+    word = num_to_words(m.group(0))
     return f" {word} " if word else f" {m.group(0)} "
 
 
-def _expand_version(m):
+def expand_version(m):
     if not _HAS_INFLECT:
         return m.group(0)
+    else:
+        pass
     prefix, _, num_str = m.group(1), m.group(2), m.group(3)
     try:
         if "." in num_str:
             parts = num_str.split(".", 1)
             if not parts[0].isdigit() or not parts[1].isdigit():
                 return m.group(0)
+            else:
+                pass
             integer_word = _inflect.number_to_words(int(parts[0]))
             decimal_words = " ".join(
                 _inflect.number_to_words(int(d)) for d in parts[1] if d.isdigit()
@@ -169,6 +193,8 @@ def _expand_version(m):
         else:
             if not num_str.isdigit():
                 return m.group(0)
+            else:
+                pass
             word = _inflect.number_to_words(int(num_str))
     except Exception:
         return m.group(0)
@@ -178,14 +204,16 @@ def _expand_version(m):
 def normalize_numbers(text):
     if not _HAS_INFLECT:
         return text
-    text = re.sub(_comma_number_re, _remove_commas, text)
-    text = re.sub(_unit_re, _expand_unit, text)
-    text = re.sub(_pounds_re, _expand_pounds, text)
-    text = re.sub(_dollars_re, _expand_dollars, text)
-    text = re.sub(_fraction_re, _expand_fraction, text)
-    text = re.sub(_percent_number_re, _expand_percent, text)
-    text = re.sub(_ordinal_re, _expand_ordinal, text)
-    text = re.sub(_version_re, _expand_version, text)
-    text = re.sub(_number_re, _expand_number, text)
+    else:
+        pass
+    text = re.sub(_comma_number_re, remove_commas, text)
+    text = re.sub(_unit_re, expand_unit, text)
+    text = re.sub(_pounds_re, expand_pounds, text)
+    text = re.sub(_dollars_re, expand_dollars, text)
+    text = re.sub(_fraction_re, expand_fraction, text)
+    text = re.sub(_percent_number_re, expand_percent, text)
+    text = re.sub(_ordinal_re, expand_ordinal, text)
+    text = re.sub(_version_re, expand_version, text)
+    text = re.sub(_number_re, expand_number, text)
     text = re.sub(_whitespace_re, " ", text)
     return text.strip()

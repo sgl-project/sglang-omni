@@ -37,7 +37,7 @@ def test_npu_kvcache_attention_uses_fused_infer_attention(
         raising=False,
     )
 
-    out = fish_audio_decoder._npu_kvcache_attention(
+    out = fish_audio_decoder.npu_kvcache_attention(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
@@ -75,7 +75,7 @@ def test_npu_kvcache_attention_requires_fused_infer_attention(
     v_cache = torch.zeros(1, 11, 4, 8)
 
     with pytest.raises(RuntimeError, match="npu_fused_infer_attention_score"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -97,7 +97,7 @@ def test_npu_kvcache_attention_requires_single_token_query(monkeypatch) -> None:
     v_cache = torch.zeros(1, 11, 4, 8)
 
     with pytest.raises(ValueError, match="single-token query"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -132,7 +132,7 @@ def test_npu_kvcache_attention_requires_kv_and_cache_position() -> None:
     k = torch.randn(1, 1, 4, 8)
 
     with pytest.raises(ValueError, match="requires k and v"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -141,7 +141,7 @@ def test_npu_kvcache_attention_requires_kv_and_cache_position() -> None:
             cache_position=0,
         )
     with pytest.raises(ValueError, match="requires cache_position"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -174,7 +174,7 @@ def test_fish_engine_builder_npu_defaults(monkeypatch) -> None:
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 16]
     assert overrides["cuda_graph_max_bs"] == 16
 
-    assert fish_engine._resolve_fast_ar_attention_backend(gpu_id=0) == "ascend"
+    assert fish_engine.resolve_fast_ar_attention_backend(gpu_id=0) == "ascend"
 
 
 def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) -> None:
@@ -185,27 +185,24 @@ def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) ->
         "current_platform",
         SimpleNamespace(is_npu=lambda: True, device_type="npu"),
     )
+    from sglang.srt.runtime_context import get_context, get_exec
+
     compiled: list[tuple[object, int]] = []
     monkeypatch.setattr(
         fish_engine.fish_stages,
-        "_compile_s2pro_codebook_decoder",
+        "compile_s2pro_codebook_decoder",
         lambda model, *, max_batch_size: compiled.append((model, max_batch_size)),
     )
 
-    def apply_override(server_args, _source, **fields):
-        for key, value in fields.items():
-            setattr(server_args, key, value)
-
-    monkeypatch.setattr(fish_engine, "override_server_args", apply_override)
-
     builder = fish_engine.FishS2ProEngineBuilder(max_new_tokens=256, ras_window=16)
     model = object()
-    server_args = SimpleNamespace(enable_torch_compile=True, torch_compile_max_bs=16)
+    with get_context().override_server_args(
+        enable_torch_compile=True, torch_compile_max_bs=16
+    ) as server_args:
+        builder.compile_model(model, server_args)
 
-    builder.compile_model(model, server_args)
-
-    assert compiled == [(model, 16)]
-    assert server_args.enable_torch_compile is False
+        assert compiled == [(model, 16)]
+        assert get_exec().graph.enable_torch_compile is False
 
 
 def test_fish_engine_builder_cuda_defaults_unchanged(monkeypatch) -> None:
@@ -230,10 +227,11 @@ def test_fish_engine_builder_cuda_defaults_unchanged(monkeypatch) -> None:
 def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     import inspect
 
+    import sglang_omni.utils.device as device_mod
     from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
     from sglang_omni.models.fishaudio_s2_pro import streaming_vocoder
 
-    # The tts_engine stage resolves device=None via resolve_device_spec.
+    # The tts_engine stage resolves device=None via resolve_concrete_device.
     default = (
         inspect.signature(fish_stages.create_sglang_tts_engine_executor)
         .parameters["device"]
@@ -241,17 +239,17 @@ def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     )
     assert default is None
 
-    # The vocoder stage resolves device=None from gpu_id via resolve_device_spec.
+    # The vocoder stage resolves device=None from gpu_id via resolve_concrete_device.
     seen: list[str] = []
     monkeypatch.setattr(
-        fish_stages,
-        "resolve_device_spec",
+        device_mod,
+        "resolve_concrete_device",
         lambda device, index: f"npu:{index}" if index is not None else "npu",
     )
     monkeypatch.setattr(fish_stages, "_resolve_checkpoint", lambda model_path: "ckpt")
     monkeypatch.setattr(
         fish_stages,
-        "_load_codec",
+        "load_codec",
         lambda checkpoint_dir, device: seen.append(device) or object(),
     )
     monkeypatch.setattr(
@@ -265,8 +263,8 @@ def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     assert seen[-1] == "npu"
 
     monkeypatch.setattr(
-        fish_stages,
-        "resolve_device_spec",
+        device_mod,
+        "resolve_concrete_device",
         lambda device, index: f"cuda:{index}" if index is not None else "cpu",
     )
     fish_stages.create_vocoder_executor("model", device=None, gpu_id=0)

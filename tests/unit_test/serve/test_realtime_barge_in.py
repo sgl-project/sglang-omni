@@ -17,7 +17,7 @@ from sglang_omni.serve.realtime.vad import Emit, VADEvent
 
 
 class FakeVAD:
-    def __init__(self, _config: object | None = None) -> None: ...
+    def __init__(self, config: object | None = None) -> None: ...
 
     def reset(self) -> None: ...
 
@@ -48,7 +48,7 @@ class ScriptedClient:
         self.abort_hook: Callable[[], Any] | None = None
 
     async def completion_stream(
-        self, _request: Any, *, request_id: str, audio_format: str = "wav"
+        self, request: Any, *, request_id: str, audio_format: str = "wav"
     ) -> AsyncIterator[CompletionStreamChunk]:
         del audio_format
         self.requests.append(request_id)
@@ -61,7 +61,7 @@ class ScriptedClient:
             await self.abort_hook()
 
 
-def _chunk(
+def make_chunk(
     *, text: str = "", modality: str = "text", finish_reason: str | None = None
 ) -> CompletionStreamChunk:
     return CompletionStreamChunk(
@@ -73,7 +73,7 @@ def _chunk(
     )
 
 
-def _session(
+def make_session(
     monkeypatch: pytest.MonkeyPatch, streams: list[StreamFactory]
 ) -> tuple[RealtimeSession, RecordingWebSocket, ScriptedClient]:
     monkeypatch.setattr(session_module, "StreamingVAD", FakeVAD)
@@ -101,18 +101,18 @@ async def test_abort_finishes_before_transcription_and_omits_cancelled_history(
 
     async def response() -> AsyncIterator[CompletionStreamChunk]:
         response_started.set()
-        yield _chunk(text="partial")
-        yield _chunk(modality="audio")
+        yield make_chunk(text="partial")
+        yield make_chunk(modality="audio")
         await abort_done.wait()
         raise RuntimeError("aborted stream")
 
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
         assert abort_done.is_set()
         transcription_started.set()
-        yield _chunk(text="original question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="original question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, client = _session(monkeypatch, [response, transcription])
+    session, websocket, client = make_session(monkeypatch, [response, transcription])
 
     async def abort() -> None:
         abort_started.set()
@@ -155,17 +155,17 @@ async def test_failed_abort_cancels_local_response_before_transcription(
 
     async def response() -> AsyncIterator[CompletionStreamChunk]:
         response_started.set()
-        yield _chunk(text="partial")
-        yield _chunk(modality="audio")
+        yield make_chunk(text="partial")
+        yield make_chunk(modality="audio")
         await release_response.wait()
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(finish_reason="stop")
 
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
         transcription_started.set()
-        yield _chunk(text="original question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="original question")
+        yield make_chunk(finish_reason="stop")
 
-    session, websocket, client = _session(monkeypatch, [response, transcription])
+    session, websocket, client = make_session(monkeypatch, [response, transcription])
 
     async def abort() -> None:
         raise RuntimeError("abort failed")
@@ -205,18 +205,18 @@ async def test_response_cancel_during_transcription_is_a_noop(
     release_transcription = asyncio.Event()
 
     async def response() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text="answer")
-        yield _chunk(finish_reason="stop")
-        yield _chunk(modality="audio")
-        yield _chunk(modality="audio", finish_reason="stop")
+        yield make_chunk(text="answer")
+        yield make_chunk(finish_reason="stop")
+        yield make_chunk(modality="audio")
+        yield make_chunk(modality="audio", finish_reason="stop")
 
     async def transcription() -> AsyncIterator[CompletionStreamChunk]:
         transcription_started.set()
         await release_transcription.wait()
-        yield _chunk(text="question")
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text="question")
+        yield make_chunk(finish_reason="stop")
 
-    session, _, client = _session(monkeypatch, [response, transcription])
+    session, _, client = make_session(monkeypatch, [response, transcription])
     turn = asyncio.create_task(session.run_turn("item-user", "audio"))
     await transcription_started.wait()
 
@@ -231,7 +231,7 @@ async def test_response_cancel_during_transcription_is_a_noop(
 async def test_speech_blocks_queued_response_until_speech_stops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _, _ = _session(monkeypatch, [])
+    session, _, _ = make_session(monkeypatch, [])
     response_started = asyncio.Event()
 
     async def run_turn(_item_id: str, _audio: str) -> None:
@@ -254,7 +254,7 @@ async def test_speech_blocks_queued_response_until_speech_stops(
 async def test_pending_response_is_cancelled_before_stream_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, client = _session(monkeypatch, [])
+    session, websocket, client = make_session(monkeypatch, [])
     session.response_start_pending = True
     await session.handle_vad_emit(Emit(VADEvent.SPEECH_STARTED, 0))
 
@@ -275,9 +275,9 @@ async def test_teardown_cancels_turn_without_starting_transcription(
     async def response() -> AsyncIterator[CompletionStreamChunk]:
         response_started.set()
         await asyncio.Event().wait()
-        yield _chunk()
+        yield make_chunk()
 
-    session, _, client = _session(monkeypatch, [response])
+    session, _, client = make_session(monkeypatch, [response])
     turn = asyncio.create_task(session.run_turn("item-user", "audio"))
     session.active_task = turn
     await response_started.wait()

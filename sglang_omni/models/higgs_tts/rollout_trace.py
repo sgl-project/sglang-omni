@@ -6,13 +6,40 @@ discrete action stream with actions, logprobs, and the trainable-action mask.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal, TypedDict
 
 import torch
+from typing_extensions import Never
 
 from sglang_omni.models.higgs_tts.utils import delay_pattern_action_mask
 
 OMNI_ROLLOUT_VERSION = 1
+
+
+class HiggsActionStream(TypedDict):
+    name: str
+    stage: str
+    modality: Literal["audio"]
+    action_type: Literal["discrete"]
+    layout: Literal["codebook_2d"]
+    flatten_order: Literal["time_major"]
+    shape: list[int]
+    vocab_size: int
+    actions: list[list[int]]
+    logprobs: list[list[float]] | None
+    action_mask: list[list[int]]
+    deterministic_mask: None
+    channel_ids: list[int]
+    channel_roles: list[str]
+
+
+class HiggsRolloutTrace(TypedDict):
+    version: int
+    model_family: str
+    stages: list[str]
+    total_action_count: int
+    action_streams: list[HiggsActionStream]
+    non_action_outputs: list[Never]
 
 
 def build_omni_rollout_trace(
@@ -24,7 +51,7 @@ def build_omni_rollout_trace(
     model_family: str = "higgs_tts",
     stage: str = "tts_engine",
     stream_name: str = "higgs_codes",
-) -> dict[str, Any]:
+) -> HiggsRolloutTrace:
     """Build the ``meta_info.omni_rollout`` dict from a delayed ``[L, N]`` code
     matrix and aligned ``[L, N]`` selected-action logprobs (``None`` if not
     requested).
@@ -39,11 +66,15 @@ def build_omni_rollout_trace(
         raise ValueError(
             f"delayed_codes must be 2-D [L, N], got shape {tuple(delayed_codes.shape)}"
         )
+    else:
+        pass
     L, N = delayed_codes.shape
     if N != num_codebooks:
         raise ValueError(
             f"delayed_codes has {N} codebooks but num_codebooks={num_codebooks}"
         )
+    else:
+        pass
 
     action_mask = delay_pattern_action_mask(delayed_codes)  # [L, N] bool
 
@@ -53,6 +84,8 @@ def build_omni_rollout_trace(
                 f"delayed_logprobs shape {tuple(delayed_logprobs.shape)} != "
                 f"codes shape {(L, N)}"
             )
+        else:
+            pass
         # Every trainable action must carry a finite logprob.
         action_logprobs = delayed_logprobs[action_mask]
         if action_logprobs.numel() and not bool(torch.isfinite(action_logprobs).all()):
@@ -60,8 +93,12 @@ def build_omni_rollout_trace(
                 "non-finite logprob at a trainable action position; "
                 "rollout logprob capture is inconsistent with the action mask"
             )
+        else:
+            pass
+    else:
+        pass
 
-    stream: dict[str, Any] = {
+    stream: HiggsActionStream = {
         "name": stream_name,
         "stage": stage,
         "modality": "audio",

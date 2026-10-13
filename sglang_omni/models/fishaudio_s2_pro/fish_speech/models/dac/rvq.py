@@ -48,6 +48,8 @@ def pad1d(
         if length <= max_pad:
             extra_pad = max_pad - length + 1
             x = F.pad(x, (0, extra_pad))
+        else:
+            pass
         padded = F.pad(x, paddings, mode, value)
         end = padded.shape[-1] - extra_pad
         return padded[..., :end]
@@ -182,11 +184,15 @@ class ConvNeXtBlock(nn.Module):
 
         if self.gamma is not None:
             x = self.gamma * x
+        else:
+            pass
 
         x = x.permute(0, 2, 1)  # (N, L, C) -> (N, C, L)
 
         if apply_residual:
             x = input + x
+        else:
+            pass
 
         return x
 
@@ -220,6 +226,8 @@ class DownsampleResidualVectorQuantize(nn.Module):
 
         if downsample_dims is None:
             downsample_dims = [input_dim for _ in range(len(downsample_factor))]
+        else:
+            pass
 
         all_dims = (input_dim,) + tuple(downsample_dims)
 
@@ -289,6 +297,8 @@ class DownsampleResidualVectorQuantize(nn.Module):
         if isinstance(m, (nn.Conv1d, nn.Linear)):
             nn.init.trunc_normal_(m.weight, std=0.02)
             nn.init.constant_(m.bias, 0)
+        else:
+            pass
 
     def forward(
         self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs
@@ -297,6 +307,8 @@ class DownsampleResidualVectorQuantize(nn.Module):
         original_shape = z.shape
         if semantic_len is None:
             semantic_len = torch.LongTensor([z.shape[-1]])
+        else:
+            pass
         z = self.downsample(z)
         z = self.pre_module(z)  # B, T, D
         (
@@ -331,6 +343,8 @@ class DownsampleResidualVectorQuantize(nn.Module):
             z = F.pad(z, (left, right))
         elif diff < 0:
             z = z[..., left:]
+        else:
+            pass
 
         results = VQResult(
             z=z,
@@ -397,3 +411,5 @@ if __name__ == "__main__":
 
     assert torch.allclose(result.z[:, :, :40], result1.z, atol=1e-8)
     print("Success")
+else:
+    pass

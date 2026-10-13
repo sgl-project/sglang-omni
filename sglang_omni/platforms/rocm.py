@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
@@ -31,6 +34,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
     ) -> dict[str, str]:
         if spec.tp_size <= 1:
             return {}
+        else:
+            pass
 
         source_env = env if env is not None else os.environ
         hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
@@ -40,6 +45,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         original_visible = source_env.get(visibility_var)
         if spec.gpu_id is None:
             raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
+        else:
+            pass
         if original_visible:
             visible_devices = [item.strip() for item in original_visible.split(",")]
             if spec.gpu_id >= len(visible_devices):
@@ -47,6 +54,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
                     f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                     f"but {visibility_var} only exposes {visible_devices}"
                 )
+            else:
+                pass
             mapped_gpu = visible_devices[spec.gpu_id]
         else:
             mapped_gpu = str(spec.gpu_id)
@@ -61,6 +70,8 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             # CUDA alias, so the child must be narrowed through it; the alias
             # is kept for the startup lock and SGLang's physical-device helpers.
             env_updates["HIP_VISIBLE_DEVICES"] = mapped_gpu
+        else:
+            pass
         return env_updates
 
     def get_intra_node_transport(self):
@@ -83,16 +94,20 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
+        cfg = resolved_view(server_args)
+        moe_runner_backend = cfg.moe_runner_backend
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and server_args.moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
             raise ValueError(
                 "Qwen3-Omni on AMD ROCm cannot use "
-                f"moe_runner_backend={server_args.moe_runner_backend!r}; the "
+                f"moe_runner_backend={moe_runner_backend!r}; the "
                 "CUTLASS MoE runners are NVIDIA CUDA-only. Leave the backend as "
                 "'auto' or pass 'aiter' or 'triton'."
             )
+        else:
+            pass
 
         return effective_quantization
 

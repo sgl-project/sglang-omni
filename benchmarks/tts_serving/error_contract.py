@@ -11,12 +11,22 @@ EXPECTED_ERROR_TYPES = {
 }
 
 
-def is_openai_error_response(body: str, *, expected_status: int) -> bool:
+def is_openai_error_response(
+    body: str,
+    *,
+    expected_status: int,
+    expected_error_type: str | None = None,
+    expected_error_code: int | str | None = None,
+) -> bool:
     if not body.strip() or body.lstrip().startswith("<"):
         return False
-    expected_error_type = EXPECTED_ERROR_TYPES.get(expected_status)
+    expected_error_type = expected_error_type or EXPECTED_ERROR_TYPES.get(
+        expected_status
+    )
     if expected_error_type is None:
         return False
+    if expected_error_code is None:
+        expected_error_code = expected_status
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
@@ -31,7 +41,7 @@ def is_openai_error_response(body: str, *, expected_status: int) -> bool:
         return False
     if error.get("type") != expected_error_type:
         return False
-    if error.get("code") != expected_status:
+    if error.get("code") != expected_error_code:
         return False
     if "param" not in error:
         return False

@@ -6,9 +6,18 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from sglang_omni.client.types import UsageInfo
 
 
 class UsageResponse(BaseModel):
@@ -23,9 +32,9 @@ class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
     role: str
-    content: Any = None
+    content: object = None
     name: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[dict[str, object]] | None = None
     tool_call_id: str | None = None
 
 
@@ -52,8 +61,8 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     seed: int | None = None
 
@@ -64,7 +73,7 @@ class ChatCompletionRequest(BaseModel):
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
 
     # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, object] | None = None  # {"voice": "...", "format": "wav"}
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
@@ -82,10 +91,11 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
-    stage_sampling: dict[str, dict[str, Any]] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_sampling: dict[str, dict[str, object]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output
     talker_temperature: float | None = None
@@ -98,6 +108,16 @@ class ChatCompletionRequest(BaseModel):
     request_id: str | None = None
     user: str | None = None
 
+    @model_validator(mode="after")
+    def validate_input_present(self) -> ChatCompletionRequest:
+        if not self.messages and not (self.audios or self.images or self.videos):
+            raise ValueError(
+                "messages must not be empty without audios, images or videos"
+            )
+        else:
+            pass
+        return self
+
     @property
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
@@ -107,7 +127,7 @@ class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
 
     index: int = 0
-    message: dict[str, Any]
+    message: dict[str, object]
     finish_reason: str | None = "stop"
 
 
@@ -170,7 +190,7 @@ class RolloutMessage(BaseModel):
     """Chat message for ``POST /generate`` (role and content required)."""
 
     role: str = Field(min_length=1)
-    content: str | list[Any]
+    content: str | list[object]
 
 
 _SERIALIZED_DTYPE_ITEMSIZE = {
@@ -195,12 +215,16 @@ class SerializedMultimodalTensor(BaseModel):
     data: str
 
     @model_validator(mode="after")
-    def _validate_payload(self) -> SerializedMultimodalTensor:
+    def validate_payload(self) -> SerializedMultimodalTensor:
         itemsize = _SERIALIZED_DTYPE_ITEMSIZE.get(self.dtype)
         if itemsize is None:
             raise ValueError(f"unsupported tensor dtype {self.dtype!r}")
+        else:
+            pass
         if any(dim < 0 for dim in self.shape):
             raise ValueError(f"invalid tensor shape {self.shape}")
+        else:
+            pass
         try:
             raw_len = len(base64.b64decode(self.data, validate=True))
         except binascii.Error as exc:
@@ -211,6 +235,8 @@ class SerializedMultimodalTensor(BaseModel):
                 f"tensor data has {raw_len} bytes, expected {expected} "
                 f"for shape={self.shape} dtype={self.dtype}"
             )
+        else:
+            pass
         return self
 
 
@@ -221,6 +247,10 @@ class SerializedMultimodalInputs(BaseModel):
     tensors: dict[str, SerializedMultimodalTensor] = Field(min_length=1)
 
 
+# Token ids are stored as signed 64-bit integers.
+TOKEN_ID_STORAGE_BOUND = 1 << 63
+
+
 class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
     ``input_ids``, ``prompt``, ``messages``."""
@@ -229,26 +259,40 @@ class RolloutGenerateRequest(BaseModel):
 
     model: str | None = None
 
-    input_ids: list[int] | None = None
+    input_ids: list[int] | None = Field(default=None, min_length=1)
     prompt: str | None = None
-    messages: list[RolloutMessage] | None = None
+    messages: list[RolloutMessage] | None = Field(default=None, min_length=1)
 
     sampling_params: RolloutSamplingParams = Field(
         default_factory=RolloutSamplingParams
     )
     stream: bool = False
     stage_sampling: dict[str, RolloutSamplingParams] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
     output_modalities: list[str] | None = None
 
     multimodal_train_inputs: SerializedMultimodalInputs | None = None
 
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
     return_logprob: bool = True
     return_omni_rollout: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
+
+    @field_validator("input_ids")
+    @classmethod
+    def validate_input_ids(cls, input_ids: list[int] | None) -> list[int] | None:
+        # One located error keeps the 422 small for a long invalid prompt.
+        for index, token_id in enumerate(input_ids or ()):
+            if not 0 <= token_id < TOKEN_ID_STORAGE_BOUND:
+                raise ValueError(
+                    f"input_ids[{index}] is {token_id}. "
+                    "Token ids must be in [0, 2**63)."
+                )
+            else:
+                pass
+        return input_ids
 
 
 class GenerateFinishReason(BaseModel):
@@ -275,9 +319,9 @@ class GenerateMetaInfo(BaseModel):
     completion_tokens: int = 0
     cached_tokens: int = 0
     weight_version: str | None = None
-    request_metadata: dict[str, Any] | None = None
-    output_token_logprobs: list[Any] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    request_metadata: dict[str, object] | None = None
+    output_token_logprobs: list[object] | None = None
+    omni_rollout: dict[str, object] | None = None
 
 
 class GenerateResponse(BaseModel):
@@ -341,6 +385,7 @@ class CreateSpeechRequest(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     stream: bool = False
+    stream_format: Literal["audio", "sse"] = "audio"
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
@@ -353,6 +398,7 @@ class CreateSpeechRequest(BaseModel):
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     x_vector_only_mode: bool | None = None
     stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
@@ -366,7 +412,7 @@ class CreateSpeechRequest(BaseModel):
     seed: int | None = None
 
     # Per-stage overrides (sglang-omni specific)
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class SpeechBatchItem(BaseModel):
@@ -374,33 +420,34 @@ class SpeechBatchItem(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    model: Any = None
-    input: Any = None
-    voice: Any = Field(
+    model: object = None
+    input: object = None
+    voice: object = Field(
         default=None,
         validation_alias=AliasChoices("voice", "speaker"),
     )
-    response_format: Any = None
-    speed: Any = None
-    stream: Any = None
-    task_type: Any = None
-    language: Any = None
-    instructions: Any = None
-    ref_audio: Any = None
-    ref_text: Any = None
-    references: Any = None
-    x_vector_only_mode: Any = None
-    stream_codec_output: Any = None
-    token_count: Any = None
-    duration_tokens: Any = None
-    max_new_tokens: Any = None
-    initial_codec_chunk_frames: Any = None
-    temperature: Any = None
-    top_p: Any = None
-    top_k: Any = None
-    repetition_penalty: Any = None
-    seed: Any = None
-    stage_params: Any = None
+    response_format: object = None
+    speed: object = None
+    stream: object = None
+    task_type: object = None
+    language: object = None
+    instructions: object = None
+    ref_audio: object = None
+    ref_text: object = None
+    references: object = None
+    x_vector_only_mode: object = None
+    stream_codec_output: object = None
+    suppress_bootstrap_silence: object = None
+    token_count: object = None
+    duration_tokens: object = None
+    max_new_tokens: object = None
+    initial_codec_chunk_frames: object = None
+    temperature: object = None
+    top_p: object = None
+    top_k: object = None
+    repetition_penalty: object = None
+    seed: object = None
+    stage_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):
@@ -425,6 +472,7 @@ class CreateSpeechBatchRequest(BaseModel):
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
     stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
@@ -434,7 +482,7 @@ class CreateSpeechBatchRequest(BaseModel):
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class SpeechBatchResult(BaseModel):
@@ -446,7 +494,15 @@ class SpeechBatchResult(BaseModel):
     format: str | None = None
     media_type: str | None = None
     finish_reason: str | None = None
-    error: dict[str, Any] | None = None
+    error: dict[str, object] | None = None
+
+
+class SpeechStreamOutcome(BaseModel):
+    """Terminal state of a finished raw PCM speech stream."""
+
+    request_id: str
+    finish_reason: str
+    usage: UsageInfo | None = None
 
 
 class SpeechBatchResponse(BaseModel):
@@ -481,6 +537,7 @@ class SpeechStreamSessionConfig(BaseModel):
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
     stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
@@ -490,7 +547,7 @@ class SpeechStreamSessionConfig(BaseModel):
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class UploadedVoiceMetadata(BaseModel):
@@ -620,11 +677,11 @@ class UpdateWeightFromDiskRequest(AdminRequestBase):
     recapture_cuda_graph: bool = False
     token_step: int = 0
     flush_cache: bool = True
-    manifest: dict[str, Any] | None = None
+    manifest: dict[str, object] | None = None
 
 
 class UpdateWeightsFromTensorRequest(AdminRequestBase):
-    serialized_named_tensors: list[Any] | None = None
+    serialized_named_tensors: list[object] | None = None
     load_format: str | None = None
     flush_cache: bool = True
     abort_all_requests: bool = False
