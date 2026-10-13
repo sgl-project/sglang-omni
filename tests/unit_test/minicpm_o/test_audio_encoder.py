@@ -13,10 +13,14 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MultiModalProjector,
@@ -30,6 +34,9 @@ from sglang_omni.models.minicpm_o.components.whisper_encoder import (
     AudioEncoderState,
     MiniCPMWhisperEncoder,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -306,3 +313,81 @@ def test_batched_streaming_matches_each_session_alone(
             state.key_value_states.untyped_storage().nbytes()
             == state.key_value_states.nbytes
         )
+
+
+def audio_payload(
+    request_id: str,
+    audio_features: torch.Tensor,
+    audio_feature_lens: torch.Tensor,
+    *,
+    cache_key: str | None,
+) -> StagePayload:
+    state = MiniCPMOPipelineState(
+        encoder_inputs={
+            "audio_encoder": {
+                "audio_features": audio_features,
+                "audio_feature_lens": audio_feature_lens,
+                "cache_key": cache_key,
+            }
+        }
+    )
+    return StagePayload(
+        request_id=request_id,
+        request=OmniRequest(inputs={}),
+        data=state.to_dict(),
+    )
+
+
+def test_cross_request_batch_preserves_order_and_reuses_results() -> None:
+    encoder = Mock()
+    encoder.audio_pool_step = 5
+    encoder.return_value = {"audio_embeds": torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
+    cache = StageOutputCache(cache_device="cpu")
+    cached_embeddings = torch.tensor([[5.0, 6.0]])
+    cache.put("cached", {"audio_embeds": cached_embeddings})
+    short_features = torch.ones(1, 80, 9)
+    long_features = torch.ones(1, 80, 11)
+    payloads = [
+        audio_payload("cached", short_features, torch.tensor([9]), cache_key="cached"),
+        audio_payload("leader", short_features, torch.tensor([9]), cache_key="shared"),
+        audio_payload(
+            "follower", short_features, torch.tensor([9]), cache_key="shared"
+        ),
+        audio_payload("other", long_features, torch.tensor([11]), cache_key="other"),
+    ]
+
+    outputs = batch_audio_encoder_payloads(payloads, encoder=encoder, cache=cache)
+
+    assert [payload.request_id for payload in outputs] == [
+        "cached",
+        "leader",
+        "follower",
+        "other",
+    ]
+    encoder.assert_called_once()
+    encoder_call_kwargs = encoder.call_args.kwargs
+    assert encoder_call_kwargs["audio_features"].shape == (2, 80, 11)
+
+    embeddings = [
+        payload.data["encoder_outs"]["audio_encoder"]["audio_embeds"]
+        for payload in outputs
+    ]
+    assert torch.equal(embeddings[0], cached_embeddings)
+    assert torch.equal(embeddings[1], torch.tensor([[1.0, 2.0]]))
+    assert torch.equal(embeddings[2], embeddings[1])
+    assert torch.equal(embeddings[3], torch.tensor([[3.0, 4.0]]))
+
+    cached = batch_audio_encoder_payloads(
+        [
+            audio_payload(
+                "cached-again", short_features, torch.tensor([9]), cache_key="shared"
+            )
+        ],
+        encoder=encoder,
+        cache=cache,
+    )
+    encoder.assert_called_once()
+    assert torch.equal(
+        cached[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"],
+        embeddings[1],
+    )
