@@ -11,10 +11,26 @@ stages:
     gpu_memory_fraction: 0.02
   thinker:
     gpu_memory_fraction: 0.78
+    factory:
+      # note (wenyao): 0.045 instead of the 0.05 default lifts the thinker KV pool from 6102
+      # to 10451 tokens at this fraction; measured on H100 80GB, #2474.
+      encoder_mem_reserve: 0.045
     engine:
       cuda_graph_backend_prefill: breakable
       cuda_graph_max_bs_prefill: 2048
   talker_ar:
     gpu_memory_fraction: 0.10
+    env:
+      # note (wenyao): SGLang estimates min(max_new_tokens, this) new tokens per request at
+      # admission; talker outputs stay far below 4096, so 256 admits more streams (H100, #2474).
+      SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION: "256"
   code2wav:
     gpu_memory_fraction: 0.02
+    factory:
+      # note (wenyao): batching across streams plus a 2-frame first window cut TTFA p50 42-44% at
+      # req/s -1 to -4% (H100 80GB, #2474); depends on the thinker reserve and talker clip above.
+      enable_batching: true
+      max_batch_wait_ms: 8
+      batch_floor: 4
+      batch_ceiling: 16
+      initial_codec_chunk_frames: 2
