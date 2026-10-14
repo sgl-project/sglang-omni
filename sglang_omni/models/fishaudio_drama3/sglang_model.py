@@ -19,7 +19,10 @@ from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+    VocabParallelEmbedding,
+)
 from sglang.srt.model_executor.forward_batch_info import (
     ForwardBatch,
     ForwardMode,
@@ -99,6 +102,49 @@ class Drama3Backbone(Qwen3_5MoeForCausalLM):
             return hidden_states
 
 
+class CandidateLogitsProcessor(LogitsProcessor):
+    """Projects hidden states onto the main-token candidates only.
+
+    Decode samples the main token among EOS and the semantic range, about 4k of the
+    backbone's 252k vocabulary rows, so the other rows' logits are never read; every
+    other column holds the dtype's minimum.
+    """
+
+    candidate_token_ids: torch.Tensor | None = None
+    candidate_lm_head_weight: torch.Tensor | None = None
+
+    def _compute_lm_head(
+        self,
+        hidden_states: torch.Tensor,
+        lm_head: VocabParallelEmbedding,
+        embedding_bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        candidate_token_ids = self.candidate_token_ids
+        candidate_lm_head_weight = self.candidate_lm_head_weight
+        if candidate_token_ids is None or candidate_lm_head_weight is None:
+            return super()._compute_lm_head(hidden_states, lm_head, embedding_bias)
+        else:
+            pass
+        assert embedding_bias is None
+        if self.use_fp32_lm_head:
+            candidate_logits = torch.mm(
+                hidden_states.to(candidate_lm_head_weight.dtype),
+                candidate_lm_head_weight.T,
+                out_dtype=torch.float32,
+            )
+        else:
+            candidate_logits = torch.matmul(
+                hidden_states.to(candidate_lm_head_weight.dtype),
+                candidate_lm_head_weight.T,
+            )
+        logits = candidate_logits.new_full(
+            (hidden_states.shape[0], lm_head.weight.shape[0]),
+            torch.finfo(candidate_logits.dtype).min,
+        )
+        logits.index_copy_(1, candidate_token_ids, candidate_logits)
+        return logits
+
+
 class Drama3ForCausalLM(nn.Module):
     """Backbone, lm_head and codebook tower; one forward samples one frame per request."""
 
@@ -151,7 +197,7 @@ class Drama3ForCausalLM(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("lm_head", prefix),
         )
-        self.logits_processor = LogitsProcessor(text_config)
+        self.logits_processor = CandidateLogitsProcessor(text_config)
         self.audio_decoder = AudioDecoder(config)
         self.tower_attention = nn.ModuleList(
             RadixAttention(
@@ -361,3 +407,10 @@ class Drama3ForCausalLM(nn.Module):
             pass
         self.lm_head.weight_loader(self.lm_head.weight, lm_head_weights[0])
         load_audio_decoder_weights(self.audio_decoder, decoder_weights)
+        candidate_token_ids = self.audio_decoder.main_token_candidate_ids.to(
+            self.lm_head.weight.device
+        )
+        self.logits_processor.candidate_token_ids = candidate_token_ids
+        self.logits_processor.candidate_lm_head_weight = (
+            self.lm_head.weight.index_select(0, candidate_token_ids).contiguous()
+        )
