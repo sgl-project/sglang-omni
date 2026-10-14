@@ -14,41 +14,63 @@ from sglang_omni.profiler.event_recorder import (
     get_recorder,
 )
 from tests.unit_test.profiler.event_recorder_test_utils import (
+    fail_status_replace,
     read_events,
     read_status_file,
 )
 
 
-def test_recording_generations_do_not_collide_in_one_directory(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("first_run_id", "second_run_id"),
+    [("first", "second"), ("reused", "reused")],
+)
+def test_recording_generations_do_not_collide_in_one_directory(
+    tmp_path: Path,
+    first_run_id: str,
+    second_run_id: str,
+) -> None:
     recorder = RequestEventRecorder()
-    first_path = recorder.start("first", str(tmp_path), "stage")
+    first_path = recorder.start(first_run_id, str(tmp_path), "stage")
     recorder.emit(request_id="first", stage="stage", event_name="event")
     recorder.stop()
 
-    second_path = recorder.start("second", str(tmp_path), "stage")
+    second_path = recorder.start(second_run_id, str(tmp_path), "stage")
     recorder.emit(request_id="second", stage="stage", event_name="event")
     recorder.stop()
 
     assert first_path != second_path
-    assert [event["run_id"] for event in read_events(first_path)] == ["first"]
-    assert [event["run_id"] for event in read_events(second_path)] == ["second"]
+    assert [event["run_id"] for event in read_events(first_path)] == [first_run_id]
+    assert [event["run_id"] for event in read_events(second_path)] == [second_run_id]
     assert len(list(tmp_path.glob("events_*.jsonl"))) == 2
     assert len(list(tmp_path.glob("run_status_*.json"))) == 2
 
 
-def test_reusing_run_id_creates_a_new_recording_generation(tmp_path: Path) -> None:
+def test_existing_event_file_is_not_reused_after_process_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.profiler import event_recorder_writer
+
+    monkeypatch.setattr(
+        event_recorder_writer, "allocate_process_generation_id", lambda: 0
+    )
     recorder = RequestEventRecorder()
-    first_path = recorder.start("reused", str(tmp_path), "stage")
+    first_path = recorder.start("first", str(tmp_path), "stage")
     recorder.emit(request_id="first", stage="stage", event_name="event")
     recorder.stop()
+    original_contents = Path(first_path).read_text(encoding="utf-8")
 
-    second_path = recorder.start("reused", str(tmp_path), "stage")
-    recorder.emit(request_id="second", stage="stage", event_name="event")
-    recorder.stop()
+    restarted_recorder = RequestEventRecorder()
+    second_path = restarted_recorder.start("second", str(tmp_path), "stage")
+    restarted_recorder.emit(request_id="second", stage="stage", event_name="event")
+    finalization = restarted_recorder.deactivate()
+    assert finalization is not None
+    assert finalization.wait(timeout_seconds=5)
 
-    assert first_path != second_path
-    assert [event["request_id"] for event in read_events(first_path)] == ["first"]
-    assert [event["request_id"] for event in read_events(second_path)] == ["second"]
+    assert second_path == first_path
+    assert Path(second_path).read_text(encoding="utf-8") == original_contents
+    status = read_status_file(finalization.status_path)
+    assert status["event_file_open_failures"] == 1
+    assert status["complete"] is False
 
 
 def test_zero_event_retired_run_finalizes_complete(tmp_path: Path) -> None:
@@ -143,13 +165,7 @@ def test_status_publication_failure_does_not_report_success(
     recorder = RequestEventRecorder(queue_capacity=8)
     recorder.start(run_id="status", event_dir=str(tmp_path), stage="stage")
 
-    from sglang_omni.profiler import event_recorder_writer
-
-    def fail_replace(source: Path, destination: Path) -> None:
-        del source, destination
-        raise OSError("synthetic status publication failure")
-
-    monkeypatch.setattr(event_recorder_writer.os, "replace", fail_replace)
+    fail_status_replace(monkeypatch)
     finalization = recorder.deactivate()
     assert finalization is not None
     assert finalization.wait(timeout_seconds=5) is False
@@ -172,12 +188,6 @@ def test_stop_returns_none_when_finalization_publication_fails(
     recorder = RequestEventRecorder()
     recorder.start(run_id="status-stop", event_dir=str(tmp_path), stage="stage")
 
-    from sglang_omni.profiler import event_recorder_writer
-
-    def fail_replace(source: Path, destination: Path) -> None:
-        del source, destination
-        raise OSError("synthetic status publication failure")
-
-    monkeypatch.setattr(event_recorder_writer.os, "replace", fail_replace)
+    fail_status_replace(monkeypatch)
 
     assert recorder.stop() is None

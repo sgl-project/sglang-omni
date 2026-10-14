@@ -147,54 +147,13 @@ def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:
     assert rec.is_active() is False
 
 
-def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
+def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
     rec = get_recorder()
-    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    file_write = rec.fp.write
-    first_paused = threading.Event()
-    release_first = threading.Event()
-
-    def pause_after_json_body(frame: FrameType, event: str, argument: object) -> None:
-        if event == "c_return" and argument == file_write:
-            sys.setprofile(None)
-            first_paused.set()
-            assert release_first.wait(5)
-        else:
-            pass
-
-    def emit_event(request_id: str, should_pause: bool) -> None:
-        if should_pause:
-            sys.setprofile(pause_after_json_body)
-        else:
-            pass
-        try:
-            rec.emit(
-                request_id=request_id,
-                stage="thinker",
-                event_name="stage_dispatch",
-                metadata={"i": 0},
-            )
-        finally:
-            sys.setprofile(None)
-
-    first_thread = threading.Thread(target=emit_event, args=("req-0", True))
-    first_thread.start()
-    assert first_paused.wait(5)
-    second_thread = threading.Thread(target=emit_event, args=("req-1", False))
-    second_thread.start()
-    second_thread.join(timeout=0.5)
-    release_first.set()
-    first_thread.join(timeout=5)
-    second_thread.join(timeout=5)
+    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="coord")
+    emit(request_id="r1", stage=None, event_name="request_admission")
     rec.stop()
-
-    assert not first_thread.is_alive() and not second_thread.is_alive()
     events = read_events(path)
-    assert len(events) == 2
-    for ev in events:
-        assert ev["event_name"] == "stage_dispatch"
-        assert ev["request_id"].startswith("req-")
-        assert ev["run_id"] == "r0"
+    assert any(e["event_name"] == "request_admission" for e in events)
 
 
 def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(

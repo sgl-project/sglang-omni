@@ -191,12 +191,33 @@ def snapshot_metadata_value(
             pass
         if shape_values == ():
             device = getattr(metadata_value, "device", None)
+            device_text = str(device) if device is not None else None
+            scalar_available = False
+            scalar_value: object = None
+            if hasattr(metadata_value, "item") and (
+                device_text is None or device_text.startswith("cpu")
+            ):
+                try:
+                    scalar_value = metadata_value.item()
+                except Exception:
+                    pass
+                else:
+                    scalar_available = True
+            else:
+                pass
+            if scalar_available and (
+                scalar_value is None
+                or isinstance(scalar_value, (bool, int, float, str))
+            ):
+                return scalar_value
+            else:
+                pass
             return {
                 "__tensor_summary__": True,
                 "type": type(metadata_value).__name__,
                 "shape": [],
                 "dtype": str(dtype),
-                "device": str(device) if device is not None else None,
+                "device": device_text,
             }
         else:
             pass

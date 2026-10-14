@@ -52,3 +52,14 @@ def stall_writer(
 
     monkeypatch.setattr(recorder, "write_queued_event", stalled_write)
     return writer_entered, release_writer
+
+
+def fail_status_replace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make atomic status publication fail for finalization tests."""
+    from sglang_omni.profiler import event_recorder_writer
+
+    def fail_replace(source: Path, destination: Path) -> None:
+        del source, destination
+        raise OSError("synthetic status publication failure")
+
+    monkeypatch.setattr(event_recorder_writer.os, "replace", fail_replace)

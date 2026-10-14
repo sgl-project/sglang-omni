@@ -41,7 +41,9 @@ stages in the same OS process share **one** JSONL file — the filename uses the
 first stage to start, and the per-event `stage` field identifies the owner. The
 generation suffix prevents a later recording, including one that reuses the
 same `run_id`, from appending to an older file. The views layer merges files
-from every process by `request_id`.
+from every process by `request_id`. The writer creates each JSONL file
+exclusively; if a process restart reuses an existing generation path, it
+records an event-file-open failure instead of appending.
 
 The recorder uses one bounded queue and one dedicated writer thread per
 process. The default queue capacity is 8192 events and can be reduced in unit
@@ -49,8 +51,9 @@ tests by constructing `RequestEventRecorder(queue_capacity=...)`. Producers
 capture timestamps, stage attribution, and bounded JSON-like metadata before
 using a nonblocking enqueue. JSON serialization, file operations, and flushes
 run only on the writer thread. Events may therefore be delayed on disk while
-profiling is active; use a finalized run or its status sidecar for a complete
-read.
+profiling is active; consumers must treat JSONL measurements as provisional
+until the corresponding finalized status sidecar exists and reports
+`complete: true`.
 
 Each finalized run also writes
 `run_status_<run-digest>_<pid>_g<generation>.json` beside the JSONL file. It
@@ -58,7 +61,8 @@ records the run ID, accepted/processed/written/unwritten/dropped counts, writer
 failures, stages, and `complete`; that flag has `completeness_scope` set to
 `event_storage` and does not claim semantic timing coverage. Queue overflow,
 writer failure, metadata snapshot failure, and metadata truncation mark the run
-incomplete. A missing sidecar is not evidence that a trace is complete.
+incomplete. Consumers must not treat a missing sidecar, or a sidecar with
+`complete: false`, as a complete trace.
 
 Metadata is intentionally limited to scalars, JSON-like mappings/sequences,
 and tensor-like values represented by shape/dtype/device summaries. Tensor
@@ -251,13 +255,6 @@ publish its sidecar. Serving control paths use `stop(wait=False)` or
 handle. Shutdown cleanup waits outside the asyncio event loop for a bounded
 interval. A stalled or failed writer cannot block serving, but the resulting
 status must be treated as incomplete.
-
-`build_report()` and `build_duplex_session_metrics()` include a
-`completeness.verified` field. It is true only when every selected JSONL file
-has a matching status sidecar with `complete=true`, zero drops, matching
-accepted/processed/written counters, and a JSONL line count equal to
-`written_events`; metrics computed from missing or incomplete sidecars are
-still returned, but must not be used as verified measurements.
 
 `POST /stop_profile` and `POST /stop_request_profile` accept an optional
 `run_id` field. When **omitted**, the request is a wildcard: every stage

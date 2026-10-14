@@ -29,7 +29,6 @@ def test_slow_writer_does_not_block_producers(
     path = recorder.start(run_id="slow", event_dir=str(tmp_path), stage="stage")
     writer_entered, release_writer = stall_writer(recorder, monkeypatch)
     recorder.emit(request_id="first", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
 
     producer_finished = threading.Event()
 
@@ -45,6 +44,7 @@ def test_slow_writer_does_not_block_producers(
     producer_thread = threading.Thread(target=produce_events)
     producer_thread.start()
     try:
+        assert writer_entered.wait(timeout=5)
         assert producer_finished.wait(timeout=5)
         finalization = recorder.deactivate()
         assert finalization is not None
@@ -151,15 +151,19 @@ def test_retired_run_waits_for_events_accepted_during_idle_observation(
     monkeypatch.setattr(recorder, "handle_writer_idle", pause_idle)
 
     recorder.emit(request_id="first", stage="stage", event_name="event")
-    assert idle_entered.wait(timeout=5)
+    finalization = None
+    try:
+        assert idle_entered.wait(timeout=5)
 
-    # This enqueue happens after event #1 was processed but before the writer
-    # is allowed to complete its idle decision.
-    recorder.emit(request_id="second", stage="stage", event_name="event")
-    finalization = recorder.deactivate(run_id="idle-race")
+        # This enqueue happens after event #1 was processed but before the writer
+        # is allowed to complete its idle decision.
+        recorder.emit(request_id="second", stage="stage", event_name="event")
+        finalization = recorder.deactivate(run_id="idle-race")
+        assert finalization is not None
+    finally:
+        release_idle.set()
+
     assert finalization is not None
-    release_idle.set()
-
     assert finalization.wait(timeout_seconds=5)
     status = read_status(path)
     assert [event["request_id"] for event in read_events(path)] == [
@@ -180,21 +184,23 @@ def test_full_queue_drops_events_and_marks_status_incomplete(
     path = recorder.start(run_id="full", event_dir=str(tmp_path), stage="stage")
     writer_entered, release_writer = stall_writer(recorder, monkeypatch)
     recorder.emit(request_id="first", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
-    for event_number in range(8):
-        recorder.emit(
-            request_id=f"request-{event_number}",
-            stage="stage",
-            event_name="event",
-        )
-    finalization = recorder.deactivate()
-    assert finalization is not None
+    finalization = None
     try:
+        assert writer_entered.wait(timeout=5)
+        for event_number in range(8):
+            recorder.emit(
+                request_id=f"request-{event_number}",
+                stage="stage",
+                event_name="event",
+            )
+        finalization = recorder.deactivate()
+        assert finalization is not None
         release_writer.set()
         assert finalization.wait(timeout_seconds=5)
     finally:
         release_writer.set()
 
+    assert finalization is not None
     status = read_status(path)
     assert status["accepted_events"] == status["written_events"]
     assert status["dropped_events"] > 0
@@ -251,9 +257,9 @@ def test_run_rotation_does_not_mix_events(
 
     monkeypatch.setattr(recorder, "write_queued_event", stalled_old_write)
     recorder.emit(request_id="old-request", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
 
     try:
+        assert writer_entered.wait(timeout=5)
         new_path = recorder.start(
             run_id="new", event_dir=str(tmp_path / "new"), stage="stage"
         )
@@ -356,31 +362,32 @@ def test_writer_failure_completes_active_and_retired_handles(
 
     monkeypatch.setattr(recorder, "write_queued_event", crashing_write)
     recorder.emit(request_id="old", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
-
-    old_finalization = recorder.deactivate()
-    assert old_finalization is not None
-    new_path = recorder.start("new", str(tmp_path / "new"), "stage")
-    new_finalization = recorder.active_state.finalization  # type: ignore[union-attr]
-    recorder.emit(request_id="new", stage="stage", event_name="event")
+    old_finalization = None
+    new_finalization = None
     try:
+        assert writer_entered.wait(timeout=5)
+        old_finalization = recorder.deactivate()
+        assert old_finalization is not None
+        new_path = recorder.start("new", str(tmp_path / "new"), "stage")
+        new_finalization = recorder.active_state.finalization  # type: ignore[union-attr]
+        recorder.emit(request_id="new", stage="stage", event_name="event")
         release_writer.set()
         assert old_finalization.wait(timeout_seconds=5)
         assert new_finalization.wait(timeout_seconds=5)
     finally:
         release_writer.set()
 
+    assert old_finalization is not None
+    assert new_finalization is not None
     assert recorder.is_active() is False
-    assert read_status_file(old_finalization.status_path)["complete"] is False
-    assert read_status_file(new_finalization.status_path)["complete"] is False
-    assert (
-        "writer_thread_failure"
-        in read_status_file(old_finalization.status_path)["incomplete_reasons"]
-    )
-    assert (
-        "writer_thread_failure"
-        in read_status_file(new_finalization.status_path)["incomplete_reasons"]
-    )
+    old_status = read_status_file(old_finalization.status_path)
+    new_status = read_status_file(new_finalization.status_path)
+    assert old_status["complete"] is False
+    assert new_status["complete"] is False
+    assert old_status["processed_events"] == old_status["accepted_events"] == 1
+    assert new_status["processed_events"] == 0
+    assert "writer_thread_failure" in old_status["incomplete_reasons"]
+    assert "writer_thread_failure" in new_status["incomplete_reasons"]
     assert read_status(old_path)["unwritten_events"] >= 1
     assert read_status(new_path)["unwritten_events"] >= 1
 
@@ -392,28 +399,29 @@ def test_rotation_backlog_is_bounded(
     recorder.start(run_id="run-0", event_dir=str(tmp_path / "run-0"), stage="stage")
     writer_entered, release_writer = stall_writer(recorder, monkeypatch)
     recorder.emit(request_id="request", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
-
-    for run_number in range(1, 5):
-        recorder.start(
-            run_id=f"run-{run_number}",
-            event_dir=str(tmp_path / f"run-{run_number}"),
-            stage="stage",
-        )
-    with pytest.raises(RuntimeError, match="waiting for finalization"):
-        recorder.start(
-            run_id="run-5",
-            event_dir=str(tmp_path / "run-5"),
-            stage="stage",
-        )
-
-    finalization = recorder.deactivate()
-    assert finalization is not None
+    finalization = None
     try:
+        assert writer_entered.wait(timeout=5)
+        for run_number in range(1, 5):
+            recorder.start(
+                run_id=f"run-{run_number}",
+                event_dir=str(tmp_path / f"run-{run_number}"),
+                stage="stage",
+            )
+        with pytest.raises(RuntimeError, match="waiting for finalization"):
+            recorder.start(
+                run_id="run-5",
+                event_dir=str(tmp_path / "run-5"),
+                stage="stage",
+            )
+
+        finalization = recorder.deactivate()
+        assert finalization is not None
         release_writer.set()
         assert finalization.wait(timeout_seconds=5)
     finally:
         release_writer.set()
+    assert finalization is not None
     assert recorder.wait_for_finalizations(timeout_seconds=5)
 
 
@@ -424,12 +432,13 @@ def test_nonblocking_stop_returns_while_writer_is_stalled(
     recorder.start(run_id="async-stop", event_dir=str(tmp_path), stage="stage")
     writer_entered, release_writer = stall_writer(recorder, monkeypatch)
     recorder.emit(request_id="request", stage="stage", event_name="event")
-    assert writer_entered.wait(timeout=5)
-
-    finalization = recorder.deactivate()
-    assert finalization is not None
+    finalization = None
     try:
+        assert writer_entered.wait(timeout=5)
+        finalization = recorder.deactivate()
+        assert finalization is not None
         assert finalization.completion_event.is_set() is False
     finally:
         release_writer.set()
+    assert finalization is not None
     assert finalization.wait(timeout_seconds=5)

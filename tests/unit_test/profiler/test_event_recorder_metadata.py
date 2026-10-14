@@ -79,11 +79,30 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
         def tolist(self):  # pragma: no cover
             raise AssertionError("hot-path emit called tolist()")
 
+    class CpuScalar:
+        shape = ()
+        dtype = "float32"
+
+        def item(self):
+            return 3.14
+
+    class CudaScalar:
+        shape = ()
+        dtype = "float32"
+        device = "cuda:0"
+
+        def item(self):  # pragma: no cover - must not be called
+            raise AssertionError("GPU scalar was materialized on the producer")
+
     rec.emit(
         request_id="r1",
         stage="encoder",
         event_name="encoder_end",
-        metadata={"hidden_states": HugeTensor()},
+        metadata={
+            "hidden_states": HugeTensor(),
+            "loss": CpuScalar(),
+            "gpu_loss": CudaScalar(),
+        },
     )
     rec.stop()
 
@@ -92,6 +111,9 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
     summary = events[0]["metadata"]["hidden_states"]
     assert summary["__tensor_summary__"] is True
     assert summary["shape"] == [1024, 4096]
+    assert events[0]["metadata"]["loss"] == 3.14
+    assert events[0]["metadata"]["gpu_loss"]["shape"] == []
+    assert events[0]["metadata"]["gpu_loss"]["device"] == "cuda:0"
 
 
 def test_nested_metadata_is_snapshotted_before_writer_serialization(
@@ -107,43 +129,16 @@ def test_nested_metadata_is_snapshotted_before_writer_serialization(
         event_name="event",
         metadata={"nested": nested_metadata},
     )
-    assert writer_entered.wait(timeout=5)
     try:
+        assert writer_entered.wait(timeout=5)
         nested_metadata["values"][0] = 2
         nested_metadata["values"][1]["name"] = "after"
     finally:
         release_writer.set()
-    recorder.stop()
+        recorder.stop()
 
     event = read_events(path)[0]
     assert event["metadata"] == {"nested": {"values": [1, {"name": "before"}]}}
-
-
-def test_tensor_like_metadata_is_summarized_without_materialization(
-    tmp_path: Path,
-) -> None:
-    recorder = RequestEventRecorder(queue_capacity=8)
-    path = recorder.start(run_id="tensor", event_dir=str(tmp_path), stage="stage")
-
-    class FakeTensor:
-        shape = (4, 8)
-        dtype = "torch.float16"
-        device = "cuda:0"
-
-        def tolist(self):
-            raise AssertionError("tensor metadata was materialized")
-
-    recorder.emit(
-        request_id="request",
-        stage="stage",
-        event_name="event",
-        metadata={"nested": {"tensor": FakeTensor()}},
-    )
-    recorder.stop()
-
-    summary = read_events(path)[0]["metadata"]["nested"]["tensor"]
-    assert summary["__tensor_summary__"] is True
-    assert summary["shape"] == [4, 8]
 
 
 def test_metadata_truncation_is_reported_in_status(tmp_path: Path) -> None:

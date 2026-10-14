@@ -27,7 +27,6 @@ class ProfilerReport(TypedDict):
     stage_breakdown: list[dict[str, str | int | float]]
     hop_breakdown: list[dict[str, str | int | float]]
     request_count: int
-    completeness: dict[str, JsonValue]
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +34,8 @@ class ProfilerReport(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-def event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
-    """Resolve event JSONL paths without reading their contents."""
+def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
+    """Yield every JSON event from a file, directory, or list of either."""
     paths: list[Path] = []
     if isinstance(source, (str, Path)):
         sources: list[str | Path] = [source]
@@ -49,13 +48,8 @@ def event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
         elif p.is_file():
             paths.append(p)
         else:
-            logger.warning("event_paths: skipping non-existent path %s", p)
-    return paths
-
-
-def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
-    """Yield every JSON event from a file, directory, or list of either."""
-    for path in event_paths(source):
+            logger.warning("iter_events: skipping non-existent path %s", p)
+    for path in paths:
         with path.open("r", encoding="utf-8") as fp:
             for line_no, line in enumerate(fp, 1):
                 line = line.strip()
@@ -80,134 +74,6 @@ def load_events(
     events = list(iter_events(source))
     events.sort(key=lambda e: e.get("timestamp_ns", 0))
     return events
-
-
-def assess_completeness(
-    source: str | Path | Iterable[str | Path],
-) -> dict[str, JsonValue]:
-    """Report whether every selected JSONL file has a self-consistent sidecar."""
-    paths = event_paths(source)
-    statuses: list[dict[str, JsonValue]] = []
-    missing_status_files: list[str] = []
-    incomplete_reasons: set[str] = set()
-    status_not_complete = False
-    for event_path in paths:
-        matching_status: dict[str, JsonValue] | None = None
-        for status_path in sorted(event_path.parent.glob("run_status_*.json")):
-            try:
-                candidate = json.loads(status_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            else:
-                pass
-            if not isinstance(candidate, dict):
-                continue
-            else:
-                pass
-            if candidate.get("event_path") == str(event_path.resolve()):
-                matching_status = candidate
-                break
-            else:
-                pass
-        if matching_status is None:
-            missing_status_files.append(event_path.name)
-        else:
-            statuses.append(matching_status)
-            reasons = matching_status.get("incomplete_reasons")
-            if isinstance(reasons, list):
-                incomplete_reasons.update(
-                    reason for reason in reasons if isinstance(reason, str)
-                )
-            else:
-                pass
-            if matching_status.get("complete") is not True:
-                status_not_complete = True
-            else:
-                counter_names = (
-                    "accepted_events",
-                    "processed_events",
-                    "written_events",
-                    "unwritten_events",
-                    "dropped_events",
-                )
-                if not all(
-                    type(matching_status.get(name)) is int for name in counter_names
-                ):
-                    incomplete_reasons.add("status_counts_unavailable")
-                else:
-                    accepted_events = matching_status["accepted_events"]
-                    processed_events = matching_status["processed_events"]
-                    written_events = matching_status["written_events"]
-                    unwritten_events = matching_status["unwritten_events"]
-                    dropped_events = matching_status["dropped_events"]
-                    if dropped_events != 0:
-                        incomplete_reasons.add("dropped_events")
-                    else:
-                        pass
-                    if (
-                        accepted_events != processed_events
-                        or accepted_events != written_events
-                        or unwritten_events != 0
-                    ):
-                        incomplete_reasons.add("event_count_mismatch")
-                    else:
-                        pass
-                    try:
-                        line_count = 0
-                        malformed_event_file = False
-                        with event_path.open("r", encoding="utf-8") as event_file:
-                            for line in event_file:
-                                if not line.strip():
-                                    continue
-                                else:
-                                    pass
-                                line_count += 1
-                                try:
-                                    json.loads(line)
-                                except json.JSONDecodeError:
-                                    malformed_event_file = True
-                                else:
-                                    pass
-                        if malformed_event_file:
-                            incomplete_reasons.add("malformed_event_file")
-                        else:
-                            pass
-                        if line_count != written_events:
-                            incomplete_reasons.add("jsonl_count_mismatch")
-                        else:
-                            pass
-                    except OSError:
-                        incomplete_reasons.add("event_file_read_failure")
-                    else:
-                        pass
-
-    if not paths:
-        return {
-            "verified": False,
-            "scope": "event_storage",
-            "reason": "no_event_files",
-            "event_file_count": 0,
-            "status_file_count": 0,
-            "missing_status_files": [],
-            "incomplete_reasons": [],
-        }
-    else:
-        pass
-    if missing_status_files:
-        reason = "missing_status_sidecar"
-    elif status_not_complete or incomplete_reasons:
-        reason = "incomplete_status"
-    else:
-        reason = None
-    return {
-        "verified": reason is None and len(statuses) == len(paths),
-        "scope": "event_storage",
-        "reason": reason,
-        "event_file_count": len(paths),
-        "status_file_count": len(statuses),
-        "missing_status_files": missing_status_files,
-        "incomplete_reasons": sorted(incomplete_reasons),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -581,17 +447,12 @@ def hop_breakdown(
 
 def build_report(source: str | Path | Iterable[str | Path]) -> ProfilerReport:
     """Return all three views as a single dict for JSON serialization."""
-    if isinstance(source, (str, Path)):
-        normalized_source: str | Path | list[str | Path] = source
-    else:
-        normalized_source = list(source)
-    timelines = reconstruct_timelines(normalized_source)
+    timelines = reconstruct_timelines(source)
     return {
         "timelines": {rid: tl.to_relative() for rid, tl in timelines.items()},
         "stage_breakdown": [row.to_dict() for row in stage_breakdown(timelines)],
         "hop_breakdown": [row.to_dict() for row in hop_breakdown(timelines)],
         "request_count": len(timelines),
-        "completeness": assess_completeness(normalized_source),
     }
 
 

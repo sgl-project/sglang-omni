@@ -456,7 +456,6 @@ class RequestEventRecorder:
                     continue
 
                 try:
-                    self.mark_event_processed(queued_event.run_state)
                     target_state = queued_event.run_state
                     if open_state is not target_state:
                         if open_state is not None:
@@ -474,7 +473,10 @@ class RequestEventRecorder:
                         file_handle = self.open_event_file(open_state)
                     else:
                         pass
-                    file_handle = self.write_queued_event(queued_event, file_handle)
+                    try:
+                        file_handle = self.write_queued_event(queued_event, file_handle)
+                    finally:
+                        self.mark_event_processed(queued_event.run_state)
                 finally:
                     self.event_queue.task_done()
         except Exception:
@@ -525,7 +527,7 @@ class RequestEventRecorder:
     def open_event_file(self, run_state: RecorderRunState) -> TextIOWrapper | None:
         try:
             return run_state.path.open(
-                "a",
+                "x",
                 buffering=EVENT_FILE_BUFFER_BYTES,
                 encoding="utf-8",
             )
@@ -615,7 +617,7 @@ class RequestEventRecorder:
             )
 
     def mark_event_processed(self, run_state: RecorderRunState) -> None:
-        """Account for a dequeued event before any writer-side operation."""
+        """Account for a completed writer attempt, successful or failed."""
         with self.lock:
             run_state.processed_events += 1
 
@@ -696,7 +698,11 @@ class RequestEventRecorder:
 
         status_published = False
         try:
-            if file_handle is None and run_state.event_file_open_failures == 0:
+            if (
+                file_handle is None
+                and run_state.event_file_open_failures == 0
+                and run_state.write_failures == 0
+            ):
                 file_handle = self.open_event_file(run_state)
             else:
                 pass

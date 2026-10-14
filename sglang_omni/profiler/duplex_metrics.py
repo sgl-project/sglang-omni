@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sglang_omni.profiler.views import assess_completeness, load_events
+from sglang_omni.profiler.views import load_events
 from sglang_omni.profiler.views import percentile as view_percentile
 from sglang_omni.utils.json import JsonValue
 
@@ -535,18 +535,6 @@ def build_duplex_session_metrics(
         }
         for stage_name, metric_values in sorted(stage_values.items())
     }
-    if isinstance(events, (str, Path)):
-        completeness = assess_completeness(events)
-    else:
-        completeness = {
-            "verified": False,
-            "scope": "event_storage",
-            "reason": "status_sidecar_unavailable",
-            "event_file_count": 0,
-            "status_file_count": 0,
-            "missing_status_files": [],
-            "incomplete_reasons": [],
-        }
     return {
         "sessions": sessions,
         "units": unit_reports,
@@ -564,5 +552,4 @@ def build_duplex_session_metrics(
             ),
             "stages": stage_summary,
         },
-        "completeness": completeness,
     }
