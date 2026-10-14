@@ -132,7 +132,10 @@ def test_post_capture_resize_shrinking_a_byte_budget_raises(monkeypatch) -> None
     runner.gpu_id = 0
     runner.device = "cuda"
 
-    def shrinking_resize(self):
+    def shrinking_resize(
+        self: ModelRunner, *, draft_runners: tuple[ModelRunner, ...] = ()
+    ) -> None:
+        assert draft_runners == ()
         self.max_total_num_tokens = 600
 
     monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", shrinking_resize)
@@ -155,17 +158,17 @@ def test_post_capture_resize_without_byte_budget_delegates(monkeypatch) -> None:
     runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
     runner.kv_cache_bytes = None
     runner.max_total_num_tokens = 1000
-    calls: list[str] = []
+    calls: list[tuple[ModelRunner, ...]] = []
 
     monkeypatch.setattr(
         ModelRunner,
         "post_capture_resize_kv_pool",
-        lambda self: calls.append("upstream"),
+        lambda self, *, draft_runners=(): calls.append(draft_runners),
     )
 
     runner.post_capture_resize_kv_pool()
 
-    assert calls == ["upstream"]
+    assert calls == [()]
 
 
 def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
@@ -175,7 +178,11 @@ def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
     runner.kv_cache_bytes = 4 * 1024**3
     runner.max_total_num_tokens = 1000
 
-    monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", lambda self: None)
+    monkeypatch.setattr(
+        ModelRunner,
+        "post_capture_resize_kv_pool",
+        lambda self, *, draft_runners=(): None,
+    )
 
     runner.post_capture_resize_kv_pool()
 

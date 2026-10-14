@@ -367,12 +367,16 @@ class ThinkerModelRunner(ModelRunner):
                     else:
                         pass
                 elif visual_count > 0:
-                    if not img_pos.numel():
-                        visual_offset = chunk_offsets.get("video", (0, 0))[0]
-                    elif not vid_pos.numel():
-                        visual_offset = chunk_offsets.get("image", (0, 0))[0]
-                    else:
-                        visual_offset = consumed.get("_visual", 0)
+                    # note (Codex): Combined visual rows follow prompt order across modalities.
+                    # Retraction may resume after a cached image or video span.
+                    visual_offset = sum(
+                        positions[modality][positions[modality] < prefix].numel()
+                        for modality in ("image", "video")
+                    )
+                    for layer in ds_embeds:
+                        self.validate_modality_cursor(
+                            "visual", visual_offset, layer.shape[0], visual_count
+                        )
                     ds_embeds = [
                         layer[visual_offset : visual_offset + visual_count]
                         for layer in ds_embeds
@@ -480,12 +484,16 @@ class ThinkerModelRunner(ModelRunner):
                 input_embeds=input_embeds,
                 input_deepstack_embeds=ds_input,
             )
-
+            if isinstance(hidden_states, tuple):
+                hidden_states, auxiliary_hidden_states = hidden_states
+            else:
+                auxiliary_hidden_states = None
             logits_output = outer.logits_processor(
                 forward_batch.input_ids,
                 hidden_states,
                 outer.lm_head,
                 forward_batch,
+                auxiliary_hidden_states,
             )
 
         return GenerationBatchResult(

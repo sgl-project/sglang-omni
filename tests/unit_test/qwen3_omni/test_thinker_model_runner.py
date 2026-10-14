@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from types import SimpleNamespace
 
+import pytest
 import torch
 from sglang.srt.model_executor.forward_context import (
     get_forward_context,
@@ -84,7 +85,10 @@ def test_visual_deepstack_prefill_keeps_model_specific_forward() -> None:
     ]
 
 
-def test_custom_omni_forward_publishes_sglang_forward_context():
+@pytest.mark.parametrize("capture_auxiliary", [False, True])
+def test_custom_omni_forward_publishes_sglang_forward_context(
+    capture_auxiliary: bool,
+) -> None:
     runner = ThinkerModelRunner.__new__(ThinkerModelRunner)
     attn_backend = SimpleNamespace(init_forward_metadata=lambda batch: None)
     runner.tp_worker = SimpleNamespace(
@@ -92,16 +96,30 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
     )
 
     seen = []
+    final_hidden_states = torch.ones(3, 2)
+    auxiliary_hidden_states = [torch.ones(3, 2), torch.full((3, 2), 2.0)]
+    deepstack_embeddings = [torch.tensor([[3.0, 4.0]])]
+    visual_mask = torch.tensor([False, True, False])
+    mrope_positions = torch.arange(3).repeat(3, 1)
 
     def model(**kwargs):
         seen.append(get_forward_context().attn_backend)
-        assert kwargs["input_deepstack_embeds"] is None
-        return torch.ones(1, 2)
+        assert torch.equal(
+            kwargs["input_deepstack_embeds"],
+            torch.tensor([[0.0, 0.0], [3.0, 4.0], [0.0, 0.0]]),
+        )
+        assert kwargs["positions"] is mrope_positions
+        if capture_auxiliary:
+            return final_hidden_states, auxiliary_hidden_states
+        else:
+            return final_hidden_states
 
-    def logits_processor(input_ids, hidden_states, lm_head, forward_batch):
+    def logits_processor(input_ids, hidden_states, lm_head, forward_batch, auxiliary):
         seen.append(get_forward_context().attn_backend)
         assert input_ids is forward_batch.input_ids
         assert lm_head == "lm_head"
+        assert hidden_states is final_hidden_states
+        assert auxiliary is (auxiliary_hidden_states if capture_auxiliary else None)
         return "logits"
 
     runner.outer_model = SimpleNamespace(
@@ -110,15 +128,20 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
         lm_head="lm_head",
     )
     forward_batch = SimpleNamespace(
-        positions=torch.tensor([0]),
-        mrope_positions=None,
-        input_ids=torch.tensor([1]),
+        positions=torch.arange(3),
+        mrope_positions=mrope_positions,
+        input_ids=torch.tensor([1, 2, 3]),
     )
 
     assert not has_forward_context()
     result = runner.forward_with_omni_embeds(
         forward_batch,
-        torch.ones(1, 2),
+        torch.ones(3, 2),
+        deepstack_embeddings,
+        visual_mask,
     )
 
     assert result.logits_output == "logits"
+    assert not result.can_run_cuda_graph
+    assert seen == [attn_backend, attn_backend]
+    assert not has_forward_context()

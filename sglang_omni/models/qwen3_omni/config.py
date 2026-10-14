@@ -327,37 +327,41 @@ WARMUP_IMAGE_PNG_BASE64 = (
 def build_server_warmup_request(
     pipeline_config: PipelineConfig,
 ) -> ChatCompletionRequest:
-    """An image, a second of audio and a short instruction through every stage."""
-    if pipeline_config.code2wav_stage() is None:
+    """Warm the configured thinker's supported input and output paths."""
+    thinker_stage_config = pipeline_config.stage_named(THINKER_STAGE)
+    assert isinstance(thinker_stage_config, EngineStageConfig)
+    thinker_engine = thinker_stage_config.engine
+    speculative_algorithm = (
+        thinker_engine.overrides().get("speculative_algorithm")
+        if thinker_engine is not None
+        else None
+    )
+    is_dflash = (
+        isinstance(speculative_algorithm, str)
+        and speculative_algorithm.upper() == "DFLASH"
+    )
+    content = [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{WARMUP_IMAGE_PNG_BASE64}"},
+        },
+        {
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64.b64encode(warmup_tone_wav_bytes()).decode("ascii"),
+                "format": "wav",
+            },
+        },
+        {"type": "text", "text": "Describe the image and the audio."},
+    ]
+    if is_dflash or pipeline_config.code2wav_stage() is None:
         modalities = ["text"]
         talker_max_new_tokens = None
     else:
         modalities = ["text", "audio"]
         talker_max_new_tokens = WARMUP_MAX_TOKENS
     return ChatCompletionRequest(
-        messages=[
-            ChatMessage(
-                role="user",
-                content=[
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{WARMUP_IMAGE_PNG_BASE64}"
-                        },
-                    },
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": base64.b64encode(warmup_tone_wav_bytes()).decode(
-                                "ascii"
-                            ),
-                            "format": "wav",
-                        },
-                    },
-                    {"type": "text", "text": "Describe the image and the audio."},
-                ],
-            )
-        ],
+        messages=[ChatMessage(role="user", content=content)],
         modalities=modalities,
         max_tokens=WARMUP_MAX_TOKENS,
         talker_max_new_tokens=talker_max_new_tokens,

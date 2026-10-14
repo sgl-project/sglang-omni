@@ -124,6 +124,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
+        self.capture_aux_hidden_states = False
         self.fused_rope_gate = install_thinker_fused_rope(self.model)
         # note (ratish): a quantized MoE can share one activation scale across rows,
         # so a padded row's experts could change the live rows' rounding.
@@ -145,6 +146,27 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
         # Existing Qwen thinker runner/hook code expects model.thinker.model.
         return self
+
+    def get_input_embeddings(self) -> nn.Module:
+        return self.model.get_input_embeddings()
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.model.embed_tokens.weight, self.lm_head.weight
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        if not layer_ids or any(
+            not isinstance(layer_id, int)
+            or isinstance(layer_id, bool)
+            or not 0 <= layer_id < self.config.num_hidden_layers - 1
+            for layer_id in layer_ids
+        ):
+            raise ValueError("DFLASH requires capturable target layer IDs")
+        elif layer_ids != sorted(set(layer_ids)):
+            raise ValueError("DFLASH target layer IDs must be strictly increasing")
+        else:
+            # note (jun): captures occur before a layer's computation.
+            self.model.layers_to_capture = [layer_id + 1 for layer_id in layer_ids]
+            self.capture_aux_hidden_states = True
 
     def forward(
         self,
@@ -191,11 +213,16 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 marked_live_rows.is_live_row = None
             else:
                 pass
+        if isinstance(hidden_states, tuple):
+            hidden_states, auxiliary_hidden_states = hidden_states
+        else:
+            auxiliary_hidden_states = None
         return self.logits_processor(
             input_ids,
             hidden_states,
             self.lm_head,
             forward_batch,
+            auxiliary_hidden_states,
         )
 
     @torch.no_grad()

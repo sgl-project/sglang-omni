@@ -11,7 +11,7 @@ from typing import TypeGuard
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
 
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
@@ -19,6 +19,8 @@ from sglang_omni.model_runner.prefill_inputs import (
     get_omni_prefill_inputs,
 )
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.scheduling.dflash_bootstrap import create_dflash_infrastructure
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
 
 _PREFILL_AUDIO_INPUT_KEYS = frozenset(
@@ -48,6 +50,24 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
     fallback. Unsupported requests deliberately delegate to the inherited
     eager multimodal path.
     """
+
+    create_speculative_infrastructure = staticmethod(create_dflash_infrastructure)
+
+    def requested_capture_hidden_mode_prefill(
+        self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
+        if self.outer_model.capture_aux_hidden_states:
+            return CaptureHiddenMode.FULL
+        else:
+            return CaptureHiddenMode.NULL
+
+    def requested_capture_hidden_mode_decode(
+        self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
+        if self.outer_model.capture_aux_hidden_states:
+            return CaptureHiddenMode.FULL
+        else:
+            return CaptureHiddenMode.NULL
 
     @staticmethod
     def origin_num_tokens(value: object) -> int | None:
@@ -353,6 +373,34 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> None:
+        for request in getattr(schedule_batch, "reqs", ()):
+            retraction_count = getattr(request, "retraction_count", 0)
+            if retraction_count == 0:
+                continue
+            else:
+                pass
+            request_data = request.omni_data
+            if (
+                not isinstance(request_data, SGLangARRequestData)
+                or request_data.req is not request
+            ):
+                raise RuntimeError("Retracted prefill lost its request-data owner")
+            elif retraction_count < request_data.prefill_retraction_count:
+                raise RuntimeError("Prefill retraction generation moved backwards")
+            elif retraction_count == request_data.prefill_retraction_count:
+                continue
+            else:
+                # note (Codex): Native extend preparation already cleared is_retracted.
+                # The request data still owns the original received media tensors.
+                request.omni_model_inputs = request_data.model_inputs or None
+                request._omni_consumed = (
+                    None  # noqa: leading-underscore  # Native request extension.
+                )
+                request._omni_mm_positions = (
+                    None  # noqa: leading-underscore  # Native request extension.
+                )
+                request_data.prefill_retraction_count = retraction_count
+
         disposition = self.classify_prefill(forward_batch, schedule_batch, requests)
         if disposition.kind != _SIDECAR:
             return

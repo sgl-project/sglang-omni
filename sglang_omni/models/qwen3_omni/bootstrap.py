@@ -5,12 +5,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.request_builders import (
+    DEFAULT_THINKER_MAX_NEW_TOKENS,
+    should_generate_audio_output,
+)
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 else:
     pass
 
@@ -53,23 +64,47 @@ def create_thinker_scheduler(
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
 
-    infrastructure = create_sglang_infrastructure(
-        server_args,
-        gpu_id,
-        tp_rank=tp_rank,
-        nccl_port=nccl_port,
-        model_arch_override="Qwen3OmniThinkerForCausalLM",
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        enable_prefill_input_embeds=enable_prefill_input_embeds,
+    algorithm = SpeculativeAlgorithm.from_string(
+        resolved_view(server_args).speculative_algorithm
     )
-
-    (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        model_config,
-    ) = infrastructure
+    speculative_infrastructure = None
+    if algorithm.is_dflash():
+        speculative_infrastructure = (
+            Qwen3OmniThinkerModelRunner.create_speculative_infrastructure(
+                server_args,
+                gpu_id,
+                tp_rank=tp_rank,
+                nccl_port=nccl_port,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                enable_prefill_input_embeds=enable_prefill_input_embeds,
+            )
+        )
+        model_worker = speculative_infrastructure.model_worker
+        tree_cache = speculative_infrastructure.tree_cache
+        req_to_token_pool = speculative_infrastructure.req_to_token_pool
+        token_to_kv_pool_allocator = (
+            speculative_infrastructure.token_to_kv_pool_allocator
+        )
+        model_config = model_worker.model_config
+        enable_async_decode = False
+    elif not algorithm.is_none():
+        raise ValueError("Qwen thinker supports only DFLASH speculative decoding")
+    else:
+        (
+            model_worker,
+            tree_cache,
+            req_to_token_pool,
+            token_to_kv_pool_allocator,
+            model_config,
+        ) = create_sglang_infrastructure(
+            server_args,
+            gpu_id,
+            tp_rank=tp_rank,
+            nccl_port=nccl_port,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            enable_prefill_input_embeds=enable_prefill_input_embeds,
+        )
 
     if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
         cuda_graph_batch_validator.attest_prefill_cuda_graphs(
@@ -81,10 +116,19 @@ def create_thinker_scheduler(
 
     output_proc = SGLangOutputProcessor()
 
-    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+    if (
+        speech_enabled
+        and prefill_graph_backend != CudaGraphBackend.BREAKABLE
+        and speculative_infrastructure is None
+    ):
         model_runner = ThinkerModelRunner(model_worker, output_proc)
     else:
         model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
+
+    if speculative_infrastructure is not None:
+        speculative_infrastructure.target_adapter.attach_runner(model_runner)
+    else:
+        pass
 
     tokenizer = get_tokenizer(
         model_config.model_path,
@@ -96,11 +140,103 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
     )
+    if speculative_infrastructure is not None:
+        build_thinker_request = request_builder
+        draft_context_limit_tokens = (
+            speculative_infrastructure.draft_context_limit_tokens
+        )
+        draft_block_tokens = speculative_infrastructure.draft_worker.block_size
+        target_position_limit_tokens = (
+            speculative_infrastructure.target_position_limit_tokens
+        )
+
+        def request_builder(payload: StagePayload) -> SGLangARRequestData:
+            if should_generate_audio_output(payload):
+                raise ValueError("Thinker DFlash currently supports text output only")
+            else:
+                pass
+            pipeline_state = Qwen3OmniPipelineState.from_dict(payload.data)
+            max_new_tokens = (payload.request.params or {}).get(
+                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+            )
+            if type(max_new_tokens) is not int or max_new_tokens <= 0:
+                raise ValueError(
+                    "max_new_tokens must be a positive integer for Thinker DFlash"
+                )
+            else:
+                pass
+            prompt_tokens = pipeline_state.prompt["input_ids"].numel()
+            # note (Codex): The final verify still evaluates a full draft block.
+            required_tokens = prompt_tokens + max_new_tokens + draft_block_tokens - 1
+            if required_tokens > draft_context_limit_tokens:
+                raise ValueError(
+                    "Requested token count exceeds the model's maximum context length: "
+                    "Thinker DFlash draft context budget "
+                    f"(prompt_tokens={prompt_tokens}, max_new_tokens={max_new_tokens}, "
+                    f"draft_block_tokens={draft_block_tokens}, "
+                    f"required_tokens={required_tokens}, "
+                    f"draft_context_limit_tokens={draft_context_limit_tokens})"
+                )
+            else:
+                request_data = build_thinker_request(payload)
+                multimodal_inputs = request_data.req.multimodal_inputs
+                if multimodal_inputs is not None:
+                    assert multimodal_inputs.mrope_position_delta_repeated_cache is None
+                    prompt_positions = multimodal_inputs.mrope_positions
+                    position_delta = multimodal_inputs.mrope_position_delta
+                    if (
+                        prompt_positions.device.type != "cpu"
+                        or position_delta.device.type != "cpu"
+                        or prompt_positions.shape != (3, prompt_tokens)
+                        or position_delta.numel() != 1
+                    ):
+                        raise RuntimeError(
+                            "Thinker DFlash requires CPU prompt position metadata"
+                        )
+                    else:
+                        pass
+                    if (
+                        not torch.isfinite(prompt_positions).all().item()
+                        or not torch.isfinite(position_delta).all().item()
+                    ):
+                        raise ValueError(
+                            "Requested token count exceeds the model's maximum context length: "
+                            "Thinker DFlash requires finite multimodal positions"
+                        )
+                    else:
+                        pass
+                    # note (Codex): Decode truncates the delta before adding positions.
+                    normalized_delta_tokens = int(position_delta.item())
+                    first_generated_position = prompt_tokens + normalized_delta_tokens
+                    last_verify_position = required_tokens - 1 + normalized_delta_tokens
+                    if (
+                        prompt_positions.min().item() < 0
+                        or prompt_positions.max().item() >= target_position_limit_tokens
+                        or first_generated_position < 0
+                        or last_verify_position >= target_position_limit_tokens
+                    ):
+                        raise ValueError(
+                            "Requested token count exceeds the model's maximum context length: "
+                            "Thinker DFlash rotary position budget "
+                            f"(first_generated_position={first_generated_position}, "
+                            f"last_verify_position={last_verify_position}, "
+                            f"target_position_limit_tokens={target_position_limit_tokens})"
+                        )
+                    else:
+                        multimodal_inputs.mrope_position_delta = position_delta.to(
+                            dtype=torch.int64
+                        )
+                else:
+                    pass
+                return request_data
+
+    else:
+        pass
     stream_output_builder = make_thinker_stream_output_builder(
         speech_enabled=speech_enabled
     )
 
-    return OmniScheduler(
+    scheduler = OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -111,12 +247,18 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        draft_worker=(
+            speculative_infrastructure.draft_worker
+            if speculative_infrastructure is not None
+            else None
+        ),
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
     )
+    return scheduler
 
 
 def create_talker_scheduler(

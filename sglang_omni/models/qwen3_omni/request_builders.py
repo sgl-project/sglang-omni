@@ -53,6 +53,7 @@ DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
@@ -749,7 +750,7 @@ def build_sglang_thinker_request(
         pass
     input_ids_list = input_ids.to(dtype=torch.long).tolist()
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
+    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
     temperature = params.get("temperature", 0.0)
     top_p = params.get("top_p", 1.0)
     top_k = params.get("top_k", -1)

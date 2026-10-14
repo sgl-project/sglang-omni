@@ -10,7 +10,12 @@ from threading import Lock
 import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.mem_cache.allocation_sizing import (
+    get_alloc_page_size,
+    get_alloc_reserve_per_decode,
+)
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
@@ -19,8 +24,9 @@ from sglang.srt.model_executor.model_runner_components.layer_setup import (
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
-from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
+from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule, get_spec
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -100,6 +106,24 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
+
+    def _build_default_req_pool(  # noqa: leading-underscore  # Required allocator override.
+        self, *, max_num_reqs: int, extra_max_context_len: int
+    ) -> ReqToTokenPool:
+        algorithm = SpeculativeAlgorithm.from_string(get_spec().speculative_algorithm)
+        if algorithm.is_dflash_family():
+            # note (Codex): Block reservations also need full headroom at page size one.
+            extra_max_context_len = max(
+                extra_max_context_len,
+                get_alloc_reserve_per_decode() + get_alloc_page_size() - 1,
+            )
+        else:
+            pass
+        return KVCacheConfigurator._build_default_req_pool(  # noqa: leading-underscore  # Allocator contract.
+            self,
+            max_num_reqs=max_num_reqs,
+            extra_max_context_len=extra_max_context_len,
+        )
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -508,13 +532,15 @@ class SGLModelRunner(ModelRunner):
             else:
                 pass
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
-        if self.token_to_kv_pool.post_capture_active:
+        if self.token_to_kv_pool.post_capture_active and self.spec_algorithm.is_none():
             self.post_capture_resize_kv_pool()
         else:
             pass
         return result
 
-    def post_capture_resize_kv_pool(self):
+    def post_capture_resize_kv_pool(
+        self, *, draft_runners: tuple[ModelRunner, ...] = ()
+    ):
         """Back the KV pool post-capture without silently shrinking a byte budget.
 
         Upstream's post-capture sizing re-derives the pool from live free
@@ -524,12 +550,12 @@ class SGLModelRunner(ModelRunner):
         serving with a silently clamped pool.
         """
         if self.kv_cache_bytes is None:
-            return super().post_capture_resize_kv_pool()
+            return super().post_capture_resize_kv_pool(draft_runners=draft_runners)
         else:
             pass
 
         tokens_before = self.max_total_num_tokens
-        result = super().post_capture_resize_kv_pool()
+        result = super().post_capture_resize_kv_pool(draft_runners=draft_runners)
         if self.max_total_num_tokens < tokens_before:
             free_bytes = free_gpu_memory_bytes(self.device, self.gpu_id)
             raise RuntimeError(

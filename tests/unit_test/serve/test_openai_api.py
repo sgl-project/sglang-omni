@@ -1281,6 +1281,21 @@ def test_chat_answer_excludes_the_matched_stop_string() -> None:
         pytest.param(["a", "\n"], ["\n\n"], "a\n", id="never-completed"),
         pytest.param(["a", "\n", None, "\nb"], ["\n\n"], "a", id="audio-ends-mid-stop"),
         pytest.param(["a", "\n", None], ["\n\n"], "a\n", id="text-never-ends"),
+        pytest.param(
+            ["one<", "ST", "OP>hidden"],
+            ["<STOP>"],
+            "one",
+            id="stop-across-accepted-blocks",
+        ),
+        pytest.param(
+            ["你好终", "止隐藏"], ["终止"], "你好", id="unicode-stop-across-blocks"
+        ),
+        pytest.param(
+            ["one<STOP>hidden", "more"],
+            ["<STOP>"],
+            "one",
+            id="suppress-accepted-suffix-after-stop",
+        ),
     ],
 )
 def test_chat_stream_never_sends_a_stop_string(
@@ -4394,3 +4409,55 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
     response = client.post("/v1/audio/speech", json=body)
     assert response.status_code == 200
     assert response.content
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Thinker DFlash requires greedy sampling without penalties, "
+        "stop strings or stop regexes, minimum output length, custom processors, "
+        "constraints, beam search, logprobs, hidden states, or sampling masks",
+        "Thinker DFlash does not support video input; use native decoding for video requests",
+        "Thinker DFlash currently supports text and image input only; audio input support has not been validated",
+    ],
+)
+def test_dflash_rejection_preserves_api_error_contract(
+    stream: bool, message: str
+) -> None:
+    client = TestClient(
+        create_app(
+            fault_client("qwen3-omni", error=message, partial_output=False),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "hello"}],
+            "modalities": ["text"],
+            "stop": ["X"],
+            "stream": stream,
+        },
+    )
+
+    if stream:
+        assert response.status_code == 200
+        events = [
+            line.removeprefix("data: ")
+            for line in response.iter_lines()
+            if line.startswith("data: ")
+        ]
+        assert json.loads(events[0]) == {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": 400,
+            }
+        }
+        assert events[1:] == ["[DONE]"]
+    else:
+        assert response.status_code == 400
+        assert response.json()["detail"] == message

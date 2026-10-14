@@ -52,6 +52,36 @@ sgl-omni serve \
   --port 8008
 ```
 
+### Experimental Thinker DFlash
+
+DFlash is disabled by default. It supports greedy text generation from text,
+image, audio, and video inputs on CUDA with Thinker TP1/PP1. The draft must
+match the Qwen3-Omni Thinker; a plain Qwen3 draft is not interchangeable.
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_num_draft_tokens 8 \
+  --thinker.engine.disable_overlap_schedule false \
+  --port 8008
+```
+
+Send `"temperature": 0.0` and `"modalities": ["text"]`. Speech output,
+streaming sessions, logprobs, hidden-state outputs, penalties, constrained
+sampling, stop strings, LoRA, and disaggregated or external-cache execution
+are rejected. The runtime reserves space for the final full verification
+block as well as the requested output tokens, and checks the initialized
+rotary-position capacity for multimodal requests.
+
+Readiness warmup still includes both an image and a second of audio, with
+text output. It does not cover every input shape or concurrent batch. Report
+startup time separately from latency after readiness. DFlash adds draft
+weights and KV storage; compare actual output lengths, latency distributions,
+quality, and memory capacity for the intended workload before enabling it.
+
 ### Image and Text Input
 
 Send an image with a text question to get a text response.

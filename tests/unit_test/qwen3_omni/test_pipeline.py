@@ -6,6 +6,7 @@ import asyncio
 import base64
 import inspect
 import threading
+from collections.abc import Mapping
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -20,7 +21,14 @@ from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
     get_rope_index_qwen3_omni,
 )
+from sglang.srt.managers.schedule_batch import MultimodalInputs
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.runtime_context import get_context
+from sglang.srt.utils import hf_transformers_utils
 from tokenizers.normalizers import NFC
+from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+    Qwen3OmniMoeThinkerConfig,
+)
 
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
@@ -42,6 +50,9 @@ from sglang_omni.models.ming_omni.config import (
     MingOmniSpeechPipelineConfig,
     MingOmniStreamingSpeechPipelineConfig,
 )
+from sglang_omni.models.qwen3_omni import bootstrap as qwen_bootstrap
+from sglang_omni.models.qwen3_omni import request_builders
+from sglang_omni.models.qwen3_omni import thinker_model_runner as qwen_thinker_runner
 from sglang_omni.models.qwen3_omni.components import preprocessor as preprocessor_mod
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
@@ -67,11 +78,16 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+from sglang_omni.scheduling import omni_scheduler
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.qwen_fakes import (
@@ -91,6 +107,44 @@ from tests.unit_test.qwen3_omni.test_mrope_positions import (
     audio_in_video_span,
     thinker_config_ns,
 )
+
+
+@pytest.mark.parametrize("has_draft_worker", [False, True])
+@pytest.mark.parametrize("logprob_carrier", ["disabled", "adapter", "native"])
+def test_thinker_logprob_admission_uses_both_request_carriers(
+    has_draft_worker: bool, logprob_carrier: str
+) -> None:
+    request_data = build_sglang_thinker_request(
+        make_qwen_state(),
+        params={"temperature": 0, "return_logprob": logprob_carrier == "adapter"},
+        tokenizer=None,
+        vocab_size=100,
+        request_id="logprob-admission",
+    )
+    assert request_data.req.return_logprob is False
+    assert request_data.return_logprob == (logprob_carrier == "adapter")
+    request_data.req.return_logprob = logprob_carrier == "native"
+    request_data.req.origin_input_ids = []
+    scheduler = Mock(spec=omni_scheduler.OmniScheduler)
+    scheduler.deferred_request_payloads = {}
+    scheduler.active_session_unit.return_value = None
+    scheduler.draft_worker = Mock() if has_draft_worker else None
+
+    omni_scheduler.OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id=request_data.req.rid),
+        False,
+        request_data,
+    )
+
+    error = scheduler.emit_request_error.call_args.args[1]
+    scheduler.abort.assert_called_once_with(request_data.req.rid)
+    if has_draft_worker and logprob_carrier != "disabled":
+        assert "Thinker DFlash requires greedy sampling" in str(error)
+        scheduler.normalize_req_token_arrays.assert_not_called()
+    else:
+        assert str(error).startswith("Request has no prompt tokens")
+        scheduler.normalize_req_token_arrays.assert_called_once_with(request_data.req)
 
 
 def make_stage(config: PipelineConfig, name: str):
@@ -1184,6 +1238,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
+        speculative_algorithm=None,
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
         ),
@@ -1317,6 +1372,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
+        speculative_algorithm=None,
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=CudaGraphBackend.BREAKABLE)
         ),
@@ -3050,3 +3106,560 @@ def test_server_warmup_request_carries_an_image_and_a_second_of_audio(
     )
     assert (len(media.images), len(media.audios), len(media.videos)) == (1, 1, 0)
     assert len(audio) == sample_rate
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ],
+)
+@pytest.mark.parametrize("algorithm", ["DFLASH", "dflash"])
+def test_dflash_server_warmup_matches_supported_request_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    config_cls: type[PipelineConfig],
+    algorithm: str,
+) -> None:
+    config = ConfigManager(config_cls(model_path="model")).merge_config(
+        [("thinker.engine.speculative_algorithm", algorithm)]
+    )
+    request = import_string(config_cls.server_warmup_request_factory)(config)
+    _, media = split_content_parts(
+        [message.model_dump() for message in request.messages]
+    )
+    image = Image.open(BytesIO(base64.b64decode(media.images[0].split(",", 1)[1])))
+    image.load()
+    assert image.size == (32, 32)
+    audio, sample_rate = decode_audio_bytes(
+        base64.b64decode(media.audios[0].split(",", 1)[1])
+    )
+    assert (len(media.images), len(media.audios), len(media.videos)) == (1, 1, 0)
+    assert len(audio) == sample_rate
+    assert request.modalities == ["text"]
+    assert request.max_tokens == 8 and request.temperature == 0.0
+    assert request.talker_max_new_tokens is None
+
+    scheduler = make_scope_scheduler(monkeypatch, "DFLASH")
+    state = Qwen3OmniPipelineState(
+        prompt={"input_ids": torch.tensor([11, 12, 13])},
+        mm_inputs={
+            "image": {"image_grid_thw": torch.tensor([[1, 2, 2]])},
+            "audio": {"audio_feature_lengths": torch.tensor([1])},
+        },
+        encoder_inputs={
+            "image_encoder": {"cache_key": "warmup-image"},
+            "audio_encoder": {"cache_key": "warmup-audio"},
+        },
+    )
+    payload = make_qwen_payload(state, params={"max_new_tokens": request.max_tokens})
+    payload.request.metadata = {"output_modalities": request.modalities}
+    merged = merge_for_thinker(
+        {
+            "preprocessing": project_preprocessing_to_mm_aggregate(payload),
+            "image_encoder": make_qwen_payload(
+                Qwen3OmniPipelineState(
+                    encoder_outs={"image_encoder": {"image_embeds": torch.ones(1, 4)}}
+                )
+            ),
+            "audio_encoder": make_qwen_payload(
+                Qwen3OmniPipelineState(
+                    encoder_outs={"audio_encoder": {"audio_embeds": torch.ones(1, 4)}}
+                )
+            ),
+        }
+    )
+    assert scheduler.request_builder(merged).req.rid == payload.request_id
+
+
+@pytest.mark.parametrize("speech_enabled", [False, True])
+def test_dflash_uses_request_output_modality_with_resident_talker(
+    monkeypatch: pytest.MonkeyPatch,
+    speech_enabled: bool,
+) -> None:
+    server_args = SimpleNamespace(
+        speculative_algorithm="DFLASH",
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+        ),
+    )
+    model_config = SimpleNamespace(
+        model_path="model",
+        vocab_size=100,
+        hf_config=SimpleNamespace(thinker_config=None),
+    )
+    infrastructure = SimpleNamespace(
+        model_worker=SimpleNamespace(model_config=model_config),
+        tree_cache=Mock(),
+        req_to_token_pool=Mock(),
+        token_to_kv_pool_allocator=Mock(),
+        target_adapter=Mock(),
+        draft_worker=Mock(block_size=8),
+        draft_context_limit_tokens=8192,
+        target_position_limit_tokens=32768,
+    )
+    runner_factory = Mock()
+    runner_factory.create_speculative_infrastructure.return_value = infrastructure
+    monkeypatch.setattr(
+        qwen_thinker_runner, "Qwen3OmniThinkerModelRunner", runner_factory
+    )
+    monkeypatch.setattr(
+        hf_transformers_utils, "get_tokenizer", lambda *arguments, **keywords: None
+    )
+    monkeypatch.setattr(
+        omni_scheduler,
+        "OmniScheduler",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    scheduler = qwen_bootstrap.create_thinker_scheduler(
+        server_args,
+        speech_enabled=speech_enabled,
+    )
+    assert scheduler.enable_async_decode is False
+    assert scheduler.draft_worker is infrastructure.draft_worker
+    payload = make_qwen_payload(params={"stream": True, "max_new_tokens": 8})
+    payload.request.metadata = {"output_modalities": ["text"]}
+    request_data = scheduler.request_builder(payload)
+    assert list(request_data.req.origin_input_ids) == [11, 12, 13]
+    assert request_data.req.sampling_params.max_new_tokens == 8
+    assert request_data.req.sampling_params.top_k == 1
+    output = RequestOutput(request_id=payload.request_id, data=7)
+    messages = scheduler.stream_output_builder(payload.request_id, request_data, output)
+    assert [message.target for message in messages] == ["decode"]
+    assert [message.data.tolist() for message in messages] == [[7]]
+    assert list(request_data.req.output_ids) == []
+
+    for modalities in (None, ["audio"], ["text", "audio"]):
+        rejected_payload = StagePayload(
+            request_id="audio-request",
+            request=OmniRequest(
+                inputs="prompt",
+                params={"stream": True},
+                metadata=(
+                    {} if modalities is None else {"output_modalities": modalities}
+                ),
+            ),
+            data={},
+        )
+        with pytest.raises(
+            ValueError, match="DFlash currently supports text output only"
+        ):
+            scheduler.request_builder(rejected_payload)
+
+
+def make_scope_scheduler(
+    monkeypatch: pytest.MonkeyPatch, algorithm: str | None
+) -> SimpleNamespace:
+    server_args = SimpleNamespace(
+        speculative_algorithm=algorithm,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+        ),
+    )
+    model_config = SimpleNamespace(
+        model_path="model",
+        vocab_size=100,
+        hf_config=SimpleNamespace(thinker_config=None),
+    )
+    infrastructure = SimpleNamespace(
+        model_worker=SimpleNamespace(model_config=model_config),
+        tree_cache=Mock(),
+        req_to_token_pool=Mock(),
+        token_to_kv_pool_allocator=Mock(),
+        target_adapter=Mock(),
+        draft_worker=Mock(block_size=8),
+        draft_context_limit_tokens=8192,
+        target_position_limit_tokens=32768,
+    )
+    runner_factory = Mock()
+    runner_factory.create_speculative_infrastructure.return_value = infrastructure
+    monkeypatch.setattr(
+        qwen_thinker_runner, "Qwen3OmniThinkerModelRunner", runner_factory
+    )
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "create_sglang_infrastructure",
+        Mock(
+            return_value=(
+                infrastructure.model_worker,
+                infrastructure.tree_cache,
+                infrastructure.req_to_token_pool,
+                infrastructure.token_to_kv_pool_allocator,
+                model_config,
+            )
+        ),
+    )
+    monkeypatch.setattr(hf_transformers_utils, "get_tokenizer", Mock(return_value=None))
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
+    return qwen_bootstrap.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize("algorithm", [None, "DFLASH"])
+@pytest.mark.parametrize("legacy_shape", [False, True])
+@pytest.mark.parametrize(
+    "modality", ["text", "image", "audio", "video", "audio-in-video", "image-and-video"]
+)
+def test_dflash_input_scope_uses_actual_merged_model_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    legacy_shape: bool,
+    modality: str,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, algorithm)
+    state = Qwen3OmniPipelineState(prompt={"input_ids": torch.tensor([11, 12, 13])})
+    encoder_outputs = {}
+    if modality in ("image", "image-and-video"):
+        state.mm_inputs["image"] = {"image_grid_thw": torch.tensor([[1, 2, 2]])}
+        state.encoder_inputs["image_encoder"] = {"cache_key": "visual-key"}
+        encoder_outputs["image_encoder"] = {"image_embeds": torch.ones(1, 4)}
+    else:
+        pass
+    if modality in ("video", "audio-in-video", "image-and-video"):
+        state.mm_inputs["video"] = {
+            "video_grid_thw": torch.tensor([[2, 2, 2]]),
+            "video_second_per_grid": torch.tensor([2.0 / 3.0]),
+            "use_audio_in_video": modality == "audio-in-video",
+        }
+        state.encoder_inputs["image_encoder"] = {"cache_key": "visual-key"}
+        encoder_outputs.setdefault("image_encoder", {})["video_embeds"] = torch.ones(
+            2, 4
+        )
+    else:
+        pass
+    if modality in ("audio", "audio-in-video"):
+        state.mm_inputs["audio"] = {"audio_feature_lengths": torch.tensor([2])}
+        state.encoder_inputs["audio_encoder"] = {"cache_key": "audio-key"}
+        encoder_outputs["audio_encoder"] = {"audio_embeds": torch.ones(2, 4)}
+    else:
+        pass
+    payload = make_qwen_payload(state, params={"stream": True, "max_new_tokens": 8})
+    payload.request.metadata = {"output_modalities": ["text"]}
+    payloads = {"preprocessing": project_preprocessing_to_mm_aggregate(payload)}
+    for stage_name, encoder_output in encoder_outputs.items():
+        payloads[stage_name] = make_qwen_payload(
+            Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_output})
+        )
+    merged = merge_for_thinker(payloads)
+    merged_state = Qwen3OmniPipelineState.from_dict(merged.data)
+    if modality == "image":
+        assert "video" in merged_state.thinker_inputs["media_cache_keys"]
+    else:
+        pass
+    if legacy_shape:
+        merged_state.thinker_inputs = request_builders.extract_thinker_model_inputs(
+            merged_state.thinker_inputs
+        )
+        merged.data = merged_state.to_dict()
+    else:
+        pass
+    native_builder = Mock(wraps=request_builders.build_sglang_thinker_request)
+    monkeypatch.setattr(
+        request_builders, "build_sglang_thinker_request", native_builder
+    )
+    request_data = scheduler.request_builder(merged)
+    native_builder.assert_called_once()
+    assert list(request_data.req.origin_input_ids) == [11, 12, 13]
+    assert list(request_data.req.output_ids) == []
+
+
+def test_dflash_input_scope_allows_false_video_flag_and_text_about_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, "DFLASH")
+    state = Qwen3OmniPipelineState(
+        prompt={"input_ids": torch.tensor([11, 12, 13])},
+        thinker_inputs={"model_inputs": {"use_audio_in_video": False}},
+    )
+    payload = make_qwen_payload(state)
+    payload.request.inputs = "Explain audio and video formats"
+    payload.request.metadata = {"output_modalities": ["text"]}
+    assert scheduler.request_builder(payload).req.rid == payload.request_id
+
+
+@pytest.mark.parametrize("algorithm", [None, "DFLASH"])
+@pytest.mark.parametrize(
+    "prompt_tokens,generation_tokens,explicit_budget,accepted",
+    [
+        (8168, 17, True, True),
+        (8169, 17, True, False),
+        (9000, 17, True, False),
+        (6137, 2048, False, True),
+        (6138, 2048, False, False),
+        (8184, 1, True, True),
+        (8185, 1, True, False),
+        (8191, 1, True, False),
+        (5650, 2048, True, True),
+    ],
+)
+def test_draft_context_budget_precedes_native_request(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    prompt_tokens: int,
+    generation_tokens: int,
+    explicit_budget: bool,
+    accepted: bool,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, algorithm)
+    state = make_qwen_state(
+        prompt={"input_ids": torch.ones(prompt_tokens, dtype=torch.long)}
+    )
+    parameters = {"max_new_tokens": generation_tokens} if explicit_budget else {}
+    payload = make_qwen_payload(state, params=parameters)
+    payload.request.metadata = {"output_modalities": ["text"]}
+    native_builder = Mock(wraps=request_builders.build_sglang_thinker_request)
+    monkeypatch.setattr(
+        request_builders, "build_sglang_thinker_request", native_builder
+    )
+    if algorithm == "DFLASH" and not accepted:
+        with pytest.raises(ValueError, match="draft context budget") as failure:
+            scheduler.request_builder(payload)
+        native_builder.assert_not_called()
+        assert is_bad_request_error(failure.value)
+    else:
+        request = scheduler.request_builder(payload)
+        native_builder.assert_called_once()
+        assert len(request.req.origin_input_ids) == prompt_tokens
+        assert request.req.sampling_params.max_new_tokens == generation_tokens
+
+
+@pytest.mark.parametrize("generation_tokens", [None, True, 0, -1, 1.5, "17"])
+def test_draft_context_rejects_unbounded_or_malformed_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    generation_tokens: object,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, "DFLASH")
+    payload = make_qwen_payload(params={"max_new_tokens": generation_tokens})
+    payload.request.metadata = {"output_modalities": ["text"]}
+    native_builder = Mock(wraps=request_builders.build_sglang_thinker_request)
+    monkeypatch.setattr(
+        request_builders, "build_sglang_thinker_request", native_builder
+    )
+    with pytest.raises(ValueError, match="max_new_tokens must be a positive integer"):
+        scheduler.request_builder(payload)
+    native_builder.assert_not_called()
+
+
+@pytest.mark.parametrize("algorithm", [None, "DFLASH"])
+@pytest.mark.parametrize(
+    "position_delta", [-510.975006, -3.0, -0.75, 0.0, 0.75, 3.0, 3.25]
+)
+def test_dflash_generated_positions_match_native_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    position_delta: float,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, algorithm)
+    prompt_tokens = 599
+    original_positions = torch.arange(prompt_tokens).repeat(3, 1).float() + 0.25
+    original_delta = torch.tensor([[position_delta]], dtype=torch.float32)
+    original_builder = request_builders.build_sglang_thinker_request
+
+    def build_request(*arguments, **keywords):
+        request_data = original_builder(*arguments, **keywords)
+        multimodal_inputs = MultimodalInputs(mm_items=[])
+        multimodal_inputs.mrope_positions = original_positions
+        multimodal_inputs.mrope_position_delta = original_delta
+        request_data.req.multimodal_inputs = multimodal_inputs
+        return request_data
+
+    monkeypatch.setattr(request_builders, "build_sglang_thinker_request", build_request)
+    payload = make_qwen_payload(
+        Qwen3OmniPipelineState(
+            prompt={"input_ids": torch.ones(prompt_tokens, dtype=torch.long)}
+        ),
+        params={"max_new_tokens": 17},
+    )
+    payload.request.metadata = {"output_modalities": ["text"]}
+    request_data = scheduler.request_builder(payload)
+    multimodal_inputs = request_data.req.multimodal_inputs
+    assert multimodal_inputs.mrope_positions is original_positions
+    assert torch.equal(
+        original_delta, torch.tensor([[position_delta]], dtype=torch.float32)
+    )
+    assert multimodal_inputs.mrope_position_delta_repeated_cache is None
+    if algorithm is None:
+        assert multimodal_inputs.mrope_position_delta is original_delta
+    else:
+        assert multimodal_inputs.mrope_position_delta.dtype == torch.int64
+        runner = SimpleNamespace(device="cpu")
+        batch = SimpleNamespace(
+            multimodal_inputs=[multimodal_inputs, None],
+            spec_info=SimpleNamespace(
+                positions=torch.arange(prompt_tokens, prompt_tokens + 8).repeat(2)
+            ),
+        )
+        verify = ForwardBatch.__new__(ForwardBatch)
+        verify.seq_lens = torch.tensor([prompt_tokens, prompt_tokens])
+        verify.compute_spec_mrope_positions(runner, batch)
+        decode_columns = []
+        with get_context().override_server_args():
+            for offset in range(8):
+                decode = ForwardBatch.__new__(ForwardBatch)
+                decode.forward_mode = ForwardMode.DECODE
+                decode.seq_lens = decode.seq_lens_cpu = torch.tensor(
+                    [prompt_tokens + offset + 1] * 2
+                )
+                decode._compute_mrope_positions_decode(
+                    runner, batch
+                )  # noqa: leading-underscore  # Native method contract.
+                decode_columns.append(decode.mrope_positions)
+            expected_positions = torch.stack(decode_columns, dim=2).reshape(3, 16)
+            assert torch.equal(verify.mrope_positions, expected_positions)
+            assert verify.mrope_positions.dtype == torch.int64
+            graph_positions = torch.empty((3, 16), dtype=torch.int64)
+            graph_positions.copy_(verify.mrope_positions)
+            assert torch.equal(graph_positions, expected_positions)
+
+            extend = ForwardBatch.__new__(ForwardBatch)
+            extend.seq_lens_cpu = torch.tensor([prompt_tokens + 2])
+            extend_batch = SimpleNamespace(
+                multimodal_inputs=[multimodal_inputs],
+                extend_lens=[4],
+                prefix_lens=[prompt_tokens - 2],
+                reqs=[SimpleNamespace(session=SimpleNamespace())],
+            )
+            extend._compute_mrope_positions_extend(
+                runner, extend_batch
+            )  # noqa: leading-underscore  # Native method contract.
+            expected_prefix = original_positions[:, -2:].to(torch.int64)
+            expected_tail = expected_positions[:, :2]
+            assert torch.equal(
+                extend.mrope_positions,
+                torch.cat([expected_prefix, expected_tail], dim=1),
+            )
+            extend.forward_mode = ForwardMode.MIXED
+            extend_batch.reqs[0].session = None
+            extend_batch.extend_lens = [1]
+            extend_batch.prefix_lens = [prompt_tokens + 1]
+            extend._compute_mrope_positions_extend(
+                runner, extend_batch
+            )  # noqa: leading-underscore  # Native method contract.
+            assert torch.equal(extend.mrope_positions, expected_positions[:, 1:2])
+        assert multimodal_inputs.mrope_positions is original_positions
+
+
+@pytest.mark.parametrize(
+    "prompt_maximum,position_delta,accepted",
+    [
+        (598.25, -510.975006, True),
+        (32767.5, 0.0, True),
+        (32768.0, 0.0, False),
+        (-0.25, 0.0, False),
+        (598.0, 32145.75, True),
+        (598.0, 32146.0, False),
+        (598.0, -599.75, True),
+        (598.0, -600.0, False),
+        (float("nan"), 0.0, False),
+        (float("inf"), 0.0, False),
+        (598.0, float("nan"), False),
+        (598.0, float("inf"), False),
+        (598.0, 1e30, False),
+        (598.0, -1e30, False),
+    ],
+)
+def test_dflash_rotary_budget_is_independent_of_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    prompt_maximum: float,
+    position_delta: float,
+    accepted: bool,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, "DFLASH")
+    prompt_tokens = 599
+    original_positions = torch.full((3, prompt_tokens), prompt_maximum)
+    original_delta = torch.tensor([[position_delta]], dtype=torch.float32)
+    original_builder = request_builders.build_sglang_thinker_request
+
+    def build_request(
+        state: Qwen3OmniPipelineState,
+        *,
+        tokenizer: FakeQwenTokenizer,
+        vocab_size: int,
+        request_id: str,
+        params: Mapping[str, object],
+        thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
+    ) -> SGLangARRequestData:
+        request_data = original_builder(
+            state,
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
+            request_id=request_id,
+            params=params,
+            thinker_config=thinker_config,
+        )
+        multimodal_inputs = MultimodalInputs(mm_items=[])
+        multimodal_inputs.mrope_positions = original_positions
+        multimodal_inputs.mrope_position_delta = original_delta
+        request_data.req.multimodal_inputs = multimodal_inputs
+        return request_data
+
+    monkeypatch.setattr(request_builders, "build_sglang_thinker_request", build_request)
+    payload = make_qwen_payload(
+        Qwen3OmniPipelineState(
+            prompt={"input_ids": torch.ones(prompt_tokens, dtype=torch.long)}
+        ),
+        params={"max_new_tokens": 17},
+    )
+    payload.request.metadata = {"output_modalities": ["text"]}
+    if accepted:
+        request_data = scheduler.request_builder(payload)
+        assert request_data.req.multimodal_inputs.mrope_positions is original_positions
+        assert request_data.req.multimodal_inputs.mrope_position_delta.item() == int(
+            original_delta.item()
+        )
+        assert original_delta.dtype == torch.float32
+    else:
+        with pytest.raises(ValueError, match="maximum context length") as failure:
+            scheduler.request_builder(payload)
+        assert is_bad_request_error(failure.value)
+        assert original_delta.dtype == torch.float32
+
+
+@pytest.mark.parametrize(
+    "invalid_metadata",
+    ["positions_device", "delta_device", "positions_shape", "delta_shape"],
+)
+def test_dflash_position_metadata_does_not_copy_device_tensors(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_metadata: str,
+) -> None:
+    scheduler = make_scope_scheduler(monkeypatch, "DFLASH")
+    original_builder = request_builders.build_sglang_thinker_request
+
+    def build_request(
+        state: Qwen3OmniPipelineState,
+        *,
+        tokenizer: FakeQwenTokenizer,
+        vocab_size: int,
+        request_id: str,
+        params: Mapping[str, object],
+        thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
+    ) -> SGLangARRequestData:
+        request_data = original_builder(
+            state,
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
+            request_id=request_id,
+            params=params,
+            thinker_config=thinker_config,
+        )
+        multimodal_inputs = MultimodalInputs(mm_items=[])
+        multimodal_inputs.mrope_positions = torch.zeros((3, 3))
+        multimodal_inputs.mrope_position_delta = torch.tensor([0])
+        if invalid_metadata == "positions_device":
+            multimodal_inputs.mrope_positions = torch.empty((3, 3), device="meta")
+        elif invalid_metadata == "delta_device":
+            multimodal_inputs.mrope_position_delta = torch.empty((1,), device="meta")
+        elif invalid_metadata == "positions_shape":
+            multimodal_inputs.mrope_positions = torch.zeros((3, 2))
+        else:
+            multimodal_inputs.mrope_position_delta = torch.tensor([0, 0])
+        request_data.req.multimodal_inputs = multimodal_inputs
+        return request_data
+
+    monkeypatch.setattr(request_builders, "build_sglang_thinker_request", build_request)
+    payload = make_qwen_payload(params={"max_new_tokens": 17})
+    payload.request.metadata = {"output_modalities": ["text"]}
+    with pytest.raises(RuntimeError, match="CPU prompt position metadata"):
+        scheduler.request_builder(payload)

@@ -14,6 +14,7 @@ inheriting from ``SGLangScheduler``.
 from __future__ import annotations
 
 import logging
+import os
 import queue as _queue_mod
 import threading
 import time
@@ -25,7 +26,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
-from typing import TYPE_CHECKING, Callable, Generic
+from typing import TYPE_CHECKING, Callable, Generic, NoReturn
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
@@ -34,6 +35,7 @@ from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.io_struct import AbortReq
+from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
     NextBatchPlan,
@@ -52,9 +54,18 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
-from sglang.srt.runtime_context import get_model, get_parallel, get_serving
+from sglang.srt.runtime_context import (
+    get_context,
+    get_memory,
+    get_model,
+    get_parallel,
+    get_schedule,
+    get_serving,
+)
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
 
@@ -104,6 +115,7 @@ from sglang_omni.scheduling.types import (
     DeferredAdmission,
     ModelRunnerOutput,
     RequestDataT,
+    RequestOutput,
     SchedulerOutput,
     StreamOutputBuilder,
 )
@@ -306,6 +318,7 @@ class OmniScheduler(Generic[RequestDataT]):
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
+    draft_worker: BaseSpecWorker | None = None
 
     def __init__(
         self,
@@ -317,6 +330,7 @@ class OmniScheduler(Generic[RequestDataT]):
         model_config: ModelConfig,
         *,
         model_runner: ModelRunner[RequestDataT] | None = None,
+        draft_worker: BaseSpecWorker | None = None,
         request_builder: (
             Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]]
             | None
@@ -345,6 +359,10 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
     ) -> None:
+        if draft_worker is not None and (enable_overlap or enable_async_decode):
+            raise ValueError("Thinker DFlash currently requires synchronous scheduling")
+        else:
+            pass
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = False
@@ -368,7 +386,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.shutdown_lock = threading.Lock()
         self.request_admission_lock = threading.RLock()
         self.prompt_cache_epoch = 0
-        from sglang.srt.runtime_context import get_memory, get_parallel, get_schedule
 
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(get_parallel().tp_size) > 1:
@@ -495,8 +512,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
-        from sglang.srt.runtime_context import get_context, get_parallel
-
         if not get_parallel().pp_max_micro_batch_size:
             get_context().override(
                 "sglang_omni.scheduler.pp_max_micro_batch_size_default",
@@ -604,17 +619,22 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         self.current_scheduler_metrics_enabled = False
 
-        # Speculative decoding (disabled)
-        from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
-
-        self.spec_algorithm = SpeculativeAlgorithm.NONE
+        self.spec_algorithm = (
+            SpeculativeAlgorithm.DFLASH
+            if draft_worker is not None
+            else SpeculativeAlgorithm.NONE
+        )
         self.future_map = self.spec_algorithm.create_future_map(
             torch.device(self.device),
             self.req_to_token_pool,
             needs_cpu_seq_lens=True,
         )
         self.dllm_config = None
-        self.draft_worker = None
+        self.draft_worker = draft_worker
+        if draft_worker is not None:
+            self.model_worker = draft_worker
+        else:
+            pass
         self.execution_bridge = None
         if model_runner is not None:
             self.bind_model_runner(model_runner)
@@ -706,6 +726,14 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         if self.model_runner is not None:
             raise RuntimeError("OmniScheduler model runner is already bound")
+        else:
+            pass
+
+        if self.draft_worker is not None:
+            # note (Codex): DFlash owns block relay; the ordinary bridge owns one token.
+            model_runner.async_enabled = False
+            self.model_runner = model_runner
+            return
         else:
             pass
 
@@ -1635,6 +1663,45 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         req = req_data.req
+        if self.draft_worker is not None:
+            sampling = req.sampling_params
+            unsupported = (
+                sampling.top_k != 1
+                or sampling.stop_strs
+                or sampling.stop_regex_strs
+                or sampling.frequency_penalty != 0.0
+                or sampling.presence_penalty != 0.0
+                or sampling.repetition_penalty != 1.0
+                or sampling.min_new_tokens != 0
+                or sampling.logit_bias
+                or sampling.custom_params
+                or sampling.json_schema
+                or sampling.regex
+                or sampling.ebnf
+                or sampling.structural_tag
+                or sampling.beam_width not in (None, 1)
+                or req.custom_logit_processor
+                or req.return_logprob
+                or req_data.return_logprob
+                or req.return_hidden_states
+                or req.return_sampling_mask
+            )
+            if unsupported:
+                self.emit_request_error(
+                    req_id,
+                    ValueError(
+                        "Thinker DFlash requires greedy sampling without penalties, "
+                        "stop strings or stop regexes, minimum output length, "
+                        "custom processors, constraints, "
+                        "beam search, logprobs, hidden states, or sampling masks"
+                    ),
+                )
+                self.abort(req_id)
+                return
+            else:
+                pass
+        else:
+            pass
         self.normalize_req_token_arrays(req)
         req_id = req.rid
         # Session appends are checked after history restore, as SGLang does.
@@ -2051,6 +2118,10 @@ class OmniScheduler(Generic[RequestDataT]):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
         except Exception as exc:
+            if self.draft_worker is not None:
+                self.drain_dflash_failure()
+            else:
+                pass
             self.handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
 
@@ -2086,9 +2157,39 @@ class OmniScheduler(Generic[RequestDataT]):
         ``ModelRunnerOutput``.  The upstream ``process_batch_result`` expects
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
-        del pp_proxy_tensors
         self.emit_prefill_start_for_batch(batch)
         self.stamp_batch_launch(batch)
+        if self.draft_worker is not None:
+            resolve_forward_inputs(batch, self.future_map)
+            with self._forward_isolation(
+                batch, overlap=False
+            ):  # noqa: leading-underscore  # Native batch transaction.
+                batch_result = self.draft_worker.forward_batch_generation(batch)
+            batch.spec_info = batch_result.next_draft_input
+            new_seq_lens = batch_result.new_seq_lens
+            if new_seq_lens is not None and new_seq_lens is not batch.seq_lens:
+                batch.seq_lens = new_seq_lens
+                if batch.seq_lens_cpu is not None:
+                    batch.seq_lens_cpu = new_seq_lens.to("cpu")
+                    batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
+                else:
+                    pass
+            else:
+                pass
+            batch.input_ids = None
+            self.update_cache_from_scheduler(batch, batch_result)
+            batch_result.copy_done = self.device_module.Event()
+            if batch_result.has_sampled_token_ids:
+                batch_result.copy_to_cpu(
+                    return_logprob=batch.return_logprob,
+                    return_hidden_states=batch.return_hidden_states,
+                )
+            else:
+                pass
+            self.emit_prefill_end_for_batch(batch)
+            return batch_result
+        else:
+            pass
         sched_output = self.build_sched_output(batch)
         mr_output = self.model_runner.execute(sched_output)
         self.emit_prefill_end_for_batch(batch)
@@ -2207,6 +2308,13 @@ class OmniScheduler(Generic[RequestDataT]):
             next_token_ids=next_token_ids,
             can_run_cuda_graph=mr_output.can_run_cuda_graph,
         )
+
+    def drain_dflash_failure(self) -> None:
+        """Establish writer completion before exceptional DFlash request cleanup."""
+        try:
+            self.device_module.synchronize(self.device)
+        except Exception as drain_error:
+            self.terminate_prefill_worker(drain_error)
 
     def run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU
@@ -2338,6 +2446,21 @@ class OmniScheduler(Generic[RequestDataT]):
                 continue
             else:
                 pass
+            if self.draft_worker is not None:
+                try:
+                    self.emit_speculative_tokens(req)
+                except Exception as exc:
+                    logger.exception(f"Speculative stream failed for request {req.rid}")
+                    req.skip_radix_cache_insert = True
+                    try:
+                        self.emit_request_error(req.rid, exc)
+                    finally:
+                        self.abort(req.rid, defer_running_cleanup=False)
+                        self.run_request_finished_callback(req.rid)
+                        self.close_completed_request(req)
+                    continue
+            else:
+                pass
             if not req.finished():
                 continue
             else:
@@ -2405,7 +2528,11 @@ class OmniScheduler(Generic[RequestDataT]):
                     model_runner.on_request_finished(rid, data)
                 else:
                     pass
-                data.output_ids = list(req.output_ids)
+                data.output_ids = list(
+                    req.output_ids_through_stop
+                    if self.draft_worker is not None
+                    else req.output_ids
+                )
                 data.weight_version = get_serving().weight_version
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
@@ -2459,6 +2586,40 @@ class OmniScheduler(Generic[RequestDataT]):
                     data=result,
                 )
             )
+
+    @staticmethod
+    def terminate_prefill_worker(error: BaseException) -> NoReturn:
+        """Retire the worker instead of releasing storage with unknown GPU writers."""
+        try:
+            os.write(2, f"Fatal prefill writer drain failure: {error!r}\n".encode())
+        finally:
+            os._exit(1)  # noqa: leading-underscore  # Fatal GPU retirement.
+
+    def emit_speculative_tokens(self, request: Req) -> None:
+        """Publish only committed tokens after stop handling has cropped the span."""
+        with self.request_admission_lock:
+            if (
+                request.rid in self.aborted_request_ids
+                or isinstance(request.finished_reason, FINISH_ABORT)
+                or request._omni_terminal_claimed  # noqa: leading-underscore  # Shared request ownership field.
+                or request.inflight_middle_chunks > 0
+            ):
+                return
+            else:
+                pass
+            request_data = request.omni_data
+            if request_data is None or self.stream_output_builder is None:
+                return
+            else:
+                pass
+            committed_tokens = request.output_ids_through_stop
+            for token_id in committed_tokens[request_data.speculative_emitted_tokens :]:
+                output = RequestOutput(request_id=request.rid, data=int(token_id))
+                messages = self.stream_output_builder(request.rid, request_data, output)
+                self.put_stream_messages(request.rid, messages)
+                request_data.speculative_emitted_tokens += 1
+            request_data.output_ids = list(committed_tokens)
+            request_data.generation_steps = len(committed_tokens)
 
     def on_stream_chunk(self, request_id: str, chunk: StreamItem) -> None:
         if request_id in self.completed_request_ids:
@@ -2763,6 +2924,20 @@ class OmniScheduler(Generic[RequestDataT]):
         self, action: str, payload: dict[str, object] | None = None
     ) -> AdminActionResult:
         payload = dict(payload or {})
+        if self.draft_worker is not None and action in (
+            ADMIN_UPDATE_WEIGHTS_FROM_DISK,
+            ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
+            ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
+            ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
+            ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
+            ADMIN_WEIGHTS_CHECKER,
+        ):
+            return {
+                "success": False,
+                "message": "Thinker DFlash does not support weight administration",
+            }
+        else:
+            pass
         if action == ADMIN_MODEL_INFO:
             return self.admin_model_info()
         else:
@@ -2806,7 +2981,7 @@ class OmniScheduler(Generic[RequestDataT]):
         }
 
     def admin_model_info(self) -> AdminActionResult:
-        info = self.model_worker.model_info()
+        info = self.tp_worker.model_info()
         with self.request_admission_lock:
             request_build_pending = len(self.pending_request_builds)
             request_admission_pending = len(self.pending_request_admissions)

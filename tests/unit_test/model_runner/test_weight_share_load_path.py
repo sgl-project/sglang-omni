@@ -29,6 +29,7 @@ from sglang.srt.model_executor.model_runner_components.weight_updater import (  
     WeightUpdater,
 )
 from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm  # noqa: E402
 
 from sglang_omni.utils import ipc_weights  # noqa: E402
 
@@ -55,6 +56,7 @@ class SmallModel(nn.Module):
 
 def bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
+    runner.spec_algorithm = SpeculativeAlgorithm.NONE
     runner.server_args = SimpleNamespace(
         load_format=load_format,
         max_total_tokens=1000,

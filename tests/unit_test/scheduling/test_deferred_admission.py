@@ -5,6 +5,10 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -126,3 +130,73 @@ def test_defer_admission_when_build_backlog_exceeds_workers() -> None:
 def test_keep_deferred_admission_without_build_executor() -> None:
     scheduler = WaitPolicyScheduler(workers=1, pending=0, backlog=0, has_executor=False)
     assert scheduler.request_build_queue_fits_workers() is False
+
+
+@pytest.mark.parametrize(("stop", "stop_regex"), [("X", None), (None, "X+")])
+def test_dflash_rejects_stop_patterns_before_scheduling(
+    stop: str | None, stop_regex: str | None
+) -> None:
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.deferred_request_payloads = {}
+    scheduler.active_session_unit.return_value = None
+    scheduler.draft_worker = Mock()
+    sampling = SamplingParams(temperature=0, stop=stop, stop_regex=stop_regex)
+    request = SimpleNamespace(sampling_params=sampling)
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="explicit-stop"),
+        False,
+        SimpleNamespace(req=request),
+    )
+
+    scheduler.abort.assert_called_once_with("explicit-stop")
+    error = scheduler.emit_request_error.call_args.args[1]
+    assert isinstance(error, ValueError)
+    assert "stop strings or stop regexes" in str(error)
+    scheduler.normalize_req_token_arrays.assert_not_called()
+
+
+@pytest.mark.parametrize("has_draft_worker", [False, True])
+@pytest.mark.parametrize("stop_strings", [None, []])
+def test_supported_stop_configuration_reaches_normal_admission(
+    has_draft_worker: bool,
+    stop_strings: list[str] | None,
+) -> None:
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.deferred_request_payloads = {}
+    scheduler.active_session_unit.return_value = None
+    scheduler.draft_worker = Mock() if has_draft_worker else None
+    sampling = SamplingParams(
+        temperature=0,
+        stop=stop_strings if has_draft_worker else "X",
+        stop_regex=stop_strings,
+        stop_token_ids=[99],
+        max_new_tokens=17,
+    )
+    if has_draft_worker:
+        sampling.normalize(None)
+    else:
+        pass
+    request = SimpleNamespace(
+        rid="supported-stop",
+        origin_input_ids=[],
+        sampling_params=sampling,
+        custom_logit_processor=None,
+        return_logprob=False,
+        return_hidden_states=False,
+        return_sampling_mask=False,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id=request.rid),
+        False,
+        SimpleNamespace(req=request, return_logprob=False),
+    )
+
+    scheduler.normalize_req_token_arrays.assert_called_once_with(request)
+    error = scheduler.emit_request_error.call_args.args[1]
+    assert str(error).startswith("Request has no prompt tokens")
+    assert sampling.stop_token_ids == {99}
+    assert sampling.max_new_tokens == 17

@@ -128,17 +128,30 @@ def test_real_qwen_config_drives_prefill_positions(
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 
-def test_outer_thinker_forward_accepts_sidecar_request_identity():
+@pytest.mark.parametrize("capture_auxiliary", [False, True])
+def test_outer_thinker_forward_accepts_sidecar_request_identity(
+    capture_auxiliary: bool,
+) -> None:
     seen: dict[str, object] = {}
+    final_hidden_states = torch.zeros((2, 3))
+    auxiliary_hidden_states = [torch.ones((2, 3)), torch.full((2, 3), 2.0)]
 
     def fake_model(**kwargs):
         seen.update(kwargs)
-        return torch.zeros((2, 3))
+        if capture_auxiliary:
+            return final_hidden_states, auxiliary_hidden_states
+        else:
+            return final_hidden_states
+
+    def logits_processor(token_ids, hidden_states, head, batch, auxiliary):
+        assert hidden_states is final_hidden_states
+        assert auxiliary is (auxiliary_hidden_states if capture_auxiliary else None)
+        return token_ids
 
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = fake_model
-    wrapper.logits_processor = lambda *args: args[0]
+    wrapper.logits_processor = logits_processor
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     wrapper.decode_live_rows = DecodeLiveRows()
@@ -160,6 +173,48 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     assert result is input_ids
     assert seen["input_embeds"] is input_embeds
     assert seen["positions"] is positions
+
+
+def test_dflash_uses_existing_target_embeddings_and_requested_layer_boundaries() -> (
+    None
+):
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    embeddings = torch.nn.Embedding(16, 4)
+    wrapper.model = SimpleNamespace(
+        embed_tokens=embeddings,
+        get_input_embeddings=lambda: embeddings,
+        layers_to_capture=[],
+    )
+    wrapper.lm_head = torch.nn.Linear(4, 16, bias=False)
+    wrapper.config = SimpleNamespace(num_hidden_layers=48)
+    wrapper.capture_aux_hidden_states = False
+
+    wrapper.set_dflash_layers_to_capture([1, 12, 23, 34, 45])
+
+    assert wrapper.get_input_embeddings() is embeddings
+    embedding_weights, head_weights = wrapper.get_embed_and_head()
+    assert embedding_weights is embeddings.weight
+    assert head_weights is wrapper.lm_head.weight
+    assert wrapper.capture_aux_hidden_states
+    assert wrapper.model.layers_to_capture == [2, 13, 24, 35, 46]
+
+
+@pytest.mark.parametrize(
+    "layer_ids", [[], [-1], [47], [48], [1, 1], [12, 1], [True], None]
+)
+def test_invalid_dflash_capture_layers_fail_before_changing_capture(layer_ids) -> None:
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.model = SimpleNamespace(layers_to_capture=[])
+    wrapper.config = SimpleNamespace(num_hidden_layers=48)
+    wrapper.capture_aux_hidden_states = False
+
+    with pytest.raises(ValueError, match="DFLASH"):
+        wrapper.set_dflash_layers_to_capture(layer_ids)
+
+    assert not wrapper.capture_aux_hidden_states
+    assert wrapper.model.layers_to_capture == []
 
 
 class FixedTopK(torch.nn.Module):

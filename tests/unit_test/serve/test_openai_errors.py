@@ -98,8 +98,26 @@ def test_an_unrelated_failure_stays_internal() -> None:
         "index out of range in self",
         "decoder said Media URL returned HTTP 404: internal",
         "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id",
+        "DFlash target returned no auxiliary rows",
     ):
         assert not is_bad_request_error(RuntimeError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Thinker DFlash requires greedy sampling without penalties, minimum output length, "
+        "custom processors, constraints, beam search, logprobs, hidden states, or sampling masks",
+        "Thinker DFlash currently supports text output only",
+        "Thinker DFlash does not support video input; use native decoding for video requests",
+        "Thinker DFlash currently supports text and image input only; audio input support has not been validated",
+        "Thinker DFlash requires greedy sampling without penalties, "
+        "stop strings or stop regexes, minimum output length, custom processors, "
+        "constraints, beam search, logprobs, hidden states, or sampling masks",
+    ],
+)
+def test_unsupported_dflash_requests_are_bad_requests(message: str) -> None:
+    assert generation_error_status_code(RuntimeError(message)) == 400
 
 
 @pytest.mark.parametrize(("status_code", "expected_status"), [(404, 400), (500, 500)])
