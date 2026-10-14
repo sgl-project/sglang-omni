@@ -101,6 +101,13 @@ def rope(estimator: PackedDiT, rows: PackedRows) -> tuple[torch.Tensor, torch.Te
     return angles.cos(), angles.sin()
 
 
+def modulations_at(
+    estimator: PackedDiT, t: torch.Tensor
+) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    estimator.build_modulations(torch.cat((t, torch.ones_like(t))), t.dtype)
+    return estimator.block_modulations[0], estimator.final_modulations[0]
+
+
 def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
     return float(
         torch.linalg.vector_norm(actual.double() - expected)
@@ -209,7 +216,7 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
             packed["mu"],
             packed["spks"],
             packed["cond"],
-            packed["t"],
+            *modulations_at(estimator, packed["t"]),
             packed["rows"],
             attention,
             rope(estimator, packed["rows"]),
@@ -278,6 +285,7 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
     twin_rows = pack_rows(LENGTHS * 2, CPU)
 
     with torch.inference_mode():
+        estimator.build_modulations(time_span, torch.float64)
         expected = solve_flow_euler(
             decoder,
             noise.clone(),
@@ -358,9 +366,10 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
     ]
 
     with torch.inference_mode():
+        modulations = modulations_at(estimator, packed["t"])
         together = estimator.forward(
             *together_inputs,
-            packed["t"],
+            *modulations,
             rows,
             estimator.row_attention(rows, streaming=streaming, dtype=torch.float64),
             rope(estimator, rows),
@@ -372,7 +381,7 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
                 padded["mu"][index : index + 1, :, :length].transpose(1, 2),
                 padded["spks"][index : index + 1].expand(length, -1).unsqueeze(0),
                 padded["cond"][index : index + 1, :, :length].transpose(1, 2),
-                padded["t"],
+                *modulations,
                 alone_rows,
                 estimator.row_attention(
                     alone_rows, streaming=streaming, dtype=torch.float64
