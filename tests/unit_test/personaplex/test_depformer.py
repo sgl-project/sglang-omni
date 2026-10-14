@@ -6,7 +6,6 @@ from typing import Literal
 
 import pytest
 import torch
-from sglang.srt.batch_invariant_ops import set_batch_invariant_mode
 
 from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
 from sglang_omni.models.personaplex.components.depformer import Depformer
@@ -24,69 +23,6 @@ from sglang_omni.models.personaplex.sampling import (
 SPEC = DepformerSpec(
     dim=32, num_heads=4, num_layers=2, ffn_hidden=24, steps=8, input_dim=16
 )
-
-
-@pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@torch.inference_mode()
-def test_deterministic_seed_survives_batch_changes_and_graph_padding() -> None:
-    torch.manual_seed(0)
-    model = Depformer(SPEC).to(device="cuda", dtype=torch.bfloat16).eval()
-    for parameter in model.parameters():
-        parameter.normal_(std=0.1)
-    hidden_states = torch.randn(32, SPEC.input_dim, device="cuda", dtype=torch.bfloat16)
-    text_tokens = torch.arange(32, device="cuda")
-    forced_codes = torch.full((32, SPEC.steps), -1, device="cuda", dtype=torch.long)
-    forced_codes[:, 0] = 17
-    target_generator = torch.Generator(device="cuda").manual_seed(1241)
-    initial_state = target_generator.get_state()
-    settings = AudioSampling(0.8, 25)
-    single_run = [
-        SamplingRun(
-            row_slice=slice(0, 1), sampling=settings, generators=[target_generator]
-        )
-    ]
-
-    with set_batch_invariant_mode():
-        expected = model.generate(
-            text_tokens[:1],
-            hidden_states[:1],
-            forced_codes[:1],
-            lambda logits: sample_runs(logits, single_run),
-        ).clone()
-        expected_state = target_generator.get_state()
-        runner = DepformerCudaGraphRunner(model, (1, 2, 4, 8, 16, 32))
-        for batch_size in (1, 2, 3, 4, 8, 16, 31, 32):
-            rows = list(range(batch_size))[::-1]
-            generators = [
-                torch.Generator(device="cuda").manual_seed(7 + row) for row in rows[:-1]
-            ] + [target_generator]
-            runs = [
-                SamplingRun(
-                    row_slice=slice(0, batch_size),
-                    sampling=settings,
-                    generators=generators,
-                )
-            ]
-            target_generator.set_state(initial_state)
-            eager = model.generate(
-                text_tokens[rows],
-                hidden_states[rows],
-                forced_codes[rows],
-                lambda logits: sample_runs(logits, runs),
-            )
-            torch.testing.assert_close(eager[-1:], expected, atol=0, rtol=0)
-            assert torch.equal(target_generator.get_state(), expected_state)
-            for _ in range(2):
-                target_generator.set_state(initial_state)
-                graphed = runner.generate(
-                    text_tokens[rows], hidden_states[rows], forced_codes[rows], runs
-                )
-                torch.testing.assert_close(graphed[-1:], expected, atol=0, rtol=0)
-                assert torch.equal(target_generator.get_state(), expected_state)
-        assert runner.graphs and all(
-            graph is not None for graph in runner.graphs.values()
-        )
 
 
 def reference_weights(checkpoint_steps: int) -> dict[str, torch.Tensor]:

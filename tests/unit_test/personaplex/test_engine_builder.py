@@ -28,9 +28,6 @@ from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-)
 
 
 def write_checkpoint(root):
@@ -93,25 +90,7 @@ def test_generation_defaults_keep_the_runner_assumptions(monkeypatch, is_cuda):
     assert defaults["chunked_prefill_size"] == -1
     assert defaults["disable_overlap_schedule"] is True
     assert defaults["disable_cuda_graph"] is not is_cuda
-    assert defaults["enable_deterministic_inference"] is is_cuda
     assert defaults["sampling_backend"] == "pytorch"
-
-
-@pytest.mark.parametrize("deterministic", [True, False])
-def test_deterministic_inference_can_be_overridden_from_cli(
-    monkeypatch: pytest.MonkeyPatch, deterministic: bool
-) -> None:
-    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
-    config = ConfigManager(
-        PersonaPlexPipelineConfig(model_path="personaplex")
-    ).merge_config(
-        {"lm.engine.enable_deterministic_inference": str(deterministic).lower()}
-    )
-    overrides = build_generation_batch_overrides(
-        **PersonaPlexEngineBuilder().generation_defaults(dtype="bfloat16"),
-        server_args_overrides=config.stage_named("lm").engine.overrides(),
-    )
-    assert overrides["enable_deterministic_inference"] is deterministic
 
 
 def test_backbone_config_selects_only_windowed_layers() -> None:

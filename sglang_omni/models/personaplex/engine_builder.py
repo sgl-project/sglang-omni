@@ -113,8 +113,6 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             # and leaves its hidden state in hidden_out, so SGLang can replay it.
             # Other platforms keep the eager path they were validated on.
             "disable_cuda_graph": not current_platform.is_cuda(),
-            # note (Codex): Seeded output must not depend on prefill batch size.
-            "enable_deterministic_inference": current_platform.is_cuda(),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,

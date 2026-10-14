@@ -156,7 +156,6 @@ class GenerationStageDefaults(TypedDict, total=False):
     disable_cuda_graph: bool
     disable_overlap_schedule: bool
     disable_radix_cache: bool
-    enable_deterministic_inference: bool
     enable_torch_compile: bool | None
     enable_mixed_chunk: bool
     trust_remote_code: bool
