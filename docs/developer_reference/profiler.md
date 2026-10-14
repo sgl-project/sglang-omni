@@ -38,12 +38,10 @@ JSONL file. The shape:
 Files are written under
 `<event_dir>/events_<stage>_<pid>_g<generation>.jsonl`. Multiple co-located
 stages in the same OS process share **one** JSONL file — the filename uses the
-first stage to start, and the per-event `stage` field identifies the owner. The
-generation suffix prevents a later recording, including one that reuses the
-same `run_id`, from appending to an older file. The views layer merges files
-from every process by `request_id`. The writer creates each JSONL file
-exclusively; if a process restart reuses an existing generation path, it
-records an event-file-open failure instead of appending.
+first stage to start, and the per-event `stage` field identifies the owner.
+The generation suffix distinguishes local recording instances within a process.
+The views layer merges files from every process by `request_id`. Files are
+created exclusively rather than appended to if a filename already exists.
 
 The recorder uses one bounded queue and one dedicated writer thread per
 process. The default queue capacity is 8192 events and can be reduced in unit
@@ -227,6 +225,15 @@ finally:
 clears both the thread-local slot and the contextvar.
 
 ## Lifecycle
+
+**Intended use and assumptions:** Request event profiling is an opt-in tool for
+controlled performance investigations, not an always-on logging or recovery
+service. Use a **unique `run_id` and a fresh, empty `event_dir` for each
+recording**. Reusing a run ID or output directory, resuming a recording after
+a process restart, and recovering or appending to earlier artifacts are not
+supported workflows. If an artifact path already exists, start a new recording
+with a fresh directory instead of attempting recovery. These scenarios do not
+justify additional restart/collision-handling machinery in the recorder.
 
 The recorder is process-local. It is started on every stage and on the
 coordinator when `POST /start_profile` (or `POST /start_request_profile`)
