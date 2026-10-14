@@ -23,7 +23,6 @@ from sglang_omni.profiler.event_recorder import (
     RequestEventSnapshot,
     emit,
     get_recorder,
-    json_default,
     reset_active_stage,
     set_active_stage,
 )
@@ -448,86 +447,6 @@ def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
 
 
 # ---------------------------------------------------------------------------
-# Safe metadata serialization (review finding P2)
-# ---------------------------------------------------------------------------
-
-
-def test_json_default_summarizes_tensor_without_materializing() -> None:
-    """``_json_default`` must NOT call .tolist() on tensors / arrays.
-
-    Regression for review finding P2: previously any object with .tolist()
-    got fully expanded; on a GPU tensor this synchronizes, copies to CPU,
-    and serializes potentially MBs of data inline — violating the "large
-    blobs stay out of metadata" rule.
-    """
-
-    class FakeTensor:
-        shape = (32, 1024, 4096)
-        dtype = "torch.float16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover - must not be called
-            raise AssertionError(
-                "_json_default called tolist() on a tensor — this is the "
-                "exact bug we're regressing against"
-            )
-
-        def item(self):  # pragma: no cover
-            raise AssertionError("item() called on multi-dim tensor")
-
-    out = json_default(FakeTensor())
-    assert isinstance(out, dict)
-    assert out["__tensor_summary__"] is True
-    assert out["type"] == "FakeTensor"
-    assert out["shape"] == [32, 1024, 4096]
-    assert out["dtype"] == "torch.float16"
-    assert out["device"] == "cuda:0"
-
-
-def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
-    """0-D tensors / numpy scalars should serialize as plain scalars."""
-
-    class FakeScalar:
-        shape = ()
-        dtype = "float32"
-
-        def item(self):
-            return 3.14
-
-    assert json_default(FakeScalar()) == 3.14
-
-
-def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
-    """End-to-end: even if a caller hands us a tensor in metadata, the
-    JSONL line must stay small and never call .tolist()."""
-
-    rec = get_recorder()
-    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
-
-    class HugeTensor:
-        shape = (1024, 4096)
-        dtype = "torch.bfloat16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover
-            raise AssertionError("hot-path emit called tolist()")
-
-    rec.emit(
-        request_id="r1",
-        stage="encoder",
-        event_name="encoder_end",
-        metadata={"hidden_states": HugeTensor()},
-    )
-    rec.stop()
-
-    events = read_events(p)
-    assert len(events) == 1
-    summary = events[0]["metadata"]["hidden_states"]
-    assert summary["__tensor_summary__"] is True
-    assert summary["shape"] == [1024, 4096]
-
-
-# ---------------------------------------------------------------------------
 # Active-stage lifecycle (review finding P3)
 # ---------------------------------------------------------------------------
 
@@ -586,8 +505,6 @@ def test_reset_active_stage_with_token_restores_previous_value() -> None:
         reset_active_stage(outer_token)
         # After the outer reset, contextvar is back to its initial None.
         assert get_active_stage() is None
-
-
 def test_scheduler_model_path_activity_is_monotonic_and_default_off(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

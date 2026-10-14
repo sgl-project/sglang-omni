@@ -493,3 +493,24 @@ def test_stage_start_observation_does_not_cross_profiler_runs(tmp_path: Path) ->
     recorder.stop()
 
     assert read_events(run_b_path) == []
+
+
+def test_duplex_metrics_does_not_verify_missing_status_sidecar(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "events_coordinator_1_g0.jsonl"
+    event_path.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                session_event("session_unit_admitted", 1),
+                session_event("session_unit_finished", 2),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_duplex_session_metrics(event_path)
+    assert report["completeness"]["verified"] is False
+    assert report["completeness"]["reason"] == "missing_status_sidecar"

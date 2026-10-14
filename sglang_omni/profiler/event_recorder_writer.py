@@ -56,6 +56,8 @@ class RequestEventRecorder:
         self.pending_states: dict[int, RecorderRunState] = {}
         self.writer_thread: threading.Thread | None = None
         self.writer_failed = False
+        # Sticky aggregate signal: individual handles remain authoritative for
+        # each run, while shutdown must not forget a completed failed publish.
         self.finalization_failed = False
         self.pid = os.getpid()
 
@@ -169,7 +171,10 @@ class RequestEventRecorder:
             captured_metadata = snapshot_metadata(metadata)
         except Exception:
             with self.lock:
-                if not run_state.finalization.completion_event.is_set():
+                if (
+                    self.active_state is run_state
+                    and not run_state.finalization.completion_event.is_set()
+                ):
                     run_state.metadata_snapshot_failures += 1
                     run_state.incomplete_reasons.add("metadata_snapshot_failure")
                 else:
@@ -306,7 +311,6 @@ class RequestEventRecorder:
             self.writer_failed = False
         else:
             pass
-        self.finalization_failed = False
         if len(self.pending_states) >= MAX_PENDING_FINALIZATIONS:
             raise RuntimeError("too many profiler runs are waiting for finalization")
         else:
@@ -375,7 +379,10 @@ class RequestEventRecorder:
         else:
             pass
         if wait:
-            finalization.wait()
+            if not finalization.wait():
+                return None
+            else:
+                pass
         else:
             pass
         return finalization.path
@@ -387,7 +394,12 @@ class RequestEventRecorder:
                 run_state.finalization for run_state in self.pending_states.values()
             ]
         if timeout_seconds is None:
-            completed = all(finalization.wait() for finalization in finalizations)
+            completed = True
+            for finalization in finalizations:
+                if not finalization.wait():
+                    completed = False
+                else:
+                    pass
             with self.lock:
                 return completed and not self.finalization_failed
         else:
@@ -404,16 +416,14 @@ class RequestEventRecorder:
             else:
                 pass
         with self.lock:
-            return not self.finalization_failed
+            return not self.finalization_failed and all(
+                finalization.successful for finalization in finalizations
+            )
 
     def writer_should_exit(self) -> bool:
-        """Relinquish writer ownership only after proving the queue is idle."""
+        """Relinquish writer ownership after all accepted events are accounted."""
         with self.lock:
-            should_exit = (
-                self.active_state is None
-                and not self.pending_states
-                and self.event_queue.empty()
-            )
+            should_exit = self.active_state is None and not self.pending_states
             if not should_exit:
                 return False
             else:
@@ -446,10 +456,17 @@ class RequestEventRecorder:
                     continue
 
                 try:
+                    self.mark_event_processed(queued_event.run_state)
                     target_state = queued_event.run_state
                     if open_state is not target_state:
                         if open_state is not None:
-                            self.finalize_run(open_state, file_handle)
+                            if not self.finalize_run(open_state, file_handle):
+                                raise RuntimeError(
+                                    "request event writer switched runs before "
+                                    "the previous run was eligible for finalization"
+                                )
+                            else:
+                                pass
                         else:
                             pass
                         self.finalize_retired_states_before(target_state.generation_id)
@@ -475,26 +492,20 @@ class RequestEventRecorder:
         open_state: RecorderRunState | None,
         file_handle: TextIOWrapper | None,
     ) -> tuple[RecorderRunState | None, TextIOWrapper | None]:
-        """Open active files and finalize retired runs when the queue is idle."""
-        with self.lock:
-            active_state = self.active_state
-            queue_is_empty = self.event_queue.empty()
-        if open_state is not None and open_state is not active_state:
+        """Finalize only runs proven inactive and fully processed."""
+        if open_state is not None and self.can_finalize_run(open_state):
             self.finalize_run(open_state, file_handle)
             open_state = None
             file_handle = None
         else:
             pass
 
-        if queue_is_empty:
-            self.finalize_retired_states_before(None)
-            with self.lock:
-                active_state = self.active_state
-            if open_state is None and active_state is not None:
-                open_state = active_state
-                file_handle = self.open_event_file(open_state)
-            else:
-                pass
+        self.finalize_retired_states_before(None)
+        with self.lock:
+            active_state = self.active_state
+        if open_state is None and active_state is not None:
+            open_state = active_state
+            file_handle = self.open_event_file(open_state)
         else:
             pass
         return open_state, file_handle
@@ -519,9 +530,10 @@ class RequestEventRecorder:
                 encoding="utf-8",
             )
         except Exception:
-            run_state.event_file_open_failures += 1
-            run_state.write_failures += 1
-            run_state.incomplete_reasons.add("event_file_open_failure")
+            with self.lock:
+                run_state.event_file_open_failures += 1
+                run_state.write_failures += 1
+                run_state.incomplete_reasons.add("event_file_open_failure")
             logger.warning(
                 f"RequestEventRecorder failed to open {run_state.path}",
                 exc_info=True,
@@ -545,9 +557,11 @@ class RequestEventRecorder:
                 default=json_default,
             )
         except Exception:
-            run_state.serialization_failures += 1
-            run_state.incomplete_reasons.add("serialization_failure")
-            if run_state.serialization_failures == 1:
+            with self.lock:
+                run_state.serialization_failures += 1
+                run_state.incomplete_reasons.add("serialization_failure")
+                first_failure = run_state.serialization_failures == 1
+            if first_failure:
                 logger.warning(
                     f"RequestEventRecorder failed to serialize event "
                     f"{queued_event.event.event_name} for "
@@ -563,9 +577,11 @@ class RequestEventRecorder:
             file_handle.write(serialized_event)
             file_handle.write("\n")
         except Exception:
-            run_state.write_failures += 1
-            run_state.incomplete_reasons.add("event_file_write_failure")
-            if run_state.write_failures == 1:
+            with self.lock:
+                run_state.write_failures += 1
+                run_state.incomplete_reasons.add("event_file_write_failure")
+                first_failure = run_state.write_failures == 1
+            if first_failure:
                 logger.warning(
                     f"RequestEventRecorder failed to write event "
                     f"{queued_event.event.event_name} for "
@@ -585,8 +601,23 @@ class RequestEventRecorder:
             return None
         else:
             pass
-        run_state.written_events += 1
+        with self.lock:
+            run_state.written_events += 1
         return file_handle
+
+    def can_finalize_run(self, run_state: RecorderRunState) -> bool:
+        """Return whether a normal finalization has a synchronized drain proof."""
+        with self.lock:
+            return (
+                run_state.generation_id in self.pending_states
+                and self.active_state is not run_state
+                and run_state.accepted_events == run_state.processed_events
+            )
+
+    def mark_event_processed(self, run_state: RecorderRunState) -> None:
+        """Account for a dequeued event before any writer-side operation."""
+        with self.lock:
+            run_state.processed_events += 1
 
     def fail_writer(
         self,
@@ -623,12 +654,12 @@ class RequestEventRecorder:
                 self.event_queue.task_done()
 
         for run_state in states.values():
-            run_state.incomplete_reasons.add("writer_thread_failure")
-            run_state.unwritten_events = max(
-                run_state.accepted_events - run_state.written_events,
-                0,
-            )
             with self.lock:
+                run_state.incomplete_reasons.add("writer_thread_failure")
+                run_state.unwritten_events = max(
+                    run_state.accepted_events - run_state.written_events,
+                    0,
+                )
                 if not run_state.finalization.completion_event.is_set():
                     self.pending_states[run_state.generation_id] = run_state
                 else:
@@ -640,17 +671,26 @@ class RequestEventRecorder:
             else:
                 pass
             state_file = file_handle if run_state is open_state else None
-            self.finalize_run(run_state, state_file)
+            self.finalize_run(run_state, state_file, force=True)
 
     def finalize_run(
         self,
         run_state: RecorderRunState,
         file_handle: TextIOWrapper | None,
-    ) -> None:
+        *,
+        force: bool = False,
+    ) -> bool:
         """Flush, close, and atomically publish one retired run's status."""
         with self.lock:
             if run_state.generation_id not in self.pending_states:
-                return
+                return False
+            else:
+                pass
+            if not force and (
+                self.active_state is run_state
+                or run_state.accepted_events != run_state.processed_events
+            ):
+                return False
             else:
                 pass
 
@@ -664,8 +704,9 @@ class RequestEventRecorder:
                 try:
                     file_handle.flush()
                 except Exception:
-                    run_state.write_failures += 1
-                    run_state.incomplete_reasons.add("event_file_flush_failure")
+                    with self.lock:
+                        run_state.write_failures += 1
+                        run_state.incomplete_reasons.add("event_file_flush_failure")
                     logger.warning(
                         f"RequestEventRecorder failed to flush {run_state.path}",
                         exc_info=True,
@@ -675,8 +716,9 @@ class RequestEventRecorder:
                 try:
                     file_handle.close()
                 except Exception:
-                    run_state.write_failures += 1
-                    run_state.incomplete_reasons.add("event_file_close_failure")
+                    with self.lock:
+                        run_state.write_failures += 1
+                        run_state.incomplete_reasons.add("event_file_close_failure")
                     logger.warning(
                         f"RequestEventRecorder failed to close {run_state.path}",
                         exc_info=True,
@@ -686,33 +728,39 @@ class RequestEventRecorder:
             else:
                 pass
 
-            run_state.unwritten_events = max(
-                run_state.accepted_events - run_state.written_events,
-                0,
-            )
-            if run_state.unwritten_events:
-                run_state.incomplete_reasons.add("event_count_mismatch")
-            else:
-                pass
-            status = {
-                "run_id": run_state.run_id,
-                "pid": self.pid,
-                "event_path": str(run_state.path),
-                "accepted_events": run_state.accepted_events,
-                "written_events": run_state.written_events,
-                "unwritten_events": run_state.unwritten_events,
-                "dropped_events": run_state.dropped_events,
-                "metadata_snapshot_failures": run_state.metadata_snapshot_failures,
-                "metadata_truncations": run_state.metadata_truncations,
-                "serialization_failures": run_state.serialization_failures,
-                "event_file_open_failures": run_state.event_file_open_failures,
-                "write_failures": run_state.write_failures,
-                "finalization_failures": run_state.finalization_failures,
-                "incomplete_reasons": sorted(run_state.incomplete_reasons),
-                "complete": not run_state.incomplete_reasons,
-                "completeness_scope": "event_storage",
-                "stages": sorted(run_state.stages),
-            }
+            with self.lock:
+                run_state.unwritten_events = max(
+                    run_state.accepted_events - run_state.written_events,
+                    0,
+                )
+                if run_state.unwritten_events:
+                    run_state.incomplete_reasons.add("event_count_mismatch")
+                else:
+                    pass
+                if run_state.accepted_events != run_state.processed_events:
+                    run_state.incomplete_reasons.add("processing_count_mismatch")
+                else:
+                    pass
+                status = {
+                    "run_id": run_state.run_id,
+                    "pid": self.pid,
+                    "event_path": str(run_state.path),
+                    "accepted_events": run_state.accepted_events,
+                    "processed_events": run_state.processed_events,
+                    "written_events": run_state.written_events,
+                    "unwritten_events": run_state.unwritten_events,
+                    "dropped_events": run_state.dropped_events,
+                    "metadata_snapshot_failures": run_state.metadata_snapshot_failures,
+                    "metadata_truncations": run_state.metadata_truncations,
+                    "serialization_failures": run_state.serialization_failures,
+                    "event_file_open_failures": run_state.event_file_open_failures,
+                    "write_failures": run_state.write_failures,
+                    "finalization_failures": run_state.finalization_failures,
+                    "incomplete_reasons": sorted(run_state.incomplete_reasons),
+                    "complete": not run_state.incomplete_reasons,
+                    "completeness_scope": "event_storage",
+                    "stages": sorted(run_state.stages),
+                }
             temporary_path = run_state.status_path.with_name(
                 f".{run_state.status_path.name}.tmp"
             )
@@ -724,8 +772,9 @@ class RequestEventRecorder:
                 os.replace(temporary_path, run_state.status_path)
                 status_published = True
             except Exception:
-                run_state.finalization_failures += 1
-                run_state.incomplete_reasons.add("status_write_failure")
+                with self.lock:
+                    run_state.finalization_failures += 1
+                    run_state.incomplete_reasons.add("status_write_failure")
                 logger.warning(
                     f"RequestEventRecorder failed to publish {run_state.status_path}",
                     exc_info=True,
@@ -737,18 +786,20 @@ class RequestEventRecorder:
             else:
                 pass
         except Exception:
-            run_state.finalization_failures += 1
-            run_state.incomplete_reasons.add("finalization_failure")
+            with self.lock:
+                run_state.finalization_failures += 1
+                run_state.incomplete_reasons.add("finalization_failure")
             logger.warning(
                 f"RequestEventRecorder failed to finalize {run_state.path}",
                 exc_info=True,
             )
         finally:
-            run_state.finalization.successful = status_published
-            run_state.finalization.completion_event.set()
             with self.lock:
                 if not status_published:
                     self.finalization_failed = True
                 else:
                     pass
                 self.pending_states.pop(run_state.generation_id, None)
+                run_state.finalization.successful = status_published
+                run_state.finalization.completion_event.set()
+            return status_published

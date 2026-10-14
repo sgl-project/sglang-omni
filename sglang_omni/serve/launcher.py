@@ -863,20 +863,28 @@ async def run_server(
                     await warmup_task
         finally:
             logger.info("Shutting down pipeline …")
-            await mp_runner.stop()
-            recorder = _get_event_recorder()
-            recorder.deactivate()
-            finalization_complete = await asyncio.to_thread(
-                recorder.wait_for_finalizations,
-                _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
-            )
-            if not finalization_complete:
-                logger.warning(
-                    f"Coordinator profiler event finalization did not finish within "
-                    f"{_DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
-                )
-            else:
-                pass
+            try:
+                await mp_runner.stop()
+            finally:
+                recorder = _get_event_recorder()
+                try:
+                    recorder.deactivate()
+                    finalization_complete = await asyncio.to_thread(
+                        recorder.wait_for_finalizations,
+                        _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                    )
+                    if not finalization_complete:
+                        logger.warning(
+                            f"Coordinator profiler event finalization did not finish "
+                            f"within {_DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+                        )
+                    else:
+                        pass
+                except Exception:
+                    logger.warning(
+                        "Coordinator profiler cleanup failed during shutdown",
+                        exc_info=True,
+                    )
             logger.info("Pipeline stopped.")
 
 

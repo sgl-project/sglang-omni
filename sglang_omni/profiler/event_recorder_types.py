@@ -13,6 +13,7 @@ DEFAULT_EVENT_QUEUE_CAPACITY = 8192
 EVENT_FILE_BUFFER_BYTES = 64 * 1024
 MAX_METADATA_SNAPSHOT_DEPTH = 8
 MAX_METADATA_SNAPSHOT_ITEMS = 256
+MAX_METADATA_STRING_LENGTH = 4096
 MAX_PENDING_FINALIZATIONS = 4
 WRITER_POLL_INTERVAL_SECONDS = 0.05
 DEFAULT_FINALIZATION_TIMEOUT_SECONDS = 5.0
@@ -119,6 +120,7 @@ class RecorderRunState:
     generation_id: int
     finalization: RequestEventFinalization
     accepted_events: int = 0
+    processed_events: int = 0
     written_events: int = 0
     unwritten_events: int = 0
     dropped_events: int = 0
@@ -158,8 +160,23 @@ def snapshot_metadata_value(
         pass
     remaining_items[0] -= 1
 
-    if metadata_value is None or isinstance(metadata_value, (bool, int, float, str)):
+    if metadata_value is None or isinstance(metadata_value, (bool, int, float)):
         return metadata_value
+    elif isinstance(metadata_value, str):
+        if len(metadata_value) <= MAX_METADATA_STRING_LENGTH:
+            return metadata_value
+        else:
+            if truncated is not None:
+                truncated[0] = True
+            else:
+                pass
+            return {
+                "__metadata_truncated__": True,
+                "reason": "string_limit",
+                "value": metadata_value[:MAX_METADATA_STRING_LENGTH],
+            }
+    elif isinstance(metadata_value, (bytes, bytearray, memoryview)):
+        raise TypeError(f"unsupported metadata value {type(metadata_value).__name__}")
     else:
         pass
 
@@ -248,12 +265,7 @@ def snapshot_metadata_value(
         return copied_values
     else:
         pass
-    try:
-        return repr(metadata_value)
-    except Exception as exc:
-        raise TypeError(
-            f"unsupported metadata value {type(metadata_value).__name__}"
-        ) from exc
+    raise TypeError(f"unsupported metadata value {type(metadata_value).__name__}")
 
 
 def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object]:
@@ -296,8 +308,14 @@ def json_default(obj: object) -> object:
     shape = getattr(obj, "shape", None)
     dtype = getattr(obj, "dtype", None)
     if shape is not None and dtype is not None:
+        device = getattr(obj, "device", None)
+        device_text = str(device) if device is not None else None
         try:
-            if len(shape) == 0 and hasattr(obj, "item"):
+            if (
+                len(shape) == 0
+                and hasattr(obj, "item")
+                and (device_text is None or device_text.startswith("cpu"))
+            ):
                 return obj.item()
             else:
                 pass
@@ -306,15 +324,14 @@ def json_default(obj: object) -> object:
         try:
             shape_list: list[int] | str = [int(dimension) for dimension in shape]
         except Exception:
-            shape_list = repr(shape)
-        device = getattr(obj, "device", None)
+            shape_list = "unavailable"
         return {
             "__tensor_summary__": True,
             "type": type(obj).__name__,
             "shape": shape_list,
             "dtype": str(dtype),
-            "device": str(device) if device is not None else None,
+            "device": device_text,
         }
     else:
         pass
-    return repr(obj)
+    raise TypeError(f"unsupported metadata value {type(obj).__name__}")

@@ -54,18 +54,19 @@ read.
 
 Each finalized run also writes
 `run_status_<run-digest>_<pid>_g<generation>.json` beside the JSONL file. It
-records the run ID, accepted/written/unwritten/dropped counts, writer failures,
-stages, and `complete`; that flag has `completeness_scope` set to
+records the run ID, accepted/processed/written/unwritten/dropped counts, writer
+failures, stages, and `complete`; that flag has `completeness_scope` set to
 `event_storage` and does not claim semantic timing coverage. Queue overflow,
 writer failure, metadata snapshot failure, and metadata truncation mark the run
 incomplete. A missing sidecar is not evidence that a trace is complete.
 
 Metadata is intentionally limited to scalars, JSON-like mappings/sequences,
 and tensor-like values represented by shape/dtype/device summaries. Tensor
-contents are never materialized by the producer. Unknown values are converted
-to a producer-time representation; a failed representation is recorded as a
-metadata snapshot failure. Bounded depth/item truncation is recorded in the
-event metadata and in the status sidecar rather than reported as complete.
+contents are never materialized by the producer. Unsupported values are
+rejected without calling arbitrary `repr`; the serving path records a metadata
+snapshot failure and continues. Strings are bounded, and bytes are unsupported
+rather than copied into the trace. Bounded depth/item truncation is recorded in
+the event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 
@@ -243,11 +244,20 @@ is hit:
 
 The Python API keeps the older synchronous behavior for administrative callers
 and unit tests: `RequestEventRecorder.stop()` waits until its local run is
-finalized. Serving control paths use `stop(wait=False)` or `deactivate()` and
-may later wait on the returned `RequestEventFinalization` handle. Shutdown
-cleanup waits outside the asyncio event loop for a bounded interval. A stalled
-or failed writer cannot block serving, but the resulting status must be
-treated as incomplete.
+finalized. It returns the event path for both complete and `complete=false`
+sidecars, and returns `None` when the finalization handle times out or fails to
+publish its sidecar. Serving control paths use `stop(wait=False)` or
+`deactivate()` and may later wait on the returned `RequestEventFinalization`
+handle. Shutdown cleanup waits outside the asyncio event loop for a bounded
+interval. A stalled or failed writer cannot block serving, but the resulting
+status must be treated as incomplete.
+
+`build_report()` and `build_duplex_session_metrics()` include a
+`completeness.verified` field. It is true only when every selected JSONL file
+has a matching status sidecar with `complete=true`, zero drops, matching
+accepted/processed/written counters, and a JSONL line count equal to
+`written_events`; metrics computed from missing or incomplete sidecars are
+still returned, but must not be used as verified measurements.
 
 `POST /stop_profile` and `POST /stop_request_profile` accept an optional
 `run_id` field. When **omitted**, the request is a wildcard: every stage
@@ -295,6 +305,88 @@ stream:
 Hop pairs match across processes by `(request_id, source_stage, dest_stage,
 chunk_id?)`, so a single request's path through subprocesses can be
 reconstructed even when each stage runs in its own process.
+
+## GPU performance validation
+
+This repository does not contain the external H200 C2 × U16 workload harness,
+so do not invent a replacement command for it. Run the frozen harness already
+used for the MiniCPM-o Full Duplex comparison, unchanged except for the
+recorder lifecycle below. The required harness change is: after the workload
+returns, wait for finalized sidecars and validate the artifacts; do not treat
+the HTTP stop response as a flush acknowledgement.
+
+For each ON visit, use a fresh directory and run:
+
+```bash
+RUN_ID="async-recorder-$(date +%Y%m%d-%H%M%S)"
+EVENT_DIR="/tmp/sglang-omni-profiler/${RUN_ID}"
+mkdir -p "$EVENT_DIR"
+
+curl --fail-with-body -sS -X POST "http://127.0.0.1:8000/start_request_profile" \
+  -H 'content-type: application/json' \
+  --data "{\"run_id\":\"${RUN_ID}\",\"event_dir\":\"${EVENT_DIR}\"}"
+
+# Run the existing frozen C2 × U16, 32-completed-Unit, burst, listen-only
+# workload here. It must produce 1,216 accepted events across five process
+# local JSONL files and no output audio/text chunks.
+
+curl --fail-with-body -sS -X POST "http://127.0.0.1:8000/stop_request_profile" \
+  -H 'content-type: application/json' \
+  --data "{\"run_id\":\"${RUN_ID}\"}"
+
+EVENT_DIR="$EVENT_DIR" EXPECTED_FILES=5 EXPECTED_EVENTS=1216 \
+  python - <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+from sglang_omni.profiler.views import assess_completeness
+
+event_dir = Path(os.environ["EVENT_DIR"])
+expected_files = int(os.environ["EXPECTED_FILES"])
+expected_events = int(os.environ["EXPECTED_EVENTS"])
+deadline = time.monotonic() + 30
+last = None
+while time.monotonic() < deadline:
+    last = assess_completeness(event_dir)
+    status_paths = sorted(event_dir.glob("run_status_*.json"))
+    if (
+        last["verified"] is True
+        and last["event_file_count"] == expected_files
+        and last["status_file_count"] == expected_files
+        and len(status_paths) == expected_files
+        and last["missing_status_files"] == []
+        and last["incomplete_reasons"] == []
+    ):
+        statuses = [
+            json.loads(path.read_text(encoding="utf-8")) for path in status_paths
+        ]
+        if sum(status["written_events"] for status in statuses) == expected_events:
+            print(json.dumps(last, sort_keys=True))
+            break
+        else:
+            pass
+    else:
+        pass
+    time.sleep(1)
+else:
+    raise SystemExit(f"profiler artifacts are not complete: {last}")
+PY
+```
+
+Run the frozen workload repeatedly in ABBA and BAAB order for each comparison:
+
+- A: profiler OFF;
+- B: the preserved 64 KiB synchronous recorder, ON;
+- C: this asynchronous recorder, ON.
+
+Keep the same model revision, server configuration, filesystem, warmup,
+arrival schedule, and sample order. Record QPS, total window, Unit p50/p95/p99,
+event counts, drops, writer failures, and producer `emit()` overhead where
+available. Do not report a performance conclusion from one noisy block. The
+acceptance target is below 1% QPS regression versus the synchronous baseline,
+zero drops, and no repeatable tail-latency regression.
 
 ## Torch profiler
 
@@ -347,9 +439,10 @@ python -m sglang_omni.profiler /tmp/profiles/demo/events --format table
   to small scalars (ids, counts, durations, modality, error strings). The
   recorder enforces this defensively: if a tensor / numpy array ends up
   in metadata, the JSON default serializer emits a summary
-  (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
-  "...", "device": "..."}`) instead of materializing the contents. 0-D
-  tensors / numpy scalars still serialize as plain scalars.
+    (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
+    "...", "device": "..."}`) instead of materializing the contents. CPU
+    0-D tensors / numpy scalars still serialize as plain scalars; device-backed
+    0-D values remain summaries.
 - **Event naming.** Lowercase snake_case, prefix with the layer that
   owns the event (`stage_*`, `scheduler_*`, `encoder_*`, etc.). Use the
   stage name (not the event name) to distinguish "thinker prefill start"
