@@ -641,6 +641,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
+| `sample_rate` | int | model native | Target output sample rate for single, batch, and WebSocket speech requests. Qwen3-TTS supports `8000` and `24000`; other models currently reject this field |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for `speech.audio.delta` / `speech.audio.done` events. `sse` streams without `stream=true` and requires `response_format="pcm"` |

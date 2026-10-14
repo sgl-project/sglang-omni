@@ -58,6 +58,7 @@ class StreamingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -67,7 +68,7 @@ class StreamingSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
-            sample_rate=self.sample_rate,
+            sample_rate=output_sample_rate or self.sample_rate,
         )
 
     async def abort(self, request_id: str) -> None:
@@ -100,6 +101,7 @@ class BlockingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -124,6 +126,7 @@ class ReleasableSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -229,6 +232,7 @@ class CompletedSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -892,6 +896,33 @@ def test_speech_websocket_non_streaming_start_uses_result_sample_rate() -> None:
 
     assert start["type"] == "audio.start"
     assert start["sample_rate"] == 44100
+
+
+@pytest.mark.parametrize("stream_audio", [False, True])
+def test_speech_websocket_uses_requested_sample_rate(stream_audio: bool) -> None:
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(),
+            model_name="qwen3-tts",
+            supported_output_sample_rates=frozenset({8000, 24000}),
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(
+            session_config(
+                response_format="pcm",
+                sample_rate=8000,
+                stream_audio=stream_audio,
+            )
+        )
+        configured = websocket.receive_json()
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        start = websocket.receive_json()
+
+    assert configured["sample_rate"] == 8000
+    assert start["type"] == "audio.start"
+    assert start["sample_rate"] == 8000
 
 
 def test_speech_websocket_cancellation_aborts_active_request() -> None:

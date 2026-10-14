@@ -81,6 +81,12 @@ from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
 
 
+def test_qwen3_tts_declares_supported_output_sample_rates() -> None:
+    assert Qwen3TTSPipelineConfig.supported_output_sample_rates == frozenset(
+        {8000, 24000}
+    )
+
+
 def placeholder_prompt_constants(
     custom_voice_speaker_embeds: dict[str, torch.Tensor] | None = None,
 ) -> Qwen3TTSPromptConstants:

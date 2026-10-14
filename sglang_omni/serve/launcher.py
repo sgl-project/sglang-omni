@@ -641,6 +641,9 @@ async def run_server(
                 pipeline_config.speech_reference_text_excludes_instructions
             ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
+            supported_output_sample_rates=(
+                pipeline_config.supported_output_sample_rates
+            ),
             max_speech_input_chars=pipeline_config.max_speech_input_chars,
             supported_speech_fields=pipeline_config.supported_speech_fields,
             enable_realtime=enable_realtime,

@@ -17,6 +17,8 @@ from functools import cache
 
 import numpy as np
 
+from sglang_omni.client.audio_resampling import resample_audio
+
 logger = logging.getLogger(__name__)
 
 # Supported output formats and their MIME types
@@ -370,6 +372,7 @@ def encode_audio(
     *,
     response_format: str = "wav",
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    output_sample_rate: int | None = None,
     speed: float = 1.0,
     allow_format_fallback: bool = True,
 ) -> tuple[bytes, str]:
@@ -379,6 +382,7 @@ def encode_audio(
         audio: Raw audio data (numpy, torch tensor, list, bytes)
         response_format: Target format (wav, mp3, flac, opus, aac, pcm)
         sample_rate: Audio sample rate in Hz
+        output_sample_rate: Target sample rate in Hz
         speed: Speed adjustment factor (1.0 = normal)
         allow_format_fallback: If True, return WAV when a compressed encoder is
             unavailable or the format is unknown. If False, raise ValueError.
@@ -417,6 +421,12 @@ def encode_audio(
             sample_rate = adjusted[0][1]
         else:
             arr, sample_rate = apply_speed(arr, speed, sample_rate)
+    else:
+        pass
+
+    if output_sample_rate is not None and output_sample_rate != sample_rate:
+        arr = resample_audio(arr, sample_rate, output_sample_rate)
+        sample_rate = output_sample_rate
     else:
         pass
 

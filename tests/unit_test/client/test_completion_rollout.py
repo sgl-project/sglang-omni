@@ -111,6 +111,31 @@ def test_speech_preserves_reason_provenance_through_typed_and_serialized_results
         assert result.finish_reason == (finish_reason or "unknown")
 
 
+def test_speech_resamples_wav_to_requested_sample_rate() -> None:
+    client = Client(
+        SubmitStubCoordinator(
+            {
+                "audio_data": [0.0] * 24000,
+                "sample_rate": 24000,
+                "finish_reason": "stop",
+            }
+        )
+    )
+
+    result = asyncio.run(
+        client.speech(
+            GenerateRequest(prompt="hello"),
+            request_id="speech-8khz",
+            response_format="wav",
+            output_sample_rate=8000,
+        )
+    )
+
+    assert result.sample_rate == 8000
+    assert int.from_bytes(result.audio_bytes[24:28], "little") == 8000
+    assert int.from_bytes(result.audio_bytes[40:44], "little") == 8000 * 2
+
+
 def test_completion_surfaces_omni_rollout() -> None:
     rollout = {
         "version": 1,

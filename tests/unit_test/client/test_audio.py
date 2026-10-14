@@ -14,6 +14,7 @@ from sglang_omni.client.audio import (
     resample_linear,
     to_numpy,
 )
+from sglang_omni.client.audio_resampling import StreamingAudioResampler
 
 
 def stereo_test_signal() -> tuple[np.ndarray, int]:
@@ -130,6 +131,53 @@ def test_resample_linear_preserves_stereo_channels():
         ]
     ).astype(np.float32)
     assert np.allclose(resampled, expected)
+
+
+def test_streaming_resampler_is_independent_of_chunk_boundaries() -> None:
+    sample_indexes = np.arange(24000, dtype=np.float32)
+    audio = np.sin(2 * np.pi * 3000 * sample_indexes / 24000).astype(np.float32)
+
+    complete_resampler = StreamingAudioResampler(24000, 8000)
+    expected = complete_resampler.process(audio, is_final=True)
+
+    streaming_resampler = StreamingAudioResampler(24000, 8000)
+    audio_chunks = [
+        streaming_resampler.process(chunk)
+        for chunk in np.split(audio, [137, 2048, 9001, 17003])
+    ]
+    audio_chunks.append(
+        streaming_resampler.process(np.empty((0,), dtype=np.float32), is_final=True)
+    )
+    actual = np.concatenate(audio_chunks)
+
+    assert actual.shape == (8000,)
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
+def test_streaming_resampler_attenuates_aliasing_frequencies() -> None:
+    sample_indexes = np.arange(24000, dtype=np.float32)
+    audio = np.sin(2 * np.pi * 6000 * sample_indexes / 24000).astype(np.float32)
+
+    output = StreamingAudioResampler(24000, 8000).process(audio, is_final=True)
+
+    input_rms_amplitude = np.sqrt(np.mean(audio**2))
+    output_rms_amplitude = np.sqrt(np.mean(output[100:-100] ** 2))
+    assert output_rms_amplitude < input_rms_amplitude * 0.01
+
+
+def test_encode_audio_resamples_wav_to_requested_rate() -> None:
+    audio = np.zeros((24000,), dtype=np.float32)
+
+    encoded, mime_type = encode_audio(
+        audio,
+        response_format="wav",
+        sample_rate=24000,
+        output_sample_rate=8000,
+    )
+
+    assert mime_type == FORMAT_MIME_TYPES["wav"]
+    assert int.from_bytes(encoded[24:28], "little") == 8000
+    assert int.from_bytes(encoded[40:44], "little") == 8000 * 2
 
 
 @pytest.mark.parametrize("response_format", ["mp3", "aac", "opus"])
