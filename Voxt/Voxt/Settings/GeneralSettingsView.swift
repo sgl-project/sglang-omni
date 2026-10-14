@@ -170,6 +170,10 @@ struct GeneralSettingsView: View {
 
             GeneralSectionDivider()
 
+            LocalAPISettingsCard()
+
+            GeneralSectionDivider()
+
             GeneralAdvancedCard(
                 isExpanded: $isAdvancedExpanded,
                 onExpand: scrollToBottomAfterAdvancedExpands

@@ -269,4 +269,10 @@ jobs:
             -only-testing:VoxtTests/HotkeyManagerTests \
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
+            -only-testing:VoxtTests/LocalAPIDictationPipelineTests \
+            -only-testing:VoxtTests/LocalAPIHTTPTests \
+            -only-testing:VoxtTests/LocalAPIRequestHandlerTests \
+            -only-testing:VoxtTests/LocalAPIRouterTests \
+            -only-testing:VoxtTests/LocalAPIServerTests \
+            -only-testing:VoxtTests/LocalAPISettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests

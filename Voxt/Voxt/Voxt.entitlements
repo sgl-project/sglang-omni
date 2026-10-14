@@ -42,6 +42,10 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 
+	<!-- Incoming loopback connections for the Local API (off by default) -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+
 	<!-- Apple Events to supported browsers for active-tab URL -->
 	<key>com.apple.security.temporary-exception.apple-events</key>
 	<array>

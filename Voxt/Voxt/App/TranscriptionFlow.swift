@@ -122,7 +122,8 @@ extension AppDelegate {
 
     func enhanceTextForCurrentMode(
         _ text: String,
-        sessionID: UUID? = nil
+        sessionID: UUID? = nil,
+        usesAppBranch: Bool = true
     ) async throws -> String {
         guard let provider = resolvedTranscriptionEnhancementProvider() else {
             return text
@@ -137,7 +138,8 @@ extension AppDelegate {
         )
         let promptResolution = resolvedEnhancementPrompt(
             rawTranscription: text,
-            glossarySelectionPolicy: provisionalStrategy.glossarySelectionPolicy
+            glossarySelectionPolicy: provisionalStrategy.glossarySelectionPolicy,
+            usesAppBranch: usesAppBranch
         )
         let strategy = TaskLLMStrategyResolver.resolve(
             taskKind: .transcriptionEnhancement,
