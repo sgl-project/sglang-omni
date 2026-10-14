@@ -16,14 +16,6 @@ from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
-def is_musa_available() -> bool:
-    try:
-        musa = torch.musa
-    except AttributeError:
-        return False
-    return bool(musa.is_available())
-
-
 def is_apple_silicon_mps_available() -> bool:
     return (
         host_platform.system() == "Darwin"
@@ -74,14 +66,14 @@ def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return NPUOmniPlatform()
     else:
         pass
+    if platform.is_musa():
+        return MUSAOmniPlatform()
+    else:
+        pass
     # Note (yexiaodong): Explicit CPU and registered platform selections must
     # win. SGLang otherwise leaves Apple Metal on its generic platform.
     if type(platform) is SRTPlatform and is_apple_silicon_mps_available():
         return AppleOmniPlatform()
-    else:
-        pass
-    if type(platform) is SRTPlatform and is_musa_available():
-        return MUSAOmniPlatform()
     else:
         pass
     qualname = f"{type(platform).__module__}.{type(platform).__qualname__}"
