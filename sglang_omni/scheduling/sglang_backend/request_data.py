@@ -92,6 +92,7 @@ class SGLangARRequestData(ARRequestData):
     generation_steps: int = 0
     prefill_retraction_count: int = 0
     speculative_emitted_tokens: int = 0
+    speculative_first_token_id: int | None = None
     suppress_tokens: list[int] | None = None
     top_p: float = 1.0
     top_k: int = -1

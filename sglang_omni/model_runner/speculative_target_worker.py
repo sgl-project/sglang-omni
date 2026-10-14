@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -16,7 +18,13 @@ from sglang.srt.model_executor.forward_batch_info import (
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
-from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.scheduling.types import PrefillTokenDrainError, SchedulerRequest
+
+
+class PrefillTokenPublisher(Protocol):
+    def __call__(
+        self, batch: ScheduleBatch, batch_result: GenerationBatchResult
+    ) -> None: ...
 
 
 class SpeculativeTargetWorker:
@@ -29,6 +37,7 @@ class SpeculativeTargetWorker:
         self.device: str = worker.device
         self.thinker_runner: ThinkerModelRunner | None = None
         self.auxiliary_hidden_width: int = 0
+        self.prefill_token_publisher: PrefillTokenPublisher | None = None
 
     def attach_runner(self, thinker_runner: ThinkerModelRunner) -> None:
         if thinker_runner.tp_worker is not self.worker:
@@ -146,4 +155,20 @@ class SpeculativeTargetWorker:
                 f"DFlash target auxiliary shape {tuple(auxiliary_hidden.shape)} "
                 f"does not match {expected_shape}"
             )
+        if batch is not None and self.prefill_token_publisher is not None:
+            try:
+                self.prefill_token_publisher(batch, batch_result)
+            except Exception:
+                try:
+                    torch.cuda.current_stream(
+                        forward_batch.input_ids.device
+                    ).synchronize()
+                except Exception as drain_error:
+                    raise PrefillTokenDrainError(
+                        "Cannot drain failed first-token publication; stop scheduling "
+                        "without releasing request storage"
+                    ) from drain_error
+                raise
+        else:
+            pass
         return batch_result

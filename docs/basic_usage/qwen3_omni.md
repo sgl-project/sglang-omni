@@ -66,6 +66,7 @@ sgl-omni serve \
   --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
   --thinker.engine.speculative_num_draft_tokens 8 \
   --thinker.engine.disable_overlap_schedule false \
+  --thinker.factory.enable_early_first_token true \
   --port 8008
 ```
 
@@ -75,6 +76,12 @@ sampling, stop strings, LoRA, and disaggregated or external-cache execution
 are rejected. The runtime reserves space for the final full verification
 block as well as the requested output tokens, and checks the initialized
 rotary-position capacity for multimodal requests.
+
+`enable_early_first_token` publishes an eligible first token after target
+prefill sampling, while draft initialization continues. EOS, a one-token
+output cap, or explicit stop-token handling uses ordinary committed output.
+This option defaults to false. Cancellation and shutdown drain pending
+device writers before request storage is released.
 
 Readiness warmup still includes both an image and a second of audio, with
 text output. It does not cover every input shape or concurrent batch. Report

@@ -26,6 +26,10 @@ class SchedulerStatus(Enum):
     ABORTED = auto()
 
 
+class PrefillTokenDrainError(RuntimeError):
+    """GPU completion is unconfirmed; request storage cannot be released."""
+
+
 @dataclass
 class SchedulerRequest:
     request_id: str

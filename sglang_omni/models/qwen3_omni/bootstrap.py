@@ -40,6 +40,7 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    enable_early_first_token: bool = False,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -67,6 +68,10 @@ def create_thinker_scheduler(
     algorithm = SpeculativeAlgorithm.from_string(
         resolved_view(server_args).speculative_algorithm
     )
+    if enable_early_first_token and not algorithm.is_dflash():
+        raise ValueError("Early first-token publication requires DFLASH")
+    else:
+        pass
     speculative_infrastructure = None
     if algorithm.is_dflash():
         speculative_infrastructure = (
@@ -258,6 +263,14 @@ def create_thinker_scheduler(
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
     )
+    if enable_early_first_token:
+        assert speculative_infrastructure is not None
+        scheduler.wait_for_prefill_publication_on_stop = True
+        speculative_infrastructure.target_adapter.prefill_token_publisher = (
+            scheduler.publish_prefill_first_token
+        )
+    else:
+        pass
     return scheduler
 
 

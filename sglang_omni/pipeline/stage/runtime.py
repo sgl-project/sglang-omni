@@ -63,6 +63,7 @@ from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
+    PendingStreamOutput,
     StageScheduler,
 )
 
@@ -190,6 +191,8 @@ class Stage:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.scheduler_crash_error: BaseException | None = None
         self.background_task_error: BaseException | None = None
+        self.retains_scheduler_outbox: bool | None = None
+        self.scheduler_stop_error: Exception | None = None
 
     def record_replica_bindings(
         self, request_id: str, bindings: dict[str, int] | None
@@ -240,6 +243,8 @@ class Stage:
         await self.control_plane.start()
         await self.comm.start()
         self.loop = asyncio.get_running_loop()
+        self.retains_scheduler_outbox = None
+        self.scheduler_stop_error = None
         self.running = True
 
         # Start scheduler in dedicated thread
@@ -294,7 +299,23 @@ class Stage:
 
         logger.info("Stage %s started", self.name)
 
+    def request_scheduler_stop(self) -> bool:
+        """Record the producer retention contract before shutdown can yield."""
+        if self.retains_scheduler_outbox is None:
+            self.retains_scheduler_outbox = False
+            if self.scheduler is not None:
+                try:
+                    self.retains_scheduler_outbox = self.scheduler.stop() is True
+                except Exception as error:
+                    self.scheduler_stop_error = error
+            else:
+                pass
+        else:
+            pass
+        return self.retains_scheduler_outbox is True
+
     async def stop(self) -> None:
+        requires_outbox_drain = self.request_scheduler_stop()
         self.running = False
         cleanup_error: Exception | None = None
 
@@ -319,10 +340,10 @@ class Stage:
         self.receive_tasks.clear()
         self.receive_lane_tails.clear()
         if self.scheduler is not None:
-            try:
-                self.scheduler.stop()
-            except Exception as exc:
-                _record_cleanup_error("scheduler", exc)
+            if self.scheduler_stop_error is not None:
+                _record_cleanup_error("scheduler", self.scheduler_stop_error)
+            else:
+                pass
             # Note: (Jiaxin Deng) the scheduler thread emits its terminal
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
@@ -332,10 +353,16 @@ class Stage:
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
-                    await asyncio.to_thread(
-                        scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
-                    )
+                    if requires_outbox_drain:
+                        completion = asyncio.create_task(
+                            asyncio.to_thread(scheduler_thread.join)
+                        )
+                        await self.wait_for_output_completion(completion)
+                    else:
+                        await asyncio.to_thread(
+                            scheduler_thread.join,
+                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
                 else:
@@ -421,7 +448,11 @@ class Stage:
             else:
                 pass
         finally:
-            await self.stop()
+            if self.request_scheduler_stop():
+                completion = asyncio.create_task(self.stop())
+                await self.wait_for_output_completion(completion)
+            else:
+                await self.stop()
             abort_task.cancel()
             outbox_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1262,6 +1293,18 @@ class Stage:
     # Outbox drain: scheduler results → route downstream
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def wait_for_output_completion(completion: asyncio.Future[None]) -> bool:
+        """Defer repeated task cancellation until executor or producer cleanup ends."""
+        cancelled = False
+        while not completion.done():
+            try:
+                await asyncio.shield(completion)
+            except asyncio.CancelledError:
+                cancelled = True
+        completion.result()
+        return cancelled
+
     async def drain_outbox(self) -> None:
         if self.owns_external_io:
             await self.drain_outbox_external()
@@ -1272,7 +1315,15 @@ class Stage:
         """Drain scheduler outbox and route results downstream."""
         loop = asyncio.get_running_loop()
         outbox = self.scheduler.outbox
-        while self.running or not outbox.empty():
+        while (
+            self.running
+            or not outbox.empty()
+            or (
+                self.retains_scheduler_outbox is True
+                and self.scheduler_thread is not None
+                and self.scheduler_thread.is_alive()
+            )
+        ):
             try:
                 out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
             except _queue_mod.Empty:
@@ -1280,7 +1331,11 @@ class Stage:
 
             stream_run: list[OutgoingMessage] = []
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
-                if out.type == "stream" and out.target is not None:
+                if (
+                    isinstance(out, OutgoingMessage)
+                    and out.type == "stream"
+                    and out.target is not None
+                ):
                     stream_run.append(out)
                 else:
                     if stream_run:
@@ -1288,7 +1343,13 @@ class Stage:
                         stream_run = []
                     else:
                         pass
-                    if out.type == "admitted":
+                    if isinstance(out, PendingStreamOutput):
+                        resolution = loop.run_in_executor(None, out.resolve)
+                        if await self.wait_for_output_completion(resolution):
+                            raise asyncio.CancelledError
+                        else:
+                            pass
+                    elif out.type == "admitted":
                         if out.request_id not in self.aborted:
                             self.record_replica_bindings(
                                 out.request_id,
@@ -1385,7 +1446,15 @@ class Stage:
     async def drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
         loop = asyncio.get_running_loop()
-        while self.running or not self.scheduler.outbox.empty():
+        while (
+            self.running
+            or not self.scheduler.outbox.empty()
+            or (
+                self.retains_scheduler_outbox is True
+                and self.scheduler_thread is not None
+                and self.scheduler_thread.is_alive()
+            )
+        ):
             try:
                 out = await loop.run_in_executor(
                     None, lambda: self.scheduler.outbox.get(timeout=0.1)
@@ -1393,7 +1462,13 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
-            if out.type == "result":
+            if isinstance(out, PendingStreamOutput):
+                resolution = loop.run_in_executor(None, out.resolve)
+                if await self.wait_for_output_completion(resolution):
+                    raise asyncio.CancelledError
+                else:
+                    pass
+            elif out.type == "result":
                 self.clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
@@ -2388,6 +2463,7 @@ class Stage:
             self.background_task_error = exc
         else:
             pass
+        self.request_scheduler_stop()
         self.running = False
         self.control_plane.close()
 

@@ -21,7 +21,11 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
-from sglang_omni.scheduling.message import OutgoingMessage, put_messages
+from sglang_omni.scheduling.message import (
+    OutgoingMessage,
+    PendingStreamOutput,
+    put_messages,
+)
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 from tests.unit_test.pipeline.helpers import make_stage
 
@@ -1229,6 +1233,56 @@ def test_same_process_stream_run_reaches_the_target_in_one_dispatch() -> None:
         ]
         assert [message.data.data for message in delivered[:4]] == [0, 0, 1, 1]
         assert {message.data.from_stage for message in delivered[:4]} == {"tts_engine"}
+
+    asyncio.run(run())
+
+
+def test_pending_publication_flushes_stream_run_before_resolving() -> None:
+    async def run() -> None:
+        dispatcher, sender, receivers = make_local_stream_pair()
+        put_messages(
+            sender.scheduler.outbox,
+            [
+                OutgoingMessage(request_id="req-a", type="admitted"),
+                OutgoingMessage(request_id="req-b", type="admitted"),
+                frame_message("req-a", 0),
+                frame_message("req-b", 0),
+            ],
+        )
+        inbox = receivers["vocoder"].scheduler.inbox
+
+        def publish() -> None:
+            assert dispatcher.chunk_batches == [
+                ("vocoder", [("req-a", 0), ("req-b", 0)])
+            ]
+            assert inbox.qsize() == 2
+            put_messages(
+                sender.scheduler.outbox,
+                [
+                    frame_message("req-a", 1),
+                    frame_message("req-b", 1),
+                    OutgoingMessage(request_id="req-a", type="result", data={}),
+                    OutgoingMessage(request_id="req-b", type="result", data={}),
+                ],
+            )
+
+        sender.scheduler.outbox.put(PendingStreamOutput(resolve=publish))
+        await sender.drain_outbox_external()
+        assert dispatcher.chunk_batches == [
+            ("vocoder", [("req-a", 0), ("req-b", 0)]),
+            ("vocoder", [("req-a", 1), ("req-b", 1)]),
+        ]
+        delivered = [inbox.get_nowait() for _ in range(6)]
+        assert inbox.empty()
+        assert [(message.request_id, message.type) for message in delivered] == [
+            ("req-a", "stream_chunk"),
+            ("req-b", "stream_chunk"),
+            ("req-a", "stream_chunk"),
+            ("req-b", "stream_chunk"),
+            ("req-a", "stream_done"),
+            ("req-b", "stream_done"),
+        ]
+        assert [message.data.data for message in delivered[:4]] == [0, 0, 1, 1]
 
     asyncio.run(run())
 

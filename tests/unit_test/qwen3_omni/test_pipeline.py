@@ -3174,9 +3174,11 @@ def test_dflash_server_warmup_matches_supported_request_scope(
 
 
 @pytest.mark.parametrize("speech_enabled", [False, True])
+@pytest.mark.parametrize("enable_early_first_token", [False, True])
 def test_dflash_uses_request_output_modality_with_resident_talker(
     monkeypatch: pytest.MonkeyPatch,
     speech_enabled: bool,
+    enable_early_first_token: bool,
 ) -> None:
     server_args = SimpleNamespace(
         speculative_algorithm="DFLASH",
@@ -3201,21 +3203,29 @@ def test_dflash_uses_request_output_modality_with_resident_talker(
     )
     runner_factory = Mock()
     runner_factory.create_speculative_infrastructure.return_value = infrastructure
+    infrastructure.target_adapter.prefill_token_publisher = None
     monkeypatch.setattr(
         qwen_thinker_runner, "Qwen3OmniThinkerModelRunner", runner_factory
     )
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *arguments, **keywords: None
     )
+    publisher = Mock()
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        lambda **kwargs: SimpleNamespace(
+            **kwargs, publish_prefill_first_token=publisher
+        ),
     )
 
     scheduler = qwen_bootstrap.create_thinker_scheduler(
         server_args,
         speech_enabled=speech_enabled,
+        enable_early_first_token=enable_early_first_token,
+    )
+    assert infrastructure.target_adapter.prefill_token_publisher is (
+        publisher if enable_early_first_token else None
     )
     assert scheduler.enable_async_decode is False
     assert scheduler.draft_worker is infrastructure.draft_worker

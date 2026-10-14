@@ -29,7 +29,8 @@ class OutgoingMessage:
 
 
 def put_messages(
-    outbox: Queue[OutgoingMessage], messages: list[OutgoingMessage]
+    outbox: Queue[OutgoingMessage | PendingStreamOutput],
+    messages: list[OutgoingMessage],
 ) -> None:
     """Add messages to an unbounded outbox in order under one lock hold.
 
@@ -45,6 +46,17 @@ def put_messages(
         pass
 
 
+class StreamOutputResolver(Protocol):
+    def __call__(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class PendingStreamOutput:
+    """Internal work resolved before subsequent scheduler output is consumed."""
+
+    resolve: StreamOutputResolver
+
+
 class StageScheduler(Protocol):
     """Scheduler lifecycle and message queues consumed by a pipeline stage."""
 
@@ -52,12 +64,14 @@ class StageScheduler(Protocol):
     def inbox(self) -> Queue[IncomingMessage]: ...
 
     @property
-    def outbox(self) -> Queue[OutgoingMessage]: ...
+    def outbox(self) -> Queue[OutgoingMessage | PendingStreamOutput]: ...
 
     def warm_up_serving_thread(self) -> None: ...
 
     def start(self) -> None: ...
 
-    def stop(self) -> None: ...
+    def stop(self) -> bool | None:
+        """Return True when the outbox consumer must survive until thread exit."""
+        ...
 
     def abort(self, request_id: str) -> None: ...

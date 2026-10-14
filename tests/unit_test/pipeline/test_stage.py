@@ -19,8 +19,9 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto import DataReadyMessage, ShutdownMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
+from sglang_omni.scheduling.message import PendingStreamOutput
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -1690,5 +1691,256 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
         assert torch.equal(received.to(original.device), original)
         # the sender-side tensor must also be left alone
         assert torch.equal(tensor, original)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("follower", [False, True])
+def test_pending_output_waits_for_real_executor_despite_repeated_cancel(follower):
+    async def run():
+        scheduler = FakeScheduler()
+        stage = make_stage(scheduler=scheduler)
+        stage.running = True
+        entered = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+
+        def resolve():
+            entered.set()
+            assert release.wait(2)
+            completed.set()
+
+        scheduler.outbox.put(PendingStreamOutput(resolve=resolve))
+        drain = stage.drain_outbox_follower if follower else stage.drain_outbox_external
+        task = asyncio.create_task(drain())
+        assert await asyncio.to_thread(entered.wait, 1)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert not completed.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert completed.is_set()
+        await stage.stop()
+
+    asyncio.run(run())
+
+
+def test_outbox_waits_for_retained_producer_after_stage_stops():
+    async def run():
+        scheduler = FakeScheduler()
+        scheduler.stop = lambda: True
+        stage = make_stage(scheduler=scheduler)
+        assert stage.request_scheduler_stop()
+        producer_release = threading.Event()
+        resolved = threading.Event()
+        stage.scheduler_thread = threading.Thread(target=producer_release.wait)
+        stage.scheduler_thread.start()
+        task = asyncio.create_task(stage.drain_outbox_external())
+        try:
+            await asyncio.sleep(0.15)
+            assert not task.done()
+            scheduler.outbox.put(PendingStreamOutput(resolve=resolved.set))
+            assert await asyncio.to_thread(resolved.wait, 1)
+        finally:
+            producer_release.set()
+            await asyncio.to_thread(stage.scheduler_thread.join, 1)
+        await asyncio.wait_for(task, 1)
+        await stage.stop()
+
+    asyncio.run(run())
+
+
+def test_early_stop_keeps_resources_until_producer_finally(monkeypatch):
+    async def run():
+        entered = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        scheduler = object.__new__(OmniScheduler)
+        scheduler.wait_for_prefill_publication_on_stop = True
+        scheduler.enable_async_decode = False
+        scheduler.enable_overlap = False
+        scheduler.prefill_start_done = set()
+        scheduler.prefill_end_done = set()
+        scheduler.request_build_executor = None
+        scheduler.request_admission_lock = threading.RLock()
+        scheduler.pending_request_admissions = {}
+        scheduler.shutdown_lock = threading.Lock()
+        scheduler.shutdown_callback = closed.set
+
+        def run_loop():
+            entered.set()
+            assert release.wait(2)
+
+        scheduler.event_loop_normal = run_loop
+        stage = make_stage(scheduler=scheduler)
+        monkeypatch.setattr(
+            stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0.01
+        )
+        await stage.start()
+        assert await asyncio.to_thread(entered.wait, 1)
+        stopping = asyncio.create_task(stage.stop())
+        await asyncio.sleep(0.05)
+        assert not stopping.done() and not closed.is_set()
+        stopping.cancel()
+        await asyncio.sleep(0)
+        stopping.cancel()
+        await asyncio.sleep(0)
+        assert not stopping.done() and not closed.is_set()
+        release.set()
+        await asyncio.wait_for(stopping, 1)
+        assert closed.is_set() and stage.scheduler_thread is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("follower", [False, True])
+def test_ordinary_stopped_outbox_does_not_wait_for_live_thread(follower):
+    async def run():
+        scheduler = FakeScheduler()
+        stage = make_stage(scheduler=scheduler)
+        release = threading.Event()
+        stage.scheduler_thread = threading.Thread(target=release.wait)
+        stage.scheduler_thread.start()
+        assert not stage.request_scheduler_stop()
+        drain = stage.drain_outbox_follower if follower else stage.drain_outbox_external
+        try:
+            await asyncio.wait_for(drain(), 0.5)
+            assert stage.scheduler_thread.is_alive()
+        finally:
+            release.set()
+            await asyncio.to_thread(stage.scheduler_thread.join, 1)
+            await stage.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_run_cleanup_shield_only_for_explicit_retention(retained, monkeypatch):
+    async def run():
+        scheduler = FakeScheduler()
+        stop_calls = []
+
+        def stop_scheduler():
+            stop_calls.append("stop")
+            return True if retained else None
+
+        scheduler.stop = stop_scheduler
+        stage = make_stage(scheduler=scheduler)
+        close_entered = asyncio.Event()
+        close_release = asyncio.Event()
+        close_cancelled = asyncio.Event()
+        actual_close = stage.comm.close
+
+        async def close_comm():
+            close_entered.set()
+            try:
+                await close_release.wait()
+            except asyncio.CancelledError:
+                close_cancelled.set()
+                raise
+            await actual_close()
+
+        monkeypatch.setattr(stage.comm, "close", close_comm)
+        await stage.start()
+        stage.control_plane.inbox.put_nowait(ShutdownMessage())
+        task = asyncio.create_task(stage.run())
+        await asyncio.wait_for(close_entered.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        if retained:
+            assert not task.done() and not close_cancelled.is_set()
+            close_release.set()
+            await asyncio.wait_for(task, 1)
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert close_cancelled.is_set()
+            await actual_close()
+        assert stop_calls == ["stop"]
+        assert stage.request_scheduler_stop() is retained
+        assert stop_calls == ["stop"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("follower", [False, True])
+def test_background_failure_retains_empty_outbox_before_late_envelope(follower):
+    async def run():
+        scheduler = FakeScheduler()
+        stopped = threading.Event()
+        release = threading.Event()
+        resolved = threading.Event()
+        stop_calls = []
+
+        def stop_scheduler():
+            stop_calls.append("stop")
+            stopped.set()
+            return True
+
+        scheduler.stop = stop_scheduler
+        stage = make_stage(scheduler=scheduler)
+        stage.running = True
+        stage.scheduler_thread = threading.Thread(target=release.wait)
+        stage.scheduler_thread.start()
+
+        async def fail_background():
+            raise RuntimeError("unrelated receive task failed")
+
+        failure = asyncio.create_task(fail_background())
+        with pytest.raises(RuntimeError):
+            await failure
+        stage.on_background_task_done(failure, "test receive")
+        assert stopped.is_set() and not stage.running
+        assert stage.retains_scheduler_outbox is True
+        assert scheduler.outbox.empty()
+        drain = stage.drain_outbox_follower if follower else stage.drain_outbox_external
+        task = asyncio.create_task(drain())
+        try:
+            await asyncio.sleep(0)
+            assert not task.done()
+            scheduler.outbox.put(PendingStreamOutput(resolve=resolved.set))
+            assert await asyncio.to_thread(resolved.wait, 1)
+        finally:
+            release.set()
+            await asyncio.to_thread(stage.scheduler_thread.join, 1)
+        await asyncio.wait_for(task, 1)
+        await stage.stop()
+        assert stop_calls == ["stop"]
+
+    asyncio.run(run())
+
+
+def test_stop_failure_is_preserved_after_other_cleanup(monkeypatch):
+    async def run():
+        scheduler = FakeScheduler()
+        error = RuntimeError("scheduler stop failed")
+        calls = []
+
+        def stop_scheduler():
+            calls.append("stop")
+            raise error
+
+        scheduler.stop = stop_scheduler
+        stage = make_stage(scheduler=scheduler)
+        comm_closed = []
+        actual_close = stage.comm.close
+
+        async def close_comm():
+            comm_closed.append("closed")
+            await actual_close()
+
+        monkeypatch.setattr(stage.comm, "close", close_comm)
+        with pytest.raises(RuntimeError, match="cleanup failed") as caught:
+            await stage.stop()
+        assert caught.value.__cause__ is error
+        assert calls == ["stop"] and comm_closed == ["closed"]
+        assert stage.control_plane.closed
+        assert not stage.request_scheduler_stop()
+        assert calls == ["stop"]
 
     asyncio.run(run())

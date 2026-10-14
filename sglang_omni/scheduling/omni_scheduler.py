@@ -24,9 +24,10 @@ from collections import deque
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from typing import TYPE_CHECKING, Callable, Generic, NoReturn
+from weakref import ref
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
@@ -51,9 +52,10 @@ from sglang.srt.managers.scheduler import (
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache, CacheRequestHandle
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import (
     get_context,
     get_memory,
@@ -101,6 +103,7 @@ from sglang_omni.proto.session import find_session_operation
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
+    PendingStreamOutput,
     put_messages,
 )
 from sglang_omni.scheduling.sglang_backend.ar_session import (
@@ -114,6 +117,7 @@ from sglang_omni.scheduling.types import (
     ARRequestData,
     DeferredAdmission,
     ModelRunnerOutput,
+    PrefillTokenDrainError,
     RequestDataT,
     RequestOutput,
     SchedulerOutput,
@@ -155,6 +159,33 @@ class RequestTimeoutAbort:
 
     rid: str
     abort_message: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class PrefillTokenPublication:
+    """Bind a sampled row to its request across the token-copy wait."""
+
+    request_index: int
+    request: Req
+    request_id: str
+    request_data: SGLangARRequestData
+    request_pool_index: int | None
+    cache_request_handle: CacheRequestHandle
+
+
+@dataclass(kw_only=True)
+class PendingPrefillPublication:
+    """Retain one immutable row selection until copy and FIFO publication finish."""
+
+    forward_mode: ForwardMode
+    rows: tuple[PrefillTokenPublication, ...]
+    source_token_ids: torch.Tensor
+    host_token_ids: torch.Tensor
+    copy_done: torch.cuda.Event
+    producer_stream: torch.cuda.Stream
+    completion: Future[None] = field(default_factory=Future)
+    resolving: bool = False
+    closed: bool = False
 
 
 @dataclass(kw_only=True)
@@ -318,6 +349,9 @@ class OmniScheduler(Generic[RequestDataT]):
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
+    pending_prefill_publication: PendingPrefillPublication | None = None
+    wait_for_prefill_publication_on_stop: bool = False
+    prefill_publication_stopped: bool = False
     draft_worker: BaseSpecWorker | None = None
 
     def __init__(
@@ -364,7 +398,10 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
-        self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.outbox: _queue_mod.Queue[OutgoingMessage | PendingStreamOutput] = (
+            _queue_mod.Queue()
+        )
+        self.pending_prefill_publication: PendingPrefillPublication | None = None
         self.requires_tp_work_fanout: bool = False
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
@@ -2117,7 +2154,14 @@ class OmniScheduler(Generic[RequestDataT]):
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
+        except PrefillTokenDrainError as error:
+            self.running = False
+            if self.wait_for_prefill_publication_on_stop:
+                self.terminate_prefill_worker(error)
+            else:
+                raise
         except Exception as exc:
+            self.close_prefill_publication(exc)
             if self.draft_worker is not None:
                 self.drain_dflash_failure()
             else:
@@ -2165,6 +2209,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 batch, overlap=False
             ):  # noqa: leading-underscore  # Native batch transaction.
                 batch_result = self.draft_worker.forward_batch_generation(batch)
+            self.wait_prefill_publication()
             batch.spec_info = batch_result.next_draft_input
             new_seq_lens = batch_result.new_seq_lens
             if new_seq_lens is not None and new_seq_lens is not batch.seq_lens:
@@ -2587,6 +2632,217 @@ class OmniScheduler(Generic[RequestDataT]):
                 )
             )
 
+    def can_publish_prefill_first_token(
+        self, batch: ScheduleBatch, request_index: int = 0
+    ) -> bool:
+        """Keep first-token publication away from finishing and session effects."""
+        if (
+            not 0 <= request_index < len(batch.reqs)
+            or batch.forward_mode not in (ForwardMode.EXTEND, ForwardMode.MIXED)
+            or batch.is_prefill_only
+            or batch.return_logprob
+            or batch.return_hidden_states
+            or self.stream_output_builder is None
+            or self.session_bridge is not None
+        ):
+            return False
+        else:
+            request = batch.reqs[request_index]
+            if batch.forward_mode == ForwardMode.MIXED and (
+                batch.decoding_reqs is None
+                or any(
+                    request is decoding_request
+                    for decoding_request in batch.decoding_reqs
+                )
+            ):
+                return False
+            else:
+                pass
+            return self.can_publish_prefill_request(request)
+
+    def can_publish_prefill_request(self, request: Req) -> bool:
+        """Revalidate mutable request ownership without consulting the live batch."""
+        request_data = request.omni_data
+        return (
+            request_data is not None
+            and request_data.stage_payload is not None
+            and bool(
+                (request_data.stage_payload.request.params or {}).get("stream", False)
+            )
+            and request_data.speculative_emitted_tokens == 0
+            and not request.output_ids
+            and request.inflight_middle_chunks == 0
+            and not request.finished()
+            and request.to_finish is None
+            and not request.is_retracted
+            and not request._omni_terminal_claimed  # noqa: leading-underscore  # Shared request ownership field.
+            and request.rid not in self.aborted_request_ids
+            and request.sampling_params.max_new_tokens > 1
+            and not request.sampling_params.stop_token_ids
+            and not request.sampling_params.stop_strs
+            and not request.sampling_params.stop_regex_strs
+        )
+
+    def publish_prefill_first_token(
+        self, batch: ScheduleBatch, batch_result: GenerationBatchResult
+    ) -> None:
+        """Queue a copy for the existing consumer before native draft submission."""
+        publications: list[PrefillTokenPublication] = []
+        with self.request_admission_lock:
+            if not self.running:
+                return
+            else:
+                pass
+            if self.pending_prefill_publication is not None:
+                raise RuntimeError("Only one prefill publication may be outstanding")
+            else:
+                pass
+            request_count = len(batch.reqs)
+            for request_index, request in enumerate(batch.reqs):
+                if not self.can_publish_prefill_first_token(batch, request_index):
+                    continue
+                else:
+                    request_data = request.omni_data
+                    assert request_data is not None
+                    publications.append(
+                        PrefillTokenPublication(
+                            request_index=request_index,
+                            request=request,
+                            request_id=request.rid,
+                            request_data=request_data,
+                            request_pool_index=request.kv.req_pool_idx,
+                            cache_request_handle=request.cache_request_handle,
+                        )
+                    )
+            if not publications:
+                return
+            else:
+                pass
+            token_ids = batch_result.next_token_ids
+            assert (
+                token_ids is not None
+                and token_ids.is_cuda
+                and token_ids.shape == (request_count,)
+            )
+            host_token_ids = torch.empty(
+                token_ids.shape, dtype=token_ids.dtype, device="cpu", pin_memory=True
+            )
+            producer_stream = torch.cuda.current_stream(token_ids.device)
+            host_token_ids.copy_(token_ids, non_blocking=True)
+            token_copy_done = torch.cuda.Event()
+            token_copy_done.record(producer_stream)
+            pending = PendingPrefillPublication(
+                forward_mode=batch.forward_mode,
+                rows=tuple(publications),
+                source_token_ids=token_ids,
+                host_token_ids=host_token_ids,
+                copy_done=token_copy_done,
+                producer_stream=producer_stream,
+            )
+            self.pending_prefill_publication = pending
+            pending_reference = ref(pending)
+
+            def resolve_pending() -> None:
+                publication = pending_reference()
+                if publication is None:
+                    return
+                else:
+                    self.resolve_prefill_publication(publication)
+
+            self.outbox.put(PendingStreamOutput(resolve=resolve_pending))
+
+    def resolve_prefill_publication(self, pending: PendingPrefillPublication) -> None:
+        """Claim a copy from either owner and acknowledge FIFO insertion once."""
+        with self.request_admission_lock:
+            if pending.resolving or pending.completion.done():
+                return
+            else:
+                pending.resolving = True
+        try:
+            pending.copy_done.synchronize()
+            with self.request_admission_lock:
+                if not pending.closed:
+                    for publication in pending.rows:
+                        request = publication.request
+                        request_id = publication.request_id
+                        request_data = publication.request_data
+                        if (
+                            not self.can_publish_prefill_request(request)
+                            or request.rid != request_id
+                            or request.omni_data is not request_data
+                            or self.find_request_data(request_id) is not request_data
+                            or request.kv.req_pool_idx != publication.request_pool_index
+                            or request.cache_request_handle
+                            is not publication.cache_request_handle
+                        ):
+                            continue
+                        else:
+                            pass
+                        token_id = int(
+                            pending.host_token_ids[publication.request_index]
+                        )
+                        if request.eos_token_ids and token_id in request.eos_token_ids:
+                            continue
+                        elif request.tokenizer is not None and (
+                            token_id == request.tokenizer.eos_token_id
+                            or (
+                                request.tokenizer.additional_stop_token_ids
+                                and token_id
+                                in request.tokenizer.additional_stop_token_ids
+                            )
+                        ):
+                            continue
+                        else:
+                            output = RequestOutput(request_id=request_id, data=token_id)
+                            messages = self.stream_output_builder(
+                                request_id, request_data, output
+                            )
+                            self.put_stream_messages(request_id, messages)
+                            request_data.speculative_emitted_tokens = 1
+                            request_data.speculative_first_token_id = token_id
+                else:
+                    pass
+        except BaseException as error:
+            pending.completion.set_exception(error)
+        else:
+            pending.completion.set_result(None)
+
+    def wait_prefill_publication(self) -> None:
+        """Wait after native submission, before cache publication or request release."""
+        pending = self.pending_prefill_publication
+        if pending is None:
+            return
+        else:
+            self.resolve_prefill_publication(pending)
+            pending.completion.result()
+            with self.request_admission_lock:
+                self.pending_prefill_publication = None
+
+    def close_prefill_publication(self, error: Exception) -> None:
+        """Suppress late publication and drain writers before recoverable cleanup."""
+        pending = self.pending_prefill_publication
+        if pending is None:
+            return
+        else:
+            with self.request_admission_lock:
+                pending.closed = True
+        try:
+            pending.producer_stream.synchronize()
+        except Exception as drain_error:
+            self.terminate_prefill_worker(drain_error)
+        with self.request_admission_lock:
+            if not pending.resolving and not pending.completion.done():
+                pending.completion.set_exception(error)
+            else:
+                pass
+        try:
+            pending.completion.result()
+        except BaseException:
+            pass
+        finally:
+            with self.request_admission_lock:
+                self.pending_prefill_publication = None
+
     @staticmethod
     def terminate_prefill_worker(error: BaseException) -> NoReturn:
         """Retire the worker instead of releasing storage with unknown GPU writers."""
@@ -2613,6 +2869,13 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
             committed_tokens = request.output_ids_through_stop
+            if request_data.speculative_first_token_id is not None:
+                assert (
+                    committed_tokens
+                    and committed_tokens[0] == request_data.speculative_first_token_id
+                )
+            else:
+                pass
             for token_id in committed_tokens[request_data.speculative_emitted_tokens :]:
                 output = RequestOutput(request_id=request.rid, data=int(token_id))
                 messages = self.stream_output_builder(request.rid, request_data, output)
@@ -2669,10 +2932,13 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def start(self) -> None:
         self.scheduler_thread_id = threading.get_ident()
-        self.running = True
+        with self.request_admission_lock:
+            self.running = not self.prefill_publication_stopped
         model_path_status = "error"
         try:
-            if self.enable_async_decode:
+            if not self.running:
+                return
+            elif self.enable_async_decode:
                 self.event_loop_async_decode()
             elif self.enable_overlap:
                 self.event_loop_overlap()
@@ -2681,6 +2947,11 @@ class OmniScheduler(Generic[RequestDataT]):
             model_path_status = "aborted"
         finally:
             try:
+                self.close_prefill_publication(
+                    RuntimeError(
+                        "Scheduler stopped before prefill publication completed"
+                    )
+                )
                 if self.session_bridge is not None:
                     self.resolve_pending_async()
                     self.session_bridge.close_open_sessions()
@@ -2698,14 +2969,27 @@ class OmniScheduler(Generic[RequestDataT]):
     def event_loop(self) -> None:
         self.start()
 
-    def stop(self) -> None:
-        self.running = False
-        retains_scheduler_thread = (
-            self.session_bridge is not None and self.scheduler_thread_id is not None
+    def stop(self) -> bool:
+        with self.request_admission_lock:
+            self.running = False
+            self.prefill_publication_stopped = self.wait_for_prefill_publication_on_stop
+            pending = self.pending_prefill_publication
+            if pending is not None:
+                pending.closed = True
+                if not pending.resolving and not pending.completion.done():
+                    pending.completion.set_exception(
+                        RuntimeError("Prefill publication consumer stopped")
+                    )
+                else:
+                    pass
+            else:
+                pass
+        retains_scheduler_thread = self.scheduler_thread_id is not None and (
+            self.session_bridge is not None or self.wait_for_prefill_publication_on_stop
         )
         if retains_scheduler_thread:
-            # note (Junnan Li): Cleanup runs on the scheduler thread after it drains GPU work.
-            return
+            # note (Junnan Li): The callback may not have installed its pending copy yet.
+            return self.wait_for_prefill_publication_on_stop
         else:
             if self.session_bridge is not None:
                 self.session_bridge.close_open_sessions()
@@ -2713,6 +2997,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             self.discard_pending_request_admissions()
             self.shutdown_resources()
+            return False
 
     def discard_pending_request_admissions(self) -> None:
         with self.request_admission_lock:
