@@ -42,10 +42,12 @@ def new_scheduler(
 
 
 def start_stream(
-    scheduler: PersonaPlexCode2WavScheduler, request_id: str
+    scheduler: PersonaPlexCode2WavScheduler, request_id: str, *, stream: bool = False
 ) -> StagePayload:
     payload = StagePayload(
-        request_id, request=OmniRequest(inputs={}), data=PersonaPlexState().to_dict()
+        request_id,
+        request=OmniRequest(inputs={}, params={"stream": stream}),
+        data=PersonaPlexState().to_dict(),
     )
     scheduler.stream_payloads[request_id] = payload
     scheduler.on_streaming_new_request(request_id, payload)
@@ -227,6 +229,21 @@ def test_chunk_ramp_decodes_burst_messages_frame_exactly(
     torch.testing.assert_close(
         decode_waveform(result.data.data), whole, atol=1e-5, rtol=1e-5
     )
+
+
+def test_a_streaming_client_gets_the_reply_once(random_codec: MimiCodec) -> None:
+    codec = random_codec
+    scheduler = new_scheduler(codec, (1, 4))
+    codes = torch.randint(0, 2048, (6, 8), generator=torch.Generator().manual_seed(12))
+    whole = codec.decode(codes.T[None])[0, 0]
+    start_stream(scheduler, "a", stream=True)
+
+    streamed = push_frames(scheduler, "a", codes)
+    tail, result = scheduler.on_stream_done("a")
+    streamed.append(decode_waveform(tail.data))
+    torch.testing.assert_close(torch.cat(streamed), whole, atol=1e-5, rtol=1e-5)
+    assert result.type == "result"
+    assert result.data.data == {"modality": "audio", "sample_rate": SAMPLE_RATE}
 
 
 def test_one_frame_ramp_decodes_as_messages_arrive(random_codec: MimiCodec) -> None:
