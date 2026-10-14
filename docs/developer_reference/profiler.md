@@ -36,12 +36,12 @@ JSONL file. The shape:
 ```
 
 Files are written under
-`<event_dir>/events_<stage>_<pid>_g<generation>.jsonl`. Multiple co-located
+`<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located
 stages in the same OS process share **one** JSONL file — the filename uses the
-first stage to start, and the per-event `stage` field identifies the owner.
-The generation suffix distinguishes local recording instances within a process.
-The views layer merges files from every process by `request_id`. Files are
-created exclusively rather than appended to if a filename already exists.
+first stage to start, and the per-event `stage` field identifies the owner. The
+views layer merges files from every process by `request_id`. The writer creates
+each JSONL file exclusively; an existing file is a storage failure rather than
+an append target.
 
 The recorder uses one bounded queue and one dedicated writer thread per
 process. The default queue capacity is 8192 events and can be reduced in unit
@@ -54,7 +54,7 @@ until the corresponding finalized status sidecar exists and reports
 `complete: true`.
 
 Each finalized run also writes
-`run_status_<run-digest>_<pid>_g<generation>.json` beside the JSONL file. It
+`run_status_<pid>.json` beside the JSONL file. It
 records the run ID, accepted/processed/written/unwritten/dropped counts, writer
 failures, stages, and `complete`; that flag has `completeness_scope` set to
 `event_storage` and does not claim semantic timing coverage. Queue overflow,
@@ -232,8 +232,10 @@ service. Use a **unique `run_id` and a fresh, empty `event_dir` for each
 recording**. Reusing a run ID or output directory, resuming a recording after
 a process restart, and recovering or appending to earlier artifacts are not
 supported workflows. If an artifact path already exists, start a new recording
-with a fresh directory instead of attempting recovery. These scenarios do not
-justify additional restart/collision-handling machinery in the recorder.
+with a fresh directory instead of attempting recovery. A different run ID may
+replace the active run while the old run drains asynchronously, but only one
+run is active in a process. These scenarios do not justify additional
+restart/collision-handling machinery in the recorder.
 
 The recorder is process-local. It is started on every stage and on the
 coordinator when `POST /start_profile` (or `POST /start_request_profile`)

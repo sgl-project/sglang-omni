@@ -143,14 +143,12 @@ class Client:
         *,
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
-        ready_generation_id: int | None = None,
     ) -> int:
         return await self.coordinator.append_session(
             session_identity,
             chunk,
             ready_timestamp_ns=ready_timestamp_ns,
             ready_run_id=ready_run_id,
-            ready_generation_id=ready_generation_id,
         )
 
     def session_outputs(

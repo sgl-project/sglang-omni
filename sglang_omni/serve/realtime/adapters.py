@@ -212,11 +212,6 @@ class CoordinatorAdapter(InteractionAdapter):
                 ready_run_id=(
                     ready_observation.run_id if ready_observation is not None else None
                 ),
-                ready_generation_id=(
-                    ready_observation.generation_id
-                    if ready_observation is not None
-                    else None
-                ),
             )
             return await self.unit_completion
         finally:

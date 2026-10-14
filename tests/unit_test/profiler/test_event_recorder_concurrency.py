@@ -115,13 +115,13 @@ def test_retired_run_waits_for_events_accepted_during_idle_observation(
     first_written = threading.Event()
     idle_entered = threading.Event()
     release_idle = threading.Event()
-    open_calls: list[int] = []
+    open_calls: list[str] = []
     original_open = recorder.open_event_file
     original_idle = recorder.handle_writer_idle
     original_write = recorder.write_queued_event
 
     def counting_open(run_state: RecorderRunState) -> TextIOWrapper | None:
-        open_calls.append(run_state.generation_id)
+        open_calls.append(run_state.run_id)
         return original_open(run_state)
 
     def observe_first_write(
@@ -174,7 +174,7 @@ def test_retired_run_waits_for_events_accepted_during_idle_observation(
     assert status["processed_events"] == 2
     assert status["written_events"] == 2
     assert status["complete"] is True
-    assert open_calls == [run_state.generation_id]
+    assert open_calls == [run_state.run_id]
 
 
 def test_full_queue_drops_events_and_marks_status_incomplete(
@@ -281,7 +281,7 @@ def test_writer_replacement_after_atomic_exit_ownership_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorder = RequestEventRecorder(queue_capacity=8)
-    first_path = recorder.start("first", str(tmp_path), "stage")
+    first_path = recorder.start("first", str(tmp_path / "first"), "stage")
     first_finalization = recorder.deactivate()
     assert first_finalization is not None
 
@@ -304,7 +304,7 @@ def test_writer_replacement_after_atomic_exit_ownership_release(
     monkeypatch.setattr(recorder, "writer_should_exit", gated_should_exit)
     try:
         assert exit_decided.wait(timeout=5)
-        second_path = recorder.start("second", str(tmp_path), "stage")
+        second_path = recorder.start("second", str(tmp_path / "second"), "stage")
         recorder.emit(request_id="new", stage="stage", event_name="event")
         second_finalization = recorder.deactivate()
         assert second_finalization is not None
@@ -337,7 +337,6 @@ def test_inactive_recorder_does_not_acquire_mutex() -> None:
     assert recorder.is_active() is False
     assert recorder.active_run_id() is None
     assert recorder.capture_active_run_timestamp_ns() is None
-    assert recorder.capture_active_run_identity_timestamp_ns() is None
 
 
 def test_writer_failure_completes_active_and_retired_handles(

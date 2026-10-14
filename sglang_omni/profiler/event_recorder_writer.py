@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -24,21 +23,10 @@ from sglang_omni.profiler.event_recorder_types import (
     RequestEvent,
     RequestEventFinalization,
     get_active_stage,
-    json_default,
     snapshot_metadata,
 )
 
 logger = logging.getLogger(__name__)
-process_generation_lock = threading.Lock()
-next_process_generation_id = 0
-
-
-def allocate_process_generation_id() -> int:
-    global next_process_generation_id
-    with process_generation_lock:
-        generation_id = next_process_generation_id
-        next_process_generation_id += 1
-    return generation_id
 
 
 class RequestEventRecorder:
@@ -53,7 +41,7 @@ class RequestEventRecorder:
         self.queue_capacity = queue_capacity
         self.event_queue: Queue[QueuedRequestEvent] = Queue(maxsize=queue_capacity)
         self.active_state: RecorderRunState | None = None
-        self.pending_states: dict[int, RecorderRunState] = {}
+        self.pending_states: dict[str, RecorderRunState] = {}
         self.writer_thread: threading.Thread | None = None
         self.writer_failed = False
         # Sticky aggregate signal: individual handles remain authoritative for
@@ -82,10 +70,8 @@ class RequestEventRecorder:
                 pass
             return active_state.run_id
 
-    def capture_active_run_identity_timestamp_ns(
-        self,
-    ) -> tuple[str, int, int] | None:
-        """Capture generation, run ID, and wall-clock timestamp atomically."""
+    def capture_active_run_timestamp_ns(self) -> tuple[str, int] | None:
+        """Capture the active run ID and wall-clock timestamp together."""
         if self.active_state is None:
             return None
         else:
@@ -96,21 +82,7 @@ class RequestEventRecorder:
                 return None
             else:
                 pass
-            return (
-                active_state.run_id,
-                active_state.generation_id,
-                time.time_ns(),
-            )
-
-    def capture_active_run_timestamp_ns(self) -> tuple[str, int] | None:
-        """Capture the active run ID and wall-clock timestamp together."""
-        active_run = self.capture_active_run_identity_timestamp_ns()
-        if active_run is None:
-            return None
-        else:
-            pass
-        run_id, _generation_id, timestamp_ns = active_run
-        return run_id, timestamp_ns
+            return active_state.run_id, time.time_ns()
 
     def active_path(self) -> str | None:
         if self.active_state is None:
@@ -134,7 +106,6 @@ class RequestEventRecorder:
         metadata: Mapping[str, object] | None = None,
         timestamp_ns: int | None = None,
         expected_run_id: str | None = None,
-        expected_generation_id: int | None = None,
     ) -> None:
         """Capture and enqueue one event without waiting for the writer."""
         if self.active_state is None:
@@ -148,13 +119,6 @@ class RequestEventRecorder:
             else:
                 pass
             if expected_run_id is not None and run_state.run_id != expected_run_id:
-                return
-            else:
-                pass
-            if (
-                expected_generation_id is not None
-                and run_state.generation_id != expected_generation_id
-            ):
                 return
             else:
                 pass
@@ -207,13 +171,6 @@ class RequestEventRecorder:
                 return
             else:
                 pass
-            if (
-                expected_generation_id is not None
-                and run_state.generation_id != expected_generation_id
-            ):
-                return
-            else:
-                pass
             if metadata_truncated:
                 run_state.metadata_truncations += 1
                 run_state.incomplete_reasons.add("metadata_truncated")
@@ -231,9 +188,8 @@ class RequestEventRecorder:
         """Start or join a per-process JSONL recording run.
 
         Co-located stages share one file per process. A different run ID
-        retires the old run without waiting for its writer. Every new
-        recording gets a process-local generation suffix so a reused run ID
-        cannot append to an older JSONL file.
+        retires the old run without waiting for its writer. Each recording is
+        expected to use a unique run ID and a fresh event directory.
         """
         with self.lock:
             active_state = self.active_state
@@ -258,12 +214,8 @@ class RequestEventRecorder:
                 pass
             self.validate_start_unlocked()
 
-            generation_id = allocate_process_generation_id()
-            path = directory / f"events_{stage}_{self.pid}_g{generation_id}.jsonl"
-            run_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
-            status_path = (
-                directory / f"run_status_{run_digest}_{self.pid}_g{generation_id}.json"
-            )
+            path = directory / f"events_{stage}_{self.pid}.jsonl"
+            status_path = directory / f"run_status_{self.pid}.json"
 
             previous_state = self.retire_active_state_unlocked()
             if previous_state is not None:
@@ -286,7 +238,6 @@ class RequestEventRecorder:
                 active_stages={stage},
                 path=path,
                 status_path=status_path,
-                generation_id=generation_id,
                 finalization=finalization,
             )
             self.active_state = run_state
@@ -324,7 +275,7 @@ class RequestEventRecorder:
         else:
             pass
         self.active_state = None
-        self.pending_states[run_state.generation_id] = run_state
+        self.pending_states[run_state.run_id] = run_state
         return run_state
 
     def release_stage(self, stage: str) -> RequestEventFinalization | None:
@@ -468,7 +419,7 @@ class RequestEventRecorder:
                                 pass
                         else:
                             pass
-                        self.finalize_retired_states_before(target_state.generation_id)
+                        self.finalize_retired_states()
                         open_state = target_state
                         file_handle = self.open_event_file(open_state)
                     else:
@@ -476,7 +427,8 @@ class RequestEventRecorder:
                     try:
                         file_handle = self.write_queued_event(queued_event, file_handle)
                     finally:
-                        self.mark_event_processed(queued_event.run_state)
+                        # Writer-owned accounting avoids producer lock contention.
+                        queued_event.run_state.processed_events += 1
                 finally:
                     self.event_queue.task_done()
         except Exception:
@@ -502,7 +454,7 @@ class RequestEventRecorder:
         else:
             pass
 
-        self.finalize_retired_states_before(None)
+        self.finalize_retired_states()
         with self.lock:
             active_state = self.active_state
         if open_state is None and active_state is not None:
@@ -512,17 +464,11 @@ class RequestEventRecorder:
             pass
         return open_state, file_handle
 
-    def finalize_retired_states_before(self, generation_id: int | None) -> None:
+    def finalize_retired_states(self) -> None:
         with self.lock:
-            retired_states = sorted(
-                self.pending_states.values(),
-                key=lambda run_state: run_state.generation_id,
-            )
+            retired_states = list(self.pending_states.values())
         for run_state in retired_states:
-            if generation_id is None or run_state.generation_id < generation_id:
-                self.finalize_run(run_state, None)
-            else:
-                pass
+            self.finalize_run(run_state, None)
 
     def open_event_file(self, run_state: RecorderRunState) -> TextIOWrapper | None:
         try:
@@ -554,10 +500,7 @@ class RequestEventRecorder:
         else:
             pass
         try:
-            serialized_event = json.dumps(
-                queued_event.event.to_dict(),
-                default=json_default,
-            )
+            serialized_event = json.dumps(queued_event.event.to_dict())
         except Exception:
             with self.lock:
                 run_state.serialization_failures += 1
@@ -603,23 +546,17 @@ class RequestEventRecorder:
             return None
         else:
             pass
-        with self.lock:
-            run_state.written_events += 1
+        run_state.written_events += 1
         return file_handle
 
     def can_finalize_run(self, run_state: RecorderRunState) -> bool:
         """Return whether a normal finalization has a synchronized drain proof."""
         with self.lock:
             return (
-                run_state.generation_id in self.pending_states
+                run_state.run_id in self.pending_states
                 and self.active_state is not run_state
                 and run_state.accepted_events == run_state.processed_events
             )
-
-    def mark_event_processed(self, run_state: RecorderRunState) -> None:
-        """Account for a completed writer attempt, successful or failed."""
-        with self.lock:
-            run_state.processed_events += 1
 
     def fail_writer(
         self,
@@ -627,18 +564,18 @@ class RequestEventRecorder:
         file_handle: TextIOWrapper | None,
     ) -> None:
         """Terminally fail the writer and complete every affected handle."""
-        states: dict[int, RecorderRunState] = {}
+        states: dict[str, RecorderRunState] = {}
         with self.lock:
             self.writer_failed = True
             retired_state = self.retire_active_state_unlocked()
             if retired_state is not None:
-                states[retired_state.generation_id] = retired_state
+                states[retired_state.run_id] = retired_state
             else:
                 pass
             for run_state in self.pending_states.values():
-                states[run_state.generation_id] = run_state
+                states[run_state.run_id] = run_state
             if open_state is not None:
-                states[open_state.generation_id] = open_state
+                states[open_state.run_id] = open_state
             else:
                 pass
             if self.writer_thread is threading.current_thread():
@@ -652,7 +589,7 @@ class RequestEventRecorder:
             except Empty:
                 break
             else:
-                states[queued_event.run_state.generation_id] = queued_event.run_state
+                states[queued_event.run_state.run_id] = queued_event.run_state
                 self.event_queue.task_done()
 
         for run_state in states.values():
@@ -663,11 +600,11 @@ class RequestEventRecorder:
                     0,
                 )
                 if not run_state.finalization.completion_event.is_set():
-                    self.pending_states[run_state.generation_id] = run_state
+                    self.pending_states[run_state.run_id] = run_state
                 else:
                     pass
 
-        for run_state in sorted(states.values(), key=lambda state: state.generation_id):
+        for run_state in states.values():
             if run_state.finalization.completion_event.is_set():
                 continue
             else:
@@ -684,7 +621,7 @@ class RequestEventRecorder:
     ) -> bool:
         """Flush, close, and atomically publish one retired run's status."""
         with self.lock:
-            if run_state.generation_id not in self.pending_states:
+            if run_state.run_id not in self.pending_states:
                 return False
             else:
                 pass
@@ -805,7 +742,7 @@ class RequestEventRecorder:
                     self.finalization_failed = True
                 else:
                     pass
-                self.pending_states.pop(run_state.generation_id, None)
+                self.pending_states.pop(run_state.run_id, None)
                 run_state.finalization.successful = status_published
                 run_state.finalization.completion_event.set()
             return status_published

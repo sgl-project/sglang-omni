@@ -115,8 +115,7 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
         assert Path(path).parent == tmp_path
         # Filename must encode stage + pid
         name = Path(path).name
-        assert name.startswith("events_encoder_")
-        assert name.endswith(".jsonl")
+        assert name == f"events_encoder_{rec.pid}.jsonl"
 
         rec.emit(request_id="r1", stage="encoder", event_name="encoder_start")
         rec.emit(
@@ -134,6 +133,9 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     assert events[0]["run_id"] == "r0"
     assert events[0]["pid"] is not None
     assert events[1]["metadata"] == {"items": 3}
+    assert sorted(tmp_path.glob("run_status_*.json")) == [
+        tmp_path / f"run_status_{rec.pid}.json"
+    ]
 
 
 def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:

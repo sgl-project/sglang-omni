@@ -88,7 +88,6 @@ class PendingRequestEvent:
     metadata: dict[str, int | float | str]
     timestamp_ns: int
     run_id: str
-    generation_id: int | None = None
 
 
 @dataclass(kw_only=True)
@@ -117,7 +116,6 @@ class RecorderRunState:
     active_stages: set[str]
     path: Path
     status_path: Path
-    generation_id: int
     finalization: RequestEventFinalization
     accepted_events: int = 0
     processed_events: int = 0

@@ -104,7 +104,7 @@ current multi-process launcher path does not mount them.
 session is currently active.
 
 Request-level events are emitted as JSON lines under
-`<event_dir>/events_<stage>_<pid>_g<generation>.jsonl`. Use `python -m sglang_omni.profiler
+`<event_dir>/events_<stage>_<pid>.jsonl`. Use `python -m sglang_omni.profiler
 <event_dir>` to derive the timeline / stage / hop reports described in
 `docs/developer_reference/profiler.md`.
 

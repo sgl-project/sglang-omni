@@ -17,32 +17,25 @@ class SessionUnitReadyObservation:
 
     timestamp_ns: int
     run_id: str
-    generation_id: int | None = None
 
 
 def capture_session_unit_ready() -> SessionUnitReadyObservation | None:
     """Capture readiness only while an event recorder run is active."""
-    active_run = get_recorder().capture_active_run_identity_timestamp_ns()
+    active_run = get_recorder().capture_active_run_timestamp_ns()
     if active_run is None:
         return None
     else:
         pass
-    run_id, generation_id, timestamp_ns = active_run
+    run_id, timestamp_ns = active_run
     return SessionUnitReadyObservation(
         timestamp_ns=timestamp_ns,
         run_id=run_id,
-        generation_id=generation_id,
     )
 
 
 def capture_session_stage_start() -> tuple[str, int] | None:
     """Capture one shared stage-start observation only for active profiling."""
     return get_recorder().capture_active_run_timestamp_ns()
-
-
-def capture_session_stage_start_with_generation() -> tuple[str, int, int] | None:
-    """Capture a stage-start observation with its recording generation."""
-    return get_recorder().capture_active_run_identity_timestamp_ns()
 
 
 def session_identity_metadata(
@@ -90,7 +83,6 @@ def emit_session_unit_ready_event(
     input_chunk: TimedChunk,
     ready_timestamp_ns: int | None,
     ready_run_id: str | None,
-    ready_generation_id: int | None = None,
 ) -> None:
     """Emit readiness only when its observation belongs to the active run."""
     if ready_timestamp_ns is None or ready_run_id is None:
@@ -105,7 +97,6 @@ def emit_session_unit_ready_event(
         metadata=session_identity_metadata(session_identity, input_chunk),
         timestamp_ns=ready_timestamp_ns,
         expected_run_id=ready_run_id,
-        expected_generation_id=ready_generation_id,
     )
 
 
@@ -117,7 +108,6 @@ def emit_session_stage_started(
     stage: str | None = None,
     timestamp_ns: int | None = None,
     expected_run_id: str | None = None,
-    expected_generation_id: int | None = None,
 ) -> None:
     """Emit one append start boundary, optionally at a shared batch timestamp."""
     recorder = get_recorder()
@@ -132,7 +122,6 @@ def emit_session_stage_started(
         metadata=session_identity_metadata(session_identity, input_chunk),
         timestamp_ns=timestamp_ns,
         expected_run_id=expected_run_id,
-        expected_generation_id=expected_generation_id,
     )
 
 
