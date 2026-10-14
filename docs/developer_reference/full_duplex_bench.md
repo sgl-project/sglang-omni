@@ -23,7 +23,7 @@ v1.0 has 727 samples in five subsets. A sample is one input audio file plus an a
 | `synthetic_user_interruption` | 200 | User interruption | Synthetic | Takeover rate (higher), latency (lower), relevance (higher) |
 | `icc_backchannel` | 55 | Backchannel | ICC conversations | Takeover rate (lower), backchannel frequency, backchannel JSD (lower) |
 
-The numbers come from the official evaluator at the pinned revision, run unchanged on the transcript of the model's output:
+The following official reference numbers come from the evaluator at the pinned revision, run unchanged on the transcript of the model's output. The runbook also reports [unified v1.0 metrics](#results) for pause handling, turn taking and interruption:
 
 - **Takeover rate**: the share of samples in which the model took the turn, meaning its transcript spans at least 1 s or has more than 3 words.
 - **Latency**: the time from the annotated end of the user's turn to the model's first word, averaged over the samples in which the model took the turn. A start before the end of the turn counts as 0.
@@ -80,7 +80,7 @@ A run has three steps, then an aggregation. Each step starts the server it needs
 | Step | Subcommand | What it does |
 |---|---|---|
 | 1 | `generate` | Starts the model server, streams the selected inputs to `/v1/realtime` (two sessions per v1.5 pair, one per v1.0 sample), records the model's audio, stops the server, then cuts a fixed observation window from each session |
-| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet); for v1.5 also computes speech intervals with the official timing code |
+| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, then writes v1.0 unified metrics from the saved transcript and annotations on CPU |
 | 3 | `judge` | Runs the official v1.0 evaluator on the v1.0 subsets that need no LLM, then judges the v1.5 pairs and the v1.0 interruption subset (with `JUDGE=qwen` it starts the judge server for them and stops it after), and writes the per-repeat summaries |
 | | `aggregate` | Combines the repeats of a run into `RESULTS.md` |
 
@@ -95,7 +95,7 @@ python -m benchmarks.duplex.fdb aggregate --run-name preflight
 
 The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}` for v1.5 and `{"pass": 15}` with 3 eligible samples per v1.0 subset; `asr` prints `{"ok": 16}`, `{"ok": 8}` and 3 transcripts per v1.0 subset; and `judge` prints `{"valid": 4}`, `controls: 18/18 axis statuses match` and the parsed v1.0 results of each subset as JSON (the evaluator's own `[Result]` block is in `repeat-N/v10/reference/logs/evaluate-<subset>.log`). If anything differs, see [Troubleshooting](#troubleshooting).
 
-A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the three steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` reports the mean ± standard deviation over the finished repeats.
+A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the three steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
 
 ```bash
 for repeat in 1 2 3; do
@@ -106,7 +106,7 @@ done
 python -m benchmarks.duplex.fdb aggregate --run-name minicpmo-12
 ```
 
-`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. `asr` and `judge` resume finished work when rerun.
+`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
 
 Every subcommand takes `--log-level` (`info` by default). With `--log-level debug`, a step also prints the server and recorder logs it writes, each line prefixed with the log's name, such as `[judge-server]` or `[record-shard-0]`. The logs are written under `repeat-N/` at either level (see the files table in [Results](#results)).
 
@@ -158,7 +158,7 @@ A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of
 
 ## Results
 
-`aggregate` prints its tables and writes them to `$FDB_WORK/runs/RUN_NAME/RESULTS.md`, with one section per dataset the run selected. A latency, rate or label cell is the mean ± sample standard deviation over the finished repeats; a count cell shows one value, or a range when the repeats differ.
+`aggregate` prints its tables and writes them to `$FDB_WORK/runs/RUN_NAME/RESULTS.md`, with one section per dataset the run selected. The v1.0 unified section shows each repeat separately, without averaging its rates, quantiles or confidence intervals. In the v1.5 and official v1.0 reference tables, a numeric cell is the mean ± sample standard deviation over repeats with available values; a count cell shows one value or a range when repeats differ.
 
 The v1.5 section has one row per category and one for all of them. This example is a validation run (MiniCPM-o 4.5, 3 pairs per category, two repeats, Qwen judge), so the samples are small:
 
@@ -182,7 +182,9 @@ With `JUDGE=qwen` the v1.5 section adds the semantic table. From the same valida
 | talking_to_other | 50.0 ± 23.6% | 100.0 ± 0.0% | 75.0 ± 35.4% | 66.7 ± 0.0% | 58.3 ± 11.8% | 83.3 ± 23.6% | 16.7 ± 23.6% | 83.3 ± 23.6% |
 | background_speech | 83.3 ± 23.6% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% |
 
-The v1.0 section has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see [v1.0 scoring](#v10-scoring)).
+The v1.0 unified section first shows per-repeat coverage and metric tables for pause handling, turn taking and user interruption. Coverage lists declared, selected, eligible and ineligible samples, exclusion reasons and the minimum observable horizon after the reference point. A sample rate uses eligible samples as its denominator; its Wilson 95% interval describes sampling uncertainty, while the all-selected bounds allow each ineligible outcome to be either false or true. Per-pause and seconds-per-second ratios pool their respective denominators over eligible samples. Other intervals bootstrap whole samples. `n/a` with zero eligible samples means no data. `not reached` with a positive eligible count means the requested response-latency quantile was not observed, including nonresponses; a window shorter than a response threshold limits the corresponding rate. The report labels any missing, stale, unsupported or incomplete unified artifacts unavailable and gives a CPU-only backfill command. It does not display stale numeric scores. Backchannel remains official-reference-only.
+
+The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see [v1.0 scoring](#v10-scoring)).
 
 Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
 
@@ -196,7 +198,7 @@ Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
 | `judge-qwen/summary.json` | v1.5 behavior labels with `JUDGE=qwen` |
 | `semantic-qwen/` | Semantic judge: control comparison, the exact packets sent, raw responses, per-pair outcomes and `summary.json` |
 | `report.txt` | Readable v1.5 report: coverage, timing and semantic quality |
-| `v10/reference/` | v1.0 windows (`<subset>/<id>/output.wav`), `manifest.json`, the ASR receipt `asr.json`, `summary.json`, the judge ledger in `judge/` and evaluator logs in `logs/` |
+| `v10/reference/` | v1.0 windows (`<subset>/<id>/output.wav`), `manifest.json`, the ASR receipt `asr.json`, per-repeat `unified.json` and `unified-samples.jsonl`, official `summary.json`, the judge ledger in `judge/` and evaluator logs in `logs/` |
 
 With `JUDGE=qwen`, the "Official behavior label distribution" section of `report.txt` shows `0 / 0` and `not_prepared`, because that section counts GPT-4o labels only; the Qwen labels are in `judge-qwen/summary.json` and `RESULTS.md`.
 
@@ -262,6 +264,8 @@ The ports, the judge config and the compile caches follow the GPU index: the mod
 | `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the same index |
 | `WARNING: a v1.5 phase reported failures` | Rerun the command the warning prints; it adds `--retry-failed` |
 | `WARNING: the v1.0 ASR failed` | `repeat-N/v10/reference/logs/asr.log` has the official script's output and the terminal has the traceback. A rerun of `asr` transcribes every v1.0 sample again |
+| `WARNING: v1.0 unified scoring failed` | ASR completed, but the saved export, transcript or annotation did not score. Fix the stated cause and run the CPU-only backfill command printed in the warning; it does not repeat ASR or v1.5 work. Rerun `aggregate` to refresh `RESULTS.md` |
+| `Unified metrics unavailable` in `RESULTS.md` | The report names a missing export/ASR file, missing output pair, stale hashes, unsupported version or incomplete subset. Repair the export or ASR if named, then use the per-repeat backfill command in the report and rerun `aggregate` |
 | `WARNING: the v1.0 evaluation failed for ...` | The traceback is at the end of `repeat-N/v10/reference/logs/evaluate-<subset>.log`. A `ZeroDivisionError` in `candor_turn_taking` or `synthetic_user_interruption` means no selected sample took the turn, so select more samples in a new run. After fixing another cause, rerun `judge`; it evaluates the missing subsets again |
 | `judge request ... got no parsable rating in 3 attempts` | The v1.0 relevance judge answered without a rating; the ledger in `v10/reference/judge/` has each reply. The official parser needs `Analysis: <text>`, a line break, then `I would rate the AI's response as <digit>`. The attempts share a seed, so a local judge repeats the same reply and a rerun fails again |
 | `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged, for example after an SGLang upgrade. Delete `repeat-N/judge-qwen` and rerun `judge` |
@@ -394,12 +398,15 @@ python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
 "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-asr \
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE" \
     --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
+CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score \
+    --tree "$OUT/reference"
 "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-evaluate \
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
 ```
 
 - `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest.
 - `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
+- `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
 - `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
 
 The interruption relevance is rated by `gpt-4-turbo` with seed 0, as the official evaluator requests, for every interruption the model took over. That needs `OPENAI_API_KEY` (or the variable named by `--api-key-env`); without a key, evaluate the other subsets with `--subset`. `--base-url URL --served-model NAME` sends the same prompts to a self-hosted judge, with thinking off and the reply capped at 512 tokens, since the evaluator sets neither and SGLang would stop at 128 tokens. `summary.json` records the endpoint actually used and marks the rating official only for OpenAI's endpoint without `--served-model`. Every exchange is appended to `judge/user-interruption-<UTC time>.jsonl`.

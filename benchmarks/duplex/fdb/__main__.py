@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
         "server's max_sessions (default: %(default)s)",
     )
     for name, help_text in (
-        ("asr", "Step 2: Parakeet ASR and official timing"),
+        ("asr", "Step 2: Parakeet ASR, v1.5 timing, v1.0 unified scoring"),
         ("judge", "Step 3: behavior and semantic judges, report"),
     ):
         commands.add_parser(

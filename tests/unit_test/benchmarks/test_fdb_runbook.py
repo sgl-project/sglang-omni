@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,8 @@ from benchmarks.duplex.fdb.selection import (
     select_v10_samples,
 )
 from benchmarks.duplex.fdb.servers import RunningServer
+from benchmarks.duplex.reference_v10 import MANIFEST_KIND
+from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 from benchmarks.duplex.v15_dataset import SUBSETS as V15_SUBSETS
 from benchmarks.eval import benchmark_duplex_v10
@@ -588,15 +591,42 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
     monkeypatch.setattr(asr_module, "run_command", run)
     stage_scored_repeat(settings, V10_IDS)
     asr_module.asr(settings, 1, False)
-    assert [command[3] for command, _ in calls] == ["asr", "timing", "reference-asr"]
+    assert [command[3] for command, _ in calls] == [
+        "asr",
+        "timing",
+        "reference-asr",
+        "unified-score",
+    ]
     assert calls[2][0][1:3] == ["-m", V10_CLI]
     assert calls[2][1] == settings.gpu
+    assert calls[3][1] == ""
+    assert calls[3][0][-2:] == [
+        "--tree",
+        str(settings.repeat_dir(1) / "v10" / "reference"),
+    ]
 
+    (settings.repeat_dir(1) / "v10" / "reference" / "asr.json").write_text("{}")
+    calls.clear()
+    asr_module.asr(settings, 1, False)
+    assert [command[3] for command, _ in calls] == ["asr", "timing", "unified-score"]
+
+    (settings.repeat_dir(1) / "v10" / "reference" / "asr.json").unlink()
+    calls.clear()
     failing.append("reference-asr")
     with pytest.raises(
         SystemExit, match="the v1.0 ASR failed.*v10/reference/logs/asr.log"
     ):
         asr_module.asr(settings, 1, False)
+    assert "unified-score" not in [command[3] for command, _ in calls]
+
+    failing.clear()
+    failing.append("unified-score")
+    with pytest.raises(SystemExit, match="v1.0 unified scoring failed.*backfill"):
+        asr_module.asr(settings, 1, False)
+    assert [command[3] for command, _ in calls][-2:] == [
+        "reference-asr",
+        "unified-score",
+    ]
 
     # note (luojiaxuan): a repeat generated with --v10-per-subset 0 has no v10/
     # and no v1.0 phase.
@@ -784,7 +814,7 @@ def test_asr_and_judge_run_only_the_v10_phases_for_a_v10_only_repeat(
         lambda command, **_: asr_calls.append(command) or True,
     )
     asr_module.asr(settings, 1, False)
-    assert [command[3] for command in asr_calls] == ["reference-asr"]
+    assert [command[3] for command in asr_calls] == ["reference-asr", "unified-score"]
     (repeat_dir / "v10" / "reference" / "asr.json").write_text("{}")
     judge_calls = stub_judge_phases(monkeypatch, failing_subset=None)
     judge_module.judge(settings, 1, False)
@@ -1025,7 +1055,7 @@ def test_results_append_a_separate_v10_table_only_when_a_run_has_v10(
     results = render(run_root, "minicpmo", "qwen")
     assert results.startswith(v15_only)
     lines = results.splitlines()
-    assert "## FDB v1.0 results" in lines
+    assert "## FDB v1.0 official reference results" in lines
     assert not any("v1.0 cells come from" in line for line in lines)
     assert (
         "| synthetic_pause_handling | 2 | 2 | 2 | 50.0 ± 0.0% | n/a | n/a | n/a | n/a | n/a |"
@@ -1085,7 +1115,7 @@ def test_results_of_a_v10_only_run_have_no_v15_section(tmp_path: Path) -> None:
     results = render(run_root, "minicpmo", "qwen")
     assert results.startswith("# FDB results: run\n")
     assert "v1.5" not in results
-    assert "## FDB v1.0 results" in results
+    assert "## FDB v1.0 official reference results" in results
 
 
 def test_results_name_the_repeats_that_carry_v10(tmp_path: Path) -> None:
@@ -1099,3 +1129,164 @@ def test_results_name_the_repeats_that_carry_v10(tmp_path: Path) -> None:
         "| candor_turn_taking | 3 | 3 | 3 | 100.0% | 2.000 | n/a | n/a | n/a | n/a |"
         in (results.splitlines())
     )
+
+
+def write_unified_reference(repeat_dir: Path) -> Path:
+    tree = repeat_dir / "v10" / "reference"
+    tree.mkdir(parents=True)
+    sample_ids = [
+        "candor_pause_handling/1",
+        "candor_turn_taking/1",
+        "icc_backchannel/1",
+    ]
+    (repeat_dir / "v10" / "sample-ids.txt").write_text(ids_text(sample_ids))
+    turn_dir = tree / "candor_turn_taking" / "1"
+    turn_dir.mkdir(parents=True)
+    (turn_dir / "turn_taking.json").write_text(
+        json.dumps([{"text": "[TURN-TAKING]", "timestamp": [2.0, 2.5]}])
+    )
+    (turn_dir / "output.json").write_text(json.dumps({"text": "", "chunks": []}))
+    rows = [
+        {
+            "sample_id": sample_ids[0],
+            "subset": "candor_pause_handling",
+            "eligible": False,
+            "reasons": ["recording failed"],
+            "files": {},
+        },
+        {
+            "sample_id": sample_ids[1],
+            "subset": "candor_turn_taking",
+            "eligible": True,
+            "reasons": [],
+            "window": {"T_s": 4.0},
+            "files": {"turn_taking.json": file_sha256(turn_dir / "turn_taking.json")},
+        },
+        {
+            "sample_id": sample_ids[2],
+            "subset": "icc_backchannel",
+            "eligible": True,
+            "reasons": [],
+            "files": {},
+        },
+    ]
+    (tree / "manifest.json").write_text(
+        json.dumps(
+            {
+                "kind": MANIFEST_KIND,
+                "samples": rows,
+                "counts": {
+                    "candor_pause_handling": {"selected": 1, "eligible": 0},
+                    "candor_turn_taking": {"selected": 1, "eligible": 1},
+                    "icc_backchannel": {"selected": 1, "eligible": 1},
+                },
+            }
+        )
+    )
+    (tree / "asr.json").write_text(
+        json.dumps(
+            {
+                "subsets": {
+                    "candor_turn_taking": {
+                        "transcripts": {"1": file_sha256(turn_dir / "output.json")}
+                    }
+                }
+            }
+        )
+    )
+    return tree
+
+
+def test_unified_scoring_and_aggregate_cli_keep_per_repeat_coverage_and_missing_states(
+    settings: Settings,
+) -> None:
+    repeat_dir = settings.repeat_dir(1)
+    tree = write_unified_reference(repeat_dir)
+    write_v15_scores(repeat_dir, 1.0)
+    (repeat_dir / "judge-qwen" / "summary.json").unlink()
+    environment = dict(os.environ, FDB_WORK=str(settings.fdb_work))
+    scorer = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            V10_CLI,
+            "unified-score",
+            "--tree",
+            str(tree),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert scorer.returncode == 0, scorer.stderr
+    aggregate = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks.duplex.fdb",
+            "aggregate",
+            "--run-name",
+            settings.run_name,
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert aggregate.returncode == 0, aggregate.stderr
+    results = (settings.run_root / "RESULTS.md").read_text()
+    assert "## FDB v1.5 results" in results
+    assert "| all | 2 | 2 | 1.000 | 2.500 | n/a | n/a | n/a | n/a | n/a |" in results
+    assert "Qwen behavior judge pending or failed for repeat-1" in results
+    assert results.index("## FDB v1.0 unified metrics") < results.index(
+        "## FDB v1.0 official reference results"
+    )
+    assert "| `candor_pause_handling` |" in results
+    assert (
+        "| `candor_pause_handling` | 216 | 1 | 0 | 1 | 0.000 | recording failed (1) | n/a |"
+        in results
+    )
+    assert "| `candor_pause_handling` | `pause_intrusion_rate` | n/a" in results
+    assert "median not reached" in results
+    assert "0/1 responded" in results
+    assert "Minimum 2.000 s after reference" in results
+    assert "Backchannel is scored by the official reference evaluator only." in results
+    assert f"[unified.json](repeat-1/v10/reference/unified.json)" in results
+
+    repeat_2 = settings.repeat_dir(2)
+    (repeat_2 / "v10").mkdir(parents=True)
+    (repeat_2 / "v10" / "sample-ids.txt").write_text(ids_text(["candor_turn_taking/1"]))
+    partial = render(settings.run_root, "minicpmo", "qwen")
+    assert "### repeat-2" in partial
+    assert "export is incomplete" in partial
+    assert "unified-score --tree" in partial
+    assert f"export FDB_WORK={settings.fdb_work}" in partial
+    assert "RUN_NAME" not in partial
+
+    unified_path = tree / "unified.json"
+    saved_unified = unified_path.read_text()
+    missing_subset = json.loads(saved_unified)
+    missing_subset["subsets"].pop("candor_turn_taking")
+    unified_path.write_text(json.dumps(missing_subset))
+    incomplete_subsets = render(settings.run_root, "minicpmo", "qwen")
+    assert "does not cover every selected scored subset" in incomplete_subsets
+    assert "median not reached" not in incomplete_subsets
+
+    incompatible = json.loads(saved_unified)
+    incompatible["schema_version"] = 2
+    unified_path.write_text(json.dumps(incompatible))
+    unsupported = render(settings.run_root, "minicpmo", "qwen")
+    assert "unsupported kind, schema, or definition" in unsupported
+    assert "median not reached" not in unsupported
+    unified_path.write_text(saved_unified)
+
+    (tree / "manifest.json").write_text((tree / "manifest.json").read_text() + " ")
+    stale = render(settings.run_root, "minicpmo", "qwen")
+    assert "stale for the current manifest or ASR" in stale
+    assert "median not reached" not in stale
+
+    (tree / "unified-samples.jsonl").unlink()
+    incomplete = render(settings.run_root, "minicpmo", "qwen")
+    assert "unified output pair is missing or incomplete" in incomplete
+    assert "median not reached" not in incomplete
