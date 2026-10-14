@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import struct
 from collections.abc import Mapping
 from pathlib import Path
 
+import av
 import numpy as np
 import numpy.typing as npt
+import soundfile
 import torch
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -18,13 +21,12 @@ from sglang_omni.preprocessing.resource_connector import MultiModalResourceConne
 from .base import MediaIO, is_url
 from .resource_connector import await_media_cleanup
 
+# note (ratish): the frame count libsndfile reports when a header does not state one.
+LIBSNDFILE_UNKNOWN_FRAMES = 2**63 - 1
+
 
 def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
-    """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
-    import io
-
-    import av
-
+    """Decode audio bytes with PyAV to mono float at full scale."""
     container = av.open(io.BytesIO(data))
     try:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)
@@ -36,14 +38,22 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
         sample_rate = audio_stream.rate
         frames = []
         for frame in container.decode(audio_stream):
-            arr = frame.to_ndarray()  # shape varies by format
-            if arr.ndim == 2:
-                # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
-                # Average channels to mono
-                arr = arr.mean(axis=0)
+            samples = frame.to_ndarray()
+            if np.issubdtype(samples.dtype, np.unsignedinteger):
+                midpoint = (np.iinfo(samples.dtype).max + 1) / 2
+                samples = (samples.astype(np.float32) - midpoint) / midpoint
+            elif np.issubdtype(samples.dtype, np.signedinteger):
+                full_scale = -float(np.iinfo(samples.dtype).min)
+                samples = samples.astype(np.float32) / full_scale
             else:
-                pass
-            frames.append(arr.flatten().astype(np.float32))
+                samples = samples.astype(np.float32, copy=False)
+            channels = len(frame.layout.channels)
+            # note (ratish): a packed frame interleaves its channels in one row.
+            if frame.format.is_planar:
+                samples = samples.reshape(channels, -1).mean(axis=0)
+            else:
+                samples = samples.reshape(-1, channels).mean(axis=1)
+            frames.append(samples)
     finally:
         container.close()
 
@@ -52,17 +62,25 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
     else:
         pass
 
-    audio = np.concatenate(frames)
-    # Normalize integer formats to [-1, 1] float range
-    if audio.max() > 1.0 or audio.min() < -1.0:
-        peak = max(abs(audio.max()), abs(audio.min()))
-        if peak > 0:
-            audio = audio / peak
+    return np.concatenate(frames), int(sample_rate)
+
+
+def decode_audio_bytes(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
+    """Decode audio bytes to mono float as the reference loader does: libsndfile, then
+    PyAV for the containers libsndfile does not read (MP4, WebM, AAC)."""
+    try:
+        sound_file = soundfile.SoundFile(io.BytesIO(data))
+    except soundfile.LibsndfileError:
+        return decode_audio_bytes_av(data)
+    with sound_file:
+        if 0 < sound_file.frames < LIBSNDFILE_UNKNOWN_FRAMES:
+            audio = sound_file.read(dtype="float32", always_2d=True)
+            return audio.mean(axis=1), int(sound_file.samplerate)
         else:
             pass
-    else:
-        pass
-    return audio, int(sample_rate)
+    # note (ratish): libsndfile reads the frames a header states; a writer that could not
+    # seek back leaves them at 0 or unknown, and FFmpeg reads to the end of the data.
+    return decode_audio_bytes_av(data)
 
 
 def parse_wav_bytes(
@@ -182,11 +200,8 @@ def load_audio_path(
 ) -> npt.NDArray[np.float32]:
     with open(path, "rb") as f:
         data = f.read()
-    try:
-        audio, sr = parse_wav_bytes(data, source=str(path))
-    except ValueError:
-        audio, sr = decode_audio_bytes_av(data)
-    return resample_linear(audio, sr, target_sr)
+    audio, sample_rate = decode_audio_bytes(data)
+    return resample_linear(audio, sample_rate, target_sr)
 
 
 class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
@@ -205,11 +220,8 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
 
     def load_bytes(self, data: bytes) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from raw bytes (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
-        try:
-            audio, sr = parse_wav_bytes(data, source="bytes")
-        except ValueError:
-            audio, sr = decode_audio_bytes_av(data)
-        resampled = resample_linear(audio, sr, self.target_sr)
+        audio, sample_rate = decode_audio_bytes(data)
+        resampled = resample_linear(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
     def load_base64(
@@ -224,11 +236,8 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
         """Load audio from a local file path (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
         with open(filepath, "rb") as f:
             data = f.read()
-        try:
-            audio, sr = parse_wav_bytes(data, source=str(filepath))
-        except ValueError:
-            audio, sr = decode_audio_bytes_av(data)
-        resampled = resample_linear(audio, sr, self.target_sr)
+        audio, sample_rate = decode_audio_bytes(data)
+        resampled = resample_linear(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
 

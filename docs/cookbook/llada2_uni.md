@@ -25,8 +25,12 @@ LLaDA2.0-Uni runs a 4-stage pipeline
 thinker disables CUDA graph by default for this experimental DLLM path.
 
 ```bash
-sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.engine.enable_torch_compile false
 ```
+
+The cookbook explicitly disables `torch.compile` to match the validated
+generation settings. CUDA Graph execution is controlled separately.
 
 ## Text Input
 

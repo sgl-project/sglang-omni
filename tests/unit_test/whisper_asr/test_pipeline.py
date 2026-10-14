@@ -18,6 +18,9 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -51,7 +54,7 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["prefill_coalesce_requests"].default == 2
     assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
@@ -184,6 +187,28 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
         builder.adjust_overrides({"chunked_prefill_size": 4096})
 
 
+@pytest.mark.parametrize(
+    ("platform_type", "expected_backend"),
+    [(XPUOmniPlatform, "torch_native"), (CUDAOmniPlatform, None)],
+)
+def test_whisper_encoder_decoder_attention_backend_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    expected_backend: str | None,
+) -> None:
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
+    defaults = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    ).generation_defaults(dtype="float16")
+
+    if expected_backend is None:
+        assert "attention_backend" not in defaults
+    else:
+        assert defaults["attention_backend"] == expected_backend
+
+
 def test_whisper_breakable_prefill_graph_policy() -> None:
     builder = whisper_asr_builder.WhisperASREngineBuilder(
         max_running_requests=4,
@@ -244,7 +269,7 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
 
     assert builder.extra_scheduler_kwargs() == {
         "enable_async_decode": True,
-        "async_decode_min_batch_size": 2,
+        "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
         "request_build_max_pending": 16,
         "prefill_coalesce_requests": 2,
@@ -290,7 +315,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
-    assert factory.async_decode_min_batch_size == 2
+    assert factory.async_decode_min_batch_size == 1
     assert factory.request_build_max_pending == 16
     assert factory.prefill_coalesce_requests == 2
     assert factory.prefill_coalesce_wait_ms == 6.0

@@ -57,3 +57,18 @@ def test_an_empty_golden_file_fails() -> None:
     assert check_golden.check(golden(0), "Apple M5", {}, METRICS)[1] == [
         "the golden file has no clips"
     ]
+
+
+def test_moss_tags_are_dropped_before_scoring() -> None:
+    text = "[0.00][S01] Hello [sniff] world.[1.25][1.30][S02]你好[2.00]"
+    assert (
+        check_golden.spoken_text(text, "moss_transcribe_diarize") == "Hello world. 你好"
+    )
+    assert check_golden.spoken_text("[S01] kept", None) == "[S01] kept"
+
+
+def test_a_pending_baseline_reports_no_delta() -> None:
+    pending = {**golden(), "baseline": {"source": "pending", **METRICS}}
+    lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
+    assert failures == []
+    assert "| wer_en | pending | 3.00% | n/a |" in lines

@@ -15,6 +15,11 @@ import msgpack
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.pipeline.replicas import assign_replica_bindings
+from sglang_omni.profiler.duplex_events import (
+    emit_session_output_event,
+    emit_session_unit_event,
+    emit_session_unit_ready_event,
+)
 from sglang_omni.proto import OmniRequest, StreamMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -31,6 +36,13 @@ class SessionStreamHandler(Protocol):
     def __call__(self, message: StreamMessage) -> None: ...
 
 
+@dataclass(frozen=True, kw_only=True)
+class PendingSessionChunk:
+    chunk: TimedChunk
+    encoded_bytes: int
+    request_id: str
+
+
 @dataclass(kw_only=True)
 class Session:
     session_identity: SessionIdentity
@@ -39,7 +51,7 @@ class Session:
     bindings: dict[str, int]
     limits: SessionLimits
     opened: list[str] = field(default_factory=list)
-    pending: deque[tuple[TimedChunk, int]] = field(default_factory=deque)
+    pending: deque[PendingSessionChunk] = field(default_factory=deque)
     pending_bytes: int = 0
     pending_count: int = 0
     outputs: deque[tuple[OutputChunk, int]] = field(default_factory=deque)
@@ -190,7 +202,12 @@ class CoordinatorSessions:
         return session.session_identity
 
     async def append_session(
-        self, session_identity: SessionIdentity, chunk: TimedChunk
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> int:
         """Accept input in global seq order, independently of output consumption.
 
@@ -250,7 +267,14 @@ class CoordinatorSessions:
             raise QueueFullError()
         else:
             pass
-        session.pending.append((chunk, encoded_bytes))
+        request_id = f"session-{uuid.uuid4()}"
+        session.pending.append(
+            PendingSessionChunk(
+                chunk=chunk,
+                encoded_bytes=encoded_bytes,
+                request_id=request_id,
+            )
+        )
         session.pending_count += 1
         session.pending_bytes += encoded_bytes
         session.next_input += 1
@@ -259,6 +283,19 @@ class CoordinatorSessions:
             session.ended_modalities.add(chunk.modality)
         else:
             pass
+        emit_session_unit_ready_event(
+            request_id=request_id,
+            session_identity=session.session_identity,
+            input_chunk=chunk,
+            ready_timestamp_ns=ready_timestamp_ns,
+            ready_run_id=ready_run_id,
+        )
+        emit_session_unit_event(
+            request_id=request_id,
+            event_name="session_unit_admitted",
+            session_identity=session.session_identity,
+            input_chunk=chunk,
+        )
         session.wake.set()
         return chunk.seq
 
@@ -297,6 +334,7 @@ class CoordinatorSessions:
     def emit_session_output(
         self,
         session: Session,
+        request_id: str,
         input_seq: int,
         chunk: TimedChunk,
         *,
@@ -326,6 +364,15 @@ class CoordinatorSessions:
             raise QueueFullError()
         else:
             pass
+        if kind == "data":
+            emit_session_output_event(request_id=request_id, output_chunk=output)
+        else:
+            emit_session_unit_event(
+                request_id=request_id,
+                event_name="session_unit_finished",
+                session_identity=session.session_identity,
+                input_chunk=chunk,
+            )
         session.outputs.append((output, size))
         session.output_bytes += size
         session.next_output += 1
@@ -342,18 +389,25 @@ class CoordinatorSessions:
                     continue
                 else:
                     pass
-                chunk, size = session.pending.popleft()
+                pending_chunk = session.pending.popleft()
+                chunk = pending_chunk.chunk
                 try:
-                    await self.session_operation(session, "append", chunk=chunk)
+                    await self.session_operation(
+                        session,
+                        "append",
+                        chunk=chunk,
+                        request_id=pending_chunk.request_id,
+                    )
                     self.emit_session_output(
                         session,
+                        pending_chunk.request_id,
                         chunk.seq,
                         replace(chunk, payload=None),
                         kind="input_done",
                     )
                 finally:
                     session.pending_count -= 1
-                    session.pending_bytes -= size
+                    session.pending_bytes -= pending_chunk.encoded_bytes
         except Exception as exc:
             session.error = exc
             self.owned_session_task(self.close_session_state(session))
@@ -365,6 +419,7 @@ class CoordinatorSessions:
         *,
         owner: str | None = None,
         chunk: TimedChunk | None = None,
+        request_id: str | None = None,
     ) -> None:
         session_identity = session.session_identity
         session_operation = SessionOperation(
@@ -380,7 +435,10 @@ class CoordinatorSessions:
                 SESSION_METADATA_KEY: session_operation.to_dict(),
             },
         )
-        request_id = f"session-{uuid.uuid4()}"
+        if request_id is None:
+            request_id = f"session-{uuid.uuid4()}"
+        else:
+            pass
 
         if chunk is not None:
             input_seq = chunk.seq
@@ -388,7 +446,10 @@ class CoordinatorSessions:
             def output(msg: StreamMessage) -> None:
                 try:
                     self.emit_session_output(
-                        session, input_seq, TimedChunk.from_dict(msg.chunk)
+                        session,
+                        request_id,
+                        input_seq,
+                        TimedChunk.from_dict(msg.chunk),
                     )
                 except Exception as exc:
                     self.reject_completion_future(request_id, exc)

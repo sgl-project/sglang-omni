@@ -146,8 +146,8 @@ def test_model_worker_update_weights_from_disk_without_a_version_leaves_the_bags
 
 def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
     worker = object.__new__(ModelWorker)
+    worker.model_config = SimpleNamespace(context_len=4096)
     worker.server_args = SimpleNamespace(
-        context_length=4096,
         max_prefill_tokens=1024,
         max_running_requests=8,
         max_queued_requests=32,

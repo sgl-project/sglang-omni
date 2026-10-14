@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.utils.channels_last_conv import is_channels_last_conv_device
 
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -49,6 +50,9 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_cache_capacity: int,
         decode_stream_priority: int,
         enable_flow_block_compile: bool,
+        enable_flow_cuda_graph: bool,
+        flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+        packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -113,6 +117,12 @@ class MiniCPMOCode2Wav(nn.Module):
                 )
         else:
             pass
+        if is_channels_last_conv_device(resolved_device):
+            with self.device_context:
+                for block in self.token2wav.flow.decoder.estimator.blocks:
+                    block.conv.use_channels_last()
+        else:
+            pass
         with self.device_context:
             device_module = torch.get_device_module(self.token2wav.device)
             self.decode_stream: torch.Stream = device_module.Stream(
@@ -143,7 +153,9 @@ class MiniCPMOCode2Wav(nn.Module):
             # note (Dayuxiaoshui): compile the dense blocks only; the packed path
             # slices by data-dependent lengths and would recompile per length.
             for block in flow.decoder.estimator.blocks:
-                block.forward = torch.compile(block.forward, dynamic=True)
+                block.forward = torch.compile(
+                    block.forward, dynamic=True, options={"triton.cudagraphs": False}
+                )
             warmup_prompt = SpeakerPrompt(
                 prompt_tokens=torch.zeros(
                     1, FLOW_WARMUP_TOKENS, dtype=torch.int32, device=resolved_device
@@ -203,6 +215,15 @@ class MiniCPMOCode2Wav(nn.Module):
                                 device=resolved_device,
                             ),
                         )
+        else:
+            pass
+
+        if enable_flow_cuda_graph and resolved_device.type == "cuda":
+            with self.device_context:
+                self.token2wav.capture_flow_graphs(
+                    flow_cuda_graph_capture_shapes,
+                    packed_dit_cuda_graph_capture_shapes,
+                )
         else:
             pass
 

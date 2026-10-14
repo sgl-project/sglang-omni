@@ -443,6 +443,136 @@ def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
     asyncio.run(run())
 
 
+WS_SUPPORTED_SPEECH_FIELDS = frozenset(
+    {"model", "voice", "response_format", "stream_audio", "split_granularity"}
+)
+
+
+@pytest.mark.parametrize(
+    ("fields", "path"),
+    [
+        ({"input": "not a session field"}, "input"),
+        ({"infill": False}, "infill"),
+        ({"seed": 0}, "seed"),
+    ],
+)
+def test_supported_speech_fields_refuse_session_config_fields(
+    fields: dict[str, object], path: str
+) -> None:
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(),
+            model_name="tts",
+            supported_speech_fields=WS_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="pcm", **fields))
+        event = websocket.receive_json()
+
+    assert event["type"] == "error"
+    assert event["param"] == path
+
+
+@pytest.mark.parametrize(
+    ("outer_fields", "path"),
+    [
+        ({"infill": None}, "infill"),
+        ({"seed": 0}, "seed"),
+        ({"response_format": "pcm"}, "response_format"),
+    ],
+    ids=["unknown-null", "unsupported", "misplaced-config-field"],
+)
+def test_supported_speech_fields_refuse_fields_beside_a_nested_session(
+    outer_fields: dict[str, object], path: str
+) -> None:
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(),
+            model_name="tts",
+            supported_speech_fields=WS_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(
+            {
+                "type": "session.config",
+                "session": {"response_format": "pcm"},
+                **outer_fields,
+            }
+        )
+        event = websocket.receive_json()
+
+    assert event["type"] == "error"
+    assert event["param"] == path
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": "session.config", "session": {"response_format": "pcm"}},
+        {"type": "session.config", "session": None, "response_format": "pcm"},
+        session_config(response_format="pcm"),
+    ],
+    ids=["nested", "flat-with-null-session", "flat"],
+)
+def test_supported_speech_fields_accept_nested_and_flat_session_configs(
+    message: dict[str, object],
+) -> None:
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(),
+            model_name="tts",
+            supported_speech_fields=WS_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(message)
+        assert websocket.receive_json()["type"] == "session.configured"
+
+
+def test_session_config_without_a_supported_set_ignores_fields_beside_a_session() -> (
+    None
+):
+    client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(
+            {
+                "type": "session.config",
+                "session": {"response_format": "pcm"},
+                "infill": None,
+                "seed": 0,
+            }
+        )
+        assert websocket.receive_json()["type"] == "session.configured"
+
+
+def test_supported_speech_fields_check_only_what_the_client_sent() -> None:
+    """Each sentence request carries input, stream and speed, which the client
+    never sent, so the supported set need not list them."""
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(),
+            model_name="tts",
+            supported_speech_fields=WS_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="pcm", stream_audio=True))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        websocket.send_json({"type": "input.done"})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["error"] is False
+        assert websocket.receive_json()["type"] == "session.done"
+
+
 def test_speech_websocket_rejects_missing_initial_config() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 

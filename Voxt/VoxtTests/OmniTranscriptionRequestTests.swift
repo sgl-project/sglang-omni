@@ -31,6 +31,112 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         XCTAssertEqual(fieldValue("include_generation_metadata", in: body), "true")
     }
 
+    func testWhisperFinalRequestsCarryTheBudgetLanguageAndTemperature() {
+        let request = OmniASRRuntime.whisperFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "en",
+            maxNewTokens: 320,
+            temperature: 0
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "en")
+        XCTAssertEqual(fieldValue("max_new_tokens", in: body), "320")
+        XCTAssertEqual(fieldValue("temperature", in: body), "0.0")
+        XCTAssertNil(fieldValue("audio_layout", in: body))
+        XCTAssertNil(fieldValue("stop_at_end_of_text", in: body))
+        XCTAssertNil(fieldValue("include_generation_metadata", in: body))
+    }
+
+    func testCohereFinalRequestsCarryVoxtsLongFormSettings() {
+        let request = OmniASRRuntime.cohereFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "zh",
+            usePunctuation: false,
+            maxNewTokens: 1024,
+            temperature: 0,
+            chunkDuration: 1200,
+            minChunkDuration: 1,
+            speechSegments: OmniSpeechSegments(
+                vadModelDirectory: URL(fileURLWithPath: "/models/silero"),
+                threshold: 0.5,
+                minSpeechMilliseconds: 220,
+                minSilenceMilliseconds: 420,
+                speechPadMilliseconds: 180,
+                mergeGapSeconds: 1,
+                maxChunkSeconds: 24
+            )
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "zh")
+        XCTAssertEqual(fieldValue("use_punctuation", in: body), "false")
+        XCTAssertEqual(fieldValue("max_new_tokens", in: body), "1024")
+        XCTAssertEqual(fieldValue("chunk_duration", in: body), "1200.0")
+        XCTAssertEqual(fieldValue("min_chunk_duration", in: body), "1.0")
+        XCTAssertEqual(fieldValue("vad_model_directory", in: body), "/models/silero")
+        XCTAssertEqual(fieldValue("vad_threshold", in: body), "0.5")
+        XCTAssertEqual(fieldValue("vad_min_speech_ms", in: body), "220")
+        XCTAssertEqual(fieldValue("vad_min_silence_ms", in: body), "420")
+        XCTAssertEqual(fieldValue("vad_speech_pad_ms", in: body), "180")
+        XCTAssertEqual(fieldValue("vad_merge_gap_seconds", in: body), "1.0")
+        XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
+    }
+
+    func testParakeetFinalRequestsCarryOnlyVoxtsChunkLength() {
+        let request = OmniASRRuntime.parakeetFinalRequest(samples: [0, 0.1], sampleRate: 16000, chunkDuration: 1200)
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("chunk_duration", in: body), "1200.0")
+        XCTAssertNil(fieldValue("language", in: body))
+        XCTAssertNil(fieldValue("max_new_tokens", in: body))
+    }
+
+    func testSenseVoiceFinalRequestsCarryTheHintITNAndOverlappingChunks() {
+        let request = OmniASRRuntime.senseVoiceFinalRequest(
+            samples: [0, 0.1],
+            sampleRate: 16000,
+            language: "zh",
+            useITN: true,
+            speechSegments: OmniSpeechSegments(
+                vadModelDirectory: URL(fileURLWithPath: "/models/silero"),
+                threshold: 0.5,
+                minSpeechMilliseconds: 220,
+                minSilenceMilliseconds: 420,
+                speechPadMilliseconds: 180,
+                mergeGapSeconds: nil,
+                maxChunkSeconds: 24,
+                chunkOverlapSeconds: 0.35
+            )
+        )
+        let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
+
+        XCTAssertEqual(fieldValue("language", in: body), "zh")
+        XCTAssertEqual(fieldValue("use_itn", in: body), "true")
+        XCTAssertEqual(fieldValue("vad_model_directory", in: body), "/models/silero")
+        XCTAssertEqual(fieldValue("vad_max_chunk_seconds", in: body), "24.0")
+        XCTAssertEqual(fieldValue("vad_chunk_overlap_seconds", in: body), "0.35")
+        XCTAssertNil(fieldValue("vad_merge_gap_seconds", in: body))
+        XCTAssertNil(fieldValue("max_new_tokens", in: body))
+    }
+
+    func testSegmentsKeepSenseVoicesLanguageEmotionAndEvent() {
+        let segments = OmniSpeakerSegment.parse([
+            ["start": 0.5, "end": 3.0, "speaker": "", "text": "你好",
+             "language": "zh", "emotion": "neutral", "event": "Speech"],
+            ["start": 3.0, "end": 4.0, "speaker": "S01", "text": "hi"],
+        ])
+
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments[0].language, "zh")
+        XCTAssertEqual(segments[0].emotion, "neutral")
+        XCTAssertEqual(segments[0].event, "Speech")
+        XCTAssertNil(segments[1].language)
+        XCTAssertEqual(segments[1].speakerID, "S01")
+    }
+
     func testRequestsWithoutALayoutLeaveTheServerDefault() {
         let request = OmniTranscriptionRequest(
             samples: [0],
@@ -44,6 +150,40 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         let body = OmniMultipartBody.transcription(request, modelName: "m", boundary: "b")
 
         XCTAssertNil(fieldValue("audio_layout", in: body))
+    }
+
+    func testMossIsRoutedToTheOmniServer() {
+        XCTAssertEqual(
+            OmniASRBackend.modelKindsByRepo["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
+            .mossTranscribeDiarize
+        )
+        XCTAssertEqual(OmniASRModelKind.mossTranscribeDiarize.rawValue, "moss_transcribe_diarize")
+    }
+
+    func testDoneEventsCarrySpeakerSegments() throws {
+        var parser = OmniTranscriptionStreamParser()
+        try parser.consume(line: #"data: {"type":"transcript.text.done","text":"[0.07][S01] Hi[1.20]","segments":[{"start":0.07,"end":1.2,"speaker":"S01","text":"Hi"},{"start":"bad"}]}"#)
+        try parser.consume(line: "data: [DONE]")
+
+        let result = try parser.finish()
+        XCTAssertEqual(result.text, "[0.07][S01] Hi[1.20]")
+        XCTAssertEqual(result.segments, [
+            OmniSpeakerSegment(startSeconds: 0.07, endSeconds: 1.2, speakerID: "S01", text: "Hi"),
+        ])
+    }
+
+    func testDoneEventsWithoutSegmentsHaveNone() throws {
+        var parser = OmniTranscriptionStreamParser()
+        try parser.consume(line: #"data: {"type":"transcript.text.done","text":"hello"}"#)
+
+        XCTAssertEqual(try parser.finish().segments, [])
+    }
+
+    func testUnlabelledSegmentsHaveNoSpeakerForVoxt() {
+        let segment = OmniSpeakerSegment(startSeconds: 0, endSeconds: 2, speakerID: "", text: "hi")
+
+        XCTAssertNil(segment.transcriptSegment.speakerID)
+        XCTAssertEqual(segment.transcriptSegment.endTime, 2)
     }
 }
 
@@ -69,5 +209,78 @@ final class OmniRealtimeSessionUpdateTests: XCTestCase {
         let session = try session(OmniRealtimeTranscriptionSession.sessionUpdate(language: "English"))
 
         XCTAssertEqual(session["language"] as? String, "English")
+    }
+
+    /// MLXAudio's MOSS session kept each finalized window on its own line and
+    /// the pending window on the next; Voxt's MOSS rendering merges the lines.
+    func testMossLiveWindowsJoinByLine() {
+        var assembler = OmniLiveTranscriptAssembler(joining: .lines)
+
+        XCTAssertEqual(
+            assembler.apply(eventIndex: 1, segmentID: 0, text: "Hello", isFinal: true),
+            .display(confirmedText: "Hello", provisionalText: "")
+        )
+        XCTAssertEqual(
+            assembler.apply(eventIndex: 2, segmentID: 1, text: ", wor", isFinal: false),
+            .display(confirmedText: "Hello\n", provisionalText: ", wor")
+        )
+        XCTAssertEqual(
+            assembler.apply(eventIndex: 3, segmentID: 1, text: " , world ", isFinal: true),
+            .display(confirmedText: "Hello\n, world", provisionalText: "")
+        )
+    }
+
+    func testQwenLiveSegmentsKeepScriptAwareSpacing() {
+        var assembler = OmniLiveTranscriptAssembler()
+
+        _ = assembler.apply(eventIndex: 1, segmentID: 0, text: "Hello", isFinal: true)
+        XCTAssertEqual(
+            assembler.apply(eventIndex: 2, segmentID: 1, text: "world", isFinal: true),
+            .display(confirmedText: "Hello world", provisionalText: "")
+        )
+    }
+
+    func testNemotronLiveSessionsPassTheLatencyAndLanguage() throws {
+        let session = try session(OmniRealtimeTranscriptionSession.sessionUpdate(
+            language: "zh-CN",
+            chunkMilliseconds: 560
+        ))
+
+        XCTAssertEqual(session["language"] as? String, "zh-CN")
+        XCTAssertEqual(session["chunk_ms"] as? Int, 560)
+        XCTAssertNil(session["prompt"])
+    }
+
+    /// Voxt maps a live language onto the prompt languages in the checkpoint's
+    /// config.json, as it did with the loaded Swift model's dictionary.
+    func testNemotronPromptLanguagesComeFromTheCheckpointConfig() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"default_language":"auto","prompt":{"prompt_dictionary":{"auto":101,"en-US":0,"zh-CN":4,"ja-JA":10,"ja-JP":10}}}"#.utf8)
+            .write(to: directory.appendingPathComponent("config.json"))
+
+        let prompt = try OmniASRRuntime.nemotronPromptLanguages(modelDirectory: directory)
+        XCTAssertEqual(prompt.defaultLanguage, "auto")
+        XCTAssertEqual(Set(prompt.languages), ["auto", "en-US", "zh-CN", "ja-JA", "ja-JP"])
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.nativeNemotronLanguage(
+                requested: "zh", availableLanguages: prompt.languages, defaultLanguage: prompt.defaultLanguage
+            ),
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.nativeNemotronLanguage(
+                requested: "ja", availableLanguages: prompt.languages, defaultLanguage: prompt.defaultLanguage
+            ),
+            "ja-JA"
+        )
+    }
+
+    func testMossLiveSessionsPassTheTaskPrompt() throws {
+        let session = try session(OmniRealtimeTranscriptionSession.sessionUpdate(language: nil, prompt: "Transcribe."))
+
+        XCTAssertEqual(session["prompt"] as? String, "Transcribe.")
+        XCTAssertNil(session["language"])
     }
 }

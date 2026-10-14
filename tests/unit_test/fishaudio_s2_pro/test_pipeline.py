@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
+import io
 import os
 import subprocess
 import sys
 import threading
+import time
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import av
 import numpy as np
+import numpy.typing as npt
 import pytest
+import soundfile
 import torch
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_exec, publish
 
+from sglang_omni.models.fishaudio_s2_pro import stages as s2pro_stages
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -27,6 +35,10 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     apply_tts_result,
     build_sglang_tts_request,
     make_tts_scheduler_adapters,
+)
+from sglang_omni.models.fishaudio_s2_pro.stages import (
+    FishReferenceEncodeHook,
+    FishReferenceInput,
 )
 from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
@@ -1310,18 +1322,15 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
-    from sglang_omni.preprocessing import audio as audio_module
 
     release = threading.Event()
     entered = threading.Event()
 
-    class AudioMediaIO:
-        def __init__(self, *, target_sr: int) -> None:
-            self.target_sr = target_sr
-
-        def load_bytes(self, payload: bytes):
-            assert payload == b"ref"
-            return np.zeros(12, dtype=np.float32), self.target_sr
+    def parse_wav_bytes(
+        data: bytes, source: str
+    ) -> tuple[npt.NDArray[np.float32], int]:
+        assert data == b"ref"
+        return np.zeros(12, dtype=np.float32), 16000
 
     class Codec:
         sample_rate = 16000
@@ -1336,7 +1345,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
             self.calls += 1
             return torch.tensor([[1, 2, 3]], dtype=torch.long), None
 
-    monkeypatch.setattr(audio_module, "AudioMediaIO", AudioMediaIO)
+    monkeypatch.setattr(s2pro_stages, "parse_wav_bytes", parse_wav_bytes)
     monkeypatch.setitem(
         sys.modules,
         "torchaudio",
@@ -1390,14 +1399,11 @@ def test_fish_reference_encode_service_failure_does_not_poison(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
-    from sglang_omni.preprocessing import audio as audio_module
 
-    class AudioMediaIO:
-        def __init__(self, *, target_sr: int) -> None:
-            self.target_sr = target_sr
-
-        def load_bytes(self, payload: bytes):
-            return np.zeros(8, dtype=np.float32), self.target_sr
+    def parse_wav_bytes(
+        data: bytes, source: str
+    ) -> tuple[npt.NDArray[np.float32], int]:
+        return np.zeros(8, dtype=np.float32), 16000
 
     class Codec:
         sample_rate = 16000
@@ -1412,7 +1418,7 @@ def test_fish_reference_encode_service_failure_does_not_poison(
                 raise RuntimeError("transient")
             return torch.tensor([[5, 6]], dtype=torch.long), None
 
-    monkeypatch.setattr(audio_module, "AudioMediaIO", AudioMediaIO)
+    monkeypatch.setattr(s2pro_stages, "parse_wav_bytes", parse_wav_bytes)
     monkeypatch.setitem(
         sys.modules,
         "torchaudio",
@@ -1453,9 +1459,7 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
         assert mono is True
         return np.zeros(8, dtype=np.float32)
 
-    from sglang_omni.utils import audio as audio_utils
-
-    monkeypatch.setattr(audio_utils, "load_audio", load_audio)
+    monkeypatch.setattr(s2pro_stages, "load_audio", load_audio)
 
     class Codec:
         sample_rate = 16000
@@ -1762,3 +1766,176 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
 
     assert torch.equal(out, torch.full_like(x, 10.0))
     assert seen_calls == ["eager"]
+
+
+class WaveformBitsCodec:
+    sample_rate: int = 44100
+
+    def encode(
+        self, audios: torch.Tensor, audio_lengths: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return audios.contiguous().view(torch.int32).long(), audio_lengths
+
+
+def test_an_uploaded_reference_encodes_like_the_same_file_by_path(
+    tmp_path: Path,
+) -> None:
+    sample_rate = 16000
+    times = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    noise = np.random.default_rng(0).standard_normal(sample_rate).astype(np.float32)
+    waveform = 0.3 * np.sin(2 * np.pi * 220 * times) + 0.05 * noise
+    reference_path = tmp_path / "reference.wav"
+    soundfile.write(reference_path, waveform, sample_rate, subtype="PCM_16")
+    reference_bytes = reference_path.read_bytes()
+    hook = FishReferenceEncodeHook(codec=WaveformBitsCodec(), checkpoint_id="codec")
+
+    by_path = hook.encode_one(FishReferenceInput("path", str(reference_path)))
+    by_bytes = hook.encode_one(FishReferenceInput("bytes", reference_bytes))
+    by_base64 = hook.encode_one(
+        FishReferenceInput(
+            "base64", base64.b64encode(reference_bytes).decode(), "audio/wav"
+        )
+    )
+
+    assert by_path.shape == (1, 44100)
+    assert torch.equal(by_bytes, by_path)
+    assert torch.equal(by_base64, by_path)
+
+
+@pytest.mark.parametrize(
+    ("container_format", "codec_name", "sample_rate"),
+    [("webm", "libopus", 48000), ("mp4", "aac", 44100)],
+    ids=["webm-opus", "m4a-aac"],
+)
+def test_an_uploaded_reference_in_a_compressed_format_encodes(
+    container_format: str, codec_name: str, sample_rate: int
+) -> None:
+    samples = 0.3 * np.sin(
+        2 * np.pi * 220 * np.arange(sample_rate, dtype=np.float32) / sample_rate
+    )
+    buffer = io.BytesIO()
+    with av.open(buffer, mode="w", format=container_format) as container:
+        stream = container.add_stream(codec_name, rate=sample_rate, layout="mono")
+        frame = av.AudioFrame.from_ndarray(
+            samples.reshape(1, -1), format="flt", layout="mono"
+        )
+        frame.sample_rate = sample_rate
+        resampler = av.AudioResampler(
+            format=stream.codec_context.format, layout="mono", rate=sample_rate
+        )
+        for resampled_frame in resampler.resample(frame):
+            for packet in stream.encode(resampled_frame):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    reference_bytes = buffer.getvalue()
+    hook = FishReferenceEncodeHook(codec=WaveformBitsCodec(), checkpoint_id="codec")
+
+    by_bytes = hook.encode_one(FishReferenceInput("bytes", reference_bytes))
+    by_base64 = hook.encode_one(
+        FishReferenceInput("base64", base64.b64encode(reference_bytes).decode())
+    )
+
+    assert by_bytes.shape[0] == 1
+    assert by_bytes.shape[1] >= WaveformBitsCodec.sample_rate
+    assert torch.equal(by_base64, by_bytes)
+
+
+class EncodeConditionsCodec:
+    sample_rate: int = 44100
+
+    def __init__(self) -> None:
+        self.conditions: list[tuple[float, bool, torch.dtype]] = []
+
+    def encode(
+        self, audios: torch.Tensor, audio_lengths: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.conditions.append(
+            (
+                float(audios.abs().max()),
+                torch.is_autocast_enabled(audios.device.type),
+                torch.get_autocast_dtype(audios.device.type),
+            )
+        )
+        return torch.zeros((1, 10, 1), dtype=torch.long), audio_lengths
+
+
+def test_a_default_encode_keeps_the_waveform_and_full_precision() -> None:
+    codec = EncodeConditionsCodec()
+    hook = FishReferenceEncodeHook(codec=codec, checkpoint_id="codec")
+
+    hook.encode_reference_waveform(torch.full((1, 4410), 1.5), 44100)
+
+    assert [condition[:2] for condition in codec.conditions] == [(1.5, False)]
+
+
+def test_a_bfloat16_encode_clamps_the_waveform_and_runs_under_autocast() -> None:
+    codec = EncodeConditionsCodec()
+    hook = FishReferenceEncodeHook(
+        codec=codec, checkpoint_id="codec", autocast_dtype=torch.bfloat16
+    )
+
+    hook.encode_reference_waveform(torch.full((1, 4410), 1.5), 44100)
+
+    assert codec.conditions == [(1.0, True, torch.bfloat16)]
+
+
+class OverlapCountingCodec:
+    sample_rate: int = 44100
+
+    def __init__(self, all_inside: threading.Barrier | None) -> None:
+        self.all_inside = all_inside
+        self.lock = threading.Lock()
+        self.inside = 0
+        self.most_inside = 0
+
+    def encode(
+        self, audios: torch.Tensor, audio_lengths: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with self.lock:
+            self.inside += 1
+            self.most_inside = max(self.most_inside, self.inside)
+        if self.all_inside is not None:
+            self.all_inside.wait(timeout=5)
+        else:
+            time.sleep(0.05)
+        with self.lock:
+            self.inside -= 1
+        return torch.zeros((1, 10, 1), dtype=torch.long), audio_lengths
+
+
+def encode_from_threads(hook: FishReferenceEncodeHook, thread_count: int) -> None:
+    threads = [
+        threading.Thread(
+            target=hook.encode_reference_waveform,
+            args=(torch.zeros((1, 441)), 44100),
+        )
+        for _ in range(thread_count)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+
+def test_encodes_on_the_cpu_run_concurrently() -> None:
+    codec = OverlapCountingCodec(threading.Barrier(4))
+    hook = FishReferenceEncodeHook(codec=codec, checkpoint_id="codec")
+
+    encode_from_threads(hook, 4)
+
+    assert codec.most_inside == 4
+
+
+@pytest.mark.accelerator
+def test_encodes_on_a_gpu_run_one_at_a_time() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    codec = OverlapCountingCodec(None)
+    hook = FishReferenceEncodeHook(codec=codec, checkpoint_id="codec", device="cuda")
+
+    encode_from_threads(hook, 4)
+
+    assert codec.most_inside == 1

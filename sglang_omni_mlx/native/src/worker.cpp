@@ -3,12 +3,11 @@
 
 namespace qwen3_asr {
 
-TranscriptionWorker::TranscriptionWorker(
-    const std::filesystem::path &model_directory) {
+TranscriptionWorker::TranscriptionWorker(std::function<void()> load) {
   std::promise<void> loaded;
   std::future<void> loaded_future = loaded.get_future();
   thread_ = std::thread(&TranscriptionWorker::Run, this, std::move(loaded),
-                        model_directory);
+                        std::move(load));
   try {
     loaded_future.get();
   } catch (...) {
@@ -36,9 +35,9 @@ TranscriptionWorker::~TranscriptionWorker() {
 }
 
 void TranscriptionWorker::Run(std::promise<void> loaded,
-                              std::filesystem::path model_directory) {
+                              std::function<void()> load) {
   try {
-    transcriber_ = std::make_unique<Qwen3ASRTranscriber>(model_directory);
+    load();
     loaded.set_value();
   } catch (...) {
     loaded.set_exception(std::current_exception());
@@ -48,6 +47,17 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
     Job job;
     {
       std::unique_lock<std::mutex> lock(mutex_);
+      // Note (khazic): a decode keeps MLX's buffer cache, since freeing every
+      // step's buffers slows each token; an idle server returns it, so it
+      // holds only the model. The synchronize lets the step a decode queued
+      // before it stopped return its buffers first.
+      if (queue_.empty()) {
+        lock.unlock();
+        mlx::core::synchronize();
+        mlx::core::clear_cache();
+        lock.lock();
+      } else {
+      }
       wake_.wait(lock, [&] { return stopping_ || !queue_.empty(); });
       if (queue_.empty()) {
         return;
@@ -61,7 +71,12 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
     std::optional<TranscriptionResult> result;
     std::exception_ptr error;
     try {
-      result = transcriber_->Transcribe(job.samples, job.options, *job.cancel);
+      // Note (khazic): a request cancelled while queued never starts.
+      if (job.cancel->load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      result = job.transcription(*job.cancel);
     } catch (...) {
       error = std::current_exception();
     }
@@ -74,24 +89,21 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
   }
 }
 
-void TranscriptionWorker::Submit(std::vector<float> samples,
-                                 TranscriptionOptions options,
-                                 CancelFlag cancel, Completion completion) {
+void TranscriptionWorker::Submit(Transcription transcription, CancelFlag cancel,
+                                 Completion completion) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    queue_.push_back({std::move(samples), std::move(options), std::move(cancel),
-                      std::move(completion)});
+    queue_.push_back(
+        {std::move(transcription), std::move(cancel), std::move(completion)});
   }
   wake_.notify_one();
 }
 
-TranscriptionResult
-TranscriptionWorker::Transcribe(std::vector<float> samples,
-                                TranscriptionOptions options,
-                                CancelFlag cancel) {
+TranscriptionResult TranscriptionWorker::Transcribe(Transcription transcription,
+                                                    CancelFlag cancel) {
   auto promise = std::make_shared<std::promise<TranscriptionResult>>();
   std::future<TranscriptionResult> future = promise->get_future();
-  Submit(std::move(samples), std::move(options), std::move(cancel),
+  Submit(std::move(transcription), std::move(cancel),
          [promise](std::optional<TranscriptionResult> result,
                    std::exception_ptr error) {
            if (error) {

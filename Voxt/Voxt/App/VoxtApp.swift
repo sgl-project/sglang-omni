@@ -836,6 +836,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         await customLLMManager.shutdownForApplicationTermination()
         await mlxModelManager.shutdownForApplicationTermination()
         await SileroVADModelProvisioner.shared.shutdownForApplicationTermination()
+        await OmniSortformerRuntime.shared.shutdownForApplicationTermination()
 
         let syncCompletion = await (obsidianSyncCompleted, remindersSyncCompleted)
         if !syncCompletion.0 {

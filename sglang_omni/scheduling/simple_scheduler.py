@@ -292,6 +292,9 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             pass
         return result
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
         self.running = True

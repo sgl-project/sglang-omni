@@ -142,17 +142,18 @@ class CoordinatorAdapter(InteractionAdapter):
             else:
                 pass
         except Exception as exc:
-            logger.exception("Realtime session output reader failed")
+            if ContextExhaustedError.matches(exc):
+                failure_code = ContextExhaustedError.CODE
+            else:
+                logger.exception("Realtime session output reader failed")
+                failure_code = "internal"
             self.reader_error = exc
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
-                code = (
-                    ContextExhaustedError.CODE
-                    if ContextExhaustedError.matches(exc)
-                    else "internal"
+                await self.output_sink(
+                    TurnFailure("server_error", failure_code, str(exc))
                 )
-                await self.output_sink(TurnFailure("server_error", code, str(exc)))
 
     async def process(self, unit: Unit) -> int:
         assert (
@@ -178,7 +179,19 @@ class CoordinatorAdapter(InteractionAdapter):
             eos=unit.eos,
         )
         try:
-            await self.client.append_session(self.session_identity, timed_chunk)
+            ready_observation = unit.ready_observation
+            await self.client.append_session(
+                self.session_identity,
+                timed_chunk,
+                ready_timestamp_ns=(
+                    ready_observation.timestamp_ns
+                    if ready_observation is not None
+                    else None
+                ),
+                ready_run_id=(
+                    ready_observation.run_id if ready_observation is not None else None
+                ),
+            )
             return await self.unit_completion
         finally:
             self.active_unit = None

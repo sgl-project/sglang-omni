@@ -29,12 +29,21 @@ std::vector<float> DecodeWav(std::string_view wav_bytes);
 
 // Slaney-scale, Slaney-normalized filters [frequency_bins, mel_bins], built in
 // float32 in the same order as Voxt's Swift front end.
-const std::vector<float> &MelFilterBank();
+const std::vector<float> &MelFilterBank(int mel_bin_count = kMelBinCount);
 const std::vector<float> &PeriodicHannWindow();
 
 // Whisper-style log-mel in float32 on MLX, [mel_bins, frames]. The reference
 // layout drops the final centered STFT frame; the Swift layout keeps it.
 mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout);
+
+// Whisper's fixed 30 s encoder window.
+inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;
+
+// Whisper log-mel of one 30 s window, zero padded, [frames, mel_bins].
+// Note (Dayuxiaoshui): the floor is taken per window, not over the recording,
+// because the reference extracts each 30 s window on its own.
+mlx::core::array WhisperWindowFeatures(const float *samples, int sample_count,
+                                       int mel_bin_count);
 
 int ConvOutputFrames(int frame_count);
 int ReferenceTokenCount(int frame_count);

@@ -15,7 +15,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
@@ -232,7 +232,7 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         self.put_code_messages(code_messages)
 
     def put_code_messages(self, code_messages: list[OutgoingMessage]) -> None:
-        """Send the messages with one ready event recorded after all their codes.
+        """Send the messages in one put with one ready event for all their codes.
 
         The event is recorded once every snapshot and stack the messages carry
         is enqueued, and before any message is visible to the consumer. Only a
@@ -252,8 +252,7 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
                 message.metadata["codes_ready_event"] = codes_ready_event
         else:
             pass
-        for message in code_messages:
-            self.outbox.put(message)
+        put_messages(self.outbox, code_messages)
 
     @staticmethod
     def is_streaming(data: SGLangARRequestData) -> bool:

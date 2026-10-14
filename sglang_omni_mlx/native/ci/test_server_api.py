@@ -43,15 +43,20 @@ def pcm16(clip_id: str) -> bytes:
 
 
 class Server:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        binary: str = "qwen3_asr_server",
+        model_kind: str = "qwen3_asr",
+        directory: Path | None = None,
+    ) -> None:
         self.process = subprocess.Popen(
             [
-                str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
+                str(Path(RUNTIME_BIN) / binary),
                 "--supervised",
                 "--model-kind",
-                "qwen3_asr",
+                model_kind,
                 "--model-directory",
-                str(model_directory()),
+                str(directory or model_directory()),
             ],  # fmt: skip
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -314,7 +319,7 @@ def test_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-def test_only_qwen3_asr_is_served() -> None:
+def test_unknown_model_kinds_are_rejected() -> None:
     completed = subprocess.run(
         [
             str(Path(RUNTIME_BIN) / "qwen3_asr_server"),

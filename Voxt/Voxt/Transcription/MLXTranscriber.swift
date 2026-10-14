@@ -1090,6 +1090,25 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 qwenUsesAutomaticLanguageProtocol: language == nil,
                 mossVisibleOutputMode: nil
             )
+        case .nativeNemotronLive where runtime.kind == .nemotronASR:
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await makeOmniNemotronLiveSession(runtime: runtime),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: false,
+                mossVisibleOutputMode: nil
+            )
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let inferenceConfiguration = resolvedInferenceConfiguration(for: .intermediate)
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await OmniNativeStreamingSession.moss(
+                    runtime: runtime,
+                    prompt: inferenceConfiguration.mossPrompt
+                ),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: false,
+                // As on the Swift backend: the live overlay strips MOSS tags.
+                mossVisibleOutputMode: .plainText
+            )
         default:
             throw NSError(
                 domain: "Voxt.Meeting.NativeMLX",
@@ -1175,6 +1194,21 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             }
             releaseNativeLiveSession(cancelSession: true)
             nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
+        case .nativeNemotronLive where runtime.kind == .nemotronASR:
+            session = try await makeOmniNemotronLiveSession(runtime: runtime)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
+        case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
+            let prompt = resolvedInferenceConfiguration(for: .intermediate).mossPrompt
+            session = try await OmniNativeStreamingSession.moss(runtime: runtime, prompt: prompt)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
         default:
             return false
         }
@@ -1217,6 +1251,22 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             )
         )
         installNativeLiveSession(session, revision: revision, releaseModel: releaseModel)
+    }
+
+    /// The Omni counterpart of installNativeNemotronLiveSession's session: the
+    /// same latency setting and the same language mapping.
+    private func makeOmniNemotronLiveSession(runtime: OmniASRRuntime) async throws -> OmniNativeStreamingSession {
+        let promptLanguages = try OmniASRRuntime.nemotronPromptLanguages(modelDirectory: runtime.modelDirectory)
+        let language = MLXTranscriptionPlanning.nativeNemotronLanguage(
+            requested: resolvedNativeNemotronLiveLanguage(),
+            availableLanguages: promptLanguages.languages,
+            defaultLanguage: promptLanguages.defaultLanguage
+        )
+        return try await OmniNativeStreamingSession.nemotron(
+            runtime: runtime,
+            language: language,
+            chunkMilliseconds: resolvedLocalTuningSettings().nemotronStreamLatency.rawValue
+        )
     }
 
     private func installNativeNemotronLiveSession(_ model: NemotronASRModel, revision: Int, releaseModel: @escaping @MainActor () -> Void) {
@@ -1692,12 +1742,18 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         case .omni(let runtime):
             // The Omni branch starts before any MLXArray exists on the client.
             let targetSampleRate = targetSampleRate
+            let speechSegments = try await omniSpeechSegmentsIfNeeded(
+                runtime: runtime,
+                audioSamples: audioSamples,
+                inferenceConfiguration: inferenceConfiguration
+            )
             let inferenceTask = Task.detached(priority: inferenceTaskPriority) {
                 try await Self.runOmniInferenceDetached(
                     runtime: runtime,
                     audioSamples: audioSamples,
                     inferenceConfiguration: inferenceConfiguration,
-                    targetSampleRate: targetSampleRate
+                    targetSampleRate: targetSampleRate,
+                    speechSegments: speechSegments
                 )
             }
             return try await withTaskCancellationHandler {
@@ -1746,6 +1802,57 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         } onCancel: {
             inferenceTask.cancel()
         }
+    }
+
+    /// Cohere's and SenseVoice's voice-activity cuts for long audio on the Omni server,
+    /// decided as resolvedLongFormVADModelIfNeeded decides them for the Swift model; the
+    /// server loads the provisioned Silero VAD itself.
+    private func omniSpeechSegmentsIfNeeded(
+        runtime: OmniASRRuntime,
+        audioSamples: [Float],
+        inferenceConfiguration: ResolvedInferenceConfiguration
+    ) async throws -> OmniSpeechSegments? {
+        let usesVoiceActivity: Bool
+        switch runtime.kind {
+        case .cohereTranscribe:
+            usesVoiceActivity = inferenceConfiguration.cohereLongFormStrategy == .voiceActivity
+        case .senseVoice:
+            usesVoiceActivity = true
+        default:
+            usesVoiceActivity = false
+        }
+        guard usesVoiceActivity,
+              MLXTranscriptionPlanning.shouldUseSenseVoiceVAD(
+                  sampleCount: audioSamples.count,
+                  sampleRate: targetSampleRate,
+                  directPassMaximumDurationSeconds: senseVoiceDirectPassMaximumDurationSeconds
+              )
+        else {
+            return nil
+        }
+        let modelDirectory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
+        try Task.checkCancellation()
+        // Note (khazic): the server returns no text for audio without speech, as this config's
+        // no-speech policy asks.
+        let config = Self.longFormSpeechSegmentConfig(
+            chunkMaximumDurationSeconds: senseVoiceChunkMaximumDurationSeconds,
+            vadThreshold: senseVoiceVADThreshold,
+            vadMinSpeechDurationMs: senseVoiceVADMinSpeechDurationMs,
+            vadMinSilenceDurationMs: senseVoiceVADMinSilenceDurationMs,
+            vadSpeechPadMs: senseVoiceVADSpeechPadMs
+        )
+        return OmniSpeechSegments(
+            vadModelDirectory: modelDirectory,
+            threshold: config.threshold,
+            minSpeechMilliseconds: config.minSpeechMs,
+            minSilenceMilliseconds: config.minSilenceMs,
+            speechPadMilliseconds: config.speechPadMs,
+            // Note (Dayuxiaoshui): SenseVoice splits each speech run into overlapping chunks
+            // instead of merging runs across short gaps.
+            mergeGapSeconds: runtime.kind == .senseVoice ? nil : config.mergeGapS,
+            maxChunkSeconds: config.maxChunkS,
+            chunkOverlapSeconds: runtime.kind == .senseVoice ? Float(senseVoiceChunkOverlapSeconds) : nil
+        )
     }
 
     private func resolvedLongFormVADModelIfNeeded(

@@ -43,6 +43,10 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.profiler.duplex_events import (
+    capture_session_stage_start,
+    emit_session_stage_started,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -98,6 +102,9 @@ class SessionHooks:
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         return ResourceUsage()
+
+    def warm_up_serving_thread(self) -> None:
+        """Build per-thread state, such as cuDNN convolution plans, on the scheduler thread before the stage reports ready."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -211,6 +218,9 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.gather_window_seconds = gather_window_seconds
         # note (Junnan Li): Operations that arrived while the previous call ran are batched as they are; only a call that starts from an idle stage waits.
         self.is_backlogged = False
+
+    def warm_up_serving_thread(self) -> None:
+        self.session_hooks.warm_up_serving_thread()
 
     def register_operation(self, message: IncomingMessage) -> None:
         try:
@@ -567,6 +577,11 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                     else:
                         append = self.start_append(payload, session_operation)
                         try:
+                            emit_session_stage_started(
+                                request_id=payload.request_id,
+                                session_identity=session_identity,
+                                input_chunk=append.chunk,
+                            )
                             updated_payload = self.session_hooks.append(
                                 append.chunk, append.payload, append.context
                             )
@@ -653,6 +668,19 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             started_sessions.append(session)
                 if started:
                     try:
+                        batch_observation = capture_session_stage_start()
+                        if batch_observation is not None:
+                            run_id, batch_start_ns = batch_observation
+                            for append in started:
+                                emit_session_stage_started(
+                                    request_id=append.payload.request_id,
+                                    session_identity=append.context.session_identity,
+                                    input_chunk=append.chunk,
+                                    timestamp_ns=batch_start_ns,
+                                    expected_run_id=run_id,
+                                )
+                        else:
+                            pass
                         updated_payloads = self.session_hooks.append_batch(started)
                     except Exception as exc:
                         for append, session in zip(

@@ -106,6 +106,9 @@ class MingStreamingTalkerScheduler:
         self.states_lock = threading.Lock()
 
     # ------------------------------------------------------------------ lifecycle
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         if self.talker is None:

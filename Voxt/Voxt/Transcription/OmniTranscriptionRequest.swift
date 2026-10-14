@@ -3,6 +3,28 @@ import Foundation
 /// Wire formats and request planning for the local Omni server.
 nonisolated enum OmniASRModelKind: String, Sendable, CaseIterable {
     case qwen3ASR = "qwen3_asr"
+    case whisper
+    case sileroVAD = "silero_vad"
+    case sortformer = "sortformer"
+    case mossTranscribeDiarize = "moss_transcribe_diarize"
+    case cohereTranscribe = "cohere_transcribe"
+    case nemotronASR = "nemotron_asr"
+    case parakeet
+    case senseVoice = "sensevoice"
+}
+
+/// Long audio cut at speech by the server's Silero VAD, with Voxt's settings.
+nonisolated struct OmniSpeechSegments: Sendable, Equatable {
+    var vadModelDirectory: URL
+    var threshold: Float
+    var minSpeechMilliseconds: Int
+    var minSilenceMilliseconds: Int
+    var speechPadMilliseconds: Int
+    /// Cohere Transcribe joins speech runs across shorter gaps.
+    var mergeGapSeconds: Float?
+    var maxChunkSeconds: Float
+    /// Note (Dayuxiaoshui): SenseVoice's chunks of one speech run overlap by this much.
+    var chunkOverlapSeconds: Float? = nil
 }
 
 nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
@@ -16,6 +38,16 @@ nonisolated struct OmniTranscriptionRequest: Sendable, Equatable {
     var includeGenerationMetadata = false
     /// Prompt audio layout the server builds; nil keeps the reference layout.
     var audioLayout: String? = nil
+    /// Sampling temperature; nil or zero decodes greedily.
+    var temperature: Float? = nil
+    /// Cohere Transcribe: punctuation, the energy-cut chunk lengths in seconds,
+    /// and speech cuts for long audio.
+    var usePunctuation: Bool? = nil
+    var chunkDuration: Float? = nil
+    var minChunkDuration: Float? = nil
+    var speechSegments: OmniSpeechSegments? = nil
+    /// SenseVoice: inverse text normalization.
+    var useITN: Bool? = nil
 }
 
 nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
@@ -24,9 +56,43 @@ nonisolated struct OmniGenerationMetadata: Sendable, Equatable {
     let hitLengthLimit: Bool
 }
 
+/// A timestamped speaker segment, for models that diarize (MOSS-Transcribe-Diarize).
+nonisolated struct OmniSpeakerSegment: Sendable, Equatable {
+    let startSeconds: Double
+    let endSeconds: Double
+    /// Empty when the model output carried no speaker segments.
+    let speakerID: String
+    let text: String
+    /// Note (Dayuxiaoshui): SenseVoice's language, emotion and audio event of the segment's audio.
+    var language: String? = nil
+    var emotion: String? = nil
+    var event: String? = nil
+
+    /// The server's segment objects; malformed entries are dropped.
+    static func parse(_ value: Any?) -> [OmniSpeakerSegment] {
+        (value as? [[String: Any]] ?? []).compactMap { segment in
+            guard let start = (segment["start"] as? NSNumber)?.doubleValue,
+                  let end = (segment["end"] as? NSNumber)?.doubleValue,
+                  let speakerID = segment["speaker"] as? String,
+                  let text = segment["text"] as? String
+            else { return nil }
+            return OmniSpeakerSegment(
+                startSeconds: start,
+                endSeconds: end,
+                speakerID: speakerID,
+                text: text,
+                language: segment["language"] as? String,
+                emotion: segment["emotion"] as? String,
+                event: segment["event"] as? String
+            )
+        }
+    }
+}
+
 nonisolated struct OmniTranscriptionResult: Sendable, Equatable {
     let text: String
     var generationMetadata: OmniGenerationMetadata? = nil
+    var segments: [OmniSpeakerSegment] = []
 }
 
 nonisolated enum OmniTranscriptionError: LocalizedError, Equatable {
@@ -124,6 +190,35 @@ nonisolated enum OmniMultipartBody {
         if let audioLayout = request.audioLayout {
             fields.append(("audio_layout", audioLayout))
         }
+        if let temperature = request.temperature {
+            fields.append(("temperature", String(temperature)))
+        }
+        if let usePunctuation = request.usePunctuation {
+            fields.append(("use_punctuation", usePunctuation ? "true" : "false"))
+        }
+        if let chunkDuration = request.chunkDuration {
+            fields.append(("chunk_duration", String(chunkDuration)))
+        }
+        if let minChunkDuration = request.minChunkDuration {
+            fields.append(("min_chunk_duration", String(minChunkDuration)))
+        }
+        if let segments = request.speechSegments {
+            fields.append(("vad_model_directory", segments.vadModelDirectory.path))
+            fields.append(("vad_threshold", String(segments.threshold)))
+            fields.append(("vad_min_speech_ms", String(segments.minSpeechMilliseconds)))
+            fields.append(("vad_min_silence_ms", String(segments.minSilenceMilliseconds)))
+            fields.append(("vad_speech_pad_ms", String(segments.speechPadMilliseconds)))
+            if let mergeGapSeconds = segments.mergeGapSeconds {
+                fields.append(("vad_merge_gap_seconds", String(mergeGapSeconds)))
+            }
+            fields.append(("vad_max_chunk_seconds", String(segments.maxChunkSeconds)))
+            if let chunkOverlapSeconds = segments.chunkOverlapSeconds {
+                fields.append(("vad_chunk_overlap_seconds", String(chunkOverlapSeconds)))
+            }
+        }
+        if let useITN = request.useITN {
+            fields.append(("use_itn", useITN ? "true" : "false"))
+        }
         var body = Data()
         for (name, value) in fields {
             body.append(Data("--\(boundary)\r\n".utf8))
@@ -168,7 +263,10 @@ nonisolated struct OmniTranscriptionStreamParser {
         case "transcript.text.delta":
             return event["delta"] as? String
         case "transcript.text.done":
-            var result = OmniTranscriptionResult(text: event["text"] as? String ?? "")
+            var result = OmniTranscriptionResult(
+                text: event["text"] as? String ?? "",
+                segments: OmniSpeakerSegment.parse(event["segments"])
+            )
             if let metadata = event["generation_metadata"] as? [String: Any] {
                 guard let count = metadata["generated_token_count"] as? Int,
                       let finishReason = metadata["finish_reason"] as? String

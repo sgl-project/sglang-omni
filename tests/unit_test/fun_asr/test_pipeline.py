@@ -78,7 +78,7 @@ def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
         is True
     )
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 @pytest.mark.parametrize(
@@ -123,7 +123,7 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def test_fun_asr_threads_generation_batch_and_request_build_policy(
@@ -307,7 +307,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     ]
     assert scheduler.stream_output_builder is stream_output_builder
     assert scheduler.enable_async_decode is True
-    assert scheduler.async_decode_min_batch_size == 2
+    assert scheduler.async_decode_min_batch_size == 1
     assert scheduler.prefill_coalesce_requests == 16
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True

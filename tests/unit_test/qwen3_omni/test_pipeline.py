@@ -6,12 +6,16 @@ import asyncio
 import base64
 import inspect
 import threading
+from copy import deepcopy
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
 import torch
 import typer
+from PIL import Image
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
     get_rope_index_qwen3_omni,
@@ -23,6 +27,8 @@ from sglang_omni.cli.serve import (
     apply_tensor_parallel_engine_overrides,
     patches_from_broadcast_flags,
 )
+from sglang_omni.client.client import extract_inputs
+from sglang_omni.client.types import GenerateRequest, Message
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
@@ -36,6 +42,7 @@ from sglang_omni.models.ming_omni.config import (
     MingOmniSpeechPipelineConfig,
     MingOmniStreamingSpeechPipelineConfig,
 )
+from sglang_omni.models.qwen3_omni.components import preprocessor as preprocessor_mod
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -57,6 +64,8 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages,
     resolve_preprocessing_next_stages_speech,
 )
+from sglang_omni.preprocessing.audio import decode_audio_bytes
+from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -621,6 +630,48 @@ def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
     )
 
 
+def test_qwen_preprocessor_limit_is_the_checkpoint_thinker_context(
+    tmp_path, monkeypatch
+) -> None:
+    """Without an explicit max_seq_len the prompt check uses the thinker context sglang
+    derives from the checkpoint."""
+    import json
+
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_omni_moe",
+                "thinker_config": {"text_config": {"max_position_embeddings": 65536}},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        preprocessor_mod.Qwen3OmniMoeProcessor,
+        "from_pretrained",
+        lambda model_dir, **kwargs: SimpleNamespace(
+            tokenizer=SimpleNamespace(
+                chat_template=None,
+                get_vocab=lambda: {"token": 0},
+                backend_tokenizer=SimpleNamespace(normalizer=NFC()),
+            ),
+            chat_template=None,
+        ),
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
+
+    assert preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path)).max_seq_len == 65536
+    assert (
+        preprocessor_mod.Qwen3OmniPreprocessor(
+            str(tmp_path), max_seq_len=4096
+        ).max_seq_len
+        == 4096
+    )
+
+
 def test_qwen_preprocessor_retries_without_special_token_compat(
     tmp_path, monkeypatch
 ) -> None:
@@ -653,7 +704,7 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path))
+    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path), max_seq_len=8192)
 
     assert calls[0]["extra_special_tokens"] == {
         "image_token": "<|image_pad|>",
@@ -2569,3 +2620,433 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
         server.server_close()
         http_worker.join(timeout=3)
     assert not worker.is_alive()
+
+
+def test_speech_talker_clamps_frames_to_the_context_a_long_prompt_leaves() -> None:
+    """A spoken prompt the speech pipeline admits at its front reaches the talker with its
+    frame cap cut to the context left, instead of failing after the thinker answered."""
+    from collections import deque
+    from queue import Queue
+
+    from sglang.srt.runtime_context import get_context
+
+    from sglang_omni.models.qwen3_omni.components.talker_input import (
+        build_prefill_input,
+    )
+    from sglang_omni.models.qwen3_omni.request_builders import (
+        build_sglang_talker_request,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from tests.unit_test.pipeline.test_scheduler import (
+        init_sync_request_build_state,
+        new_stage_payload,
+    )
+
+    checkpoint_context = 65536
+    config = Qwen3OmniSpeechPipelineConfig(model_path="model")
+    contexts = {}
+    for name in ("preprocessing", "talker_ar"):
+        stage = make_stage(config, name)
+        factory = import_string(stage.factory_path)
+        factory_default = inspect.signature(factory).parameters["max_seq_len"].default
+        contexts[name] = (
+            resolve_stage_factory_args(stage, config).get(
+                "max_seq_len", factory_default
+            )
+            or checkpoint_context
+        )
+    ids = torch.tensor([1, 2, 3] + [4] * 62444 + [1, 5, 3, 6])
+    preprocessor_mod.validate_prompt_seq_len(ids, max_seq_len=contexts["preprocessing"])
+    embeddings = torch.zeros(ids.numel(), 2)
+    prefill = build_prefill_input(
+        thinker_embed=embeddings,
+        thinker_hidden=embeddings,
+        thinker_input_ids=ids,
+        multimodal_mask=torch.zeros(ids.numel(), dtype=torch.bool),
+        text_projection=torch.nn.Identity(),
+        hidden_projection=torch.nn.Identity(),
+        codec_embed_fn=torch.nn.Embedding(16, 2),
+        tts_bos_embed=torch.zeros(1, 2),
+        tts_eos_embed=torch.zeros(1, 2),
+        tts_pad_embed=torch.zeros(1, 2),
+        im_start_token_id=1,
+        system_token_id=7,
+        user_token_id=2,
+        assistant_token_id=5,
+        speaker_id=8,
+        codec_nothink_id=9,
+        codec_think_bos_id=10,
+        codec_think_eos_id=11,
+        codec_pad_id=12,
+        codec_bos_id=13,
+        tts_pad_token_id=14,
+    )
+    talker = build_sglang_talker_request(
+        torch.empty(0),
+        tokenizer=None,
+        codec_vocab_size=3072,
+        max_new_tokens=4096,
+        talker_input_embeds=prefill["input_embeds"],
+        talker_input_ids=prefill["input_ids"],
+        input_embeds_are_projected=True,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.max_req_len = contexts["talker_ar"] - 1
+    scheduler.max_req_input_len = scheduler.max_req_len - 1
+    scheduler.max_new_tokens_limit = None
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 2 * checkpoint_context
+    init_sync_request_build_state(scheduler)
+    scheduler.request_builder = lambda payload: talker
+
+    with get_context().override_server_args():
+        scheduler.process_input_requests([new_stage_payload(talker.req.rid)])
+
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == [talker.req]
+    assert talker.max_new_tokens == (
+        scheduler.max_req_len - len(talker.req.origin_input_ids) - 1
+    )
+
+
+class ProcessorCalled(Exception):
+    pass
+
+
+def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor:
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.processor = processor
+    pre.max_seq_len = None
+    for name in (
+        "default_video_fps",
+        "default_video_max_frames",
+        "default_video_min_pixels",
+        "default_video_max_pixels",
+        "default_video_total_pixels",
+    ):
+        setattr(pre, name, None)
+    return pre
+
+
+def image_part(url: str) -> dict[str, object]:
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def test_chat_content_parts_become_placeholders_where_they_stood() -> None:
+    messages = [
+        {"role": "system", "content": "Answer briefly."},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "first.png", "detail": "low"},
+                },
+                {"type": "text", "text": "and"},
+                {"type": "input_image", "image_url": "second.png"},
+                {"type": "video_url", "video_url": {"url": "clip.mp4"}},
+            ],
+        },
+        {"role": "assistant", "content": None},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio_url", "audio_url": {"url": "speech.wav"}},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "UklG", "format": "wav"},
+                },
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "SUQz", "format": "mp3"},
+                },
+                {"type": "input_text", "text": "What is said?"},
+            ],
+        },
+    ]
+
+    template_messages, media = split_content_parts(messages)
+
+    assert template_messages == [
+        {"role": "system", "content": "Answer briefly."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": "and"},
+                {"type": "image"},
+                {"type": "video"},
+            ],
+        },
+        {"role": "assistant", "content": ""},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio"},
+                {"type": "audio"},
+                {"type": "audio"},
+                {"type": "text", "text": "What is said?"},
+            ],
+        },
+    ]
+    assert media.images == ["first.png", "second.png"]
+    assert media.videos == ["clip.mp4"]
+    assert media.audios == [
+        "speech.wav",
+        "data:audio/wav;base64,UklG",
+        "data:audio/mpeg;base64,SUQz",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        ([{"type": "model_private", "value": 1}], "Unsupported chat content part type"),
+        ([7], "chat content part must be an object"),
+        (
+            [{"type": "video_url", "video_url": {}}],
+            "video_url chat content part requires",
+        ),
+        ([{"type": "text", "text": 3}], "text chat content part requires a string"),
+        (
+            [{"type": "input_audio", "input_audio": {"data": "AA", "format": "flac"}}],
+            "input_audio chat content part format must be one of",
+        ),
+        (
+            [{"type": "input_audio", "input_audio": {"data": "AA", "format": []}}],
+            "input_audio chat content part format must be one of",
+        ),
+        ([{"type": "input_audio", "input_audio": {}}], "requires base64 data"),
+        ({"type": "text", "text": "a dict"}, "a list of chat content parts"),
+    ],
+)
+def test_malformed_chat_content_is_a_bad_request(content: object, error: str) -> None:
+    with pytest.raises(ValueError, match=error) as excinfo:
+        split_content_parts([{"role": "user", "content": content}])
+
+    assert is_bad_request_error(excinfo.value)
+
+
+@pytest.mark.parametrize("top_level", [None, "extra.png", ["extra.png"]])
+def test_image_parts_reach_processor_in_conversation_order(
+    monkeypatch, top_level: str | list[str] | None
+) -> None:
+    messages = [
+        {"role": "user", "content": [image_part("first.png")]},
+        {"role": "assistant", "content": "The first image."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Compare it with "},
+                image_part("second.png"),
+                {"type": "text", "text": " and this image."},
+                image_part("third.png"),
+            ],
+        },
+    ]
+    original = deepcopy(messages)
+    request = GenerateRequest(
+        messages=[Message(**message) for message in messages],
+        metadata={"images": top_level} if top_level is not None else {},
+    )
+    inputs = extract_inputs(request)
+    if top_level is None:
+        assert inputs == messages
+    else:
+        assert inputs == {"messages": messages, "images": top_level}
+
+    loader = AsyncMock(side_effect=lambda images, **kwargs: images or [])
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", loader)
+    monkeypatch.setattr(
+        preprocessor_mod, "ensure_audio_list_async", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        preprocessor_mod,
+        "ensure_video_list_async",
+        AsyncMock(return_value=([], None, [])),
+    )
+    processor = Mock(return_value={"input_ids": torch.tensor([[1, 2]])})
+    processor.apply_chat_template.return_value = "chat prompt"
+    payload = StagePayload(
+        request_id="image-parts",
+        request=OmniRequest(inputs=inputs, params={"max_new_tokens": 2}),
+        data={},
+    )
+
+    asyncio.run(bare_preprocessor(processor).call_impl(payload))
+
+    expected_images = ["first.png", "second.png", "third.png"]
+    if top_level is not None:
+        expected_images.append("extra.png")
+    else:
+        pass
+    assert loader.await_args.args == (expected_images,)
+    assert processor.call_args.kwargs["images"] == expected_images
+    templated = processor.apply_chat_template.call_args.args[0]
+    assert templated[0] == {"role": "user", "content": [{"type": "image"}]}
+    assert templated[1] == messages[1]
+    expected_parts = [
+        {"type": "text", "text": "Compare it with "},
+        {"type": "image"},
+        {"type": "text", "text": " and this image."},
+        {"type": "image"},
+    ]
+    if top_level is not None:
+        expected_parts.append({"type": "image"})
+    else:
+        pass
+    assert templated[2] == {"role": "user", "content": expected_parts}
+    assert messages == original
+
+
+def test_audio_and_video_parts_reach_processor_in_placeholder_order(
+    monkeypatch,
+) -> None:
+    """With use_audio_in_video each video's audio is read where its placeholder stands."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio_url", "audio_url": {"url": "question.wav"}},
+                {"type": "video_url", "video_url": {"url": "clip.mp4"}},
+                {"type": "text", "text": "Answer the question about the clip."},
+            ],
+        }
+    ]
+    question, clip_track, top_level = (
+        np.full(4, value, dtype=np.float32) for value in (1.0, 2.0, 3.0)
+    )
+    video_loader = AsyncMock(return_value=(["clip frames"], None, [clip_track]))
+    audio_loader = AsyncMock(return_value=[question, top_level])
+    monkeypatch.setattr(
+        preprocessor_mod, "ensure_image_list_async", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", audio_loader)
+    for name in (
+        "compute_audio_cache_key",
+        "compute_image_cache_key",
+        "compute_video_cache_key",
+    ):
+        monkeypatch.setattr(preprocessor_mod, name, lambda media: None)
+    processor = Mock(side_effect=ProcessorCalled)
+    processor.apply_chat_template.return_value = "chat prompt"
+    payload = StagePayload(
+        request_id="audio-video-parts",
+        request=OmniRequest(
+            inputs={
+                "messages": messages,
+                "audios": ["top.wav"],
+                "use_audio_in_video": True,
+            },
+            params={"max_new_tokens": 2},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ProcessorCalled):
+        asyncio.run(bare_preprocessor(processor).call_impl(payload))
+
+    assert video_loader.await_args.args == (["clip.mp4"],)
+    assert audio_loader.await_args.args == (["question.wav", "top.wav"],)
+    assert processor.apply_chat_template.call_args.args[0] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio"},
+                {"type": "video"},
+                {"type": "text", "text": "Answer the question about the clip."},
+                {"type": "audio"},
+            ],
+        }
+    ]
+    assert [audio[0] for audio in processor.call_args.kwargs["audio"]] == [
+        1.0,
+        2.0,
+        3.0,
+    ]
+
+
+def test_unknown_chat_content_parts_are_rejected_before_any_media_loads(
+    monkeypatch,
+) -> None:
+    loader = AsyncMock(return_value=[])
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", loader)
+    payload = StagePayload(
+        request_id="unknown-part",
+        request=OmniRequest(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [image_part("one.png"), {"type": "model_private"}],
+                }
+            ],
+            params={},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="Unsupported chat content part type"):
+        asyncio.run(bare_preprocessor(Mock()).call_impl(payload))
+    loader.assert_not_awaited()
+
+
+def test_top_level_media_precede_plain_text() -> None:
+    messages, media = split_content_parts(
+        [{"role": "user", "content": "Describe the media."}]
+    )
+
+    assert media.images == []
+    assert bare_preprocessor(Mock()).build_multimodal_messages(
+        messages, num_images=1, num_audios=1, num_videos=1
+    ) == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "video"},
+                {"type": "audio"},
+                {"type": "text", "text": "Describe the media."},
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "modalities", "talker_max_new_tokens"),
+    [
+        (Qwen3OmniPipelineConfig, ["text"], None),
+        (Qwen3OmniSpeechPipelineConfig, ["text", "audio"], 8),
+    ],
+)
+def test_server_warmup_request_carries_an_image_and_a_second_of_audio(
+    config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
+    modalities: list[str],
+    talker_max_new_tokens: int | None,
+) -> None:
+    config = config_cls(model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    request = import_string(config_cls.server_warmup_request_factory)(config)
+
+    _, media = split_content_parts(
+        [message.model_dump() for message in request.messages]
+    )
+    audio, sample_rate = decode_audio_bytes(
+        base64.b64decode(media.audios[0].split(",", 1)[1])
+    )
+    image = Image.open(BytesIO(base64.b64decode(media.images[0].split(",", 1)[1])))
+    image.load()
+
+    assert request.modalities == modalities
+    assert (request.max_tokens, request.talker_max_new_tokens) == (
+        8,
+        talker_max_new_tokens,
+    )
+    assert (len(media.images), len(media.audios), len(media.videos)) == (1, 1, 0)
+    assert len(audio) == sample_rate
