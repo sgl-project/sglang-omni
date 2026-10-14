@@ -13,6 +13,7 @@ inheriting from ``SGLangScheduler``.
 
 from __future__ import annotations
 
+import copy
 import logging
 import queue as _queue_mod
 import threading
@@ -59,6 +60,7 @@ from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
 
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -174,6 +176,42 @@ def compact_decode_input_history(data: ARRequestData) -> None:
     else:
         pass
     data.decode_input_embeds = list(torch.stack(history).unbind(0))
+
+
+def compact_relay_views(msg: IncomingMessage) -> IncomingMessage:
+    """A relayed tensor is a view of the request's whole transfer buffer, and
+    pickle writes that buffer once per distinct view. Copy such views before a
+    TP broadcast so followers receive only the tensor bytes."""
+    payload = msg.data
+    if msg.type != "new_request" or not isinstance(payload, StagePayload):
+        return msg
+    else:
+        pass
+    header, tensors = extract_tensors(payload.data)
+    compact: dict[int, torch.Tensor] = {}
+    for tensor in tensors.values():
+        if (
+            id(tensor) not in compact
+            and tensor.device.type == "cpu"
+            and tensor.layout == torch.strided
+            and tensor.untyped_storage().nbytes() > tensor.nbytes
+        ):
+            compact[id(tensor)] = tensor.clone()
+        else:
+            pass
+    if not compact:
+        return msg
+    else:
+        pass
+    # Shallow copies keep the cached payload and its scheduler-local fields.
+    payload = copy.copy(payload)
+    payload.data = restore_tensors(
+        header,
+        {path: compact.get(id(tensor), tensor) for path, tensor in tensors.items()},
+    )
+    msg = copy.copy(msg)
+    msg.data = payload
+    return msg
 
 
 def detach_request_data(req: Req) -> None:
@@ -1077,7 +1115,11 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
-        recv_msgs = self.drain_local_inbox() if self.is_entry_rank else []
+        recv_msgs = (
+            [compact_relay_views(msg) for msg in self.drain_local_inbox()]
+            if self.is_entry_rank
+            else []
+        )
         return broadcast_pyobj(
             recv_msgs,
             self.tp_group.rank,
