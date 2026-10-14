@@ -3512,6 +3512,33 @@ def test_qwen3_tts_decode_graphs_replay_pads_batch_and_slices_output() -> None:
     assert decoder.decode_inputs == []
 
 
+def test_qwen3_tts_decode_graphs_partial_batch_after_full_clears_stale_padding() -> (
+    None
+):
+    graphs = Qwen3TTSInitialDecodeGraphs(
+        FakeQwen3TTSDecoder(),
+        device=torch.device("cpu"),
+        num_quantizers=2,
+        input_frames=24,
+        batch_sizes=(4,),
+    )
+    graphs.graphs[(24, 4)] = FakeCudaGraph()
+    graphs.inputs[(24, 4)] = torch.zeros((4, 2, 24), dtype=torch.long)
+    graphs.outputs[(24, 4)] = torch.zeros((4, 1, 96), dtype=torch.float32)
+
+    full_codes = torch.full((4, 2, 24), 7, dtype=torch.long)
+    assert graphs.decode(full_codes) is not None
+    assert torch.equal(graphs.inputs[(24, 4)], full_codes)
+
+    partial_codes = torch.full((3, 2, 24), 9, dtype=torch.long)
+    assert graphs.decode(partial_codes) is not None
+
+    static_input = graphs.inputs[(24, 4)]
+    assert torch.equal(static_input[:3], partial_codes)
+    assert torch.equal(static_input[3], torch.zeros((2, 24), dtype=torch.long))
+    assert graphs.graphs[(24, 4)].replays == 2
+
+
 def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),

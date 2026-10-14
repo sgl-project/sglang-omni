@@ -352,6 +352,60 @@ def test_capture_failure_falls_back_to_eager(session_bundle):
     assert runner.sealed, "runner must still seal after capture failures"
 
 
+@pytest.mark.skipif(not HAS_CUDA, reason="needs CUDA")
+def test_partial_batch_after_full_batch_resets_padding_to_scratch_slots():
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        CapturedVocoderGraph,
+        MossVocoderCudaGraphRunner,
+    )
+
+    class CountingGraph:
+        def __init__(self) -> None:
+            self.replays = 0
+
+        def replay(self) -> None:
+            self.replays += 1
+
+    runner = MossVocoderCudaGraphRunner(
+        torch.nn.Linear(1, 1, device="cuda"),
+        real_state_capacity=STREAM_SLOTS,
+        scratch_capacity=STREAM_SLOTS,
+        batch_sizes=[4],
+        frame_sizes=[5],
+        num_quantizers=N_VQ,
+    )
+    capture_slots = runner.capture_state_slots(4, device=runner.device)
+    entry = CapturedVocoderGraph(
+        graph=CountingGraph(),
+        static_codes=torch.zeros(N_VQ, 4, 5, dtype=torch.long, device="cuda"),
+        static_lengths=torch.zeros(4, dtype=torch.long, device="cuda"),
+        static_state_slot_ids=capture_slots.clone(),
+        capture_state_slot_ids=capture_slots,
+        static_valid_rows=torch.zeros(4, dtype=torch.bool, device="cuda"),
+        static_audio=torch.zeros(4, 1, 20, device="cuda"),
+        static_audio_lengths=torch.zeros(4, dtype=torch.long, device="cuda"),
+    )
+    runner.graphs[(4, 5)] = entry
+
+    full_codes = torch.full((N_VQ, 4, 5), 7, dtype=torch.long, device="cuda")
+    assert (
+        runner.decode_step(full_codes, torch.tensor([3, 1, 6, 2], device="cuda"))
+        is not None
+    )
+    partial_codes = torch.full((N_VQ, 3, 5), 9, dtype=torch.long, device="cuda")
+    assert (
+        runner.decode_step(partial_codes, torch.tensor([5, 0, 4], device="cuda"))
+        is not None
+    )
+
+    assert bool(entry.static_codes[:, :3].eq(9).all())
+    assert bool(entry.static_codes[:, 3].eq(0).all())
+    assert entry.static_lengths.tolist() == [5, 5, 5, 0]
+    assert entry.static_state_slot_ids.tolist() == [5, 0, 4, STREAM_SLOTS + 3]
+    assert entry.static_valid_rows.tolist() == [True, True, True, False]
+    assert entry.graph.replays == 2
+
+
 if __name__ == "__main__":
     import sys
 

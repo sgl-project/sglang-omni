@@ -551,8 +551,11 @@ class Qwen3TTSInitialDecodeGraphs:
         else:
             pass
         static_input = self.inputs[key]
-        static_input.zero_()
         static_input[:batch_size].copy_(codes)
+        if batch_size < bucket:
+            static_input[batch_size:].zero_()
+        else:
+            pass
         self.graphs[key].replay()
         return self.outputs[key][:batch_size].clone()
 
