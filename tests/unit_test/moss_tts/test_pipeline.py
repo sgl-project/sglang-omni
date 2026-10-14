@@ -780,6 +780,9 @@ def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) 
     class FakeAudioVocoder:
         sample_rate = 16000
 
+        def __init__(self) -> None:
+            self.model = torch.nn.Linear(1, 1)
+
         def decode_codes(self, segments):
             decoded_segments.extend(segment.tolist() for segment in segments)
             offset = float(len(decoded_segments) * 10)
@@ -1111,7 +1114,7 @@ def test_moss_tts_vocoder_honors_explicit_codec_path(
         audio_tokenizer=None,
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=24000),
     )
-    vocoder = SimpleNamespace(sample_rate=24000)
+    vocoder = SimpleNamespace(sample_rate=24000, model=torch.nn.Linear(1, 1))
     loaded: list[tuple[str, str, torch.dtype, torch.dtype | None]] = []
 
     def load_vocoder(

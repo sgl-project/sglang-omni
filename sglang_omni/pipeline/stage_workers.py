@@ -975,7 +975,7 @@ def construct_stage(
     )
 
     if spec.is_stream_receiver:
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
     else:
         pass
 

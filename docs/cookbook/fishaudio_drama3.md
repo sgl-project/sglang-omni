@@ -4,7 +4,7 @@
 
 - **35B parameters, 3B active per token**: MoE text backbone with hybrid (full + linear) attention
 - **Codebook-MTP audio decoder**: 10 codebooks decoded causally over the whole sequence
-- **FP8 MoE experts** with the remaining weights in bf16
+- **FP8 MoE experts** with the remaining weights in bf16; an [int4 checkpoint](#int4-checkpoint) cuts the weight memory from 37.0 GB to 20.8 GB
 - **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` — one text can carry up to 16 characters
 - **Long text** is chunked automatically and can be streamed per chunk
 
@@ -178,6 +178,31 @@ Change the cap with `--tts_engine.factory.max_prompt_rows`. A prompt and its `ma
 ## Attention Backend
 
 Drama 3 runs its attention on the `triton` backend only. The server refuses to start with any other attention backend, for example `--tts_engine.engine.attention_backend fa3`.
+
+## Int4 Checkpoint
+
+[`fishaudio/drama-3-int4`](https://huggingface.co/fishaudio/drama-3-int4) is a 4-bit GPTQ quantization of Drama 3. Thanks so much to [AK](https://x.com/_akhaliq) for the quantization! The server reads its quantization from the checkpoint, so it starts with the same command:
+
+```bash
+hf download fishaudio/drama-3-int4
+
+sgl-omni serve \
+  --model-path fishaudio/drama-3-int4 \
+  --port 8000
+```
+
+The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer.
+
+Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.
+
+| Checkpoint | Weights | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | WER without samples above 50% |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `fishaudio/drama-3` (FP8 experts) | 37.0 GB | 1.235 s | 1.902 s | 0.281 | 6.47 | 1.99% | 1.32% |
+| `fishaudio/drama-3-int4` | 20.8 GB | 1.334 s | 2.178 s | 0.320 | 5.99 | 1.63% | 1.42% |
+
+*Table 3. Drama 3 FP8 and int4 checkpoints on Seed-TTS English, concurrency 8, one H200.*
+
+The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level: the gap between the two is about as large as the run-to-run spread of one checkpoint (a second FP8 run measured 1.365 s mean latency and 2.02% WER).
 
 ## Deployment Performance
 
