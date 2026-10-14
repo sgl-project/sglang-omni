@@ -12,7 +12,10 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-from sglang_omni.models.moss_tts_local.radix_hash import build_rows_and_radix_token_ids
+from sglang_omni.models.moss_tts_local.radix_hash import (
+    RADIX_HASH_SPACE,
+    build_rows_and_radix_token_ids,
+)
 from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
     MossTTSLocalSGLangRequestData,
@@ -49,6 +52,8 @@ class MossTTSLocalModelRunner(ModelRunner):
     """
 
     model: MossTTSLocalSGLangModel
+    radix_hash_space: int = RADIX_HASH_SPACE
+    radix_hash_offset: int = 0
 
     outbox: Queue[OutgoingMessage] | None = None
     vocoder_target = "vocoder"
@@ -436,7 +441,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         slot_id = int(cfg.audio_assistant_slot_token_id)
         end_id = int(cfg.audio_end_token_id)
         rows, next_token_ids = build_rows_and_radix_token_ids(
-            stop_choice, codes, slot_id, end_id
+            stop_choice,
+            codes,
+            slot_id,
+            end_id,
+            hash_space=self.radix_hash_space,
+            hash_offset=self.radix_hash_offset,
         )
         next_text = rows[:, 0]
         if embeds is None:

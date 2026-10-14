@@ -26,7 +26,7 @@ from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
     MossVocoderCudaGraphRunner,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
@@ -369,6 +369,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         *,
         n_vq: int,
         sample_rate: int,
+        state_cls: type[DeclarativeStateBase] = MossTTSLocalState,
+        source_hint: str = _SOURCE_HINT,
         stream_slots: int = 16,
         stream_chunk_frames: int = 25,
         attention_backend: str = AUTO_ATTENTION_BACKEND,
@@ -400,12 +402,14 @@ class MossTTSLocalStreamingVocoderScheduler(
             attention_backend=attention_backend,
         )
         logger.info(
-            "MOSS-TTS Local non-streaming vocoder uses configured attention "
-            "backend=%s stages=%d",
+            "%s non-streaming vocoder uses configured attention backend=%s stages=%d",
+            source_hint,
             attention_backend,
             len(nonstream_decoder),
         )
         self.codec = codec
+        self.state_cls = state_cls
+        self.source_hint = str(source_hint)
         self.nonstream_decoder = nonstream_decoder
         quantizer = getattr(codec, "quantizer", None)
         if quantizer is None or not callable(getattr(quantizer, "decode_codes", None)):
@@ -465,7 +469,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             self.vocode,
             batch_compute_fn=self.vocode_batch,
             sample_rate=sample_rate,
-            stream_source_hint=_SOURCE_HINT,
+            stream_source_hint=self.source_hint,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
@@ -505,7 +509,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             n_vq = int(n_vq)
             if state.n_vq is not None and state.n_vq != n_vq:
                 raise ValueError(
-                    f"MOSS-TTS Local stream n_vq changed for {request_id!r}: "
+                    f"{self.source_hint} stream n_vq changed for {request_id!r}: "
                     f"{state.n_vq} -> {n_vq}"
                 )
             else:
@@ -537,7 +541,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         else:
             shape_contract = f"at least {n_vq + 1} channels"
         raise ValueError(
-            f"MOSS-TTS Local stream chunk must be {shape_contract}, "
+            f"{self.source_hint} stream chunk must be {shape_contract}, "
             f"got {tuple(codes.shape)}"
         )
 
@@ -551,7 +555,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             state.pending.extend(codes.unbind(0))
         else:
             raise ValueError(
-                f"MOSS-TTS Local validated stream codes must be 1-D or 2-D, "
+                f"{self.source_hint} validated stream codes must be 1-D or 2-D, "
                 f"got {tuple(codes.shape)}"
             )
         self.ensure_slot(state)
@@ -597,7 +601,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             waveform.detach().to("cpu", torch.float32),
             sample_rate=self.sample_rate,
             modality="audio",
-            source_hint=f"{_SOURCE_HINT} streaming",
+            source_hint=f"{self.source_hint} streaming",
             keep_channels=True,
         )
 
@@ -615,7 +619,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
-        usage = build_usage(MossTTSLocalState.from_dict(payload.data))
+        usage = build_usage(self.state_cls.from_dict(payload.data))
         if usage is not None:
             final_data["usage"] = usage
         else:
@@ -806,7 +810,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             state.threshold = self.stream_chunk_frames
 
     def decode_payload_codes(self, payload: StagePayload) -> torch.Tensor | None:
-        state = MossTTSLocalState.from_dict(payload.data)
+        state = self.state_cls.from_dict(payload.data)
         if state.audio_codes is None:
             return None
         else:
@@ -820,10 +824,10 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def prepare_codes(
         self, payload: StagePayload
-    ) -> tuple[MossTTSLocalState, torch.Tensor | None]:
-        state = MossTTSLocalState.from_dict(payload.data)
+    ) -> tuple[DeclarativeStateBase, torch.Tensor | None]:
+        state = self.state_cls.from_dict(payload.data)
         if state.audio_codes is None:
-            raise RuntimeError("MOSS-TTS Local vocoder requires audio_codes")
+            raise RuntimeError(f"{self.source_hint} vocoder requires audio_codes")
         else:
             pass
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
@@ -837,12 +841,12 @@ class MossTTSLocalStreamingVocoderScheduler(
     def store_vocoder_result(
         self,
         payload: StagePayload,
-        state: MossTTSLocalState,
+        state: DeclarativeStateBase,
         wav: torch.Tensor,
     ) -> StagePayload:
         # The v2 codec is natively stereo: keep [channels, samples] end to end.
         audio_payload = audio_waveform_payload(
-            wav, source_hint=_SOURCE_HINT, keep_channels=True
+            wav, source_hint=self.source_hint, keep_channels=True
         )
         state.audio_codes = None
         state.sample_rate = self.sample_rate

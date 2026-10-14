@@ -1,0 +1,2 @@
+config_cls: MossTTSNanoPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-Nano

@@ -81,6 +81,7 @@ if triton is not None:
         text_stride,
         end_id,
         hash_space,
+        hash_offset,
         MOD: tl.constexpr,
         BASE: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
@@ -102,7 +103,7 @@ if triton is not None:
             value = tl.where(value < 0, value + MOD, value)
             acc = (acc * BASE + value) % MOD
 
-        folded = acc % hash_space
+        folded = acc % (hash_space - hash_offset) + hash_offset
         next_text_value = tl.load(
             next_text_ptr + row * text_stride,
             mask=row_mask,
@@ -133,6 +134,7 @@ if triton is not None:
         slot_id,
         end_id,
         hash_space,
+        hash_offset,
         MOD: tl.constexpr,
         BASE: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
@@ -163,7 +165,7 @@ if triton is not None:
             acc = (acc * BASE + value) % MOD
             tl.store(row_start + channel + 1, raw, mask=row_mask)
 
-        folded = acc % hash_space
+        folded = acc % (hash_space - hash_offset) + hash_offset
         output = tl.where(text == end_id, text, folded)
         tl.store(ids_ptr + row, output, mask=row_mask)
 
@@ -200,14 +202,23 @@ def gpu_radix_row_hash(
     end_id: int,
     *,
     hash_space: int = RADIX_HASH_SPACE,
+    hash_offset: int = 0,
 ) -> torch.Tensor:
     """Capture-safe radix token ids for a batch of generated frames.
 
     ``rows`` is ``[B, C]`` int64 (text channel + RVQ codes); ``next_text`` is
     ``[B]`` (the text-channel id, ``end_id`` for a stop frame). Continuing
-    frames get a key in ``[0, hash_space)``; EOS rows keep the raw ``end_id``
-    so the existing eos detection still fires. device/dtype follow ``rows``.
+    frames get a key in ``[hash_offset, hash_space)``; EOS rows keep the raw
+    ``end_id`` so the existing eos detection still fires. device/dtype follow
+    ``rows``.
     """
+    if not 0 <= hash_offset < hash_space:
+        raise ValueError(
+            f"hash_offset must be in [0, hash_space), got "
+            f"hash_offset={hash_offset}, hash_space={hash_space}"
+        )
+    else:
+        pass
     if (
         radix_row_hash_kernel is not None
         and rows.device.type == "cuda"
@@ -236,6 +247,7 @@ def gpu_radix_row_hash(
                 next_text.stride(0),
                 end_id,
                 hash_space,
+                hash_offset,
                 MOD=_MOD,
                 BASE=_BASE,
                 BLOCK_SIZE=_TRITON_BLOCK_SIZE,
@@ -245,7 +257,9 @@ def gpu_radix_row_hash(
     else:
         pass
 
-    folded = torch.remainder(poly_row_hash(rows), hash_space)
+    folded = (
+        torch.remainder(poly_row_hash(rows), hash_space - hash_offset) + hash_offset
+    )
     return torch.where(next_text == end_id, next_text.to(torch.int64), folded)
 
 
@@ -256,6 +270,7 @@ def build_rows_and_radix_token_ids(
     end_id: int,
     *,
     hash_space: int = RADIX_HASH_SPACE,
+    hash_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build a generated frame row and its radix id in one device pass.
 
@@ -266,6 +281,13 @@ def build_rows_and_radix_token_ids(
     :func:`gpu_radix_row_hash` separately. Unsupported inputs use that exact
     Torch sequence as a fallback.
     """
+    if not 0 <= hash_offset < hash_space:
+        raise ValueError(
+            f"hash_offset must be in [0, hash_space), got "
+            f"hash_offset={hash_offset}, hash_space={hash_space}"
+        )
+    else:
+        pass
     if (
         build_rows_and_hash_kernel is not None
         and stop_choice.device.type == "cuda"
@@ -302,6 +324,7 @@ def build_rows_and_radix_token_ids(
                 slot_id,
                 end_id,
                 hash_space,
+                hash_offset,
                 MOD=_MOD,
                 BASE=_BASE,
                 BLOCK_SIZE=_TRITON_BLOCK_SIZE,
@@ -321,4 +344,6 @@ def build_rows_and_radix_token_ids(
     )
     rows[:, 0] = next_text
     rows[:, 1:] = codes
-    return rows, gpu_radix_row_hash(rows, next_text, end_id, hash_space=hash_space)
+    return rows, gpu_radix_row_hash(
+        rows, next_text, end_id, hash_space=hash_space, hash_offset=hash_offset
+    )

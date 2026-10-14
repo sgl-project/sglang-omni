@@ -141,17 +141,24 @@ def test_accepts_non_int64_input_dtype():
     assert int(keys.min()) >= 0 and int(keys.max()) < RADIX_HASH_SPACE
 
 
-def test_build_rows_and_ids_cpu_matches_split_reference():
+@pytest.mark.parametrize("hash_space,hash_offset", [(RADIX_HASH_SPACE, 0), (16384, 10)])
+def test_build_rows_and_ids_cpu_matches_split_reference(hash_space, hash_offset):
     stop = torch.tensor([0, 1, 2], dtype=torch.long)
     codes = torch.tensor([[1, 2], [-1, _MOD + 3], [7, 8]], dtype=torch.long)
-    rows, ids = build_rows_and_radix_token_ids(stop, codes, SLOT_ID, END_ID)
+    rows, ids = build_rows_and_radix_token_ids(
+        stop, codes, SLOT_ID, END_ID, hash_space=hash_space, hash_offset=hash_offset
+    )
     expected_rows = torch.tensor(
         [[SLOT_ID, 1, 2], [END_ID, -1, _MOD + 3], [END_ID, 7, 8]],
         dtype=torch.long,
     )
     expected_ids = torch.tensor(
         [
-            ref_poly(row) % RADIX_HASH_SPACE if row[0] != END_ID else END_ID
+            (
+                ref_poly(row) % (hash_space - hash_offset) + hash_offset
+                if row[0] != END_ID
+                else END_ID
+            )
             for row in expected_rows.tolist()
         ],
         dtype=torch.int64,
@@ -167,7 +174,8 @@ def test_build_rows_and_ids_cpu_matches_split_reference():
     "shape", [(0, 13), (4, 0), (1, 1), (3, 7), (16, 13), (129, 33)]
 )
 @pytest.mark.parametrize("strided", [False, True])
-def test_cuda_matches_python_reference(shape, dtype, strided):
+@pytest.mark.parametrize("hash_offset", [0, 10])
+def test_cuda_matches_python_reference(shape, dtype, strided, hash_offset):
     batch, channels = shape
     rows = torch.randint(-4096, 4096, shape, dtype=dtype)
     limits = torch.iinfo(dtype)
@@ -179,7 +187,11 @@ def test_cuda_matches_python_reference(shape, dtype, strided):
     hash_space = 1009
     expected = torch.tensor(
         [
-            END_ID if token == END_ID else ref_poly(row) % hash_space
+            (
+                END_ID
+                if token == END_ID
+                else ref_poly(row) % (hash_space - hash_offset) + hash_offset
+            )
             for row, token in zip(rows.tolist(), text.tolist())
         ],
         dtype=torch.int64,
@@ -193,7 +205,9 @@ def test_cuda_matches_python_reference(shape, dtype, strided):
     text_storage = torch.empty((batch, 2), device="cuda", dtype=dtype)
     device_text = text_storage[:, 1]
     device_text.copy_(text)
-    actual = gpu_radix_row_hash(device_rows, device_text, END_ID, hash_space=hash_space)
+    actual = gpu_radix_row_hash(
+        device_rows, device_text, END_ID, hash_space=hash_space, hash_offset=hash_offset
+    )
     assert actual.dtype == torch.int64
     assert actual.device == device_rows.device
     assert torch.equal(actual.cpu(), expected)
@@ -203,7 +217,10 @@ def test_cuda_matches_python_reference(shape, dtype, strided):
 @requires_cuda
 @pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
 @pytest.mark.parametrize("strided", [False, True])
-def test_cuda_row_builder_tail_matches_python_reference(dtype, strided):
+@pytest.mark.parametrize("hash_space,hash_offset", [(RADIX_HASH_SPACE, 0), (16384, 10)])
+def test_cuda_row_builder_tail_matches_python_reference(
+    dtype, strided, hash_space, hash_offset
+):
     batch = 129
     channels = N_CHANNELS - 1
     codes = (torch.arange(batch * channels) % 1024).reshape(batch, channels)
@@ -212,7 +229,11 @@ def test_cuda_row_builder_tail_matches_python_reference(dtype, strided):
     expected_rows = torch.cat((text[:, None], codes), dim=1)
     expected_ids = torch.tensor(
         [
-            END_ID if row[0] == END_ID else ref_poly(row) % RADIX_HASH_SPACE
+            (
+                END_ID
+                if row[0] == END_ID
+                else ref_poly(row) % (hash_space - hash_offset) + hash_offset
+            )
             for row in expected_rows.tolist()
         ],
         dtype=torch.int64,
@@ -229,7 +250,12 @@ def test_cuda_row_builder_tail_matches_python_reference(dtype, strided):
         device_stop = stop.to(device="cuda", dtype=dtype)
 
     rows, ids = build_rows_and_radix_token_ids(
-        device_stop, device_codes, SLOT_ID, END_ID
+        device_stop,
+        device_codes,
+        SLOT_ID,
+        END_ID,
+        hash_space=hash_space,
+        hash_offset=hash_offset,
     )
 
     assert rows.dtype == ids.dtype == torch.int64
@@ -263,18 +289,21 @@ def test_cuda_graph_replays_new_rows_and_eos():
 
 @pytest.mark.accelerator
 @requires_cuda
-def test_cuda_graph_replays_row_builder():
+@pytest.mark.parametrize("hash_space,hash_offset", [(RADIX_HASH_SPACE, 0), (16384, 10)])
+def test_cuda_graph_replays_row_builder(hash_space, hash_offset):
     stop = torch.zeros(16, device="cuda", dtype=torch.int64)
     codes = torch.zeros((16, N_CHANNELS - 1), device="cuda", dtype=torch.int64)
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
-        build_rows_and_radix_token_ids(stop, codes, SLOT_ID, END_ID)
+        build_rows_and_radix_token_ids(
+            stop, codes, SLOT_ID, END_ID, hash_space=hash_space, hash_offset=hash_offset
+        )
     torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         actual_rows, actual_ids = build_rows_and_radix_token_ids(
-            stop, codes, SLOT_ID, END_ID
+            stop, codes, SLOT_ID, END_ID, hash_space=hash_space, hash_offset=hash_offset
         )
     for step in range(3):
         host_stop = torch.arange(16, dtype=torch.int64) % 3
@@ -291,7 +320,8 @@ def test_cuda_graph_replays_row_builder():
                 (
                     END_ID
                     if row[0] == END_ID
-                    else ref_poly(row.tolist()) % RADIX_HASH_SPACE
+                    else ref_poly(row.tolist()) % (hash_space - hash_offset)
+                    + hash_offset
                 )
                 for row in host_rows
             ],
