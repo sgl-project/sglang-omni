@@ -276,7 +276,10 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
     try:
         if args.sample_util:
             gpu_ids = [int(g) for g in args.util_gpu_ids.split(",") if g.strip()]
-            sampler = UtilizationSampler(gpu_ids=gpu_ids, interval_s=args.util_interval)
+            sampler = UtilizationSampler(
+                gpu_ids=gpu_ids,
+                interval_s=args.util_interval,
+            )
             sampler.start()
         benchmark_result = await run_asr_seedtts_once(
             samples,
@@ -591,7 +594,7 @@ def add_common_args(
         type=_positive_int,
         action="append",
         help=(
-            "NVML/host PID to include in process memory and CPU metrics; repeat "
+            "Device/host PID to include in process memory and CPU metrics; repeat "
             "for multiple GPU processes. Without this option, process-specific "
             "metrics are unavailable instead of including every GPU workload."
         ),

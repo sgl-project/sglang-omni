@@ -5,7 +5,14 @@ from __future__ import annotations
 
 from types import ModuleType
 
+import pytest
+
 import sglang_omni.utils.gpu_compat as gpu_compat
+
+
+@pytest.fixture(autouse=True)
+def use_cuda_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gpu_compat, "gpu_device_type", lambda: "cuda")
 
 
 class FakeP2PNVML(ModuleType):
@@ -97,3 +104,47 @@ def test_disabled_when_p2p_status_api_missing(monkeypatch) -> None:
     patch_pynvml(monkeypatch, FakeP2PNVML(drop_status_fn=True))
     assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1], env={}) is None
     assert gpu_compat.should_disable_custom_all_reduce_for_gpus([0, 1], env={}) is True
+
+
+@pytest.mark.parametrize("missing_reverse_peer", [False, True])
+def test_xpu_queries_logical_indices_in_both_directions(
+    monkeypatch: pytest.MonkeyPatch, missing_reverse_peer: bool
+) -> None:
+    pairs: list[tuple[int, int]] = []
+
+    def can_access_peer(source: int, destination: int) -> bool:
+        pairs.append((source, destination))
+        return not (missing_reverse_peer and (source, destination) == (1, 0))
+
+    monkeypatch.setattr(gpu_compat, "gpu_device_type", lambda: "xpu")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,5")
+    monkeypatch.setattr(gpu_compat.torch.xpu, "can_device_access_peer", can_access_peer)
+    assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1, 0]) is not missing_reverse_peer
+    assert pairs == [(0, 1), (1, 0)]
+    assert gpu_compat.should_disable_custom_all_reduce_for_gpus([0, 1]) is True
+
+
+def test_xpu_unknown_peer_access_keeps_custom_all_reduce_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(source: int, destination: int) -> bool:
+        raise RuntimeError("peer access unavailable")
+
+    monkeypatch.setattr(gpu_compat, "gpu_device_type", lambda: "xpu")
+    monkeypatch.setattr(gpu_compat.torch.xpu, "can_device_access_peer", unavailable)
+    assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1]) is None
+    assert gpu_compat.should_disable_custom_all_reduce_for_gpus([0, 1]) is True
+
+
+def test_xpu_does_not_probe_a_different_visibility_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_probe(source: int, destination: int) -> bool:
+        pytest.fail("current process cannot probe another XPU mask")
+
+    monkeypatch.setattr(gpu_compat, "gpu_device_type", lambda: "xpu")
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "0,1")
+    monkeypatch.setattr(gpu_compat.torch.xpu, "can_device_access_peer", refuse_probe)
+    assert (
+        gpu_compat.gpu_ids_support_p2p_mesh([0, 1], {"ZE_AFFINITY_MASK": "2,3"}) is None
+    )
