@@ -81,7 +81,9 @@ def test_sampling_defaults_and_overrides():
 
 
 def test_stream_builder_ships_pending_frames_to_the_codec():
-    data = build_lm_request(make_payload(2, num_samples=3000), vocab_size=32000)
+    data = build_lm_request(
+        make_payload(2, {"stream": True}, num_samples=3000), vocab_size=32000
+    )
     assert lm_stream_output_builder("r", data, None) == []
     data.talker_model_inputs["pending_frames"].append(torch.arange(8))
     messages = lm_stream_output_builder("r", data, None)
@@ -89,6 +91,7 @@ def test_stream_builder_ships_pending_frames_to_the_codec():
     assert messages[0].target == "code2wav"
     assert messages[0].data.shape == (1, 8)
     assert messages[0].metadata["num_samples"] == 3000
+    assert messages[0].metadata["stream"] is True
     assert data.talker_model_inputs["pending_frames"] == []
 
 

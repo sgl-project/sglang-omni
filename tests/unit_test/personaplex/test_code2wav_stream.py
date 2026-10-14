@@ -238,7 +238,8 @@ def test_a_streaming_client_gets_the_reply_once(random_codec: MimiCodec) -> None
     whole = codec.decode(codes.T[None])[0, 0]
     start_stream(scheduler, "a", stream=True)
 
-    streamed = push_frames(scheduler, "a", codes)
+    streamed = push_frames(scheduler, "a", codes, {"stream": True})
+    assert scheduler.stream_states["a"].audio_parts == []
     tail, result = scheduler.on_stream_done("a")
     streamed.append(decode_waveform(tail.data))
     torch.testing.assert_close(torch.cat(streamed), whole, atol=1e-5, rtol=1e-5)

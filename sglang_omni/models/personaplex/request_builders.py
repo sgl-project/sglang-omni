@@ -298,6 +298,7 @@ def lm_stream_output_builder(
             metadata={
                 "modality": "audio_codes",
                 "num_samples": data.talker_model_inputs["num_samples"],
+                "stream": bool(data.stage_payload.request.params.get("stream")),
             },
         )
     ]
