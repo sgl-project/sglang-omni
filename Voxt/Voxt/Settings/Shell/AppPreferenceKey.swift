@@ -36,6 +36,8 @@ enum AppPreferenceKey {
     nonisolated static let modelStorageRootPath = "modelStorageRootPath"
     static let modelStorageRootBookmark = "modelStorageRootBookmark"
     static let useHfMirror = "useHfMirror"
+    nonisolated static let localAPIServerEnabled = "localAPIServerEnabled"
+    nonisolated static let localAPIServerPort = "localAPIServerPort"
     static let modelDownloadSourceSelections = "modelDownloadSourceSelections"
     static let hiddenModelVisibilityIDs = "hiddenModelVisibilityIDs"
     nonisolated static let hotkeyInputType = "hotkeyInputType"

@@ -1842,6 +1842,21 @@
 "Compiling model..." = "モデルをコンパイル中...";
 "Compiling %@" = "%@ をコンパイル中";
 
+/* Local API */
+"Local API" = "ローカル API";
+"Allow other apps to dictate through Voxt" = "他のアプリから Voxt で音声入力を許可";
+"Scripts, shortcuts and tools on this Mac send audio over HTTP. Voxt transcribes it with your current model, enhancement and dictionary, and returns the text." = "この Mac のスクリプト、ショートカット、ツールが HTTP で音声を送ります。Voxt は現在のモデル、補正、辞書で文字起こしし、テキストを返します。";
+"Voxt listens on 127.0.0.1 only." = "Voxt は 127.0.0.1 でのみ待ち受けます。";
+"Access token" = "アクセストークン";
+"Send it as a Bearer token with every request. Regenerating it disconnects existing clients." = "すべてのリクエストに Bearer トークンとして付けてください。再生成すると既存のクライアントは使えなくなります。";
+"Stopped" = "停止中";
+"Starting…" = "起動中…";
+"Listening on 127.0.0.1:%d" = "127.0.0.1:%d で待ち受け中";
+"Couldn't start: %@" = "起動できませんでした：%@";
+"Voxt is recording on the Mac. Try again in a moment." = "Mac で Voxt が録音中です。少し待ってから再試行してください。";
+"Voxt is recording a meeting on the Mac." = "Mac で Voxt が会議を録音中です。";
+"Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple 音声認識は録音済みの音声を文字起こしできません。Voxt 設定 > 文字起こし でローカルまたはリモートのモデルを選んでください。";
+
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "句読点と段落の流れを整えます。例：話し言葉の間を読みやすい文にします。";
 "Allow" = "許可";

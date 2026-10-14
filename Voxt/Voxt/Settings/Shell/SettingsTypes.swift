@@ -17,6 +17,8 @@ nonisolated extension Notification.Name {
     static let voxtMeetingFileResourceWaitDidChange = Notification.Name("voxt.meeting-file.resource-wait.did-change")
     static let voxtHotkeyDidTrigger = Notification.Name("voxt.hotkey.did-trigger")
     static let voxtModelStorageAuthorizationDidChange = Notification.Name("voxt.model-storage.authorization.did-change")
+    static let voxtLocalAPISettingsDidChange = Notification.Name("voxt.local-api.settings.did-change")
+    static let voxtLocalAPIStatusDidChange = Notification.Name("voxt.local-api.status.did-change")
 }
 
 nonisolated enum AppInterfaceLanguage: String, CaseIterable, Identifiable {

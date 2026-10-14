@@ -42,7 +42,8 @@ extension AppDelegate {
 
     func resolvedEnhancementPrompt(
         rawTranscription: String,
-        glossarySelectionPolicy: DictionaryGlossarySelectionPolicy? = nil
+        glossarySelectionPolicy: DictionaryGlossarySelectionPolicy? = nil,
+        usesAppBranch: Bool = true
     ) -> EnhancementPromptResolution {
         let groups = loadAppBranchGroups()
         let urlsByID = loadAppBranchURLsByID()
@@ -66,7 +67,7 @@ extension AppDelegate {
                 userMainLanguagePromptValue: userMainLanguagePromptValue,
                 userOtherLanguagesPromptValue: userOtherMainLanguagesPromptValue,
                 dictionaryGlossary: glossary,
-                appEnhancementEnabled: appEnhancementEnabled,
+                appEnhancementEnabled: appEnhancementEnabled && usesAppBranch,
                 groups: groups,
                 urlsByID: urlsByID,
                 frontmostBundleID: frontmostBundleID,
