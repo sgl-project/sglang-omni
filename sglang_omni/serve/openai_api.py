@@ -43,6 +43,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST
 from starlette.types import ASGIApp
 from starlette.types import Message as ASGIMessage
 from starlette.types import Receive, Scope, Send
@@ -76,6 +77,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.proto import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
@@ -126,6 +128,7 @@ from sglang_omni.serve.speech_limits import (
     MAX_VOICE_UPLOAD_BODY_BYTES,
     MAX_VOICE_UPLOAD_BYTES,
 )
+from sglang_omni.serve.speech_metrics import SpeechMetricsMiddleware
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_to_text import complete_unless_disconnected
@@ -231,6 +234,7 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    metrics: RuntimeMetrics | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -272,6 +276,8 @@ def create_app(
             ``/v1/audio/speech/batch``.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
+        metrics: Runtime metrics collector. None disables metrics collection and
+            the /metrics endpoint.
 
     Returns:
         Configured FastAPI application.
@@ -294,6 +300,9 @@ def create_app(
     app.state.client = client
     app.state.server_status = ServerStatus.UP
     app.state.model_name = model_name or "sglang-omni"
+    app.state.metrics = metrics
+    if metrics is not None:
+        app.add_middleware(SpeechMetricsMiddleware, metrics=metrics)
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
@@ -333,6 +342,8 @@ def create_app(
 
     # Register all routes
     register_favicon(app)
+    if metrics is not None:
+        register_metrics(app)
     register_health(app)
     register_models(app)
     register_admin(app, resolved_key)
@@ -350,6 +361,13 @@ def create_app(
         pass
 
     return app
+
+
+def register_metrics(app: FastAPI) -> None:
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        runtime_metrics: RuntimeMetrics = app.state.metrics
+        return Response(runtime_metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 def register_voices(app: FastAPI) -> None:
@@ -1575,6 +1593,7 @@ def register_speech(app: FastAPI) -> None:
         except SpeechAPIError as exc:
             return speech_error_response(exc)
 
+        request.state.audio_streaming = req.stream
         if req.stream:
             try:
                 return await speech_audio_response(
@@ -1618,10 +1637,19 @@ def register_speech(app: FastAPI) -> None:
         headers = {
             "Content-Disposition": f'attachment; filename="speech.{result.format}"',
             "X-Request-Id": request_id,
+        }
+        request.state.audio_duration_s = result.duration_s
+        store_speech_usage(request, result.usage)
+        if result.format == "pcm":
+            headers["X-Sample-Rate"] = str(result.sample_rate or DEFAULT_SAMPLE_RATE)
+            headers["X-Channels"] = "1"
+            headers["X-Bit-Depth"] = "16"
+        if result.finish_reason is not None:
             # note (Junnan Li): the body is binary audio, so the terminal state
             # travels in the same X- header channel as usage.
-            "X-Finish-Reason": result.finish_reason,
-        }
+            headers["X-Finish-Reason"] = result.finish_reason
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {
@@ -1785,6 +1813,12 @@ def speech_pcm_chunk_bytes(
     return audio_bytes, emitted_samples, sample_rate
 
 
+def store_speech_usage(request: Request, usage: UsageInfo | None) -> None:
+    """Store speech usage for response metrics."""
+    if usage is not None and usage.engine_time_s is not None:
+        request.state.audio_generation_s = usage.engine_time_s
+
+
 async def speech_audio_response(
     request: Request,
     client: Client,
@@ -1844,6 +1878,7 @@ async def speech_audio_response(
             except StopAsyncIteration:
                 stream_completed = True
                 break
+            store_speech_usage(request, chunk.usage)
             record_terminal_chunk_state(chunk)
             if chunk.audio_data is None:
                 continue
@@ -1895,6 +1930,7 @@ async def speech_audio_response(
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
+                store_speech_usage(request, chunk.usage)
                 record_terminal_chunk_state(chunk)
                 if chunk.audio_data is None:
                     continue
