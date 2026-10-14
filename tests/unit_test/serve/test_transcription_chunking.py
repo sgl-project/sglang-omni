@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 
+from sglang_omni.client.types import CompletionResult, GenerateRequest
 from sglang_omni.config import AudioChunkingConfig, ResolvedAudioChunking
-from sglang_omni.serve import transcription_chunking
+from sglang_omni.serve import create_app, transcription_chunking
 from sglang_omni.serve.transcription_chunking import (
     RMSSplitter,
     Span,
@@ -673,3 +677,134 @@ def test_join_transcript_parts(parts: list[str], expected: str) -> None:
     from sglang_omni.serve.transcription_chunking import join_transcript_parts
 
     assert join_transcript_parts(parts) == expected
+
+
+class LanguageDetectingClient:
+    """Answers each request with the language scripted for its chunk index.
+
+    An unchunked request is answered as chunk 0, and a chunk without a
+    scripted language detects none.
+    """
+
+    def __init__(self, chunk_languages: dict[int, str]) -> None:
+        self.chunk_languages = chunk_languages
+        self.request_ids: list[str] = []
+
+    async def completion(
+        self, request: GenerateRequest, *, request_id: str
+    ) -> CompletionResult:
+        self.request_ids.append(request_id)
+        _, separator, chunk_index = request_id.rpartition("-chunk-")
+        index = int(chunk_index) if separator else 0
+        return CompletionResult(
+            request_id=request_id,
+            text=f"part{index}",
+            language=self.chunk_languages.get(index),
+        )
+
+
+def verbose_json_language(
+    transcription_client: LanguageDetectingClient,
+    waveform: np.ndarray,
+    *,
+    language_hint: str | None = None,
+    architectures: list[str] | None = None,
+    condition_on_previous_text: bool = False,
+) -> str | None:
+    """Transcribe over HTTP and return the verbose_json language field."""
+    app = create_app(
+        transcription_client,
+        model_name="asr",
+        architectures=architectures,
+        audio_chunking=replace(
+            PLAN_CONFIG, condition_on_previous_text=condition_on_previous_text
+        ),
+    )
+    form_fields = {"model": "asr", "response_format": "verbose_json"}
+    if language_hint is not None:
+        form_fields["language"] = language_hint
+    else:
+        pass
+    response = TestClient(app).post(
+        "/v1/audio/transcriptions",
+        data=form_fields,
+        files={"file": ("audio.wav", wav_bytes(waveform), "audio/wav")},
+    )
+    assert response.status_code == 200
+    return response.json().get("language")
+
+
+# The concurrent path, and the ordered path that chains previous text.
+CHUNK_DECODING_PATHS = pytest.mark.parametrize(
+    ("architectures", "condition_on_previous_text"),
+    [(None, False), (["WhisperForConditionalGeneration"], True)],
+    ids=["concurrent", "ordered"],
+)
+
+
+@CHUNK_DECODING_PATHS
+def test_chunked_verbose_json_reports_the_first_detected_language(
+    architectures: list[str] | None, condition_on_previous_text: bool
+) -> None:
+    transcription_client = LanguageDetectingClient({0: "English", 1: "Chinese"})
+
+    language = verbose_json_language(
+        transcription_client,
+        make_speech(40_000),
+        architectures=architectures,
+        condition_on_previous_text=condition_on_previous_text,
+    )
+
+    assert len(transcription_client.request_ids) > 1
+    assert language == "English"
+
+
+def test_chunked_verbose_json_keeps_the_language_hint_without_detection() -> None:
+    transcription_client = LanguageDetectingClient({})
+
+    language = verbose_json_language(
+        transcription_client, make_speech(40_000), language_hint="en"
+    )
+
+    assert len(transcription_client.request_ids) > 1
+    assert language == "en"
+
+
+def test_chunked_and_unchunked_verbose_json_agree_on_the_language() -> None:
+    unchunked_client = LanguageDetectingClient({0: "English"})
+    chunked_client = LanguageDetectingClient({0: "English"})
+
+    unchunked_language = verbose_json_language(
+        unchunked_client, make_speech(SAMPLE_RATE // 2)
+    )
+    chunked_language = verbose_json_language(chunked_client, make_speech(40_000))
+
+    assert len(unchunked_client.request_ids) == 1
+    assert len(chunked_client.request_ids) > 1
+    assert chunked_language == unchunked_language == "English"
+
+
+@CHUNK_DECODING_PATHS
+def test_speechless_chunks_do_not_shadow_a_later_detected_language(
+    architectures: list[str] | None, condition_on_previous_text: bool
+) -> None:
+    rng = np.random.default_rng(0)
+    noise_floor = rng.uniform(-3e-4, 3e-4, SAMPLE_RATE).astype(np.float32)
+    waveform = np.concatenate([noise_floor, make_speech(2 * SAMPLE_RATE)])
+    plan = plan_audio_chunks(wav_bytes(waveform), PLAN_CONFIG)
+    assert plan is not None
+    # The leading noise floor never reaches the engine, so it detects nothing.
+    assert plan.spans[0].has_speech is False
+    transcription_client = LanguageDetectingClient(
+        dict.fromkeys(range(len(plan.spans)), "English")
+    )
+
+    language = verbose_json_language(
+        transcription_client,
+        waveform,
+        architectures=architectures,
+        condition_on_previous_text=condition_on_previous_text,
+    )
+
+    assert len(transcription_client.request_ids) < len(plan.spans)
+    assert language == "English"
