@@ -97,7 +97,9 @@ extension MLXTranscriptionPlanning {
     ) -> String {
         let protocolPrefix = "language "
         let textMarker = "<asr_text>"
-        let trimmed = decodedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = decodedText
+            .replacingOccurrences(of: qwenChatTokenPattern, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
         var visible = ""
@@ -185,7 +187,9 @@ extension MLXTranscriptionPlanning {
         return text
     }
 
+    // Qwen3-ASR writes "language None" before it has heard speech.
     private nonisolated static let qwenLanguageNames: Set<String> = [
+        "none",
         "arabic", "cantonese", "chinese", "czech", "danish", "dutch", "english",
         "finnish", "french", "german", "greek", "hindi", "hungarian",
         "indonesian", "italian", "japanese", "korean", "macedonian", "malay",
@@ -193,8 +197,15 @@ extension MLXTranscriptionPlanning {
         "swedish", "tagalog", "thai", "turkish", "vietnamese",
     ]
 
+    private nonisolated static let qwenChatTokenPattern = #"<\|[a-z_]+\|>"#
+
     nonisolated static func removingKnownASRContextLeakage(from text: String) -> String {
-        let lines = text
+        // Qwen3-ASR occasionally emits a chat token before its language header when it
+        // detects the language itself; the parser then passes the header through.
+        let withoutQwenProtocol = text
+            .replacingOccurrences(of: qwenChatTokenPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"language [A-Za-z][A-Za-z ]{0,40}<asr_text>"#, with: "", options: .regularExpression)
+        let lines = withoutQwenProtocol
             .components(separatedBy: .newlines)
             .filter { !isKnownASRContextLeakageLine($0) }
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)

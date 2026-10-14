@@ -263,6 +263,8 @@ jobs:
             -only-testing:VoxtTests/OmniSpeakerDiarizationTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
+            -only-testing:VoxtTests/ASRHintSettingsTests \
+            -only-testing:VoxtTests/MLXTranscriptionPlanningTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
             -only-testing:VoxtTests/MLXTranscriberIdleReleaseTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \

@@ -689,6 +689,32 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
         )
     }
 
+    func testQwenStreamingTextHidesTheHeaderQwenSendsBeforeSpeech() {
+        // Qwen3-ASR's first live updates with no language hint, before it has heard speech.
+        for update in [
+            "<|im_start|>",
+            "<|im_start|>language",
+            "<|im_start|>language None",
+            "<|im_start|>language None<asr_text>",
+        ] {
+            XCTAssertEqual(MLXTranscriptionPlanning.qwenStreamingVisibleText(update), "", update)
+        }
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.qwenStreamingVisibleText("<|im_start|>language None<asr_text>The new laptop"),
+            "The new laptop"
+        )
+    }
+
+    func testQwenFinalTextHidesAChatTokenBeforeTheHeader() {
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.qwenStreamingVisibleText(
+                "<|im_start|>language English<asr_text>The new laptop is faster.",
+                suppressIncompleteWindowHeader: false
+            ),
+            "The new laptop is faster."
+        )
+    }
+
     func testQwenStreamingTextParsesMarkerSplitAcrossConfirmedAndProvisionalText() {
         let parts = MLXTranscriptionPlanning.qwenStreamingVisibleTextParts(
             confirmedText: "language Chinese<asr_",

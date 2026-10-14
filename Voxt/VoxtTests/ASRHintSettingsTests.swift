@@ -389,6 +389,25 @@ final class ASRHintSettingsTests: XCTestCase {
         )
     }
 
+    func testQwenLanguageHeaderIsRemovedFromASROutput() {
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(
+                from: "<|im_start|>language English<asr_text>The new laptop is faster, but the battery is worse."
+            ),
+            "The new laptop is faster, but the battery is worse."
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(
+                from: "今天开会。 language Chinese<asr_text>明天继续。<|im_end|>"
+            ),
+            "今天开会。 明天继续。"
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(from: "Pick a language English speakers know."),
+            "Pick a language English speakers know."
+        )
+    }
+
     func testMLXModelFamilyRecognizesCohereTranscribe() {
         XCTAssertEqual(
             MLXModelFamily.family(for: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"),
