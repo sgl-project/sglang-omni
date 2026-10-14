@@ -23,6 +23,7 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import supports_device_streams
 
 SOURCE_HINT = "PersonaPlex"
 
@@ -105,7 +106,30 @@ class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
         self, request_id: str, item: StreamItem
     ) -> list[OutgoingMessage]:
         state = self.stream_state(request_id)
-        codes_FK = torch.as_tensor(item.data, dtype=torch.long)
+        device = self.decode_slots.codec.device
+        metadata = item.metadata if isinstance(item.metadata, dict) else None
+        codes_ready_event = (
+            None if metadata is None else metadata.get("codes_ready_event")
+        )
+        device_module = torch.get_device_module(device)
+        current_stream = device_module.current_stream(device)
+        if isinstance(codes_ready_event, torch.Event):
+            current_stream.wait_event(codes_ready_event)
+        else:
+            pass
+        source = item.data
+        codes_FK = torch.as_tensor(source, dtype=torch.long, device=device)
+        # note (guozhihao): as_tensor copies when the chunk is not already long
+        # on this device. Mark the source only after that copy is queued.
+        if (
+            isinstance(source, torch.Tensor)
+            and source.device == device
+            and supports_device_streams(device)
+            and source.data_ptr() != codes_FK.data_ptr()
+        ):
+            source.record_stream(current_stream)
+        else:
+            pass
         state.pending_codes.append(codes_FK)
         state.pending_frames += codes_FK.shape[0]
         # Note (wilsonzheng0327): The terminal payload only arrives after the LM finishes,
@@ -127,7 +151,25 @@ class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
         self, request_id: str, state: StreamState, frame_count: int
     ) -> OutgoingMessage:
         """Decode the oldest frame_count frames of pending codes and emit the chunk."""
-        pending_codes = torch.cat(list(state.pending_codes))
+        device = self.decode_slots.codec.device
+        queued_codes = list(state.pending_codes)
+        if len(queued_codes) == 1 and queued_codes[0].is_contiguous():
+            pending_codes = queued_codes[0]
+        else:
+            pending_codes = torch.cat(queued_codes)
+        # note (guozhihao): record_stream only covers work already queued, so
+        # each tensor is marked after the cat or decode kernel that reads it.
+        # cat copies even one contiguous chunk, so that chunk is kept and only
+        # the storage decode reads is marked.
+        if supports_device_streams(device):
+            consumer_stream = torch.get_device_module(device).current_stream(device)
+            for queued in queued_codes:
+                if queued.data_ptr() != pending_codes.data_ptr():
+                    queued.record_stream(consumer_stream)
+                else:
+                    pass
+        else:
+            consumer_stream = None
         codes_FK = pending_codes[:frame_count]
         remaining_codes = pending_codes[frame_count:]
         state.pending_codes = (
@@ -135,8 +177,16 @@ class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
         )
         state.pending_frames -= frame_count
         state.decodes_done += 1
-        codes_BKF = codes_FK.T[None].to(self.decode_slots.codec.device)
+        codes_BKF = codes_FK.T[None].to(device)
+        if consumer_stream is not None and codes_FK.data_ptr() != codes_BKF.data_ptr():
+            codes_FK.record_stream(consumer_stream)
+        else:
+            pass
         waveform = self.decode_slots.decode_step(codes_BKF, state.decode_slot)[0, 0]
+        if consumer_stream is not None:
+            codes_BKF.record_stream(consumer_stream)
+        else:
+            pass
         waveform = waveform.float().cpu()
         if state.num_samples:
             waveform = waveform[

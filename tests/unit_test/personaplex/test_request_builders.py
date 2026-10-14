@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """One decode step per caller frame; sampling knobs and seeds resolve as documented."""
 
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, SamplingParams
+from sglang_omni.models.personaplex import request_builders as request_builders_module
 from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TEMPERATURE,
     DEFAULT_AUDIO_TOP_K,
@@ -30,6 +32,7 @@ from sglang_omni.serve.openai_api import (
 )
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import ChatCompletionRequest, RolloutGenerateRequest
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 
 def make_payload(
@@ -87,9 +90,92 @@ def test_stream_builder_ships_pending_frames_to_the_codec():
     messages = lm_stream_output_builder("r", data, None)
     assert len(messages) == 1
     assert messages[0].target == "code2wav"
-    assert messages[0].data.shape == (1, 8)
+    assert torch.equal(messages[0].data, torch.arange(8).view(1, 8))
+    assert messages[0].data.device == torch.device("cpu")
+    assert "codes_ready_event" not in messages[0].metadata
     assert messages[0].metadata["num_samples"] == 3000
     assert data.talker_model_inputs["pending_frames"] == []
+    first = torch.arange(8)
+    second = torch.arange(8, 16)
+    data.talker_model_inputs["pending_frames"].extend((first, second))
+    (message,) = lm_stream_output_builder("r", data, None)
+    assert message.data.shape == (2, 8)
+    assert torch.equal(message.data, torch.stack((first, second)))
+    assert data.talker_model_inputs["pending_frames"] == []
+
+
+def test_stream_builder_records_the_event_after_stacking_the_pending_clone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The event is recorded on the current stream after the pending clone is stacked."""
+
+    class ProducerStream:
+        pass
+
+    class RecordingEvent:
+        def __init__(self) -> None:
+            created.append(self)
+
+        def record(self, stream: ProducerStream) -> None:
+            call_names.append("record")
+            recorded_streams.append(stream)
+
+    def device_streams_enabled(device: torch.device) -> bool:
+        return True
+
+    def current_stream(device: torch.device) -> ProducerStream:
+        return producer_stream
+
+    def device_module(device: torch.device) -> SimpleNamespace:
+        return SimpleNamespace(
+            Event=RecordingEvent, current_stream=current_stream, device=device
+        )
+
+    def logging_stack(tensors: list[torch.Tensor]) -> torch.Tensor:
+        call_names.append("stack")
+        stacked.extend(tensors)
+        return original_stack(tensors)
+
+    created: list[RecordingEvent] = []
+    call_names: list[str] = []
+    recorded_streams: list[ProducerStream] = []
+    stacked: list[torch.Tensor] = []
+    producer_stream = ProducerStream()
+    original_stack = torch.stack
+    data = build_lm_request(make_payload(2), vocab_size=32000)
+    first = torch.arange(8)
+    second = torch.arange(8, 16)
+    expected = torch.stack((first, second))
+    monkeypatch.setattr(
+        request_builders_module, "supports_device_streams", device_streams_enabled
+    )
+    monkeypatch.setattr(request_builders_module.torch, "stack", logging_stack)
+    monkeypatch.setattr(
+        request_builders_module.torch, "get_device_module", device_module
+    )
+    data.talker_model_inputs["pending_frames"].extend((first, second))
+    (message,) = request_builders_module.lm_stream_output_builder("r", data, None)
+    assert stacked[0] is first and stacked[1] is second
+    assert call_names == ["stack", "record"]
+    assert recorded_streams == [producer_stream]
+    assert message.metadata["codes_ready_event"] is created[0]
+    assert torch.equal(message.data, expected)
+
+
+@pytest.mark.accelerator
+def test_cuda_pending_frames_stay_on_the_frame_device() -> None:
+    """Stacked codes stay on the frame's device, in storage stack just allocated."""
+    require_cuda()
+    data = build_lm_request(make_payload(2), vocab_size=32000)
+    first = torch.arange(8, device="cuda")
+    second = torch.arange(8, 16, device="cuda")
+    data.talker_model_inputs["pending_frames"].extend((first, second))
+    (message,) = lm_stream_output_builder("r", data, None)
+    assert message.data.device == first.device
+    assert message.data.device == second.device
+    assert message.data.data_ptr() != first.data_ptr()
+    assert message.data.data_ptr() != second.data_ptr()
+    assert isinstance(message.metadata["codes_ready_event"], torch.cuda.Event)
 
 
 def test_request_boundary_rejects_unusable_inputs():

@@ -1,17 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """The streaming codec stage renders per-request chunks into the whole-reply waveform."""
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 
-from sglang_omni.models.personaplex import mimi_decode_graph
+from sglang_omni.models.personaplex import code2wav_stream, mimi_decode_graph
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.code2wav_stream import PersonaPlexCode2WavScheduler
 from sglang_omni.models.personaplex.components.mimi import MimiCodec
-from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_decode_graph import DecodeSlot, MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
@@ -201,6 +202,26 @@ def test_chunk_ramp_holds_frames_until_each_target_width(
     torch.testing.assert_close(
         decode_waveform(result.data.data), whole, atol=1e-5, rtol=1e-5
     )
+
+
+def test_chunk_ramp_decodes_each_width_once(random_codec: MimiCodec) -> None:
+    codec = random_codec
+    scheduler = new_scheduler(codec, (1, 3))
+    decoded_widths: list[int] = []
+    decode_step = scheduler.decode_slots.decode_step
+
+    def counting_decode_step(codes_BKF: torch.Tensor, slot: DecodeSlot) -> torch.Tensor:
+        decoded_widths.append(int(codes_BKF.shape[-1]))
+        return decode_step(codes_BKF, slot)
+
+    scheduler.decode_slots.decode_step = counting_decode_step
+    codes = torch.randint(0, 2048, (5, 8), generator=torch.Generator().manual_seed(11))
+    start_stream(scheduler, "a")
+    for frame in range(codes.shape[0]):
+        push_frames(scheduler, "a", codes[frame : frame + 1])
+    assert decoded_widths == [1, 3]
+    scheduler.on_stream_done("a")
+    assert decoded_widths == [1, 3, 1]
 
 
 def test_chunk_ramp_decodes_burst_messages_frame_exactly(
@@ -443,6 +464,148 @@ def test_stream_done_flushes_tail_in_either_payload_order(
     )
     assert messages[-1].data.request is payload.request
     assert "reply" not in scheduler.stream_states
+
+
+class CodecStream:
+    def __init__(self, names: list[str], waited_events: list[torch.Event]) -> None:
+        self.names = names
+        self.waited_events = waited_events
+
+    def wait_event(self, event: torch.Event) -> None:
+        self.names.append("wait_event")
+        self.waited_events.append(event)
+
+
+@dataclass(kw_only=True)
+class CodecStreamTrace:
+    names: list[str]
+    waited_events: list[torch.Event]
+    recorded_tensors: list[torch.Tensor]
+    recorded_streams: list[CodecStream]
+    codec_stream: CodecStream
+
+
+def install_codec_stream_fakes(monkeypatch: pytest.MonkeyPatch) -> CodecStreamTrace:
+    """Force device streams on and record wait, as_tensor, and record_stream order."""
+    names: list[str] = []
+    waited_events: list[torch.Event] = []
+    recorded_tensors: list[torch.Tensor] = []
+    recorded_streams: list[CodecStream] = []
+    codec_stream = CodecStream(names, waited_events)
+    trace = CodecStreamTrace(
+        names=names,
+        waited_events=waited_events,
+        recorded_tensors=recorded_tensors,
+        recorded_streams=recorded_streams,
+        codec_stream=codec_stream,
+    )
+    original_as_tensor = code2wav_stream.torch.as_tensor
+
+    def current_stream(device: torch.device) -> CodecStream:
+        return trace.codec_stream
+
+    def device_module(device: torch.device) -> SimpleNamespace:
+        return SimpleNamespace(current_stream=current_stream, device=device)
+
+    def logging_as_tensor(
+        source: torch.Tensor, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        trace.names.append("as_tensor")
+        adopted = original_as_tensor(source, dtype=dtype, device=device)
+        trace.names.append("as_tensor_return")
+        return adopted
+
+    def logging_record_stream(tensor: torch.Tensor, stream: CodecStream) -> None:
+        trace.names.append("record_stream")
+        trace.recorded_tensors.append(tensor)
+        trace.recorded_streams.append(stream)
+
+    def device_streams_enabled(device: torch.device) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        code2wav_stream, "supports_device_streams", device_streams_enabled
+    )
+    monkeypatch.setattr(code2wav_stream.torch, "get_device_module", device_module)
+    monkeypatch.setattr(code2wav_stream.torch, "as_tensor", logging_as_tensor)
+    monkeypatch.setattr(torch.Tensor, "record_stream", logging_record_stream)
+    return trace
+
+
+def test_codes_ready_event_is_waited_before_the_chunk_is_adopted(
+    monkeypatch: pytest.MonkeyPatch, random_codec: MimiCodec
+) -> None:
+    """The codec waits out the producer's event before adopting the chunk."""
+    trace = install_codec_stream_fakes(monkeypatch)
+    scheduler = new_scheduler(random_codec, (4,))
+    chunk = torch.arange(8, dtype=torch.long).view(1, 8)
+    event = torch.Event()
+    start_stream(scheduler, "ready")
+    scheduler.on_stream_chunk(
+        "ready",
+        SimpleNamespace(data=chunk, metadata={"codes_ready_event": event}),
+    )
+    assert trace.names.index("wait_event") < trace.names.index("as_tensor")
+    assert trace.waited_events == [event]
+
+    trace.names.clear()
+    trace.waited_events.clear()
+    start_stream(scheduler, "plain")
+    scheduler.on_stream_chunk("plain", SimpleNamespace(data=chunk, metadata=None))
+    assert "as_tensor" in trace.names
+    assert "wait_event" not in trace.names
+
+
+def test_resident_long_chunk_keeps_its_storage_and_a_cast_is_marked_after(
+    monkeypatch: pytest.MonkeyPatch, random_codec: MimiCodec
+) -> None:
+    """A chunk already long on the codec is not marked; a cast is, after as_tensor."""
+    trace = install_codec_stream_fakes(monkeypatch)
+    scheduler = new_scheduler(random_codec, (4,))
+    resident = torch.arange(8, dtype=torch.long).view(1, 8)
+    start_stream(scheduler, "resident")
+    scheduler.on_stream_chunk("resident", SimpleNamespace(data=resident, metadata=None))
+    adopted = scheduler.stream_states["resident"].pending_codes[0]
+    assert adopted.data_ptr() == resident.data_ptr()
+    assert trace.recorded_tensors == []
+
+    trace.names.clear()
+    cast_source = torch.arange(8, dtype=torch.int32).view(1, 8)
+    start_stream(scheduler, "cast")
+    scheduler.on_stream_chunk("cast", SimpleNamespace(data=cast_source, metadata=None))
+    assert trace.names.index("as_tensor_return") < trace.names.index("record_stream")
+    assert len(trace.recorded_tensors) == 1
+    assert trace.recorded_tensors[0] is cast_source
+    assert trace.recorded_streams == [trace.codec_stream]
+
+
+def test_decode_chunk_marks_the_read_storage_after_decode_step(
+    monkeypatch: pytest.MonkeyPatch, random_codec: MimiCodec
+) -> None:
+    """One decode marks the storage it read, not the source of a contiguous chunk."""
+    trace = install_codec_stream_fakes(monkeypatch)
+    scheduler = new_scheduler(random_codec, (1,))
+    decode_step = scheduler.decode_slots.decode_step
+    read_codes: list[torch.Tensor] = []
+
+    def logging_decode_step(codes_BKF: torch.Tensor, slot: DecodeSlot) -> torch.Tensor:
+        read_codes.append(codes_BKF)
+        trace.names.append("decode_step")
+        waveform = decode_step(codes_BKF, slot)
+        trace.names.append("decode_step_return")
+        return waveform
+
+    scheduler.decode_slots.decode_step = logging_decode_step
+    chunk = torch.randint(0, 2048, (1, 8), generator=torch.Generator().manual_seed(1))
+    start_stream(scheduler, "a")
+    scheduler.on_stream_chunk("a", SimpleNamespace(data=chunk, metadata=None))
+    assert len(read_codes) == 1
+    assert read_codes[0].data_ptr() == chunk.data_ptr()
+    assert len(trace.recorded_tensors) == 1
+    assert trace.recorded_tensors[0] is read_codes[0]
+    assert all(recorded is not chunk for recorded in trace.recorded_tensors)
+    assert trace.recorded_streams == [trace.codec_stream]
+    assert trace.names.index("decode_step_return") < trace.names.index("record_stream")
 
 
 def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monkeypatch):
