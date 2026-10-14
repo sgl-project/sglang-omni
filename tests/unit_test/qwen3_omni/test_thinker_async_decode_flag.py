@@ -6,8 +6,14 @@ turns it off like any other scheduler setting.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
+from sglang_omni.scheduling import generation_batch_policy
 
 
 def thinker_scheduler(cfg):
@@ -33,3 +39,19 @@ def test_dotted_flag_keeps_thinker_async():
         [("thinker.factory.enable_async_decode", "true")]
     )
     assert thinker_scheduler(resolved).enable_async_decode is True
+
+
+def test_spec_v2_requires_compatible_native_scheduler_configuration(monkeypatch):
+    monkeypatch.setattr(
+        generation_batch_policy,
+        "get_prefill_cuda_graph_backend",
+        lambda args: generation_batch_policy.CudaGraphBackend.DISABLED,
+    )
+    arguments = SimpleNamespace(
+        speculative_algorithm="DFLASH", disable_overlap_schedule=True
+    )
+    with pytest.raises(ValueError, match="disable_overlap_schedule=false"):
+        create_thinker_scheduler(arguments, enable_spec_v2_overlap=True)
+    arguments.speculative_algorithm = None
+    with pytest.raises(ValueError, match="requires DFLASH"):
+        create_thinker_scheduler(arguments, enable_spec_v2_overlap=True)

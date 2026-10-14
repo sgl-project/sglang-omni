@@ -25,6 +25,7 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass, field
+from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING, Callable, Generic, NoReturn
 from weakref import ref
@@ -35,8 +36,12 @@ from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.managers import scheduler as native_scheduler
 from sglang.srt.managers.io_struct import AbortReq
-from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+from sglang.srt.managers.overlap_utils import (
+    decide_needs_cpu_seq_lens,
+    resolve_forward_inputs,
+)
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
     NextBatchPlan,
@@ -197,6 +202,25 @@ class PendingDecode:
     device_step: PendingStep | MlxSchedulerPendingStep
 
 
+@dataclass(frozen=True, kw_only=True)
+class SpecV2Row:
+    request: Req
+    request_id: str
+    pool_index: int
+    generation: int
+    cache_request_handle: CacheRequestHandle | None
+
+
+@dataclass(kw_only=True)
+class PendingSpecV2:
+    """Original B-by-D result rows, independent of next batch filtering."""
+
+    batch: ScheduleBatch
+    result: GenerationBatchResult
+    rows: tuple[SpecV2Row, ...]
+    writer_done: torch.cuda.Event
+
+
 class PendingStreamIngress:
     """Stream input buffered for a request the scheduler has not admitted."""
 
@@ -318,6 +342,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_finished_callback: Callable[[str], None] | None
     enable_overlap: bool
     enable_async_decode: bool
+    enable_spec_v2_overlap: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
     prefill_coalesce_requests: int
@@ -353,6 +378,8 @@ class OmniScheduler(Generic[RequestDataT]):
     wait_for_prefill_publication_on_stop: bool = False
     prefill_publication_stopped: bool = False
     draft_worker: BaseSpecWorker | None = None
+    enable_spec_v2_overlap: bool = False
+    pending_spec_v2: PendingSpecV2 | None = None
 
     def __init__(
         self,
@@ -382,6 +409,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_finished_callback: Callable[[str], None] | None = None,
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
+        enable_spec_v2_overlap: bool = False,
         async_decode_min_batch_size: int = 1,
         async_decode_resolve_before_prefill: bool = False,
         prefill_coalesce_requests: int = 0,
@@ -393,6 +421,20 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
     ) -> None:
+        if enable_spec_v2_overlap and (
+            draft_worker is None or enable_overlap or enable_async_decode
+        ):
+            raise ValueError(
+                "SpecV2 overlap requires DFlash and a separate scheduler loop"
+            )
+        else:
+            pass
+        if enable_spec_v2_overlap and (
+            get_parallel().tp_size != 1 or get_parallel().pp_size != 1
+        ):
+            raise ValueError("SpecV2 overlap requires TP1/PP1")
+        else:
+            pass
         if draft_worker is not None and (enable_overlap or enable_async_decode):
             raise ValueError("Thinker DFlash currently requires synchronous scheduling")
         else:
@@ -480,7 +522,13 @@ class OmniScheduler(Generic[RequestDataT]):
         self.dp_size = get_parallel().dp_size
         self.attn_cp_size = get_parallel().attn_cp_size
         self.page_size = get_schedule().page_size
-        self.enable_overlap = enable_overlap
+        self.enable_spec_v2_overlap = enable_spec_v2_overlap
+        self.pending_spec_v2 = None
+        self.spec_v2_draft_tokens = (
+            int(draft_worker.block_size) if enable_spec_v2_overlap else 0
+        )
+        self.wait_for_prefill_publication_on_stop = enable_spec_v2_overlap
+        self.enable_overlap = enable_overlap or enable_spec_v2_overlap
         # One-step-lookahead async decode (single stream + CUDA event). Only
         # safe for model runners that implement post_decode_launch/resolve.
         self.enable_async_decode = enable_async_decode
@@ -664,7 +712,11 @@ class OmniScheduler(Generic[RequestDataT]):
         self.future_map = self.spec_algorithm.create_future_map(
             torch.device(self.device),
             self.req_to_token_pool,
-            needs_cpu_seq_lens=True,
+            needs_cpu_seq_lens=(
+                decide_needs_cpu_seq_lens(draft_worker.spec_v2_attn_backends)
+                if enable_spec_v2_overlap
+                else True
+            ),
         )
         self.dllm_config = None
         self.draft_worker = draft_worker
@@ -2127,6 +2179,12 @@ class OmniScheduler(Generic[RequestDataT]):
         return now_s - oldest_enqueue_s < self.prefill_coalesce_wait_s
 
     def get_new_batch_prefill(self, running_batch):
+        if self.enable_spec_v2_overlap and (
+            self.waiting_queue or self.chunked_req is not None
+        ):
+            self.drain_spec_v2()
+        else:
+            pass
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
@@ -2162,11 +2220,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 raise
         except Exception as exc:
             self.close_prefill_publication(exc)
-            if self.draft_worker is not None:
-                self.drain_dflash_failure()
+            if self.enable_spec_v2_overlap:
+                self.fail_spec_v2(batch, exc)
             else:
-                pass
-            self.handle_batch_failure(batch, exc)
+                if self.draft_worker is not None:
+                    self.drain_dflash_failure()
+                else:
+                    pass
+                self.handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
 
     def process_batch_result(self, batch, result) -> None:
@@ -2204,13 +2265,38 @@ class OmniScheduler(Generic[RequestDataT]):
         self.emit_prefill_start_for_batch(batch)
         self.stamp_batch_launch(batch)
         if self.draft_worker is not None:
+            if self.enable_spec_v2_overlap:
+                self.future_map.resolve_seq_lens_cpu(batch)
+            else:
+                pass
             resolve_forward_inputs(batch, self.future_map)
             with self._forward_isolation(
                 batch, overlap=False
             ):  # noqa: leading-underscore  # Native batch transaction.
-                batch_result = self.draft_worker.forward_batch_generation(batch)
+                if self.enable_spec_v2_overlap:
+                    batch_result = self.draft_worker.forward_batch_generation(
+                        batch,
+                        on_publish=partial(
+                            self.future_map.publish, batch.req_pool_indices
+                        ),
+                    )
+                else:
+                    batch_result = self.draft_worker.forward_batch_generation(batch)
             self.wait_prefill_publication()
+            if self.enable_spec_v2_overlap:
+                self._relay_forward_payload(  # noqa: leading-underscore  # Native relay owner.
+                    batch, batch.req_pool_indices, batch_result
+                )
+            else:
+                pass
             batch.spec_info = batch_result.next_draft_input
+            if self.enable_spec_v2_overlap:
+                batch.spec_info.future_indices = batch.req_pool_indices
+                batch.spec_info.future_dsa_topk_indices_available = (
+                    batch.spec_info.dsa_topk_indices is not None
+                )
+            else:
+                pass
             new_seq_lens = batch_result.new_seq_lens
             if new_seq_lens is not None and new_seq_lens is not batch.seq_lens:
                 batch.seq_lens = new_seq_lens
@@ -2354,12 +2440,240 @@ class OmniScheduler(Generic[RequestDataT]):
             can_run_cuda_graph=mr_output.can_run_cuda_graph,
         )
 
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        if self.enable_spec_v2_overlap:
+            # note (Codex): Retraction can free rows even when the loop's earlier memory check passed.
+            batch.filter_batch()
+            if not batch.is_empty() and (
+                not batch.check_decode_mem()
+                or (
+                    native_scheduler.TEST_RETRACT
+                    and self.forward_ct % native_scheduler.TEST_RETRACT_INTERVAL == 0
+                )
+            ):
+                self.drain_spec_v2()
+            else:
+                pass
+        else:
+            pass
+        return _Upstream.update_running_batch(self, batch)
+
+    def launch_spec_v2(self, batch: ScheduleBatch) -> PendingSpecV2:
+        """Submit native verify/draft and D2H; do not commit or wait on the host."""
+        if batch.forward_mode != ForwardMode.DECODE:
+            raise ValueError("SpecV2 launch accepts only prepared DECODE batches")
+        else:
+            pass
+        self.stamp_batch_launch(batch)
+        rows = tuple(
+            SpecV2Row(
+                request=request,
+                request_id=request.rid,
+                pool_index=request.kv.req_pool_idx,
+                generation=int(
+                    self.req_to_token_pool.req_generation[request.kv.req_pool_idx]
+                ),
+                cache_request_handle=request.cache_request_handle,
+            )
+            for request in batch.reqs
+        )
+        self.future_map.resolve_seq_lens_cpu(batch)
+        with self.device_module.stream(self.forward_stream):
+            self.forward_stream.wait_stream(self.schedule_stream)
+            # note (Codex): Static graph outputs cannot be rewritten during their D2H.
+            self.forward_stream.wait_stream(self.copy_stream)
+            resolve_forward_inputs(batch, self.future_map)
+            with self._forward_isolation(
+                batch, overlap=True
+            ):  # noqa: leading-underscore  # Native transaction.
+
+                future_indices = batch.req_pool_indices
+                result = self.draft_worker.forward_batch_generation(
+                    batch, on_publish=partial(self.future_map.publish, future_indices)
+                )
+                if (
+                    result.delay_sample_func is not None
+                    or result.next_draft_input is None
+                ):
+                    raise RuntimeError(
+                        "SpecV2 requires an immediate native draft result"
+                    )
+                else:
+                    pass
+                if result.extra_keep_alive_refs:
+                    self.batch_record_buf[self.batch_record_ct].extend(
+                        result.extra_keep_alive_refs
+                    )
+                else:
+                    pass
+                self._relay_forward_payload(  # noqa: leading-underscore  # Native relay owner.
+                    batch, future_indices, result
+                )
+                writer_done = self.device_module.Event()
+                writer_done.record(self.forward_stream)
+                result.copy_done = self.device_module.Event()
+                self.copy_stream.wait_stream(self.forward_stream)
+                with self.device_module.stream(self.copy_stream):
+                    result.copy_to_cpu(
+                        return_logprob=batch.return_logprob,
+                        return_hidden_states=batch.return_hidden_states,
+                    )
+        batch.input_ids = None
+        batch.spec_info = result.next_draft_input
+        batch.spec_info.future_indices = future_indices
+        batch.spec_info.future_dsa_topk_indices_available = (
+            batch.spec_info.dsa_topk_indices is not None
+        )
+        # note (Codex): All later GPU frees/reuse follow the entire draft writer, not publish.
+        self.schedule_stream.wait_event(writer_done)
+        return PendingSpecV2(
+            batch=batch.copy(), result=result, rows=rows, writer_done=writer_done
+        )
+
+    def resolve_spec_v2(self, pending: PendingSpecV2) -> None:
+        """Keep original padded token/acceptance rows for the native resolver."""
+        pending.result.copy_done.synchronize()
+        for request, row in zip(pending.batch.reqs, pending.rows, strict=True):
+            if request is not row.request or request.rid != row.request_id:
+                raise RuntimeError("SpecV2 result request identity changed")
+            elif request.finished() or request.is_retracted:
+                # note (Codex): Native overlap skips a finished overshoot row without re-free.
+                continue
+            elif (
+                request.kv.req_pool_idx != row.pool_index
+                or int(self.req_to_token_pool.req_generation[row.pool_index])
+                != row.generation
+                or request.cache_request_handle is not row.cache_request_handle
+            ):
+                raise RuntimeError("SpecV2 result slot generation changed")
+            else:
+                pass
+        self.process_batch_result(pending.batch, pending.result)
+
+    def spec_v2_pending_may_reach_cap(self) -> bool:
+        pending = self.pending_spec_v2
+        if pending is None:
+            return False
+        else:
+            # note (Codex): Do not launch a second full block beyond the admitted context budget.
+            return any(
+                len(row.request.output_ids) + self.spec_v2_draft_tokens
+                >= row.request.sampling_params.max_new_tokens
+                for row in pending.rows
+                if not row.request.finished()
+            )
+
+    def drain_spec_v2(self) -> None:
+        """Retain ownership if any device wait fails; never free unknown writers."""
+        if self.pending_spec_v2 is None:
+            return
+        else:
+            pending = self.pending_spec_v2
+        try:
+            pending.writer_done.synchronize()
+            pending.result.copy_done.synchronize()
+        except Exception as error:
+            self.terminate_prefill_worker(error)
+        else:
+            self.pending_spec_v2 = None
+            self.resolve_spec_v2(pending)
+
     def drain_dflash_failure(self) -> None:
         """Establish writer completion before exceptional DFlash request cleanup."""
         try:
-            self.device_module.synchronize(self.device)
+            if self.enable_spec_v2_overlap:
+                self.forward_stream.synchronize()
+                self.copy_stream.synchronize()
+                self.schedule_stream.synchronize()
+            else:
+                # note (Codex): Failed synchronous submission may have no completion event.
+                self.device_module.synchronize(self.device)
         except Exception as drain_error:
             self.terminate_prefill_worker(drain_error)
+
+    def fail_spec_v2(self, batch: ScheduleBatch, error: Exception) -> None:
+        """A partially submitted forward owns its rows until every stream drains."""
+        self.drain_dflash_failure()
+        pending, self.pending_spec_v2 = self.pending_spec_v2, None
+        if pending is not None:
+            self.handle_batch_failure(pending.batch, error)
+        else:
+            pass
+        remaining = batch.copy()
+        remaining.reqs = [request for request in batch.reqs if not request.finished()]
+        if remaining.reqs:
+            self.handle_batch_failure(remaining, error)
+        else:
+            pass
+
+    @DynamicGradMode()
+    def event_loop_spec_v2(self) -> None:
+        """One pending native result; prefill, admission and admin changes drain it."""
+        self.forward_stream = self.tp_worker.model_runner.forward_stream
+        self.schedule_stream = self.device_module.Stream()
+        self.schedule_stream.wait_stream(self.device_module.current_stream())
+        self.copy_stream = self.device_module.Stream()
+        self.batch_record_buf = [None, None]
+        self.batch_record_ct = 0
+        with self.device_module.stream(self.schedule_stream):
+            while self.running:
+                if not self.inbox.empty() or not self.admin_queue.empty():
+                    self.drain_spec_v2()
+                else:
+                    pass
+                self.process_admin_requests()
+                recv_requests = self.recv_requests()
+                recv_requests.extend(self.take_deferred_request_payloads())
+                self.process_input_requests(recv_requests)
+                if self._engine_paused:  # noqa: leading-underscore
+                    self.drain_spec_v2()
+                    time.sleep(0.001)
+                    continue
+                else:
+                    pass
+                if (
+                    self.waiting_queue
+                    or self.chunked_req is not None
+                    or self.spec_v2_pending_may_reach_cap()
+                    or (
+                        self.pending_spec_v2 is not None
+                        and not self.running_batch.is_empty()
+                        and not self.running_batch.check_decode_mem()
+                    )
+                ):
+                    self.drain_spec_v2()
+                else:
+                    pass
+                batch = self.get_next_batch_to_run()
+                self.cur_batch = batch
+                if batch is not None and batch.forward_mode == ForwardMode.DECODE:
+                    previous = self.pending_spec_v2
+                    try:
+                        launched = self.launch_spec_v2(batch)
+                    except Exception as error:
+                        self.fail_spec_v2(batch, error)
+                    else:
+                        self.pending_spec_v2 = launched
+                        if previous is not None:
+                            try:
+                                self.resolve_spec_v2(previous)
+                            except Exception as error:
+                                self.fail_spec_v2(previous.batch, error)
+                        else:
+                            pass
+                else:
+                    self.drain_spec_v2()
+                    if batch is not None:
+                        result = self.run_batch(batch)
+                        if result is not _FAILED_BATCH_RESULT:
+                            self.process_batch_result(batch, result)
+                        else:
+                            pass
+                    else:
+                        self._sched_idled = True  # noqa: leading-underscore
+                        self.self_check_during_idle()
+                        self.sleep_during_idle()
+                self.last_batch = batch
 
     def run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU
@@ -2938,6 +3252,8 @@ class OmniScheduler(Generic[RequestDataT]):
         try:
             if not self.running:
                 return
+            elif self.enable_spec_v2_overlap:
+                self.event_loop_spec_v2()
             elif self.enable_async_decode:
                 self.event_loop_async_decode()
             elif self.enable_overlap:
@@ -2947,6 +3263,10 @@ class OmniScheduler(Generic[RequestDataT]):
             model_path_status = "aborted"
         finally:
             try:
+                if self.enable_spec_v2_overlap:
+                    self.drain_spec_v2()
+                else:
+                    pass
                 self.close_prefill_publication(
                     RuntimeError(
                         "Scheduler stopped before prefill publication completed"
@@ -3026,7 +3346,7 @@ class OmniScheduler(Generic[RequestDataT]):
         if (
             self.scheduler_thread_id is not None
             and self.scheduler_thread_id != threading.get_ident()
-            and (bridge is not None or self.tp_size > 1)
+            and (bridge is not None or self.tp_size > 1 or self.enable_spec_v2_overlap)
         ):
             # note (Richard Wang): every TP rank must drop a request in the same
             # pass, so the entry rank broadcast carries it and followers skip theirs.
@@ -3035,6 +3355,10 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
             return
+        else:
+            pass
+        if self.enable_spec_v2_overlap and not defer_running_cleanup:
+            self.drain_spec_v2()
         else:
             pass
         if bridge is not None:
@@ -3128,6 +3452,15 @@ class OmniScheduler(Generic[RequestDataT]):
         self, action: str, payload: dict[str, object] | None = None
     ) -> AdminActionResult:
         payload = dict(payload or {})
+        if (
+            self.enable_spec_v2_overlap
+            and self.scheduler_thread_id is not None
+            and self.scheduler_thread_id != threading.get_ident()
+            and not self.running
+        ):
+            return {"success": False, "message": "SpecV2 scheduler is draining"}
+        else:
+            pass
         if self.should_enqueue_admin():
             return self.enqueue_admin(action, payload)
         else:
@@ -3208,6 +3541,10 @@ class OmniScheduler(Generic[RequestDataT]):
     def run_admin_action(
         self, action: str, payload: dict[str, object] | None = None
     ) -> AdminActionResult:
+        if self.enable_spec_v2_overlap:
+            self.drain_spec_v2()
+        else:
+            pass
         payload = dict(payload or {})
         if self.draft_worker is not None and action in (
             ADMIN_UPDATE_WEIGHTS_FROM_DISK,
@@ -3842,8 +4179,11 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def async_pending_batch(self) -> ScheduleBatch | None:
         """Return the launched decode batch awaiting result processing, or None."""
-        pending_decode = self.async_pending
-        return pending_decode.batch if pending_decode is not None else None
+        if self.pending_spec_v2 is not None:
+            return self.pending_spec_v2.batch
+        else:
+            pending_decode = self.async_pending
+            return pending_decode.batch if pending_decode is not None else None
 
     def synchronize_launched_decode(self) -> None:
         pending_decode = self.async_pending

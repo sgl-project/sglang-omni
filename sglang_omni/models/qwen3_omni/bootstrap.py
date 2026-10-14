@@ -41,6 +41,7 @@ def create_thinker_scheduler(
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
     enable_early_first_token: bool = False,
+    enable_spec_v2_overlap: bool = False,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -68,6 +69,14 @@ def create_thinker_scheduler(
     algorithm = SpeculativeAlgorithm.from_string(
         resolved_view(server_args).speculative_algorithm
     )
+    if enable_spec_v2_overlap and not algorithm.is_dflash():
+        raise ValueError("SpecV2 overlap requires DFLASH")
+    elif enable_spec_v2_overlap and resolved_view(server_args).disable_overlap_schedule:
+        raise ValueError(
+            "SpecV2 overlap requires engine.disable_overlap_schedule=false"
+        )
+    else:
+        pass
     if enable_early_first_token and not algorithm.is_dflash():
         raise ValueError("Early first-token publication requires DFLASH")
     else:
@@ -258,6 +267,7 @@ def create_thinker_scheduler(
             else None
         ),
         enable_async_decode=enable_async_decode,
+        enable_spec_v2_overlap=enable_spec_v2_overlap,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
