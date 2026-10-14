@@ -13,6 +13,7 @@ from sglang_omni.profiler.event_recorder import RequestEventRecorder
 from sglang_omni.profiler.event_recorder_types import (
     QueuedRequestEvent,
     RecorderRunState,
+    RequestEventFinalization,
 )
 from tests.unit_test.profiler.event_recorder_test_utils import (
     read_events,
@@ -177,6 +178,125 @@ def test_retired_run_waits_for_events_accepted_during_idle_observation(
     assert open_calls == [run_state.run_id]
 
 
+def test_idle_writer_does_not_open_new_run_ahead_of_queued_old_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    open_calls: list[str] = []
+    original_open = recorder.open_event_file
+    original_idle = recorder.handle_writer_idle
+    original_write = recorder.write_queued_event
+    event_a_written = threading.Event()
+    idle_entered = threading.Event()
+    release_idle = threading.Event()
+    event_b_written = threading.Event()
+
+    def counting_open(run_state: RecorderRunState) -> TextIOWrapper | None:
+        open_calls.append(run_state.run_id)
+        return original_open(run_state)
+
+    def observe_write(
+        queued_event: QueuedRequestEvent,
+        file_handle: TextIOWrapper | None,
+    ) -> TextIOWrapper | None:
+        result = original_write(queued_event, file_handle)
+        if queued_event.event.run_id == "run-a":
+            event_a_written.set()
+        elif queued_event.event.run_id == "run-b":
+            event_b_written.set()
+        else:
+            pass
+        return result
+
+    def pause_idle(
+        open_state: RecorderRunState | None,
+        file_handle: TextIOWrapper | None,
+    ) -> tuple[RecorderRunState | None, TextIOWrapper | None]:
+        if event_a_written.is_set() and not idle_entered.is_set():
+            idle_entered.set()
+            if not release_idle.wait(timeout=5):
+                raise AssertionError("test did not release the idle writer")
+            else:
+                pass
+        else:
+            pass
+        return original_idle(open_state, file_handle)
+
+    monkeypatch.setattr(recorder, "open_event_file", counting_open)
+    monkeypatch.setattr(recorder, "write_queued_event", observe_write)
+    monkeypatch.setattr(recorder, "handle_writer_idle", pause_idle)
+
+    path_a = recorder.start(
+        run_id="run-a", event_dir=str(tmp_path / "run-a"), stage="stage"
+    )
+    recorder.emit(request_id="request-a", stage="stage", event_name="event")
+    finalization_a = None
+    finalization_b = None
+    finalization_c = None
+    try:
+        assert event_a_written.wait(timeout=5)
+        assert idle_entered.wait(timeout=5)
+
+        finalization_a = recorder.deactivate(run_id="run-a")
+        assert finalization_a is not None
+        path_b = recorder.start(
+            run_id="run-b", event_dir=str(tmp_path / "run-b"), stage="stage"
+        )
+        recorder.emit(request_id="request-b", stage="stage", event_name="event")
+        finalization_b = recorder.deactivate(run_id="run-b")
+        assert finalization_b is not None
+        path_c = recorder.start(
+            run_id="run-c", event_dir=str(tmp_path / "run-c"), stage="stage"
+        )
+
+        release_idle.set()
+        assert event_b_written.wait(timeout=5)
+        finalization_c = recorder.deactivate(run_id="run-c")
+        assert finalization_c is not None
+    finally:
+        release_idle.set()
+        recorder.stop(wait=False)
+        recorder.wait_for_finalizations(timeout_seconds=5)
+
+    assert finalization_a is not None
+    assert finalization_b is not None
+    assert finalization_c is not None
+    finalizations = {
+        "run-a": finalization_a,
+        "run-b": finalization_b,
+        "run-c": finalization_c,
+    }
+    paths = {"run-a": path_a, "run-b": path_b, "run-c": path_c}
+    expected_request_ids = {"run-a": ["request-a"], "run-b": ["request-b"], "run-c": []}
+
+    for run_id, path in paths.items():
+        finalization = finalizations[run_id]
+        assert finalization.wait(timeout_seconds=5)
+        status = read_status_file(finalization.status_path)
+        assert status["run_id"] == run_id
+        assert status["event_path"] == path
+        assert status["accepted_events"] == status["processed_events"]
+        assert status["processed_events"] == status["written_events"]
+        assert status["dropped_events"] == 0
+        assert status["write_failures"] == 0
+        assert status["incomplete_reasons"] == []
+        assert status["complete"] is True
+        assert [event["request_id"] for event in read_events(path)] == (
+            expected_request_ids[run_id]
+        )
+
+    assert open_calls == ["run-a", "run-b", "run-c"]
+    writer_thread = recorder.writer_thread
+    if writer_thread is not None:
+        writer_thread.join(timeout=5)
+    else:
+        pass
+    assert writer_thread is None or not writer_thread.is_alive()
+    assert [event["request_id"] for event in read_events(path_a)] == ["request-a"]
+    assert [event["request_id"] for event in read_events(path_b)] == ["request-b"]
+    assert read_events(path_c) == []
+
+
 def test_full_queue_drops_events_and_marks_status_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,7 +437,7 @@ def test_writer_replacement_after_atomic_exit_ownership_release(
     assert [event["run_id"] for event in read_events(second_path)] == ["second"]
 
 
-def test_inactive_recorder_does_not_acquire_mutex() -> None:
+def test_recorder_activity_hints_do_not_acquire_mutex() -> None:
     class LockMustNotBeAcquired:
         def __enter__(self) -> None:
             raise AssertionError("inactive recorder acquired its mutex")
@@ -337,6 +457,21 @@ def test_inactive_recorder_does_not_acquire_mutex() -> None:
     assert recorder.is_active() is False
     assert recorder.active_run_id() is None
     assert recorder.capture_active_run_timestamp_ns() is None
+
+    recorder.active_state = RecorderRunState(
+        run_id="active",
+        stage="stage",
+        stages={"stage"},
+        active_stages={"stage"},
+        path=Path("events.jsonl"),
+        status_path=Path("run_status.json"),
+        finalization=RequestEventFinalization(
+            path="events.jsonl",
+            status_path="run_status.json",
+            completion_event=threading.Event(),
+        ),
+    )
+    assert recorder.is_active() is True
 
 
 def test_writer_failure_completes_active_and_retired_handles(

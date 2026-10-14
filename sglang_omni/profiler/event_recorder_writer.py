@@ -50,12 +50,7 @@ class RequestEventRecorder:
         self.pid = os.getpid()
 
     def is_active(self) -> bool:
-        if self.active_state is None:
-            return False
-        else:
-            pass
-        with self.lock:
-            return self.active_state is not None
+        return self.active_state is not None
 
     def active_run_id(self) -> str | None:
         if self.active_state is None:
@@ -455,13 +450,6 @@ class RequestEventRecorder:
             pass
 
         self.finalize_retired_states()
-        with self.lock:
-            active_state = self.active_state
-        if open_state is None and active_state is not None:
-            open_state = active_state
-            file_handle = self.open_event_file(open_state)
-        else:
-            pass
         return open_state, file_handle
 
     def finalize_retired_states(self) -> None:
