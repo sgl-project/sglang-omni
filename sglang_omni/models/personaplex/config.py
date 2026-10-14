@@ -21,6 +21,16 @@ LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
 
 
+class PersonaPlexLMFactoryArgs(FactoryArgs):
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+    )
+
+
+class PersonaPlexLMStageConfig(EngineStageConfig):
+    factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
+
+
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
     num_decode_slots: NonNegativeInt = 8
     max_graph_frames: NonNegativeInt | None = None
@@ -50,11 +60,11 @@ def personaplex_stages_factory() -> list[StageConfig]:
             gpu=0,
             next=LM_STAGE,
         ),
-        EngineStageConfig(
+        PersonaPlexLMStageConfig(
             name=LM_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_lm_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=PersonaPlexLMFactoryArgs(dtype="bfloat16"),
             gpu=0,
             engine=EngineArgs(mem_fraction_static=0.3),
             next=["decode", CODE2WAV_STAGE],
@@ -80,7 +90,7 @@ def personaplex_stages_factory() -> list[StageConfig]:
 class PersonaPlexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = PERSONAPLEX_ARCH
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: EngineStageConfig,
+        LM_STAGE: PersonaPlexLMStageConfig,
         CODE2WAV_STAGE: PersonaPlexCode2WavStageConfig,
     }
 

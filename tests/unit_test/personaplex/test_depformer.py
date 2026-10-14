@@ -1,12 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Depformer weight slicing and teacher forcing, on a scaled-down spec."""
 
+from itertools import groupby
+from typing import Literal
+
 import pytest
 import torch
 
 from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
 from sglang_omni.models.personaplex.components.depformer import Depformer
-from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    CapturedDepformerGraph,
+    DepformerCudaGraphRunner,
+)
+from sglang_omni.models.personaplex.sampling import (
+    AudioSampling,
+    SamplingRun,
+    sample_runs,
+    sample_token,
+)
 
 SPEC = DepformerSpec(
     dim=32, num_heads=4, num_layers=2, ffn_hidden=24, steps=8, input_dim=16
@@ -229,3 +241,180 @@ def test_each_row_draws_from_its_own_generator():
     batched = [sample_token(logits, sampling, generators) for _ in range(20)]
     assert [int(picks[0]) for picks in batched] == alone(0, 7)
     assert [int(picks[3]) for picks in batched] == alone(3, 8)
+
+
+@pytest.mark.parametrize("batch_sizes", [(), (1,), (1, 4)])
+@torch.inference_mode()
+def test_cuda_graph_runner_falls_back_on_cpu(batch_sizes: tuple[int, ...]) -> None:
+    model = Depformer(SPEC)
+    model.load_reference_weights(reference_weights(8))
+    runner = DepformerCudaGraphRunner(model, batch_sizes)
+    hidden_states = torch.randn(3, SPEC.input_dim)
+    text_tokens = torch.arange(3)
+    forced_codes = torch.full((3, SPEC.steps), -1, dtype=torch.long)
+    sampling = AudioSampling(0.8, 25)
+    runs = [
+        SamplingRun(row_slice=slice(0, 3), sampling=sampling, generators=[None] * 3)
+    ]
+    torch.manual_seed(71)
+    expected = model.generate(
+        text_tokens,
+        hidden_states,
+        forced_codes,
+        lambda logits: sample_runs(logits, runs),
+    )
+    torch.manual_seed(71)
+    actual = runner.generate(text_tokens, hidden_states, forced_codes, runs)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert not runner.graphs
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 8, 16, 32])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("mixed", [False, True])
+@torch.inference_mode()
+def test_graph_batch_codes_and_rng_match_eager(
+    batch_size: int, dtype: torch.dtype, mixed: bool
+) -> None:
+    weights = {
+        name: (
+            tensor / tensor.shape[-1] ** 0.5
+            if tensor.ndim == 2 and "emb" not in name
+            else tensor
+        )
+        for name, tensor in reference_weights(8).items()
+    }
+    model = Depformer(SPEC).to(device="cuda", dtype=dtype)
+    model.load_reference_weights(weights)
+    runner = DepformerCudaGraphRunner(model, (1, 2, 4, 8, 16, 32))
+    hidden_states = torch.randn(batch_size, SPEC.input_dim, device="cuda", dtype=dtype)
+    text_tokens = torch.arange(batch_size, device="cuda")
+    forced_codes = torch.full(
+        (batch_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+    )
+    eager_generators = [
+        torch.Generator(device="cuda").manual_seed(7 + row) if row % 4 < 2 else None
+        for row in range(batch_size)
+    ]
+    graph_generators = [
+        torch.Generator(device="cuda").manual_seed(7 + row) if row % 4 < 2 else None
+        for row in range(batch_size)
+    ]
+    old_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for frame in range(4):
+        # note (Kokoro2336): Reordering and shrinking exercise request lifecycle and padded replay.
+        rows = list(range(batch_size))[:: -1 if frame % 2 else 1]
+        rows = rows[: max(1, batch_size - frame)]
+        eager_runs: list[SamplingRun] = []
+        graph_runs: list[SamplingRun] = []
+        settings = [
+            AudioSampling(0.8, 25),
+            AudioSampling(0.0, 0),
+            AudioSampling(1.0, 0),
+        ]
+        sampling_rows = [settings[row % 3] if mixed else settings[0] for row in rows]
+        start_row = 0
+        for sampling, group in groupby(
+            enumerate(sampling_rows), key=lambda entry: entry[1]
+        ):
+            count = len(list(group))
+            selected_rows = rows[start_row : start_row + count]
+            eager_runs.append(
+                SamplingRun(
+                    row_slice=slice(start_row, start_row + count),
+                    sampling=sampling,
+                    generators=[eager_generators[row] for row in selected_rows],
+                )
+            )
+            graph_runs.append(
+                SamplingRun(
+                    row_slice=slice(start_row, start_row + count),
+                    sampling=sampling,
+                    generators=[graph_generators[row] for row in selected_rows],
+                )
+            )
+            start_row += count
+        hidden_states.normal_()
+        forced_codes[:, frame] = frame + 13
+        random_state = torch.cuda.get_rng_state()
+        expected = model.generate(
+            text_tokens[rows],
+            hidden_states[rows],
+            forced_codes[rows],
+            lambda logits: sample_runs(logits, eager_runs),
+        )
+        expected_random_state = torch.cuda.get_rng_state()
+        torch.cuda.set_rng_state(random_state)
+        actual = runner.generate(
+            text_tokens[rows], hidden_states[rows], forced_codes[rows], graph_runs
+        )
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+        assert torch.equal(torch.cuda.get_rng_state(), expected_random_state)
+        for eager_generator, graph_generator in zip(
+            eager_generators, graph_generators, strict=True
+        ):
+            if eager_generator is None:
+                pass
+            else:
+                assert torch.equal(
+                    eager_generator.get_state(), graph_generator.get_state()
+                )
+        old_outputs.append((actual, actual.clone()))
+    assert runner.graphs and all(graph is not None for graph in runner.graphs.values())
+    for output, snapshot in old_outputs:
+        torch.testing.assert_close(output, snapshot, atol=0, rtol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    "fallback", ["disabled", "oversized", "cache_full", "capture_failure"]
+)
+@torch.inference_mode()
+def test_graph_supported_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    fallback: Literal["disabled", "oversized", "cache_full", "capture_failure"],
+) -> None:
+    model = Depformer(SPEC).cuda()
+    model.load_reference_weights(reference_weights(8))
+    runner = DepformerCudaGraphRunner(model, () if fallback == "disabled" else (1,))
+    batch_size = 2 if fallback == "oversized" else 1
+    if fallback == "cache_full":
+        monkeypatch.setattr(
+            "sglang_omni.models.personaplex.components.depformer_cuda_graph.MAX_CACHED_GRAPHS",
+            0,
+        )
+    elif fallback == "capture_failure":
+
+        def fail_capture(
+            layout: tuple[tuple[int, AudioSampling], ...]
+        ) -> CapturedDepformerGraph:
+            raise RuntimeError("simulated capture failure")
+
+        monkeypatch.setattr(runner, "capture", fail_capture)
+    else:
+        pass
+    hidden_states = torch.randn(batch_size, SPEC.input_dim, device="cuda")
+    text_tokens = torch.arange(batch_size, device="cuda")
+    forced_codes = torch.full(
+        (batch_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+    )
+    runs = [
+        SamplingRun(
+            row_slice=slice(0, batch_size),
+            sampling=AudioSampling(0.8, 25),
+            generators=[None] * batch_size,
+        )
+    ]
+    torch.cuda.manual_seed(81)
+    expected = model.generate(
+        text_tokens,
+        hidden_states,
+        forced_codes,
+        lambda logits: sample_runs(logits, runs),
+    )
+    torch.cuda.manual_seed(81)
+    actual = runner.generate(text_tokens, hidden_states, forced_codes, runs)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)

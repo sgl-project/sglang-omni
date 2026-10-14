@@ -11,7 +11,10 @@ import pytest
 from sglang.srt.configs.model_config import get_hybrid_layer_ids, is_hybrid_swa_model
 from transformers import PretrainedConfig
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.personaplex.architecture import TEMPORAL_TRANSFORMER
+from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
     shim_checkpoint_dir,
@@ -137,3 +140,18 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
         assert declarations == []
     else:
         assert declarations == [("sglang_omni.personaplex.window_kv", True)]
+
+
+@pytest.mark.parametrize("batch_sizes", [[], [1, 4]])
+def test_depformer_cuda_graph_buckets_accept_dotted_cli(batch_sizes: list[int]) -> None:
+    config = ConfigManager(
+        PersonaPlexPipelineConfig(model_path="personaplex")
+    ).merge_config(
+        {"lm.factory.depformer_cuda_graph_batch_sizes": json.dumps(batch_sizes)}
+    )
+    assert (
+        resolve_stage_typed_kwargs(config.stage_named("lm"))[
+            "depformer_cuda_graph_batch_sizes"
+        ]
+        == batch_sizes
+    )
