@@ -7,6 +7,7 @@ import gc
 import signal
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
+import threading
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
@@ -1254,6 +1255,58 @@ async def test_launcher_stops_runner_when_server_raises(
     assert len(runners) == 1
     assert runners[0].started
     assert runners[0].stopped
+
+
+@pytest.mark.asyncio
+async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop()
+    else:
+        pass
+    recorder.start("coordinator-shutdown", str(tmp_path / "events"), "coordinator")
+
+    loop = asyncio.get_running_loop()
+    wait_started = asyncio.Event()
+    release_wait = threading.Event()
+
+    def wait_for_finalizations(timeout_seconds: float) -> bool:
+        del timeout_seconds
+        loop.call_soon_threadsafe(wait_started.set)
+        return release_wait.wait(timeout=5)
+
+    monkeypatch.setattr(recorder, "wait_for_finalizations", wait_for_finalizations)
+    server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    task = asyncio.create_task(
+        run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    )
+    try:
+        await asyncio.wait_for(wait_started.wait(), timeout=5)
+        assert task.done() is False
+        release_wait.set()
+        with pytest.raises(RuntimeError, match="server failed"):
+            await task
+    finally:
+        release_wait.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        else:
+            pass
+        if recorder.is_active():
+            recorder.stop()
+        else:
+            pass
 
 
 @pytest.mark.asyncio

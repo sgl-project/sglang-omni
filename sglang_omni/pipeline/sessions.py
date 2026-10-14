@@ -488,6 +488,7 @@ class CoordinatorSessions:
             input_chunk=chunk,
             ready_timestamp_ns=ready_timestamp_ns,
             ready_run_id=ready_run_id,
+            ready_generation_id=ready_generation_id,
         )
         emit_session_unit_event(
             request_id=request_id,

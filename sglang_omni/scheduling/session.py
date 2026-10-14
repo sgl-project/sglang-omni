@@ -55,7 +55,7 @@ from typing import Protocol
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.profiler.duplex_events import (
-    capture_session_stage_start,
+    capture_session_stage_start_with_generation,
     emit_session_stage_started,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -857,9 +857,11 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             started_sessions.append(session)
                 if started:
                     try:
-                        batch_observation = capture_session_stage_start()
+                        batch_observation = (
+                            capture_session_stage_start_with_generation()
+                        )
                         if batch_observation is not None:
-                            run_id, batch_start_ns = batch_observation
+                            run_id, generation_id, batch_start_ns = batch_observation
                             for append in started:
                                 emit_session_stage_started(
                                     request_id=append.payload.request_id,
@@ -867,6 +869,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                                     input_chunk=append.chunk,
                                     timestamp_ns=batch_start_ns,
                                     expected_run_id=run_id,
+                                    expected_generation_id=generation_id,
                                 )
                         else:
                             pass

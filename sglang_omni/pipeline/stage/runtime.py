@@ -457,10 +457,9 @@ class Stage:
         except Exception as exc:
             _record_cleanup_error("comm", exc)
         recorder = _get_recorder()
-        recorder.deactivate()
+        recorder.release_stage(self.name)
         finalization_complete = await asyncio.to_thread(
-            recorder.wait_for_finalizations,
-            _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+            recorder.wait_for_finalizations, _DEFAULT_FINALIZATION_TIMEOUT_SECONDS
         )
         if not finalization_complete:
             logger.warning(

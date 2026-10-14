@@ -35,11 +35,13 @@ JSONL file. The shape:
 }
 ```
 
-Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple
-co-located stages in the same OS process share **one** JSONL file — the
-filename uses the first stage to start, and the per-event `stage` field
-identifies the owner. The views layer merges files from every process by
-`request_id`.
+Files are written under
+`<event_dir>/events_<stage>_<pid>_g<generation>.jsonl`. Multiple co-located
+stages in the same OS process share **one** JSONL file — the filename uses the
+first stage to start, and the per-event `stage` field identifies the owner. The
+generation suffix prevents a later recording, including one that reuses the
+same `run_id`, from appending to an older file. The views layer merges files
+from every process by `request_id`.
 
 The recorder uses one bounded queue and one dedicated writer thread per
 process. The default queue capacity is 8192 events and can be reduced in unit
@@ -50,12 +52,20 @@ run only on the writer thread. Events may therefore be delayed on disk while
 profiling is active; use a finalized run or its status sidecar for a complete
 read.
 
-Each finalized run also writes `run_status_<run-digest>_<pid>.json` beside the
-JSONL file. It records the run ID, accepted/written/dropped counts, writer
-failures, stages, and `complete`; that flag has `completeness_scope` set to
-`event_storage` and does not claim semantic timing coverage. Queue overflow
-drops the event, marks the run incomplete, and is never logged once per event.
-A missing sidecar is not evidence that a trace is complete.
+Each finalized run also writes
+`run_status_<run-digest>_<pid>_g<generation>.json` beside the JSONL file. It
+records the run ID, accepted/written/unwritten/dropped counts, writer failures,
+stages, and `complete`; that flag has `completeness_scope` set to
+`event_storage` and does not claim semantic timing coverage. Queue overflow,
+writer failure, metadata snapshot failure, and metadata truncation mark the run
+incomplete. A missing sidecar is not evidence that a trace is complete.
+
+Metadata is intentionally limited to scalars, JSON-like mappings/sequences,
+and tensor-like values represented by shape/dtype/device summaries. Tensor
+contents are never materialized by the producer. Unknown values are converted
+to a producer-time representation; a failed representation is recorded as a
+metadata snapshot failure. Bounded depth/item truncation is recorded in the
+event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 

@@ -87,19 +87,25 @@ class PendingRequestEvent:
     metadata: dict[str, int | float | str]
     timestamp_ns: int
     run_id: str
+    generation_id: int | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(kw_only=True)
 class RequestEventFinalization:
     """Completion handle for one deactivated recorder run."""
 
     path: str
     status_path: str
     completion_event: threading.Event
+    successful: bool = False
 
     def wait(self, timeout_seconds: float | None = None) -> bool:
         """Wait for the writer to close the event file and status sidecar."""
-        return self.completion_event.wait(timeout_seconds)
+        if not self.completion_event.wait(timeout_seconds):
+            return False
+        else:
+            pass
+        return self.successful
 
 
 @dataclass
@@ -107,15 +113,17 @@ class RecorderRunState:
     run_id: str
     stage: str
     stages: set[str]
+    active_stages: set[str]
     path: Path
     status_path: Path
-    sequence_number: int
+    generation_id: int
     finalization: RequestEventFinalization
-    stop_requested: threading.Event = field(default_factory=threading.Event)
     accepted_events: int = 0
     written_events: int = 0
+    unwritten_events: int = 0
     dropped_events: int = 0
     metadata_snapshot_failures: int = 0
+    metadata_truncations: int = 0
     serialization_failures: int = 0
     event_file_open_failures: int = 0
     write_failures: int = 0
@@ -134,10 +142,18 @@ def snapshot_metadata_value(
     *,
     depth: int,
     remaining_items: list[int],
+    truncated: list[bool] | None = None,
 ) -> object:
     """Copy bounded JSON-like metadata without touching tensor contents."""
     if remaining_items[0] <= 0 or depth > MAX_METADATA_SNAPSHOT_DEPTH:
-        return "<metadata omitted>"
+        if truncated is not None:
+            truncated[0] = True
+        else:
+            pass
+        return {
+            "__metadata_truncated__": True,
+            "reason": "snapshot_limit",
+        }
     else:
         pass
     remaining_items[0] -= 1
@@ -157,7 +173,14 @@ def snapshot_metadata_value(
         else:
             pass
         if shape_values == ():
-            return metadata_value
+            device = getattr(metadata_value, "device", None)
+            return {
+                "__tensor_summary__": True,
+                "type": type(metadata_value).__name__,
+                "shape": [],
+                "dtype": str(dtype),
+                "device": str(device) if device is not None else None,
+            }
         else:
             pass
         if shape_values is not None:
@@ -178,13 +201,26 @@ def snapshot_metadata_value(
         copied_mapping: dict[str, object] = {}
         for metadata_key, nested_value in metadata_value.items():
             if remaining_items[0] <= 0:
+                if truncated is not None:
+                    truncated[0] = True
+                else:
+                    pass
                 break
+            else:
+                pass
+            if not isinstance(metadata_key, str):
+                if truncated is not None:
+                    truncated[0] = True
+                else:
+                    pass
+                continue
             else:
                 pass
             copied_mapping[metadata_key] = snapshot_metadata_value(
                 nested_value,
                 depth=depth + 1,
                 remaining_items=remaining_items,
+                truncated=truncated,
             )
         return copied_mapping
     else:
@@ -194,6 +230,10 @@ def snapshot_metadata_value(
         copied_values: list[object] = []
         for nested_value in metadata_value:
             if remaining_items[0] <= 0:
+                if truncated is not None:
+                    truncated[0] = True
+                else:
+                    pass
                 break
             else:
                 pass
@@ -202,12 +242,18 @@ def snapshot_metadata_value(
                     nested_value,
                     depth=depth + 1,
                     remaining_items=remaining_items,
+                    truncated=truncated,
                 )
             )
         return copied_values
     else:
         pass
-    return metadata_value
+    try:
+        return repr(metadata_value)
+    except Exception as exc:
+        raise TypeError(
+            f"unsupported metadata value {type(metadata_value).__name__}"
+        ) from exc
 
 
 def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object]:
@@ -217,17 +263,31 @@ def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object
     else:
         pass
     remaining_items = [MAX_METADATA_SNAPSHOT_ITEMS]
+    truncated = [False]
     copied_metadata: dict[str, object] = {}
     for metadata_key, metadata_value in metadata.items():
         if remaining_items[0] <= 0:
+            truncated[0] = True
             break
+        else:
+            pass
+        if not isinstance(metadata_key, str):
+            truncated[0] = True
+            continue
         else:
             pass
         copied_metadata[metadata_key] = snapshot_metadata_value(
             metadata_value,
             depth=0,
             remaining_items=remaining_items,
+            truncated=truncated,
         )
+    if truncated[0]:
+        copied_metadata["__metadata_truncated__"] = {
+            "reason": "snapshot_limit",
+        }
+    else:
+        pass
     return copied_metadata
 
 

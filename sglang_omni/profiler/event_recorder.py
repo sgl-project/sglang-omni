@@ -71,12 +71,12 @@ class RequestEventBuffer(threading.local):
         metadata: dict[str, int | float | str],
     ) -> None:
         """Consume snapshots now; all requests in this cohort share capture clocks."""
-        active_run = get_recorder().capture_active_run_timestamp_ns()
+        active_run = get_recorder().capture_active_run_identity_timestamp_ns()
         if active_run is None:
             return
         else:
             pass
-        run_id, timestamp_ns = active_run
+        run_id, generation_id, timestamp_ns = active_run
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
         for snapshot in snapshots:
@@ -92,6 +92,7 @@ class RequestEventBuffer(threading.local):
                     },
                     timestamp_ns=timestamp_ns,
                     run_id=run_id,
+                    generation_id=generation_id,
                 )
             )
 
@@ -107,6 +108,7 @@ class RequestEventBuffer(threading.local):
                 metadata=record.metadata,
                 timestamp_ns=record.timestamp_ns,
                 expected_run_id=record.run_id,
+                expected_generation_id=record.generation_id,
             )
 
 

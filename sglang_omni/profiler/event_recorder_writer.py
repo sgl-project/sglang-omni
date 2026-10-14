@@ -29,6 +29,16 @@ from sglang_omni.profiler.event_recorder_types import (
 )
 
 logger = logging.getLogger(__name__)
+process_generation_lock = threading.Lock()
+next_process_generation_id = 0
+
+
+def allocate_process_generation_id() -> int:
+    global next_process_generation_id
+    with process_generation_lock:
+        generation_id = next_process_generation_id
+        next_process_generation_id += 1
+    return generation_id
 
 
 class RequestEventRecorder:
@@ -44,38 +54,74 @@ class RequestEventRecorder:
         self.event_queue: Queue[QueuedRequestEvent] = Queue(maxsize=queue_capacity)
         self.active_state: RecorderRunState | None = None
         self.pending_states: dict[int, RecorderRunState] = {}
-        self.next_sequence_number = 0
         self.writer_thread: threading.Thread | None = None
+        self.writer_failed = False
+        self.finalization_failed = False
         self.pid = os.getpid()
 
     def is_active(self) -> bool:
+        if self.active_state is None:
+            return False
+        else:
+            pass
         with self.lock:
             return self.active_state is not None
 
     def active_run_id(self) -> str | None:
+        if self.active_state is None:
+            return None
+        else:
+            pass
         with self.lock:
-            if self.active_state is None:
+            active_state = self.active_state
+            if active_state is None:
                 return None
             else:
                 pass
-            return self.active_state.run_id
+            return active_state.run_id
+
+    def capture_active_run_identity_timestamp_ns(
+        self,
+    ) -> tuple[str, int, int] | None:
+        """Capture generation, run ID, and wall-clock timestamp atomically."""
+        if self.active_state is None:
+            return None
+        else:
+            pass
+        with self.lock:
+            active_state = self.active_state
+            if active_state is None:
+                return None
+            else:
+                pass
+            return (
+                active_state.run_id,
+                active_state.generation_id,
+                time.time_ns(),
+            )
 
     def capture_active_run_timestamp_ns(self) -> tuple[str, int] | None:
         """Capture the active run ID and wall-clock timestamp together."""
-        with self.lock:
-            if self.active_state is None:
-                return None
-            else:
-                pass
-            return self.active_state.run_id, time.time_ns()
+        active_run = self.capture_active_run_identity_timestamp_ns()
+        if active_run is None:
+            return None
+        else:
+            pass
+        run_id, _generation_id, timestamp_ns = active_run
+        return run_id, timestamp_ns
 
     def active_path(self) -> str | None:
+        if self.active_state is None:
+            return None
+        else:
+            pass
         with self.lock:
-            if self.active_state is None:
+            active_state = self.active_state
+            if active_state is None:
                 return None
             else:
                 pass
-            return str(self.active_state.path)
+            return str(active_state.path)
 
     def emit(
         self,
@@ -86,8 +132,13 @@ class RequestEventRecorder:
         metadata: Mapping[str, object] | None = None,
         timestamp_ns: int | None = None,
         expected_run_id: str | None = None,
+        expected_generation_id: int | None = None,
     ) -> None:
         """Capture and enqueue one event without waiting for the writer."""
+        if self.active_state is None:
+            return
+        else:
+            pass
         with self.lock:
             run_state = self.active_state
             if run_state is None:
@@ -95,6 +146,13 @@ class RequestEventRecorder:
             else:
                 pass
             if expected_run_id is not None and run_state.run_id != expected_run_id:
+                return
+            else:
+                pass
+            if (
+                expected_generation_id is not None
+                and run_state.generation_id != expected_generation_id
+            ):
                 return
             else:
                 pass
@@ -111,7 +169,7 @@ class RequestEventRecorder:
             captured_metadata = snapshot_metadata(metadata)
         except Exception:
             with self.lock:
-                if self.active_state is run_state:
+                if not run_state.finalization.completion_event.is_set():
                     run_state.metadata_snapshot_failures += 1
                     run_state.incomplete_reasons.add("metadata_snapshot_failure")
                 else:
@@ -120,6 +178,10 @@ class RequestEventRecorder:
         else:
             pass
 
+        if "__metadata_truncated__" in captured_metadata:
+            metadata_truncated = True
+        else:
+            metadata_truncated = False
         event = RequestEvent(
             request_id=request_id,
             stage=resolved_stage,
@@ -140,6 +202,18 @@ class RequestEventRecorder:
                 return
             else:
                 pass
+            if (
+                expected_generation_id is not None
+                and run_state.generation_id != expected_generation_id
+            ):
+                return
+            else:
+                pass
+            if metadata_truncated:
+                run_state.metadata_truncations += 1
+                run_state.incomplete_reasons.add("metadata_truncated")
+            else:
+                pass
             try:
                 self.event_queue.put_nowait(queued_event)
             except Full:
@@ -152,39 +226,39 @@ class RequestEventRecorder:
         """Start or join a per-process JSONL recording run.
 
         Co-located stages share one file per process. A different run ID
-        retires the old run without waiting for its writer.
+        retires the old run without waiting for its writer. Every new
+        recording gets a process-local generation suffix so a reused run ID
+        cannot append to an older JSONL file.
         """
         with self.lock:
-            if self.active_state is not None and self.active_state.run_id == run_id:
-                self.active_state.stages.add(stage)
-                return str(self.active_state.path)
+            active_state = self.active_state
+            if active_state is not None and active_state.run_id == run_id:
+                active_state.stages.add(stage)
+                active_state.active_stages.add(stage)
+                return str(active_state.path)
             else:
                 pass
-            if len(self.pending_states) >= MAX_PENDING_FINALIZATIONS:
-                raise RuntimeError(
-                    "too many profiler runs are waiting for finalization"
-                )
-            else:
-                pass
+            self.validate_start_unlocked()
 
         directory = Path(event_dir).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"events_{stage}_{self.pid}.jsonl"
-        run_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
-        status_path = directory / f"run_status_{run_digest}_{self.pid}.json"
 
         with self.lock:
-            if self.active_state is not None and self.active_state.run_id == run_id:
-                self.active_state.stages.add(stage)
-                return str(self.active_state.path)
+            active_state = self.active_state
+            if active_state is not None and active_state.run_id == run_id:
+                active_state.stages.add(stage)
+                active_state.active_stages.add(stage)
+                return str(active_state.path)
             else:
                 pass
-            if len(self.pending_states) >= MAX_PENDING_FINALIZATIONS:
-                raise RuntimeError(
-                    "too many profiler runs are waiting for finalization"
-                )
-            else:
-                pass
+            self.validate_start_unlocked()
+
+            generation_id = allocate_process_generation_id()
+            path = directory / f"events_{stage}_{self.pid}_g{generation_id}.jsonl"
+            run_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+            status_path = (
+                directory / f"run_status_{run_digest}_{self.pid}_g{generation_id}.json"
+            )
 
             previous_state = self.retire_active_state_unlocked()
             if previous_state is not None:
@@ -195,24 +269,23 @@ class RequestEventRecorder:
             else:
                 pass
 
-            completion_event = threading.Event()
             finalization = RequestEventFinalization(
                 path=str(path),
                 status_path=str(status_path),
-                completion_event=completion_event,
+                completion_event=threading.Event(),
             )
             run_state = RecorderRunState(
                 run_id=run_id,
                 stage=stage,
                 stages={stage},
+                active_stages={stage},
                 path=path,
                 status_path=status_path,
-                sequence_number=self.next_sequence_number,
+                generation_id=generation_id,
                 finalization=finalization,
             )
-            self.next_sequence_number += 1
             self.active_state = run_state
-            if self.writer_thread is None or not self.writer_thread.is_alive():
+            if self.writer_thread is None:
                 self.writer_thread = threading.Thread(
                     target=self.writer_loop,
                     name=f"request-event-writer-{self.pid}",
@@ -223,6 +296,22 @@ class RequestEventRecorder:
                 pass
             return str(path)
 
+    def validate_start_unlocked(self) -> None:
+        """Validate a new run; the caller must hold ``lock``."""
+        if self.writer_failed and self.pending_states:
+            raise RuntimeError("request event writer failed")
+        else:
+            pass
+        if self.writer_failed:
+            self.writer_failed = False
+        else:
+            pass
+        self.finalization_failed = False
+        if len(self.pending_states) >= MAX_PENDING_FINALIZATIONS:
+            raise RuntimeError("too many profiler runs are waiting for finalization")
+        else:
+            pass
+
     def retire_active_state_unlocked(self) -> RecorderRunState | None:
         """Deactivate the current state; the caller must hold ``lock``."""
         run_state = self.active_state
@@ -231,9 +320,25 @@ class RequestEventRecorder:
         else:
             pass
         self.active_state = None
-        run_state.stop_requested.set()
-        self.pending_states[run_state.sequence_number] = run_state
+        self.pending_states[run_state.generation_id] = run_state
         return run_state
+
+    def release_stage(self, stage: str) -> RequestEventFinalization | None:
+        """Release one co-located stage without stopping its shared run."""
+        with self.lock:
+            active_state = self.active_state
+            if active_state is None or stage not in active_state.active_stages:
+                return None
+            else:
+                pass
+            active_state.active_stages.remove(stage)
+            if active_state.active_stages:
+                return None
+            else:
+                pass
+            retired_state = self.retire_active_state_unlocked()
+            assert retired_state is not None
+            return retired_state.finalization
 
     def deactivate(
         self, *, run_id: str | None = None
@@ -282,7 +387,9 @@ class RequestEventRecorder:
                 run_state.finalization for run_state in self.pending_states.values()
             ]
         if timeout_seconds is None:
-            return all(finalization.wait() for finalization in finalizations)
+            completed = all(finalization.wait() for finalization in finalizations)
+            with self.lock:
+                return completed and not self.finalization_failed
         else:
             pass
         deadline = time.monotonic() + timeout_seconds
@@ -296,7 +403,27 @@ class RequestEventRecorder:
                 return False
             else:
                 pass
-        return True
+        with self.lock:
+            return not self.finalization_failed
+
+    def writer_should_exit(self) -> bool:
+        """Relinquish writer ownership only after proving the queue is idle."""
+        with self.lock:
+            should_exit = (
+                self.active_state is None
+                and not self.pending_states
+                and self.event_queue.empty()
+            )
+            if not should_exit:
+                return False
+            else:
+                pass
+            if self.writer_thread is threading.current_thread():
+                self.writer_thread = None
+                return True
+            else:
+                pass
+            return False
 
     def writer_loop(self) -> None:
         """Drain accepted events and finalize retired runs off the producer path."""
@@ -312,14 +439,7 @@ class RequestEventRecorder:
                     open_state, file_handle = self.handle_writer_idle(
                         open_state, file_handle
                     )
-                    with self.lock:
-                        should_exit = (
-                            self.active_state is None
-                            and not self.pending_states
-                            and self.event_queue.empty()
-                            and open_state is None
-                        )
-                    if should_exit:
+                    if self.writer_should_exit():
                         return
                     else:
                         pass
@@ -332,9 +452,7 @@ class RequestEventRecorder:
                             self.finalize_run(open_state, file_handle)
                         else:
                             pass
-                        self.finalize_retired_states_before(
-                            target_state.sequence_number
-                        )
+                        self.finalize_retired_states_before(target_state.generation_id)
                         open_state = target_state
                         file_handle = self.open_event_file(open_state)
                     else:
@@ -344,16 +462,8 @@ class RequestEventRecorder:
                     self.event_queue.task_done()
         except Exception:
             logger.exception("RequestEventRecorder writer thread crashed")
-            if open_state is not None:
-                open_state.write_failures += 1
-                open_state.incomplete_reasons.add("writer_thread_failure")
-            else:
-                pass
+            self.fail_writer(open_state, file_handle)
         finally:
-            if open_state is not None:
-                self.finalize_run(open_state, file_handle)
-            else:
-                pass
             with self.lock:
                 if self.writer_thread is threading.current_thread():
                     self.writer_thread = None
@@ -389,14 +499,14 @@ class RequestEventRecorder:
             pass
         return open_state, file_handle
 
-    def finalize_retired_states_before(self, sequence_number: int | None) -> None:
+    def finalize_retired_states_before(self, generation_id: int | None) -> None:
         with self.lock:
             retired_states = sorted(
                 self.pending_states.values(),
-                key=lambda run_state: run_state.sequence_number,
+                key=lambda run_state: run_state.generation_id,
             )
         for run_state in retired_states:
-            if sequence_number is None or run_state.sequence_number < sequence_number:
+            if generation_id is None or run_state.generation_id < generation_id:
                 self.finalize_run(run_state, None)
             else:
                 pass
@@ -478,83 +588,167 @@ class RequestEventRecorder:
         run_state.written_events += 1
         return file_handle
 
+    def fail_writer(
+        self,
+        open_state: RecorderRunState | None,
+        file_handle: TextIOWrapper | None,
+    ) -> None:
+        """Terminally fail the writer and complete every affected handle."""
+        states: dict[int, RecorderRunState] = {}
+        with self.lock:
+            self.writer_failed = True
+            retired_state = self.retire_active_state_unlocked()
+            if retired_state is not None:
+                states[retired_state.generation_id] = retired_state
+            else:
+                pass
+            for run_state in self.pending_states.values():
+                states[run_state.generation_id] = run_state
+            if open_state is not None:
+                states[open_state.generation_id] = open_state
+            else:
+                pass
+            if self.writer_thread is threading.current_thread():
+                self.writer_thread = None
+            else:
+                pass
+
+        while True:
+            try:
+                queued_event = self.event_queue.get_nowait()
+            except Empty:
+                break
+            else:
+                states[queued_event.run_state.generation_id] = queued_event.run_state
+                self.event_queue.task_done()
+
+        for run_state in states.values():
+            run_state.incomplete_reasons.add("writer_thread_failure")
+            run_state.unwritten_events = max(
+                run_state.accepted_events - run_state.written_events,
+                0,
+            )
+            with self.lock:
+                if not run_state.finalization.completion_event.is_set():
+                    self.pending_states[run_state.generation_id] = run_state
+                else:
+                    pass
+
+        for run_state in sorted(states.values(), key=lambda state: state.generation_id):
+            if run_state.finalization.completion_event.is_set():
+                continue
+            else:
+                pass
+            state_file = file_handle if run_state is open_state else None
+            self.finalize_run(run_state, state_file)
+
     def finalize_run(
         self,
         run_state: RecorderRunState,
         file_handle: TextIOWrapper | None,
     ) -> None:
-        """Flush, close, and account for one retired run on the writer thread."""
+        """Flush, close, and atomically publish one retired run's status."""
         with self.lock:
-            if run_state.sequence_number not in self.pending_states:
+            if run_state.generation_id not in self.pending_states:
                 return
             else:
                 pass
 
-        if file_handle is None and run_state.event_file_open_failures == 0:
-            file_handle = self.open_event_file(run_state)
-        else:
-            pass
-        if file_handle is not None:
-            try:
-                file_handle.flush()
-            except Exception:
-                run_state.write_failures += 1
-                run_state.incomplete_reasons.add("event_file_flush_failure")
-                logger.warning(
-                    f"RequestEventRecorder failed to flush {run_state.path}",
-                    exc_info=True,
-                )
-            else:
-                pass
-            try:
-                file_handle.close()
-            except Exception:
-                run_state.write_failures += 1
-                run_state.incomplete_reasons.add("event_file_close_failure")
-                logger.warning(
-                    f"RequestEventRecorder failed to close {run_state.path}",
-                    exc_info=True,
-                )
-            else:
-                pass
-        else:
-            pass
-
-        if run_state.written_events != run_state.accepted_events:
-            run_state.incomplete_reasons.add("event_count_mismatch")
-        else:
-            pass
-        status = {
-            "run_id": run_state.run_id,
-            "pid": self.pid,
-            "event_path": str(run_state.path),
-            "accepted_events": run_state.accepted_events,
-            "written_events": run_state.written_events,
-            "dropped_events": run_state.dropped_events,
-            "metadata_snapshot_failures": run_state.metadata_snapshot_failures,
-            "serialization_failures": run_state.serialization_failures,
-            "event_file_open_failures": run_state.event_file_open_failures,
-            "write_failures": run_state.write_failures,
-            "finalization_failures": run_state.finalization_failures,
-            "incomplete_reasons": sorted(run_state.incomplete_reasons),
-            "complete": not run_state.incomplete_reasons,
-            "completeness_scope": "event_storage",
-            "stages": sorted(run_state.stages),
-        }
+        status_published = False
         try:
-            run_state.status_path.write_text(
-                json.dumps(status, sort_keys=True),
-                encoding="utf-8",
+            if file_handle is None and run_state.event_file_open_failures == 0:
+                file_handle = self.open_event_file(run_state)
+            else:
+                pass
+            if file_handle is not None:
+                try:
+                    file_handle.flush()
+                except Exception:
+                    run_state.write_failures += 1
+                    run_state.incomplete_reasons.add("event_file_flush_failure")
+                    logger.warning(
+                        f"RequestEventRecorder failed to flush {run_state.path}",
+                        exc_info=True,
+                    )
+                else:
+                    pass
+                try:
+                    file_handle.close()
+                except Exception:
+                    run_state.write_failures += 1
+                    run_state.incomplete_reasons.add("event_file_close_failure")
+                    logger.warning(
+                        f"RequestEventRecorder failed to close {run_state.path}",
+                        exc_info=True,
+                    )
+                else:
+                    pass
+            else:
+                pass
+
+            run_state.unwritten_events = max(
+                run_state.accepted_events - run_state.written_events,
+                0,
             )
+            if run_state.unwritten_events:
+                run_state.incomplete_reasons.add("event_count_mismatch")
+            else:
+                pass
+            status = {
+                "run_id": run_state.run_id,
+                "pid": self.pid,
+                "event_path": str(run_state.path),
+                "accepted_events": run_state.accepted_events,
+                "written_events": run_state.written_events,
+                "unwritten_events": run_state.unwritten_events,
+                "dropped_events": run_state.dropped_events,
+                "metadata_snapshot_failures": run_state.metadata_snapshot_failures,
+                "metadata_truncations": run_state.metadata_truncations,
+                "serialization_failures": run_state.serialization_failures,
+                "event_file_open_failures": run_state.event_file_open_failures,
+                "write_failures": run_state.write_failures,
+                "finalization_failures": run_state.finalization_failures,
+                "incomplete_reasons": sorted(run_state.incomplete_reasons),
+                "complete": not run_state.incomplete_reasons,
+                "completeness_scope": "event_storage",
+                "stages": sorted(run_state.stages),
+            }
+            temporary_path = run_state.status_path.with_name(
+                f".{run_state.status_path.name}.tmp"
+            )
+            try:
+                temporary_path.write_text(
+                    json.dumps(status, sort_keys=True),
+                    encoding="utf-8",
+                )
+                os.replace(temporary_path, run_state.status_path)
+                status_published = True
+            except Exception:
+                run_state.finalization_failures += 1
+                run_state.incomplete_reasons.add("status_write_failure")
+                logger.warning(
+                    f"RequestEventRecorder failed to publish {run_state.status_path}",
+                    exc_info=True,
+                )
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            else:
+                pass
         except Exception:
             run_state.finalization_failures += 1
-            run_state.incomplete_reasons.add("status_write_failure")
+            run_state.incomplete_reasons.add("finalization_failure")
             logger.warning(
-                f"RequestEventRecorder failed to write {run_state.status_path}",
+                f"RequestEventRecorder failed to finalize {run_state.path}",
                 exc_info=True,
             )
-        else:
-            pass
-        run_state.finalization.completion_event.set()
-        with self.lock:
-            self.pending_states.pop(run_state.sequence_number, None)
+        finally:
+            run_state.finalization.successful = status_published
+            run_state.finalization.completion_event.set()
+            with self.lock:
+                if not status_published:
+                    self.finalization_failed = True
+                else:
+                    pass
+                self.pending_states.pop(run_state.generation_id, None)
