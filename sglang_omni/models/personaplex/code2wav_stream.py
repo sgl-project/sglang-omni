@@ -172,20 +172,27 @@ class PersonaPlexCode2WavScheduler(StreamingSimpleScheduler):
         else:
             pass
         messages = self.on_stream_done_before_payload(request_id)
-        waveform = torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
+        request = self.stream_payloads[request_id].request
+        if request.params.get("stream"):
+            # Note (wilsonzheng0327): A streaming client already holds every chunk; only a
+            # non-streaming client reads the reply from the result.
+            result_data = {"modality": "audio", "sample_rate": SAMPLE_RATE}
+        else:
+            waveform = (
+                torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
+            )
+            result_data = audio_waveform_payload(
+                waveform,
+                sample_rate=SAMPLE_RATE,
+                modality="audio",
+                source_hint=SOURCE_HINT,
+            )
         messages.append(
             OutgoingMessage(
                 request_id=request_id,
                 type="result",
                 data=StagePayload(
-                    request_id=request_id,
-                    request=self.stream_payloads[request_id].request,
-                    data=audio_waveform_payload(
-                        waveform,
-                        sample_rate=SAMPLE_RATE,
-                        modality="audio",
-                        source_hint=SOURCE_HINT,
-                    ),
+                    request_id=request_id, request=request, data=result_data
                 ),
             )
         )

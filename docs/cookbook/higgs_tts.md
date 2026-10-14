@@ -61,6 +61,15 @@ sgl-omni serve \
 The voice-cloning examples below use local reference clips from
 `docs/_static/audio`.
 
+CUDA reference encoding temporarily disables cuDNN convolutions and cuDNN
+attention. These settings affect the whole process, so `audio_encoder` must
+run in a separate process from CUDA stages such as `tts_engine` and `vocoder`,
+even when they use different GPUs. The default layout already does this:
+CPU preprocessing and the audio encoder share `tts_frontend`, while the
+engine and vocoder share `pipeline` on the same GPU. Custom layouts that
+combine the CUDA encoder with another CUDA stage are rejected at configuration
+validation; CPU encoding does not have this restriction.
+
 ## Synthesizing Speech
 
 ### Zero-shot

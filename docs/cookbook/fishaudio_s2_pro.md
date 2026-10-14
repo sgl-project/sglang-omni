@@ -31,6 +31,25 @@ sgl-omni serve \
   --port 8000
 ```
 
+Reference audio encoding runs on GPU 0 in the preprocessing process by default,
+using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU.
+The preprocessing process has a 6 GiB PyTorch allocator limit; this is a memory
+budget, not a reference-duration limit or a reservation of all GPU allocations.
+Long references can exceed it and fail encoding.
+
+Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, while
+leaving enough GPU memory for the autoregressive engine and vocoder. To encode
+references on CPU instead, clear both the GPU placement and its budget:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --preprocessing.gpu null \
+  --preprocessing.total_reserve_bytes null \
+  --port 8000
+```
+
 ## Synthesize Speech
 
 Plain TTS:

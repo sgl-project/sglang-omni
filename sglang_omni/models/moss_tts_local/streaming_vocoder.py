@@ -26,6 +26,7 @@ from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
     MossVocoderCudaGraphRunner,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
@@ -119,10 +120,7 @@ class CodecStreamSession:
 
     def graph_batch_sizes(self) -> list[int]:
         """Return batch buckets shared by eager and CUDA graph execution."""
-        buckets = [1, 2, 4, *range(8, self.stream_slots, 4), self.stream_slots]
-        return sorted(
-            {bucket for bucket in buckets if 0 < int(bucket) <= self.stream_slots}
-        )
+        return build_default_cuda_graph_bs(self.stream_slots)
 
     def acquire(self) -> int | None:
         if not self.free_stream_slots:
