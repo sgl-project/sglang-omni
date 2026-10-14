@@ -1,99 +1,65 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-level event recorder.
+"""Request-level event recorder compatibility facade.
 
-Each process appends events to ``<dir>/events_<stage>_<pid>.jsonl``; the
-views layer merges files by ``request_id``. Kept free of sglang-omni
-imports so it can be loaded from any process without circular risk.
+The producer-facing API stays here. Queue ownership and all file I/O live in
+the dedicated writer module so instrumentation call sites remain lightweight.
 """
 
 from __future__ import annotations
 
-import contextvars
 import functools
-import json
-import logging
-import os
 import threading
 import time
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
-from io import TextIOWrapper
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Mapping
 
-logger = logging.getLogger(__name__)
-
-
-# Active-stage binding used when ``emit(stage=None)`` is called from code
-# that can't plumb the stage name down (preprocessor, encoder callable,
-# scheduler internals). Stage._run_scheduler binds the active stage on
-# the scheduler thread; the contextvar propagates through
-# ``asyncio.to_thread`` / ``loop.run_in_executor``, the thread-local
-# covers plain ``threading.Thread`` workers.
-
-_thread_active_stage = threading.local()
-_active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "sglang_omni_active_stage", default=None
+from sglang_omni.profiler.event_recorder_types import (
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    PendingRequestEvent,
+    RequestEvent,
+    RequestEventFinalization,
+    RequestEventSnapshot,
+    _active_stage_cv,
+    _thread_active_stage,
+    get_active_stage,
+    json_default,
+    reset_active_stage,
+    set_active_stage,
+    snapshot_metadata,
+    snapshot_metadata_value,
 )
+from sglang_omni.profiler.event_recorder_writer import RequestEventRecorder
 
+thread_active_stage = _thread_active_stage
+active_stage_context = _active_stage_cv
 
-def set_active_stage(stage: str | None) -> contextvars.Token[str | None]:
-    """Bind ``stage`` for this thread / task. Returns a Token for reset."""
-    _thread_active_stage.stage = stage
-    return _active_stage_cv.set(stage)
-
-
-def reset_active_stage(token: contextvars.Token[str | None] | None) -> None:
-    """Undo :func:`set_active_stage`. ``token=None`` clears the binding."""
-    if token is not None:
-        _active_stage_cv.reset(token)
-    else:
-        _active_stage_cv.set(None)
-    _thread_active_stage.stage = None
-
-
-def get_active_stage() -> str | None:
-    """Active stage for this thread / task, contextvar first."""
-    stage = _active_stage_cv.get()
-    if stage is not None:
-        return stage
-    else:
-        pass
-    return getattr(_thread_active_stage, "stage", None)
-
-
-@dataclass(frozen=True)
-class RequestEvent:
-    """A single point-in-time profiling event for one request."""
-
-    request_id: str
-    stage: str
-    event_name: str
-    timestamp_ns: int
-    run_id: str | None = None
-    pid: int | None = None
-    metadata: dict[str, object] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class RequestEventSnapshot:
-    request_id: str
-    metadata: dict[str, int | float | str]
-
-
-@dataclass(frozen=True, kw_only=True)
-class PendingRequestEvent:
-    request_id: str
-    event_name: str
-    metadata: dict[str, int | float | str]
-    timestamp_ns: int
+__all__ = [
+    "DEFAULT_FINALIZATION_TIMEOUT_SECONDS",
+    "PendingRequestEvent",
+    "RequestEvent",
+    "RequestEventBuffer",
+    "RequestEventFinalization",
+    "RequestEventRecorder",
+    "RequestEventSnapshot",
+    "active_stage_context",
+    "emit",
+    "emit_model_path",
+    "emit_model_path_end",
+    "emit_model_path_start",
+    "get_active_stage",
+    "get_recorder",
+    "json_default",
+    "read_host_boot_id",
+    "reset_active_stage",
+    "set_active_stage",
+    "snapshot_metadata",
+    "snapshot_metadata_value",
+    "thread_active_stage",
+]
 
 
 class RequestEventBuffer(threading.local):
-    """Capture scalar records on a thread, then flush outside its serving locks."""
+    """Capture scalar records on a thread, then flush outside serving locks."""
 
     def __init__(self) -> None:
         self.records: list[PendingRequestEvent] = []
@@ -105,13 +71,14 @@ class RequestEventBuffer(threading.local):
         metadata: dict[str, int | float | str],
     ) -> None:
         """Consume snapshots now; all requests in this cohort share capture clocks."""
-        if not get_recorder().is_active():
+        active_run = get_recorder().capture_active_run_timestamp_ns()
+        if active_run is None:
             return
         else:
             pass
-        timestamp_ns = time.time_ns()
-        monotonic_s = time.monotonic()
-        worker = threading.current_thread().name
+        run_id, timestamp_ns = active_run
+        monotonic_seconds = time.monotonic()
+        worker_name = threading.current_thread().name
         for snapshot in snapshots:
             self.records.append(
                 PendingRequestEvent(
@@ -120,238 +87,27 @@ class RequestEventBuffer(threading.local):
                     metadata={
                         **metadata,
                         **snapshot.metadata,
-                        "worker": worker,
-                        "monotonic_s": monotonic_s,
+                        "worker": worker_name,
+                        "monotonic_s": monotonic_seconds,
                     },
                     timestamp_ns=timestamp_ns,
+                    run_id=run_id,
                 )
             )
 
     def flush(self, *, stage: str | None) -> None:
-        for record in self.records:
-            emit(
+        recorder = get_recorder()
+        records = self.records
+        self.records = []
+        for record in records:
+            recorder.emit(
                 request_id=record.request_id,
                 stage=stage,
                 event_name=record.event_name,
                 metadata=record.metadata,
                 timestamp_ns=record.timestamp_ns,
+                expected_run_id=record.run_id,
             )
-        self.records.clear()
-
-
-class RequestEventRecorder:
-    """Process-local JSONL event sink. Toggled via profiler control plane."""
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.run_id: str | None = None
-        self.stage: str | None = None
-        self.stages: set[str] = set()
-        self.path: Path | None = None
-        self.fp: TextIOWrapper | None = None
-        self.pid: int = os.getpid()
-        self.dropped: int = 0
-
-    # ---- lifecycle -----------------------------------------------------
-
-    def is_active(self) -> bool:
-        return self.fp is not None
-
-    def active_run_id(self) -> str | None:
-        return self.run_id
-
-    def capture_active_run_timestamp_ns(self) -> tuple[str, int] | None:
-        """Capture the active run ID and wall-clock timestamp together."""
-        if self.fp is None:
-            return None
-        else:
-            pass
-        with self.lock:
-            if self.fp is None or self.run_id is None:
-                return None
-            else:
-                pass
-            return self.run_id, time.time_ns()
-
-    def active_path(self) -> str | None:
-        return None if self.path is None else str(self.path)
-
-    def start(self, run_id: str, event_dir: str, stage: str) -> str:
-        """Open (or join) the per-process JSONL file for ``run_id``.
-
-        Co-located stages share one file per ``(run_id, pid)``; only a
-        new ``run_id`` rotates. Returns the absolute path.
-        """
-        with self.lock:
-            if self.fp is not None:
-                if self.run_id == run_id:
-                    if stage not in self.stages:
-                        self.stages.add(stage)
-                    else:
-                        pass
-                    assert self.path is not None
-                    return str(self.path)
-                else:
-                    pass
-                logger.warning(
-                    "RequestEventRecorder already active (run_id=%s); "
-                    "rotating to run_id=%s",
-                    self.run_id,
-                    run_id,
-                )
-                self.close_unlocked()
-            else:
-                pass
-
-            directory = Path(event_dir).expanduser().resolve()
-            directory.mkdir(parents=True, exist_ok=True)
-            # Filename uses the first stage to join; per-event ``stage``
-            # disambiguates owners once others join.
-            path = directory / f"events_{stage}_{self.pid}.jsonl"
-            self.fp = path.open("a", buffering=1, encoding="utf-8")
-            self.run_id = run_id
-            self.stage = stage
-            self.stages = {stage}
-            self.path = path
-            self.dropped = 0
-            logger.info(
-                "RequestEventRecorder started run_id=%s stage=%s path=%s",
-                run_id,
-                stage,
-                path,
-            )
-            return str(path)
-
-    def stop(self, *, run_id: str | None = None) -> str | None:
-        """Close the active file. ``run_id=None`` stops any active session."""
-        with self.lock:
-            if self.fp is None:
-                return None
-            else:
-                pass
-            if run_id is not None and self.run_id is not None and run_id != self.run_id:
-                logger.warning(
-                    "Ignoring RequestEventRecorder stop for run_id=%s; active run_id=%s",
-                    run_id,
-                    self.run_id,
-                )
-                return None
-            else:
-                pass
-            path = str(self.path) if self.path is not None else None
-            self.close_unlocked()
-            return path
-
-    def close_unlocked(self) -> None:
-        if self.fp is not None:
-            try:
-                self.fp.flush()
-                self.fp.close()
-            except Exception:
-                logger.warning(
-                    "RequestEventRecorder failed to close cleanly", exc_info=True
-                )
-        else:
-            pass
-        self.fp = None
-        self.run_id = None
-        self.stage = None
-        self.stages = set()
-        self.path = None
-
-    # ---- emit ----------------------------------------------------------
-
-    def emit(
-        self,
-        *,
-        request_id: str,
-        stage: str | None,
-        event_name: str,
-        metadata: Mapping[str, object] | None = None,
-        timestamp_ns: int | None = None,
-        expected_run_id: str | None = None,
-    ) -> None:
-        """Append one event. No-op when inactive; errors are swallowed."""
-        if self.fp is None:
-            return
-        else:
-            pass
-        ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
-        with self.lock:
-            fp = self.fp
-            if fp is None:
-                return
-            else:
-                pass
-            if expected_run_id is not None and self.run_id != expected_run_id:
-                return
-            else:
-                pass
-            if stage is None:
-                # Prefer thread/task binding over the process-global
-                # ``_stage``, which is wrong in shared-process topologies.
-                stage = get_active_stage() or self.stage or "unknown"
-            else:
-                pass
-            event = RequestEvent(
-                request_id=request_id,
-                stage=stage,
-                event_name=event_name,
-                timestamp_ns=ts,
-                run_id=self.run_id,
-                pid=self.pid,
-                metadata=dict(metadata) if metadata else {},
-            )
-            try:
-                fp.write(json.dumps(event.to_dict(), default=json_default))
-                fp.write("\n")
-            except Exception:
-                self.dropped += 1
-                if self.dropped == 1:
-                    logger.warning(
-                        "RequestEventRecorder failed to write event %s for %s",
-                        event_name,
-                        request_id,
-                        exc_info=True,
-                    )
-                else:
-                    pass
-
-
-def json_default(obj: object) -> object:
-    """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
-
-    Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
-    device}``; 0-D variants serialise as plain scalars; everything else
-    falls back to ``repr``.
-    """
-    shape = getattr(obj, "shape", None)
-    dtype = getattr(obj, "dtype", None)
-    if shape is not None and dtype is not None:
-        try:
-            if len(shape) == 0 and hasattr(obj, "item"):
-                return obj.item()
-            else:
-                pass
-        except TypeError:
-            # ``.shape`` without ``__len__`` — skip the 0-D fast path
-            # and fall through to the summary serializer below.
-            pass
-        try:
-            shape_list: list[int] | str = [int(d) for d in shape]
-        except Exception:
-            shape_list = repr(shape)
-        device = getattr(obj, "device", None)
-        return {
-            "__tensor_summary__": True,
-            "type": type(obj).__name__,
-            "shape": shape_list,
-            "dtype": str(dtype),
-            "device": str(device) if device is not None else None,
-        }
-    else:
-        pass
-    return repr(obj)
 
 
 _RECORDER = RequestEventRecorder()

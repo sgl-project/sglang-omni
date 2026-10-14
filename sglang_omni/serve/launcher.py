@@ -53,6 +53,9 @@ from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
+from sglang_omni.profiler.event_recorder import (
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS as _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
@@ -490,7 +493,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -503,7 +506,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -861,6 +864,19 @@ async def run_server(
         finally:
             logger.info("Shutting down pipeline …")
             await mp_runner.stop()
+            recorder = _get_event_recorder()
+            recorder.deactivate()
+            finalization_complete = await asyncio.to_thread(
+                recorder.wait_for_finalizations,
+                _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+            )
+            if not finalization_complete:
+                logger.warning(
+                    f"Coordinator profiler event finalization did not finish within "
+                    f"{_DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+                )
+            else:
+                pass
             logger.info("Pipeline stopped.")
 
 

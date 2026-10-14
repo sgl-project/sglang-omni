@@ -45,6 +45,38 @@ def read_events(path: str) -> list[dict]:
         return [json.loads(line) for line in fp if line.strip()]
 
 
+def read_status(path: str) -> dict:
+    status_paths = sorted(Path(path).parent.glob("run_status_*.json"))
+    assert len(status_paths) == 1
+    return json.loads(status_paths[0].read_text(encoding="utf-8"))
+
+
+def test_event_dataclass_roundtrip() -> None:
+    ev = RequestEvent(
+        request_id="r1",
+        stage="thinker",
+        event_name="thinker_first_token",
+        timestamp_ns=1234,
+        run_id="run_x",
+        pid=99,
+        metadata={"chunk_id": 7},
+    )
+    d = ev.to_dict()
+    assert d["request_id"] == "r1"
+    assert d["stage"] == "thinker"
+    assert d["event_name"] == "thinker_first_token"
+    assert d["timestamp_ns"] == 1234
+    assert d["run_id"] == "run_x"
+    assert d["metadata"] == {"chunk_id": 7}
+
+
+def test_inactive_recorder_is_silent(tmp_path: Path) -> None:
+    """emit() must be a no-op when start() was never called."""
+    rec = RequestEventRecorder()
+    rec.emit(request_id="r1", stage="s", event_name="anything")
+    assert rec.is_active() is False
+
+
 def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     rec = get_recorder()
     path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
@@ -173,7 +205,6 @@ def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
                 {},
             )
             buffer.flush(stage="vocoder")
-            assert [event["request_id"] for event in read_events(path)] == ["ingest"]
         finally:
             release.set()
         before_capture_ns, after_capture_ns = completion.result(timeout=5)
@@ -213,7 +244,6 @@ def test_buffer_checks_activity_before_consuming_snapshots(tmp_path: Path) -> No
     path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
     buffer.capture("decode_enqueued", snapshots("active"), {})
     assert visited == ["active"]
-    assert read_events(path) == []
     buffer.flush(stage="vocoder")
     recorder.stop()
 
@@ -574,3 +604,418 @@ def test_model_path_activity_preserves_the_profiler_wall_clock_domain(
     assert all(item["timestamp_ns"] == 2_000_000_000 for item in emitted)
     assert all(item["metadata"]["monotonic_ns"] == 123456 for item in model_path_events)
     assert reconstruct_timelines(path)["request-clock-domain"].total_ms == 0.0
+def test_slow_writer_does_not_block_producers(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=4)
+    path = recorder.start(run_id="slow", event_dir=str(tmp_path), stage="stage")
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_write(queued_event, file_handle):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5)
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_write
+    recorder.emit(request_id="first", stage="stage", event_name="event")
+    assert writer_entered.wait(timeout=5)
+
+    producer_finished = threading.Event()
+
+    def produce_events() -> None:
+        for event_number in range(4):
+            recorder.emit(
+                request_id=f"request-{event_number}",
+                stage="stage",
+                event_name="event",
+            )
+        producer_finished.set()
+
+    producer_thread = threading.Thread(target=produce_events)
+    producer_thread.start()
+    assert producer_finished.wait(timeout=1)
+    assert recorder.event_queue.qsize() <= recorder.queue_capacity
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    release_writer.set()
+    assert finalization.wait(timeout_seconds=5)
+    producer_thread.join(timeout=5)
+    assert producer_thread.is_alive() is False
+
+    events = read_events(path)
+    assert all(event["run_id"] == "slow" for event in events)
+
+
+def test_full_queue_drops_events_and_marks_status_incomplete(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=1)
+    path = recorder.start(run_id="full", event_dir=str(tmp_path), stage="stage")
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_write(queued_event, file_handle):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5)
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_write
+    recorder.emit(request_id="first", stage="stage", event_name="event")
+    assert writer_entered.wait(timeout=5)
+    for event_number in range(8):
+        recorder.emit(
+            request_id=f"request-{event_number}",
+            stage="stage",
+            event_name="event",
+        )
+    assert recorder.event_queue.qsize() <= 1
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    release_writer.set()
+    assert finalization.wait(timeout_seconds=5)
+
+    status = read_status(path)
+    assert status["accepted_events"] == status["written_events"]
+    assert status["dropped_events"] > 0
+    assert status["complete"] is False
+    assert "queue_overflow" in status["incomplete_reasons"]
+
+
+def test_stop_drains_accepted_events_into_parseable_jsonl(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=128)
+    path = recorder.start(run_id="drain", event_dir=str(tmp_path), stage="stage")
+    for event_number in range(64):
+        recorder.emit(
+            request_id=f"request-{event_number}",
+            stage="stage",
+            event_name="event",
+            metadata={"number": event_number},
+        )
+
+    recorder.stop()
+    events = read_events(path)
+    assert len(events) == 64
+    assert all(event["run_id"] == "drain" for event in events)
+    status = read_status(path)
+    assert status["accepted_events"] == 64
+    assert status["written_events"] == 64
+    assert status["complete"] is True
+
+
+def test_run_rotation_does_not_mix_events(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=16)
+    old_path = recorder.start(
+        run_id="old", event_dir=str(tmp_path / "old"), stage="stage"
+    )
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_old_write(queued_event, file_handle):
+        if queued_event.event.run_id == "old":
+            writer_entered.set()
+            assert release_writer.wait(timeout=5)
+        else:
+            pass
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_old_write
+    recorder.emit(request_id="old-request", stage="stage", event_name="event")
+    assert writer_entered.wait(timeout=5)
+
+    new_path = recorder.start(
+        run_id="new", event_dir=str(tmp_path / "new"), stage="stage"
+    )
+    recorder.emit(request_id="new-request", stage="stage", event_name="event")
+    release_writer.set()
+    recorder.stop()
+    assert recorder.wait_for_finalizations(timeout_seconds=5)
+
+    old_events = read_events(old_path)
+    new_events = read_events(new_path)
+    assert [event["request_id"] for event in old_events] == ["old-request"]
+    assert [event["request_id"] for event in new_events] == ["new-request"]
+    assert {event["run_id"] for event in old_events} == {"old"}
+    assert {event["run_id"] for event in new_events} == {"new"}
+
+
+def test_stale_expected_run_id_cannot_enter_a_later_run(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    first_path = recorder.start(
+        run_id="first", event_dir=str(tmp_path / "first"), stage="stage"
+    )
+    recorder.start(run_id="second", event_dir=str(tmp_path / "second"), stage="stage")
+    recorder.emit(
+        request_id="stale",
+        stage="stage",
+        event_name="event",
+        expected_run_id="first",
+    )
+    second_path = recorder.active_path()
+    recorder.stop()
+    assert recorder.wait_for_finalizations(timeout_seconds=5)
+    assert read_events(first_path) == []
+    assert second_path is not None
+    assert read_events(second_path) == []
+
+
+def test_nested_metadata_is_snapshotted_before_writer_serialization(
+    tmp_path: Path,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(run_id="metadata", event_dir=str(tmp_path), stage="stage")
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_write(queued_event, file_handle):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5)
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_write
+    nested_metadata = {"values": [1, {"name": "before"}]}
+    recorder.emit(
+        request_id="request",
+        stage="stage",
+        event_name="event",
+        metadata={"nested": nested_metadata},
+    )
+    assert writer_entered.wait(timeout=5)
+    nested_metadata["values"][0] = 2
+    nested_metadata["values"][1]["name"] = "after"
+    release_writer.set()
+    recorder.stop()
+
+    event = read_events(path)[0]
+    assert event["metadata"] == {"nested": {"values": [1, {"name": "before"}]}}
+
+
+def test_tensor_like_metadata_is_summarized_without_materialization(
+    tmp_path: Path,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(run_id="tensor", event_dir=str(tmp_path), stage="stage")
+
+    class FakeTensor:
+        shape = (4, 8)
+        dtype = "torch.float16"
+        device = "cuda:0"
+
+        def tolist(self):
+            raise AssertionError("tensor metadata was materialized")
+
+    recorder.emit(
+        request_id="request",
+        stage="stage",
+        event_name="event",
+        metadata={"nested": {"tensor": FakeTensor()}},
+    )
+    recorder.stop()
+
+    summary = read_events(path)[0]["metadata"]["nested"]["tensor"]
+    assert summary["__tensor_summary__"] is True
+    assert summary["shape"] == [4, 8]
+
+
+def test_buffered_event_keeps_original_run_identity_after_rotation(
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    first_path = recorder.start(
+        run_id="first", event_dir=str(tmp_path / "first"), stage="stage"
+    )
+    buffer.capture(
+        "event",
+        (RequestEventSnapshot(request_id="stale", metadata={"value": 1}),),
+        {},
+    )
+    second_path = recorder.start(
+        run_id="second", event_dir=str(tmp_path / "second"), stage="stage"
+    )
+    buffer.flush(stage="stage")
+    recorder.stop()
+    assert recorder.wait_for_finalizations(timeout_seconds=5)
+    assert read_events(first_path) == []
+    assert read_events(second_path) == []
+
+
+def test_concurrent_producers_preserve_counts_and_per_producer_order(
+    tmp_path: Path,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=1024)
+    path = recorder.start(run_id="concurrent", event_dir=str(tmp_path), stage="stage")
+    producer_count = 8
+    events_per_producer = 40
+
+    def produce_events(producer_number: int) -> None:
+        for event_number in range(events_per_producer):
+            recorder.emit(
+                request_id=f"producer-{producer_number}",
+                stage="stage",
+                event_name="event",
+                metadata={"number": event_number},
+            )
+
+    producers = [
+        threading.Thread(target=produce_events, args=(producer_number,))
+        for producer_number in range(producer_count)
+    ]
+    for producer in producers:
+        producer.start()
+    for producer in producers:
+        producer.join(timeout=5)
+        assert producer.is_alive() is False
+    recorder.stop()
+
+    events = read_events(path)
+    assert len(events) == producer_count * events_per_producer
+    for producer_number in range(producer_count):
+        producer_events = [
+            event
+            for event in events
+            if event["request_id"] == f"producer-{producer_number}"
+        ]
+        assert [event["metadata"]["number"] for event in producer_events] == list(
+            range(events_per_producer)
+        )
+    status = read_status(path)
+    assert status["accepted_events"] == len(events)
+    assert status["written_events"] == len(events)
+
+
+def test_serialization_failure_marks_run_incomplete(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(run_id="serialize", event_dir=str(tmp_path), stage="stage")
+
+    class BrokenMetadata:
+        def __repr__(self):
+            raise RuntimeError("broken metadata")
+
+    recorder.emit(
+        request_id="request",
+        stage="stage",
+        event_name="event",
+        metadata={"broken": BrokenMetadata()},
+    )
+    recorder.stop()
+
+    status = read_status(path)
+    assert status["serialization_failures"] == 1
+    assert status["complete"] is False
+    assert "serialization_failure" in status["incomplete_reasons"]
+
+
+def test_file_write_failure_marks_run_incomplete(tmp_path: Path, monkeypatch) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(run_id="write", event_dir=str(tmp_path), stage="stage")
+
+    class BrokenFile:
+        def write(self, serialized_event: str) -> None:
+            raise OSError("broken file")
+
+        def flush(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def open_broken_file(run_state):
+        return BrokenFile()
+
+    monkeypatch.setattr(recorder, "open_event_file", open_broken_file)
+    recorder.emit(request_id="request", stage="stage", event_name="event")
+    recorder.stop()
+
+    status = read_status(path)
+    assert status["write_failures"] >= 1
+    assert status["complete"] is False
+    assert "event_file_write_failure" in status["incomplete_reasons"]
+
+
+def test_rotation_backlog_is_bounded(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    recorder.start(run_id="run-0", event_dir=str(tmp_path / "run-0"), stage="stage")
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_write(queued_event, file_handle):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5)
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_write
+    recorder.emit(request_id="request", stage="stage", event_name="event")
+    assert writer_entered.wait(timeout=5)
+
+    for run_number in range(1, 5):
+        recorder.start(
+            run_id=f"run-{run_number}",
+            event_dir=str(tmp_path / f"run-{run_number}"),
+            stage="stage",
+        )
+    with pytest.raises(RuntimeError, match="waiting for finalization"):
+        recorder.start(
+            run_id="run-5",
+            event_dir=str(tmp_path / "run-5"),
+            stage="stage",
+        )
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    release_writer.set()
+    assert finalization.wait(timeout_seconds=5)
+    assert recorder.wait_for_finalizations(timeout_seconds=5)
+
+
+def test_disabled_recorder_does_not_snapshot_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    recorder = RequestEventRecorder()
+
+    def fail_snapshot(metadata):
+        raise AssertionError("disabled recorder constructed event metadata")
+
+    from sglang_omni.profiler import (
+        event_recorder_writer as event_recorder_writer_module,
+    )
+
+    monkeypatch.setattr(
+        event_recorder_writer_module,
+        "snapshot_metadata",
+        fail_snapshot,
+    )
+    recorder.emit(
+        request_id="request",
+        stage="stage",
+        event_name="event",
+        metadata={"value": 1},
+    )
+    assert recorder.writer_thread is None
+    assert recorder.event_queue.qsize() == 0
+
+
+def test_nonblocking_stop_returns_while_writer_is_stalled(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    recorder.start(run_id="async-stop", event_dir=str(tmp_path), stage="stage")
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    original_write = recorder.write_queued_event
+
+    def stalled_write(queued_event, file_handle):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5)
+        return original_write(queued_event, file_handle)
+
+    recorder.write_queued_event = stalled_write
+    recorder.emit(request_id="request", stage="stage", event_name="event")
+    assert writer_entered.wait(timeout=5)
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    assert finalization.completion_event.is_set() is False
+    release_writer.set()
+    assert finalization.wait(timeout_seconds=5)
