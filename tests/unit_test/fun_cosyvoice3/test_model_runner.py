@@ -85,9 +85,27 @@ def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
 
 def test_cosyvoice3_runner_samples_before_prefill_and_decode_collection() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
+    sampled = torch.tensor([13])
+
+    def forward_without_tokens(*args) -> SimpleNamespace:
+        return SimpleNamespace(next_token_ids=None, logits_output=object())
+
+    runner.custom_prefill_forward = forward_without_tokens
+    runner.tp_worker = SimpleNamespace(forward_batch_generation=forward_without_tokens)
+    runner.sample_next_token_ids = lambda *args: sampled
+    schedule_batch = SimpleNamespace(is_prefill_only=False)
+
+    prefill = runner.prepare_and_forward(
+        SimpleNamespace(), schedule_batch, [], is_prefill=True
+    )
+    decode = runner.prepare_and_forward(
+        SimpleNamespace(), schedule_batch, [], is_prefill=False
+    )
 
     assert runner.sample_before_post_prefill(None, None, []) is True
     assert runner.sample_before_post_decode(None, None, []) is True
+    assert prefill.next_token_ids is sampled
+    assert decode.next_token_ids is sampled
 
 
 def test_cosyvoice3_mlx_runner_collects_exact_scheduler_rows() -> None:

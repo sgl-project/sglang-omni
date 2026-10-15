@@ -50,6 +50,16 @@ def test_mlx_engine_profile_disables_incompatible_scheduler_features(
         "enable_async_decode": True,
         "async_decode_min_batch_size": 1,
     }
+    server_args = valid_mlx_server_args()
+    for field in (
+        "max_running_requests",
+        "disable_radix_cache",
+        "chunked_prefill_size",
+        "disable_overlap_schedule",
+        "mlx_enable_sampling",
+    ):
+        setattr(server_args, field, defaults[field])
+    builder.validate_before_infrastructure(server_args)
 
 
 @pytest.mark.parametrize(

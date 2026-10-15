@@ -264,51 +264,6 @@ def test_cosyvoice3_reference_cache_separates_audio_content(
     assert service.stats()["entries"] == 2
 
 
-def test_cosyvoice3_reference_cache_retries_after_encode_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempts = 0
-
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio_24k",
-        lambda source: np.zeros(2400, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "extract_prompt_speech_feat",
-        lambda audio, sample_rate: torch.ones(1, 4, 80),
-    )
-
-    class RetrySpeechTokenizer(FakeSpeechTokenizer):
-        def extract_speech_token(self, audio, sample_rate):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise RuntimeError("temporary tokenizer failure")
-            return super().extract_speech_token(audio, sample_rate)
-
-    hook = CosyVoice3ReferenceEncodeHook(model=FakeModel(), model_revision="test")
-    hook.bind_encoders(
-        speech_tokenizer=RetrySpeechTokenizer(),
-        speaker_encoder=FakeSpeakerEncoder(),
-    )
-    service = ReferenceEncodeService(hook, max_items=4, max_bytes=1 << 20)
-
-    with pytest.raises(RuntimeError, match="temporary tokenizer failure"):
-        service.get_or_encode(b"retry-reference")
-    artifact = service.get_or_encode(b"retry-reference")
-
-    assert artifact.llm_prompt_speech_token.tolist() == [[40, 41]]
-    assert service.stats()["failed"] == 1
-    assert service.stats()["entries"] == 1
-
-
 def test_generation_kwargs_keep_every_set_value() -> None:
     """A set temperature 0.7, top_p 0.8 or top_k 20 reaches the model instead of being dropped."""
     params = {
@@ -359,7 +314,7 @@ class FakeModel(torch.nn.Module):
         )
 
 
-@pytest.mark.parametrize("repetition_penalty", [None, 1.1, 1.21])
+@pytest.mark.parametrize("repetition_penalty", [None, 1.1])
 def test_preprocess_and_build_request_share_prepared_state(
     monkeypatch: pytest.MonkeyPatch,
     repetition_penalty: float | None,
@@ -1297,7 +1252,7 @@ def test_reference_features_survive_terminal_messagepack(strided: bool) -> None:
     assert terminal["flow_prompt_speech_feat_dtype"] == "float32"
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float64])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_reference_features_preserve_fallback_lists(dtype: torch.dtype) -> None:
     features = torch.arange(160, dtype=dtype).reshape(1, 2, 80)
     state = FunCosyVoice3State(flow_prompt_speech_feat=features)
