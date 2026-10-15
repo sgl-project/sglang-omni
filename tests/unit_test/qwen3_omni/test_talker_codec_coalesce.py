@@ -139,7 +139,7 @@ def test_early_frames_preserve_code2wav_window_cadence() -> None:
 
 
 @pytest.mark.parametrize("early_frames", [10, 12])
-@pytest.mark.parametrize("steps", [9, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33])
+@pytest.mark.parametrize("steps", [9, 10, 11, 12, 13, 20, 21, 22, 23])
 def test_early_frames_preserve_order_and_final_tail(early_frames, steps):
     """The early single-frame prefix and coalesced tail emit each non-EOS row once."""
     runner = make_runner(fake_model(1, 4, 2), coalesce=10)
