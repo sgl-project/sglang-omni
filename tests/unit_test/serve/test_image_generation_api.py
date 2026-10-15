@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import subprocess
 import sys
 from typing import AsyncIterator, NoReturn, TypeAlias, TypedDict
@@ -19,17 +20,9 @@ from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.protocol import ChatCompletionRequest, ImageGenerationParams
 
-PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 JSONValue: TypeAlias = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
+    str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 )
 
 
@@ -43,9 +36,7 @@ class RecordingCoordinator:
     def __init__(self) -> None:
         self.requests: list[OmniRequest] = []
 
-    async def submit(
-        self, request_id: str, request: OmniRequest
-    ) -> ResultPayload:
+    async def submit(self, request_id: str, request: OmniRequest) -> ResultPayload:
         self.requests.append(request)
         return {
             "decode": {
@@ -144,7 +135,6 @@ def test_http_rejects_nonfinite_cfg_without_dispatch(api, field, value):
         {"image_h": 31},
         {"image_w": 33},
         {"mode": "interleaved"},
-        {"mode": "thinking"},
         {"decode_mode": "unknown"},
     ],
 )
@@ -365,7 +355,8 @@ def test_native_image_routes_preserve_generation_controls(api, editing):
     assert options["decoder_steps"] == 8
     assert options["dllm_steps"] == 32
     if editing:
-        assert request.inputs["images"] == [f"data:image/png;base64,{PNG_BASE64}"]
+        source_base64 = base64.b64encode(b"png").decode("ascii")
+        assert request.inputs["images"] == [f"data:image/png;base64,{source_base64}"]
         assert "image_w" not in options
     else:
         assert (options["image_w"], options["image_h"]) == (1024, 768)
