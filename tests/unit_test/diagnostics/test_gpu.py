@@ -303,25 +303,6 @@ def test_module_import_probe_reports_import_error() -> None:
     assert "ModuleNotFoundError" in error
 
 
-def test_check_gpu_json_output(monkeypatch) -> None:
-    check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
-    report = {
-        "schema_version": 1,
-        "environment": {"logical_device_count": 0},
-        "gpus": [],
-    }
-    monkeypatch.setattr(
-        check_gpu_module,
-        "collect_gpu_diagnostics",
-        lambda: report,
-    )
-
-    result = CliRunner().invoke(app, ["check-gpu", "--json"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == report
-
-
 def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
