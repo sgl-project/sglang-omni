@@ -9,8 +9,12 @@ import torch
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_serving
 
+import sglang_omni.model_runner.model_worker as model_worker_module
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import StrictWeightChecker, tensor_bytes
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -170,8 +174,23 @@ def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
     assert worker_info[5] == 510
 
 
-def test_model_worker_init_weights_update_group_passes_positional_args() -> None:
-    calls: list[tuple[Any, ...]] = []
+@pytest.mark.parametrize(
+    ("platform_type", "requested_backend", "expected_backend"),
+    [
+        (CUDAOmniPlatform, None, "nccl"),
+        (XPUOmniPlatform, None, "xccl"),
+        (XPUOmniPlatform, "gloo", "gloo"),
+    ],
+)
+def test_model_worker_init_weights_update_group_passes_positional_args(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    requested_backend: str | None,
+    expected_backend: str,
+) -> None:
+    """An unnamed backend is the host's collective library, not NCCL everywhere."""
+    calls: list[tuple[str, int, int, int, str, str]] = []
+    monkeypatch.setattr(model_worker_module, "current_platform", platform_type())
 
     def init_weights_update_group(
         master_address: str,
@@ -179,7 +198,7 @@ def test_model_worker_init_weights_update_group_passes_positional_args() -> None
         rank_offset: int,
         world_size: int,
         group_name: str,
-        backend: str = "nccl",
+        backend: str,
     ) -> tuple[bool, str]:
         calls.append(
             (master_address, master_port, rank_offset, world_size, group_name, backend)
@@ -199,12 +218,13 @@ def test_model_worker_init_weights_update_group_passes_positional_args() -> None
             "rank_offset": 1,
             "world_size": 2,
             "group_name": "talker_group",
+            "backend": requested_backend,
         },
     )
 
     assert success is True
     assert message == "group ready"
-    assert calls == [("10.0.0.1", 12355, 1, 2, "talker_group", "nccl")]
+    assert calls == [("10.0.0.1", 12355, 1, 2, "talker_group", expected_backend)]
 
 
 def test_model_worker_init_weights_update_group_rejects_non_integer_fields() -> None:
