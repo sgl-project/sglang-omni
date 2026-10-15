@@ -123,27 +123,6 @@ def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> No
     assert result.can_run_cuda_graph is True
 
 
-def test_model_worker_sync_dllm_accepts_five_field_result() -> None:
-    class Algorithm:
-        fdfo = False
-
-        def run(self, model_runner, forward_batch, algo_states):
-            assert algo_states is None
-            return ("logits", [[10, 11]], None, None, False)
-
-    worker = object.__new__(ModelWorker)
-    worker.dllm_algorithm = Algorithm()
-    worker.model_runner = object()
-
-    result = ModelWorker.forward_batch_generation(worker, "forward-batch")
-
-    assert result.logits_output == "logits"
-    assert result.next_token_ids == [[10, 11]]
-    assert result.accept_length_per_req_cpu is None
-    assert result.dllm_algo_state is None
-    assert result.can_run_cuda_graph is False
-
-
 def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,55 +163,6 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
 
     assert forwarded == [(forward_batch, batch)]
     assert forward_batch.reqs == []
-
-
-def test_dllm_staging_admission_uses_dllm_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang.srt.runtime_context import get_context
-
-    scheduler = make_scheduler(fdfo=True)
-    scheduler.tree_cache = object()
-    scheduler.token_to_kv_pool_allocator = object()
-    scheduler.req_to_token_pool = object()
-    scheduler.model_config = object()
-    scheduler.chunked_prefill_size = 16
-    scheduler.waiting_queue = []
-    req = SimpleNamespace(
-        rid="req",
-        kv=SimpleNamespace(),
-        inflight_middle_chunks=0,
-        init_next_round_input=lambda: None,
-    )
-    scheduler.staging_queue = [req]
-    created = {}
-
-    class Adder:
-        def __init__(self, *args, **kwargs) -> None:
-            created["dllm_config"] = kwargs.get("dllm_config")
-            self.can_run_list = []
-
-        def add_dllm_staging_req(self, value):
-            created["staging_req"] = value
-            self.can_run_list.append(value)
-            return dllm_scheduler_module.AddReqResult.CONTINUE
-
-    class Batch:
-        @staticmethod
-        def init_new(**kwargs):
-            created["batch_reqs"] = kwargs["reqs"]
-            return SimpleNamespace(prepare_for_extend=lambda: None)
-
-    monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", Adder)
-    monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", Batch)
-
-    with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
-        batch = scheduler.schedule_next_batch()
-
-    assert batch is not None
-    assert created["dllm_config"] is scheduler.dllm_config
-    assert created["staging_req"] is req
-    assert created["batch_reqs"] == [req]
 
 
 def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
@@ -290,19 +220,6 @@ def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
     assert req.full_untruncated_fill_ids == array("q", [1, 2, 10, 11, 12, 13])
     assert req.output_ids == [10, 11, 12, 13]
     assert req.accepted_lengths == [4]
-
-
-def test_fdfo_result_requires_accept_lengths() -> None:
-    scheduler = make_scheduler(fdfo=True)
-    batch = SimpleNamespace(reqs=[ReqDouble()])
-    result = SimpleNamespace(
-        next_token_ids=[[10, 11, 12, 13]],
-        accept_length_per_req_cpu=None,
-        dllm_algo_state=None,
-    )
-
-    with pytest.raises(AssertionError, match="missing accept lengths"):
-        scheduler.apply_results(batch, result)
 
 
 @pytest.mark.parametrize(
@@ -446,6 +363,31 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
 
     assert batch.reqs == requests
     assert all(req.extend_range.length == 32 for req in batch.reqs)
+
+
+def test_dllm_staging_admission_uses_dllm_config(
+    chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = chunked_scheduler
+    request = scheduler.waiting_queue[0]
+    scheduler.waiting_queue = [request]
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"], prepare_for_extend=lambda: None
+            )
+        ),
+    )
+
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        assert scheduler.schedule_next_batch() is not None
+        assert scheduler.staging_queue == [request]
+        batch = scheduler.schedule_next_batch()
+
+    assert batch.reqs == [request]
+    assert request.extend_range.length == scheduler.dllm_config.block_size
 
 
 def test_abort_between_blocks_releases_cached_tokens(

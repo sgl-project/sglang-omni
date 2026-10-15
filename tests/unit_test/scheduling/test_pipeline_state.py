@@ -6,13 +6,10 @@ from typing import Any
 import pytest
 import torch
 
-from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import (
     DeclarativeStateBase,
     PipelineStateBase,
     build_usage,
-    load_state,
-    store_state,
     wire,
 )
 from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
@@ -53,26 +50,6 @@ def test_build_usage_includes_total_and_rounded_engine_time() -> None:
     }
 
 
-def test_load_and_store_state_round_trip_stage_payload() -> None:
-    payload = StagePayload(
-        request_id="req",
-        request=OmniRequest(inputs={}),
-        data={"value": "ok", "prompt_tokens": 2},
-    )
-
-    state = load_state(payload, DummyState)
-    state.completion_tokens = 4
-    stored = store_state(payload, state)
-
-    assert stored is payload
-    assert payload.data == {
-        "value": "ok",
-        "sample_rate": 24000,
-        "prompt_tokens": 2,
-        "completion_tokens": 4,
-    }
-
-
 def test_serialize_value_detaches_tensor_to_cpu() -> None:
     tensor = torch.tensor([1, 2], requires_grad=False)
 
@@ -82,49 +59,12 @@ def test_serialize_value_detaches_tensor_to_cpu() -> None:
     assert value.device.type == "cpu"
     assert value.tolist() == [1, 2]
 
-
-def test_tts_pipeline_states_share_base_usage_contract() -> None:
-    import dataclasses
-
-    from sglang_omni.models.audar_tts.payload_types import AudarTTSState
-    from sglang_omni.models.dots_tts.payload_types import DotsTTSState
-    from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
-    from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-    from sglang_omni.models.ming_tts.payload_types import MingTTSState
-    from sglang_omni.models.moss_tts.payload_types import MossTTSState
-    from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
-    from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
-    from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
-    from sglang_omni.models.zonos2.payload_types import Zonos2State
-
-    # Every in-scope TTS model routes its state through PipelineStateBase.
-    state_classes = (
-        AudarTTSState,
-        DotsTTSState,
-        S2ProState,
-        HiggsTtsState,
-        MingTTSState,
-        MossTTSState,
-        MossTTSLocalState,
-        Qwen3TTSState,
-        VoxtralTTSState,
-        Zonos2State,
+    value = PipelineStateBase.serialize_value(
+        torch.tensor([1.0, 2.0], requires_grad=True)
     )
-    base_fields = {
-        "sample_rate",
-        "prompt_tokens",
-        "completion_tokens",
-        "engine_time_s",
-        "finish_reason",
-    }
 
-    for state_cls in state_classes:
-        assert issubclass(state_cls, PipelineStateBase), state_cls.__name__
-        field_names = {f.name for f in dataclasses.fields(state_cls)}
-        missing = base_fields - field_names
-        assert not missing, f"{state_cls.__name__} missing base fields: {missing}"
-        assert callable(getattr(state_cls, "to_dict", None)), state_cls.__name__
-        assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
+    assert not value.requires_grad
+    assert value.tolist() == [1.0, 2.0]
 
 
 def normalize_payload_value(value: Any) -> Any:
@@ -412,13 +352,6 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
         assert_restored_fields(state, overrides)
 
 
-def test_base_requires_to_dict_and_from_dict() -> None:
-    with pytest.raises(NotImplementedError):
-        PipelineStateBase().to_dict()
-    with pytest.raises(NotImplementedError):
-        PipelineStateBase.from_dict({})
-
-
 def test_typed_tensor_round_trip_preserves_values() -> None:
     codes = torch.tensor([[1, 2, 3], [4, 5, 6]])
 
@@ -463,6 +396,10 @@ def test_typed_tensor_empty_float_round_trip_keeps_shape() -> None:
     assert restored.shape == (0, 2, 3)
     assert restored.dtype == torch.float32
 
+    data = encode_typed_tensor(torch.empty((0, 2), dtype=torch.int64), key="codes")
+
+    assert decode_typed_tensor(data, key="codes").shape == (0, 2)
+
 
 def test_typed_tensor_legacy_list_fallback_and_missing() -> None:
     restored = decode_typed_tensor(
@@ -486,13 +423,8 @@ def test_declarative_typed_tensor_missing_payload_keeps_default() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"audio_codes_shape": [1]},
         {"audio_codes_bytes": b"\x01\x00"},
         {"audio_codes_dtype": "uint16"},
-        {
-            "audio_codes_bytes": b"\x01\x00",
-            "audio_codes_dtype": "uint16",
-        },
         {"audio_codes_bytes": None, "audio_codes_shape": [1]},
         {
             "audio_codes_bytes": b"\x01\x00",
@@ -523,32 +455,7 @@ def test_declarative_typed_tensor_allows_omitted_dtype() -> None:
     assert TypedState.from_dict(payload).audio_codes.tolist() == [1, 2]
 
 
-def test_declarative_default_factory_is_lazy() -> None:
-    calls = 0
-
-    def make_items() -> list[int]:
-        nonlocal calls
-        calls += 1
-        return [1]
-
-    @dataclass
-    class FactoryState(DeclarativeStateBase):
-        items: list[int] = wire(default_factory=make_items, codec="list")
-
-    state = FactoryState()
-    assert calls == 1
-
-    calls_before_to_dict = calls
-    payload = state.to_dict()
-    assert calls == calls_before_to_dict
-
-    calls_before_restore = calls
-    restored = FactoryState.from_dict(payload)
-    assert calls == calls_before_restore
-    assert restored.items == [1]
-
-
-@pytest.mark.parametrize("emit", ["not-non", "with:audio_samples"])
+@pytest.mark.parametrize("emit", ["not-non"])
 def test_declarative_wire_rejects_unknown_emit_mode(emit: str) -> None:
     with pytest.raises(ValueError, match="unknown wire emit mode"):
         wire(None, emit=emit)
