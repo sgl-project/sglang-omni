@@ -238,6 +238,7 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_speech_server(args)
@@ -394,6 +395,7 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -432,6 +434,7 @@ def test_ming_text_launcher_rejects_nonpositive_tp_before_config(monkeypatch) ->
             host="127.0.0.1",
             port=8000,
             model_name="ming-omni",
+            skip_server_warmup=False,
         )
 
         with pytest.raises(ValueError, match="--tp-size must be >= 1"):
@@ -463,6 +466,7 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -501,6 +505,7 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -540,6 +545,7 @@ def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -571,6 +577,7 @@ def test_ming_text_launcher_rejects_image_encoder_tp_zero(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--image-encoder-tp must be >= 1"):
@@ -600,6 +607,7 @@ def test_ming_text_launcher_rejects_thinker_only_with_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--thinker-only cannot be used"):
@@ -629,6 +637,7 @@ def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--gpu-image-encoder must be specified"):
@@ -656,6 +665,7 @@ def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="requires exactly 2 GPU ids"):
@@ -683,6 +693,7 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="GPU ids must be unique"):
@@ -1280,3 +1291,48 @@ def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
     )
     assert "video_embeds" not in out
     assert "video_grid_thw" not in out
+
+
+def test_ming_audio_paths_follow_the_server_media_policy(monkeypatch, tmp_path) -> None:
+    import asyncio
+
+    from sglang_omni.models.ming_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing import resource_connector
+    from sglang_omni.proto import OmniRequest, StagePayload
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside, outside = allowed / "inside.wav", tmp_path / "outside.wav"
+    for path in (inside, outside):
+        path.write_bytes(b"RIFF" + b"\0" * 64)
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, str(allowed))
+    monkeypatch.setenv(resource_connector.ALLOWED_MEDIA_DOMAINS_ENV, "")
+    monkeypatch.setattr(resource_connector, "_global_connector", None)
+    reads = []
+
+    def load_audio(path, target_sr):
+        reads.append(Path(path))
+        return np.zeros(1600, dtype=np.float32)
+
+    monkeypatch.setattr(mod, "load_audio_path", load_audio)
+    monkeypatch.setattr(
+        mod, "compute_mel_features_for_waveform", lambda *_: (torch.zeros(1, 2), 1, 1)
+    )
+    pre = mod.MingPreprocessor.__new__(mod.MingPreprocessor)
+    pre.audio_config = SimpleNamespace()
+    pre.build_prompt = lambda messages, **counts: ("prompt", [1, 2, 3], [1])
+
+    def run(path: Path) -> None:
+        inputs = {
+            "messages": [{"role": "user", "content": "Describe this."}],
+            "audios": [str(path)],
+        }
+        payload = StagePayload(
+            request_id="ming-policy", request=OmniRequest(inputs=inputs), data=None
+        )
+        asyncio.run(pre(payload))
+
+    run(inside)
+    with pytest.raises(ValueError, match="not within allowed directory"):
+        run(outside)
+    assert reads == [inside.resolve()]

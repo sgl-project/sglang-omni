@@ -49,6 +49,9 @@ _TRANSCRIPTION_PROMPT = (
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
 
+# note (Tianyao Wu): 10 tokens a second over the 60 s audio buffer cap; speech is 3-5.
+TRANSCRIPTION_MAX_NEW_TOKENS = 600
+
 HANDLERS: dict[type[ClientEvent], str] = {
     SessionUpdate: "handle_session_update",
     InputAudioBufferAppend: "handle_audio_append",
@@ -1170,7 +1173,9 @@ class RealtimeSession:
                 Message(role="system", content=_TRANSCRIPTION_PROMPT),
                 Message(role="user", content="Transcribe the spoken audio."),
             ],
-            sampling=self.sampling(),
+            sampling=dataclasses.replace(
+                self.sampling(), max_new_tokens=TRANSCRIPTION_MAX_NEW_TOKENS
+            ),
             stream=True,
             output_modalities=["text"],
             metadata={"audios": [audio_payload]},

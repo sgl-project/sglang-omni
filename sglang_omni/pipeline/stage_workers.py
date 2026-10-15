@@ -19,6 +19,8 @@ from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Event
 from typing import Literal, Sequence
 
+from sglang.srt.utils import kill_itself_when_parent_died
+
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -81,6 +83,9 @@ class StageLaunchConfig:
     )
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
+    # note (Richard Wang): the env_defaults keys the pipeline or stage config
+    # wrote, as opposed to values a model derived at launch.
+    written_env: frozenset[str] = frozenset()
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
     # factory kwargs, so no factory signature can accidentally absorb them.
     kv_cache_bytes: int | None = None
@@ -159,6 +164,7 @@ class StageWorkerProcessSpec:
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
     cpu_threads: int | None = None
+    cpu_affinity: frozenset[int] | None = None
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -186,6 +192,28 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 
 
 @contextmanager
+def spawn_affinity(spec: StageWorkerProcessSpec) -> Generator[None, None, None]:
+    """Run the spawning thread on the process's planned CPUs while it starts it.
+
+    The affinity call moves only the calling thread, and a child starts with
+    that thread's mask, so every thread the child creates, including pools
+    started while it imports its stages, stays on the planned CPUs.
+    """
+    launcher_cpus = None if spec.cpu_affinity is None else os.sched_getaffinity(0)
+    if launcher_cpus is not None:
+        os.sched_setaffinity(0, spec.cpu_affinity)
+    else:
+        pass
+    try:
+        yield
+    finally:
+        if launcher_cpus is not None:
+            os.sched_setaffinity(0, launcher_cpus)
+        else:
+            pass
+
+
+@contextmanager
 def patched_spawn_env(
     spec: StageWorkerProcessSpec,
     extra_env: Mapping[str, str] | None = None,
@@ -205,6 +233,21 @@ def patched_spawn_env(
                 env_default_updates[key] = value
             else:
                 pass
+    default_threads = env_default_updates.get("OMP_NUM_THREADS", "")
+    if (
+        spec.cpu_affinity is not None
+        and default_threads.isdigit()
+        and int(default_threads) > len(spec.cpu_affinity)
+        and not any(
+            "OMP_NUM_THREADS" in stage_spec.written_env
+            for stage_spec in spec.stage_specs
+        )
+    ):
+        # note (Richard Wang): a derived default sized for the whole host would
+        # put more threads than CPUs on a bound process. Written values still win.
+        env_default_updates["OMP_NUM_THREADS"] = str(len(spec.cpu_affinity))
+    else:
+        pass
 
     worker_process_env = get_worker_process_env(spec)
     compat_env_defaults = get_gpu_compat_env_defaults(
@@ -342,7 +385,7 @@ class StageGroup:
                     if process_env_overrides is not None
                     else None
                 )
-                with patched_spawn_env(spec, extra_env=extra_env):
+                with patched_spawn_env(spec, extra_env=extra_env), spawn_affinity(spec):
                     self._process_start_attempts.add(
                         spec.process_name
                     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -488,6 +531,15 @@ def stage_process_main(
     startup_error_channel: Queue[str] | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
+    # note (Richard Wang): exit with the parent, so a killed server does not
+    # leave its stage workers holding the GPUs. A parent that died before the
+    # signal was registered sends none, so check it once registered.
+    kill_itself_when_parent_died()
+    parent = multiprocessing.parent_process()
+    if parent is not None and not parent.is_alive():
+        raise SystemExit(1)
+    else:
+        pass
     # note (Dayuxiaoshui): a spawned process starts with fresh logging, and
     # importing sglang already installs a root handler at INFO, which turns
     # basicConfig into a no-op. Set the level explicitly so the stage follows
@@ -513,7 +565,7 @@ def stage_process_main(
         run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         destroy_torch_distributed_process_group(log)
-        reclaim_process_cuda_memory(
+        reclaim_process_gpu_memory(
             stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
@@ -529,7 +581,7 @@ def stage_process_main(
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
         destroy_torch_distributed_process_group(log)
-        reclaim_process_cuda_memory(
+        reclaim_process_gpu_memory(
             stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
@@ -664,7 +716,7 @@ def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         )
 
 
-def reclaim_process_cuda_memory(
+def reclaim_process_gpu_memory(
     gpu_ids: Iterable[int],
     log: logging.Logger,
     *,
@@ -679,42 +731,35 @@ def reclaim_process_cuda_memory(
     try:
         import torch
 
-        if not torch.cuda.is_available():
+        if current_platform.is_cpu():
             return
         else:
             pass
-        log.warning(
-            "Reclaiming CUDA memory after %s on gpu_ids=%s",
-            reason,
-            gpu_id_list,
-        )
+        log.warning(f"Reclaiming GPU memory after {reason} on gpu_ids={gpu_id_list}")
         for gpu_id in gpu_id_list:
             try:
-                torch.cuda.set_device(int(gpu_id))
+                current_platform.set_device(current_platform.get_device(int(gpu_id)))
                 with suppress(Exception):
-                    torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-                with suppress(Exception):
-                    torch.cuda.ipc_collect()
+                    current_platform.synchronize()
+                current_platform.empty_cache()
+                if current_platform.is_cuda_alike():
+                    with suppress(Exception):
+                        torch.cuda.ipc_collect()
+                else:
+                    pass
             except Exception as exc:
                 log.warning(
-                    "CUDA memory reclaim failed for gpu_id=%s after %s: %s",
-                    gpu_id,
-                    reason,
-                    exc,
+                    f"GPU memory reclaim failed for gpu_id={gpu_id} after "
+                    f"{reason}: {exc}",
                     exc_info=True,
                 )
         gc.collect()
         log.warning(
-            "CUDA memory reclaim complete after %s on gpu_ids=%s",
-            reason,
-            gpu_id_list,
+            f"GPU memory reclaim complete after {reason} on gpu_ids={gpu_id_list}"
         )
     except Exception as exc:
         log.warning(
-            "CUDA memory reclaim skipped after %s: %s",
-            reason,
-            exc,
+            f"GPU memory reclaim skipped after {reason}: {exc}",
             exc_info=True,
         )
 
@@ -930,7 +975,7 @@ def construct_stage(
     )
 
     if spec.is_stream_receiver:
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
     else:
         pass
 

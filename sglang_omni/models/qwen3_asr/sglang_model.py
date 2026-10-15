@@ -181,7 +181,13 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             return
         else:
             pass
-        runner = Qwen3ASREncoderLayerStackGraphRunner(
+        if device.type == "npu":
+            from .encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
+
+            runner_cls = Qwen3ASREncoderNpuGraphRunner
+        else:
+            runner_cls = Qwen3ASREncoderLayerStackGraphRunner
+        runner = runner_cls(
             self.audio_tower,
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
             max_batch_size=max_batch_size,

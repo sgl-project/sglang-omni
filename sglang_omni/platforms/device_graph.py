@@ -47,9 +47,6 @@ DeviceGraphPool = CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int]
 class DeviceGraphBackend(Protocol):
     """Records a model-owned graph on one accelerator."""
 
-    # Ascend task groups: CPU sequence metadata, lazy capture and a shared pool.
-    supports_graph_task_update: bool = False
-
     def capture(
         self,
         *,
@@ -65,7 +62,7 @@ class DeviceGraphBackend(Protocol):
         ...
 
 
-class CudaDeviceGraphBackend(DeviceGraphBackend):
+class CudaDeviceGraphBackend:
     """CUDA, and the backends that present through torch.cuda: HIP and MUSA."""
 
     def graph_pool_handle(self) -> CudaGraphPoolHandle:
@@ -97,10 +94,8 @@ class CudaDeviceGraphBackend(DeviceGraphBackend):
             yield graph
 
 
-class NpuDeviceGraphBackend(DeviceGraphBackend):
+class NpuDeviceGraphBackend:
     """Ascend NPU."""
-
-    supports_graph_task_update = True
 
     def graph_pool_handle(self) -> tuple[int, int]:
         return torch.npu.graph_pool_handle()
@@ -131,7 +126,7 @@ class NpuDeviceGraphBackend(DeviceGraphBackend):
             yield graph
 
 
-class XpuDeviceGraphBackend(DeviceGraphBackend):
+class XpuDeviceGraphBackend:
     """Intel XPU."""
 
     def graph_pool_handle(self) -> XpuGraphPoolHandle:

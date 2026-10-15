@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils import snake_beta
 
 
@@ -291,3 +292,36 @@ def test_shared_snake_graph_reads_current_inputs_and_parameters() -> None:
             original.beta.fill_(-value)
             graph.replay()
             assert torch.equal(actual, original(x))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("channels_last", [False, True])
+def test_fused_snake_beta_matches_eager_on_this_host(channels_last: bool) -> None:
+    """The parity tests above allocate CUDA tensors, so this is what exercises the
+    launch and its rounding options on a non-CUDA Triton device."""
+    device_type = current_platform.device_type
+    if device_type not in snake_beta.TRITON_DEVICE_TYPES:
+        pytest.skip(f"{device_type} has no Triton backend")
+    else:
+        pass
+    assert snake_beta.HAS_TRITON, "Triton is required on accelerator CI"
+    device_module = torch.get_device_module(device_type)
+    device = torch.device(device_type, device_module.current_device())
+    snake_beta.prewarm(device)
+
+    torch.manual_seed(0)
+    original = StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
+    for frames in (2, 33, 1024):
+        if channels_last:
+            x = torch.randn(
+                (1, frames, 96), device=device, dtype=torch.bfloat16
+            ).transpose(1, 2)
+        else:
+            x = torch.randn((1, 96, frames), device=device, dtype=torch.bfloat16)
+        expected = original(x)
+        actual = snake_beta.fused_snake_beta(
+            x, original.alpha, original.beta, original.no_div_by_zero
+        )
+        assert actual is not None, frames
+        assert torch.equal(actual, expected), frames
+        assert actual.stride() == x.stride(), frames

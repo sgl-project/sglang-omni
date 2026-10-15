@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 
 class TokenUsageDict(TypedDict):
@@ -22,6 +22,26 @@ class UsageInfoDict(TokenUsageDict, total=False):
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
 # did not say how generation ended.
 UNKNOWN_FINISH_REASON = "unknown"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiarizationSegment:
+    """One speaker's active interval, in seconds from the recording start."""
+
+    start: float
+    end: float
+    speaker: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiarizationResult:
+    """Standalone speaker activity, with overlapping intervals permitted."""
+
+    duration: float
+    segments: list[DiarizationSegment]
+
+
+DiarizationOperation = Literal["open", "append", "finish", "close", "reset"]
 
 
 @dataclass
@@ -74,27 +94,32 @@ class UsageInfo:
 class SamplingParams:
     """Sampling configuration."""
 
-    temperature: float = 1.0
-    top_p: float = 1.0
-    top_k: int = -1
-    min_p: float = 0.0
-    repetition_penalty: float = 1.0
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
     stop: list[str] = field(default_factory=list)
     stop_token_ids: list[int] = field(default_factory=list)
     seed: int | None = None
     max_new_tokens: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        # note (ratish): a field the caller left unset stays out, so the stage
+        # request builder applies its own model default.
+        values: dict[str, object] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k,
             "min_p": self.min_p,
             "repetition_penalty": self.repetition_penalty,
-            "stop": list(self.stop),
-            "stop_token_ids": list(self.stop_token_ids),
             "seed": self.seed,
             "max_new_tokens": self.max_new_tokens,
+        }
+        return {
+            **{name: value for name, value in values.items() if value is not None},
+            "stop": list(self.stop),
+            "stop_token_ids": list(self.stop_token_ids),
         }
 
 
@@ -165,6 +190,7 @@ class GenerateChunk:
     language: str | None = None
     audio_data: object = None
     sample_rate: int | None = None
+    diarization: DiarizationResult | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -238,6 +264,7 @@ class CompletionResult:
     omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
     language: str | None = None
+    diarization: DiarizationResult | None = None
 
 
 @dataclass

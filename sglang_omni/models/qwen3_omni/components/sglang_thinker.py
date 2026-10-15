@@ -9,6 +9,7 @@ prefill, so this wrapper keeps only the text model and LM head.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
@@ -17,13 +18,19 @@ import torch
 import torch.nn as nn
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_config import (
+    get_config_dtype_str,
+    try_get_optimal_moe_config,
+)
 from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK, TopKOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
+from sglang.srt.runtime_context import max_prefill_buffer_tokens
 from sglang.srt.utils import add_prefix, logger
 from transformers import PretrainedConfig
 
@@ -189,6 +196,69 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             hidden_states,
             self.lm_head,
             forward_batch,
+        )
+
+    @torch.no_grad()
+    def precompile_kernels_after_loading(self) -> None:
+        """Run one MoE layer on zero rows once per fused MoE kernel variant that a forward
+        up to the prefill ceiling reaches, so no request waits for one to compile."""
+        moe = next(
+            layer.mlp
+            for layer in self.model.layers
+            if isinstance(layer, Qwen3MoeDecoderLayer)
+            and isinstance(layer.mlp, Qwen3MoeSparseMoeBlock)
+        )
+        experts = moe.experts
+        if not (
+            isinstance(experts.quant_method, UnquantizedFusedMoEMethod)
+            and experts.quant_method.runner.runner_backend.is_triton()
+        ):
+            return
+        else:
+            pass
+        num_experts = experts.w13_weight.shape[0]
+        top_k = self.config.num_experts_per_tok
+        variant_token_counts: dict[tuple, int] = {}
+        for num_tokens in range(1, max_prefill_buffer_tokens() + 1):
+            config, (down_config, _) = try_get_optimal_moe_config(
+                experts.w13_weight.shape,
+                experts.w2_weight.shape,
+                top_k,
+                get_config_dtype_str(experts.w13_weight.dtype),
+                num_tokens,
+                return_down_config=True,
+            )
+            routed_rows = top_k * num_tokens
+            block_rows = config["BLOCK_SIZE_M"]
+            if routed_rows < num_experts + 1:
+                aligned_rows = routed_rows * block_rows
+            else:
+                aligned_rows = routed_rows + (num_experts + 1) * (block_rows - 1)
+            # note (ratish): besides its config, each GEMM's kernel compiles per early
+            # release of its dependents (at most 512 input rows) and per divisibility by 16
+            # of the routed rows and of the expert-aligned routing length.
+            variant = (
+                tuple(sorted(config.items())),
+                None if down_config is None else tuple(sorted(down_config.items())),
+                num_tokens <= 512,
+                routed_rows <= 512,
+                routed_rows % 16 == 0,
+                aligned_rows % 16 == 0,
+            )
+            variant_token_counts.setdefault(variant, num_tokens)
+        start = time.perf_counter()
+        for num_tokens in variant_token_counts.values():
+            moe.forward_normal(
+                torch.zeros(
+                    num_tokens,
+                    self.config.hidden_size,
+                    device=experts.w13_weight.device,
+                    dtype=experts.w13_weight.dtype,
+                )
+            )
+        logger.info(
+            f"Compiled the thinker MoE kernels for {len(variant_token_counts)} token "
+            f"counts in {time.perf_counter() - start:.1f} s"
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:

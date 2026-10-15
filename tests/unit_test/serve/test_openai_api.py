@@ -6,35 +6,37 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.client import extract_inputs
+from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    CompleteMessage,
-    OmniRequest,
-    StreamMessage,
-)
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    ServerStatus,
     _ClosableStreamingResponse,
     await_speech_response,
     build_chat_generate_request,
+    chat_non_stream,
     chat_stream,
     speech_audio_response,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
+from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
 from sglang_omni.serve.transcriptions import (
     _first_transcription_chunk,
     _transcription_stream,
@@ -48,6 +50,62 @@ MODEL_FAMILIES = {
     "s2-pro": "vocoder",
     "voxtral": "vocoder",
 }
+
+
+def test_chat_api_client_preserves_ordered_media_and_turns() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Before"},
+                {"type": "image_url", "image_url": {"url": "first.png"}},
+                {"type": "text", "text": "After"},
+            ],
+        },
+        {"role": "assistant", "content": "First answer."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio_url", "audio_url": {"url": "second.wav"}},
+                {"type": "text", "text": "Second question."},
+            ],
+        },
+    ]
+    request = ChatCompletionRequest(model="minicpm-o", messages=messages)
+    client_request = build_chat_generate_request(request)
+    assert extract_inputs(client_request) == messages
+
+
+@pytest.mark.parametrize("input_style", ["inline", "top-level"])
+def test_live_chat_frontend_transcribes_audio(input_style: str) -> None:
+    api_url = os.environ.get("OMNI_PARITY_API_URL")
+    fixture_path = os.environ.get("OMNI_PARITY_MANIFEST")
+    if not api_url or not fixture_path:
+        pytest.skip(
+            "Set OMNI_PARITY_API_URL and OMNI_PARITY_MANIFEST for live correctness checks"
+        )
+    else:
+        manifest = json.loads(Path(fixture_path).read_text())
+    sample = next(
+        sample for sample in manifest["samples"] if sample["id"] == "asr_zh-0000"
+    )
+    request = {
+        "model": "omni",
+        "messages": sample["messages"],
+        "temperature": 0,
+        "max_tokens": 256,
+        "modalities": ["text"],
+    }
+    if input_style == "top-level":
+        content = sample["messages"][0]["content"]
+        request["messages"] = [{"role": "user", "content": content[0]["text"]}]
+        request["audios"] = [content[1]["audio_url"]["url"]]
+    else:
+        pass
+    response = httpx.post(api_url + "/v1/chat/completions", json=request, timeout=120)
+    response.raise_for_status()
+    transcript = response.json()["choices"][0]["message"]["content"]
+    assert sample["answer"].rstrip("。") in transcript
 
 
 class FaultInjectingCoordinator(Coordinator):
@@ -173,6 +231,11 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            usage=UsageInfo(
+                prompt_tokens=5,
+                completion_tokens=2,
+                total_tokens=7,
+            ),
             finish_reason=self.finish_reason,
         )
 
@@ -362,6 +425,25 @@ class BlockingNonStreamingSpeechClient:
         allow_format_fallback: bool = True,
     ):
         del request, request_id, response_format, speed, allow_format_fallback
+        self.started.set()
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class BlockingCompletionClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.aborted: list[str] = []
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> None:
         self.started.set()
         await asyncio.Future()
 
@@ -912,6 +994,11 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
     assert response.headers["x-finish-reason"] == "length"
+    assert response.headers["x-prompt-tokens"] == "5"
+    assert response.headers["x-completion-tokens"] == "2"
+    assert response.headers["x-sglang-omni-input-tokens"] == "5"
+    assert response.headers["x-sglang-omni-output-tokens"] == "2"
+    assert response.headers["x-sglang-omni-total-tokens"] == "7"
     assert response.headers["x-request-id"].startswith("speech-")
     assert speech_client.speech_requests[0].model == "tts"
     assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
@@ -926,6 +1013,24 @@ def test_create_app_passes_model_specific_speech_input_limit() -> None:
     )
 
     assert app.state.speech_service.max_speech_input_chars is None
+
+
+def test_health_reports_starting_until_the_launcher_marks_the_server_up() -> None:
+    client, coordinator, _ = streaming_client()
+    app = create_app(client)
+    http_client = TestClient(app)
+
+    coordinator.running = True
+    app.state.server_status = ServerStatus.STARTING
+    starting = http_client.get("/health")
+    app.state.server_status = ServerStatus.UP
+    healthy = http_client.get("/health")
+    coordinator.running = False
+    stopped = http_client.get("/health")
+
+    assert (starting.status_code, starting.json()["status"]) == (503, "starting")
+    assert (healthy.status_code, healthy.json()["status"]) == (200, "healthy")
+    assert (stopped.status_code, stopped.json()["status"]) == (503, "unhealthy")
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1119,6 +1224,107 @@ def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
         "type": "server_error",
         "code": 500,
     }
+
+
+class TextDeltaCoordinator:
+    """Answer chat with fixed text: whole when buffered, as deltas when streamed.
+
+    A None delta is an audio chunk that finishes the audio.
+    """
+
+    def __init__(self, deltas: list[str | None]) -> None:
+        self.deltas = deltas
+
+    async def submit(self, request_id: str, omni_request: OmniRequest) -> object:
+        text = "".join(delta for delta in self.deltas if delta is not None)
+        return {"text": text, "finish_reason": "stop"}
+
+    async def stream(
+        self, request_id: str, omni_request: OmniRequest
+    ) -> AsyncIterator[StreamMessage]:
+        for index, delta in enumerate(self.deltas):
+            modality = "audio" if delta is None else "text"
+            chunk: dict[str, object] = {"modality": modality}
+            if delta is not None:
+                chunk["text"] = delta
+            else:
+                pass
+            if delta is None or index == len(self.deltas) - 1:
+                chunk["finish_reason"] = "stop"
+            else:
+                pass
+            yield StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk=chunk,
+                stage_name="decode",
+                modality=modality,
+            )
+
+
+def test_chat_answer_excludes_the_matched_stop_string() -> None:
+    coordinator = TextDeltaCoordinator(["1, 2", ", 3"])
+    app = create_app(Client(coordinator), model_name="qwen3-omni")
+    body = {"messages": [{"role": "user", "content": "count"}], "stop": [", 3"]}
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "1, 2"
+
+
+@pytest.mark.parametrize(
+    ("deltas", "stop", "expected"),
+    [
+        pytest.param(["1, 2", ", 3"], [", 3"], "1, 2", id="whole"),
+        pytest.param(["a", "\n", "b\n", "\nc"], ["\n\n"], "a\nb", id="across-deltas"),
+        pytest.param(["a", "\n"], ["\n\n"], "a\n", id="never-completed"),
+        pytest.param(["a", "\n", None, "\nb"], ["\n\n"], "a", id="audio-ends-mid-stop"),
+        pytest.param(["a", "\n", None], ["\n\n"], "a\n", id="text-never-ends"),
+    ],
+)
+def test_chat_stream_never_sends_a_stop_string(
+    deltas: list[str | None], stop: list[str], expected: str
+) -> None:
+    app = create_app(Client(TextDeltaCoordinator(deltas)), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "count"}],
+        "stop": stop,
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    content = [
+        choice["delta"]["content"]
+        for event in events
+        for choice in event["choices"]
+        if choice["delta"].get("content")
+    ]
+
+    assert "".join(content) == expected
+    assert events[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_stream_stop_check_is_bounded_by_the_held_text() -> None:
+    class CountingStop(str):
+        prefixes = 0
+
+        def __getitem__(self, key: object) -> str:
+            CountingStop.prefixes += 1
+            return super().__getitem__(key)
+
+    trimmer = StreamedStopTrimmer(stop=[CountingStop("x" * 10_000)])
+    deltas = ["ab", "cd", "ef"]
+
+    released = "".join(trimmer.push(delta) for delta in deltas) + trimmer.finish()
+
+    assert released == "abcdef"
+    assert CountingStop.prefixes <= sum(len(delta) for delta in deltas)
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
@@ -1397,73 +1603,92 @@ def test_transcription_stream_close_reaches_coordinator_owner() -> None:
     asyncio.run(run())
 
 
-def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
-    req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
-        messages=[{"role": "user", "content": "hello"}],
-    )
-
-    gen_req = build_chat_generate_request(req)
-
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
-
-
-@pytest.mark.parametrize("use_audio_in_video", [True, False])
-def test_chat_request_forwards_embedded_video_audio_flag(
-    use_audio_in_video: bool,
+@pytest.mark.parametrize(
+    "sampling_fields",
+    [{}, {"temperature": None, "top_p": None, "top_k": None, "seed": None}],
+)
+def test_chat_request_leaves_unset_sampling_fields_out_of_params(
+    sampling_fields: dict[str, None],
 ) -> None:
     req = ChatCompletionRequest(
         model="qwen3-omni",
         messages=[{"role": "user", "content": "hello"}],
-        videos=["clip.mp4"],
-        use_audio_in_video=use_audio_in_video,
+        **sampling_fields,
     )
 
-    gen_req = build_chat_generate_request(req)
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
 
-    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
-    assert extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
+    assert not {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "seed",
+    } & set(params)
 
 
-def test_chat_request_preserves_explicit_default_sampling_values() -> None:
+@pytest.mark.parametrize("use_audio_in_video", [True, False])
+@pytest.mark.parametrize(
+    ("content", "videos"),
+    [
+        ("hello", ["clip.mp4"]),
+        ([{"type": "video_url", "video_url": {"url": "clip.mp4"}}], None),
+    ],
+)
+def test_chat_request_forwards_video_options(
+    content: str | list[dict[str, object]],
+    videos: list[str] | None,
+    use_audio_in_video: bool,
+) -> None:
     req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": content}],
+        videos=videos,
+        use_audio_in_video=use_audio_in_video,
+        video_fps=4.0,
+        video_max_frames=8,
+    )
+
+    inputs = extract_inputs(build_chat_generate_request(req))
+
+    assert inputs["use_audio_in_video"] is use_audio_in_video
+    assert inputs["video_fps"] == 4.0
+    assert inputs["video_max_frames"] == 8
+
+
+def test_chat_request_keeps_every_set_sampling_value() -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
         messages=[{"role": "user", "content": "hello"}],
         temperature=1.0,
         top_p=1.0,
         top_k=-1,
+        min_p=0.0,
+        repetition_penalty=1.0,
+        seed=7,
     )
 
-    gen_req = build_chat_generate_request(req)
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
 
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
-        "temperature",
-        "top_k",
-        "top_p",
-    ]
-
-
-def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
-    req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
-        messages=[{"role": "user", "content": "hello"}],
-        temperature=None,
-        top_p=None,
-        top_k=None,
-    )
-
-    gen_req = build_chat_generate_request(req)
-
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+    assert {
+        name: params[name]
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "seed",
+        )
+    } == {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": -1,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+        "seed": 7,
+    }
 
 
 def test_speech_stream_defaults_to_raw_pcm() -> None:
@@ -1800,6 +2025,56 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
     asyncio.run(drive())
 
 
+def test_buffered_chat_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            chat_non_stream(
+                request=request,
+                client=client,
+                gen_req=GenerateRequest(model="qwen3-omni", prompt="hello"),
+                request_id="req-1",
+                response_id="chatcmpl-req-1",
+                created=0,
+                model="qwen3-omni",
+                req=ChatCompletionRequest(
+                    messages=[{"role": "user", "content": "hello"}]
+                ),
+                audio_format="wav",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(drive())
+
+
+def test_speech_to_text_completion_aborts_its_request_on_client_disconnect() -> None:
+    async def drive() -> None:
+        client = BlockingCompletionClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            complete_speech_to_text_request(
+                request,
+                client,
+                GenerateRequest(model="moss-td", prompt="hello"),
+                request_id="transcription-1",
+                error_log_message="Error transcribing audio for request %s",
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(HTTPException, match="Client disconnected"):
+            await task
+        assert client.aborted == ["transcription-1"]
+
+    asyncio.run(drive())
+
+
 def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
     async def drive() -> None:
         result = await await_speech_response(
@@ -1815,7 +2090,39 @@ def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
     asyncio.run(drive())
 
 
-def test_speech_request_records_explicit_generation_params() -> None:
+@pytest.mark.parametrize("stream", [False, True])
+def test_supported_speech_fields_refuse_an_unknown_field_before_generation(
+    stream: bool,
+) -> None:
+    client_impl = SuccessfulSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="tts",
+            supported_speech_fields=frozenset(
+                {"model", "input", "voice", "response_format", "stream"}
+            ),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "tts",
+            "input": "hello",
+            "stream": stream,
+            "response_format": "pcm" if stream else "wav",
+            "stage_sampling": {},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "stage_sampling"
+    assert client_impl.generate_requests == []
+    assert client_impl.speech_requests == []
+
+
+def test_speech_request_passes_only_the_set_sampling_fields() -> None:
     req = CreateSpeechRequest(
         input="hello",
         temperature=0.8,
@@ -1826,16 +2133,12 @@ def test_speech_request_records_explicit_generation_params() -> None:
     gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
         req
     )
+    params = Client.build_omni_request(gen_req).params
 
-    assert gen_req.sampling.temperature == 0.8
-    assert gen_req.sampling.top_k == 30
-    assert gen_req.sampling.seed == 123
-    assert isinstance(gen_req.metadata["tts_params"], dict)
-    assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
-        "seed",
-        "temperature",
-        "top_k",
-    ]
+    assert params["temperature"] == 0.8
+    assert params["top_k"] == 30
+    assert params["seed"] == 123
+    assert not {"top_p", "min_p", "repetition_penalty"} & set(params)
 
 
 def test_speech_request_passes_streaming_control_fields() -> None:
@@ -1883,6 +2186,7 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.sampling.temperature == 0.0
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.0
+    assert "repetition_penalty" not in omni_req.params
     assert gen_req.metadata == {"task": "asr"}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
@@ -1916,7 +2220,6 @@ def test_transcription_request_passes_explicit_temperature() -> None:
     )
 
     assert gen_req.sampling.temperature == 0.7
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["temperature"]
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.7
 
@@ -1935,7 +2238,6 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
 
     assert gen_req.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert gen_req.sampling.max_new_tokens == 4096
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["max_new_tokens"] == 4096
 
@@ -3122,15 +3424,33 @@ def test_transcription_endpoint_returns_text_json() -> None:
             "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
             400,
         ),
+        ("video_fps must be positive and finite", 400),
+        ("video_max_frames must be positive", 400),
+        ("Video pixel budgets must be positive", 400),
+        ("Video minimum pixel budget exceeds maximum budget", 400),
+        ("Video input has invalid duration or frame rate", 400),
+        ("MiniCPM-o video stack_frames currently supports only 1", 400),
+        ("MiniCPM-o video inputs must be frame images or a pixel tensor", 400),
+        ("MiniCPM-o video inputs must have shape (T, C, H, W), got (3, 64, 64)", 400),
+        (
+            "MiniCPM-o video frames must have 1, 3, or 4 channels, got (1, 2, 64, 64)",
+            400,
+        ),
+        ("video_url requires a media URL", 400),
         ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
         (
             "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
             500,
         ),
+        (
+            "MiniCPM-o timed video input requires decord==0.6.0; "
+            "its prebuilt Linux wheel supports x86_64 only",
+            500,
+        ),
     ],
 )
 @pytest.mark.parametrize("stream", [False, True])
-def test_chat_endpoint_classifies_embedded_audio_errors(
+def test_chat_endpoint_classifies_video_media_errors(
     error: str, expected_status: int, stream: bool
 ) -> None:
     client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
@@ -3343,7 +3663,6 @@ def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     request = transcription_client.requests[0]
     assert request.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert request.sampling.max_new_tokens == 4096
-    assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
 
 
 def test_transcription_endpoint_maps_input_length_error_to_400() -> None:
@@ -3575,30 +3894,6 @@ def test_transcription_endpoint_uses_openai_temperature_default() -> None:
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
-
-
-def test_transcription_endpoint_marks_mtd_request_for_model_sampling_defaults() -> None:
-    transcription_client = SuccessfulTranscriptionClient()
-    client = TestClient(
-        create_app(
-            transcription_client,
-            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
-        )
-    )
-
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
-
-    assert response.status_code == 200
-    assert transcription_client.requests
-    request = transcription_client.requests[0]
-    assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
 
 
 class DiarizationTranscriptionClient:

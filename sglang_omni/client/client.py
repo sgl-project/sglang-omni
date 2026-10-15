@@ -7,9 +7,10 @@ import asyncio
 import uuid
 from collections.abc import Mapping
 from contextlib import aclosing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import AsyncIterator, Callable, TypedDict
 
+import msgspec
 import numpy as np
 
 from sglang_omni.client.audio import (
@@ -27,6 +28,7 @@ from sglang_omni.client.types import (
     CompletionAudio,
     CompletionResult,
     CompletionStreamChunk,
+    DiarizationResult,
     GenerateChunk,
     GenerateRequest,
     SpeechResult,
@@ -35,7 +37,6 @@ from sglang_omni.client.types import (
 from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
-from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -49,6 +50,61 @@ class EncodeAudioOptions(TypedDict, total=False):
     sample_rate: int
     speed: float
     allow_format_fallback: bool
+
+
+def stop_string_start(text: str, stop: list[str]) -> int | None:
+    """Where the matched stop string starts: the first, in request order, in text."""
+    for stop_string in stop:
+        index = text.find(stop_string)
+        if index != -1:
+            return index
+        else:
+            pass
+    return None
+
+
+@dataclass(kw_only=True)
+class StreamedStopTrimmer:
+    """Hold back streamed text that may begin a stop string, and drop the match."""
+
+    stop: list[str]
+    held_text: str = ""
+    is_stopped: bool = False
+
+    def push(self, text: str) -> str:
+        if self.is_stopped:
+            return ""
+        else:
+            pass
+        self.held_text += text
+        stop_start = stop_string_start(self.held_text, self.stop)
+        if stop_start is not None:
+            self.is_stopped = True
+            released_text = self.held_text[:stop_start]
+            self.held_text = ""
+            return released_text
+        else:
+            pass
+        held_length = max(
+            (
+                prefix_length
+                for stop_string in self.stop
+                for prefix_length in range(
+                    1, min(len(self.held_text), len(stop_string) - 1) + 1
+                )
+                if self.held_text.endswith(stop_string[:prefix_length])
+            ),
+            default=0,
+        )
+        released_length = len(self.held_text) - held_length
+        released_text = self.held_text[:released_length]
+        self.held_text = self.held_text[released_length:]
+        return released_text
+
+    def finish(self) -> str:
+        released_text = "" if self.is_stopped else self.held_text
+        self.held_text = ""
+        return released_text
 
 
 class Client:
@@ -78,9 +134,19 @@ class Client:
         )
 
     async def append_session(
-        self, session_identity: SessionIdentity, chunk: TimedChunk
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> int:
-        return await self.coordinator.append_session(session_identity, chunk)
+        return await self.coordinator.append_session(
+            session_identity,
+            chunk,
+            ready_timestamp_ns=ready_timestamp_ns,
+            ready_run_id=ready_run_id,
+        )
 
     def session_outputs(
         self, session_identity: SessionIdentity
@@ -188,6 +254,11 @@ class Client:
             pass
 
         full_text = "".join(text_parts)
+        stop_start = stop_string_start(full_text, request.sampling.stop)
+        if stop_start is not None:
+            full_text = full_text[:stop_start]
+        else:
+            pass
 
         audio: CompletionAudio | None = None
         if audio_chunks:
@@ -222,6 +293,7 @@ class Client:
             omni_rollout=omni_rollout,
             weight_version=weight_version,
             language=language,
+            diarization=last_chunk.diarization,
         )
 
     # ------------------------------------------------------------------
@@ -241,6 +313,11 @@ class Client:
         need to touch numpy / raw bytes.
         """
         streamed_text = ""
+        stop_trimmer = (
+            StreamedStopTrimmer(stop=request.sampling.stop)
+            if request.sampling.stop
+            else None
+        )
         generate_stream = self.generate(request, request_id=request_id)
         async with aclosing(generate_stream):
             async for chunk in generate_stream:
@@ -264,6 +341,22 @@ class Client:
                         pass
                 else:
                     pass
+                if stop_trimmer is not None and chunk.modality == "text" and text:
+                    text = stop_trimmer.push(text) or None
+                else:
+                    pass
+                # A stop string that never completed releases its held text when the text ends.
+                held_text = (
+                    stop_trimmer.finish()
+                    if stop_trimmer is not None
+                    and chunk.modality == "text"
+                    and chunk.finish_reason is not None
+                    else ""
+                )
+                if held_text:
+                    text = (text or "") + held_text
+                else:
+                    pass
 
                 yield CompletionStreamChunk(
                     request_id=request_id,
@@ -274,6 +367,13 @@ class Client:
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
                 )
+            held_text = stop_trimmer.finish() if stop_trimmer is not None else ""
+            if held_text:
+                yield CompletionStreamChunk(
+                    request_id=request_id, text=held_text, modality="text"
+                )
+            else:
+                pass
 
     # ------------------------------------------------------------------
     # High-level: text-to-speech
@@ -568,16 +668,6 @@ class Client:
         inputs = extract_inputs(request)
         params = build_params(request)
         metadata = dict(request.metadata)
-        if (
-            request.stage_sampling
-            and EXPLICIT_STAGE_SAMPLING_PARAMS_KEY not in metadata
-        ):
-            metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
-                stage: list(sampling)
-                for stage, sampling in params["stage_sampling"].items()
-            }
-        else:
-            pass
         if request.model:
             metadata.setdefault("model", request.model)
         else:
@@ -704,6 +794,12 @@ class Client:
                 pass
             Client.set_audio_data(chunk, result)
             chunk.usage = Client.build_usage_info(result)
+            diarization = result.get("diarization")
+            chunk.diarization = (
+                None
+                if diarization is None
+                else msgspec.convert(diarization, type=DiarizationResult)
+            )
             return chunk
         else:
             pass
@@ -863,10 +959,22 @@ def extract_inputs(request: GenerateRequest) -> object:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    video_options = {
+        key: request.metadata[key]
+        for key in (
+            "video_fps",
+            "video_max_frames",
+            "video_min_pixels",
+            "video_max_pixels",
+            "video_total_pixels",
+            "use_audio_in_video",
+        )
+        if request.metadata.get(key) is not None
+    }
 
-    # If we have any media, return a dict with messages and media
+    # If we have any media or media options, return a dict with messages and them
     # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if audios or images or videos or video_options:
         result: dict[str, object] = {"messages": messages}
         if images:
             result["images"] = images
@@ -880,19 +988,7 @@ def extract_inputs(request: GenerateRequest) -> object:
             result["videos"] = videos
         else:
             pass
-        for key in (
-            "video_fps",
-            "video_max_frames",
-            "video_min_pixels",
-            "video_max_pixels",
-            "video_total_pixels",
-            "use_audio_in_video",
-        ):
-            value = request.metadata.get(key)
-            if value is not None:
-                result[key] = value
-            else:
-                pass
+        result.update(video_options)
         return result
     else:
         pass
@@ -901,15 +997,10 @@ def extract_inputs(request: GenerateRequest) -> object:
 
 def build_params(request: GenerateRequest) -> dict[str, object]:
     params = request.sampling.to_dict()
-    max_new_tokens = request.sampling.max_new_tokens
     if request.max_tokens is not None:
-        max_new_tokens = request.max_tokens
+        params["max_new_tokens"] = request.max_tokens
     else:
         pass
-    if max_new_tokens is None:
-        params.pop("max_new_tokens", None)
-    else:
-        params["max_new_tokens"] = max_new_tokens
     params["stream"] = request.stream
     if request.stage_sampling:
         params["stage_sampling"] = {

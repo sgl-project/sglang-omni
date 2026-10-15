@@ -107,6 +107,7 @@ final class SileroVADModelProvisioner {
         _ = try? await inFlightTask?.value
         self.prefetchTask = nil
         self.inFlightTask = nil
+        await OmniSileroVADRuntime.shared.shutdownForApplicationTermination()
         await modelManager.shutdownForApplicationTermination()
     }
 }

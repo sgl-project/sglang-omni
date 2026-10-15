@@ -178,7 +178,17 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         else:
             pass
         if batch.out_cache_loc is not None:
-            self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
+            allocator = self.token_to_kv_pool_allocator
+            if allocator.page_size > 1:
+                # note (Richard Wang): a paged allocator frees whole pages, so only
+                # release the pages this step opened, since the rest hold earlier KV.
+                new_pages = (batch.seq_lens_cpu - 1) % allocator.page_size == 0
+                if new_pages.any():
+                    allocator.free(batch.out_cache_loc[new_pages])
+                else:
+                    pass
+            else:
+                allocator.free(batch.out_cache_loc)
             batch.out_cache_loc = None
         else:
             pass

@@ -159,7 +159,8 @@ class ConfigManager:
                 config_cls = variants[variant]
             else:
                 raise ValueError(
-                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                    f"Unknown variant '{variant}' for {config_cls.__name__}. "
+                    f"Available variants: {', '.join(sorted(variants or ())) or 'none'}"
                 )
         else:
             pass

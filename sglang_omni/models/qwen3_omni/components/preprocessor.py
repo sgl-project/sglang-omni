@@ -7,15 +7,18 @@ import asyncio
 import base64
 import json
 import logging
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, TypedDict, TypeGuard
+from typing import TypedDict, TypeGuard
 
 import numpy as np
 import numpy.typing as npt
 import torch
 import xxhash
-from transformers import BatchFeature, PreTrainedTokenizerBase
+from sglang.srt.utils.hf_transformers.common import get_context_length
+from tokenizers.normalizers import NFC
+from transformers import AutoConfig, BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -37,15 +40,21 @@ from sglang_omni.preprocessing import (
     ensure_chat_template,
     ensure_image_list_async,
     ensure_video_list_async,
-    normalize_messages,
 )
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
     await_media_cleanup,
 )
+from sglang_omni.preprocessing.text import (
+    MediaPlaceholderPart,
+    TextContentPart,
+    split_content_parts,
+)
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.audio import AudioDecodeError
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +64,10 @@ class VideoProcessorKwargs(TypedDict, total=False):
     max_frames: int
     min_pixels: int
     max_pixels: int
-    total_pixels: int
     use_audio_in_video: bool
     seconds_per_chunk: float
     position_id_per_seconds: float
     device: str
-
-
-class MediaPlaceholderPart(TypedDict):
-    type: Literal["image", "video", "audio"]
-
-
-class TextContentPart(TypedDict):
-    type: Literal["text"]
-    text: object
 
 
 class ProcessorKwargs(TypedDict, total=False):
@@ -144,6 +143,18 @@ def merge_extracted_video_audio(
     return [*extracted_audios, *explicit], True
 
 
+def with_content_media(content_urls: list[str], top_level: object) -> object:
+    """Content-part media first, then the top-level field's: their placeholder order."""
+    if not content_urls:
+        return top_level
+    elif isinstance(top_level, list):
+        return [*content_urls, *top_level]
+    elif top_level is not None:
+        return [*content_urls, top_level]
+    else:
+        return list(content_urls)
+
+
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
 _QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
     "image_token",
@@ -200,6 +211,44 @@ def contextualize_cache_key(base_key: str | None, **context: object) -> str | No
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 QWEN3_OMNI_CHAT_TEMPLATE_FALLBACK_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+# U+1F82 decomposes into four code points, the most that NFC recomposes into one.
+MAX_NFC_COMPOSITION_LENGTH = 4
+
+LANGUAGE_CODE_TO_NAME: dict[str, str] = {
+    "ar": "Arabic",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+    "nl": "Dutch",
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ms": "Malay",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "es": "Spanish",
+    "tr": "Turkish",
+    "ur": "Urdu",
+    "vi": "Vietnamese",
+}
+LANGUAGE_NAME_BY_CASEFOLD: dict[str, str] = {
+    name.casefold(): name for name in LANGUAGE_CODE_TO_NAME.values()
+}
+
+
+def resolve_language(language: str) -> str:
+    """Normalize Qwen3-Omni language hints while retaining unknown values."""
+    value = language.strip()
+    normalized = value.casefold()
+    if normalized == "cn" or normalized.startswith(("zh-", "zh_")):
+        return "Chinese"
+    else:
+        return LANGUAGE_CODE_TO_NAME.get(normalized) or LANGUAGE_NAME_BY_CASEFOLD.get(
+            normalized, value
+        )
 
 
 def validate_prompt_seq_len(
@@ -273,7 +322,6 @@ class Qwen3OmniPreprocessor:
         video_total_pixels: int | None = None,
     ) -> None:
         self.model_path = model_path
-        self.max_seq_len = max_seq_len
         self.default_video_fps = float(video_fps) if video_fps is not None else None
         self.default_video_max_frames = (
             int(video_max_frames) if video_max_frames is not None else None
@@ -288,6 +336,13 @@ class Qwen3OmniPreprocessor:
             int(video_total_pixels) if video_total_pixels is not None else None
         )
         self.model_dir = resolve_local_model_dir(model_path)
+        if max_seq_len is None:
+            thinker_text_config = AutoConfig.from_pretrained(
+                self.model_dir, trust_remote_code=True
+            ).thinker_config.text_config
+            self.max_seq_len = get_context_length(thinker_text_config)
+        else:
+            self.max_seq_len = max_seq_len
         # Only override ``extra_special_tokens`` when the checkpoint omits them
         # (transformers 5.x layout). Passing an empty dict would clobber the
         # tokens a transformers 4.x checkpoint already declares in its config.
@@ -334,6 +389,9 @@ class Qwen3OmniPreprocessor:
             )
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.tokenizer: PreTrainedTokenizerBase = self.processor.tokenizer
+        self.max_token_chars = max(len(token) for token in self.tokenizer.get_vocab())
+        self.normalizer = self.tokenizer.backend_tokenizer.normalizer
+        assert isinstance(self.normalizer, NFC), self.normalizer
         ensure_chat_template(
             self.tokenizer,
             model_path=self.model_dir,
@@ -345,6 +403,56 @@ class Qwen3OmniPreprocessor:
             self.processor.chat_template = self.tokenizer.chat_template
         else:
             pass
+
+    def validate_prompt_text_len(
+        self,
+        prompt_text: str,
+        *,
+        max_new_tokens: int,
+        request_id: str,
+    ) -> None:
+        """Reject prompt text that cannot fit before the tokenizer spends time on it.
+
+        A token spans at most max_token_chars characters of the NFC text the
+        tokenizer encodes, and NFC keeps at least a quarter of its input
+        characters, so these counts bound the token count from below.
+        """
+        if self.max_seq_len is None:
+            return
+        else:
+            pass
+        max_prompt_chars = (
+            self.max_seq_len - int(max_new_tokens) - 1
+        ) * self.max_token_chars
+        if len(prompt_text) <= max_prompt_chars:
+            return
+        elif len(prompt_text) > MAX_NFC_COMPOSITION_LENGTH * max_prompt_chars:
+            normalized_chars = math.ceil(len(prompt_text) / MAX_NFC_COMPOSITION_LENGTH)
+        else:
+            normalized_chars = len(self.normalizer.normalize_str(prompt_text))
+        if normalized_chars <= max_prompt_chars:
+            return
+        else:
+            pass
+        min_prompt_tokens = math.ceil(normalized_chars / self.max_token_chars)
+        logger.info(
+            f"rejecting request {request_id}: prompt text of {len(prompt_text)} "
+            f"characters needs at least {min_prompt_tokens} tokens"
+        )
+        if min_prompt_tokens >= self.max_seq_len:
+            raise ValueError(
+                f"The input (at least {min_prompt_tokens} tokens) is longer than "
+                f"the model's context length ({self.max_seq_len} tokens)."
+            )
+        else:
+            pass
+        raise ValueError(
+            f"Requested token count exceeds the model's maximum context length "
+            f"of {self.max_seq_len} tokens. The input messages need at least "
+            f"{min_prompt_tokens} tokens and the completion requests "
+            f"{int(max_new_tokens)}. Please reduce the length of the input "
+            f"messages or the completion to fit within the limit."
+        )
 
     def build_multimodal_messages(
         self,
@@ -368,14 +476,16 @@ class Qwen3OmniPreprocessor:
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
                 content_parts: list[MediaPlaceholderPart | TextContentPart] = []
-                # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})
                 for _ in range(num_videos):
                     content_parts.append({"type": "video"})
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
-                content_parts.append({"type": "text", "text": content})
+                if isinstance(content, list):
+                    content_parts = [*content, *content_parts]
+                else:
+                    content_parts.append({"type": "text", "text": content})
                 result.append({"role": role, "content": content_parts})
             else:
                 result.append(msg)
@@ -552,6 +662,10 @@ class Qwen3OmniPreprocessor:
             return self.preprocess_train_inputs(payload, inputs)
         else:
             pass
+        if isinstance(inputs, list):
+            inputs = {"messages": inputs}
+        else:
+            pass
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -562,7 +676,7 @@ class Qwen3OmniPreprocessor:
                 )
             else:
                 pass
-            messages = inputs.get("messages", [])
+            messages, content_media = split_content_parts(inputs.get("messages", []))
             raw_images = inputs.get("images")
             raw_videos = inputs.get("videos")
             if raw_videos is None:
@@ -575,6 +689,40 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
+            audio_bytes = inputs.get("audio_bytes")
+            if audio_bytes is not None:
+                try:
+                    prepared_audio = await asyncio.to_thread(
+                        prepare_audio,
+                        payload,
+                        source_name="Qwen3-Omni",
+                        target_sample_rate=audio_target_sr,
+                    )
+                except AudioDecodeError as exc:
+                    raise ValueError(
+                        "Qwen3-Omni could not decode the uploaded audio; "
+                        "provide a valid audio file."
+                    ) from exc
+                transcription_prompt = (
+                    "Please transcribe the speech in the audio verbatim. "
+                    "Output only the transcription in its original language, "
+                    "without explanations."
+                )
+                language = str(payload.request.params.get("language") or "").strip()
+                if language:
+                    language = resolve_language(language)
+                    transcription_prompt += f"\nThe spoken language is {language}."
+                else:
+                    pass
+                context = str(payload.request.params.get("prompt") or "").strip()
+                if context:
+                    transcription_prompt += f"\nTranscription context: {context}"
+                else:
+                    pass
+                messages = [{"role": "user", "content": transcription_prompt}]
+                raw_audios = [prepared_audio.waveform]
+            else:
+                pass
             video_fps = inputs.get("video_fps", self.default_video_fps)
             video_max_frames = inputs.get(
                 "video_max_frames",
@@ -629,10 +777,14 @@ class Qwen3OmniPreprocessor:
             else:
                 pass
 
+            request_images = with_content_media(content_media.images, raw_images)
+            request_videos = with_content_media(content_media.videos, raw_videos)
+            request_audios = with_content_media(content_media.audios, raw_audios)
+
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
             extract_audio_from_video_flag = bool(
-                use_audio_in_video and raw_videos is not None
+                use_audio_in_video and request_videos is not None
             )
 
             # Worker requests run on separate event loops. Keep pooled HTTP
@@ -640,9 +792,9 @@ class Qwen3OmniPreprocessor:
             connection = ResourceHTTPConnection()
             connector = MultiModalResourceConnector(connection=connection)
             loaders = [
-                ensure_image_list_async(raw_images, media_connector=connector),
+                ensure_image_list_async(request_images, media_connector=connector),
                 ensure_video_list_async(
-                    raw_videos,
+                    request_videos,
                     fps=resolved_video_fps,
                     max_frames=resolved_video_max_frames,
                     min_pixels=resolved_video_min_pixels,
@@ -653,7 +805,9 @@ class Qwen3OmniPreprocessor:
                     resource_connector=connector,
                 ),
                 ensure_audio_list_async(
-                    raw_audios, target_sr=audio_target_sr, resource_connector=connector
+                    request_audios,
+                    target_sr=audio_target_sr,
+                    resource_connector=connector,
                 ),
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
@@ -685,30 +839,35 @@ class Qwen3OmniPreprocessor:
                 else None
             )
         else:
-            messages = inputs
-            images = []
-            videos = []
-            audios = []
-            audio_target_sr = 16000
-            video_fps = self.default_video_fps
-            video_max_frames = self.default_video_max_frames
-            video_min_pixels = self.default_video_min_pixels
-            video_max_pixels = self.default_video_max_pixels
-            video_total_pixels = self.default_video_total_pixels
-            sampled_video_fps = None
-            use_audio_in_video = None
-            effective_use_audio_in_video = None
-            video_seconds_per_chunk = None
-            video_position_id_per_seconds = None
-            audio_from_video = False
-            num_explicit_audios = 0
-            resolved_video_fps = None
-            resolved_video_max_frames = None
-            resolved_video_min_pixels = None
-            resolved_video_max_pixels = None
-            resolved_video_total_pixels = None
-            resolved_video_seconds_per_chunk = None
-            resolved_video_position_id_per_seconds = None
+            raise ValueError("Preprocessing expects a list of chat messages")
+
+        # Insert placeholders:
+        # - Explicit audio files get independent audio placeholders
+        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
+        messages_mm = self.build_multimodal_messages(
+            messages,
+            num_images=len(images) - len(content_media.images),
+            num_audios=num_explicit_audios,
+            num_videos=len(videos) - len(content_media.videos),
+        )
+        if audio_from_video and (content_media.audios or content_media.videos):
+            # note (ratish): the processor reads one audio per audio placeholder and per video
+            # placeholder in text order; only content parts can put an audio before a video.
+            video_audios = iter(audios[: len(videos)])
+            placeholder_audios = iter(audios[len(videos) :])
+            audios = [
+                (
+                    next(video_audios)
+                    if part["type"] == "video"
+                    else next(placeholder_audios)
+                )
+                for message in messages_mm
+                if isinstance(message["content"], list)
+                for part in message["content"]
+                if part["type"] in ("audio", "video")
+            ]
+        else:
+            pass
 
         # Note (wenyao): URLs can change content and sampled hashes can miss edits,
         # so audio cache keys include every decoded sample, including video tracks.
@@ -717,21 +876,18 @@ class Qwen3OmniPreprocessor:
         image_cache_key = compute_image_cache_key(images)
         video_cache_key = compute_video_cache_key(videos)
 
-        messages_norm = normalize_messages(messages)
-        # Insert placeholders:
-        # - Explicit audio files get independent audio placeholders
-        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
-        num_audios_for_placeholder = num_explicit_audios
-        messages_mm = self.build_multimodal_messages(
-            messages_norm,
-            num_images=len(images),
-            num_audios=num_audios_for_placeholder,
-            num_videos=len(videos),
-        )
         prompt_text = self.processor.apply_chat_template(
             messages_mm,
             add_generation_prompt=True,
             tokenize=False,
+        )
+        max_new_tokens = payload.request.params.get(
+            "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+        )
+        self.validate_prompt_text_len(
+            prompt_text,
+            max_new_tokens=max_new_tokens,
+            request_id=payload.request_id,
         )
 
         videos_kwargs: VideoProcessorKwargs = {}
@@ -758,10 +914,6 @@ class Qwen3OmniPreprocessor:
             pass
         if resolved_video_max_pixels is not None:
             videos_kwargs["max_pixels"] = resolved_video_max_pixels
-        else:
-            pass
-        if resolved_video_total_pixels is not None:
-            videos_kwargs["total_pixels"] = resolved_video_total_pixels
         else:
             pass
         if effective_use_audio_in_video is not None:
@@ -809,9 +961,7 @@ class Qwen3OmniPreprocessor:
         validate_prompt_seq_len(
             input_ids,
             max_seq_len=self.max_seq_len,
-            max_new_tokens=payload.request.params.get(
-                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
-            ),
+            max_new_tokens=max_new_tokens,
             request_id=payload.request_id,
         )
 

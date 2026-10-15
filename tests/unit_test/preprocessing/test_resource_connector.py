@@ -13,12 +13,17 @@ zero load_file calls.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
+from sglang_omni.preprocessing import resource_connector
+from sglang_omni.preprocessing.audio import ensure_audio_list_async
 from sglang_omni.preprocessing.base import MediaIO
+from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.video import ensure_video_list_async
 
 
 class RecordingMediaIO(MediaIO[Path]):
@@ -76,6 +81,31 @@ def test_load_local_path_rejects_outside_allowlist(tmp_path: Path) -> None:
         connector.load_local_path(outside, media_io)
 
     assert media_io.loaded_paths == []
+
+
+def test_chat_media_follows_the_server_media_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    missing = str(tmp_path / "missing.mp4")
+    monkeypatch.setenv(resource_connector.ALLOWED_LOCAL_MEDIA_PATH_ENV, "")
+    monkeypatch.setenv(resource_connector.ALLOWED_MEDIA_DOMAINS_ENV, "")
+    resource_connector.export_media_policy(str(allowed), ["example.com"])
+    connector = MultiModalResourceConnector()
+
+    for load in (
+        ensure_image_list_async([str(outside)], media_connector=connector),
+        ensure_audio_list_async([str(outside)], resource_connector=connector),
+        ensure_video_list_async([str(outside)], resource_connector=connector),
+        ensure_video_list_async([missing], resource_connector=connector),
+    ):
+        with pytest.raises(ValueError, match="not within allowed directory"):
+            asyncio.run(load)
+    with pytest.raises(ValueError, match="is not allowed"):
+        connector.assert_url_allowed("http://127.0.0.1/image.png")
 
 
 def test_load_local_path_rejects_traversal_escape(tmp_path: Path) -> None:

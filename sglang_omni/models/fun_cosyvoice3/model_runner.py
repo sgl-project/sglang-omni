@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import sampling_from_probs_torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -49,7 +50,10 @@ if TYPE_CHECKING:
 else:
     pass
 
-_COSYVOICE3_RAS_WINDOW_SIZE = 10
+COSYVOICE3_RAS_WINDOW_SIZE = 10
+# note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
+# conditioned on the rejected candidate having won that draw.
+COSYVOICE3_RAS_SEED_SALT = 0x2545F491
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
@@ -146,10 +150,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        if (
-            logits_output.next_token_logits.device.type != "mps"
-            or current_platform.is_float64_supported()
-        ):
+        if not self.is_mps_ras_fallback(logits_output.next_token_logits):
             return super().sample_next_token_ids(
                 logits_output,
                 forward_batch,
@@ -237,6 +238,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             pass
         return next_token_ids
 
+    def is_mps_ras_fallback(self, logits: torch.Tensor) -> bool:
+        """Torch MPS without float64 samples one request and redraws it itself."""
+        return (
+            logits.device.type == "mps" and not current_platform.is_float64_supported()
+        )
+
     def apply_ras_fallback(
         self,
         logits_output: LogitsProcessorOutput,
@@ -269,7 +276,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         token_id = int(token_ids[0].item())
 
         if not sampling_info.is_all_greedy and token_id < VOCAB_SIZE:
-            if token_id in recent[-_COSYVOICE3_RAS_WINDOW_SIZE:]:
+            if token_id in recent[-COSYVOICE3_RAS_WINDOW_SIZE:]:
                 probs = logits_output.next_token_logits
                 if probs is None or probs.ndim != 2:
                     raise RuntimeError(
@@ -315,7 +322,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
         if 0 <= token_id < VOCAB_SIZE:
             recent.append(token_id)
-            del recent[:-_COSYVOICE3_RAS_WINDOW_SIZE]
+            del recent[:-COSYVOICE3_RAS_WINDOW_SIZE]
         else:
             pass
         return next_token_ids
@@ -350,7 +357,15 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         else:
             pass
         # note (guozhihao-224): one batched D2H instead of per-request .item() syncs.
-        token_ids_cpu = token_ids.tolist()
+        # note (Yucheng Hu): a pageable D2H on the default stream stalls other threads'
+        # kernel launches while it waits, an event wait does not.
+        self.stage_token_ids(result, token_ids)
+        token_ids_cpu = self.redraw_repeated_tokens(
+            result,
+            forward_batch,
+            requests,
+            self.resolve_host_token_ids(result).tolist(),
+        )
         for idx, sched_req in enumerate(requests):
             token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
@@ -360,6 +375,72 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             token = torch.tensor([token_id], dtype=torch.long)
             sched_req.data.output_codes.append(token)
             self.queue_or_emit_code_chunk(sched_req, token)
+
+    def redraw_repeated_tokens(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+        token_ids: list[int],
+    ) -> list[int]:
+        """Redraw repeated speech tokens with them masked, so EOS stays reachable."""
+        if (
+            forward_batch is None
+            or not forward_batch.forward_mode.is_decode()
+            or self.is_mps_ras_fallback(result.next_token_ids)
+        ):
+            return token_ids
+        else:
+            pass
+        # note (ratish): the window is checked on the host ids the step reads anyway,
+        # so a step without a repeat launches nothing.
+        rows = [
+            row
+            for row, (sched_req, token_id) in enumerate(
+                zip(requests, token_ids, strict=True)
+            )
+            if token_id < VOCAB_SIZE
+            and sched_req.data.req.sampling_params.top_k != 1
+            and token_id in sched_req.data.req.output_ids[-COSYVOICE3_RAS_WINDOW_SIZE:]
+        ]
+        if not rows:
+            return token_ids
+        else:
+            pass
+        # note (ratish): both samplers apply top-k and top-p to a copy,
+        # leaving the tempered probabilities here, or the tempered logits on Ascend.
+        if self.tp_worker.model_runner.sampler.use_ascend_backend:
+            probs = torch.softmax(
+                result.logits_output.next_token_logits, dim=-1, dtype=torch.float64
+            )
+        else:
+            probs = result.logits_output.next_token_logits
+        sampled_ids = result.next_token_ids.reshape(-1)
+        row_index = torch.tensor(rows, device=probs.device)
+        sampling_seeds = forward_batch.sampling_info.sampling_seed
+        # note (ratish): float64, as the first seeded draw feeds the compiled
+        # multinomial_with_seed, so a seeded redraw reuses that graph, not a new one.
+        row_probs = probs[row_index].to(torch.float64)
+        redraw_probs = row_probs.scatter(
+            1, sampled_ids[row_index].long().unsqueeze(1), 0.0
+        )
+        # note (Yucheng Hu): multinomial rejects an all-zero row, and a row whose
+        # whole mass sat on the candidate has nothing else to draw.
+        redraw_probs = torch.where(
+            redraw_probs.sum(dim=1, keepdim=True) > 0, redraw_probs, row_probs
+        )
+        redraw_seeds = (
+            None
+            if sampling_seeds is None
+            else sampling_seeds[row_index] ^ COSYVOICE3_RAS_SEED_SALT
+        )
+        redrawn_ids = sampled_ids.clone()
+        redrawn_ids[row_index] = sampling_from_probs_torch(
+            redraw_probs, redraw_seeds, forward_batch.positions[row_index]
+        ).to(redrawn_ids.dtype)
+        result.next_token_ids = redrawn_ids.view_as(result.next_token_ids)
+        self.stage_token_ids(result, redrawn_ids)
+        return self.resolve_host_token_ids(result).tolist()
 
     def queue_or_emit_code_chunk(
         self,

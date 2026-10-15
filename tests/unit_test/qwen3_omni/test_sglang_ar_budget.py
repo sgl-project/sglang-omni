@@ -4,12 +4,13 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
-from sglang.srt.runtime_context import get_context
+from sglang.srt.runtime_context import get_context, get_schedule
 
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
@@ -184,7 +185,7 @@ def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 8192
+        assert context_length is None
         assert overrides["sampling_backend"] == "pytorch"
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
@@ -305,6 +306,123 @@ def test_non_colocated_ar_delegates_to_upstream_available_bytes(
     assert (
         configurator._profile_available_bytes(123) == 456
     )  # noqa: leading-underscore  # production name
+
+
+HYBRID_STATE_BYTES_PER_REQUEST = 64 * 1024**2
+HYBRID_MAX_RUNNING_REQUESTS = 8
+
+
+@pytest.fixture
+def hybrid_schedule() -> Iterator[None]:
+    """Publish the schedule fields upstream's state-pool sizing reads and writes."""
+    published = get_context().override_server_args(
+        disable_radix_cache=True,
+        max_running_requests=HYBRID_MAX_RUNNING_REQUESTS,
+    )
+    published.install()
+    yield
+    published.restore()
+
+
+def make_hybrid_configurator(
+    *, total_gpu_memory_fraction: float | None
+) -> runner_mod.OmniKVCacheConfigurator:
+    """A configurator whose model keeps per-request linear-attention state."""
+    configurator = make_configurator(
+        total_gpu_memory_fraction=total_gpu_memory_fraction
+    )
+    hybrid_config = SimpleNamespace(
+        mamba2_cache_params=SimpleNamespace(
+            layers=[0, 1, 2],
+            mamba_cache_per_req=HYBRID_STATE_BYTES_PER_REQUEST,
+        )
+    )
+    configurator.mambaish_config = hybrid_config
+    configurator.hybrid_gdn_config = hybrid_config
+    configurator.pp_size = 1
+    configurator.attn_dp_size = 1
+    configurator.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+    configurator.model_config = SimpleNamespace(hf_config=SimpleNamespace())
+    return configurator
+
+
+@pytest.mark.parametrize(
+    "process_memory_bytes,stage_budget_bytes",
+    [(30 * 1024**3, 10 * 1024**3), (None, 7 * 1024**3)],
+    ids=["nvml-process", "stage-load-delta"],
+)
+def test_colocated_hybrid_budget_sizes_state_pool_before_kv(
+    monkeypatch: pytest.MonkeyPatch,
+    hybrid_schedule: None,
+    process_memory_bytes: int | None,
+    stage_budget_bytes: int,
+) -> None:
+    """The stage budget must size the state pool the way upstream's profile does."""
+    configurator = make_hybrid_configurator(total_gpu_memory_fraction=0.4)
+    monkeypatch.setattr(
+        runner_mod, "get_process_gpu_memory_bytes", lambda gpu_id: process_memory_bytes
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+    monkeypatch.setattr(
+        runner_mod.OmniKVCacheConfigurator,
+        "profile_available_bytes_from_stage_load_delta",
+        lambda self, pre_model_load_memory, total_memory: 7 * 1024**3,
+    )
+    assert get_schedule().max_mamba_cache_size is None
+
+    available_bytes = configurator._profile_available_bytes(
+        0
+    )  # noqa: leading-underscore  # production name
+
+    # One state slot per running request, plus the pool's padding slot.
+    assert get_schedule().max_mamba_cache_size == HYBRID_MAX_RUNNING_REQUESTS
+    assert available_bytes == (
+        stage_budget_bytes
+        - (HYBRID_MAX_RUNNING_REQUESTS + 1) * HYBRID_STATE_BYTES_PER_REQUEST
+    )
+
+
+def test_colocated_hybrid_budget_without_kv_headroom_raises(
+    monkeypatch: pytest.MonkeyPatch, hybrid_schedule: None
+) -> None:
+    configurator = make_hybrid_configurator(total_gpu_memory_fraction=0.4)
+    # A 512 MiB stage budget cannot hold nine 64 MiB state slots.
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 40 * 1024**3 - 512 * 1024**2,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+
+    with pytest.raises(RuntimeError, match="hybrid state cache"):
+        configurator._profile_available_bytes(
+            0
+        )  # noqa: leading-underscore  # production name
+
+
+def test_non_colocated_hybrid_budget_leaves_state_sizing_to_upstream(
+    monkeypatch: pytest.MonkeyPatch, hybrid_schedule: None
+) -> None:
+    """Upstream's profile already sizes the state pool; it must not shrink twice."""
+    configurator = make_hybrid_configurator(total_gpu_memory_fraction=None)
+    monkeypatch.setattr(
+        KVCacheConfigurator,
+        "_profile_available_bytes",
+        lambda self, pre_model_load_memory: 456,
+    )
+
+    assert (
+        configurator._profile_available_bytes(123) == 456
+    )  # noqa: leading-underscore  # production name
+    assert get_schedule().max_mamba_cache_size is None
 
 
 def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
@@ -428,7 +546,7 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 8192
+        assert context_length is None
         build_calls.append(dict(overrides))
         return SimpleNamespace(
             mem_fraction_static=0.85,
@@ -495,7 +613,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length == 4096
+        assert context_length is None
         build_calls.append(dict(overrides))
         return SimpleNamespace(
             mem_fraction_static=0.55,
@@ -665,6 +783,18 @@ def test_thinker_decode_graph_stays_available_to_an_explicit_override(
     )
 
     assert overrides["disable_decode_cuda_graph"] is False
+
+
+@pytest.mark.parametrize(
+    "is_cuda, expected", [(True, "breakable"), (False, "disabled")]
+)
+def test_thinker_prefill_graph_defaults_to_breakable_on_cuda(
+    monkeypatch, is_cuda: bool, expected: str
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
+    overrides = thinker_overrides(monkeypatch, allows=True)
+
+    assert overrides["cuda_graph_backend_prefill"] == expected
 
 
 def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:

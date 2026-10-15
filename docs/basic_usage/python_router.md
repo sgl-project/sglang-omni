@@ -349,6 +349,10 @@ curl -s -X DELETE http://127.0.0.1:8008/workers/http%3A%2F%2F127.0.0.1%3A8013
 Worker update requests are atomic. If an update returns `400`, the live worker
 state is not partially changed.
 
+When an admin key is set (`--admin-api-key` or `SGLANG_OMNI_ADMIN_KEY`), adding,
+updating, and deleting workers require `Authorization: Bearer <key>`, like the
+other admin routes, while `GET /workers` stays open.
+
 ## Routing Behavior
 
 The router only selects workers that are healthy, not disabled, and capable of

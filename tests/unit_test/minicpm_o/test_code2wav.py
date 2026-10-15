@@ -235,6 +235,9 @@ def build_code2wav_model(
             str(tmp_path),
             prompt_wav=str(default_reference_path),
             enable_flow_variable_length=enable_flow_variable_length,
+            enable_flow_cuda_graph=False,
+            flow_cuda_graph_capture_shapes=(),
+            packed_dit_cuda_graph_capture_shapes=(),
             reference_workers=reference_workers,
             prompt_cache_capacity=prompt_cache_capacity,
             decode_stream_priority=code2wav_stage_factory().decode_stream_priority,
@@ -325,6 +328,10 @@ def build_code2wav_stage(
         max_batch_wait_ms=factory.max_batch_wait_ms,
         batch_wait_when_idle=factory.batch_wait_when_idle,
         enable_dit_torch_compile=factory.enable_dit_torch_compile,
+        enable_hift_torch_compile=factory.enable_hift_torch_compile,
+        enable_flow_cuda_graph=factory.enable_flow_cuda_graph,
+        flow_cuda_graph_capture_shapes=factory.flow_cuda_graph_capture_shapes,
+        packed_dit_cuda_graph_capture_shapes=factory.packed_dit_cuda_graph_capture_shapes,
         enable_flow_variable_length=factory.enable_flow_variable_length,
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
@@ -341,6 +348,9 @@ def load_checkpoint_model(
         str(checkpoint),
         device=str(resolve_concrete_device(None)),
         enable_flow_variable_length=enable_flow_variable_length,
+        enable_flow_cuda_graph=False,
+        flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
         decode_stream_priority=factory.decode_stream_priority,
@@ -468,6 +478,65 @@ def test_mixed_reference_batch_matches_single_row_mels(
         model.close_reference_pool()
 
 
+@pytest.mark.parametrize(
+    "compile_dense,variable_length,enable_graph,expected_order",
+    [
+        (True, False, True, ["compile", "warmup", "capture"]),
+        (False, True, True, ["capture"]),
+        (True, False, False, ["compile", "warmup"]),
+    ],
+)
+def test_flow_graph_capture_follows_compile_warmup(
+    tmp_path: Path,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    compile_dense: bool,
+    variable_length: bool,
+    enable_graph: bool,
+    expected_order: list[str],
+) -> None:
+    order: list[str] = []
+    block = MagicMock()
+    fake_token2wav.flow.decoder.estimator.blocks = [block]
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        MagicMock(
+            side_effect=lambda *args, **kwargs: order.append("compile") or block.forward
+        ),
+    )
+    monkeypatch.setattr(torch, "zeros", MagicMock(return_value=torch.empty(1)))
+    monkeypatch.setattr(torch, "tensor", MagicMock(return_value=torch.empty(1)))
+    monkeypatch.setattr(
+        MiniCPMOCode2Wav,
+        "flow_mel",
+        MagicMock(side_effect=lambda *args: order.append("warmup")),
+    )
+    fake_token2wav.capture_flow_graphs.side_effect = lambda *args: order.append(
+        "capture"
+    )
+    model = MiniCPMOCode2Wav(
+        str(tmp_path),
+        enable_dit_torch_compile=compile_dense,
+        enable_flow_variable_length=variable_length,
+        enable_flow_cuda_graph=enable_graph,
+        flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
+        reference_workers=1,
+        prompt_cache_capacity=1,
+        decode_stream_priority=0,
+        enable_flow_block_compile=False,
+    )
+    try:
+        assert order == expected_order
+        assert (
+            fake_token2wav.flow.decoder.estimator.enable_variable_length
+            is variable_length
+        )
+    finally:
+        model.close_reference_pool()
+
+
 @pytest.fixture(scope="module")
 def compiled_vocoder() -> Iterator[MiniCPMOCode2Wav]:
     checkpoint = find_checkpoint_dir()
@@ -482,7 +551,11 @@ def compiled_vocoder() -> Iterator[MiniCPMOCode2Wav]:
         device=str(device),
         dtype=factory.dtype,
         enable_dit_torch_compile=True,
+        enable_hift_torch_compile=True,
         enable_flow_variable_length=factory.enable_flow_variable_length,
+        enable_flow_cuda_graph=False,
+        flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
         reference_workers=factory.reference_workers,
         prompt_cache_capacity=factory.prompt_cache_capacity,
         decode_stream_priority=factory.decode_stream_priority,
@@ -521,6 +594,24 @@ def test_compiled_flow_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
     assert relative_rms_error(compiled, eager) < 5e-3
 
 
+@pytest.mark.accelerator
+def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None:
+    device = compiled_vocoder.token2wav.device
+    tokens = torch.tensor(
+        [CHECKPOINT_CODEC_TOKENS * 7], dtype=torch.int32, device=device
+    )
+    token_lengths = torch.tensor([tokens.shape[1]], dtype=torch.int32, device=device)
+    prompts = compiled_vocoder.prepare_references([None])
+    hift = compiled_vocoder.token2wav.hift
+    with torch.inference_mode():
+        mel = compiled_vocoder.flow_mel(tokens, token_lengths, prompts).float()
+        _, source = hift(speech_feat=mel)
+        compiled = hift.decode(mel, source)
+        with torch.compiler.set_stance("force_eager"):
+            eager = hift.decode(mel, source)
+    assert relative_rms_error(compiled, eager) < 1e-2
+
+
 def test_dit_torch_compile_rejects_non_cuda_device() -> None:
     with pytest.raises(ValueError, match="CUDA only"):
         MiniCPMOCode2Wav(
@@ -528,6 +619,9 @@ def test_dit_torch_compile_rejects_non_cuda_device() -> None:
             device="xpu:0",
             enable_dit_torch_compile=True,
             enable_flow_variable_length=True,
+            enable_flow_cuda_graph=False,
+            flow_cuda_graph_capture_shapes=(),
+            packed_dit_cuda_graph_capture_shapes=(),
             reference_workers=8,
             prompt_cache_capacity=32,
             decode_stream_priority=0,
@@ -602,6 +696,7 @@ def test_speech_pipeline_colocates_batched_code2wav_with_talker_by_default() -> 
     assert factory.batch_wait_when_idle is False
     assert factory.dtype == "float16"
     assert factory.enable_dit_torch_compile is True
+    assert factory.enable_hift_torch_compile is True
     assert factory.enable_flow_variable_length is False
     assert factory.reference_workers == 8
     assert factory.prompt_cache_capacity == 32

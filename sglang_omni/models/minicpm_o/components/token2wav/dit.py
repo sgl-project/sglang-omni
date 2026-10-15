@@ -21,6 +21,18 @@ from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     AttentionState,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    FixedPackedLayout,
+    unpack_fixed_capacity,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    CapturedPackedDiTGraph,
+    PackedDiTCudaGraphRunner,
+)
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_weight,
+)
 
 TIMESTEP_MAX_PERIOD = 10000
 MIN_PACKED_BATCH_SIZE = 3
@@ -95,7 +107,9 @@ class Attention(torch.nn.Module):
         x: torch.Tensor,
         attn_mask: torch.Tensor | None,
         state: AttentionState | None = None,
+        window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, AttentionState | None]:
+        """A window holds keys and values over [new frames, history] with the history already written; the new keys and values are written into its leading frames in place."""
         b, t, c = x.shape
         q = self.to_q(x)
         k = self.to_k(x)
@@ -105,7 +119,12 @@ class Attention(torch.nn.Module):
         v = self.to_heads(v)
         q = self.q_norm(q)
         k = self.k_norm(k)
-        if state is not None:
+        if window is not None:
+            window[:, :, :t, : self.head_dim].copy_(k)
+            window[:, :, :t, self.head_dim :].copy_(v)
+            k, v = window.chunk(2, dim=-1)
+            next_state = None
+        elif state is not None:
             if state.history is not None:
                 previous_key, previous_value = state.history.chunk(2, dim=-1)
                 k = torch.cat((k, previous_key), dim=2)
@@ -215,10 +234,12 @@ class ConvBlockState:
 
 @dataclass(frozen=True, kw_only=True)
 class DiTState:
-    """Per-block histories stacked along the first axis; empty fields start a stream."""
+    """Per-block states stacked along the first axis; empty fields start a stream."""
 
     convolution: torch.Tensor | None = None
     attention: torch.Tensor | None = None
+    attention_mask: torch.Tensor | None = None
+    valid_frame_counts: torch.Tensor | None = None
 
 
 class CausalConvBlock(nn.Module):
@@ -239,6 +260,49 @@ class CausalConvBlock(nn.Module):
             CausalConv1d(out_channels, out_channels, kernel_size),
             Transpose(1, 2),
         )
+        self.is_channels_last = False
+
+    def use_channels_last(self) -> None:
+        """Store both conv weights channels last; every (B, T, C) path then convolves without transposes."""
+        for convolution in (self.block[1], self.block[6]):
+            if not isinstance(convolution, CausalConv1d):
+                raise TypeError(
+                    "the channels-last path expects block[1] and block[6] to be CausalConv1d"
+                )
+            else:
+                pass
+            convolution.weight.data = channels_last_weight(convolution)
+        self.is_channels_last = True
+
+    def channels_last_convolution(
+        self,
+        hidden_states: torch.Tensor,
+        convolution: CausalConv1d,
+        state: ConvState | None = None,
+    ) -> tuple[torch.Tensor, ConvState | None]:
+        """Causal conv of (B, T, C) frames without a channel-first transpose.
+
+        The streaming history keeps its (B, C, frames) layout; only its two frames
+        are transposed into and out of the channels-last context.
+        """
+        history_length = (convolution.kernel_size[0] - 1) * convolution.dilation[0]
+        if state is not None and state.history is not None:
+            context = torch.cat((state.history.transpose(1, 2), hidden_states), dim=1)
+        else:
+            context = F.pad(hidden_states, (0, 0, history_length, 0))
+        next_state = (
+            ConvState(
+                history=context[:, -history_length:]
+                .transpose(1, 2)
+                .clone(memory_format=torch.contiguous_format)
+            )
+            if state is not None
+            else None
+        )
+        output = channels_last_conv1d(
+            context, convolution, convolution.weight, hidden_states.shape[1]
+        )
+        return output, next_state
 
     def forward(
         self,
@@ -250,24 +314,37 @@ class CausalConvBlock(nn.Module):
             x = x * mask
         else:
             pass
-        previous = iter(
-            (state.first, state.second) if state is not None else (None, None)
-        )
-        histories: list[ConvState] = []
-        for module in self.block:
-            if isinstance(module, CausalConv1d):
-                x, history = module(x, next(previous))
-                if history is not None:
-                    histories.append(history)
+        if self.is_channels_last:
+            first, second = (
+                (state.first, state.second) if state is not None else (None, None)
+            )
+            x, first = self.channels_last_convolution(x, self.block[1], first)
+            x = self.block[4](self.block[3](x))
+            x, second = self.channels_last_convolution(x, self.block[6], second)
+            next_state = (
+                ConvBlockState(first=first, second=second)
+                if state is not None
+                else None
+            )
+        else:
+            previous = iter(
+                (state.first, state.second) if state is not None else (None, None)
+            )
+            histories: list[ConvState] = []
+            for module in self.block:
+                if isinstance(module, CausalConv1d):
+                    x, history = module(x, next(previous))
+                    if history is not None:
+                        histories.append(history)
+                    else:
+                        pass
                 else:
-                    pass
-            else:
-                x = module(x)
-        next_state = (
-            ConvBlockState(first=histories[0], second=histories[1])
-            if state is not None
-            else None
-        )
+                    x = module(x)
+            next_state = (
+                ConvBlockState(first=histories[0], second=histories[1])
+                if state is not None
+                else None
+            )
         if mask is not None:
             x = x * mask
         else:
@@ -281,11 +358,17 @@ class CausalConvBlock(nn.Module):
         real_frame_mask: torch.Tensor,
     ) -> torch.Tensor:
         def apply_causal_convolution(
-            frames: torch.Tensor, convolution: nn.Module
+            frames: torch.Tensor, convolution: CausalConv1d
         ) -> torch.Tensor:
-            channel_first = frames.transpose(0, 1).unsqueeze(0)
-            convolved, _ = convolution(channel_first)
-            return convolved.squeeze(0).transpose(0, 1)
+            if self.is_channels_last:
+                convolved, _ = self.channels_last_convolution(
+                    frames.unsqueeze(0), convolution
+                )
+                return convolved.squeeze(0)
+            else:
+                channel_first = frames.transpose(0, 1).unsqueeze(0)
+                convolved, _ = convolution(channel_first)
+                return convolved.squeeze(0).transpose(0, 1)
 
         first_convolution = self.block[1]
         layer_norm = self.block[3]
@@ -344,6 +427,7 @@ class DiTBlock(nn.Module):
         attn_mask: torch.Tensor | None,
         convolution_state: ConvBlockState | None = None,
         attention_state: AttentionState | None = None,
+        attention_window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ConvBlockState | None, AttentionState | None]:
         (
             shift_msa,
@@ -357,7 +441,10 @@ class DiTBlock(nn.Module):
             gate_conv,
         ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
         attention, next_attention_state = self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, attention_state
+            modulate(self.norm1(x), shift_msa, scale_msa),
+            attn_mask,
+            attention_state,
+            attention_window,
         )
         x = x + gate_msa * attention
         convolution, next_convolution_state = self.conv(
@@ -448,6 +535,7 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.enable_variable_length = enable_variable_length
+        self.packed_graph_runner: PackedDiTCudaGraphRunner | None = None
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.in_proj = nn.Linear(in_channels, hidden_size)
         self.blocks = nn.ModuleList(
@@ -482,6 +570,19 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    def prepare_inputs(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        speaker_embeddings: torch.Tensor | None = None,
+        mel_conditioning: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning),
+            self.t_embedder(t).unsqueeze(1),
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -490,20 +591,30 @@ class DiT(nn.Module):
         t: torch.Tensor,
         speaker_embeddings: torch.Tensor | None = None,
         mel_conditioning: torch.Tensor | None = None,
+        *,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
-        t = self.t_embedder(t).unsqueeze(1)
-        x = self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning)
+        x, t = self.prepare_inputs(x, mu, t, speaker_embeddings, mel_conditioning)
         attn_mask = mask.bool()
         if (
             self.enable_variable_length
             and x.shape[0] >= MIN_PACKED_BATCH_SIZE
             and x.is_cuda
         ):
-            sequence_lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
             with torch.autocast(x.device.type, dtype=torch.bfloat16):
-                x = self.forward_packed(
-                    self.in_proj(x), t.to(torch.bfloat16), sequence_lengths
-                )
+                projected = self.in_proj(x).to(torch.bfloat16)
+                conditioning = t.to(torch.bfloat16)
+                if packed_layout is not None:
+                    assert packed_graph is not None
+                    x = self.forward_packed_fixed(
+                        projected, conditioning, packed_layout, packed_graph
+                    )
+                else:
+                    sequence_lengths = attn_mask.squeeze(1).sum(
+                        dim=1, dtype=torch.int32
+                    )
+                    x = self.forward_packed(projected, conditioning, sequence_lengths)
         else:
             x = self.in_proj(x)
             for block in self.blocks:
@@ -541,7 +652,7 @@ class DiT(nn.Module):
         mel_conditioning: torch.Tensor,
         state: DiTState,
     ) -> tuple[torch.Tensor, DiTState]:
-        """Run one unmasked chunk against the stream's histories."""
+        """Run one chunk against the streams' histories, masked only for ragged rows."""
         timestep_embedding = self.t_embedder(t).unsqueeze(1)
         x = self.in_proj(self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning))
         next_convolution: list[torch.Tensor] = []
@@ -553,20 +664,36 @@ class DiT(nn.Module):
                     (block.conv.in_channels, block.conv.out_channels), dim=1
                 )
                 convolution_state = ConvBlockState(
-                    first=ConvState(history=first), second=ConvState(history=second)
+                    first=ConvState(
+                        history=first, valid_frame_counts=state.valid_frame_counts
+                    ),
+                    second=ConvState(
+                        history=second, valid_frame_counts=state.valid_frame_counts
+                    ),
                 )
-                attention_state = AttentionState(history=state.attention[index])
+                x, convolution_state, _ = block(
+                    x,
+                    timestep_embedding,
+                    state.attention_mask,
+                    convolution_state,
+                    None,
+                    state.attention[index],
+                )
             else:
-                convolution_state = ConvBlockState()
-                attention_state = AttentionState()
-            x, convolution_state, attention_state = block(
-                x, timestep_embedding, None, convolution_state, attention_state
-            )
-            assert convolution_state is not None and attention_state is not None
+                x, convolution_state, attention_state = block(
+                    x,
+                    timestep_embedding,
+                    state.attention_mask,
+                    ConvBlockState(),
+                    AttentionState(),
+                )
+                assert attention_state is not None
+                assert attention_state.history is not None
+                next_attention.append(attention_state.history)
+            assert convolution_state is not None
             assert (
                 convolution_state.first.history is not None
                 and convolution_state.second.history is not None
-                and attention_state.history is not None
             )
             next_convolution.append(
                 torch.cat(
@@ -574,11 +701,14 @@ class DiT(nn.Module):
                     dim=1,
                 )
             )
-            next_attention.append(attention_state.history)
         x = self.final_layer(x, timestep_embedding).transpose(1, 2)
+        if state.attention is not None:
+            next_attention_window = state.attention
+        else:
+            next_attention_window = torch.stack(next_attention)
         return x, DiTState(
             convolution=torch.stack(next_convolution),
-            attention=torch.stack(next_attention),
+            attention=next_attention_window,
         )
 
     def forward_packed(
@@ -609,17 +739,53 @@ class DiT(nn.Module):
             dtype=torch.bool,
         )
         real_frame_mask[real_frame_positions] = True
+        x = self.run_packed_blocks(
+            x,
+            timestep_embedding,
+            sequence_ids,
+            cumulative_sequence_lengths,
+            padded_length,
+            real_frame_positions,
+            real_frame_mask,
+        )
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid_frames] = x
+        return dense.transpose(1, 2)
+
+    def forward_packed_fixed(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        layout: FixedPackedLayout,
+        captured_graph: CapturedPackedDiTGraph,
+    ) -> torch.Tensor:
+        """Run packed blocks at a fixed capacity for graph replay."""
+        padded_length = x.shape[1]
+        assert self.packed_graph_runner is not None
+        workspace = captured_graph.workspace
+        workspace.dense_input[: x.shape[0] * padded_length].copy_(x.flatten(0, 1))
+        workspace.conditioning[:-1].copy_(timestep_embedding.squeeze(1))
+        packed = self.packed_graph_runner.replay(captured_graph)
+        return unpack_fixed_capacity(packed, layout).transpose(1, 2)
+
+    def run_packed_blocks(
+        self,
+        x: torch.Tensor,
+        timestep_embedding: torch.Tensor,
+        sequence_ids: torch.Tensor,
+        cumulative_sequence_lengths: torch.Tensor,
+        maximum_sequence_length: int,
+        real_frame_positions: torch.Tensor,
+        real_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
         for block in self.blocks:
             x = block.forward_packed(
                 x,
                 timestep_embedding,
                 sequence_ids,
                 cumulative_sequence_lengths,
-                padded_length,
+                maximum_sequence_length,
                 real_frame_positions,
                 real_frame_mask,
             )
-        x = self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)
-        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
-        dense[valid_frames] = x
-        return dense.transpose(1, 2)
+        return self.final_layer.forward_packed(x, timestep_embedding, sequence_ids)

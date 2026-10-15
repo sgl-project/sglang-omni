@@ -14,7 +14,7 @@ on:
       - .github/workflows/release-docker-npu-nightly.yml
   workflow_dispatch:
   schedule:
-    - cron: '0 14 * * *' # 22:00 Beijing time
+    - cron: '0 9 * * *' # 17:00 Beijing time
 
 permissions:
   contents: read

@@ -94,6 +94,8 @@ class TranscriptionServerEvent(EventBase):
 class TranscriptionSegment(TranscriptionServerEvent):
     type: Literal["transcription.segment"] = "transcription.segment"
     segment_id: int
+    audio_start_ms: int
+    audio_end_ms: int
     text: str
     is_final: bool
 

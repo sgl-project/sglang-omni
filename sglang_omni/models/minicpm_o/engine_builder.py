@@ -17,6 +17,7 @@ from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     MiniCPMOThinkerForCausalLM,
 )
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
+from sglang_omni.models.minicpm_o.native_config import THINKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
@@ -29,7 +30,7 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     model_name: str = "MiniCPM-o thinker"
     model_arch_override: str = "MiniCPMO"
-    context_length: int = 8192
+    context_length: int = THINKER_CONTEXT_LENGTH
     supports_context_length_override: ClassVar[bool] = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
@@ -40,12 +41,12 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             dtype=dtype,
             enable_streaming_session=True,
             disable_overlap_schedule=True,
-            disable_cuda_graph=True,
             chunked_prefill_size=-1,
             enable_return_hidden_states=True,
             sampling_backend="pytorch",
-            mem_fraction_static=0.45,
             trust_remote_code=False,
+            # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
+            enable_torch_compile=False,
         )
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:

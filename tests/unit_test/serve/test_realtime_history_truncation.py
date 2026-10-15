@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import pytest
 
 from sglang_omni.client.types import CompletionStreamChunk
+from sglang_omni.serve.realtime import session as session_module
 from sglang_omni.serve.realtime.vad import Emit, VADEvent
 from tests.unit_test.serve.test_realtime_barge_in import make_chunk, make_session
 
@@ -195,3 +197,24 @@ async def test_invalid_truncate_does_not_mutate_history(
         event for event in reversed(websocket.events) if event["type"] == "error"
     )
     assert error["error"]["code"] == expected_code
+
+
+@pytest.mark.parametrize(
+    ("response_token_cap", "response_max_new_tokens"), [(8, 8), ("inf", None)]
+)
+def test_transcription_pass_has_its_own_token_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    response_token_cap: int | Literal["inf"],
+    response_max_new_tokens: int | None,
+) -> None:
+    session, _, _ = make_session(monkeypatch, [])
+    session.session_object.max_response_output_tokens = response_token_cap
+
+    response_request = session.build_response_request("audio")
+    transcription_request = session.build_transcription_request("audio")
+
+    assert response_request.sampling.max_new_tokens == response_max_new_tokens
+    assert (
+        transcription_request.sampling.max_new_tokens
+        == session_module.TRANSCRIPTION_MAX_NEW_TOKENS
+    )

@@ -119,7 +119,7 @@ def create_sglang_fun_asr_executor(
     enable_encoder_torch_compile: bool = False,
     enable_encoder_cuda_graph: bool = False,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 16,
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,

@@ -56,6 +56,14 @@ enum MLXModelDownloadSupport {
         }
     }
 
+    /// Weight files a model directory may hold. A Whisper checkpoint served by
+    /// the Omni runtime also loads from weights.npz, the only weights some
+    /// mlx-community repos ship.
+    nonisolated static func weightExtensions(for repo: String?) -> Set<String> {
+        guard let repo, OmniASRBackend.modelKind(for: repo) == .whisper else { return ["safetensors"] }
+        return ["safetensors", "npz"]
+    }
+
     struct ModelFileEntry: Hashable {
         let path: String
         let size: Int64?
@@ -195,11 +203,12 @@ enum MLXModelDownloadSupport {
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+        let allowedExtensions = modelEntryAllowedExtensions.union(weightExtensions(for: repo))
         return json.compactMap { item in
             guard (item["type"] as? String) == "file" else { return nil }
             let path = (item["path"] as? String) ?? ""
             let ext = path.split(separator: ".").last.map(String.init) ?? ""
-            guard modelEntryAllowedExtensions.contains(ext.lowercased()) else { return nil }
+            guard allowedExtensions.contains(ext.lowercased()) else { return nil }
             let size: Int64?
             if let raw = item["size"] as? Int {
                 size = Int64(raw)
@@ -277,7 +286,7 @@ enum MLXModelDownloadSupport {
     ) throws {
         let files = allFiles(at: url, fileManager: fileManager)
         let hasWeights = files.contains { file in
-            guard file.pathExtension.lowercased() == "safetensors" else { return false }
+            guard weightExtensions(for: repo).contains(file.pathExtension.lowercased()) else { return false }
             let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             return size > 0
         }
@@ -341,7 +350,7 @@ enum MLXModelDownloadSupport {
 
         let files = allFiles(at: directory, fileManager: fileManager)
         let hasWeights = files.contains { file in
-            guard file.pathExtension.lowercased() == "safetensors" else { return false }
+            guard weightExtensions(for: repo).contains(file.pathExtension.lowercased()) else { return false }
             let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             return size > 0
         }

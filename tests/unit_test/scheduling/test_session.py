@@ -116,6 +116,9 @@ def test_state_budget_is_per_session():
     invoke("one", "append")
     with pytest.raises(QueueFullError):
         invoke("one", "append")
+    # note (Junnan Li): The failed session is released at once, so a unit queued behind it cannot run.
+    with pytest.raises(ValueError, match="unknown session"):
+        invoke("one", "append")
     # note (Junnan Li): Session two stays within its own budget while session one outgrows it.
     invoke("two", "append")
     scheduler.stop()
@@ -418,7 +421,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.mark_request_finished_immediately.return_value = []
     scheduler.init_req_max_new_tokens = Mock()
     scheduler.max_req_input_len = 8190
-    scheduler.server_args = SimpleNamespace(context_length=8192)
+    scheduler.model_config = SimpleNamespace(context_len=8192)
     scheduler.active_session_unit = MethodType(
         OmniScheduler.active_session_unit, scheduler
     )

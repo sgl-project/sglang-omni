@@ -10,6 +10,9 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
+
+from sglang_omni.models.ming_omni.thinker import BailingMoeV2Attention
 
 BOOTSTRAP_PATH = Path("sglang_omni/models/ming_omni/bootstrap.py")
 RUNNER_PATH = Path("sglang_omni/model_runner/ming_thinker_model_runner.py")
@@ -95,6 +98,28 @@ def test_ming_image_encoder_tp_init_requires_parallel_state() -> None:
 
     assert "parallel_state.model_parallel_is_initialized()" in init_fn
     assert 'if getattr(dp, "_ATTN_TP_SIZE", None) is not None' not in init_fn
+
+
+def test_ming_thinker_attention_feeds_o_proj_one_row_per_token() -> None:
+    head_dim, num_heads, num_tokens = 8, 2, 3
+
+    def return_query(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        forward_batch: SimpleNamespace,
+    ) -> torch.Tensor:
+        return q
+
+    attention = BailingMoeV2Attention.__new__(BailingMoeV2Attention)
+    attention.attn = return_query
+    q = torch.arange(num_tokens * num_heads * head_dim, dtype=torch.float32).reshape(
+        num_tokens, num_heads, head_dim
+    )
+
+    output = attention.forward_core(q, q, q, SimpleNamespace())
+
+    assert torch.equal(output, q.flatten(1))
 
 
 def test_vendored_sglang_layers_do_not_import_removed_sampling_symbol() -> None:
@@ -280,8 +305,6 @@ def test_ming_config_and_stages_do_not_import_ming_runner() -> None:
 
 
 def load_runner_with_fake_sglang(monkeypatch):
-    torch = pytest.importorskip("torch")
-
     scheduler_module = ModuleType("sglang.srt.managers.scheduler")
 
     class GenerationBatchResult:
@@ -289,11 +312,6 @@ def load_runner_with_fake_sglang(monkeypatch):
             self.__dict__.update(kwargs)
 
     scheduler_module.GenerationBatchResult = GenerationBatchResult
-    monkeypatch.setitem(sys.modules, "sglang", ModuleType("sglang"))
-    monkeypatch.setitem(sys.modules, "sglang.srt", ModuleType("sglang.srt"))
-    monkeypatch.setitem(
-        sys.modules, "sglang.srt.managers", ModuleType("sglang.srt.managers")
-    )
     monkeypatch.setitem(
         sys.modules,
         "sglang.srt.managers.scheduler",
@@ -433,7 +451,6 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
 
 
 def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
-    import torch
     from sglang.srt.model_executor.forward_context import (
         get_forward_context,
         has_forward_context,

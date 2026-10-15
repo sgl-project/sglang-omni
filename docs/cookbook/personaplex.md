@@ -60,23 +60,18 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 |---|---|
 | `voice` | A packaged voice name (`NATF0..3`, `NATM0..3`, `VARF0..4`, `VARM0..4`), a `.pt` file, or a recording. Default `NATF2`; an empty string runs without a voice prompt. |
 | `text_prompt` (or `instructions`) | The role prompt, wrapped in `<system>` tags. Default: the reference assistant prompt. |
-| `temperature`, `top_k` | Text sampling; defaults 0.7 / 25, which the client's filler values (1.0 / -1) do not override unless set explicitly. `temperature=0` is greedy. |
+| `temperature`, `top_k` | Text sampling, defaults 0.7 / 25. `temperature=0` is greedy. |
 | `audio_temperature`, `audio_top_k` | Code sampling in the depformer; defaults 0.8 / 250. |
 | `seed` | Makes both draws reproducible (a child seed each for text and audio). |
 | `max_new_tokens` | Ignored; the frame count is fixed by the input length. |
 
-### Explicit stage sampling
+### Stage sampling
 
-HTTP chat and rollout requests preserve which fields were provided in
-`stage_sampling.lm`. For example, `{"seed": 7}` keeps the PersonaPlex text
-defaults (temperature 0.7, top-k 25), while
-`{"temperature": 1.0, "top_k": -1}` explicitly selects temperature 1.0 and
-disables top-k filtering. In-process stage `SamplingParams` objects are complete configurations:
-all serialized fields are explicit. Thus `SamplingParams(seed=7)` in
-`stage_sampling.lm` selects temperature 1.0 and top-k -1 as well as seed 7.
-To keep PersonaPlex text defaults, omit `stage_sampling` and set the seed in
-the top-level `sampling=SamplingParams(seed=7)` instead. Top-level client
-filler handling is unchanged.
+Fields left out of `stage_sampling.lm` keep the PersonaPlex text defaults.
+For example, `{"seed": 7}` keeps temperature 0.7 and top-k 25, while
+`{"temperature": 1.0, "top_k": -1}` samples at temperature 1.0 with no top-k
+filtering. The same holds for `SamplingParams` objects passed to the Python
+client: `SamplingParams(seed=7)` in `stage_sampling.lm` sets only the seed.
 
 Text sampling uses `stage_sampling.lm`, then `stage_params.lm`, then top-level
 request values. Stage sampling also takes precedence for `seed`.
@@ -87,9 +82,11 @@ The fixed caller-frame budget still determines the number of generated frames.
 
 ## Known limitations
 
-- Offline, one request at a time (`max_running_requests=1`).
-- CUDA graphs are off; a 7B decode step plus 8 depformer steps runs close to the 80 ms frame budget rather than well inside it.
+- Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
+- On CUDA the backbone's decode step replays a CUDA graph (`--lm.engine.disable_cuda_graph true` turns it off); the 8 depformer steps still run eagerly, so a frame runs close to the 80 ms budget rather than well inside it.
+- On CUDA, streaming Mimi decode replays CUDA graphs for chunks of 1 to `max_graph_frames` frames on `num_decode_slots` resident decode states (default 8); other platforms decode eagerly. When unset, `max_graph_frames` follows the widest entry in `chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time), covering both regular chunks and shorter final chunks. Each decode handles one request; slots hold independent request states, not a decode batch. A stream that arrives while every slot is taken decodes eagerly, so keep `--code2wav.factory.num_decode_slots` at or above `--lm.engine.max_running_requests`; an explicit `--code2wav.factory.max_graph_frames N` overrides the graph limit, and `0` turns the graphs off.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
+- On a CUDA platform with resolved `device=cuda`, `page_size=1` and radix caching disabled (the default), window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms, page sizes and radix-enabled configurations use the full KV pool. Context and request-length limits remain unchanged, and returning slots does not shrink the preallocated pool. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
 
 ## Tests
 
@@ -99,9 +96,26 @@ The fixed caller-frame budget still determines the number of generated frames.
 pytest tests/unit_test/personaplex/ -q
 ```
 
-Reference comparisons and reproducibility checks are evaluation scripts under
-`benchmarks/eval/`, separate from the unit suite. See the
-[PersonaPlex evaluation guide](../../benchmarks/eval/personaplex.md) for checkpoint,
-reference-environment and output setup. The greedy comparison checks a matching
-prefix, not full-output equality; the component comparison includes a diagnostic
-for the reference depformer ring behavior.
+### Reference parity
+
+Two opt-in tests compare against an [NVIDIA/personaplex](https://github.com/NVIDIA/personaplex) checkout. Its `moshi` package pins `torch < 2.5`, so it needs its own environment, separate from the serving one:
+
+```bash
+git clone https://github.com/NVIDIA/personaplex.git /path/to/personaplex
+uv venv /path/to/personaplex/.venv -p 3.12
+uv pip install --python /path/to/personaplex/.venv/bin/python /path/to/personaplex/moshi/
+```
+
+Then run the tests from the serving environment. They need CUDA, skip unless both variables are set, and run one file per command:
+
+```bash
+export PERSONAPLEX_REFERENCE_SOURCE=/path/to/personaplex
+export PERSONAPLEX_REFERENCE_PYTHON=/path/to/personaplex/.venv/bin/python
+python -m pytest tests/test_model/test_personaplex_parity.py -v -s
+python -m pytest tests/test_model/test_personaplex_components.py -v -s
+```
+
+- `test_personaplex_parity.py`: greedy replies to the reference's two test recordings must have the input's length, match it for at least the first 100 frames, and agree in text over that prefix; greedy and seeded replies must also repeat. **This is not full-output parity.**
+- `test_personaplex_components.py`: Mimi, the input embeddings and the depformer logits on the public `kyutai/moshiko-pytorch-bf16` base. The last depformer step matches only with the reference's ring behavior emulated, which diagnoses a known difference rather than proving a match.
+
+`PERSONAPLEX_PARITY_CHECKPOINT` and `PERSONAPLEX_MOSHI_CHECKPOINT` override the checkpoints, `PERSONAPLEX_STAGE_ARGS` forwards pipeline flags such as `'--lm.engine.mem_fraction_static 0.5'`, and `PERSONAPLEX_REFERENCE_REPO` sets the reference CLI's config lookup. Reference outputs are regenerated on every run under pytest's temporary directory.

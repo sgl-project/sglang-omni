@@ -11,6 +11,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 pytest.importorskip("xxhash")
 
+from sglang_omni.client.client import Client
 from sglang_omni.models.qwen3_omni.merge import merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
@@ -18,7 +19,9 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_thinker_request,
     compute_mrope_positions,
 )
+from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.protocol import ChatCompletionRequest
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -109,6 +112,27 @@ def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
 
     assert f"token id {token_id} at position 1" in str(raised.value)
     assert is_bad_request_error(RuntimeError(str(raised.value)))
+
+
+def test_chat_request_without_a_temperature_reaches_the_thinker_greedy(monkeypatch):
+    """A chat request without a temperature samples the thinker greedily, not at 1.0."""
+    patch_sampling_validation(monkeypatch)
+    gen_req = build_chat_generate_request(
+        ChatCompletionRequest(
+            model="qwen3-omni", messages=[{"role": "user", "content": "hello"}]
+        )
+    )
+
+    request = build_sglang_thinker_request(
+        make_qwen_state(),
+        params=Client.build_omni_request(gen_req).params,
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        request_id="chat-without-temperature",
+    )
+
+    assert request.temperature == 0.0
+    assert request.req.sampling_params.top_k == 1
 
 
 def test_legacy_flat_payloads_still_reach_the_model_input_field():

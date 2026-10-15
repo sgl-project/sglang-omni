@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import av
 import numpy as np
 import pytest
 import torch
@@ -368,3 +369,44 @@ async def test_local_video_audio_decode_concurrently_and_drain(
         for event in release:
             event.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.fixture
+def mpeg4_video(tmp_path: Path) -> Path:
+    path = tmp_path / "video.mp4"
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("mpeg4", rate=4)
+        stream.width = stream.height = 56
+        stream.pix_fmt = "yuv420p"
+        for index in range(8):
+            pixels = np.full((56, 56, 3), index * 25, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return path
+
+
+@pytest.mark.parametrize("tensor_index", [0, 1, 2])
+@pytest.mark.parametrize("extract_audio", [False, True])
+def test_a_processed_video_before_a_file_keeps_every_video_in_place(
+    mpeg4_video: Path, tensor_index: int, extract_audio: bool
+) -> None:
+    decoded, _ = video.load_video_path(mpeg4_video, fps=2)
+    processed = torch.zeros_like(decoded)
+    inputs: list[object] = [mpeg4_video, mpeg4_video]
+    inputs.insert(tensor_index, processed)
+
+    videos, sample_fps, audios = asyncio.run(
+        video.ensure_video_list_async(inputs, fps=2, extract_audio=extract_audio)
+    )
+
+    assert len(videos) == 3
+    for index, loaded in enumerate(videos):
+        if index == tensor_index:
+            assert loaded is processed
+        else:
+            assert torch.equal(loaded, decoded)
+    assert sample_fps is None
+    assert audios == ([None, None, None] if extract_audio else None)

@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +13,11 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
     build_buckets,
     window_lens_from_token_counts,
+)
+from sglang_omni.models.qwen3_asr.encoder_npu_graph import (
+    NpuGraphCaptureAttention,
+    NpuGraphCaptureContext,
+    Qwen3ASREncoderNpuGraphRunner,
 )
 from sglang_omni.platforms import current_platform
 
@@ -99,7 +107,8 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
     attention_metadata = object()
 
-    output = runner.layer_stack(hidden_states, cu_seqlens, attention_metadata)
+    runner.capture_attention_metadata = attention_metadata
+    output = runner.layer_stack(hidden_states, cu_seqlens)
 
     assert torch.equal(output, hidden_states)
     assert seen["cu_seqlens"] is cu_seqlens
@@ -182,14 +191,19 @@ def test_graph_matches_eager_tower(asr_server_args):
             else:
                 prm.zero_()
 
-    runner = Qwen3ASREncoderLayerStackGraphRunner(
+    runner_cls = (
+        Qwen3ASREncoderNpuGraphRunner
+        if tower_device.type == "npu"
+        else Qwen3ASREncoderLayerStackGraphRunner
+    )
+    runner = runner_cls(
         tower,
         buckets=build_buckets(4, 104),
         max_batch_size=4,
         graph_backend=current_platform.get_device_graph_backend(tower_device),
     )
     runner.capture_all()
-    if not runner.graph_backend.supports_graph_task_update:
+    if tower_device.type != "npu":
         assert runner.graphs and not runner.failed
         pools = [entry.graph.pool() for entry in runner.graphs.values()]
         assert len(set(pools)) == len(pools)
@@ -250,3 +264,190 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
     )
 
     assert model.encoder_graph_runner == "untouched"
+
+
+@pytest.mark.parametrize("update_fails", [False, True])
+def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails):
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.max_seqlen = 8
+    runner.graphs = {}
+    runner.failed = set()
+    runner.plan = lambda total, windows: (8, [8 - total])
+    caller = threading.get_ident()
+    waits = []
+    updates = []
+    captures = []
+    replay_started = threading.Event()
+    runner.update_stream = SimpleNamespace(
+        wait_stream=lambda stream: waits.append(threading.get_ident())
+    )
+    runner.device_module = SimpleNamespace(
+        current_stream=lambda: "compute", stream=lambda stream: nullcontext()
+    )
+
+    def apply(device_module, stream, boundaries):
+        # Force update to start after replay: the dependency must already exist.
+        assert replay_started.wait(timeout=2)
+        updates.append((threading.get_ident(), boundaries))
+        if update_fails:
+            raise RuntimeError("update failed")
+
+    def replay():
+        assert waits == [caller] * (len(updates) + 1)
+        replay_started.set()
+
+    def capture(bucket_size, *, window_lens):
+        captures.append(window_lens)
+        return SimpleNamespace(
+            hidden_states=torch.zeros(8, 2),
+            output=torch.zeros(8, 2),
+            graph=SimpleNamespace(replay=replay),
+            npu_update_tasks=(SimpleNamespace(apply=apply),),
+        )
+
+    runner.capture = capture
+
+    def initialize_worker():
+        assert replay_started.wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=1, initializer=initialize_worker) as executor:
+        runner.update_executor = executor
+        runner.capture_all()
+        assert not runner.graphs
+        for length in (4, 3):
+            replay_started.clear()
+            if update_fails:
+                with pytest.raises(RuntimeError, match="update failed"):
+                    runner.run(torch.ones(length, 2), [length])
+            else:
+                assert runner.run(torch.ones(length, 2), [length]) is not None
+    assert captures == [(4, 4)]
+    assert [bounds for _, bounds in updates] == [[4, 8], [3, 8]]
+    assert updates[0][0] == updates[1][0] != caller
+
+
+def test_npu_attention_capture_restores_partial_setup():
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device_module = SimpleNamespace()
+    original = torch.nn.Identity()
+    attention = torch.nn.Module()
+    attention.qkv_backend_name = "ascend_attn"
+    attention.qkv_backend = original
+    runner.tower = SimpleNamespace(
+        layers=[
+            SimpleNamespace(self_attn=attention),
+            SimpleNamespace(self_attn=SimpleNamespace(qkv_backend_name="unsupported")),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="ascend_attn"):
+        with runner.capture_npu_attention_tasks(NpuGraphCaptureContext(tasks=[])):
+            pytest.fail("capture body must not run after partial setup fails")
+    assert attention.qkv_backend is original
+
+
+def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkeypatch):
+    calls = []
+
+    def operation(**kwargs):
+        calls.append(("operation", kwargs))
+
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "_npu_fused_infer_attention_score_get_max_workspace",
+        lambda **kwargs: torch.empty(16),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "npu_fused_infer_attention_score",
+        SimpleNamespace(out=operation),
+        raising=False,
+    )
+
+    class Event:
+        def wait(self, stream):
+            calls.append(("wait", stream))
+
+        def reset(self, stream):
+            calls.append(("reset", stream))
+
+        def record(self, stream):
+            calls.append(("record", stream))
+
+    class DeviceModule:
+        def current_stream(self):
+            return "capture-stream"
+
+        def ExternalEvent(self):
+            return Event()
+
+        def graph_task_group_begin(self, stream):
+            calls.append(("begin", stream))
+
+        def graph_task_group_end(self, stream):
+            calls.append(("capture_end", stream))
+            return "fia-handle"
+
+        def graph_task_update_begin(self, stream, handle):
+            calls.append(("update_begin", stream, handle))
+
+        def graph_task_update_end(self, stream):
+            calls.append(("update_end", stream))
+
+    context = NpuGraphCaptureContext(tasks=[])
+    device_module = DeviceModule()
+    attention = NpuGraphCaptureAttention(context, device_module)
+    metadata = SimpleNamespace(cu_seqlens=torch.tensor([0, 3, 8], dtype=torch.int32))
+
+    output = attention(
+        torch.zeros(8, 2, 4),
+        torch.zeros(8, 2, 4),
+        torch.zeros(8, 2, 4),
+        forward_metadata=metadata,
+    )
+
+    assert output.shape == (8, 2, 4)
+    assert len(context.tasks) == 1
+    task = context.tasks[0]
+    assert task.handle == "fia-handle"
+    capture_kwargs = calls[-2][1]
+    assert capture_kwargs["actual_seq_lengths"] == [3, 8]
+    assert capture_kwargs["actual_seq_lengths_kv"] == [3, 8]
+
+    calls.clear()
+    task.apply(device_module, "update-stream", [2, 8])
+
+    assert [call[0] for call in calls] == [
+        "update_begin",
+        "operation",
+        "update_end",
+        "record",
+    ]
+    assert calls[0] == ("update_begin", "update-stream", "fia-handle")
+    update_kwargs = calls[1][1]
+    assert update_kwargs["actual_seq_lengths"] == [2, 8]
+    assert update_kwargs["actual_seq_lengths_kv"] == [2, 8]
+    assert calls[2:] == [("update_end", "update-stream"), ("record", "update-stream")]
+
+
+@pytest.mark.parametrize(
+    "runner_cls", [Qwen3ASREncoderLayerStackGraphRunner, Qwen3ASREncoderNpuGraphRunner]
+)
+def test_capture_failure_keeps_bucket_eager(runner_cls):
+    runner = object.__new__(runner_cls)
+    runner.max_seqlen = 8
+    runner.graphs = {}
+    runner.failed = set()
+    runner.plan = lambda total, windows: (8, [8 - total])
+    attempts = []
+
+    def capture(bucket_size, *, window_lens):
+        attempts.append(bucket_size)
+        raise RuntimeError("capture failed")
+
+    runner.capture = capture
+    assert runner.run(torch.ones(4, 2), [4]) is None
+    assert runner.run(torch.ones(4, 2), [4]) is None
+    assert attempts == [8]
+    assert runner.failed == {8}

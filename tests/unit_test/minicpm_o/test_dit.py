@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 
 import pytest
@@ -10,6 +11,7 @@ import torch
 
 from sglang_omni.models.minicpm_o.components.token2wav.dit import (
     CausalConvBlock,
+    ConvBlockState,
     DiT,
     TimestepEmbedder,
 )
@@ -84,6 +86,50 @@ def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
         torch.cat(rows), real_frame_positions, real_frame_mask
     )
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("frame_count", [9, 16, 33])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_channels_last_causal_conv_matches_channel_first(
+    frame_count: int, dtype: torch.dtype
+) -> None:
+    torch.manual_seed(0)
+    channel_first = CausalConvBlock(64, 64).to("cuda", dtype).eval()
+    channels_last = copy.deepcopy(channel_first)
+    channels_last.use_channels_last()
+    frames = torch.randn(frame_count, 64, device="cuda", dtype=dtype)
+    causal_padding_frames = channel_first.kernel_size - 1
+    real_frame_positions = (
+        torch.arange(frame_count, device="cuda") + causal_padding_frames
+    )
+    real_frame_mask = torch.zeros(
+        frame_count + causal_padding_frames, dtype=torch.bool, device="cuda"
+    )
+    real_frame_mask[real_frame_positions] = True
+    with torch.inference_mode():
+        torch.testing.assert_close(
+            channels_last(frames.unsqueeze(0))[0],
+            channel_first(frames.unsqueeze(0))[0],
+        )
+        torch.testing.assert_close(
+            channels_last.forward_packed(frames, real_frame_positions, real_frame_mask),
+            channel_first.forward_packed(frames, real_frame_positions, real_frame_mask),
+        )
+        # The streaming path carries a two-frame history between chunks.
+        state_first, state_last = ConvBlockState(), ConvBlockState()
+        for chunk in frames.unsqueeze(0).split(4, dim=1):
+            expected, state_first = channel_first(chunk, state=state_first)
+            actual, state_last = channels_last(chunk, state=state_last)
+            torch.testing.assert_close(actual, expected)
+        # The history also keeps the channel-first path's contiguous layout.
+        torch.testing.assert_close(
+            state_last.first.history, state_first.first.history, check_stride=True
+        )
+        torch.testing.assert_close(
+            state_last.second.history, state_first.second.history, check_stride=True
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
