@@ -664,6 +664,20 @@ def install_fake_batch_adapter(monkeypatch, calls: list[list]) -> None:
     monkeypatch.setattr(stages.FunCosyVoice3Flow, "inference", fake_infer)
 
 
+def test_decode_payload_size_one_uses_batch_adapter(monkeypatch) -> None:
+    flow = BatchCapableFakeFlow()
+    batch_calls: list[list] = []
+    install_fake_batch_adapter(monkeypatch, batch_calls)
+    vocoder = stages.CosyVoice3Vocoder(flow, FakeHiFT())
+    state = make_state()
+    state.audio_codes = make_codes(2)
+
+    result = asyncio.run(vocoder.decode_payload(make_payload(state)))
+
+    assert result.data["modality"] == "audio"
+    assert [len(call) for call in batch_calls] == [1]
+
+
 def test_decode_batch_merges_flow_preserving_hift_groups_and_order(
     monkeypatch,
 ) -> None:
