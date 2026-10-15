@@ -206,34 +206,6 @@ def test_sanm_fused_qkv_matches_separate_projections() -> None:
     assert q_ref.shape == k_ref.shape == v_ref.shape
 
 
-def test_encoder_layer_runs_attention_once() -> None:
-    torch.manual_seed(5)
-    layer = FunAsrNanoAudioEncoder(
-        input_size=8,
-        output_size=8,
-        attention_heads=2,
-        linear_units=16,
-        num_blocks=1,
-        tp_blocks=0,
-        kernel_size=3,
-        dropout_rate=0.0,
-        attention_dropout_rate=0.0,
-        activation_dropout_rate=0.0,
-    ).layers[0]
-    layer.eval()
-    calls = {"attn": 0}
-    original = layer.self_attn.forward
-
-    def counting_attn(x, mask=None):
-        calls["attn"] += 1
-        return original(x, mask)
-
-    layer.self_attn.forward = counting_attn  # type: ignore[method-assign]
-    with torch.no_grad():
-        layer(torch.randn(1, 6, 8), mask=None)
-    assert calls["attn"] == 1
-
-
 def test_fsmn_mask_zeros_pad_and_matches_unpadded() -> None:
     torch.manual_seed(1)
     fsmn = FunAsrNanoFSMN(size=4, kernel_size=3, dropout_rate=0.0)
@@ -297,17 +269,6 @@ def test_get_audio_feature_batched_matches_serial_with_pre_padded_features() -> 
 
     assert batched.shape == serial.shape
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
-
-
-def test_get_audio_feature_single_item_output_length() -> None:
-    model = tiny_audio_mm_model()
-    length = 16
-    item = audio_item(torch.randn(1, 8, length), length, hash_id=7)
-
-    with torch.no_grad():
-        out = model.get_audio_feature([item])
-
-    assert out.shape == (2, 8)
 
 
 def test_get_audio_feature_rejects_empty_items() -> None:

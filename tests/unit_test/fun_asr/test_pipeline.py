@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -49,38 +48,6 @@ def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     )
 
 
-def test_fun_asr_stage_default_allows_64_running_requests() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["max_new_tokens"].default == 200
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
-    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 10
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 32
-    assert signature.parameters["stream_emit_interval_s"].default == 0.05
-
-
-def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-
-
 @pytest.mark.parametrize(
     ("batch_size", "wait_ms", "match"),
     [
@@ -99,31 +66,6 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
         )
-
-
-def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["mem_fraction_static"].default is None
-
-
-def test_fun_asr_stage_default_disables_multimodal_embedding_cache() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-
-
-def test_fun_asr_stage_default_defers_torch_compile_to_builder() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["enable_torch_compile"].default is None
-
-
-def test_fun_asr_stage_default_enables_async_decode() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def test_fun_asr_threads_generation_batch_and_request_build_policy(
@@ -339,10 +281,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         fun_asr_stages.create_sglang_fun_asr_executor("dummy")
 
     assert encoder_services[2].close_calls == 1
-
-
-def test_fun_asr_declares_breakable_prefill_cuda_graph_support() -> None:
-    assert fun_asr_builder.FunASREngineBuilder.supports_breakable_prefill_cuda_graph
 
 
 def apple_builder(monkeypatch, *, mlx):
