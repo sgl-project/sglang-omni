@@ -254,6 +254,16 @@ def test_supported_speech_fields_fail_only_the_offending_batch_items() -> None:
     assert [request.prompt for request in client_impl.requests] == ["normal"]
 
 
+def test_batch_items_without_a_supported_set_keep_ignoring_extras() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post("/v1/audio/speech/batch", json={"items": MIXED_BATCH_ITEMS})
+
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == len(MIXED_BATCH_ITEMS)
+
+
 @pytest.mark.parametrize(
     ("fields", "path"),
     [
