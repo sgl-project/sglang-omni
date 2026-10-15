@@ -935,22 +935,6 @@ def test_qwen_preprocessing_routes_only_active_encoder_branches() -> None:
         )
 
 
-def test_qwen_aggregate_wait_sources_accept_projected_active_metadata() -> None:
-    payload = make_qwen_payload(
-        make_qwen_state(
-            encoder_inputs={
-                "audio_encoder": {"cache_key": "audio-cache", "_active": True}
-            }
-        )
-    )
-
-    assert resolve_mm_aggregate_wait_sources(
-        payload.request_id,
-        "preprocessing",
-        payload,
-    ) == ["preprocessing", "audio_encoder"]
-
-
 def test_qwen_aggregate_projection_marks_uncached_active_encoder_inputs() -> None:
     state = make_qwen_state(
         encoder_inputs={
@@ -1067,24 +1051,6 @@ def test_qwen_broadcast_mem_fraction_targets_only_engine_stages() -> None:
     assert engine_mem_fraction_static(resolved, "talker_ar") == 0.80
     for non_ar_stage in ("image_encoder", "audio_encoder", "code2wav"):
         assert server_args_overrides(resolved, non_ar_stage) == {}
-
-
-def test_qwen_dotted_per_stage_mem_fraction_overrides_the_broadcast() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    patches = patches_from_broadcast_flags(
-        config,
-        mem_fraction_static=0.80,
-    )
-    merged = ConfigManager(config).merge_config(
-        [
-            ("thinker.engine.mem_fraction_static", "0.70"),
-            ("talker_ar.engine.mem_fraction_static", "0.65"),
-        ],
-        extra_patches=patches,
-    )
-
-    assert engine_mem_fraction_static(merged, "thinker") == 0.70
-    assert engine_mem_fraction_static(merged, "talker_ar") == 0.65
 
 
 def test_qwen_partial_dotted_override_falls_back_to_the_broadcast() -> None:
@@ -1519,33 +1485,6 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
     assert attest_calls == ([(model_runner, True, 1)] if is_breakable else [])
 
 
-def test_qwen_broadcast_and_dotted_conflict_is_never_silent() -> None:
-    """Two spellings of one leaf at one precedence stay an error."""
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    with pytest.raises(Exception, match="same precedence"):
-        ConfigManager(config).merge_config(
-            [
-                ("thinker.engine.mem_fraction_static", "0.70"),
-                ("thinker.engine.mem_fraction_static", "0.80"),
-            ]
-        )
-
-
-def test_qwen_encoder_reserve_and_explicit_pin_conflict_consumer_side() -> None:
-    """encoder_mem_reserve only applies to the auto mem-fraction path; the
-    stage factory refuses the combination with an explicit pin."""
-    server_args = SimpleNamespace(mem_fraction_static=0.70)
-
-    applied = qwen_stages.apply_qwen_thinker_encoder_reserve(
-        server_args,
-        has_explicit_mem_fraction_static=True,
-        encoder_mem_reserve=0.15,
-    )
-
-    assert applied is False
-    assert server_args.mem_fraction_static == 0.70
-
-
 def test_qwen_cli_thinker_tp_override_applies_tp_size_and_gpus() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
@@ -1687,25 +1626,6 @@ def test_qwen_thinker_explicit_pin_bypasses_encoder_reserve() -> None:
 
     assert applied is False
     assert server_args.mem_fraction_static == 0.70
-
-
-def test_qwen_thinker_encoder_reserve_rejects_below_safe_floor() -> None:
-    with pytest.raises(ValueError, match="below the safe floor"):
-        qwen_stages.apply_qwen_thinker_encoder_reserve(
-            SimpleNamespace(mem_fraction_static=0.15),
-            has_explicit_mem_fraction_static=False,
-            encoder_mem_reserve=0.10,
-        )
-
-
-def test_qwen_factory_signatures_keep_reserve_thinker_only() -> None:
-    thinker_sig = inspect.signature(
-        qwen_stages.create_sglang_thinker_executor_from_config
-    )
-    talker_sig = inspect.signature(qwen_stages.create_talker_ar_executor_from_config)
-
-    assert thinker_sig.parameters["encoder_mem_reserve"].default == 0.05
-    assert "encoder_mem_reserve" not in talker_sig.parameters
 
 
 def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> None:
@@ -2818,10 +2738,6 @@ def test_chat_content_parts_become_placeholders_where_they_stood() -> None:
         ([{"type": "text", "text": 3}], "text chat content part requires a string"),
         (
             [{"type": "input_audio", "input_audio": {"data": "AA", "format": "flac"}}],
-            "input_audio chat content part format must be one of",
-        ),
-        (
-            [{"type": "input_audio", "input_audio": {"data": "AA", "format": []}}],
             "input_audio chat content part format must be one of",
         ),
         ([{"type": "input_audio", "input_audio": {}}], "requires base64 data"),

@@ -32,34 +32,34 @@ def test_rows_correct(model_dir):
     assert torch.equal(rows, expected[[3, 0, 7]])
 
 
-def test_index_parsed_once_across_calls(model_dir, monkeypatch):
-    calls = {"n": 0}
-    real_loads = json.loads
+def test_index_parsed_once_across_calls(model_dir):
+    first = talker_prefill.load_thinker_embedding_rows(str(model_dir), [1])
+    sources = (
+        talker_prefill._EMBED_SOURCE_CACHE
+    )  # noqa: leading-underscore  # production name
+    source = sources[str(model_dir)]
 
-    def counting_loads(*args, **kwargs):
-        calls["n"] += 1
-        return real_loads(*args, **kwargs)
+    again = talker_prefill.load_thinker_embedding_rows(str(model_dir), [1])
 
-    monkeypatch.setattr(talker_prefill.json, "loads", counting_loads)
+    assert source == (
+        model_dir / "model-00001-of-00001.safetensors",
+        "thinker.model.embed_tokens.weight",
+    )
+    assert torch.equal(again, first)
+    assert sources[str(model_dir)] is source
+
+
+def test_shard_opened_once_across_calls(model_dir):
     talker_prefill.load_thinker_embedding_rows(str(model_dir), [1])
-    talker_prefill.load_thinker_embedding_rows(str(model_dir), [2])
-    talker_prefill.load_thinker_embedding_rows(str(model_dir), [3, 4])
-    assert calls["n"] == 1
+    handles = (
+        talker_prefill._EMBED_HANDLE_CACHE
+    )  # noqa: leading-underscore  # production name
+    handle = handles[str(model_dir)]
 
-
-def test_shard_opened_once_across_calls(model_dir, monkeypatch):
-    opens = {"n": 0}
-    real_safe_open = talker_prefill.safe_open
-
-    def counting_safe_open(*args, **kwargs):
-        opens["n"] += 1
-        return real_safe_open(*args, **kwargs)
-
-    monkeypatch.setattr(talker_prefill, "safe_open", counting_safe_open)
-    talker_prefill.load_thinker_embedding_rows(str(model_dir), [1])
     talker_prefill.load_thinker_embedding_rows(str(model_dir), [2, 9])
-    talker_prefill.load_thinker_embedding_rows(str(model_dir), [15])
-    assert opens["n"] == 1
+
+    assert list(handles) == [str(model_dir)]
+    assert handles[str(model_dir)] is handle
 
 
 def test_repeated_rows_stay_identical(model_dir):

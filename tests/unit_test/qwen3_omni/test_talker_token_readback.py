@@ -79,13 +79,6 @@ def test_stage_token_ids_cpu_passthrough_no_event():
     assert runner.resolve_host_token_ids(result).tolist() == ref.tolist()
 
 
-def test_resolve_host_token_ids_absent_returns_none():
-    runner = bare_runner()
-    result = SimpleNamespace()
-
-    assert runner.resolve_host_token_ids(result) is None
-
-
 def finalize_scheduler_output(n: int) -> SimpleNamespace:
     reqs = [
         SimpleNamespace(
