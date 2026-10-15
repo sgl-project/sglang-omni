@@ -3431,6 +3431,34 @@ def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled(
     assert requested_enabled == [True] + [False] * len(scheduler.followup_graph_holders)
 
 
+def test_qwen3_tts_vocoder_warms_graphs_before_serving_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    captures: list[str] = []
+    monkeypatch.setattr(
+        scheduler.initial_decode_graphs,
+        "capture",
+        lambda: captures.append("initial"),
+    )
+    monkeypatch.setattr(
+        scheduler.followup_decode_graphs,
+        "capture",
+        lambda: captures.append("followup"),
+    )
+
+    scheduler.warmup_now()
+    scheduler.on_serving_start()
+    try:
+        assert captures == ["initial", "followup"]
+    finally:
+        scheduler.stop()
+
+
 def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> None:
     """Match each streaming row to its independent batch-one decode."""
     tokenizer = FakeQwen3TTSSpeechTokenizer()
