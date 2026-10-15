@@ -233,6 +233,15 @@ raw summary.
 `--fingerprint` records the client environment and the server `/v1/models`
 identity.
 
+Local SeedTTS `.lst` inputs use
+`sample_id|reference_text|reference_audio_path|target_text`. Only the first three
+pipes delimit columns; the target retains additional pipes, including inline
+speech controls such as `<|emotion:elation|>Hello!`. The first three fields do
+not support embedded pipes. Relative reference paths are resolved beside the
+metadata file; absolute paths remain unchanged. Blank lines and rows with fewer
+than four fields are skipped. Existing whole-line whitespace trimming remains
+unchanged.
+
 Chat-completion speed runs forward `--seed` on the request when it is set
 (MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
 `--fingerprint`. `benchmark_omni_streaming_ttft.py` uses one `--seed` for
