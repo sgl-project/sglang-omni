@@ -354,6 +354,16 @@ def create_auk_engine_executor(
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
     device = resolve_concrete_device(device, gpu_id)
+    if enable_dit_cuda_graph and enable_dit_torch_compile and device.type == "xpu":
+        # The compiled blocks keep the attention they were traced with, which
+        # the capture-time pin cannot reach and an XPU graph cannot record.
+        raise ValueError(
+            "AuK enable_dit_cuda_graph on XPU needs enable_dit_torch_compile "
+            "false: an XPU graph cannot record the attention the compiled "
+            "blocks trace"
+        )
+    else:
+        pass
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
     # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32

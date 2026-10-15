@@ -242,6 +242,20 @@ def test_the_step_graph_is_refused_without_the_attention_bias(stages, monkeypatc
         create_auk_engine_executor("stub", device="cpu", enable_dit_cuda_graph=True)
 
 
+def test_the_step_graph_on_xpu_is_refused_over_compiled_blocks(stages, monkeypatch):
+    """A compiled block keeps the attention it traced, which XPU cannot record."""
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("xpu")
+    )
+    with pytest.raises(ValueError, match="needs enable_dit_torch_compile false"):
+        create_auk_engine_executor(
+            "stub",
+            device="xpu",
+            enable_dit_cuda_graph=True,
+            enable_dit_torch_compile=True,
+        )
+
+
 def test_the_warmup_covers_a_request_that_carries_no_reference():
     """An instruction-only request guards on no bias, and would recompile both blocks."""
     flow = stub_flow()

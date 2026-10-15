@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shape declaration, lookup, and the eager fallbacks the step graph runner takes."""
 
-from unittest.mock import Mock
+from contextlib import contextmanager
+from unittest.mock import MagicMock, Mock
 
 import pytest
 import torch
@@ -12,6 +13,7 @@ from sglang_omni.models.auk.step_cuda_graph import (
     AuKStepCudaGraphRunner,
     verify_capture_shapes,
 )
+from sglang_omni.platforms import current_platform
 
 
 def runner(*shapes: tuple[int, int, int, int]) -> AuKStepCudaGraphRunner:
@@ -138,3 +140,112 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
 
     assert declared.ready == set()
     assert "will run eager" in caplog.text
+
+
+def test_the_headroom_counts_the_blocks_the_capture_releases():
+    """The capture empties the allocator cache before it records, so blocks the
+    warmup trajectories left cached must not turn a shape that fits eager."""
+    declared = runner((1, 192, 0, 192))
+    cached = {"bytes": 3 * 1024**3}
+    module = MagicMock()
+    module.empty_cache.side_effect = lambda: cached.update(bytes=0)
+    module.mem_get_info.side_effect = lambda device: (
+        5 * 1024**3 - cached["bytes"],
+        24 * 1024**3,
+    )
+    declared.module = module
+    declared.capture = Mock(return_value="captured")
+
+    entry = declared.prepare(("key",), Mock(), {}, torch.zeros(1), torch.zeros(1))
+
+    assert entry == "captured"
+    assert declared.graphs == {("key",): "captured"}
+
+
+def test_every_trajectory_runs_under_the_platform_capture_attention(monkeypatch):
+    """XPU cannot record its default attention, and the warmup inside a
+    trajectory must settle the attention the capture then records."""
+    events = []
+
+    @contextmanager
+    def recording_pin():
+        events.append("pin_enter")
+        try:
+            yield
+        finally:
+            events.append("pin_exit")
+
+    monkeypatch.setattr(current_platform, "graph_capture_attention", recording_pin)
+    declared = runner((1, 192, 0, 192), (1, 320, 320, 384))
+    declared.ready.clear()
+
+    def run_trajectory(shape):
+        events.append(shape.frames)
+        raise RuntimeError("capture failed")
+
+    declared.capture_declared(run_trajectory)
+
+    assert events == ["pin_enter", 192, "pin_exit", "pin_enter", 320, "pin_exit"]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.xpu.is_available(), reason="records an XPU graph")
+def test_an_xpu_step_graph_replays_the_padded_eager_trajectory_for_every_request():
+    """The replay must match the padded eager step under the same attention, and
+    a later request must reuse the graph rather than record another."""
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+    from sglang_omni.models.auk.stages import warmup_flow
+
+    device = torch.device("xpu", 0)
+    torch.manual_seed(42)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=1,
+            num_single_layers=1,
+        ),
+        num_llm_layers=2,
+    )
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    flow = flow.to(device).eval()
+    shape = AuKGraphShape(batch=1, frames=32, ref=8, text=16)
+    item = AuKSampleItem(
+        torch.randn(10, 16, device=device),
+        torch.ones(10, dtype=torch.bool, device=device),
+        20,
+        torch.randn(6, 8, device=device),
+        seed=3,
+        ref_length=6,
+    )
+    sampling = dict(steps=4, cfg_strength=2.0)
+
+    # No headroom, so another tenant on the card cannot turn the capture eager.
+    graphed = AuKStepCudaGraphRunner(
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+        capture_shapes=[shape],
+        min_free_gb=0,
+    )
+    padded = AuKStepCudaGraphRunner(
+        backend=Mock(), device=device, capture_shapes=[shape]
+    )
+    padded.ready.add(shape)
+    with torch.inference_mode():
+        warmup_flow(flow, device, torch.float32, sampling, graphed)
+        with current_platform.graph_capture_attention():
+            expected = flow.sample_batch([item], **sampling, step_graph=padded)
+        requests = [
+            flow.sample_batch([item], **sampling, step_graph=graphed) for _ in range(2)
+        ]
+
+    assert graphed.ready == {shape}
+    assert len(graphed.graphs) == 1
+    for (latent,) in requests:
+        assert latent.shape == (20, 8)
+        torch.testing.assert_close(latent, expected[0], rtol=1e-5, atol=1e-6)
