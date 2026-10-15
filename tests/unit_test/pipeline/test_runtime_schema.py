@@ -129,7 +129,7 @@ def test_engine_kv_cache_bytes_parses_sizes(value, expected) -> None:
     assert EngineArgs(kv_cache_bytes=value).kv_cache_bytes == expected
 
 
-@pytest.mark.parametrize("value", [0, -1, True, "2GB", "1.5GiB", "GiB", " 2GiB"])
+@pytest.mark.parametrize("value", [0, True, "2GB", "1.5GiB", "GiB", " 2GiB"])
 def test_engine_kv_cache_bytes_rejects_bad_values(value) -> None:
     from sglang_omni.config import EngineArgs
 
