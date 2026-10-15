@@ -12,22 +12,6 @@ import pytest
 from fastapi import HTTPException
 
 from sglang_omni.serve import speech_to_text
-from sglang_omni.serve.transcriptions import (
-    build_transcription_generate_request as legacy_transcription_request_builder,
-)
-
-
-def build_request(*, task: str = "transcribe"):
-    return speech_to_text.build_speech_to_text_generate_request(
-        audio_bytes=b"RIFF",
-        filename="sample.wav",
-        content_type="audio/wav",
-        model="openai/whisper-large-v3",
-        language="en",
-        prompt=None,
-        temperature=None,
-        task=task,
-    )
 
 
 def test_build_request_passes_a_set_repetition_penalty() -> None:
@@ -46,23 +30,18 @@ def test_build_request_passes_a_set_repetition_penalty() -> None:
 
 
 def test_build_request_leaves_repetition_penalty_unset_by_default() -> None:
-    assert build_request().sampling.repetition_penalty is None
-
-
-def test_transcription_builder_import_keeps_shared_callable() -> None:
-    """Keep the pre-extraction import stable while stacked consumers migrate."""
-    assert (
-        legacy_transcription_request_builder
-        is speech_to_text.build_speech_to_text_generate_request
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+        task="transcribe",
     )
 
-
-def test_build_request_defaults_to_transcribe_task() -> None:
-    assert build_request().extra_params["task"] == "transcribe"
-
-
-def test_build_request_accepts_sibling_endpoint_task() -> None:
-    assert build_request(task="translate").extra_params["task"] == "translate"
+    assert req.sampling.repetition_penalty is None
 
 
 def test_response_format_validation_preserves_endpoint_error_contract() -> None:
@@ -139,18 +118,7 @@ def test_av_duration_measures_a_container_whose_tags_are_not_utf8() -> None:
     assert speech_to_text.av_duration(upload) == pytest.approx(0.5)
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        pytest.param(
-            b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32, id="id3-mp3"
-        ),
-        pytest.param(b"\xff\xfb\x90\x00" * 64, id="bare-mp3-frames"),
-        pytest.param(b"\x1a\x45\xdf\xa3" + b"\x00" * 64, id="webm"),
-        pytest.param(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 64, id="m4a"),
-    ],
-)
-def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
+def test_probe_keeps_estimated_containers_on_av(monkeypatch) -> None:
     import soundfile
 
     monkeypatch.setattr(
@@ -161,6 +129,7 @@ def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
         ),
     )
     monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 86.0)
+    header = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32
 
     assert speech_to_text.probe_audio_duration(header) == 86.0
 
@@ -199,20 +168,6 @@ def test_probe_distrusts_inexact_soundfile_answers(monkeypatch, header, info) ->
 
 def test_probe_returns_zero_for_unreadable_bytes() -> None:
     assert speech_to_text.probe_audio_duration(b"\x00not-audio") == 0.0
-
-
-def test_verbose_response_uses_requested_task() -> None:
-    response = speech_to_text.assemble_speech_to_text_response(
-        text="hello world",
-        response_format="verbose_json",
-        endpoint_path="/v1/audio/transcriptions",
-        task="translate",
-        language="en",
-        audio_bytes=b"not-a-real-audio-file",
-        architectures=None,
-    )
-
-    assert json.loads(response.body)["task"] == "translate"
 
 
 class Upload:

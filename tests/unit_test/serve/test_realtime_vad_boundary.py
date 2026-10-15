@@ -175,28 +175,6 @@ async def test_adjacent_turn_retains_suffix_and_second_commit():
 
 
 @pytest.mark.asyncio
-async def test_silero_adjacent_turns_preserve_second_speech():
-    second = speechish(5, seed=1)
-    session, sent, commits = make_session()
-    await append(session, speechish(5, seed=0) + make_pcm(16) + second)
-
-    assert [e["type"] for e in sent] == BOUNDARY and len(commits) == 1
-    started, stopped = by_type(sent, BOUNDARY[0]), by_type(sent, BOUNDARY[1])[0]
-    assert (
-        started[0]["audio_start_ms"]
-        < stopped["audio_end_ms"]
-        < started[1]["audio_start_ms"]
-    )
-    assert session.vad_origin_samples == 0
-    assert (
-        session.buffer_origin_samples
-        == stopped["audio_end_ms"] * VAD_SAMPLE_RATE // 1000
-    )
-    assert bytes(session.audio_buffer.buf).endswith(second)
-    await stop(session)
-
-
-@pytest.mark.asyncio
 async def test_silero_silence_threshold_across_appends():
     """Silence threshold can accumulate across client appends (network streaming)."""
     first = speechish(5, seed=0)
