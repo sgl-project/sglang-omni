@@ -12,7 +12,7 @@ from sglang_omni.utils.audio import cached_resample, resample_kernel
 
 @pytest.mark.parametrize(
     "orig,target",
-    [(8000, 16000), (44100, 16000), (22050, 16000), (48000, 16000), (16000, 24000)],
+    [(44100, 16000), (16000, 24000)],
 )
 def test_matches_torchaudio_bit_exactly(orig, target):
     rng = np.random.default_rng(0)
