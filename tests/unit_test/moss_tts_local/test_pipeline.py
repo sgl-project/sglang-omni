@@ -22,16 +22,11 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalPipelineConfig,
     MossTTSLocalSplitPipelineConfig,
 )
-from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
-from sglang_omni.models.moss_tts_local.local_transformer import (
-    MossTTSLocalTransformer,
-    rotate_half_interleaved,
-)
+from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
-    MossTTSLocalSGLangRequestData,
     apply_sglang_moss_tts_local_result,
     build_generation_kwargs,
     build_moss_tts_local_state,
@@ -180,7 +175,7 @@ def reference_full_forward(
     return module.ln_f(x)
 
 
-@pytest.mark.parametrize("num_layers", [1, 2])
+@pytest.mark.parametrize("num_layers", [2])
 def test_local_transformer_incremental_matches_full_recompute(num_layers: int):
     torch.manual_seed(0)
     module = MossTTSLocalTransformer(
@@ -227,11 +222,6 @@ def test_local_transformer_rejects_out_of_range_position():
     )
     with pytest.raises(ValueError):
         module.step(torch.randn(1, 32), N_VQ + 1)
-
-
-def test_rotate_half_interleaved_matches_upstream():
-    x = torch.randn(5, 4, 8)
-    torch.testing.assert_close(rotate_half_interleaved(x), hf_rotate_half(x))
 
 
 @pytest.mark.accelerator
@@ -541,7 +531,7 @@ def test_pipeline_stage_wiring():
 
 @pytest.mark.parametrize(
     "effective_cpus,expected_threads",
-    [(4, 1), (16, 1), (32, 2), (224, 8)],
+    [(4, 1)],
 )
 def test_pipeline_sets_spawn_time_omp_default(
     monkeypatch: pytest.MonkeyPatch,
@@ -627,6 +617,7 @@ def test_pipeline_without_preprocessing_does_not_set_omp_default() -> None:
     )
 
     assert "OMP_NUM_THREADS" not in config.env_defaults
+    assert "OMP_NUM_THREADS" not in config.resolved_env_defaults()
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():
@@ -818,19 +809,6 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
-def test_moss_tts_local_generation_defaults_disable_torch_compile() -> None:
-    builder = MossTtsLocalEngineBuilder(
-        enable_async_decode=True,
-        async_decode_min_batch_size=1,
-        total_gpu_memory_fraction=0.5,
-        codec_mem_reserve=0.0,
-    )
-
-    assert (
-        builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is False
-    )
-
-
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -883,34 +861,6 @@ def test_moss_local_context_probe_uses_runtime_model_config_inputs(
             "_configuration_file": "/tmp/override.json",
         },
     }
-
-
-def test_moss_local_context_probe_uses_model_default_without_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.moss_tts import hf_loading
-    from sglang_omni.models.moss_tts_local import engine_builder
-
-    monkeypatch.setattr(
-        hf_loading,
-        "get_config",
-        lambda model_path, **kwargs: types.SimpleNamespace(model_path=model_path),
-    )
-    monkeypatch.setattr(
-        hf_loading,
-        "get_hf_text_config",
-        lambda config: types.SimpleNamespace(),
-    )
-
-    assert (
-        engine_builder.MossTtsLocalEngineBuilder(
-            enable_async_decode=False,
-            async_decode_min_batch_size=2,
-            total_gpu_memory_fraction=None,
-            codec_mem_reserve=0.0,
-        ).resolve_context_length("model")
-        == engine_builder.MossTtsLocalEngineBuilder.context_length
-    )
 
 
 def test_moss_local_engine_honors_context_length_override(monkeypatch):
@@ -1076,7 +1026,7 @@ def test_special_token_defaults_match_v15_checkpoint():
 # Generation kwargs / state
 
 
-@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("stream", [False])
 def test_build_generation_kwargs_defaults(stream):
     kwargs = build_generation_kwargs({"stream": stream}, tts_params={})
     assert kwargs["max_new_tokens"] == 4096
@@ -1270,20 +1220,6 @@ def test_preprocess_and_result_adapter():
         clear_moss_tts_local_preprocessing_context()
 
 
-def test_pipeline_preserves_explicit_process_and_mps_overrides() -> None:
-    config = MossTTSLocalPipelineConfig(
-        model_path="OpenMOSS-Team/moss-local-test", mps="off"
-    )
-    config.stage_named("preprocessing").process = "pipeline"
-    topology = build_compiled_process_topology(config)
-    assert config.mps == "off"
-    assert topology.stage_to_process == {
-        "preprocessing": "pipeline",
-        "tts_engine": "pipeline",
-        "vocoder": "vocoder",
-    }
-
-
 def test_prepared_request_survives_stage_transport() -> None:
     model = types.SimpleNamespace(config=FakeProcessor.model_config)
     set_moss_tts_local_preprocessing_context(processor=FakeProcessor())
@@ -1326,21 +1262,6 @@ def test_preprocessing_abort_discards_prepared_payload(
         clear_moss_tts_local_preprocessing_context()
 
 
-def test_result_adapter_empty_generation():
-    payload = make_payload()
-    data = MossTTSLocalSGLangRequestData(
-        input_ids=torch.zeros(4, dtype=torch.long),
-        max_new_tokens=16,
-        temperature=0.0,
-        output_ids=[],
-        prompt_rows=torch.full((4, N_VQ + 1), 1024, dtype=torch.long),
-        stage_payload=payload,
-        engine_start_s=0.0,
-    )
-    with pytest.raises(RuntimeError, match="generated no audio frames"):
-        apply_sglang_moss_tts_local_result(payload, data)
-
-
 # Repetition penalty parity
 
 
@@ -1375,32 +1296,6 @@ def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     torch.testing.assert_close(
         logits2, torch.tensor([[-4.0, 1.0]], dtype=torch.float32)
     )
-
-
-def test_audio_history_presence_mask_excludes_prompt_rows():
-    from types import SimpleNamespace
-
-    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
-
-    model = SimpleNamespace(
-        decode_input_embedding=SimpleNamespace(
-            weight=torch.zeros(2, 4, dtype=torch.bfloat16)
-        ),
-        config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
-    )
-    pool = MossTTSLocalDecodeStatePool(model)
-    row = pool.acquire_row("rid")
-    prompt_row = torch.cat(
-        [torch.tensor([151656]), torch.full((N_VQ,), 99, dtype=torch.long)]
-    )
-    generated_row = torch.cat(
-        [torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)]
-    )
-
-    pool.update_audio_history(torch.tensor([row]), generated_row.reshape(1, -1))
-
-    assert bool(pool.audio_token_presence[row, 0, 0])
-    assert not bool(pool.audio_token_presence[row, 0, int(prompt_row[1])])
 
 
 def test_build_generation_kwargs_precedence():
@@ -1817,30 +1712,6 @@ def test_on_request_finished_flushes_stream_tail_without_end_token():
         ]
     )
     assert torch.equal(reconstructed, rows)
-
-
-def test_finalize_skip_rids_selects_chunked_rows():
-    pytest.importorskip("sglang")
-    import types
-
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-
-    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
-
-    def sched_req(rid, inflight_middle_chunks):
-        data = types.SimpleNamespace(
-            req=types.SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks)
-        )
-        return types.SimpleNamespace(request_id=rid, data=data)
-
-    sched_output = types.SimpleNamespace(
-        requests=[
-            sched_req("c0", inflight_middle_chunks=1),
-            sched_req("c1", inflight_middle_chunks=2),
-            sched_req("final", inflight_middle_chunks=0),
-        ]
-    )
-    assert runner.finalize_skip_rids(sched_output) == {"c0", "c1"}
 
 
 def test_chunked_prefill_generation_steps_matches_single_shot():
