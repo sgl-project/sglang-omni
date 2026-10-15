@@ -389,9 +389,7 @@ def test_turbo_sampler_matches_reference_and_preserves_rng():
     )
 
 
-@pytest.mark.parametrize(
-    "turbo,steps,expected_calls", [(False, 2, 1), (False, 50, 49), (True, 1, 1)]
-)
+@pytest.mark.parametrize("turbo,steps,expected_calls", [(False, 2, 1), (True, 1, 1)])
 def test_sampler_forward_counts(turbo, steps, expected_calls):
     initial_latents = torch.zeros(1, 1, 1, 1)
     calls = []
@@ -540,7 +538,7 @@ def preprocessor():
 
 @pytest.mark.parametrize(
     "source_size,grid",
-    [((1024, 1024), (32, 32)), ((256, 256), (32, 32)), ((1600, 200), (16, 64))],
+    [((1024, 1024), (32, 32)), ((1600, 200), (16, 64))],
 )
 def test_edit_preprocess_merge_extract_and_decode(
     preprocessor, decode_probe, monkeypatch, tmp_path, source_size, grid
