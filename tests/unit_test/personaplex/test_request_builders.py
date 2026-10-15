@@ -293,6 +293,7 @@ def test_rollout_stage_token_limit_alias_preserves_frame_budget() -> None:
     [
         ("audio_temperature", -1, "top_level"),
         ("audio_temperature", float("inf"), "stage_params"),
+        ("audio_temperature", float("nan"), "top_level"),
         ("audio_temperature", "0.5", "stage_params"),
         ("audio_temperature", True, "top_level"),
         ("audio_top_k", -5, "stage_params"),
