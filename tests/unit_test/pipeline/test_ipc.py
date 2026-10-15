@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import threading
 from collections.abc import Coroutine
 from pathlib import Path
 from traceback import format_exception
@@ -439,6 +440,7 @@ async def run_launcher_with_fake_runner(
     monkeypatch: pytest.MonkeyPatch,
     replica_counts: tuple[int, ...] = (1,),
     host: str = "0.0.0.0",
+    runner_stop_error: Exception | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
@@ -480,6 +482,10 @@ async def run_launcher_with_fake_runner(
 
         async def stop(self) -> None:
             self.stopped = True
+            if runner_stop_error is not None:
+                raise runner_stop_error
+            else:
+                pass
 
         async def wait_failed(self) -> None:
             await asyncio.Future()
@@ -1006,6 +1012,96 @@ async def test_launcher_stops_runner_when_server_raises(
         )
 
     server_serve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner_stop_error",
+    [None, RuntimeError("runner stop failed")],
+    ids=["runner-stop-success", "runner-stop-failure"],
+)
+async def test_coordinator_shutdown_always_finalizes_profiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_stop_error: Exception | None,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop()
+    else:
+        pass
+    event_dir = tmp_path / "events"
+    recorder.start("shutdown-finalization", str(event_dir), "coordinator")
+
+    server_serve = AsyncMock(return_value=None)
+    if runner_stop_error is None:
+        await run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    else:
+        with pytest.raises(RuntimeError, match="runner stop failed"):
+            await run_launcher_with_fake_runner(
+                config=make_config(tmp_path),
+                serve_mock=server_serve,
+                monkeypatch=monkeypatch,
+                runner_stop_error=runner_stop_error,
+            )
+    assert recorder.is_active() is False
+    assert len(list(event_dir.glob("run_status_*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop()
+    else:
+        pass
+    recorder.start("coordinator-shutdown", str(tmp_path / "events"), "coordinator")
+
+    loop = asyncio.get_running_loop()
+    wait_started = asyncio.Event()
+    release_wait = threading.Event()
+
+    def wait_for_finalizations(timeout_seconds: float) -> bool:
+        del timeout_seconds
+        loop.call_soon_threadsafe(wait_started.set)
+        return release_wait.wait(timeout=5)
+
+    monkeypatch.setattr(recorder, "wait_for_finalizations", wait_for_finalizations)
+    server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    task = asyncio.create_task(
+        run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    )
+    try:
+        await asyncio.wait_for(wait_started.wait(), timeout=5)
+        assert task.done() is False
+        release_wait.set()
+        with pytest.raises(RuntimeError, match="server failed"):
+            await task
+    finally:
+        release_wait.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        else:
+            pass
+        if recorder.is_active():
+            recorder.stop()
+        else:
+            pass
 
 
 @pytest.mark.asyncio

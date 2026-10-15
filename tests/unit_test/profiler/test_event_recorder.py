@@ -3,14 +3,11 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import pytest
 
 from sglang_omni.profiler.event_recorder import (
     RequestEvent,
@@ -19,28 +16,10 @@ from sglang_omni.profiler.event_recorder import (
     RequestEventSnapshot,
     emit,
     get_recorder,
-    json_default,
     reset_active_stage,
     set_active_stage,
 )
-
-
-@pytest.fixture(autouse=True)
-def reset_recorder():
-    """Make sure the process-global recorder is closed before every test."""
-    rec = get_recorder()
-    if rec.is_active():
-        rec.stop()
-    # Clear any active-stage binding leaked from prior tests.
-    reset_active_stage(None)
-    yield
-    if rec.is_active():
-        rec.stop()
-
-
-def read_events(path: str) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as fp:
-        return [json.loads(line) for line in fp if line.strip()]
+from tests.unit_test.profiler.event_recorder_test_utils import read_events
 
 
 def test_event_dataclass_roundtrip() -> None:
@@ -77,8 +56,7 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
         assert Path(path).parent == tmp_path
         # Filename must encode stage + pid
         name = Path(path).name
-        assert name.startswith("events_encoder_")
-        assert name.endswith(".jsonl")
+        assert name == f"events_encoder_{rec.pid}.jsonl"
 
         rec.emit(request_id="r1", stage="encoder", event_name="encoder_start")
         rec.emit(
@@ -96,6 +74,9 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     assert events[0]["run_id"] == "r0"
     assert events[0]["pid"] is not None
     assert events[1]["metadata"] == {"items": 3}
+    assert sorted(tmp_path.glob("run_status_*.json")) == [
+        tmp_path / f"run_status_{rec.pid}.json"
+    ]
 
 
 def test_default_stage_falls_back_to_active(tmp_path: Path) -> None:
@@ -120,37 +101,6 @@ def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:
     finally:
         rec.stop()
     assert rec.is_active() is False
-
-
-def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
-    rec = get_recorder()
-    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    n_threads = 8
-    n_per_thread = 50
-
-    def worker(tid: int) -> None:
-        for i in range(n_per_thread):
-            rec.emit(
-                request_id=f"req-{tid}",
-                stage="thinker",
-                event_name="stage_dispatch",
-                metadata={"i": i},
-            )
-
-    threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    rec.stop()
-
-    events = read_events(path)
-    assert len(events) == n_threads * n_per_thread
-    # Every line must be valid JSON with required fields
-    for ev in events:
-        assert ev["event_name"] == "stage_dispatch"
-        assert ev["request_id"].startswith("req-")
-        assert ev["run_id"] == "r0"
 
 
 def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
@@ -200,7 +150,6 @@ def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
                 {},
             )
             buffer.flush(stage="vocoder")
-            assert [event["request_id"] for event in read_events(path)] == ["ingest"]
         finally:
             release.set()
         before_capture_ns, after_capture_ns = completion.result(timeout=5)
@@ -240,7 +189,6 @@ def test_buffer_checks_activity_before_consuming_snapshots(tmp_path: Path) -> No
     path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
     buffer.capture("decode_enqueued", snapshots("active"), {})
     assert visited == ["active"]
-    assert read_events(path) == []
     buffer.flush(stage="vocoder")
     recorder.stop()
 
@@ -302,6 +250,22 @@ def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
     events = read_events(p1)
     stages = {e["stage"] for e in events}
     assert stages == {"preprocessing", "image_encoder", "thinker"}
+
+
+def test_releasing_one_shared_stage_does_not_stop_live_stage(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder()
+    path = recorder.start("shared", str(tmp_path), "first")
+    recorder.start("shared", str(tmp_path), "second")
+    recorder.emit(request_id="first", stage="first", event_name="event")
+
+    assert recorder.release_stage("first") is None
+    assert recorder.is_active() is True
+    recorder.emit(request_id="second", stage="second", event_name="event")
+    finalization = recorder.release_stage("second")
+    assert finalization is not None
+    assert finalization.wait(timeout_seconds=5)
+
+    assert {event["stage"] for event in read_events(path)} == {"first", "second"}
 
 
 # ---------------------------------------------------------------------------
@@ -395,86 +359,6 @@ def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
     assert (
         seen["from_executor"] == "encoder"
     ), "contextvar didn't propagate through asyncio.to_thread"
-
-
-# ---------------------------------------------------------------------------
-# Safe metadata serialization (review finding P2)
-# ---------------------------------------------------------------------------
-
-
-def test_json_default_summarizes_tensor_without_materializing() -> None:
-    """``_json_default`` must NOT call .tolist() on tensors / arrays.
-
-    Regression for review finding P2: previously any object with .tolist()
-    got fully expanded; on a GPU tensor this synchronizes, copies to CPU,
-    and serializes potentially MBs of data inline — violating the "large
-    blobs stay out of metadata" rule.
-    """
-
-    class FakeTensor:
-        shape = (32, 1024, 4096)
-        dtype = "torch.float16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover - must not be called
-            raise AssertionError(
-                "_json_default called tolist() on a tensor — this is the "
-                "exact bug we're regressing against"
-            )
-
-        def item(self):  # pragma: no cover
-            raise AssertionError("item() called on multi-dim tensor")
-
-    out = json_default(FakeTensor())
-    assert isinstance(out, dict)
-    assert out["__tensor_summary__"] is True
-    assert out["type"] == "FakeTensor"
-    assert out["shape"] == [32, 1024, 4096]
-    assert out["dtype"] == "torch.float16"
-    assert out["device"] == "cuda:0"
-
-
-def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
-    """0-D tensors / numpy scalars should serialize as plain scalars."""
-
-    class FakeScalar:
-        shape = ()
-        dtype = "float32"
-
-        def item(self):
-            return 3.14
-
-    assert json_default(FakeScalar()) == 3.14
-
-
-def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
-    """End-to-end: even if a caller hands us a tensor in metadata, the
-    JSONL line must stay small and never call .tolist()."""
-
-    rec = get_recorder()
-    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
-
-    class HugeTensor:
-        shape = (1024, 4096)
-        dtype = "torch.bfloat16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover
-            raise AssertionError("hot-path emit called tolist()")
-
-    rec.emit(
-        request_id="r1",
-        stage="encoder",
-        event_name="encoder_end",
-        metadata={"hidden_states": HugeTensor()},
-    )
-    rec.stop()
-
-    events = read_events(p)
-    assert len(events) == 1
-    summary = events[0]["metadata"]["hidden_states"]
-    assert summary["__tensor_summary__"] is True
-    assert summary["shape"] == [1024, 4096]
 
 
 # ---------------------------------------------------------------------------

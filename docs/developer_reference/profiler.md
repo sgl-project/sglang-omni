@@ -35,11 +35,40 @@ JSONL file. The shape:
 }
 ```
 
-Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple
-co-located stages in the same OS process share **one** JSONL file — the
-filename uses the first stage to start, and the per-event `stage` field
-identifies the owner. The views layer merges files from every process by
-`request_id`.
+Files are written under
+`<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located
+stages in the same OS process share **one** JSONL file — the filename uses the
+first stage to start, and the per-event `stage` field identifies the owner. The
+views layer merges files from every process by `request_id`. The writer creates
+each JSONL file exclusively; an existing file is a storage failure rather than
+an append target.
+
+The recorder uses one bounded queue and one dedicated writer thread per
+process. The default queue capacity is 8192 events and can be reduced in unit
+tests by constructing `RequestEventRecorder(queue_capacity=...)`. Producers
+capture timestamps, stage attribution, and bounded JSON-like metadata before
+using a nonblocking enqueue. JSON serialization, file operations, and flushes
+run only on the writer thread. Events may therefore be delayed on disk while
+profiling is active; consumers must treat JSONL measurements as provisional
+until the corresponding finalized status sidecar exists and reports
+`complete: true`.
+
+Each finalized run also writes
+`run_status_<pid>.json` beside the JSONL file. It
+records the run ID, accepted/processed/written/unwritten/dropped counts, writer
+failures, stages, and `complete`; that flag has `completeness_scope` set to
+`event_storage` and does not claim semantic timing coverage. Queue overflow,
+writer failure, metadata snapshot failure, and metadata truncation mark the run
+incomplete. Consumers must not treat a missing sidecar, or a sidecar with
+`complete: false`, as a complete trace.
+
+Metadata is intentionally limited to scalars, JSON-like mappings/sequences,
+and tensor-like values represented by shape/dtype/device summaries. Tensor
+contents are never materialized by the producer. Unsupported values are
+rejected without calling arbitrary `repr`; the serving path records a metadata
+snapshot failure and continues. Strings are bounded, and bytes are unsupported
+rather than copied into the trace. Bounded depth/item truncation is recorded in
+the event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 
@@ -197,6 +226,17 @@ clears both the thread-local slot and the contextvar.
 
 ## Lifecycle
 
+**Intended use and assumptions:** Request event profiling is an opt-in tool for
+controlled performance investigations, not an always-on logging or recovery
+service. Use a **unique `run_id` and a fresh, empty `event_dir` for each
+recording**. Reusing a run ID or output directory, resuming a recording after
+a process restart, and recovering or appending to earlier artifacts are not
+supported workflows. If an artifact path already exists, start a new recording
+with a fresh directory instead of attempting recovery. A different run ID may
+replace the active run while the old run drains asynchronously, but only one
+run is active in a process. These scenarios do not justify additional
+restart/collision-handling machinery in the recorder.
+
 The recorder is process-local. It is started on every stage and on the
 coordinator when `POST /start_profile` (or `POST /start_request_profile`)
 is hit:
@@ -209,8 +249,21 @@ is hit:
    the first stage to call `start()` wins the filename; every subsequent
    stage in the same process writes to the same file and the per-event
    `stage` field disambiguates.
-5. On `POST /stop_profile`, the recorder is closed everywhere; files
-   remain on disk under `<event_dir>`.
+5. On `POST /stop_profile`, every process deactivates its current run without
+   joining the writer on its serving/control loop. Accepted events still drain
+   and the writer creates the status sidecar during finalization. The HTTP
+   response is not an acknowledgement that every process has finalized its
+   artifact; inspect every expected process sidecar before analysis.
+
+The Python API keeps the older synchronous behavior for administrative callers
+and unit tests: `RequestEventRecorder.stop()` waits until its local run is
+finalized. It returns the event path for both complete and `complete=false`
+sidecars, and returns `None` when the finalization handle times out or fails to
+publish its sidecar. Serving control paths use `stop(wait=False)` or
+`deactivate()` and may later wait on the returned `RequestEventFinalization`
+handle. Shutdown cleanup waits outside the asyncio event loop for a bounded
+interval. A stalled or failed writer cannot block serving, but the resulting
+status must be treated as incomplete.
 
 `POST /stop_profile` and `POST /stop_request_profile` accept an optional
 `run_id` field. When **omitted**, the request is a wildcard: every stage
@@ -302,15 +355,18 @@ python -m sglang_omni.profiler /tmp/profiles/demo/events --format table
 
 ## Discipline
 
-- **Profiling must never break serving.** The emitter swallows write
-  errors and counts drops; the first failure is logged once.
+- **Profiling must never break serving.** The emitter performs no JSON
+  serialization or file I/O and never blocks on a full queue. It counts queue
+  drops; writer failures are recorded in the run status and the first failure
+  is logged once.
 - **Tensors and large blobs stay out of event metadata.** Keep metadata
   to small scalars (ids, counts, durations, modality, error strings). The
   recorder enforces this defensively: if a tensor / numpy array ends up
-  in metadata, `_json_default` serializes a summary
-  (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
-  "...", "device": "..."}`) instead of materializing the contents. 0-D
-  tensors / numpy scalars still serialize as plain scalars.
+  in metadata, the JSON default serializer emits a summary
+    (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
+    "...", "device": "..."}`) instead of materializing the contents. CPU
+    0-D tensors / numpy scalars still serialize as plain scalars; device-backed
+    0-D values remain summaries.
 - **Event naming.** Lowercase snake_case, prefix with the layer that
   owns the event (`stage_*`, `scheduler_*`, `encoder_*`, etc.). Use the
   stage name (not the event name) to distinguish "thinker prefill start"

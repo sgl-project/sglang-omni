@@ -39,6 +39,9 @@ from sglang_omni.pipeline.tp_control import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
+from sglang_omni.profiler.event_recorder import (
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS as _DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -366,6 +369,18 @@ class Stage:
             await self.comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
+        recorder = _get_recorder()
+        recorder.release_stage(self.name)
+        finalization_complete = await asyncio.to_thread(
+            recorder.wait_for_finalizations, _DEFAULT_FINALIZATION_TIMEOUT_SECONDS
+        )
+        if not finalization_complete:
+            logger.warning(
+                f"Stage {self.name} profiler event finalization did not finish "
+                f"within {_DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+            )
+        else:
+            pass
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -2356,7 +2371,7 @@ class Stage:
         if recorder.is_active() and (
             msg.run_id is None or recorder.active_run_id() == msg.run_id
         ):
-            recorder.stop(run_id=msg.run_id)
+            recorder.stop(run_id=msg.run_id, wait=False)
         else:
             pass
 
