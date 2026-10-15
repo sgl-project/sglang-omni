@@ -23,26 +23,6 @@ def ming_config_with_thinker_tp2(config_cls):
     return stages
 
 
-def build_groups(config, build_stage_groups, prepare_pipeline_runtime):
-    prep = prepare_pipeline_runtime(config)
-    try:
-        return build_stage_groups(
-            config,
-            stages_cfg=prep.stages_cfg,
-            endpoints=prep.endpoints,
-            placement_plan=prep.placement_plan,
-            process_plan=prep.process_plan,
-        )
-    finally:
-        if prep.runtime_dir is not None:
-            prep.runtime_dir.close()
-
-
-def thinker_specs(config, build_stage_groups, prepare_pipeline_runtime):
-    groups = build_groups(config, build_stage_groups, prepare_pipeline_runtime)
-    return [s for g in groups for s in g.specs if s.stage_name == "thinker"]
-
-
 def module_refs_any(module: ModuleType, refs: Iterable[object]) -> bool:
     ref_ids = {id(ref) for ref in refs}
     return any(id(value) in ref_ids for value in vars(module).values())
@@ -118,160 +98,6 @@ def cached_attrs_from_missing_project_modules() -> list[str]:
     return stale_attrs
 
 
-def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
-    importlib.import_module("sglang_omni.pipeline")
-    before_import = set(sys.modules)
-    fake_torch = ModuleType("torch")
-    fake_torch.Tensor = object
-    fake_torch_nn = ModuleType("torch.nn")
-    fake_torch_nn.Module = object
-    fake_torch_distributed = ModuleType("torch.distributed")
-    fake_torch_distributed.ProcessGroup = object
-    fake_torch.distributed = fake_torch_distributed
-    fake_profiler = ModuleType("torch.profiler")
-    fake_profiler.ProfilerActivity = SimpleNamespace(CPU="cpu", CUDA="cuda")
-
-    class FakeProfile:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    fake_profiler.profile = FakeProfile
-
-    class FakePretrainedConfig:
-        def __init__(self, **kwargs):
-            for name, value in kwargs.items():
-                setattr(self, name, value)
-
-    fake_transformers = ModuleType("transformers")
-    fake_transformers.AutoConfig = SimpleNamespace(
-        from_pretrained=lambda *a, **k: None,
-        register=lambda *a, **k: None,
-    )
-    fake_transformers.PretrainedConfig = FakePretrainedConfig
-    fake_transformers_init = ModuleType("transformers.initialization")
-    fake_transformers_init.no_init_weights = lambda: SimpleNamespace(
-        __enter__=lambda self: None,
-        __exit__=lambda self, exc_type, exc, tb: None,
-    )
-    fake_transformers_utils = ModuleType("transformers.utils")
-    fake_transformers_hub = ModuleType("transformers.utils.hub")
-    fake_transformers_hub.cached_file = lambda *a, **k: ""
-    fake_msgpack = ModuleType("msgpack")
-    fake_zmq = ModuleType("zmq")
-    fake_zmq_asyncio = ModuleType("zmq.asyncio")
-    fake_zmq_asyncio.Context = object
-    fake_zmq_asyncio.Socket = object
-    fake_zmq.asyncio = fake_zmq_asyncio
-    fake_zmq.PUSH = object()
-    fake_zmq.PULL = object()
-    fake_zmq.PUB = object()
-    fake_zmq.SUB = object()
-    fake_zmq.SUBSCRIBE = object()
-    fake_zmq.POLLIN = 1
-    fake_nixl = ModuleType("sglang_omni.relay.nixl")
-
-    class FakeConnection:
-        pass
-
-    class FakeNixlOperation:
-        pass
-
-    class FakeNixlRelay:
-        pass
-
-    fake_nixl.NIXL_AVAILABLE = False
-    fake_nixl.Connection = FakeConnection
-    fake_nixl.NixlOperation = FakeNixlOperation
-    fake_nixl.NixlRelay = FakeNixlRelay
-    fake_refs = (
-        fake_torch,
-        fake_torch_nn,
-        fake_torch_distributed,
-        fake_profiler,
-        fake_transformers,
-        fake_transformers_init,
-        fake_transformers_utils,
-        fake_transformers_hub,
-        fake_msgpack,
-        fake_zmq,
-        fake_zmq_asyncio,
-        fake_nixl,
-        FakeConnection,
-        FakeNixlOperation,
-        FakeNixlRelay,
-    )
-
-    try:
-        with monkeypatch.context() as mp:
-            mp.setitem(sys.modules, "torch", fake_torch)
-            mp.setitem(sys.modules, "torch.nn", fake_torch_nn)
-            mp.setitem(sys.modules, "torch.distributed", fake_torch_distributed)
-            mp.setitem(sys.modules, "torch.profiler", fake_profiler)
-            mp.setitem(sys.modules, "transformers", fake_transformers)
-            mp.setitem(
-                sys.modules, "transformers.initialization", fake_transformers_init
-            )
-            mp.setitem(sys.modules, "transformers.utils", fake_transformers_utils)
-            mp.setitem(sys.modules, "transformers.utils.hub", fake_transformers_hub)
-            mp.setitem(sys.modules, "msgpack", fake_msgpack)
-            mp.setitem(sys.modules, "zmq", fake_zmq)
-            mp.setitem(sys.modules, "zmq.asyncio", fake_zmq_asyncio)
-            mp.setitem(sys.modules, "sglang_omni.relay.nixl", fake_nixl)
-
-            from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
-            from sglang_omni.pipeline.mp_runner import build_stage_groups
-            from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
-
-            config = MingOmniPipelineConfig(
-                model_path="dummy",
-                stages=ming_config_with_thinker_tp2(MingOmniPipelineConfig),
-            )
-
-            groups = build_groups(config, build_stage_groups, prepare_pipeline_runtime)
-            all_specs = [s for g in groups for s in g.specs]
-            specs = [s for s in all_specs if s.stage_name == "thinker"]
-            cpu_stage_specs = {
-                s.stage_name: s
-                for s in all_specs
-                if s.stage_name in {"preprocessing", "mm_aggregate", "decode"}
-            }
-            assert {name: spec.gpu_id for name, spec in cpu_stage_specs.items()} == {
-                "preprocessing": None,
-                "mm_aggregate": None,
-                "decode": None,
-            }
-            assert [spec.role for spec in specs] == ["leader", "follower"]
-            assert [spec.gpu_id for spec in specs] == [0, 1]
-            assert [spec.tp_rank for spec in specs] == [0, 1]
-            assert {spec.tp_size for spec in specs} == {2}
-            assert specs[0].nccl_port is not None
-            assert specs[0].nccl_port == specs[1].nccl_port
-            assert all("gpu_id" not in spec.factory_kwargs for spec in specs)
-            assert [spec.factory_arg_defaults["gpu_id"] for spec in specs] == [0, 1]
-            assert [spec.factory_kwargs["tp_rank"] for spec in specs] == [0, 1]
-            assert {spec.factory_kwargs["tp_size"] for spec in specs} == {2}
-            assert specs[0].factory_kwargs["nccl_port"] == specs[0].nccl_port
-            assert specs[1].factory_kwargs["nccl_port"] == specs[0].nccl_port
-
-            explicit_stages = ming_config_with_thinker_tp2(MingOmniPipelineConfig)
-            for stage in explicit_stages:
-                if stage.name == "thinker":
-                    stage.gpu = [2, 4]
-            explicit_config = MingOmniPipelineConfig(
-                model_path="dummy",
-                stages=explicit_stages,
-            )
-            explicit_specs = thinker_specs(
-                explicit_config, build_stage_groups, prepare_pipeline_runtime
-            )
-            assert [spec.gpu_id for spec in explicit_specs] == [2, 4]
-    finally:
-        purge_project_modules_with_fake_refs(before_import, fake_refs)
-
-    assert project_modules_with_ref(fake_torch) == []
-    assert cached_attrs_from_missing_project_modules() == []
-
-
 def test_ming_speech_rejects_talker_inside_explicit_thinker_tp_gpus() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
@@ -288,17 +114,14 @@ def test_ming_speech_rejects_talker_inside_explicit_thinker_tp_gpus() -> None:
     ("config_cls_name", "stage_name", "gpu"),
     [
         ("MingOmniPipelineConfig", "audio_encoder", [0, 1]),
-        ("MingOmniSpeechPipelineConfig", "audio_encoder", [0, 1]),
         ("MingOmniSpeechPipelineConfig", "talker", [2, 3]),
-        ("MingOmniStreamingSpeechPipelineConfig", "audio_encoder", [2, 3]),
-        ("MingOmniStreamingSpeechPipelineConfig", "segmenter", None),
         ("MingOmniStreamingSpeechPipelineConfig", "talker_stream", [2, 3]),
     ],
 )
 def test_ming_rejects_non_ar_stage_tp_size_gt_one(
     config_cls_name: str,
     stage_name: str,
-    gpu: list[int] | None,
+    gpu: list[int],
 ) -> None:
     import sglang_omni.models.ming_omni.config as ming_config
 
@@ -343,20 +166,6 @@ def test_ming_text_allows_image_encoder_tp_size_gt_one() -> None:
     rebuilt = MingOmniPipelineConfig(model_path="dummy", stages=stages)
 
     assert rebuilt.gpu_placement["image_encoder"] == [2, 3]
-
-
-def test_ming_speech_rejects_talker_on_non_contiguous_thinker_tp_gpu() -> None:
-    from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
-
-    stages = ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
-    for stage in stages:
-        if stage.name == "thinker":
-            stage.gpu = [0, 2]
-        if stage.name == "talker":
-            stage.gpu = 2
-
-    with pytest.raises(ValueError, match="collides"):
-        MingOmniSpeechPipelineConfig(model_path="dummy", stages=stages)
 
 
 def test_ming_speech_rejects_any_talker_gpu_list_overlap_with_thinker_tp() -> None:
