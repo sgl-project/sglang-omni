@@ -155,7 +155,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         return tower.proj2(h)[0]
 
     def capture_boundaries(
-        self, bucket_size: int, window_lens: tuple[int, ...] | None
+        self, bucket_size: int
     ) -> tuple[torch.Tensor, VisionAttentionMetadata | None]:
         max_windows = self.max_windows_for(bucket_size)
         base, rem = divmod(bucket_size, max_windows)
@@ -179,17 +179,13 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             pass
         return static_cu, attention_metadata
 
-    def capture(
-        self, bucket_size: int, *, window_lens: tuple[int, ...] | None = None
-    ) -> CapturedGraph:
+    def capture(self, bucket_size: int) -> CapturedGraph:
         """Record one graph for a bucket-sized packed input."""
         device, dtype = self.device, self.dtype
         d_model = self.tower.ln_post.normalized_shape[0]
         static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
 
-        static_cu, attention_metadata = self.capture_boundaries(
-            bucket_size, window_lens
-        )
+        static_cu, attention_metadata = self.capture_boundaries(bucket_size)
         max_windows = static_cu.numel() - 1
         self.capture_attention_metadata = attention_metadata
 
@@ -259,9 +255,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         entry = self.graphs.get(bucket_size)
         if entry is None:
             try:
-                entry = self.capture(
-                    bucket_size, window_lens=tuple(window_lens + dummy_sizes)
-                )
+                entry = self.capture(bucket_size)
             except Exception as exc:
                 logger.warning(
                     "[qwen3-asr] encoder graph capture failed for bucket=%d: %s; "

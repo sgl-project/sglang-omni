@@ -24,6 +24,7 @@ from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 from transformers import PretrainedConfig
 
+from sglang_omni.models.qwen3_asr.encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
 from sglang_omni.platforms import current_platform
 
 from .configuration_qwen3_asr import Qwen3ASRConfig
@@ -182,8 +183,6 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         else:
             pass
         if device.type == "npu":
-            from .encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
-
             runner_cls = Qwen3ASREncoderNpuGraphRunner
         else:
             runner_cls = Qwen3ASREncoderLayerStackGraphRunner

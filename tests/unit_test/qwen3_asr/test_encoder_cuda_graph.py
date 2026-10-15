@@ -226,6 +226,9 @@ def test_graph_matches_eager_tower(asr_server_args):
     # graph memory may assume away.
     sequence = ([500], [450], [300, 500, 120], [800, 800, 800, 800])
     check(sequence[0])
+    if tower_device.type == "npu":
+        entry = next(iter(runner.graphs.values()))
+        assert entry.cu_seqlens[1].item() != qwen3_asr_num_audio_tokens(sequence[0][0])
     graph_count = len(runner.graphs)
     check(sequence[1])
     assert len(runner.graphs) == graph_count
@@ -266,6 +269,7 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
 def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails):
     runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
     runner.max_seqlen = 8
+    runner.max_windows_for = lambda bucket: 2
     runner.graphs = {}
     runner.failed = set()
     runner.plan = lambda total, windows: (8, [8 - total])
@@ -293,8 +297,9 @@ def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails
         assert waits == [caller] * (len(updates) + 1)
         replay_started.set()
 
-    def capture(bucket_size, *, window_lens):
-        captures.append(window_lens)
+    def capture(bucket_size):
+        cu, metadata = runner.capture_boundaries(bucket_size)
+        captures.append(cu.tolist())
         runner.update_tasks[bucket_size] = (SimpleNamespace(apply=apply),)
         return SimpleNamespace(
             hidden_states=torch.zeros(8, 2),
@@ -311,15 +316,15 @@ def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails
         runner.update_executor = executor
         runner.capture_all()
         assert not runner.graphs
-        for length in (4, 3):
+        for length in (3, 2):
             replay_started.clear()
             if update_fails:
                 with pytest.raises(RuntimeError, match="update failed"):
                     runner.run(torch.ones(length, 2), [length])
             else:
                 assert runner.run(torch.ones(length, 2), [length]) is not None
-    assert captures == [(4, 4)]
-    assert [bounds for _, bounds in updates] == [[4, 8], [3, 8]]
+    assert captures == [[0, 4, 8]]
+    assert [bounds for _, bounds in updates] == [[3, 8], [2, 8]]
     assert updates[0][0] == updates[1][0] != caller
 
 
@@ -388,7 +393,10 @@ def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkey
     original = torch.nn.Identity()
     attention = SimpleNamespace(qkv_backend_name="ascend_attn", qkv_backend=original)
     runner.tower = SimpleNamespace(layers=[SimpleNamespace(self_attn=attention)])
-    metadata = SimpleNamespace(cu_seqlens=torch.tensor([0, 3, 8], dtype=torch.int32))
+    runner.max_seqlen = 8
+    runner.max_windows_for = lambda bucket: 2
+    cu, metadata = runner.capture_boundaries(8)
+    assert cu.device.type == "cpu"
 
     graph, output = runner.record_graph(
         8,
@@ -406,8 +414,8 @@ def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkey
     assert task.handle == "fia-handle"
     assert [call[0] for call in calls] == ["wait", "reset", "begin", "operation"]
     capture_kwargs = calls[-1][1]
-    assert capture_kwargs["actual_seq_lengths"] == [3, 8]
-    assert capture_kwargs["actual_seq_lengths_kv"] == [3, 8]
+    assert capture_kwargs["actual_seq_lengths"] == [4, 8]
+    assert capture_kwargs["actual_seq_lengths_kv"] == [4, 8]
 
     calls.clear()
     task.apply(device_module, "update-stream", [2, 8])

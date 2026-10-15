@@ -8,28 +8,27 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import accumulate
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import torch
-from sglang.srt.layers.attention.vision import VisionAttentionMetadata
+from sglang.srt.layers.attention.vision import VisionAttention, VisionAttentionMetadata
+from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     CapturedGraph,
     Qwen3ASREncoderLayerStackGraphRunner,
 )
-from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
-
-if TYPE_CHECKING:
-    from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
-else:
-    pass
+from sglang_omni.platforms.device_graph import (
+    DeviceGraphBackend,
+    DeviceGraphPool,
+    ReplayableGraph,
+)
 
 
 @dataclass
 class NpuGraphUpdateTask:
     """One captured FIA task whose host-side sequence boundaries can change."""
 
-    operation: Any
     kwargs: dict[str, Any]
     handle: Any
     event: Any
@@ -41,7 +40,7 @@ class NpuGraphUpdateTask:
         cumulative_window_lens: list[int],
     ) -> None:
         device_module.graph_task_update_begin(update_stream, self.handle)
-        self.operation(
+        torch.ops.npu.npu_fused_infer_attention_score.out(
             **self.kwargs,
             actual_seq_lengths=cumulative_window_lens,
             actual_seq_lengths_kv=cumulative_window_lens,
@@ -80,15 +79,6 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         softmax_scale: float | None = None,
         **kwargs: object,
     ) -> torch.Tensor:
-        del kwargs
-        if forward_metadata is None or attention_mask is not None:
-            raise RuntimeError(
-                "NPU encoder graph capture requires unmasked Ascend attention "
-                "with precomputed sequence metadata"
-            )
-        else:
-            pass
-
         cumulative_window_lens = (
             forward_metadata.cu_seqlens[1:].to(torch.int32).tolist()
         )
@@ -125,7 +115,6 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         else:
             pass
 
-        operation = torch.ops.npu.npu_fused_infer_attention_score.out
         operation_kwargs = {
             **fia_kwargs,
             "workspace": context.workspace,
@@ -137,7 +126,7 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         event.wait(stream)
         event.reset(stream)
         device_module.graph_task_group_begin(stream)
-        operation(
+        torch.ops.npu.npu_fused_infer_attention_score.out(
             **operation_kwargs,
             actual_seq_lengths=cumulative_window_lens,
             actual_seq_lengths_kv=cumulative_window_lens,
@@ -145,7 +134,6 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         handle = device_module.graph_task_group_end(stream)
         context.tasks.append(
             NpuGraphUpdateTask(
-                operation=operation,
                 kwargs=operation_kwargs,
                 handle=handle,
                 event=event,
@@ -171,10 +159,10 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
             max_batch_size=max_batch_size,
             graph_backend=graph_backend,
         )
-        self.graph_pool = None
+        self.graph_pool: DeviceGraphPool | None = None
         self.update_tasks: dict[int, tuple[NpuGraphUpdateTask, ...]] = {}
         self.update_stream = self.device_module.Stream(device=self.device)
-        # The runner and executor live for the model's lifetime.
+        # Note (wangyao-i): The runner and executor live for the model's lifetime.
         self.update_executor = ThreadPoolExecutor(
             max_workers=1,
             initializer=self.device_module.set_device,
@@ -182,16 +170,15 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
         )
 
     def capture_all(self) -> None:
-        """Ascend captures lazily using the first batch's window boundaries."""
+        """Ascend captures each bucket lazily on first use."""
 
     def capture_boundaries(
-        self, bucket_size: int, window_lens: tuple[int, ...] | None
+        self, bucket_size: int
     ) -> tuple[torch.Tensor, VisionAttentionMetadata]:
-        if not window_lens or sum(window_lens) != bucket_size:
-            raise ValueError("NPU graph capture requires exact window boundaries")
-        else:
-            pass
-        cu = torch.tensor(list(accumulate(window_lens, initial=0)), dtype=torch.int32)
+        max_windows = self.max_windows_for(bucket_size)
+        base, rem = divmod(bucket_size, max_windows)
+        sizes = [base + 1] * rem + [base] * (max_windows - rem)
+        cu = torch.tensor(list(accumulate(sizes, initial=0)), dtype=torch.int32)
         return cu, VisionAttentionMetadata(
             cu_seqlens=cu,
             seq_lens=cu[1:] - cu[:-1],
@@ -206,7 +193,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
             self.graph_pool = self.graph_backend.graph_pool_handle()
         else:
             pass
-        replacements: list[tuple[Any, torch.nn.Module]] = []
+        replacements: list[tuple[VisionAttention, torch.nn.Module]] = []
         try:
             for layer in self.tower.layers:
                 attention = layer.self_attn
@@ -236,7 +223,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
 
     def replay(self, entry: CapturedGraph, cu: torch.Tensor) -> None:
         cumulative_window_lens = cu[1:].tolist()
-        # Record the dependency before replay can enqueue waits for FIA updates.
+        # Note (wangyao-i): Record the dependency before replay waits for FIA updates.
         self.update_stream.wait_stream(self.device_module.current_stream())
 
         def update_attention_tasks() -> None:
