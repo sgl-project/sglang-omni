@@ -78,7 +78,13 @@ class Latent2Wav(nn.Module):
         groups = int(config["groups"])
         layers: list[nn.Module] = []
         in_channels = int(config["latent_size"])
+        self.spectrogram_frames_per_code: int = 1
+        self.left_context_spectrogram_frames: int = 0
         for mult, rate in zip(reversed(mults), reversed(rates)):
+            self.spectrogram_frames_per_code *= rate
+            self.left_context_spectrogram_frames = (
+                self.left_context_spectrogram_frames * rate + blocks * (kernel_size - 1)
+            )
             channels = base * mult
             layers.append(
                 nn.ConvTranspose1d(
@@ -154,6 +160,22 @@ class RVQVAEDecoder(nn.Module):
             "silence_codes",
             torch.empty(self.num_quantizers, dtype=torch.long),
             persistent=False,
+        )
+
+    def required_context_frames(self, holdback_samples: int) -> int:
+        """Include causal convolutions and iSTFT overlap for held-back samples."""
+        decoder = self.decoder
+        assert (
+            self.samples_per_frame
+            == decoder.spectrogram_frames_per_code * decoder.hop_length
+        )
+        padding_samples = (decoder.n_fft - decoder.hop_length) // 2
+        first_spectrogram_frame = (
+            -holdback_samples + padding_samples - decoder.n_fft
+        ) // decoder.hop_length + 1
+        return -(
+            (first_spectrogram_frame - decoder.left_context_spectrogram_frames)
+            // decoder.spectrogram_frames_per_code
         )
 
     def forward(self, codes_TQ):

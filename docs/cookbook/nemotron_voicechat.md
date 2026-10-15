@@ -46,6 +46,33 @@ The reply text is the thinker's spoken tokens only; frames where the model is li
 
 For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
 
+### Streaming codec chunk sizes
+
+The offline pipeline's streaming output defaults to one codec frame per decode.
+To reduce decoder calls and audio transfers, set the code2wav factory's
+`chunk_frames` when building the pipeline:
+
+```python
+config = NemotronVoiceChatPipelineConfig(model_path=model_path)
+code2wav = next(stage for stage in config.stages if stage.name == "code2wav")
+code2wav.factory = code2wav.factory.model_copy(
+    update={"chunk_frames": (1, 1, 1, 1, 2, 2, 4)}
+)
+```
+
+Each entry is the number of **new** codec frames to collect for a decode; the
+last entry repeats for the rest of the request. This example emits four small
+chunks before growing to two frames and then four (320 ms of audio per steady
+chunk). `(1,)` restores the default cadence. The schedule restarts for each
+request, and end-of-stream flushes a partially filled chunk.
+
+Larger chunks trade playback arrival frequency for fewer decoder calls. Measure
+both first-chunk latency and playback underruns with the intended client buffer
+before enabling a ramp. This setting does not control the native realtime duplex
+pipeline. Chunk sizes must be positive integers and leave enough history in the
+16-frame decode window for the checkpoint's causal decoder and held-back tail;
+invalid schedules fail when the code2wav scheduler is created.
+
 ## Realtime conversation
 
 ```bash
