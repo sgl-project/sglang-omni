@@ -127,8 +127,8 @@ for a full Python raw PCM consumer.
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream raw PCM audio chunks |
 
-> Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so sampling
-> parameters such as `top_p`, `top_k`, and `temperature` are not used. Reference-clip voice
+> Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so a request
+> that sets `temperature`, `top_p`, `top_k`, `repetition_penalty` or `seed` is rejected. Reference-clip voice
 > cloning (`references`) is **not** supported for Voxtral — use a preset `voice` instead.
 
 ## Benchmark Results

@@ -71,14 +71,7 @@ def test_build_ttm_state_rejects_ignored_speech_controls(
 @pytest.mark.parametrize("name", ["temperature", "top_p", "top_k"])
 def test_build_ttm_state_rejects_explicit_sampling_controls(name: str) -> None:
     with pytest.raises(ValueError, match="sampling parameters"):
-        build_ttm_state(
-            payload(
-                tts_params={
-                    name: 0.5,
-                    "explicit_generation_params": [name],
-                }
-            )
-        )
+        build_ttm_state(payload(params={name: 0.5}))
 
 
 def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:

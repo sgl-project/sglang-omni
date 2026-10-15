@@ -7,6 +7,7 @@ from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
+from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
@@ -44,6 +45,7 @@ class RuntimeLimits:
     max_output_events: int = 256
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
+    session_update_timeout_s: float = 60
 
     def __post_init__(self) -> None:
         if any(
@@ -154,6 +156,7 @@ class Unit:
     eos: bool = False
     output_modalities: tuple[str, ...] | None = None
     images: tuple[bytes, ...] = ()
+    ready_observation: SessionUnitReadyObservation | None = None
 
     @property
     def unit_id(self) -> str:

@@ -531,6 +531,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     from sglang_omni.models.moss_tts import stages
 
     codec = nn.Module()
+    codec.dummy = nn.Parameter(torch.zeros(1))
     codec.decoder = nn.ModuleList()
     audio_vocoder = SimpleNamespace(
         model=codec,

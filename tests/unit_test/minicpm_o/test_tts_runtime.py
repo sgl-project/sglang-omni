@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import StreamChunk
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
     MiniCPMOVocoderRuntime,
+    SynthesisRequest,
 )
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
@@ -20,6 +22,7 @@ class FakeToken2Wav:
 
     def __init__(self) -> None:
         self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD)
+        self.device = torch.device("cpu")
         self.opened = 0
 
     def open_stream(self, prompt: tuple[torch.Tensor, ...]) -> tuple[dict, dict]:
@@ -28,15 +31,12 @@ class FakeToken2Wav:
             "speech": torch.zeros(16)
         }
 
-    def stream(
-        self,
-        tokens: list[int],
-        prompt: tuple[torch.Tensor, ...],
-        caches: tuple[dict, dict],
-        is_last_chunk: bool = False,
-    ) -> tuple[bytes, tuple[dict, dict]]:
-        caches[0]["estimator_attention_cache"].add_(1)
-        return b"\0\0" * 100, caches
+    def stream_batch(
+        self, chunks: list[StreamChunk]
+    ) -> list[tuple[bytes, tuple[dict, dict]]]:
+        for chunk in chunks:
+            chunk.caches[0]["estimator_attention_cache"].add_(1)
+        return [(b"\0\0" * 100, chunk.caches) for chunk in chunks]
 
 
 class FakeCode2Wav:
@@ -44,6 +44,7 @@ class FakeCode2Wav:
 
     def __init__(self) -> None:
         self.token2wav = FakeToken2Wav()
+        self.decode_stream = torch.cpu.current_stream()
         self.prepared: list[bytes] = []
 
     def resolve_reference_key(self, reference: bytes) -> tuple[str, bytes]:
@@ -60,7 +61,9 @@ class FakeCode2Wav:
 
 def test_voice_cache_lifecycle() -> None:
     code2wav = FakeCode2Wav()
-    runtime = MiniCPMOVocoderRuntime(code2wav)
+    runtime = MiniCPMOVocoderRuntime(
+        code2wav, max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
 
     first = runtime.open_session("a", reference_audio=b"voice-1")
     second = runtime.open_session("b", reference_audio=b"voice-1")
@@ -76,7 +79,7 @@ def test_voice_cache_lifecycle() -> None:
     shared = estimate_cache_bytes(first.speaker.base_caches)
     own = estimate_cache_bytes((first.caches, first.pending_codec_token_ids))
     assert runtime.held("a").bytes == own + shared
-    assert runtime.held("b").bytes == own
+    assert runtime.held("b").bytes == own + shared
 
     runtime.close_session("a")
     assert runtime.held("b").bytes == own + shared
@@ -88,18 +91,37 @@ def test_voice_cache_lifecycle() -> None:
 
 
 def test_turn_reset_restores_untouched_prompt_caches() -> None:
-    runtime = MiniCPMOVocoderRuntime(FakeCode2Wav())
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
     state = runtime.open_session("a", reference_audio=b"voice")
     runtime.open_session("b", reference_audio=b"voice")
 
-    runtime.synthesize(
-        "a",
-        [1] * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD),
-        is_turn_start=True,
-        end_of_turn=False,
+    list(
+        runtime.synthesize_batch(
+            [
+                SynthesisRequest(
+                    session_id="a",
+                    codec_token_ids=[1] * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD),
+                    is_turn_start=True,
+                    end_of_turn=False,
+                )
+            ]
+        )
     )
     assert state.caches[0]["estimator_attention_cache"].sum() > 0
     assert state.speaker.base_caches[0]["estimator_attention_cache"].sum() == 0
 
-    runtime.synthesize("a", [], is_turn_start=False, end_of_turn=True)
+    list(
+        runtime.synthesize_batch(
+            [
+                SynthesisRequest(
+                    session_id="a",
+                    codec_token_ids=[],
+                    is_turn_start=False,
+                    end_of_turn=True,
+                )
+            ]
+        )
+    )
     assert state.caches[0]["estimator_attention_cache"].sum() == 0

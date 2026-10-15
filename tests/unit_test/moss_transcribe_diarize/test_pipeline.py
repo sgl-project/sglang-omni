@@ -22,10 +22,13 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     missing_additional_chat_templates_compat,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.utils.imports import import_string
 
 
 def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -69,7 +72,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     factory = config.stages[0].factory
     engine = config.stages[0].engine
     assert factory.device is None
-    assert engine.max_running_requests == 16
+    assert engine.max_running_requests == 64
     assert engine.enable_torch_compile is True
     assert engine.torch_compile_max_bs == 4
     assert factory.encoder_max_batch_size == 2
@@ -192,7 +195,7 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
 
-    assert signature.parameters["max_running_requests"].default == 16
+    assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["enable_torch_compile"].default is None
     assert signature.parameters["torch_compile_max_bs"].default == 4
@@ -547,3 +550,13 @@ def test_processor_compat_preserves_non_template_repo_errors(
     with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)
+
+
+def test_server_warmup_request_is_a_second_of_audio_to_transcribe() -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    request = import_string(config.server_warmup_request_factory)(config)
+
+    audio, sample_rate = decode_audio_bytes(request.wav_bytes)
+
+    assert isinstance(request, TranscriptionWarmupRequest)
+    assert (len(audio), sample_rate, request.max_new_tokens) == (16000, 16000, 8)

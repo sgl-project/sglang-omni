@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-import hashlib
 import json
+import logging
 import queue
 import threading
 import time
@@ -23,6 +23,9 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
 )
+from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
+from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -47,6 +50,9 @@ from sglang_omni.scheduling.speaker_cache import (
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
+from sglang_omni.utils.device import supports_device_streams
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel, Qwen3TTSTokenizer
@@ -79,13 +85,6 @@ _GENERATION_FIELDS = (
     "subtalker_top_k",
     "max_new_tokens",
 )
-
-_IMPLICIT_SAMPLING_DEFAULTS = {
-    "temperature": {1.0, 0.8},
-    "top_p": {1.0, 0.8},
-    "top_k": {-1, 30},
-    "repetition_penalty": {1.0, 1.1},
-}
 
 _QWEN3_TTS_SAMPLING_SEED_MASK = SAMPLING_SEED_MASK
 
@@ -150,7 +149,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     enforce_request_limits: bool = True
     output_codes: list[torch.Tensor] = field(default_factory=list)
     latest_stream_code_chunk: torch.Tensor | None = None
-    codes_ready_event: torch.cuda.Event | None = None
+    codes_ready_event: torch.Event | None = None
     stream_ref_sent: bool = False
     stream_codec_output: bool = False
     suppress_bootstrap_silence: bool = False
@@ -180,20 +179,22 @@ class Qwen3TTSPreparedRequest:
     prompt_input_embeds: torch.Tensor
     tts_pad_embed: torch.Tensor
     gen_kwargs: Mapping[str, object]
-    ready_event: torch.cuda.Event | None = None
+    ready_event: torch.Event | None = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Qwen3TTSPreprocessingContext:
     model: PromptModel
     wrapper: Qwen3TTSModel
+    prompt_constants: Qwen3TTSPromptConstants
+    prompt_row_cache_keys: PromptRowCacheKeys
     # Note (Jiaxin Deng): True when preprocessing runs outside the engine process,
     # so prepared tensors travel in the payload instead of the module registry.
     standalone: bool = False
     # note (luojiaxuan): in-process preprocessing runs its GPU work on this
     # stream so it never queues behind the talker's step on the default
     # stream; the scheduler waits on the per-request event before reading.
-    stream: torch.cuda.Stream | None = None
+    stream: torch.Stream | None = None
 
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
@@ -225,6 +226,27 @@ def set_qwen3_tts_preprocessing_context(
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
+    stream = (
+        torch.get_device_module(device).Stream(device=device)
+        if device is not None and supports_device_streams(device) and not standalone
+        else None
+    )
+    feedback_buffer = model.model.feedback_buffer
+    # note (ratish): built on the preprocessing stream, which every request's work
+    # and ready event follow, so readers on other streams see them complete.
+    with (
+        (
+            torch.get_device_module(stream.device).stream(stream)
+            if stream is not None
+            else contextlib.nullcontext()
+        ),
+        torch.no_grad(),
+    ):
+        prompt_constants = model.build_prompt_constants()
+        prompt_row_cache_keys = PromptRowCacheKeys.for_rows(
+            row_bytes=int(feedback_buffer.shape[-1]) * feedback_buffer.element_size(),
+            device=feedback_buffer.device,
+        )
     with _PREPARED_REQUESTS_LOCK:
         get_qwen3_tts_adhoc_reference_service_locked(
             model,
@@ -234,16 +256,10 @@ def set_qwen3_tts_preprocessing_context(
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
+            prompt_constants=prompt_constants,
+            prompt_row_cache_keys=prompt_row_cache_keys,
             standalone=standalone,
-            stream=(
-                torch.cuda.Stream(device=device)
-                if (
-                    device is not None
-                    and device.type in {"cuda", "musa"}
-                    and not standalone
-                )
-                else None
-            ),
+            stream=stream,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -275,7 +291,8 @@ def prepared_request_id(payload: StagePayload) -> str | None:
 
 def adopt_prepared_tensors(prepared: Qwen3TTSPreparedRequest) -> None:
     """Order the scheduler's stream after preprocessing and keep its tensors alive."""
-    stream = torch.cuda.current_stream(prepared.prompt_input_embeds.device)
+    device = prepared.prompt_input_embeds.device
+    stream = torch.get_device_module(device).current_stream(device)
     stream.wait_event(prepared.ready_event)
     for tensor in (
         prepared.attention_mask,
@@ -284,7 +301,7 @@ def adopt_prepared_tensors(prepared: Qwen3TTSPreparedRequest) -> None:
         prepared.prompt_input_embeds,
         prepared.tts_pad_embed,
     ):
-        if tensor is not None and tensor.device.type in {"cuda", "musa"}:
+        if tensor is not None and supports_device_streams(tensor.device):
             tensor.record_stream(stream)
         else:
             pass
@@ -434,6 +451,10 @@ def build_qwen3_tts_state(
     seed = tts_params["seed"] if "seed" in tts_params else params.get("seed")
     normalized_seed = normalize_qwen3_tts_seed(seed) if seed is not None else None
 
+    generation_kwargs = build_generation_kwargs(
+        params,
+        tts_engine_params=tts_engine_params,
+    )
     suppress_bootstrap_silence = resolve_bootstrap_silence_suppression(
         task_type=task_type,
         voice=voice,
@@ -442,6 +463,7 @@ def build_qwen3_tts_state(
         stream_codec_output=stream_codec_output,
         params=params,
         tts_params=tts_params,
+        generation_kwargs=generation_kwargs,
     )
 
     return Qwen3TTSState(
@@ -465,11 +487,7 @@ def build_qwen3_tts_state(
         non_streaming_mode=non_streaming_mode,
         stream_codec_output=stream_codec_output,
         suppress_bootstrap_silence=suppress_bootstrap_silence,
-        generation_kwargs=build_generation_kwargs(
-            params,
-            tts_params=tts_params,
-            tts_engine_params=tts_engine_params,
-        ),
+        generation_kwargs=generation_kwargs,
         seed=normalized_seed,
     )
 
@@ -643,11 +661,6 @@ QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES = frozenset({"english"})
 _BOOTSTRAP_SILENCE_SAMPLING_FIELDS = frozenset(
     name for name in _GENERATION_FIELDS if name != "max_new_tokens"
 )
-# note (luojiaxuan): the serving layer materializes a sampling value on every
-# request, so key presence cannot distinguish an operator override. The request
-# already carries explicit_generation_params, which names the fields the caller
-# actually set, so that is the discriminator rather than a second copy of the
-# defaults.
 
 
 def resolve_bootstrap_silence_suppression(
@@ -659,6 +672,7 @@ def resolve_bootstrap_silence_suppression(
     stream_codec_output: bool,
     params: dict[str, object],
     tts_params: dict[str, object],
+    generation_kwargs: Mapping[str, object],
 ) -> bool:
     for source in (params, tts_params):
         if "suppress_bootstrap_silence" in source:
@@ -689,13 +703,7 @@ def resolve_bootstrap_silence_suppression(
         return False
     else:
         pass
-    explicit = tts_params.get("explicit_generation_params")
-    explicit_fields = (
-        {str(field) for field in explicit}
-        if isinstance(explicit, (list, tuple, set))
-        else set()
-    )
-    if explicit_fields & _BOOTSTRAP_SILENCE_SAMPLING_FIELDS:
+    if _BOOTSTRAP_SILENCE_SAMPLING_FIELDS.intersection(generation_kwargs):
         return False
     else:
         pass
@@ -727,15 +735,8 @@ def resolve_x_vector_only_mode(
 def build_generation_kwargs(
     params: Mapping[str, object],
     *,
-    tts_params: dict[str, object],
     tts_engine_params: Mapping[str, object],
 ) -> dict[str, object]:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
-
     selected_fields: dict[str, object] = {}
     for field in _GENERATION_FIELDS:
         stage_value = tts_engine_params.get(field)
@@ -747,13 +748,6 @@ def build_generation_kwargs(
         value = params.get(field)
         if value is None:
             continue
-        else:
-            pass
-        if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
-            if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
-                continue
-            else:
-                pass
         else:
             pass
         selected_fields[field] = value
@@ -774,36 +768,6 @@ def build_generation_kwargs(
         else:
             pass
     return generation_kwargs
-
-
-def build_embedding_cache_key_ids(input_embeds: torch.Tensor) -> list[int]:
-    """Build stable radix-cache token ids for a precomputed embedding prefix."""
-    rows = input_embeds.detach().to(dtype=torch.float32, device="cpu")
-    key_ids: list[int] = []
-    for row in rows:
-        digest = hashlib.blake2b(row.numpy().tobytes(), digest_size=8).digest()
-        key_ids.append(int.from_bytes(digest, "little") & ((1 << 63) - 1))
-    return key_ids
-
-
-def build_qwen3_tts_pad_embed(model: PromptModel) -> torch.Tensor:
-    feedback_buffer = model.model.feedback_buffer
-    with torch.no_grad():
-        return (
-            model.text_projection(
-                model.get_text_embeddings()(
-                    torch.tensor(
-                        [[model.root_config.tts_pad_token_id]],
-                        device=model.device,
-                        dtype=torch.long,
-                    )
-                )
-            )
-            .squeeze(0)
-            .squeeze(0)
-            .detach()
-            .to(device=feedback_buffer.device, dtype=feedback_buffer.dtype)
-        )
 
 
 def build_instruct_id(
@@ -927,20 +891,22 @@ class Qwen3TTSAdhocReferenceInput:
     x_vector_only_mode: bool
 
 
-def new_cuda_encode_stream(device: torch.device) -> torch.cuda.Stream | None:
-    if device.type not in {"cuda", "musa"}:
+def new_encode_stream(device: torch.device) -> torch.Stream | None:
+    if not supports_device_streams(device):
         return None
     else:
         pass
-    return torch.cuda.Stream(device=device)
+    return torch.get_device_module(device).Stream(device=device)
 
 
 def record_ref_code_consumer_stream(ref_code: torch.Tensor) -> torch.Tensor:
     # note (luojiaxuan): reference codes may be allocated on the batcher's
     # private stream; register the consumer stream with the caching allocator
     # so a later batch cannot recycle the block while reads are still queued.
-    if isinstance(ref_code, torch.Tensor) and ref_code.device.type in {"cuda", "musa"}:
-        ref_code.record_stream(torch.cuda.current_stream(ref_code.device))
+    if isinstance(ref_code, torch.Tensor) and supports_device_streams(ref_code.device):
+        ref_code.record_stream(
+            torch.get_device_module(ref_code.device).current_stream(ref_code.device)
+        )
     else:
         pass
     return ref_code
@@ -964,17 +930,24 @@ class Qwen3TTSRefCodeBatcher:
         self.encoder_dtype = param.dtype
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self.encode_stream = new_cuda_encode_stream(self.encoder_device)
+        self.encode_stream = new_encode_stream(self.encoder_device)
         self.graph_runner: Qwen3TTSReferenceEncoderCudaGraphRunner | None = None
         if self.encode_stream is not None and graph_bucket_frames:
-            self.graph_runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
-                self.encoder,
-                hop=self.hop,
-                num_quantizers=self.num_quantizers,
-                bucket_frames=graph_bucket_frames,
-                stream=self.encode_stream,
-            )
-            self.graph_runner.capture()
+            if current_platform.supports_graph_captured_host_read():
+                self.graph_runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
+                    self.encoder,
+                    hop=self.hop,
+                    num_quantizers=self.num_quantizers,
+                    bucket_frames=graph_bucket_frames,
+                    stream=self.encode_stream,
+                )
+                self.graph_runner.capture()
+            else:
+                logger.info(
+                    f"qwen3_tts_reference_encoder_graph resolved=eager "
+                    f"platform={current_platform.device_type}: the encoder reads a "
+                    f"tensor on the host mid-capture"
+                )
         else:
             pass
         self.queue: queue.Queue[object] = queue.Queue()
@@ -1038,7 +1011,7 @@ class Qwen3TTSRefCodeBatcher:
         # on the dedicated stream's event leaves the default stream, where
         # speaker-embedding kernels run concurrently, untouched.
         if self.encode_stream is not None:
-            handoff = torch.cuda.Event()
+            handoff = torch.get_device_module(self.encoder_device).Event()
             handoff.record(self.encode_stream)
             handoff.synchronize()
             return
@@ -1094,7 +1067,7 @@ class Qwen3TTSRefCodeBatcher:
             ]
             outcomes: dict[int, torch.Tensor | Exception] = {}
             encode_stream_ctx = (
-                torch.cuda.stream(self.encode_stream)
+                torch.get_device_module(self.encoder_device).stream(self.encode_stream)
                 if self.encode_stream is not None
                 else contextlib.nullcontext()
             )
@@ -1412,6 +1385,7 @@ def prepare_qwen3_tts_base_request(
     state: Qwen3TTSState,
     model: PromptModel,
     wrapper: Qwen3TTSModel,
+    prompt_constants: Qwen3TTSPromptConstants,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     speaker_cache = get_speaker_artifact_cache()
     cache_key = qwen3_tts_uploaded_voice_cache_key(state)
@@ -1458,6 +1432,7 @@ def prepare_qwen3_tts_base_request(
             voice_clone_prompt=voice_clone_prompt,
             language=state.language,
             non_streaming_mode=state.non_streaming_mode,
+            prompt_constants=prompt_constants,
             instruct_id=instruct_id,
         )
 
@@ -1467,6 +1442,7 @@ def prepare_qwen3_tts_custom_voice_request(
     state: Qwen3TTSState,
     model: "PromptModel",
     wrapper: "Qwen3TTSModel",
+    prompt_constants: Qwen3TTSPromptConstants,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[
         0
@@ -1481,6 +1457,7 @@ def prepare_qwen3_tts_custom_voice_request(
             voice=state.voice or QWEN3_TTS_DEFAULT_CUSTOM_VOICE,
             language=state.language,
             non_streaming_mode=state.non_streaming_mode,
+            prompt_constants=prompt_constants,
             instruct_id=instruct_id,
         )
 
@@ -1490,6 +1467,7 @@ def prepare_qwen3_tts_voice_design_request(
     state: Qwen3TTSState,
     model: "PromptModel",
     wrapper: "Qwen3TTSModel",
+    prompt_constants: Qwen3TTSPromptConstants,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[
         0
@@ -1500,6 +1478,7 @@ def prepare_qwen3_tts_voice_design_request(
             input_id=input_id,
             language=state.language,
             non_streaming_mode=state.non_streaming_mode,
+            prompt_constants=prompt_constants,
             instruct_id=instruct_id,
         )
 
@@ -1509,6 +1488,8 @@ def prepare_qwen3_tts_request(
     *,
     model: PromptModel,
     wrapper: Qwen3TTSModel,
+    prompt_constants: Qwen3TTSPromptConstants,
+    prompt_row_cache_keys: PromptRowCacheKeys,
     default_stream_codec_output: bool = True,
 ) -> Qwen3TTSPreparedRequest:
     state = build_qwen3_tts_state(
@@ -1529,6 +1510,7 @@ def prepare_qwen3_tts_request(
             state=state,
             model=model,
             wrapper=wrapper,
+            prompt_constants=prompt_constants,
         )
     elif state.task_type == QWEN3_TTS_TASK_CUSTOM_VOICE:
         (
@@ -1540,6 +1522,7 @@ def prepare_qwen3_tts_request(
             state=state,
             model=model,
             wrapper=wrapper,
+            prompt_constants=prompt_constants,
         )
     elif state.task_type == QWEN3_TTS_TASK_VOICE_DESIGN:
         (
@@ -1551,6 +1534,7 @@ def prepare_qwen3_tts_request(
             state=state,
             model=model,
             wrapper=wrapper,
+            prompt_constants=prompt_constants,
         )
     else:
         raise AssertionError(f"unhandled Qwen3-TTS task type: {state.task_type}")
@@ -1564,7 +1548,7 @@ def prepare_qwen3_tts_request(
             dtype=feedback_buffer.dtype,
         )
     )
-    input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
+    input_ids_list = prompt_row_cache_keys.key_ids(prompt_input_embeds)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
     trailing_text_hidden = (
         trailing_text_hidden.squeeze(0)
@@ -1587,7 +1571,7 @@ def prepare_qwen3_tts_request(
         trailing_text_hidden=trailing_text_hidden,
         ref_code=ref_code,
         prompt_input_embeds=prompt_input_embeds,
-        tts_pad_embed=build_qwen3_tts_pad_embed(model),
+        tts_pad_embed=prompt_constants.feedback_pad_embed,
         gen_kwargs=gen_kwargs,
     )
 
@@ -1612,17 +1596,22 @@ def preprocess_qwen3_tts_payload(
             payload,
             model=context.model,
             wrapper=context.wrapper,
+            prompt_constants=context.prompt_constants,
+            prompt_row_cache_keys=context.prompt_row_cache_keys,
             default_stream_codec_output=default_stream_codec_output,
         )
     else:
-        with torch.cuda.stream(context.stream):
+        stream_device_module = torch.get_device_module(context.stream.device)
+        with stream_device_module.stream(context.stream):
             prepared = prepare_qwen3_tts_request(
                 payload,
                 model=context.model,
                 wrapper=context.wrapper,
+                prompt_constants=context.prompt_constants,
+                prompt_row_cache_keys=context.prompt_row_cache_keys,
                 default_stream_codec_output=default_stream_codec_output,
             )
-            prepared.ready_event = torch.cuda.Event()
+            prepared.ready_event = stream_device_module.Event()
             prepared.ready_event.record(context.stream)
     if context.standalone:
         return store_prepared_qwen3_tts_payload(payload, prepared)
@@ -1748,10 +1737,14 @@ def build_sglang_qwen3_tts_request(
     if state.seed is None:
         semantic_sampling_seed = new_qwen3_tts_sampling_seed()
         subtalker_sampling_seed = new_qwen3_tts_sampling_seed()
+        # note (ratish): only a request seed takes the seeded draw; the private seed
+        # fills this row when it shares a batch with a seeded request.
+        request_sampling_seed = None
     else:
         semantic_sampling_seed, subtalker_sampling_seed = (
             derive_qwen3_tts_sampling_seeds(state.seed)
         )
+        request_sampling_seed = semantic_sampling_seed
     sampling_params = SamplingParams(
         max_new_tokens=int(
             gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
@@ -1761,7 +1754,7 @@ def build_sglang_qwen3_tts_request(
         top_k=int(gen_kwargs.get("top_k", 50)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.05)),
         stop_token_ids=[int(model.config.codec_eos_token_id)],
-        sampling_seed=semantic_sampling_seed,
+        sampling_seed=request_sampling_seed,
     )
     sampling_params.normalize(None)
     sampling_params.verify(int(model.config.vocab_size))
@@ -1973,8 +1966,10 @@ def make_qwen3_tts_scheduler_adapters(
                 codes = torch.cat((ref_code, codes), dim=0)
                 # note (luojiaxuan): the step's ready event was recorded before
                 # this cat, so the prefixed chunk needs its own.
-                if codes.device.type in {"cuda", "musa"}:
-                    data.codes_ready_event = torch.cuda.Event()
+                if supports_device_streams(codes.device):
+                    data.codes_ready_event = torch.get_device_module(
+                        codes.device
+                    ).Event()
                     data.codes_ready_event.record()
                 else:
                     pass

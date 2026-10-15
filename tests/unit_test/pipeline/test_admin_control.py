@@ -74,6 +74,7 @@ def test_omni_scheduler_admin_enqueues_to_scheduler_thread() -> None:
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
+    scheduler.tp_size = 1
     scheduler.admin_queue = queue.Queue()
     scheduler.scheduler_thread_id = None
 
@@ -369,6 +370,34 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     ]
 
 
+def test_omni_scheduler_abort_pause_ends_each_dropped_request() -> None:
+    from sglang_omni.admission import AdminDroppedRequestError
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    aborted: list[str] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.admin_lock = threading.Lock()
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
+    scheduler.resolve_pending_async = lambda: None
+    scheduler.active_request_ids = lambda: ["req-1", "req-2"]
+    scheduler.abort = lambda request_id, **_kwargs: aborted.append(request_id)
+    scheduler.running_batch = scheduler.cur_batch = scheduler.last_batch = None
+    scheduler.is_entry_rank = True
+    scheduler.outbox = queue.Queue()
+
+    result = OmniScheduler.admin_pause_generation(scheduler, {"mode": "abort"})
+
+    assert aborted == ["req-1", "req-2"]
+    assert result["data"]["num_paused_requests"] == 2
+    assert "aborted_request_ids" not in result["data"]
+    ended = [scheduler.outbox.get_nowait() for _ in range(2)]
+    assert [(msg.request_id, msg.type) for msg in ended] == [
+        ("req-1", "error"),
+        ("req-2", "error"),
+    ]
+    assert all(AdminDroppedRequestError.matches(msg.data) for msg in ended)
+
+
 def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() -> None:
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
@@ -427,10 +456,10 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
         nonlocal empty_cache_calls
         empty_cache_calls += 1
 
-    def abort_all_requests() -> int:
+    def abort_all_requests() -> list[str]:
         nonlocal abort_calls
         abort_calls += 1
-        return 1
+        return ["req-1"]
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.model_worker = SimpleNamespace(

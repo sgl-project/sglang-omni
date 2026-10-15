@@ -182,7 +182,7 @@ def strip_process_local_metadata(
 ) -> dict[str, object] | None:
     """Drop values that only mean something inside the sending process.
 
-    A CUDA event orders a same-process consumer after the producer's stream;
+    A device event orders a same-process consumer after the producer's stream;
     across a process boundary the transport establishes readiness itself.
     """
     if metadata is None:
@@ -192,7 +192,7 @@ def strip_process_local_metadata(
     return {
         key: value
         for key, value in metadata.items()
-        if not isinstance(value, torch.cuda.Event)
+        if not isinstance(value, torch.Event)
     }
 
 

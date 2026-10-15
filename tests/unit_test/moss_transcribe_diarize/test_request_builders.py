@@ -20,7 +20,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     audio_feature_lengths_from_waveform,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, OmniRequest, StagePayload
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 def wav_bytes(num_samples: int = 1600, sample_rate: int = 16000) -> bytes:
@@ -539,10 +539,7 @@ def test_request_builder_repetition_penalty_passthrough() -> None:
     data = request_builder(
         payload(
             params={"repetition_penalty": 1.3},
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
@@ -557,10 +554,7 @@ def test_request_builder_rejects_out_of_range_repetition_penalty() -> None:
         request_builder(
             payload(
                 params={"repetition_penalty": 2.5},
-                metadata={
-                    "model": "moss-transcribe-diarize",
-                    EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
-                },
+                metadata={"model": "moss-transcribe-diarize"},
             )
         )
 
@@ -639,10 +633,7 @@ def test_request_builder_preserves_sampling_overrides() -> None:
                 "top_p": 0.9,
                 "top_k": 25,
             },
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
@@ -651,25 +642,8 @@ def test_request_builder_preserves_sampling_overrides() -> None:
     assert data.top_k == 25
 
 
-def test_request_builder_ignores_implicit_client_sampling_defaults() -> None:
-    request_builder = make_request_builder()
-
-    data = request_builder(
-        payload(
-            params={
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "top_k": -1,
-            },
-        )
-    )
-
-    assert data.temperature == DEFAULT_TEMPERATURE
-    assert data.top_p == DEFAULT_TOP_P
-    assert data.top_k == DEFAULT_TOP_K
-
-
 def test_request_builder_preserves_explicit_default_valued_overrides() -> None:
+    """A set temperature 1.0, top_p 1.0 or top_k -1 reaches the model instead of being dropped."""
     request_builder = make_request_builder()
 
     data = request_builder(
@@ -679,29 +653,13 @@ def test_request_builder_preserves_explicit_default_valued_overrides() -> None:
                 "top_p": 1.0,
                 "top_k": -1,
             },
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
     assert data.temperature == 1.0
     assert data.top_p == 1.0
     assert data.top_k == -1
-
-
-def test_request_builder_ignores_openai_transcription_temperature_default() -> None:
-    request_builder = make_request_builder()
-
-    data = request_builder(
-        payload(
-            params={"temperature": 0.0},
-            metadata={"model": "moss-transcribe-diarize"},
-        )
-    )
-
-    assert data.temperature == DEFAULT_TEMPERATURE
 
 
 def test_request_builder_uses_default_prompt_for_empty_transcription_prompt() -> None:

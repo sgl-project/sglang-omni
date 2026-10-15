@@ -463,10 +463,25 @@ def incremental_attention(
     return attention.o_proj(output), key, value
 
 
+def frames_ending_at(
+    sequence: torch.Tensor, end_frames: torch.Tensor, count: int, dim: int
+) -> torch.Tensor:
+    """Each row's count entries of sequence along dim that end at end_frames[row]."""
+    index = (end_frames - count).unsqueeze(1) + torch.arange(
+        count, device=sequence.device
+    )
+    shape = [1] * sequence.ndim
+    shape[0], shape[dim] = int(sequence.shape[0]), count
+    expanded = list(sequence.shape)
+    expanded[dim] = count
+    return sequence.gather(dim, index.view(shape).expand(expanded))
+
+
 def incremental_transformer(
     transformer: "Qwen3TTSTokenizerV2DecoderTransformerModel",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
+    valid_frames: torch.Tensor | None = None,
 ) -> torch.Tensor:
     hidden_states = transformer.input_proj(hidden_states)
     batch_size = int(hidden_states.shape[0])
@@ -509,16 +524,25 @@ def incremental_transformer(
         hidden_states = layer.post_attention_layernorm(hidden_states)
         hidden_states = layer.mlp(hidden_states)
         hidden_states = residual + layer.mlp_layer_scale(hidden_states)
-        next_keys[layer_index] = (
-            key[..., -retained_context:, :].clone()
-            if retained_context
-            else key[..., :0, :].clone()
-        )
-        next_values[layer_index] = (
-            value[..., -retained_context:, :].clone()
-            if retained_context
-            else value[..., :0, :].clone()
-        )
+        if valid_frames is not None:
+            retained_end = prior_length + valid_frames
+            next_keys[layer_index] = frames_ending_at(
+                key, retained_end, retained_context, -2
+            )
+            next_values[layer_index] = frames_ending_at(
+                value, retained_end, retained_context, -2
+            )
+        else:
+            next_keys[layer_index] = (
+                key[..., -retained_context:, :].clone()
+                if retained_context
+                else key[..., :0, :].clone()
+            )
+            next_values[layer_index] = (
+                value[..., -retained_context:, :].clone()
+                if retained_context
+                else value[..., :0, :].clone()
+            )
 
     state.transformer_keys = next_keys
     state.transformer_values = next_values
@@ -877,6 +901,57 @@ class Qwen3TTSIncrementalDecoder:
         state.advance(fresh_frames)
         return waveform
 
+    def tail_frames(self, emit_frames: int) -> int:
+        """How many transformer outputs the last emit_frames frames' samples and the conv-stack
+        state depend on, walked back from the waveform: a causal conv adds its history, and a
+        transposed conv of kernel k and stride s maps n samples to (n + k - 1) // s inputs.
+        """
+        decoder = self.decoder
+        samples = int(emit_frames) * self.total_upsample + int(
+            decoder.decoder[-1].padding
+        )
+        for decoder_block in reversed(decoder.decoder[1:-2]):
+            for residual_unit in reversed(decoder_block.block[2:]):
+                samples += int(residual_unit.conv2.padding) + int(
+                    residual_unit.conv1.padding
+                )
+            transconv = decoder_block.block[1].conv
+            samples = (samples + int(transconv.kernel_size[0]) - 1) // int(
+                transconv.stride[0]
+            )
+        samples += int(decoder.decoder[0].padding)
+        for blocks in reversed(decoder.upsample):
+            samples += int(blocks[1].dwconv.padding)
+            transconv = blocks[0].conv
+            samples = (samples + int(transconv.kernel_size[0]) - 1) // int(
+                transconv.stride[0]
+            )
+        return samples
+
+    def decode_tail(
+        self,
+        codes: torch.Tensor,
+        valid_frames: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+        emit_frames: int,
+    ) -> torch.Tensor:
+        """Decode row i's valid_frames[i] frames with the conv stack on the last
+        tail_frames(emit_frames) outputs only, and return the last emit_frames frames' samples.
+        Needs arena state (per-row positions, full-width K/V), tail_frames <= valid_frames[i].
+        """
+        if state.frame_positions is None:
+            raise ValueError("Qwen3-TTS tail decoding needs per-row frame positions")
+        else:
+            pass
+        tail_frames = self.tail_frames(emit_frames)
+        hidden_states = self.frame_tensors(codes, state, valid_frames)
+        time_dim = 1 if self.channels_last_weights is not None else 2
+        window = frames_ending_at(hidden_states, valid_frames, tail_frames, time_dim)
+        waveform = self.conv_stack_tensors(window, state)
+        state.transformer_context_length = self.state_spec().retained_context
+        state.frame_positions = state.frame_positions + valid_frames
+        return waveform[..., -int(emit_frames) * self.total_upsample :]
+
     def decode_tensors(
         self,
         codes: torch.Tensor,
@@ -890,6 +965,16 @@ class Qwen3TTSIncrementalDecoder:
         channels_last_weights, activations flow as (B, L, C) from the quantizer
         to the final conv.
         """
+        return self.conv_stack_tensors(self.frame_tensors(codes, state), state)
+
+    def frame_tensors(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+        valid_frames: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Quantizer, pre_conv and transformer in the decoder's layout; with valid_frames,
+        row i's pre_conv history and kept K/V end at valid_frames[i]."""
         channels_last_weights = self.channels_last_weights
         is_channels_last = channels_last_weights is not None
         hidden_states = self.decoder.quantizer.decode(codes)
@@ -897,6 +982,10 @@ class Qwen3TTSIncrementalDecoder:
             hidden_states = hidden_states.transpose(1, 2)
         else:
             pass
+        prior_history = (
+            state.conv_histories["pre_conv"] if valid_frames is not None else None
+        )
+        quantized = hidden_states
         hidden_states = causal_conv1d(
             self.decoder.pre_conv,
             hidden_states,
@@ -904,15 +993,35 @@ class Qwen3TTSIncrementalDecoder:
             "pre_conv",
             channels_last_weights,
         )
-        if is_channels_last:
-            hidden_states = incremental_transformer(
-                self.decoder.pre_transformer, hidden_states, state
+        if valid_frames is not None:
+            history_size = int(prior_history.shape[-1])
+            inputs = quantized.transpose(1, 2) if is_channels_last else quantized
+            state.conv_histories["pre_conv"] = frames_ending_at(
+                torch.cat((prior_history, inputs), dim=-1),
+                history_size + valid_frames,
+                history_size,
+                -1,
             )
         else:
-            hidden_states = incremental_transformer(
-                self.decoder.pre_transformer, hidden_states.transpose(1, 2), state
+            pass
+        if is_channels_last:
+            return incremental_transformer(
+                self.decoder.pre_transformer, hidden_states, state, valid_frames
+            )
+        else:
+            return incremental_transformer(
+                self.decoder.pre_transformer,
+                hidden_states.transpose(1, 2),
+                state,
+                valid_frames,
             ).permute(0, 2, 1)
 
+    def conv_stack_tensors(
+        self, hidden_states: torch.Tensor, state: Qwen3TTSIncrementalCodecState
+    ) -> torch.Tensor:
+        """Everything after the transformer, from its outputs to the clamped waveform."""
+        channels_last_weights = self.channels_last_weights
+        is_channels_last = channels_last_weights is not None
         for stage_index, blocks in enumerate(self.decoder.upsample):
             if len(blocks) != 2:
                 raise TypeError("unsupported Qwen3-TTS upsample layout")

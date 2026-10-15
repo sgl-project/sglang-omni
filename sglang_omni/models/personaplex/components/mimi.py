@@ -29,6 +29,7 @@ from sglang_omni.models.personaplex.components.causal_conv import (
     StreamingModule,
 )
 from sglang_omni.models.personaplex.components.mimi_transformer import (
+    AttentionState,
     MimiTransformer,
     TransformerState,
 )
@@ -58,8 +59,8 @@ class SEANetResnetBlock(StreamingModule):
             y = module(y)
         return x + y
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.block)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.block, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         y = x
@@ -75,8 +76,57 @@ def run_stack(modules: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def stack_state(modules: nn.ModuleList) -> SEANetState:
-    return [m.init_state() for m in modules]
+def stack_state(modules: nn.ModuleList, batch_size: int) -> SEANetState:
+    return [m.init_state(batch_size) for m in modules]
+
+
+def reset_stack(state: SEANetState) -> None:
+    for module_state in state:
+        if isinstance(module_state, list):
+            reset_stack(module_state)
+        elif module_state is not None:
+            module_state.reset()
+        else:
+            pass
+
+
+def select_stack_rows(state: SEANetState, rows: torch.Tensor) -> SEANetState:
+    selected: SEANetState = []
+    for module_state in state:
+        if isinstance(module_state, list):
+            selected.append(select_stack_rows(module_state, rows))
+        elif isinstance(module_state, ConvState):
+            # Note (nightdecode): has_started is one flag per state, not per row.
+            # Only replicate padding reads it and the decoder pads with zeros, so
+            # the selection shares the flag rather than copying it.
+            selected.append(
+                ConvState(
+                    previous=module_state.previous.index_select(0, rows),
+                    has_started=module_state.has_started,
+                )
+            )
+        elif isinstance(module_state, ConvTransposeState):
+            selected.append(
+                ConvTransposeState(partial=module_state.partial.index_select(0, rows))
+            )
+        else:
+            selected.append(None)
+    return selected
+
+
+def stack_row_tensors(state: SEANetState) -> list[torch.Tensor]:
+    """A stack's per-row tensors, in the order select_stack_rows visits them."""
+    tensors: list[torch.Tensor] = []
+    for module_state in state:
+        if isinstance(module_state, list):
+            tensors.extend(stack_row_tensors(module_state))
+        elif isinstance(module_state, ConvState):
+            tensors.append(module_state.previous)
+        elif isinstance(module_state, ConvTransposeState):
+            tensors.append(module_state.partial)
+        else:
+            pass
+    return tensors
 
 
 def step_stack(
@@ -113,8 +163,8 @@ class SEANetEncoder(StreamingModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return run_stack(self.model, x)
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.model)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.model, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         return step_stack(self.model, x, state)
@@ -148,8 +198,8 @@ class SEANetDecoder(StreamingModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return run_stack(self.model, x)
 
-    def init_state(self) -> SEANetState:
-        return stack_state(self.model)
+    def init_state(self, batch_size: int) -> SEANetState:
+        return stack_state(self.model, batch_size)
 
     def step(self, x: torch.Tensor, state: SEANetState) -> torch.Tensor:
         return step_stack(self.model, x, state)
@@ -256,6 +306,60 @@ class MimiDecodeState:
     transformer: TransformerState
     decoder: SEANetState
 
+    def reset(self) -> None:
+        """Back to a fresh stream, in place, so captured graphs keep their addresses."""
+        self.upsample.reset()
+        self.transformer.reset()
+        reset_stack(self.decoder)
+
+    def reset_row(self, row: int) -> None:
+        """Back to a fresh stream for one row, in place."""
+        for tensor in self.row_tensors():
+            tensor[row].zero_()
+
+    def select_rows(self, rows: torch.Tensor) -> MimiDecodeState:
+        """The given rows, in order, as a new state; each keeps its own offset.
+
+        A device index keeps this capturable, so a graph can gather the rows
+        it decodes from a state stacked over many streams.
+        """
+        return MimiDecodeState(
+            upsample=ConvTransposeState(
+                partial=self.upsample.partial.index_select(0, rows)
+            ),
+            transformer=TransformerState(
+                offset=self.transformer.offset.index_select(0, rows),
+                layers=[
+                    AttentionState(
+                        keys=layer.keys.index_select(0, rows),
+                        values=layer.values.index_select(0, rows),
+                    )
+                    for layer in self.transformer.layers
+                ],
+            ),
+            decoder=select_stack_rows(self.decoder, rows),
+        )
+
+    def store_rows(self, rows: torch.Tensor, selected: MimiDecodeState) -> None:
+        """Write a state select_rows took, since advanced, back into its rows."""
+        for tensor, selected_tensor in zip(
+            self.row_tensors(), selected.row_tensors(), strict=True
+        ):
+            tensor.index_copy_(0, rows, selected_tensor)
+
+    def row_tensors(self) -> list[torch.Tensor]:
+        """Every tensor that holds one row per stream, in a fixed order."""
+        return [
+            self.upsample.partial,
+            self.transformer.offset,
+            *(
+                tensor
+                for layer in self.transformer.layers
+                for tensor in (layer.keys, layer.values)
+            ),
+            *stack_row_tensors(self.decoder),
+        ]
+
 
 class MimiCodec(nn.Module):
     def __init__(self, spec: MimiSpec = MIMI) -> None:
@@ -304,11 +408,13 @@ class MimiCodec(nn.Module):
         latent = self.upsample(self.quantizer.decode(codes_BKF))
         return self.decoder(self.decoder_transformer(latent))
 
-    def init_encode_state(self) -> MimiEncodeState:
+    def init_encode_state(self, batch_size: int) -> MimiEncodeState:
         return MimiEncodeState(
-            encoder=self.encoder.init_state(),
-            transformer=self.encoder_transformer.init_state(),
-            downsample=self.downsample.init_state(),
+            encoder=self.encoder.init_state(batch_size),
+            transformer=self.encoder_transformer.init_state(
+                batch_size, max_chunk_steps=self.spec.frame_ratio
+            ),
+            downsample=self.downsample.init_state(batch_size),
         )
 
     @torch.inference_mode()
@@ -326,11 +432,15 @@ class MimiCodec(nn.Module):
             pass
         return self.quantizer.encode(latent)
 
-    def init_decode_state(self) -> MimiDecodeState:
+    def init_decode_state(
+        self, batch_size: int, *, max_chunk_frames: int
+    ) -> MimiDecodeState:
         return MimiDecodeState(
-            upsample=self.upsample.init_state(),
-            transformer=self.decoder_transformer.init_state(),
-            decoder=self.decoder.init_state(),
+            upsample=self.upsample.init_state(batch_size),
+            transformer=self.decoder_transformer.init_state(
+                batch_size, max_chunk_steps=max_chunk_frames * self.spec.frame_ratio
+            ),
+            decoder=self.decoder.init_state(batch_size),
         )
 
     @torch.inference_mode()

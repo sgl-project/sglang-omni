@@ -1018,7 +1018,7 @@ def test_re_enabling_a_journaled_worker_requires_admin_auth(tmp_path: Path) -> N
     )
     with TestClient(app) as client:
         # Note (Jiaxin Deng): discarding a journal entry via re-enable is admin-
-        # sensitive even though ordinary worker CRUD is not
+        # sensitive
         assert (
             client.put(f"/workers/{worker_id}", json={"disabled": False}).status_code
             == 401

@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -11,9 +12,13 @@ import numpy as np
 import pytest
 import torch
 from sglang.srt.arg_groups.overrides import resolution_result
+from transformers import PreTrainedTokenizerFast
 
 import sglang_omni.platforms as platforms
 from sglang_omni.cli.serve import patches_from_broadcast_flags
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateRequest
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.sources import patches_from_shared_block
@@ -40,9 +45,16 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HIGGS_STREAM_STRIDE_METADATA,
     HiggsStreamingVocoderScheduler,
 )
+from sglang_omni.pipeline.mp_runner import build_stage_groups
+from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.pipeline.stage_workers import patched_spawn_env
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
+from sglang_omni.serve.openai_api import build_rollout_generate_request
+from sglang_omni.serve.protocol import CreateSpeechRequest, RolloutGenerateRequest
+from sglang_omni.serve.speech_service import SpeechRequestValidator
+from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -650,6 +662,59 @@ def test_higgs_preprocessing_prunes_preencoded_reference_inputs(monkeypatch) -> 
     assert state.reference_codes_delayed is not None
     assert state.prompt_token_ids == [5, 3, 7]
     assert state.reference_waveform is None
+
+
+def preprocessed_sampling(
+    monkeypatch: pytest.MonkeyPatch, generation_request: GenerateRequest
+) -> tuple[float, float | None, int | None]:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+
+    class FakeAdapter:
+        def __init__(self, tokenizer: PreTrainedTokenizerFast) -> None:
+            pass
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [len(text)]
+
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2).fn
+    payload = StagePayload(
+        request_id="sampling",
+        request=Client.build_omni_request(generation_request),
+        data={},
+    )
+    state = HiggsTtsState.from_dict(preprocess(payload).data)
+    return state.temperature, state.top_p, state.top_k
+
+
+def test_higgs_speech_request_without_sampling_gets_the_model_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation_request = SpeechRequestValidator(
+        default_model="higgs"
+    ).build_generate_request(CreateSpeechRequest(input="hello"))
+
+    assert preprocessed_sampling(monkeypatch, generation_request) == (0.8, 0.8, 30)
+
+
+def test_higgs_rollout_request_without_sampling_samples_the_full_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation_request = build_rollout_generate_request(
+        RolloutGenerateRequest(
+            prompt="hello", return_omni_rollout=True, output_modalities=["audio"]
+        )
+    )
+
+    assert preprocessed_sampling(monkeypatch, generation_request) == (1.0, 1.0, -1)
 
 
 def test_higgs_preprocessing_prunes_raw_reference_inputs(monkeypatch) -> None:
@@ -2374,11 +2439,13 @@ def test_higgs_bounds_preprocessing_without_global_omp_default() -> None:
     preprocessing = next(
         stage for stage in config.stages if stage.name == "preprocessing"
     )
+    preprocessing_env_defaults = config.resolved_stage_env_defaults("preprocessing")
 
     assert preprocessing.factory.max_concurrency == 2
     assert "OMP_NUM_THREADS" not in config.env_defaults
-    assert int(preprocessing.env["OMP_NUM_THREADS"]) >= 1
-    assert int(preprocessing.env["OMP_NUM_THREADS"]) <= 8
+    assert "OMP_NUM_THREADS" not in preprocessing.env
+    assert int(preprocessing_env_defaults["OMP_NUM_THREADS"]) >= 1
+    assert int(preprocessing_env_defaults["OMP_NUM_THREADS"]) <= 8
 
 
 def test_higgs_preserves_pipeline_omp_override() -> None:
@@ -2392,3 +2459,47 @@ def test_higgs_preserves_pipeline_omp_override() -> None:
 
     assert config.env_defaults["OMP_NUM_THREADS"] == "3"
     assert "OMP_NUM_THREADS" not in preprocessing.env
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "3"
+
+
+@pytest.mark.parametrize(
+    "written_omp_setting",
+    [
+        # note (Richard Wang): above the derived cap of 8, so never the derived value.
+        ("env_defaults.OMP_NUM_THREADS", "12"),
+        ("audio_encoder.env.OMP_NUM_THREADS", "12"),
+    ],
+)
+def test_higgs_frontend_process_spawns_with_a_written_omp_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    written_omp_setting: tuple[str, str],
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    config = ConfigManager(HiggsTtsPipelineConfig(model_path="dummy")).merge_config(
+        [written_omp_setting]
+    )
+    prepared_runtime = prepare_pipeline_runtime(config)
+    try:
+        stage_groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prepared_runtime.stages_cfg,
+            endpoints=prepared_runtime.endpoints,
+            placement_plan=prepared_runtime.placement_plan,
+            process_plan=prepared_runtime.process_plan,
+            replica_topology=prepared_runtime.replica_topology,
+        )
+        (frontend_process_spec,) = [
+            process_spec
+            for stage_group in stage_groups
+            for process_spec in stage_group.process_specs
+            if any(
+                stage_spec.stage_name == "preprocessing"
+                for stage_spec in process_spec.stage_specs
+            )
+        ]
+
+        with patched_spawn_env(frontend_process_spec):
+            assert os.environ["OMP_NUM_THREADS"] == "12"
+    finally:
+        prepared_runtime.runtime_dir.close()

@@ -28,26 +28,13 @@ from sglang_omni.models.personaplex.timeline import (
     build_prompt_frames,
     build_timeline,
 )
-from sglang_omni.proto.request import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    EXPLICIT_STAGE_SAMPLING_PARAMS_KEY,
-    StagePayload,
-)
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.sampling.seed import derive_sampling_seed
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import RequestOutput
 
 SEED_NAMESPACE = "personaplex"
-# Note (wilsonzheng0327): The client fills these into every request, so a value equal
-# to one of them only counts when the caller listed the field as explicit.
-CLIENT_FILLER_VALUES = {
-    "temperature": 1.0,
-    "top_k": -1,
-    "top_p": 1.0,
-    "min_p": 0.0,
-    "repetition_penalty": 1.0,
-}
 
 
 @dataclass(frozen=True)
@@ -97,24 +84,8 @@ def param_or_default(params: dict, key: str, default, cast):
     return default if value is None else cast(value)
 
 
-def chosen_text_param(sources: list[tuple[dict, bool]], key: str, default, cast):
-    """The first value a caller actually chose, from (params, explicit) sources."""
-    for params, explicit in sources:
-        value = params.get(key)
-        if value is None:
-            continue
-        else:
-            pass
-        if not explicit and value == CLIENT_FILLER_VALUES[key]:
-            continue
-        else:
-            pass
-        return cast(value)
-    return default
-
-
 def resolve_sampling(
-    params: dict, explicit_fields=(), *, stage_sampling: dict
+    params: dict[str, object], *, stage_sampling: dict[str, object]
 ) -> RequestSampling:
     """Resolve selected stage values before stage overrides and top-level values."""
     for source in (params, stage_param_overrides(params, LM_STAGE), stage_sampling):
@@ -147,24 +118,23 @@ def resolve_sampling(
                 pass
     lm_overrides = stage_param_overrides(params, LM_STAGE)
     lm_params = {**params, **lm_overrides}
-    explicit = set(explicit_fields)
     seed = stage_sampling.get("seed")
     if seed is None:
         seed = lm_params.get("seed")
     else:
         pass
-
-    def text(key: str, default, cast):
-        sources = [
-            (stage_sampling, True),
-            (lm_overrides, True),
-            (params, key in explicit),
-        ]
-        return chosen_text_param(sources, key, default, cast)
+    text_params = {
+        field_name: value
+        for source in (params, lm_overrides, stage_sampling)
+        for field_name, value in source.items()
+        if value is not None
+    }
 
     return RequestSampling(
-        text_temperature=text("temperature", DEFAULT_TEXT_TEMPERATURE, float),
-        text_top_k=text("top_k", DEFAULT_TEXT_TOP_K, int),
+        text_temperature=float(
+            text_params.get("temperature", DEFAULT_TEXT_TEMPERATURE)
+        ),
+        text_top_k=int(text_params.get("top_k", DEFAULT_TEXT_TOP_K)),
         audio=AudioSampling(
             temperature=param_or_default(
                 lm_params, "audio_temperature", DEFAULT_AUDIO_TEMPERATURE, float
@@ -172,9 +142,9 @@ def resolve_sampling(
             top_k=param_or_default(lm_params, "audio_top_k", DEFAULT_AUDIO_TOP_K, int),
         ),
         seed=None if seed is None else int(seed),
-        top_p=text("top_p", 1.0, float),
-        min_p=text("min_p", 0.0, float),
-        repetition_penalty=text("repetition_penalty", 1.0, float),
+        top_p=float(text_params.get("top_p", 1.0)),
+        min_p=float(text_params.get("min_p", 0.0)),
+        repetition_penalty=float(text_params.get("repetition_penalty", 1.0)),
     )
 
 
@@ -208,20 +178,12 @@ def build_lm_request(
     decode step per 80 ms frame of the caller's audio."""
     state = PersonaPlexState.from_dict(payload.data)
     timeline = timeline_from_state(state)
-    metadata = payload.request.metadata or {}
     params = payload.request.params
     if "stage_sampling" in params and LM_STAGE in params["stage_sampling"]:
-        stage_sampling = {
-            key: params["stage_sampling"][LM_STAGE][key]
-            for key in metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY][LM_STAGE]
-        }
+        stage_sampling = params["stage_sampling"][LM_STAGE]
     else:
         stage_sampling = {}
-    sampling = resolve_sampling(
-        params,
-        metadata.get(EXPLICIT_GENERATION_PARAMS_KEY) or (),
-        stage_sampling=stage_sampling,
-    )
+    sampling = resolve_sampling(params, stage_sampling=stage_sampling)
     if timeline.num_frames < 1:
         raise ValueError("PersonaPlex needs at least one 80 ms frame of caller audio")
     else:
@@ -336,6 +298,7 @@ def lm_stream_output_builder(
             metadata={
                 "modality": "audio_codes",
                 "num_samples": data.talker_model_inputs["num_samples"],
+                "stream": bool(data.stage_payload.request.params.get("stream")),
             },
         )
     ]

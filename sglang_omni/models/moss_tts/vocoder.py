@@ -318,6 +318,17 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
             pass
         return state, delayed_codes
 
+    def decode_segments(self, segments: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Standalone per-segment decode under the codec's autocast boundary."""
+        codec_decoder = getattr(self.codec, "decoder", self.codec)
+        codec_dtype = module_dtype(codec_decoder) or module_dtype(self.codec)
+        resolved_codec_device = codec_device(self.codec, self.device)
+        decoded = []
+        with autocast_if_supported(resolved_codec_device, codec_dtype):
+            for segment in segments:
+                decoded.extend(self.audio_vocoder.decode_codes([segment]))
+        return decoded
+
     def decode_audio(
         self,
         state: MossTTSState,
@@ -332,13 +343,7 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
             audio_pad_code=audio_pad_code,
             assistant_start_length=int(state.assistant_start_length),
         )
-        codec_decoder = getattr(self.codec, "decoder", self.codec)
-        codec_dtype = module_dtype(codec_decoder) or module_dtype(self.codec)
-        resolved_codec_device = codec_device(self.codec, self.device)
-        decoded = []
-        with autocast_if_supported(resolved_codec_device, codec_dtype):
-            for segment in segments:
-                decoded.extend(self.audio_vocoder.decode_codes([segment]))
+        decoded = self.decode_segments(segments)
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         else:

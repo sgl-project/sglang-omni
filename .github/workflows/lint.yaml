@@ -1,7 +1,13 @@
 name: Lint
 
+# Runs on every pull request without CI labels, and is a required check on
+# main. The self-hosted CI gates (.github/scripts/pr_ci_gate.py) wait for the
+# lint job on the same commit, so keep this workflow fast. Pushes to main only
+# refresh the pre-commit cache that pull requests read.
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -14,24 +20,38 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        id: python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install pre-commit hook
-        run: |
-          python -m pip install pre-commit
-          pre-commit install
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: python -m pip install pre-commit
+
+      # note (chenyang): no-commit-to-branch fails on main by design, so a
+      # push only builds the hook environments for the cache.
+      - name: Warm pre-commit cache
+        if: ${{ github.event_name == 'push' }}
+        run: pre-commit install-hooks
 
       - name: Linting
+        if: ${{ github.event_name != 'push' }}
         run: pre-commit run --all-files --show-diff-on-failure
 
   playback-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -20,6 +20,9 @@ import torch._dynamo as dynamo
 import torch._inductor.config as inductor_config
 import torch.nn.functional as F
 from numpy.typing import ArrayLike, NDArray
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 from x_transformers.x_transformers import apply_rotary_pos_emb
@@ -38,6 +41,11 @@ if TYPE_CHECKING:
 else:
     pass
 
+from sglang_omni.models.fun_cosyvoice3.causal_conv import (
+    GROUP_CONV_KERNEL_CHANNELS,
+    HAS_TRITON,
+    FusedConvPositionEmbedding,
+)
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
@@ -45,7 +53,9 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
 )
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     DIT_INDUCTOR_OPTIONS,
+    FA3_DTYPES,
     PackedDiT,
+    euler_step_times,
     gather_rows,
     pack_rows,
     scatter_rows,
@@ -59,27 +69,28 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     release_rows,
     solve_flow_euler_prefix,
 )
+from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import PrefixCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
 )
-from sglang_omni.models.fun_cosyvoice3.streaming import (
-    TOKEN_HOP_LEN,
-    TOKEN_MAX_HOP_LEN,
-    TOKEN_MEL_RATIO,
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN, TOKEN_MAX_HOP_LEN
+from sglang_omni.models.fun_cosyvoice3.whole_history_cuda_graph import (
+    WholeHistoryCudaGraphRunner,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphPool, ReplayableGraph
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as load_pipeline_state
-from sglang_omni.scheduling.pipeline_state import store_state as store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.device import resolve_concrete_device, supports_device_streams
 
 # Note (xinran): This is an admission budget, not a maximum supported request
 # length. The scheduler admits a request that exceeds it as a singleton Flow
@@ -349,8 +360,7 @@ def solve_flow_euler(
         dtype=dtype,
     )
     prompt_mel_cfg = torch.zeros_like(noisy_mel_cfg)
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for step in range(1, len(time_span)):
+    for t, dt in euler_step_times(time_span):
         noisy_mel_cfg[:batch_size] = noisy_mel
         noisy_mel_cfg[batch_size:] = noisy_mel
         mel_mask_cfg[:batch_size] = mel_mask
@@ -389,11 +399,6 @@ def solve_flow_euler(
             (1.0 + decoder.inference_cfg_rate) * conditional
             - decoder.inference_cfg_rate * unconditional
         )
-        t = t + dt
-        if step < len(time_span) - 1:
-            dt = time_span[step + 1] - t
-        else:
-            pass
     return noisy_mel.float()
 
 
@@ -424,7 +429,7 @@ def verify_flow_cuda_graph_capture_shapes(
 
 @dataclass
 class CapturedFlowCudaGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     static_inputs: tuple[torch.Tensor, ...]
     static_output: torch.Tensor
 
@@ -440,8 +445,9 @@ class FlowCudaGraphRunner:
         self.flow = flow
         self.device = torch.device(device)
         self.autocast_dtype = autocast_dtype
+        self.device_module: ModuleType = torch.get_device_module(self.device)
         self.graphs: dict[tuple[int, int], CapturedFlowCudaGraph] = {}
-        self.pool: tuple[int, int] | None = None
+        self.pool: DeviceGraphPool | None = None
 
     def capture_inputs(
         self, batch_size: int, mel_frame: int
@@ -491,12 +497,18 @@ class FlowCudaGraphRunner:
         # note(ratish): CosyVoice's loader leaves an onnxruntime session in a cycle;
         # a collection inside the capture would free it there and invalidate the graph.
         gc.collect()
+        graph_backend = current_platform.get_device_graph_backend(self.device)
+        assert graph_backend is not None, f"{self.device} records no Flow graphs"
         graphs: dict[tuple[int, int], CapturedFlowCudaGraph] = {}
-        current_stream = torch.cuda.current_stream(self.device)
-        stream = torch.cuda.Stream(device=self.device)
+        current_stream = self.device_module.current_stream(self.device)
+        stream = self.device_module.Stream(self.device)
         stream.wait_stream(current_stream)
-        with torch.cuda.device(self.device), torch.cuda.stream(stream):
-            self.pool = torch.cuda.graph_pool_handle()
+        with (
+            current_platform.graph_capture_attention(),
+            self.device_module.device(self.device),
+            self.device_module.stream(stream),
+        ):
+            self.pool = graph_backend.graph_pool_handle()
             for batch_size, mel_frame in capture_shapes:
                 static_inputs = self.capture_inputs(batch_size, mel_frame)
                 with torch.autocast(
@@ -505,14 +517,10 @@ class FlowCudaGraphRunner:
                     enabled=self.autocast_dtype is not None,
                 ):
                     solve_flow_euler(self.flow.decoder, *static_inputs)
-                graph = torch.cuda.CUDAGraph()
                 with (
-                    torch.cuda.graph(
-                        cuda_graph=graph,
-                        pool=self.pool,
-                        stream=stream,
-                        capture_error_mode="thread_local",
-                    ),
+                    graph_backend.capture(
+                        pool=self.pool, stream=stream, thread_local_errors=True
+                    ) as graph,
                     torch.autocast(
                         device_type=self.device.type,
                         dtype=self.autocast_dtype,
@@ -526,7 +534,7 @@ class FlowCudaGraphRunner:
                     static_output=static_output,
                 )
         current_stream.wait_stream(stream)
-        torch.cuda.empty_cache()
+        self.device_module.empty_cache()
         self.graphs = graphs
         return
 
@@ -599,7 +607,7 @@ class FlowCudaGraphRunner:
                 return None
             else:
                 with (
-                    torch.cuda.device(self.device),
+                    self.device_module.device(self.device),
                     torch.autocast(
                         device_type=self.device.type,
                         dtype=self.autocast_dtype,
@@ -803,24 +811,48 @@ def generate_flow_packed(
     streaming: bool,
     finalize: bool,
 ) -> torch.Tensor:
-    """Eager Flow call over the rows packed along the sequence: every per
-    token module pays for each row's own frames, attention still for the
-    widest row. Returns the padded (rows, channels, frames) layout the mel
-    split reads."""
+    """Flow call over the rows packed along the sequence, a non-streaming call
+    replayed from the whole history graphs when one holds its rows. Returns the
+    padded (rows, channels, frames) layout the mel split reads."""
     conditioning = prepare_flow_conditioning(flow, packed, finalize=finalize)
     token_condition = conditioning.token_condition
-    rows = pack_rows(conditioning.mel_lengths, token_condition.device)
-    generated = solve_flow_euler_packed(
-        flow.packed_estimator,
-        gather_rows(conditioning.noisy_mel.transpose(1, 2), rows),
-        conditioning.time_span,
-        gather_rows(token_condition.transpose(1, 2), rows),
-        conditioning.speaker_embedding,
-        gather_rows(conditioning.prompt_mel.transpose(1, 2), rows),
-        rows,
-        cfg_rate=flow.decoder.inference_cfg_rate,
-        streaming=streaming,
-    )
+    device = token_condition.device
+    rows = pack_rows(conditioning.mel_lengths, device)
+    noise = gather_rows(conditioning.noisy_mel.transpose(1, 2), rows)
+    mu = gather_rows(token_condition.transpose(1, 2), rows)
+    mel_conditioning = gather_rows(conditioning.prompt_mel.transpose(1, 2), rows)
+    if streaming or flow.whole_history_cuda_graph_runner is None:
+        generated = None
+    else:
+        generated = flow.whole_history_cuda_graph_runner.run(
+            noise=noise,
+            time_span=conditioning.time_span,
+            mu=mu,
+            speaker_embeddings=conditioning.speaker_embedding,
+            mel_conditioning=mel_conditioning,
+            lengths=rows.lengths,
+        )
+    if generated is None:
+        estimator = flow.packed_estimator
+        twin_rows = pack_rows(rows.lengths * 2, device)
+        generated = solve_flow_euler_packed(
+            estimator,
+            noise,
+            conditioning.time_span,
+            mu,
+            conditioning.speaker_embedding,
+            mel_conditioning,
+            twin_rows,
+            estimator.row_attention(
+                twin_rows,
+                streaming=streaming,
+                dtype=conditioning.speaker_embedding.dtype,
+            ),
+            estimator.rope_angles(twin_rows.width),
+            cfg_rate=flow.decoder.inference_cfg_rate,
+        )
+    else:
+        pass
     return scatter_rows(generated, rows, token_condition.shape[2]).transpose(1, 2)
 
 
@@ -870,6 +902,8 @@ class FunCosyVoice3Flow:
         # estimator, whose fixed (2, 80, T) profile keeps the padded layout.
         self.packed_estimator = packed_estimator
         self.prefix_pool: PrefixKVPool | None = None
+        self.prefix_cuda_graph_runner: PrefixCudaGraphRunner | None = None
+        self.whole_history_cuda_graph_runner: WholeHistoryCudaGraphRunner | None = None
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
@@ -978,18 +1012,36 @@ class FunCosyVoice3Flow:
             flat = padded.transpose(1, 2).reshape(-1, padded.shape[1])
             return flat[new_frame_index].unsqueeze(0)
 
-        generated = solve_flow_euler_prefix(
-            self.packed_estimator,
-            self.prefix_pool,
-            take_new_frames(conditioning.noisy_mel),
-            conditioning.time_span,
-            take_new_frames(token_condition),
-            conditioning.speaker_embedding,
-            take_new_frames(conditioning.prompt_mel),
-            new_frames,
-            list(caches),
-            cfg_rate=self.flow.decoder.inference_cfg_rate,
-        )
+        noise = take_new_frames(conditioning.noisy_mel)
+        mu = take_new_frames(token_condition)
+        mel_conditioning = take_new_frames(conditioning.prompt_mel)
+        if self.prefix_cuda_graph_runner is None:
+            generated = None
+        else:
+            generated = self.prefix_cuda_graph_runner.run(
+                noise=noise,
+                time_span=conditioning.time_span,
+                mu=mu,
+                speaker_embeddings=conditioning.speaker_embedding,
+                mel_conditioning=mel_conditioning,
+                new_frames=new_frames,
+                caches=list(caches),
+            )
+        if generated is None:
+            generated = solve_flow_euler_prefix(
+                self.packed_estimator,
+                self.prefix_pool,
+                noise,
+                conditioning.time_span,
+                mu,
+                conditioning.speaker_embedding,
+                mel_conditioning,
+                new_frames,
+                list(caches),
+                cfg_rate=self.flow.decoder.inference_cfg_rate,
+            )
+        else:
+            pass
         padded = generated.new_zeros(
             len(inputs), token_condition.shape[2], generated.shape[2]
         )
@@ -1146,6 +1198,14 @@ def load_cosyvoice3_flow_hift(
                 module.to(autocast_dtype)
             else:
                 pass
+        input_embed = flow.decoder.estimator.input_embed
+        conv = input_embed.conv_pos_embed.conv1[0]
+        if HAS_TRITON and conv.in_channels // conv.groups in GROUP_CONV_KERNEL_CHANNELS:
+            input_embed.conv_pos_embed = FusedConvPositionEmbedding(
+                input_embed.conv_pos_embed
+            )
+        else:
+            pass
     else:
         pass
     wrapped = FunCosyVoice3Flow(
@@ -1883,7 +1943,7 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
                 streaming=streaming,
                 finalize=finalize,
             )
-        tts_mel = tts_mel[:, :, offset * TOKEN_MEL_RATIO :]
+        tts_mel = tts_mel[:, :, offset * self.flow.token_mel_ratio :]
         return self.hift_delta(
             tts_mel, hift_mel=hift_mel, speech_offset=speech_offset, finalize=finalize
         )
@@ -2210,7 +2270,7 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
 
-        payload = store_pipeline_state(payload, state)
+        payload.data = state.to_terminal_dict()
         payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
@@ -2343,7 +2403,7 @@ class CosyVoice3MlxVocoderAdapter(
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
-        payload = store_pipeline_state(payload, state)
+        payload.data = state.to_terminal_dict()
         payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
@@ -2550,6 +2610,8 @@ def create_vocoder_executor(
     flow_merge_pad_budget_percent: float = 25.0,
     enable_dit_torch_compile: bool = True,
     enable_flow_cuda_graph: bool = True,
+    enable_flow_prefix_cuda_graph: bool,
+    enable_flow_whole_history_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
@@ -2642,8 +2704,19 @@ def create_vocoder_executor(
 
     device_obj = torch.device(device)
     if enable_flow_cuda_graph and (
-        device_obj.type != "cuda" or not torch.cuda.is_available()
+        not supports_device_streams(device_obj)
+        or current_platform.get_device_graph_backend(device_obj) is None
     ):
+        enable_flow_cuda_graph = False
+    elif (
+        enable_flow_cuda_graph
+        and enable_dit_torch_compile
+        and current_platform.get_graph_capture_sdpa_backends()
+    ):
+        logger.info(
+            f"Fun-CosyVoice3 Flow graphs stay off on {device_obj}: the compiled DiT "
+            "keeps an SDPA kernel this platform cannot record"
+        )
         enable_flow_cuda_graph = False
     else:
         pass
@@ -2702,8 +2775,97 @@ def create_vocoder_executor(
         token_max_hop_len=token_max_hop_len,
         disable_hop_growth=disable_hop_growth,
     )
+    packed_estimator = vocoder.flow.packed_estimator
+    if packed_estimator is not None:
+        # note(ratish): a graph replays its captured dtypes; under autocast a hop's frames
+        # keep the token embedding's dtype and its speaker embedding does not.
+        with (
+            torch.inference_mode(),
+            torch.autocast(
+                device_type=device_obj.type,
+                dtype=autocast_dtype,
+                enabled=autocast_dtype is not None,
+            ),
+        ):
+            conditioning = prepare_flow_conditioning(
+                vocoder.flow,
+                pack_flow_inputs(
+                    vocoder.flow.flow,
+                    [scheduler.make_warmup_flow_input(token_hop_len)],
+                ),
+                finalize=False,
+            )
+            packed_estimator.build_modulations(
+                conditioning.time_span, conditioning.speaker_embedding.dtype
+            )
+    else:
+        pass
     if enable_dit_torch_compile:
         scheduler.warmup_packed_dit_compile()
+    else:
+        pass
+    has_prefix_graphs = enable_flow_prefix_cuda_graph and flow.prefix_pool is not None
+    # note(ratish): sglang's ladder starts at 4 frames, so a smaller admission budget
+    # has no tier and every final keeps the eager solve.
+    whole_history_tier_frames = generate_prefill_cuda_graph_batch_sizes(
+        flow_batch_admission_frames
+    )
+    has_whole_history_graphs = (
+        enable_flow_whole_history_cuda_graph
+        and device_obj.type == "cuda"
+        and flow.packed_estimator is not None
+        and flow.packed_estimator.is_ragged
+        and autocast_dtype in FA3_DTYPES
+        and len(whole_history_tier_frames) > 0
+    )
+    if has_prefix_graphs or has_whole_history_graphs:
+        graph_backend = current_platform.get_device_graph_backend(device_obj)
+        assert graph_backend is not None and flow.packed_estimator is not None
+        assert autocast_dtype is not None
+        solve_graphs = SolveGraphCapture(
+            graph_backend, device=device_obj, autocast_dtype=autocast_dtype
+        )
+    else:
+        pass
+    if has_prefix_graphs:
+        token_mel_ratio = flow.token_mel_ratio
+        if disable_hop_growth:
+            longest_hop_tokens = token_hop_len
+        else:
+            longest_hop_tokens = token_max_hop_len
+        prefix_cuda_graph_runner = PrefixCudaGraphRunner(
+            flow.packed_estimator,
+            flow.prefix_pool,
+            graphs=solve_graphs,
+            frame_dtype=conditioning.noisy_mel.dtype,
+            speaker_dtype=conditioning.speaker_embedding.dtype,
+            cfg_rate=flow.decoder.inference_cfg_rate,
+            mel_channels=flow.output_size,
+            speaker_channels=flow.spk_embed_affine_layer.out_features,
+            max_rows=max_batch_size,
+            hop_frames=longest_hop_tokens * token_mel_ratio,
+            min_hop_frames=token_hop_len * token_mel_ratio,
+            max_frames=flow.decoder.rand_noise.shape[2],
+        )
+        prefix_cuda_graph_runner.capture()
+        flow.prefix_cuda_graph_runner = prefix_cuda_graph_runner
+    else:
+        pass
+    if has_whole_history_graphs:
+        whole_history_cuda_graph_runner = WholeHistoryCudaGraphRunner(
+            flow.packed_estimator,
+            graphs=solve_graphs,
+            frame_dtype=conditioning.noisy_mel.dtype,
+            speaker_dtype=conditioning.speaker_embedding.dtype,
+            cfg_rate=flow.decoder.inference_cfg_rate,
+            euler_steps=FLOW_EULER_STEPS,
+            mel_channels=flow.output_size,
+            speaker_channels=flow.spk_embed_affine_layer.out_features,
+            max_rows=max_batch_size,
+            tier_frames=whole_history_tier_frames,
+        )
+        whole_history_cuda_graph_runner.capture()
+        flow.whole_history_cuda_graph_runner = whole_history_cuda_graph_runner
     else:
         pass
     scheduler.warmup_now()

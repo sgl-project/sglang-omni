@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -35,11 +36,21 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
         def sample(self, _hidden, _history, noise, *args, **_kwargs):
             return noise + 1
 
+    @contextmanager
+    def graph_capture_attention() -> Iterator[None]:
+        events.append("attention_pinned")
+        yield
+        events.append("attention_released")
+
     get_backend = Mock(return_value=FakeGraphBackend())
     monkeypatch.setattr(
         talker_model,
         "current_platform",
-        SimpleNamespace(get_device_graph_backend=get_backend, is_cuda=lambda: False),
+        SimpleNamespace(
+            get_device_graph_backend=get_backend,
+            graph_capture_attention=graph_capture_attention,
+            is_cuda=lambda: False,
+        ),
     )
     executor = talker_model.CFMGraphExecutor(
         SimpleNamespace(steps=2, patch_size=2),
@@ -64,7 +75,7 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
     assert executor.initialized is True
     assert executor.graph is graph
     get_backend.assert_called_once_with(input_tensor.device)
-    assert events == [("capture", True)]
+    assert events == ["attention_pinned", ("capture", True), "attention_released"]
 
 
 def test_cfm_graph_warms_up_full_tail_before_capture(monkeypatch) -> None:
@@ -119,6 +130,7 @@ def test_cfm_graph_warms_up_full_tail_before_capture(monkeypatch) -> None:
         "current_platform",
         SimpleNamespace(
             get_device_graph_backend=lambda device: FakeGraphBackend(),
+            graph_capture_attention=nullcontext,
             is_cuda=lambda: True,
         ),
     )
@@ -177,6 +189,7 @@ def test_cfm_graph_replay_uses_new_inputs_and_checks_abort(monkeypatch) -> None:
         "current_platform",
         SimpleNamespace(
             get_device_graph_backend=lambda device: FakeGraphBackend(),
+            graph_capture_attention=nullcontext,
             is_cuda=lambda: False,
         ),
     )

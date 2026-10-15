@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PretrainedConfig
 
 from sglang_omni.models.minicpm_o.components.whisper_encoder import (
@@ -25,6 +27,29 @@ from sglang_omni.models.weight_loader import (
 MASK_MIN = -1e9
 
 logger = logging.getLogger(__name__)
+
+AudioBatchKey = tuple[tuple[int, ...], int, int]
+# note (Junnan Li): cuDNN attention rebuilds a graph for every new key length, and streaming makes a new one each unit.
+STREAMING_ATTENTION_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+
+@dataclass(kw_only=True)
+class StreamingAudioChunk:
+    """One session's mel chunk and the attention history it continues; the forward takes the history."""
+
+    audio_features: torch.Tensor
+    state: AudioEncoderState | None
+    prefix_extra_frames: int
+    suffix_extra_frames: int
+
+    def batch_key(self) -> AudioBatchKey:
+        """Chunks with equal keys share one forward; history lengths may differ."""
+        return (
+            tuple(self.audio_features.shape),
+            self.prefix_extra_frames,
+            self.suffix_extra_frames,
+        )
+
 
 QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 
@@ -200,7 +225,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
         attn_mask = attn_mask.unsqueeze(1)
 
-        audio_states, _ = self.apm(wavforms, attn_mask)
+        audio_states = self.apm(wavforms, attn_mask)
         audio_embeds = self.audio_projection_layer(audio_states)
 
         audio_embeds = audio_embeds.transpose(1, 2)
@@ -214,53 +239,103 @@ class MiniCPMOAudioEncoder(nn.Module):
         return {"audio_embeds": audio_embeds[keep]}
 
     @torch.no_grad()
-    def forward_streaming(
-        self,
-        audio_features: torch.Tensor,
-        audio_feature_lens: torch.Tensor,
-        state: AudioEncoderState | None = None,
-        prefix_extra_frames: int = 0,
-        suffix_extra_frames: int = 0,
-    ) -> tuple[torch.Tensor, AudioEncoderState]:
-        """Encode one mel chunk while retaining only its non-context attention KV."""
-        if audio_features.shape[0] != 1:
-            raise ValueError("streaming audio encoding supports batch_size=1")
-        else:
-            pass
-        state = AudioEncoderState() if state is None else state
-        past_length = state.past_length
-        convolution_length = (audio_features.shape[-1] + 1) // 2
-        if past_length + convolution_length >= self.apm.embed_positions.num_embeddings:
-            logger.info(f"Resetting audio encoder KV at {past_length} frames")
-            state = AudioEncoderState()
-            past_length = 0
-        else:
-            pass
+    def forward_streaming_batch(
+        self, chunks: list[StreamingAudioChunk]
+    ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
+        """Encode one mel chunk per session in one forward; histories are left-padded and the padding is masked."""
+        first = chunks[0]
+        convolution_length = (first.audio_features.shape[-1] + 1) // 2
+        states: list[AudioEncoderState] = []
+        for chunk in chunks:
+            state = AudioEncoderState() if chunk.state is None else chunk.state
+            chunk.state = None
+            if (
+                state.past_length + convolution_length
+                >= self.apm.embed_positions.num_embeddings
+            ):
+                logger.info(f"Resetting audio encoder KV at {state.past_length} frames")
+                state = AudioEncoderState()
+            else:
+                pass
+            states.append(state)
         current_length = (
             convolution_length
-            - (prefix_extra_frames + 1) // 2
-            - (suffix_extra_frames + 1) // 2
+            - (first.prefix_extra_frames + 1) // 2
+            - (first.suffix_extra_frames + 1) // 2
         )
         if current_length < self.audio_pool_step:
             raise ValueError("streaming audio chunk is too short after context removal")
         else:
             pass
-        attention_mask = torch.zeros(
-            (1, 1, current_length, past_length + current_length),
+        past_lengths = [state.past_length for state in states]
+        longest = max(past_lengths)
+        attention = self.apm.layers[0].self_attn
+        # note (Junnan Li): Zeros, not empty memory: masked keys still multiply their values, and garbage could be NaN.
+        key_value_states = torch.zeros(
+            (
+                len(self.apm.layers),
+                2,
+                len(chunks),
+                attention.num_heads,
+                longest + current_length,
+                attention.head_dim,
+            ),
             dtype=self.dtype,
             device=self.device,
         )
-        states, new_state = self.apm(
-            audio_features,
-            attention_mask,
-            state,
-            prefix_extra_frames,
-            suffix_extra_frames,
+        for row, state in enumerate(states):
+            if state.key_value_states is None:
+                pass
+            else:
+                key_value_states[
+                    :, :, row, :, longest - state.past_length : longest
+                ] = state.key_value_states[:, :, 0]
+        # note (Junnan Li): The batch tensor now holds every history, so free the old ones before the forward allocates the new ones.
+        del state, states
+        # note (Junnan Li): A non-blocking copy from pageable memory is staged at once and does not wait for the GPU.
+        device_past_lengths = torch.tensor(past_lengths).to(
+            self.device, non_blocking=True
         )
-        embeds = self.audio_projection_layer(states)
+        key_positions = torch.arange(longest + current_length, device=self.device)
+        is_padding = key_positions[None, :] < (longest - device_past_lengths)[:, None]
+        attention_mask = (
+            torch.where(is_padding, MASK_MIN, 0.0)
+            .to(self.dtype)[:, None, None, :]
+            .expand(-1, 1, current_length, -1)
+            .contiguous()
+        )
+        positions = device_past_lengths[:, None] + torch.arange(
+            current_length, device=self.device
+        )
+        with sdpa_kernel(STREAMING_ATTENTION_BACKENDS):
+            hidden_states = self.apm(
+                torch.cat([chunk.audio_features for chunk in chunks]).to(
+                    self.device, non_blocking=True
+                ),
+                attention_mask,
+                key_value_states,
+                positions,
+                prefix_extra_frames=first.prefix_extra_frames,
+                suffix_extra_frames=first.suffix_extra_frames,
+            )
+        embeds = self.audio_projection_layer(hidden_states)
         embeds = self.audio_avg_pooler(embeds.transpose(1, 2)).transpose(1, 2)
+        if len(chunks) == 1:
+            session_states = [AudioEncoderState(key_value_states=key_value_states)]
+        else:
+            # note (Junnan Li): Copy each session's rows out so its state owns exactly its history and the batch tensor is freed.
+            session_states = [
+                AudioEncoderState(
+                    key_value_states=key_value_states[
+                        :, :, row : row + 1, :, longest - past_length :
+                    ].clone()
+                )
+                for row, past_length in enumerate(past_lengths)
+            ]
         pooled_length = feature_lens_after_pooling(
-            audio_feature_lens, self.audio_pool_step
+            torch.tensor([first.audio_features.shape[-1]]), self.audio_pool_step
         ).item()
-        assert new_state is not None
-        return embeds[0, :pooled_length], new_state
+        return [
+            (embeds[row, :pooled_length], session_state)
+            for row, session_state in enumerate(session_states)
+        ]

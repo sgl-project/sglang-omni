@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import math
 import mimetypes
 import sys
@@ -73,6 +74,7 @@ from benchmarks.tasks.transcribe_diarize import (
     extract_prediction_text,
     load_movies800_samples,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 AISHELL4_REPO_ID: Final[str] = "zhaochenyang20/AISHELL4"
 GOOGLETIME_REPO_ID: Final[str] = "zhaochenyang20/googletime"
@@ -424,6 +426,11 @@ def main(
     *,
     default_dataset: str = "movies800times",
 ) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     try:
         args = parse_args(argv, default_dataset=default_dataset)
         if args.reuse_asr_results:

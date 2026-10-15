@@ -251,17 +251,9 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     }
 
 
-def test_request_lowering_keeps_audar_defaults_unless_explicit() -> None:
+def test_request_lowering_keeps_audar_defaults_unless_set() -> None:
     reference = {"bytes": five_second_wav(), "text": "reference transcript"}
-    implicit = make_payload(
-        inputs={"text": "target", "references": [reference]},
-        params={
-            "temperature": 0.8,
-            "top_p": 0.8,
-            "top_k": 30,
-            "repetition_penalty": 1.1,
-        },
-    )
+    implicit = make_payload(inputs={"text": "target", "references": [reference]})
     implicit_state = build_audar_state(implicit)
     assert implicit_state.generation_kwargs == {
         "max_new_tokens": 2048,
@@ -274,14 +266,7 @@ def test_request_lowering_keeps_audar_defaults_unless_explicit() -> None:
     explicit = make_payload(
         inputs={"text": "target", "references": [reference]},
         params={"temperature": 0.6, "top_k": 20, "max_new_tokens": 128},
-        tts_params={
-            "explicit_generation_params": [
-                "temperature",
-                "top_k",
-                "max_new_tokens",
-            ],
-            "seed": 17,
-        },
+        tts_params={"seed": 17},
     )
     explicit_state = build_audar_state(explicit)
     assert explicit_state.generation_kwargs == {
@@ -318,13 +303,6 @@ def test_openai_speech_request_lowers_to_audar_state() -> None:
         validate=False,
         reference_descriptors=prepared.reference_descriptors,
     )
-    assert isinstance(generation_request.metadata["tts_params"], dict)
-    assert generation_request.metadata["tts_params"]["explicit_generation_params"] == [
-        "max_new_tokens",
-        "seed",
-        "temperature",
-        "top_k",
-    ]
     payload = StagePayload(
         request_id="request",
         request=Client.build_omni_request(generation_request),

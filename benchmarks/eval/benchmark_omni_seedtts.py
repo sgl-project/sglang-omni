@@ -186,11 +186,8 @@ from benchmarks.tasks.tts import (
     save_speed_results,
     talker_sampling_params,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 60
@@ -939,6 +936,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     parser = _build_arg_parser()
     args = parser.parse_args()
     config = _config_from_args(args)

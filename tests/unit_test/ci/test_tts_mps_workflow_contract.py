@@ -11,6 +11,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 OMNI_WORKFLOW = REPO_ROOT / ".github/workflows/omni-ci.yaml"
 TTS_WORKFLOW = REPO_ROOT / ".github/workflows/test-tts-ci.yaml"
+MPS_WORKFLOW = REPO_ROOT / ".github/workflows/test-mps-ci.yaml"
+MPS_JOB_ID = "stage-1-mps-nonstream"
 
 
 def make_workflow(path: Path) -> dict:
@@ -22,11 +24,10 @@ def make_step(job: dict, name: str) -> dict:
 
 
 def test_workflow_keeps_ordinary_stage_and_adds_isolated_mps_validation() -> None:
-    workflow = make_workflow(TTS_WORKFLOW)
-    jobs = workflow["jobs"]
+    jobs = make_workflow(TTS_WORKFLOW)["jobs"]
     ordinary = jobs["stage-1-non-streaming"]
-    mps = jobs["stage-5-mps"]
-    assert mps["name"] == "stage 5 - MPS"
+    mps = make_workflow(MPS_WORKFLOW)["jobs"][MPS_JOB_ID]
+    assert mps["name"] == "stage 1 - MPS non-streaming"
 
     ordinary_run = make_step(ordinary, "Run TTS non-streaming benchmark stage")
     assert "test_tts_ci.py" in ordinary_run["run"]
@@ -37,14 +38,12 @@ def test_workflow_keeps_ordinary_stage_and_adds_isolated_mps_validation() -> Non
         == "tts-stage-nonstream-speed-results"
     )
 
-    assert mps["needs"] == "stage-4-serving"
-    assert "always()" in mps["if"]
     assert (
         "tests/test_ci/test_tts_mps_dp2.py"
         in make_step(mps, "Run TTS MPS non-streaming validation")["run"]
     )
     assert "--cap-add SYS_NICE" in mps["container"]["options"]
-    # Same shape as the other TTS stages: fixed name, overwritten per rerun,
+    # Same shape as the TTS stages: fixed name, overwritten per rerun,
     # evidence paths only, and the run outputs removed from the CI home.
     upload = make_step(mps, "Upload TTS MPS evidence")["with"]
     assert upload["name"] == "tts-stage-mps-nonstream-evidence"
@@ -62,54 +61,40 @@ def test_workflow_keeps_ordinary_stage_and_adds_isolated_mps_validation() -> Non
     assert jobs["stage-2-streaming"]["needs"] == "stage-1-non-streaming"
     assert jobs["stage-3-consistency"]["needs"] == "stage-2-streaming"
     assert jobs["stage-4-serving"]["needs"] == "stage-3-consistency"
-    assert list(jobs).index("stage-5-mps") > list(jobs).index("stage-4-serving")
 
 
 def test_mps_artifacts_cannot_be_consumed_by_canonical_consistency() -> None:
-    workflow = make_workflow(TTS_WORKFLOW)
-    jobs = workflow["jobs"]
-    mps = jobs["stage-5-mps"]
-    mps_env = mps["env"]
+    mps_env = make_workflow(MPS_WORKFLOW)["jobs"][MPS_JOB_ID]["env"]
     assert "/mps-nonstream/" in mps_env["TTS_MPS_OUTPUT_ROOT"]
     assert "/nonstream/" not in mps_env["TTS_MPS_OUTPUT_ROOT"]
 
-    canonical_jobs = [
-        jobs["stage-2-streaming"],
-        jobs["stage-3-consistency"],
-        jobs["stage-4-serving"],
-    ]
-    canonical_text = yaml.safe_dump(canonical_jobs)
+    canonical_text = yaml.safe_dump(make_workflow(TTS_WORKFLOW))
     assert "tts-mps-" not in canonical_text
     assert "mps-nonstream" not in canonical_text
 
 
-def test_mps_stage_measures_the_pool_model_not_the_rotation_model() -> None:
-    """Stage 5 can run a different model than stages 1-4, so it must say so.
-
-    The evidence writer and the threshold lookup both key on the model name,
+def test_mps_stage_measures_the_model_its_preflight_selected() -> None:
+    """The evidence writer and the threshold lookup both key on the model name,
     and both reject a name they have no MPS references for.
     """
-    mps = make_workflow(TTS_WORKFLOW)["jobs"]["stage-5-mps"]
+    mps = make_workflow(MPS_WORKFLOW)["jobs"][MPS_JOB_ID]
     assert (
         make_step(mps, "Run TTS MPS non-streaming validation")["env"]["TTS_CI_MODEL"]
-        == "${{ inputs.tts_mps_model }}"
+        == "${{ inputs.mps_ci_model }}"
     )
     assert (
-        '--selected-model "${{ inputs.tts_mps_model }}"'
+        '--selected-model "${{ inputs.mps_ci_model }}"'
         in make_step(mps, "Initialize TTS MPS evidence")["run"]
     )
-    assert "inputs.tts_ci_model" not in yaml.safe_dump(mps)
     # Passing the config without the model would gate a moss pool on whichever
     # model the test defaults to.
-    tts_ci = make_workflow(OMNI_WORKFLOW)["jobs"]["tts-ci"]
-    assert "pick-tts-model" in tts_ci["needs"]
-    assert (
-        tts_ci["with"]["tts_mps_model"]
-        == "${{ needs.pick-tts-model.outputs.resolved_mps_model }}"
+    mps_ci = make_workflow(OMNI_WORKFLOW)["jobs"]["mps-ci"]
+    assert "preflight" in mps_ci["needs"]
+    assert mps_ci["with"]["mps_ci_model"] == (
+        "${{ needs.preflight.outputs.mps_ci_model }}"
     )
-    assert (
-        tts_ci["with"]["tts_ci_model"]
-        == "${{ needs.pick-tts-model.outputs.selected_model }}"
+    assert mps_ci["with"]["mps_ci_config"] == (
+        "${{ needs.preflight.outputs.mps_ci_config }}"
     )
 
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 import torch
@@ -19,6 +20,7 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
+from sglang_omni.utils.device import supports_device_streams
 
 if TYPE_CHECKING:
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -75,6 +77,9 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     model: Qwen3TTSTalker
     tp_worker: ModelWorker
+    # Resolved in __init__: post_process_outputs records a readiness event per
+    # decode step, and the device cannot change under the runner.
+    codes_event_module: ModuleType | None = None
 
     def __init__(
         self,
@@ -89,6 +94,11 @@ class Qwen3TTSModelRunner(ModelRunner):
         self.row_ids_cache: torch.Tensor | None = None
         self.leading_silence_mask_frames = leading_silence_mask_frames
         self.silence_codec_ids = silence_codec_ids
+        self.codes_event_module = (
+            torch.get_device_module(self.device)
+            if supports_device_streams(self.device)
+            else None
+        )
 
     def before_prefill(
         self,
@@ -167,21 +177,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         del batch
         return False
 
-    def sample_next_token_ids(
-        self,
-        logits_output: LogitsProcessorOutput,
-        forward_batch: ForwardBatch,
-        schedule_batch: ScheduleBatch | None,
-        requests: list[SchedulerRequest],
-    ) -> torch.Tensor:
-        self.install_semantic_sampling_seeds(forward_batch, requests)
-        return super().sample_next_token_ids(
-            logits_output,
-            forward_batch,
-            schedule_batch,
-            requests,
-        )
-
     # ------------------------------------------------------------------
     # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
@@ -231,15 +226,25 @@ class Qwen3TTSModelRunner(ModelRunner):
         else:
             pass
 
-    def install_semantic_sampling_seeds(
+    def install_sampling_seeds(
         self,
         forward_batch: ForwardBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        batch_size = len(requests)
-        forward_batch.sampling_info.sampling_seed = (
-            self.model.semantic_sampling_seed_tensor[:batch_size]
-        )
+        """Install the staged semantic seeds when a request in the batch carries a
+        seed, or deterministic inference has already seeded every row."""
+        sampling_info = forward_batch.sampling_info
+        if sampling_info.sampling_seed is None and all(
+            scheduled_request.data.req.sampling_params.sampling_seed is None
+            for scheduled_request in requests
+        ):
+            return
+        else:
+            pass
+        self.validate_seeded_sampling_supported(sampling_info)
+        sampling_info.sampling_seed = self.model.semantic_sampling_seed_tensor[
+            : len(requests)
+        ]
 
     def collect_codes(
         self,
@@ -294,8 +299,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         codes_snap = self.model.output_codes[:batch_size].detach().clone()
         embeds_snap = self.model.output_embeds[:batch_size].detach().clone()
         codes_ready = None
-        if codes_snap.is_cuda:
-            codes_ready = torch.cuda.Event()
+        if self.codes_event_module is not None:
+            codes_ready = self.codes_event_module.Event()
             codes_ready.record()
         else:
             pass

@@ -418,6 +418,39 @@ async def test_mps_startup_cancellation_cleans_children_before_close(
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_startup_cleanup_still_stops_children(
+    short_base,
+    monkeypatch,
+):
+    events: list[str] = []
+    group = FakeGroup(
+        events,
+        ready_error=RuntimeError("ready failed"),
+        direct_process=True,
+    )
+    fake_mps = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
+    start_task = asyncio.current_task()
+    retire_process_clients = fake_mps.retire_process_clients
+
+    async def retire_during_sigterm(process_name: str) -> set[str]:
+        start_task.cancel()
+        await asyncio.sleep(0)
+        return await retire_process_clients(process_name)
+
+    fake_mps.retire_process_clients = retire_during_sigterm
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.start()
+
+    assert events.index("MPS retire pipeline") < events.index("stage terminate")
+    assert events.index("coordinator stop") < events.index("MPS close")
+    assert runner.ipc_runtime_dir is None
+    assert not fake_mps.has_leases
+
+
+@pytest.mark.asyncio
 async def test_startup_cancellation_remains_primary_when_mps_close_is_dirty(
     short_base,
     monkeypatch,

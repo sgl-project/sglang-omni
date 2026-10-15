@@ -176,7 +176,7 @@ async def ensure_video_list_async(
     else:
         items = [videos]
     normalized: list[object] = []
-    sample_fps_list: list[float] = []
+    sample_fps_list: list[float] = [0.0] * len(items)
     extracted_audios: list[npt.NDArray[np.float32] | None] = []
     all_paths = True
 
@@ -271,21 +271,19 @@ async def ensure_video_list_async(
                     coroutines.append(task)
                     url_indices.append(idx)
                     normalized.append(None)  # note (Teery): Placeholder for video
-                    sample_fps_list.append(0.0)  # note (Teery): Placeholder for fps
                     if extract_audio:
                         extracted_audios.append(
                             None
                         )  # note (Teery): Placeholder for audio
                     else:
                         pass
-                elif Path(video_item).exists():
+                elif Path(resource_connector.local_media_path(video_item)).exists():
                     # note (Teery): Load from local path with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=False)
                     task = asyncio.create_task(coro)
                     coroutines.append(task)
                     url_indices.append(idx)
                     normalized.append(None)  # note (Teery): Placeholder for video
-                    sample_fps_list.append(0.0)  # note (Teery): Placeholder for fps
                     if extract_audio:
                         extracted_audios.append(
                             None

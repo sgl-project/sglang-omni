@@ -3,9 +3,17 @@
 
 from __future__ import annotations
 
+import sys
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
 import pytest
 
 from tests.test_model.tts_ci_config import TTS_CI_PRESETS
+
+CI_LABEL_RULES_PATH = (
+    Path(__file__).resolve().parents[3] / ".github/scripts/resolve_ci_labels.py"
+)
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
@@ -30,37 +38,20 @@ def test_a_named_voice_preset_carries_a_voice(name: str) -> None:
         assert model.voice, f"{name} sends no reference, so it needs a voice"
 
 
-def test_the_workflow_rotation_draws_registered_presets_only() -> None:
-    """Every model the random rotation can draw is a registered preset, and
-    the CustomVoice arm is not in the draw: it gates nothing until it is
-    calibrated on the CI host, so a random draw of it would spend a CI slot
-    without deciding anything. It runs by label or dispatch until then.
-    """
-    from pathlib import Path
+def test_every_tts_ci_label_selects_a_registered_preset() -> None:
+    """A TTS model label or the random draw can only select a registered preset."""
+    spec = spec_from_file_location("resolve_ci_labels", CI_LABEL_RULES_PATH)
+    assert spec is not None and spec.loader is not None
+    ci_label_rules = module_from_spec(spec)
+    sys.modules[spec.name] = ci_label_rules
+    spec.loader.exec_module(ci_label_rules)
+    tts = next(stage for stage in ci_label_rules.CI_STAGES if stage.name == "tts")
+    selectable_presets = set(tts.preset_by_model_label.values())
 
-    import yaml
-
-    workflow = Path(__file__).resolve().parents[3] / ".github/workflows/omni-ci.yaml"
-    jobs = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)[
-        "jobs"
-    ]
-    script = next(
-        step["run"]
-        for step in jobs["pick-tts-model"]["steps"]
-        if step.get("id") == "tts"
+    assert selectable_presets <= set(TTS_CI_PRESETS), (
+        "the TTS CI labels name models tts_ci_config.py does not know: "
+        f"{sorted(selectable_presets - set(TTS_CI_PRESETS))}"
     )
-    line = next(
-        stripped
-        for stripped in (raw.strip() for raw in script.splitlines())
-        if stripped.startswith("models=(")
-    )
-    rotation = set(line[len("models=(") : line.rindex(")")].split())
-
-    assert rotation <= set(TTS_CI_PRESETS), (
-        "the rotation names models tts_ci_config.py does not know: "
-        f"{sorted(rotation - set(TTS_CI_PRESETS))}"
-    )
-    assert "qwen3-tts-custom-voice" not in rotation
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))

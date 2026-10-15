@@ -12,9 +12,13 @@ from torch.nn import functional as F
 
 @dataclass(frozen=True, kw_only=True)
 class ConvState:
-    """Empty history enables streaming; no state disables caching."""
+    """Empty history enables streaming; no state disables caching.
+
+    With valid_frame_counts the next history ends at each row's last real frame.
+    """
 
     history: torch.Tensor | None = None
+    valid_frame_counts: torch.Tensor | None = None
 
 
 class CausalConv1d(nn.Conv1d):
@@ -26,9 +30,19 @@ class CausalConv1d(nn.Conv1d):
             x = torch.cat((state.history, x), dim=2)
         else:
             x = F.pad(x, (history_length, 0))
-        next_state = (
-            ConvState(history=x[:, :, x.shape[2] - history_length :].clone())
-            if state is not None
-            else None
-        )
+        if state is None:
+            next_state = None
+        elif state.valid_frame_counts is None:
+            next_state = ConvState(
+                history=x[:, :, x.shape[2] - history_length :].clone()
+            )
+        else:
+            positions = state.valid_frame_counts[:, None] + torch.arange(
+                history_length, device=x.device
+            )
+            next_state = ConvState(
+                history=torch.gather(
+                    x, 2, positions[:, None, :].expand(-1, x.shape[1], -1)
+                )
+            )
         return super().forward(x), next_state

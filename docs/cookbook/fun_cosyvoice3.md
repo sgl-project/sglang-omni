@@ -89,6 +89,8 @@ sgl-omni serve \
 ```
 
 
+For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../get_started/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
@@ -234,7 +236,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `temperature` | `0.7` | Sampling temperature |
 | `top_p` | `0.8` | Top-p sampling |
 | `top_k` | `20` | Top-k sampling |
-| `repetition_penalty` | `1.1` | Repetition penalty |
+| `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
@@ -265,7 +267,7 @@ On the other hand, decrease the admission budget to reduce latency and lower pea
 
 ### Vocoder Configuration
 
-Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. Streaming hops over the Flow prefix cache replay their Euler solve from CUDA graphs captured per frame tier (`max_batch_size` rows of the longest hop, on the decode batch ladder); a step above the largest tier runs eagerly, and `enable_flow_prefix_cuda_graph=false` turns the graphs off. A stream's final step replays its whole-history Euler solve from CUDA graphs captured per frame tier with `max_batch_size` row slots, on SGLang's prefill graph ladder up to `flow_batch_admission_frames`. A final step above the largest tier runs eagerly, and `enable_flow_whole_history_cuda_graph=false` turns these graphs off. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
@@ -464,6 +466,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+
+Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 
 ## Benchmarking
 

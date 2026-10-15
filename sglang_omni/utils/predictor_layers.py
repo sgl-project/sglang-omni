@@ -25,6 +25,10 @@ One program covers a launch's rows, so the launch reads each weight once, as the
 replaces does. FusedPredictorLayers owns the launches' buffers, runs the layer loop, and
 covers passes of up to MAX_FUSED_ROWS rows; larger passes keep the plain path.
 
+On GPUs with programmatic dependent launch, each fused launch releases its dependents after
+its weight loop, and a fused launch that follows one starts early and waits for it before
+reading anything, so its launch latency hides under the predecessor's tail.
+
 The module imports where Triton is unavailable; the resolvers then keep the plain path.
 """
 
@@ -33,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sglang.kernels.jit.utils import is_arch_support_pdl
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.runtime_context import get_exec
@@ -43,12 +48,15 @@ try:  # keep the module importable where Triton is unavailable
     import triton
     import triton.language as tl
     from triton.language.extra import libdevice
+    from triton.language.extra.cuda import gdc_launch_dependents, gdc_wait
 
     HAS_TRITON = True
 except Exception:  # pragma: no cover
     triton = None
     tl = None
     libdevice = None
+    gdc_launch_dependents = None
+    gdc_wait = None
     HAS_TRITON = False
 
 HIDDEN_SIZE = 1024
@@ -178,11 +186,16 @@ if HAS_TRITON:
         SPLIT: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_K: tl.constexpr,
+        USE_GDC: tl.constexpr,
     ):
         """One program per head and K split: the weighted input against the head's qkv
         columns over the split's K range, with the rows' sum of squares alongside; the
         last program of the head sums the partials, applies the norm scale, then norms
         and rotates q and k; q to Q_OUT, k and v to the row's slot."""
+        if USE_GDC:
+            gdc_wait()
+        else:
+            pass
         head = tl.program_id(0)
         pid_s = tl.program_id(1)
         HALF: tl.constexpr = HEAD_DIM // 2
@@ -213,6 +226,10 @@ if HAS_TRITON:
             acc_hi = tl.dot(
                 scaled, tl.trans(weight_tile(W, hi_cols, k0, K, BLOCK_K)), acc_hi
             )
+        if USE_GDC:
+            gdc_launch_dependents()
+        else:
+            pass
         sum_sq = diagonal(square)
         if SPLIT > 1:
             partial_rows = (pid_s * BLOCK_M + rm)[:, None] * N_TOTAL
@@ -326,10 +343,15 @@ if HAS_TRITON:
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
+        USE_GDC: tl.constexpr,
     ):
         """One program per output tile and K split: X against the tile's weight rows
         over the split's K range; the last program of the tile sums the partials in
         index order, rounds the product, then writes the rounded sum with RES_IN."""
+        if USE_GDC:
+            gdc_wait()
+        else:
+            pass
         pid_n = tl.program_id(0)
         pid_s = tl.program_id(1)
         HEADS_PER_SPLIT: tl.constexpr = K // D // SPLIT
@@ -348,6 +370,10 @@ if HAS_TRITON:
                     other=0.0,
                 )
                 acc = tl.dot(x, tl.trans(weight_tile(W, cols, k0, K, BLOCK_K)), acc)
+        if USE_GDC:
+            gdc_launch_dependents()
+        else:
+            pass
         if SPLIT > 1:
             partial_offsets = (pid_s * BLOCK_M + rm)[:, None] * N + cols[None, :]
             tl.store(PARTIALS + partial_offsets, acc)
@@ -397,10 +423,15 @@ if HAS_TRITON:
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
+        USE_GDC: tl.constexpr,
     ):
         """One program per activation tile: the weighted input against the tile's gate
         and up rows with the rows' sum of squares alongside, the norm scale applied to
         both products, both rounded, then silu(gate) * up rounded once."""
+        if USE_GDC:
+            gdc_wait()
+        else:
+            pass
         pid = tl.program_id(0)
         rm = tl.arange(0, BLOCK_M)
         rk = tl.arange(0, BLOCK_K)
@@ -426,12 +457,55 @@ if HAS_TRITON:
             acc_up = tl.dot(
                 scaled, tl.trans(weight_tile(W, up_cols, k0, K, BLOCK_K)), acc_up
             )
+        if USE_GDC:
+            gdc_launch_dependents()
+        else:
+            pass
         rstd = libdevice.rsqrt(diagonal(square) / K + norm_eps)
         gate = (acc_gate * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
         up = (acc_up * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
         activated = gate / (1.0 + libdevice.exp(-gate)) * up
         offsets = rm[:, None] * INTERMEDIATE + gate_cols[None, :]
         tl.store(OUT + offsets, activated.to(tl.bfloat16), mask=row_mask[:, None])
+
+    @triton.jit
+    def codebook_step_kernel(
+        LOGITS,
+        logits_stride,
+        EMBEDDING,
+        CODES,
+        codes_stride,
+        CODEBOOK_INPUT,
+        SUMMED,
+        summed_stride,
+        VOCAB: tl.constexpr,
+        HIDDEN: tl.constexpr,
+        USE_GDC: tl.constexpr,
+    ):
+        """One program per row: the code torch.argmax picks (the first NaN, else the first
+        maximum) into the row's code slot, its embedding row as the next pass's input, and
+        that row added into the summed embedding with one bf16 rounding of the fp32 sum.
+        """
+        row = tl.program_id(0)
+        vocab = tl.arange(0, VOCAB)
+        logits = tl.load(LOGITS + row * logits_stride + vocab).to(tl.float32)
+        is_nan = logits != logits
+        best = tl.max(tl.where(is_nan, float("-inf"), logits), 0)
+        picked = tl.where(tl.max(is_nan.to(tl.int32), 0) > 0, is_nan, logits == best)
+        code = tl.min(tl.where(picked, vocab, VOCAB), 0)
+        tl.store(CODES + row * codes_stride, code.to(tl.int64))
+        hidden = tl.arange(0, HIDDEN)
+        embedding = tl.load(EMBEDDING + code * HIDDEN + hidden)
+        tl.store(CODEBOOK_INPUT + row * HIDDEN + hidden, embedding)
+        summed = tl.load(SUMMED + row * summed_stride + hidden).to(tl.float32)
+        tl.store(
+            SUMMED + row * summed_stride + hidden,
+            (summed + embedding.to(tl.float32)).to(tl.bfloat16),
+        )
+        if USE_GDC:
+            gdc_launch_dependents()
+        else:
+            pass
 
 else:
     pass
@@ -618,6 +692,7 @@ def attention_inputs(
     the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
     rows = x.shape[0]
     heads = shape.num_q_heads + 2 * shape.num_kv_heads
+    use_gdc = is_arch_support_pdl()
     norm_qkv_rope_store_kernel[(heads, shape.split_qkv)](
         x,
         tokens_per_row * x.stride(0),
@@ -648,8 +723,10 @@ def attention_inputs(
         SPLIT=shape.split_qkv,
         BLOCK_M=block_rows(rows),
         BLOCK_K=BLOCK_K,
+        USE_GDC=use_gdc,
         num_warps=NUM_WARPS,
         num_stages=NUM_STAGES,
+        launch_pdl=use_gdc,
     )
 
 
@@ -688,6 +765,9 @@ def o_proj_add(
         BLOCK_M=block_rows(rows),
         BLOCK_N=BLOCK_N,
         BLOCK_K=BLOCK_K,
+        # note (ratish): it releases mlp_up but launches as usual: a dependent launch
+        # after sdpa, which never releases its dependents, costs time.
+        USE_GDC=is_arch_support_pdl(),
         num_warps=NUM_WARPS,
         num_stages=NUM_STAGES,
     )
@@ -704,6 +784,7 @@ def mlp_up(
     """activated = bf16(silu(bf16(normed @ gate.T)) * bf16(normed @ up.T)) with the
     normed residual, gate and up being the halves of the merged weight."""
     rows = residual.shape[0]
+    use_gdc = is_arch_support_pdl()
     norm_gate_up_silu_kernel[(shape.intermediate_size // BLOCK_N,)](
         residual,
         residual.stride(0),
@@ -719,8 +800,10 @@ def mlp_up(
         BLOCK_M=block_rows(rows),
         BLOCK_N=BLOCK_N,
         BLOCK_K=MLP_BLOCK_K,
+        USE_GDC=use_gdc,
         num_warps=NUM_WARPS,
         num_stages=NUM_STAGES,
+        launch_pdl=use_gdc,
     )
 
 
@@ -735,6 +818,7 @@ def down_add(
 ) -> None:
     """residual = bf16(bf16(activated @ weight.T) + residual), in place."""
     rows = residual.shape[0]
+    use_gdc = is_arch_support_pdl()
     gemv_add_kernel[(shape.hidden_size // BLOCK_N, shape.split_hidden)](
         activated,
         activated.stride(0),
@@ -755,9 +839,44 @@ def down_add(
         BLOCK_M=block_rows(rows),
         BLOCK_N=BLOCK_N,
         BLOCK_K=BLOCK_K,
+        USE_GDC=use_gdc,
         num_warps=NUM_WARPS,
         num_stages=NUM_STAGES,
+        launch_pdl=use_gdc,
     )
+
+
+def codebook_step(
+    logits: torch.Tensor,
+    embedding_weight: torch.Tensor,
+    codes: torch.Tensor,
+    summed: torch.Tensor,
+) -> torch.Tensor:
+    """codes = argmax(logits) as torch.argmax picks it, summed += embedding[codes] in
+    place, in one launch; returns the next pass's input rows (rows, 1, hidden). logits is
+    (rows, vocab), codes a (rows,) int64 view; bf16 tables, power-of-two widths."""
+    rows, vocab_size = logits.shape
+    hidden_size = embedding_weight.shape[1]
+    codebook_input = torch.empty(
+        (rows, 1, hidden_size), device=summed.device, dtype=summed.dtype
+    )
+    codebook_step_kernel[(rows,)](
+        logits,
+        logits.stride(0),
+        embedding_weight,
+        codes,
+        codes.stride(0),
+        codebook_input,
+        summed,
+        summed.stride(0),
+        VOCAB=vocab_size,
+        HIDDEN=hidden_size,
+        # note (ratish): it releases the next pass's first layer but launches as usual
+        # after the lm_head GEMM, which never releases its dependents.
+        USE_GDC=is_arch_support_pdl(),
+        num_warps=NUM_WARPS,
+    )
+    return codebook_input
 
 
 class FusedPredictorLayers:

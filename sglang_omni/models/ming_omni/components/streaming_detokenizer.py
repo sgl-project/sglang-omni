@@ -94,6 +94,9 @@ class MingStreamingDetokenizeScheduler:
         # the scheduler thread; guards iteration/multi-op sections.
         self.state_lock = threading.Lock()
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         while self.running:

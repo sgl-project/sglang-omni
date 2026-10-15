@@ -30,7 +30,7 @@ def build_request(*, task: str = "transcribe"):
     )
 
 
-def test_build_request_marks_repetition_penalty_explicit() -> None:
+def test_build_request_passes_a_set_repetition_penalty() -> None:
     req = speech_to_text.build_speech_to_text_generate_request(
         audio_bytes=b"RIFF",
         filename="sample.wav",
@@ -42,17 +42,11 @@ def test_build_request_marks_repetition_penalty_explicit() -> None:
         repetition_penalty=1.3,
     )
 
-    assert req.metadata["explicit_generation_params"] == ["repetition_penalty"]
     assert req.sampling.repetition_penalty == 1.3
 
 
-def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
-    req = build_request()
-
-    explicit_generation_params = req.metadata.get("explicit_generation_params", [])
-    assert isinstance(explicit_generation_params, list)
-    assert "repetition_penalty" not in explicit_generation_params
-    assert req.sampling.repetition_penalty == 1.0
+def test_build_request_leaves_repetition_penalty_unset_by_default() -> None:
+    assert build_request().sampling.repetition_penalty is None
 
 
 def test_transcription_builder_import_keeps_shared_callable() -> None:
@@ -122,6 +116,27 @@ def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
         writer.writeframes(b"\x00\x00" * 8000)
 
     assert speech_to_text.probe_audio_duration(buffer.getvalue()) == pytest.approx(0.5)
+
+
+def test_av_duration_measures_a_container_whose_tags_are_not_utf8() -> None:
+    title = b"\xff\xfe titles\x00"
+    info = b"INFO" + b"INAM" + struct.pack("<I", len(title)) + title
+    samples = b"\x00\x00" * 8000
+    body = (
+        b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+        + b"LIST"
+        + struct.pack("<I", len(info))
+        + info
+        + b"data"
+        + struct.pack("<I", len(samples))
+        + samples
+    )
+
+    upload = b"RIFF" + struct.pack("<I", len(body)) + body
+
+    assert speech_to_text.av_duration(upload) == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize(
