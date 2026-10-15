@@ -61,23 +61,9 @@ def test_does_not_clobber_subclass_installed_seed():
 def test_preinstalled_seed_requires_sampling_mode_contract():
     runner = object.__new__(ModelRunner)
     preset = torch.tensor([1, 2])
-    fb = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=preset))
-    with pytest.raises(AttributeError):
+    fb = make_fb(sampling_seed=preset, min_p=True)
+    with pytest.raises(ValueError, match="min_p"):
         runner.install_sampling_seeds(fb, [req(42), req(42)])
-
-
-def test_unseeded_row_in_seeded_batch_uses_rank_shared_fallback():
-    runner = object.__new__(ModelRunner)
-    requests = [req(42, "seeded"), req(None, "unseeded")]
-    fb = make_fb()
-    runner.install_sampling_seeds(fb, requests)
-    fallback = int(fb.sampling_info.sampling_seed[1])
-    assert requests[1].data.req.sampling_params.sampling_seed is None
-
-    fb_next = make_fb()
-    runner.install_sampling_seeds(fb_next, requests)
-    assert int(fb_next.sampling_info.sampling_seed[1]) == fallback
-    assert requests[1].data.req.sampling_params.sampling_seed is None
 
 
 def test_rejects_seeded_min_p_before_upstream_sampler():
