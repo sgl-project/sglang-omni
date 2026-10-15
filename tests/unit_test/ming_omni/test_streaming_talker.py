@@ -177,8 +177,6 @@ def test_streaming_talker_abort_short_circuits_generation():
                     assert abort_sent.wait(timeout=5.0)
                 else:
                     pass
-                if abort_event is not None and abort_event.is_set():
-                    return
                 time.sleep(0.02)
                 yield (torch.zeros(256, dtype=torch.float32), None, None, None)
 
