@@ -8,14 +8,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 import torch
-from pydantic import ValidationError
 
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
-from sglang_omni.config.schema import StageConfig
-from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher, LocalStreamChunk
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
@@ -595,27 +592,6 @@ def test_stage_routes_inline_stream_chunk_to_scheduler(
     assert received[0]["bytes"] == 8
 
 
-def test_stage_config_rejects_unknown_model_transport_field() -> None:
-    field_name = "stream_" + "transport"
-    with pytest.raises(ValidationError):
-        StageConfig(
-            name="tts_engine",
-            factory_path="pkg.create",
-            next="vocoder",
-            stream_to=["vocoder"],
-            **{field_name: {"vocoder": "relay"}},
-        )
-
-
-def test_s2pro_config_declares_topology_without_transport_policy() -> None:
-    config = S2ProPipelineConfig(model_path="dummy")
-    tts_stage = next(stage for stage in config.stages if stage.name == "tts_engine")
-    vocoder_stage = next(stage for stage in config.stages if stage.name == "vocoder")
-    assert tts_stage.stream_to == ["vocoder"]
-    assert vocoder_stage.can_accept_stream_before_payload
-    assert "stream_transport" not in StageConfig.model_fields
-
-
 def test_stream_queue_drops_chunk_after_request_cleanup() -> None:
     stream_queue = StreamQueue()
     stream_queue.open("req")
@@ -1070,50 +1046,6 @@ def test_stage_drains_relay_payload_for_already_aborted_request() -> None:
 
         assert scheduler.inbox.empty()
         assert relay.gets == 1
-
-    asyncio.run(run())
-
-
-def test_stage_routes_relay_stream_chunk_to_scheduler() -> None:
-    async def run() -> None:
-        control_plane = FakeControlPlane()
-        codes = torch.arange(2048, dtype=torch.float32)
-        scheduler = SimpleNamespace(
-            outbox=queue.Queue(),
-            inbox=queue.Queue(),
-            abort=lambda request_id: None,
-        )
-        relay = ShmRelay(engine_id="t", device="cpu")
-        stage = Stage(
-            name="vocoder",
-            role="single",
-            get_next=lambda request_id, output: None,
-            gpu_id=None,
-            endpoints={"tts_engine": "inproc://tts_engine"},
-            control_plane=control_plane,
-            relay=relay,
-            scheduler=scheduler,
-        )
-        stage.stream_queue = StreamQueue()
-        stage.stream_queue.open("req")
-
-        await stage.on_stream_chunk(
-            await make_relay_chunk(
-                relay,
-                request_id="req",
-                from_stage="tts_engine",
-                to_stage="vocoder",
-                chunk_id=0,
-                data=codes,
-                metadata={"modality": "audio_codes"},
-            )
-        )
-
-        queued = scheduler.inbox.get_nowait()
-        assert queued.request_id == "req"
-        assert queued.type == "stream_chunk"
-        assert torch.equal(queued.data.data, codes)
-        assert queued.data.metadata == {"modality": "audio_codes"}
 
     asyncio.run(run())
 

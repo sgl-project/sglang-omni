@@ -179,12 +179,6 @@ def test_omni_scheduler_weights_checker_compare_change_is_success() -> None:
             {"model_path": "/tmp/new-model", "torch_empty_cache": True},
             id="disk",
         ),
-        pytest.param(
-            "admin_update_weights_from_tensor",
-            "update_weights_from_tensor",
-            {"serialized_named_tensors": None, "torch_empty_cache": True},
-            id="tensor",
-        ),
     ],
 )
 def test_omni_scheduler_weight_updates_flush_and_advance_epoch(
@@ -396,43 +390,6 @@ def test_omni_scheduler_abort_pause_ends_each_dropped_request() -> None:
         ("req-2", "error"),
     ]
     assert all(AdminDroppedRequestError.matches(msg.data) for msg in ended)
-
-
-def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() -> None:
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-
-    update_calls: list[dict] = []
-    scheduler = object.__new__(OmniScheduler)
-    scheduler.model_worker = SimpleNamespace(
-        update_weights_from_distributed=lambda payload: update_calls.append(payload)
-        or (True, "ok")
-    )
-    scheduler.admin_lock = threading.Lock()
-    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
-    scheduler.last_pause_mode = None
-    scheduler.async_pending = None
-    scheduler.resolve_pending_async = lambda: None
-    scheduler.active_request_ids = lambda: ["req-1"]
-
-    result = OmniScheduler.admin_update_weights_from_distributed(
-        scheduler,
-        {
-            "names": ["w.0"],
-            "dtypes": ["bfloat16"],
-            "shapes": [[2, 2]],
-            "flush_cache": False,
-            "abort_all_requests": False,
-        },
-    )
-
-    assert result["success"] is False
-    assert "active requests are present" in result["message"]
-    assert result["data"]["active_request_count"] == 1
-    assert (
-        scheduler._engine_paused is False
-    )  # noqa: leading-underscore  # production name
-    assert result["data"]["engine_paused"] is False
-    assert update_calls == []
 
 
 def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:

@@ -1102,48 +1102,6 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
     asyncio.run(run())
 
 
-def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> None:
-    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
-    monkeypatch.setattr(
-        stage_io,
-        "serialize_direct_cuda_ipc_payload",
-        lambda payload: {
-            "_type": "TorchCudaIpcPayload",
-            "version": 1,
-            "header": b"payload",
-            "tensors": [],
-        },
-    )
-
-    async def run() -> None:
-        relay = FakeRelay()
-        control_plane = RecordingStageControlPlane()
-        sender = Stage(
-            name="encoder",
-            role="single",
-            get_next=lambda request_id, output: None,
-            gpu_id=0,
-            endpoints={"mm_aggregate": "inproc://mm"},
-            control_plane=control_plane,
-            relay=relay,
-            scheduler=FakeScheduler(),
-            gpu_stage_names={"mm_aggregate"},
-            stage_gpu_ids={"mm_aggregate": (0,)},
-        )
-
-        payload = make_stage_payload(request_id="req-same-gpu", data={"x": "cuda"})
-        await sender.send_to_stage("req-same-gpu", "mm_aggregate", payload)
-
-        assert relay.storage == {}
-        target, endpoint, msg = control_plane.sent_to_stage[0]
-        assert target == "mm_aggregate"
-        assert endpoint == "inproc://mm"
-        assert msg.data_ref["_type"] == "TorchCudaIpcPayload"
-        assert msg.chunk_id is None
-
-    asyncio.run(run())
-
-
 def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
     monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
 

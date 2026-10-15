@@ -15,6 +15,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling import pd_utils
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import (
     OmniDecodeScheduler,
@@ -516,6 +517,29 @@ def test_discarded_stage_transfer_releases_source_lease():
     make_stage().discard_kv_transfer(transfer)
 
     transfer.lease.release.assert_called_once_with()
+
+    async def wait_for_release(inactive: KVPageTransfer) -> None:
+        while not inactive.lease.release.called:
+            await asyncio.sleep(0.01)
+
+    async def run() -> None:
+        stage = make_stage()
+        stage.running = True
+        inactive = make_transfer("inactive")
+        stage.scheduler.outbox.put(
+            OutgoingMessage(inactive.request_id, "kv_transfer", inactive)
+        )
+        drain = asyncio.create_task(stage.drain_outbox())
+        try:
+            await asyncio.wait_for(wait_for_release(inactive), 5)
+            inactive.lease.release.assert_called_once_with()
+            assert not stage.receive_tasks
+        finally:
+            stage.running = False
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+    asyncio.run(run())
 
 
 def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
