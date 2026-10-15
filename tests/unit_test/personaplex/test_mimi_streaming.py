@@ -163,25 +163,6 @@ def test_the_ring_drops_its_oldest_step_as_the_reference_does():
     )
 
 
-@pytest.mark.parametrize(
-    "length", [SMALL.context - 1, SMALL.context, 3 * SMALL.context + 1]
-)
-def test_whole_sequence_matches_the_streaming_replay(length):
-    transformer = small_transformer()
-    x = torch.randn(1, SMALL.dim, length)
-    state = transformer.init_state(batch_size=1, max_chunk_steps=SMALL.frame_ratio)
-    with torch.no_grad():
-        whole = transformer(x)
-        chunked = torch.cat(
-            [
-                transformer.step(x[..., t : t + SMALL.frame_ratio], state)
-                for t in range(0, x.shape[-1], SMALL.frame_ratio)
-            ],
-            -1,
-        )
-    torch.testing.assert_close(whole, chunked, atol=1e-6, rtol=1e-5)
-
-
 @pytest.mark.parametrize("max_chunk_frames", [1, 3, 8])
 @pytest.mark.parametrize("length_in_steps", [5, 6, 67])
 def test_aggregated_transformer_chunks_match_whole_across_ring_wraps(

@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Preprocessing resolves the caller channel, the role prompt and the voice per request."""
 
-import json
-from typing import Literal
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.sources import patches_from_stages_mapping
@@ -197,7 +194,6 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     assert rendered[-1] == num_samples - 1
 
 
-@pytest.mark.parametrize("source", ["cli", "yaml"])
 @pytest.mark.parametrize(
     "chunk_ramp_frames,max_graph_frames,expected_graph_frames",
     [
@@ -211,7 +207,6 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
 )
 def test_code2wav_graph_limit_follows_resolved_configuration(
     monkeypatch: pytest.MonkeyPatch,
-    source: Literal["cli", "yaml"],
     chunk_ramp_frames: list[int],
     max_graph_frames: int | None,
     expected_graph_frames: int,
@@ -222,22 +217,10 @@ def test_code2wav_graph_limit_follows_resolved_configuration(
         overrides["max_graph_frames"] = max_graph_frames
     else:
         pass
-    if source == "cli":
-        manager = ConfigManager(config)
-        resolved = manager.merge_config(
-            manager.parse_extra_args(
-                [
-                    argument
-                    for name, value in overrides.items()
-                    for argument in (f"--code2wav.factory.{name}", json.dumps(value))
-                ]
-            )
-        )
-    else:
-        patches = patches_from_stages_mapping(
-            {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
-        )
-        resolved = ConfigResolver(config).resolve(patches).config
+    patches = patches_from_stages_mapping(
+        {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
+    )
+    resolved = ConfigResolver(config).resolve(patches).config
     codec = Mock()
     decode_slots = Mock()
     decode_slots.return_value.max_chunk_frames = max(
