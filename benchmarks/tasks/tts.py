@@ -1075,6 +1075,7 @@ def _build_tts_payload(
             payload[key] = value
     if stream:
         payload["stream"] = True
+        payload["stream_format"] = "audio"
         if initial_codec_chunk_frames is not None:
             payload["initial_codec_chunk_frames"] = initial_codec_chunk_frames
     return payload
@@ -1197,8 +1198,10 @@ async def stream_outcome_collector(api_url: str) -> AsyncIterator[AfterSendFn]:
 def _parse_pcm_response_format(
     headers: aiohttp.typedefs.LooseHeaders,
 ) -> tuple[int, int, int]:
-    sample_rate = int(headers.get("x-sample-rate", 24000))
-    num_channels = int(headers.get("x-channels", 1))
+    sample_rate = int(
+        headers.get("x-sample-rate", headers.get("x-audio-sample-rate", 24000))
+    )
+    num_channels = int(headers.get("x-channels", headers.get("x-audio-channels", 1)))
     bit_depth = int(headers.get("x-bit-depth", 16))
     if sample_rate <= 0:
         raise ValueError("x-sample-rate must be positive")
