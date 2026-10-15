@@ -780,6 +780,9 @@ def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) 
     class FakeAudioVocoder:
         sample_rate = 16000
 
+        def __init__(self) -> None:
+            self.model = torch.nn.Linear(1, 1)
+
         def decode_codes(self, segments):
             decoded_segments.extend(segment.tolist() for segment in segments)
             offset = float(len(decoded_segments) * 10)
@@ -1111,7 +1114,7 @@ def test_moss_tts_vocoder_honors_explicit_codec_path(
         audio_tokenizer=None,
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=24000),
     )
-    vocoder = SimpleNamespace(sample_rate=24000)
+    vocoder = SimpleNamespace(sample_rate=24000, model=torch.nn.Linear(1, 1))
     loaded: list[tuple[str, str, torch.dtype, torch.dtype | None]] = []
 
     def load_vocoder(
@@ -1147,7 +1150,6 @@ def test_moss_tts_maps_references_token_count_and_checkpoint_defaults() -> None:
             "text": "${token:120}hello [pause 0.5s] ni3 hao3 /hello/",
             "references": [{"audio_path": "voice.wav", "text": "reference"}],
         },
-        params={"temperature": 0.8, "top_p": 0.8, "top_k": 30},
         tts_params={"language": "en"},
     )
 
@@ -1319,10 +1321,7 @@ def test_moss_tts_preserves_explicit_standard_sampling_values() -> None:
     payload = make_payload(
         inputs="hello",
         params={"temperature": 0.7, "top_p": 0.9, "top_k": 40},
-        tts_params={
-            "explicit_generation_params": ["temperature", "top_p", "top_k"],
-            "token_count": 42,
-        },
+        tts_params={"token_count": 42},
     )
 
     state = build_moss_tts_state(payload)

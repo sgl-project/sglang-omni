@@ -294,6 +294,33 @@ def speech_append(
     )
 
 
+@pytest.mark.parametrize(
+    ("is_listen", "codec_tokens", "end_of_turn", "eos", "gathers"),
+    [
+        (True, [], False, False, False),
+        (False, list(range(CODEC_CHUNK_SIZE)), False, False, True),
+        (True, [], True, False, True),
+        (True, [], False, True, True),
+    ],
+    ids=["listening", "speaking", "turn-end", "input-end"],
+)
+def test_speech_hooks_gather_peers_only_for_units_the_vocoder_runs(
+    is_listen: bool,
+    codec_tokens: list[int],
+    end_of_turn: bool,
+    eos: bool,
+    gathers: bool,
+) -> None:
+    hooks = SpeechHooks(open_runtime([]), b"voice")
+    append = speech_append(
+        SessionIdentity("s"), [], codec_tokens=codec_tokens, is_listen=is_listen
+    )
+    append.payload.data["end_of_turn"] = end_of_turn
+    chunk = TimedChunk("text", 0, 1000, 0, None, eos=eos)
+
+    assert hooks.gathers_peers(append.payload, chunk) is gathers
+
+
 def test_speech_hooks_emit_one_voice_chunk_per_unit() -> None:
     runtime = open_runtime([])
     hooks = SpeechHooks(runtime, b"voice")

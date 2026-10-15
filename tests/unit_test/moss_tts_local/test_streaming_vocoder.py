@@ -21,13 +21,13 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.models.moss_tts.codec_session import CodecStreamSession
 from sglang_omni.models.moss_tts_local import stages
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.models.moss_tts_local.request_builders import (
     build_moss_tts_local_stream_metadata,
 )
 from sglang_omni.models.moss_tts_local.streaming_vocoder import (
-    CodecStreamSession,
     MossTTSLocalStreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -368,9 +368,12 @@ def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
         (1, 1, 1),
         (3, 3, 3),
         (16, 15, 16),
-        (32, 17, 20),
-        (64, 17, 20),
-        (64, 33, 36),
+        (32, 17, 24),
+        (64, 17, 24),
+        (64, 33, 40),
+        (80, 65, 72),
+        (300, 257, 272),
+        (600, 513, 544),
         (25, 25, 25),
     ],
 )
@@ -457,7 +460,7 @@ def test_compact_native_session_replays_graph_and_slices_bucket() -> None:
 
 
 def test_compact_runner_requires_scratch_rows() -> None:
-    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+    from sglang_omni.models.moss_tts.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
 
@@ -473,7 +476,7 @@ def test_compact_runner_requires_scratch_rows() -> None:
 
 
 def test_runner_skips_capture_on_cpu() -> None:
-    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+    from sglang_omni.models.moss_tts.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
 

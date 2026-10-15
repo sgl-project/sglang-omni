@@ -80,7 +80,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
-| `temperature` | float | `1.0` | Thinker |
+| `temperature` | float | `0.0` (greedy) | Thinker |
 | `top_p` | float | `1.0` | Thinker |
 | `top_k` | int | `-1` | Thinker |
 | `min_p` | float | `0.0` | Thinker |

@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
 that model's CosyVoice dependencies — see
 [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). `[fishaudio]` adds the dependencies for [Fish Audio Drama 3](#fish-audio-drama-3-text-to-speech-two-xpus-with-cpu-offload), whose CPU-offloaded deployment requires additional SGLang fixes. ZONOS2 also serves here,
@@ -488,6 +488,23 @@ ZE_AFFINITY_MASK=0 python examples/run_personaplex.py \
   --lm.engine.mem_fraction_static 0.70
 ```
 
+### Nemotron VoiceChat (speech-to-speech, two XPUs)
+
+Follow the [Nemotron VoiceChat prerequisites](../cookbook/nemotron_voicechat.md#prerequisites)
+to download the model. Its weights take about 22.6 GB, so on 24 GB Intel Arc Pro B60 cards the
+thinker runs on its own card while perception, the talker and the codec share the other. It
+needs two free XPUs:
+
+```bash
+python examples/run_nemotron_voicechat.py \
+  --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
+  --audio /path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav \
+  --out reply.wav \
+  --thinker.process thinker --thinker.gpu 1 \
+  --thinker.engine.mem_fraction_static 0.90 \
+  --talker.engine.mem_fraction_static 0.50
+```
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
@@ -590,9 +607,9 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
+> ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
 

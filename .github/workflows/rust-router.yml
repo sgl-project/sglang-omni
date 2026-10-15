@@ -3,9 +3,6 @@ name: Rust Router
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".github/workflows/rust-router.yml"
-      - "sglang_omni_router/rust/**"
   push:
     branches: [main]
     paths:

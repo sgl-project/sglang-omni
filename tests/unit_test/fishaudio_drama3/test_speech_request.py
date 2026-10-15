@@ -27,11 +27,7 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
     FishReferenceInput,
 )
-from sglang_omni.proto.request import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    OmniRequest,
-    StagePayload,
-)
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.serve.openai_api import build_rollout_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
@@ -232,8 +228,7 @@ def test_sampling_takes_the_set_fields_and_drama3_defaults_for_the_rest(
 def test_a_generate_request_keeps_its_set_fields_and_max_tokens(
     tokenizer: Tokenizer,
 ) -> None:
-    """/v1/generate records set fields in the metadata, and lowers max_tokens to
-    max_new_tokens without recording it."""
+    """/v1/generate passes the fields it sets, with max_tokens as max_new_tokens."""
     request = Client.build_omni_request(
         build_rollout_generate_request(
             RolloutGenerateRequest.model_validate(
@@ -670,43 +665,35 @@ def test_a_codec_failure_while_encoding_stays_an_internal_error(
     assert not is_bad_request_error(failure.value)
 
 
-def direct_client_payload(
-    sampling: SamplingParams, metadata: dict[str, object]
-) -> StagePayload:
+def direct_client_payload(sampling: SamplingParams) -> StagePayload:
     """A request a Python caller hands to Client itself."""
     return first_stage_payload(
-        Client.build_omni_request(
-            GenerateRequest(prompt="hello", sampling=sampling, metadata=metadata)
-        )
+        Client.build_omni_request(GenerateRequest(prompt="hello", sampling=sampling))
     )
 
 
 @pytest.mark.parametrize(
-    ("sampling", "metadata", "expected_sampling"),
+    ("sampling", "expected_sampling"),
     [
-        pytest.param(SamplingParams(), {}, (1.0, 0.9, 30), id="placeholders-unlisted"),
+        pytest.param(SamplingParams(), (1.0, 0.9, 30), id="unset"),
         pytest.param(
-            SamplingParams(temperature=0.0, top_p=1.0, top_k=1),
-            {EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"]},
-            (0.0, 1.0, 1),
-            id="listed-values-including-a-placeholder",
+            SamplingParams(temperature=0.5), (0.5, 0.9, 30), id="only-temperature"
         ),
         pytest.param(
-            SamplingParams(temperature=0.5),
-            {EXPLICIT_GENERATION_PARAMS_KEY: []},
-            (1.0, 0.9, 30),
-            id="an-empty-list-is-the-record",
+            SamplingParams(temperature=0.0, top_p=1.0, top_k=1),
+            (0.0, 1.0, 1),
+            id="all-set",
         ),
     ],
 )
-def test_a_direct_client_request_takes_the_fields_it_lists(
+def test_a_direct_client_request_takes_the_fields_it_sets(
     tokenizer: Tokenizer,
     sampling: SamplingParams,
-    metadata: dict[str, object],
     expected_sampling: tuple[float, float, int],
 ) -> None:
+    """A Client caller's set sampling fields reach the model with no metadata record."""
     generation_input = generation_input_of(
-        speech_preprocessor(tokenizer)(direct_client_payload(sampling, metadata))
+        speech_preprocessor(tokenizer)(direct_client_payload(sampling))
     )
 
     assert (
@@ -716,53 +703,12 @@ def test_a_direct_client_request_takes_the_fields_it_lists(
     ) == expected_sampling
 
 
-UNLISTED_TEMPERATURE = "temperature set without explicit_generation_params"
-
-
-@pytest.mark.parametrize(
-    ("sampling", "metadata", "error"),
-    [
-        pytest.param(
-            SamplingParams(temperature=0.0, top_p=0.5, top_k=1, repetition_penalty=1.2),
-            {},
-            "temperature, top_p, top_k, repetition_penalty set without "
-            "explicit_generation_params",
-            id="values-unlisted",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {EXPLICIT_GENERATION_PARAMS_KEY: None},
-            UNLISTED_TEMPERATURE,
-            id="a-null-list-is-no-record",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {EXPLICIT_GENERATION_PARAMS_KEY: "temperature"},
-            UNLISTED_TEMPERATURE,
-            id="a-string-is-no-record",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {"tts_params": None},
-            UNLISTED_TEMPERATURE,
-            id="null-tts-params-are-no-record",
-        ),
-        pytest.param(
-            SamplingParams(repetition_penalty=1.2),
-            {EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"]},
-            "repetition_penalty must be 1.0",
-            id="listed-repetition-penalty",
-        ),
-    ],
-)
-def test_a_direct_client_request_cannot_drop_or_misuse_a_sampling_field(
+def test_a_direct_client_request_cannot_set_a_repetition_penalty(
     tokenizer: Tokenizer,
-    sampling: SamplingParams,
-    metadata: dict[str, object],
-    error: str,
 ) -> None:
     message = refused(
-        speech_preprocessor(tokenizer), direct_client_payload(sampling, metadata)
+        speech_preprocessor(tokenizer),
+        direct_client_payload(SamplingParams(repetition_penalty=1.2)),
     )
 
-    assert error in message
+    assert "repetition_penalty must be 1.0" in message

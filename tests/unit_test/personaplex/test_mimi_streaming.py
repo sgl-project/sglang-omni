@@ -17,8 +17,10 @@ from sglang_omni.models.personaplex.components.mimi import (
     rename_mimi_key,
 )
 from sglang_omni.models.personaplex.components.mimi_transformer import (
+    AttentionState,
     MimiAttention,
     MimiTransformer,
+    TransformerState,
 )
 
 
@@ -198,3 +200,41 @@ def test_aggregated_transformer_chunks_match_whole_across_ring_wraps(
             for start in range(0, length_in_steps, max_chunk_steps)
         ]
     torch.testing.assert_close(torch.cat(chunks, -1), whole, atol=1e-6, rtol=1e-5)
+
+
+def test_rows_at_different_offsets_step_together_like_their_own_streams():
+    transformer = small_transformer()
+    chunk = SMALL.frame_ratio
+    # Steps each row has taken: none, a few, and enough to wrap its ring.
+    taken = [0, 2 * chunk, 3 * SMALL.context]
+    x = torch.randn(len(taken), SMALL.dim, max(taken) + chunk)
+    with torch.no_grad():
+        states = []
+        for row, steps in enumerate(taken):
+            state = transformer.init_state(
+                batch_size=1, max_chunk_steps=SMALL.frame_ratio
+            )
+            for t in range(0, steps, chunk):
+                transformer.step(x[row : row + 1, :, t : t + chunk], state)
+            states.append(state)
+        stacked = TransformerState(
+            offset=torch.cat([state.offset for state in states]),
+            layers=[
+                AttentionState(
+                    keys=torch.cat([state.layers[layer].keys for state in states]),
+                    values=torch.cat([state.layers[layer].values for state in states]),
+                )
+                for layer in range(SMALL.num_layers)
+            ],
+        )
+        next_chunks = [
+            x[row : row + 1, :, steps : steps + chunk]
+            for row, steps in enumerate(taken)
+        ]
+        batched = transformer.step(torch.cat(next_chunks), stacked)
+        separate = [
+            transformer.step(next_chunk, state)
+            for next_chunk, state in zip(next_chunks, states, strict=True)
+        ]
+    torch.testing.assert_close(batched, torch.cat(separate), atol=1e-6, rtol=1e-5)
+    assert stacked.offset.tolist() == [steps + chunk for steps in taken]

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 2: Parakeet ASR of all four v1.5 roles, official VAD timing intervals,
-then Parakeet ASR of the v1.0 outputs."""
+"""Step 2: Parakeet ASR, v1.5 timing, and v1.0 unified scoring."""
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from benchmarks.duplex.fdb.common import (
@@ -97,6 +97,15 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
     else:
         pass
     is_v10_ok = v10_tree is None or v10_asr(settings, v10_tree)
+    is_unified_ok = True
+    if v10_tree is not None and is_v10_ok:
+        log("== v1.0 unified scoring")
+        is_unified_ok = run_command(
+            v10_command(settings, "unified-score", "--tree", str(v10_tree)),
+            visible_gpus="",
+        )
+    else:
+        pass
 
     problems = []
     if not (is_asr_ok and is_timing_ok):
@@ -111,6 +120,16 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
             f"WARNING: the v1.0 ASR failed; its log is {v10_tree / 'logs' / 'asr.log'}. "
             f"Rerun `{step_command('asr', settings, repeat)}`; the v1.0 ASR restarts "
             "in full."
+        )
+    else:
+        pass
+    if not is_unified_ok:
+        problems.append(
+            f"WARNING: v1.0 unified scoring failed for {v10_tree}. "
+            "After fixing the cause, backfill without repeating ASR with "
+            f'`CUDA_VISIBLE_DEVICES="" {shlex.quote(str(settings.scoring_python))} '
+            "-m benchmarks.eval.benchmark_duplex_v10 unified-score "
+            f"--tree {shlex.quote(str(v10_tree))}`."
         )
     else:
         pass

@@ -146,7 +146,6 @@ def test_custom_voice_config_preserves_model_owned_defaults(
     assert params["voice"] == voice
     assert params["instructions"] == "Calm and clear."
     assert "task_type" not in params and "language" not in params
-    assert params.get("explicit_generation_params", []) == []
     assert generated.prompt == "hello"
     assert prepared.reference_descriptors == []
     assert store.mock_calls == []
@@ -419,7 +418,6 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     assert tts_params["initial_codec_chunk_frames"] == 8
     assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
     assert gen_req.sampling.max_new_tokens == 128
-    assert tts_params["explicit_generation_params"] == ["max_new_tokens"]
 
 
 GENERATION_FIELD_VALUES: dict[str, int | float] = {
@@ -432,39 +430,31 @@ GENERATION_FIELD_VALUES: dict[str, int | float] = {
 }
 
 
-def lowered_speech_request(
-    payload: dict[str, object],
-) -> tuple[list[str], dict[str, object]]:
-    """The explicit generation fields and pipeline params a raw payload lowers to."""
+def lowered_speech_params(payload: dict[str, object]) -> dict[str, object]:
+    """The pipeline params a raw speech payload lowers to."""
     service = SpeechRequestValidator(default_model="tts")
-    generate_request = service.build_generate_request(
-        service.parse_raw_request({"input": "hello", **payload})
+    return build_params(
+        service.build_generate_request(
+            service.parse_raw_request({"input": "hello", **payload})
+        )
     )
-    tts_params = generate_request.metadata["tts_params"]
-    assert isinstance(tts_params, dict)
-    explicit_fields = tts_params.get("explicit_generation_params", [])
-    assert isinstance(explicit_fields, list)
-    return explicit_fields, build_params(generate_request)
 
 
 @pytest.mark.parametrize("field_name", sorted(GENERATION_FIELD_VALUES))
 def test_null_generation_field_lowers_like_an_omitted_one(field_name: str) -> None:
-    omitted = lowered_speech_request({})
+    omitted = lowered_speech_params({})
 
-    assert lowered_speech_request({field_name: None}) == omitted
-    assert omitted[0] == []
+    assert lowered_speech_params({field_name: None}) == omitted
+    assert field_name not in omitted
 
 
 @pytest.mark.parametrize(
     ("field_name", "value"), sorted(GENERATION_FIELD_VALUES.items())
 )
-def test_generation_field_given_a_value_is_explicit(
+def test_generation_field_given_a_value_reaches_the_params(
     field_name: str, value: int | float
 ) -> None:
-    explicit_fields, params = lowered_speech_request({field_name: value})
-
-    assert explicit_fields == [field_name]
-    assert params[field_name] == value
+    assert lowered_speech_params({field_name: value})[field_name] == value
 
 
 SUPPORTED_SPEECH_FIELDS = frozenset(

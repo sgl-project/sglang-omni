@@ -37,6 +37,7 @@ from benchmarks.duplex.fdb.selection import (
 from benchmarks.duplex.fdb.servers import model_server
 from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
+from sglang_omni.models.minicpm_o.native_config import DEFAULT_MAX_SESSIONS
 
 PROGRESS_INTERVAL_S = 60
 
@@ -220,6 +221,15 @@ def generate(
     v10_selection: SampleSelection,
     num_shards: int,
 ) -> None:
+    # note (wenyao): model_server_command uses the default session capacity.
+    if num_shards > DEFAULT_MAX_SESSIONS:
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} exceeds the model server's "
+            f"max_sessions {DEFAULT_MAX_SESSIONS}; it rejects extra connections "
+            "with HTTP 503."
+        )
+    else:
+        pass
     repeat_dir = settings.repeat_dir(repeat)
     v10_dir = repeat_dir / V10_DIR
     if (repeat_dir / "recording").exists() or (v10_dir / "recording").exists():

@@ -692,3 +692,55 @@ def test_stage_process_exits_when_its_parent_died_before_it_started(
 
     assert (tmp_path / "exited").exists()
     assert not (tmp_path / "built").exists()
+
+
+# note (Richard Wang): run_process stands in for a stage that stopped or was
+# interrupted. The object in the script's globals reports interpreter teardown.
+STAGE_PROCESS_THAT_STOPS = """
+import atexit, sys, threading, time
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+
+marker, interrupted = sys.argv[1], sys.argv[2] == "1"
+
+def note(text):
+    with open(marker, "a") as fh:
+        fh.write(text)
+
+class Teardown:
+    # Module globals are cleared before this runs at teardown.
+    def __del__(self, open=open, marker=marker):
+        with open(marker, "a") as fh:
+            fh.write("teardown,")
+
+def run_process(spec, ready_event, log):
+    threading.Thread(target=lambda: (time.sleep(0.2), note("thread,"))).start()
+    atexit.register(note, "atexit,")
+    sys.stdout.write("unflushed")
+    if interrupted:
+        raise KeyboardInterrupt
+
+teardown = Teardown()
+stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
+stage_workers.run_process = run_process
+stage = SimpleNamespace(gpu_id=None)
+spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
+stage_workers.stage_process_main(spec, None)
+"""
+
+
+@pytest.mark.parametrize("interrupted, code", [(False, 0), (True, 1)])
+def test_stage_process_exits_without_interpreter_teardown(
+    tmp_path: Path, interrupted: bool, code: int
+) -> None:
+    marker = tmp_path / "marker.txt"
+    command = [sys.executable, "-c", STAGE_PROCESS_THAT_STOPS, str(marker)]
+
+    done = subprocess.run(
+        [*command, str(int(interrupted))], capture_output=True, text=True, timeout=300
+    )
+
+    assert done.returncode == code, done.stderr
+    assert "unflushed" in done.stdout
+    # Threads finish before the atexit callbacks, as at a normal exit.
+    assert marker.read_text() == "thread,atexit,"

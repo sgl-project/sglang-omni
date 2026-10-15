@@ -481,10 +481,23 @@ class CoordinatorSessions:
         except asyncio.TimeoutError as exc:
             self.begin_session_close(session)
             raise TimeoutError(f"session {operation} timed out") from exc
-        except BaseException:
+        except BaseException as exc:
             # Note (Junnan Li): Request abort can yield before the pump sees this fatal failure.
             self.begin_session_close(session)
-            raise
+            future = self.completion_futures.get(request_id)
+            if (
+                isinstance(exc, asyncio.CancelledError)
+                and future is not None
+                and future.done()
+                and not future.cancelled()
+                and isinstance(future.exception(), asyncio.CancelledError)
+            ):
+                # note (Richard Wang): an abort of this operation's request, such
+                # as an admin drop, is a session failure, not a cancel of the
+                # pump, so the pump still closes the session and its owners.
+                raise RuntimeError(f"session {operation} was aborted") from exc
+            else:
+                raise
         finally:
             self.session_stream_handlers.pop(request_id, None)
             future = self.completion_futures.get(request_id)

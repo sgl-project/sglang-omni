@@ -146,13 +146,10 @@ class MiniCPMOPreprocessor:
             tts_params = metadata.get("tts_params") or {}
             read_prompt = tts_read_prompt(known_tts_text, tts_params.get("language"))
             inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
-            explicit_fields = tts_params.get("explicit_generation_params") or []
             talker_params = {
                 f"talker_{field}": value
                 for field, value in params.items()
-                if field in TALKER_SPEECH_SAMPLING_FIELDS
-                and field in explicit_fields
-                and value is not None
+                if field in TALKER_SPEECH_SAMPLING_FIELDS and value is not None
             }
             params = {**params, **talker_params}
             payload.request.params = params

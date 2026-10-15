@@ -15,6 +15,7 @@ from benchmarks.duplex.fdb.common import (
     log,
     read_json,
 )
+from benchmarks.duplex.fdb.unified_report import render_unified
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 
 CATEGORIES = (
@@ -74,9 +75,12 @@ RepeatMetrics = dict[str, dict[str, float | None]]
 def repeat_metrics(repeat_dir: Path, engine: str, judge: JudgeName) -> RepeatMetrics:
     timing_groups = read_json(repeat_dir / "scores" / "summary.json")["engines"][engine]
     if judge == "qwen":
-        behavior_groups = read_json(repeat_dir / "judge-qwen" / "summary.json")[
-            "engines"
-        ][engine]
+        behavior_path = repeat_dir / "judge-qwen" / "summary.json"
+        behavior_groups = (
+            read_json(behavior_path)["engines"][engine]
+            if behavior_path.is_file()
+            else {}
+        )
     else:
         behavior_groups = {
             category: group["behavior"] for category, group in timing_groups.items()
@@ -89,15 +93,19 @@ def repeat_metrics(repeat_dir: Path, engine: str, judge: JudgeName) -> RepeatMet
             pass
         timing = timing_groups[category]["timing_official_overlap"]
         intervals = timing["official_all_intervals"]
-        behavior = behavior_groups[category]
+        behavior = behavior_groups.get(category)
         metrics[category] = {
             "pairs": timing["population"],
             "timed_overlap_sessions": timing["status"].get("ok", 0),
             "stop_mean_s": intervals["stop"]["mean_s"],
             "response_mean_s": intervals["response"]["mean_s"],
-            "judged_pairs": behavior["valid_n"],
+            "judged_pairs": None if behavior is None else behavior["valid_n"],
             **{
-                label: behavior["valid_label_proportions"][label]["proportion"]
+                label: (
+                    None
+                    if behavior is None
+                    else behavior["valid_label_proportions"][label]["proportion"]
+                )
                 for label in C_LABELS
             },
         }
@@ -249,6 +257,7 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
         for path in run_root.glob("repeat-*")
         if (path / "scores" / "summary.json").is_file()
         or (path / V10_DIR / "reference" / "manifest.json").is_file()
+        or (path / V10_DIR / "sample-ids.txt").is_file()
     )
     if not repeat_dirs:
         raise SystemExit(f"no finished repeat-* under {run_root}")
@@ -257,8 +266,7 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
     lines = [
         f"# FDB results: {run_root.name}",
         "",
-        f"Repeats: {', '.join(path.name for path in repeat_dirs)}. "
-        f"Judge: {judge}. Cells are mean ± sample standard deviation across repeats.",
+        f"Repeats: {', '.join(path.name for path in repeat_dirs)}. Judge: {judge}.",
     ]
     per_repeat = [
         (
@@ -269,16 +277,34 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
         for path in repeat_dirs
     ]
     if any(per_repeat):
+        missing_qwen = [
+            path.name
+            for path, metrics in zip(repeat_dirs, per_repeat)
+            if judge == "qwen"
+            and metrics
+            and not (path / "judge-qwen" / "summary.json").is_file()
+        ]
         lines += [
             "",
             "## FDB v1.5 results",
             "",
+            "Numeric cells are mean ± sample standard deviation across repeats "
+            "where values exist; counts are a value or range. "
             "Latencies are pooled whole-file overlap intervals; "
             "label shares are over valid judge labels."
             + coverage_note("v1.5", repeat_dirs, per_repeat),
             "",
             *render_table(per_repeat, COLUMNS),
         ]
+        if missing_qwen:
+            lines += [
+                "",
+                "Qwen behavior judge pending or failed for "
+                f"{', '.join(missing_qwen)}: summary.json is missing; "
+                "judged-pair and label-share cells are n/a there.",
+            ]
+        else:
+            pass
     else:
         pass
     per_repeat_semantic = [semantic_metrics(path) for path in repeat_dirs]
@@ -295,14 +321,21 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
     else:
         pass
     per_repeat_v10 = [v10_metrics(path) for path in repeat_dirs]
+    unified_lines = render_unified(repeat_dirs)
+    if unified_lines:
+        lines += ["", *unified_lines]
+    else:
+        pass
     if any(per_repeat_v10):
         relevance_judge = (
             "the local Qwen judge, non-official" if judge == "qwen" else "GPT"
         )
         lines += [
             "",
-            "## FDB v1.0 results",
+            "## FDB v1.0 official reference results",
             "",
+            "Numeric cells are mean ± sample standard deviation across repeats "
+            "where values exist; counts are a value or range. "
             "Pinned reference evaluation per subset; subsets are never pooled. "
             "Selected counts the recorded samples, Eligible the exports the "
             "evaluator can score, Evaluated the ones it scored; a subset that is "

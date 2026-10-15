@@ -8,7 +8,6 @@ from collections.abc import Mapping
 import torch
 from tokenizers import Tokenizer
 
-from sglang_omni.client.types import SamplingParams
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.prompt import (
     SEMANTIC_BEGIN_TOKEN,
@@ -28,11 +27,7 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceInput,
     fish_reference_payload_is_supported,
 )
-from sglang_omni.proto.request import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    OmniRequest,
-    StagePayload,
-)
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 DEFAULT_TEMPERATURE = 1.0
@@ -51,62 +46,14 @@ UNSUPPORTED_TTS_PARAMS = (
     "seed",
 )
 UNSUPPORTED_PARAMS = ("seed", "stage_params", "stage_sampling")
-# A direct Client fills the sampling fields its caller left alone with these values.
-CLIENT_SAMPLING_PLACEHOLDERS = SamplingParams().to_dict()
-PLACEHOLDER_SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")
 INT64_LIMITS = torch.iinfo(torch.int64)
 
 
-def explicit_generation_fields(
-    request: OmniRequest, tts_params: Mapping[str, object]
-) -> frozenset[str]:
-    """Sampling fields the caller set, as recorded in tts_params for speech requests or
-    in metadata[EXPLICIT_GENERATION_PARAMS_KEY] otherwise. A direct Client caller lists
-    there every sampling field it sets, placeholder values included."""
-    is_recorded = isinstance(request.metadata.get("tts_params"), Mapping) or isinstance(
-        request.metadata.get(EXPLICIT_GENERATION_PARAMS_KEY), list | tuple
-    )
-    unrecorded_fields = (
-        []
-        if is_recorded
-        else [
-            field_name
-            for field_name in PLACEHOLDER_SAMPLING_FIELDS
-            if request.params.get(field_name, CLIENT_SAMPLING_PLACEHOLDERS[field_name])
-            != CLIENT_SAMPLING_PLACEHOLDERS[field_name]
-        ]
-    )
-    if unrecorded_fields:
-        raise ValueError(
-            f"{REQUEST_ERROR_PREFIX} {', '.join(unrecorded_fields)} set without "
-            f"{EXPLICIT_GENERATION_PARAMS_KEY}; list every sampling field you set in "
-            f"the request metadata"
-        )
-    else:
-        pass
-    # Serving never fills in max_new_tokens, so a value is always the caller's.
-    field_names = (
-        {"max_new_tokens"}
-        if request.params.get("max_new_tokens") is not None
-        else set()
-    )
-    for source in (tts_params, request.metadata):
-        recorded = source.get(EXPLICIT_GENERATION_PARAMS_KEY)
-        if isinstance(recorded, list | tuple):
-            field_names.update(str(field_name) for field_name in recorded)
-        else:
-            pass
-    return frozenset(field_names)
-
-
 def given_number(
-    params: Mapping[str, object],
-    explicit_fields: frozenset[str],
-    field_name: str,
-    default: float,
+    params: Mapping[str, object], field_name: str, default: float
 ) -> float:
     """The caller's value of a sampling field it set, else the model's default."""
-    value = params.get(field_name) if field_name in explicit_fields else default
+    value = params.get(field_name, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(
             f"{REQUEST_ERROR_PREFIX} {field_name} must be a number; got {value!r}"
@@ -116,17 +63,14 @@ def given_number(
 
 
 def given_integer(
-    params: Mapping[str, object],
-    explicit_fields: frozenset[str],
-    field_name: str,
-    default: int | None,
+    params: Mapping[str, object], field_name: str, default: int | None
 ) -> int | None:
     """The caller's value of an integer field it set, else the model's default."""
-    if field_name not in explicit_fields:
+    if field_name not in params:
         return default
     else:
         pass
-    value = params.get(field_name)
+    value = params[field_name]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(
             f"{REQUEST_ERROR_PREFIX} {field_name} must be an integer; got {value!r}"
@@ -254,19 +198,12 @@ class Drama3SpeechPreprocessor:
         else:
             pass
 
-        explicit_fields = explicit_generation_fields(request, tts_params)
-        temperature = given_number(
-            request.params, explicit_fields, "temperature", DEFAULT_TEMPERATURE
-        )
-        top_p = given_number(request.params, explicit_fields, "top_p", DEFAULT_TOP_P)
-        top_k = given_integer(request.params, explicit_fields, "top_k", DEFAULT_TOP_K)
+        temperature = given_number(request.params, "temperature", DEFAULT_TEMPERATURE)
+        top_p = given_number(request.params, "top_p", DEFAULT_TOP_P)
+        top_k = given_integer(request.params, "top_k", DEFAULT_TOP_K)
         assert top_k is not None
-        max_new_tokens = given_integer(
-            request.params, explicit_fields, "max_new_tokens", None
-        )
-        repetition_penalty = given_number(
-            request.params, explicit_fields, "repetition_penalty", 1.0
-        )
+        max_new_tokens = given_integer(request.params, "max_new_tokens", None)
+        repetition_penalty = given_number(request.params, "repetition_penalty", 1.0)
         if repetition_penalty != 1.0:
             raise ValueError(
                 f"{REQUEST_ERROR_PREFIX} repetition_penalty must be 1.0; got "

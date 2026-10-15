@@ -69,7 +69,9 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
-                max_running_requests=16,
+                # Note (Jiaxin Deng): 16 left half of a C32 load queued behind
+                # idle GPU time; 64 matches the other ASR stages.
+                max_running_requests=64,
                 enable_torch_compile=True,
                 torch_compile_max_bs=4,
             ),

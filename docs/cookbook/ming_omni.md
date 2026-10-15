@@ -421,7 +421,7 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `video_max_pixels` | `null` | Maximum per-frame pixel budget passed to video preprocessing. |
 | `video_total_pixels` | `null` | Total pixel budget across sampled frames. |
 | `max_tokens` | `2048` | Forwarded to Ming as `max_new_tokens`. |
-| `temperature` | `1.0` | Chat-completions default. Set 0.0 for greedy deterministic examples. |
+| `temperature` | `1.0` | Thinker sampling. Set 0.0 for greedy deterministic examples. |
 | `top_p` | `1.0` | Thinker sampling. |
 | `top_k` | `-1` | Thinker sampling. |
 | `min_p` | `0.0` | Thinker sampling. |

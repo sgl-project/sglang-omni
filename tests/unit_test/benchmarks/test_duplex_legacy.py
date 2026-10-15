@@ -1207,7 +1207,10 @@ RECORD_ARGS = [
 ]
 
 
-def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_v15_recorder_records_a_legacy_profile(
+    tmp_path: Path, concurrency: int
+) -> None:
     dataset, run = tmp_path / "data", tmp_path / "run"
     write_dataset(dataset)
     with legacy_peer_server() as url:
@@ -1216,6 +1219,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
             ["record", "--dataset-root", str(dataset), "--url", url]
             + ["--output", str(run), "--sample-id", "user_interruption/1"]
             + RECORD_ARGS
+            + ["--concurrency", str(concurrency)]
             + [
                 "--turn-detection",
                 '{"type": "server_vad", "silence_duration_ms": 500}',
@@ -1225,6 +1229,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     assert summary["variant_status"] == {"pass": 2}
     manifest = json.loads((run / "manifest.json").read_text())
     assert manifest["profile"] == LEGACY
+    assert manifest["config"]["concurrency"] == concurrency
     assert manifest["config"]["protocol"] == "legacy"
     legacy_config = manifest["config"]["legacy"]
     assert legacy_config["turn_detection"] == {
@@ -1235,6 +1240,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     assert legacy_config["barge_in_cut"] == LEGACY_BARGE_IN_CUT
     assert "session_end" in legacy_config
     result = json.loads((run / "run.json").read_text())
+    assert result["load"]["concurrency"] == concurrency
     variant = result["samples"][0]["variants"]["overlap"]
     directory = run / variant["directory"]
     variant_manifest = json.loads((directory / "manifest.json").read_text())

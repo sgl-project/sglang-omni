@@ -10,6 +10,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, replace
 from typing import AsyncIterator, Callable, TypedDict
 
+import msgspec
 import numpy as np
 
 from sglang_omni.client.audio import (
@@ -27,6 +28,7 @@ from sglang_omni.client.types import (
     CompletionAudio,
     CompletionResult,
     CompletionStreamChunk,
+    DiarizationResult,
     GenerateChunk,
     GenerateRequest,
     SpeechResult,
@@ -35,7 +37,6 @@ from sglang_omni.client.types import (
 from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
-from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -292,6 +293,7 @@ class Client:
             omni_rollout=omni_rollout,
             weight_version=weight_version,
             language=language,
+            diarization=last_chunk.diarization,
         )
 
     # ------------------------------------------------------------------
@@ -666,16 +668,6 @@ class Client:
         inputs = extract_inputs(request)
         params = build_params(request)
         metadata = dict(request.metadata)
-        if (
-            request.stage_sampling
-            and EXPLICIT_STAGE_SAMPLING_PARAMS_KEY not in metadata
-        ):
-            metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
-                stage: list(sampling)
-                for stage, sampling in params["stage_sampling"].items()
-            }
-        else:
-            pass
         if request.model:
             metadata.setdefault("model", request.model)
         else:
@@ -802,6 +794,12 @@ class Client:
                 pass
             Client.set_audio_data(chunk, result)
             chunk.usage = Client.build_usage_info(result)
+            diarization = result.get("diarization")
+            chunk.diarization = (
+                None
+                if diarization is None
+                else msgspec.convert(diarization, type=DiarizationResult)
+            )
             return chunk
         else:
             pass
@@ -999,15 +997,10 @@ def extract_inputs(request: GenerateRequest) -> object:
 
 def build_params(request: GenerateRequest) -> dict[str, object]:
     params = request.sampling.to_dict()
-    max_new_tokens = request.sampling.max_new_tokens
     if request.max_tokens is not None:
-        max_new_tokens = request.max_tokens
+        params["max_new_tokens"] = request.max_tokens
     else:
         pass
-    if max_new_tokens is None:
-        params.pop("max_new_tokens", None)
-    else:
-        params["max_new_tokens"] = max_new_tokens
     params["stream"] = request.stream
     if request.stage_sampling:
         params["stage_sampling"] = {

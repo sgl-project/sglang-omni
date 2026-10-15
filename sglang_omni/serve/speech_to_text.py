@@ -25,7 +25,6 @@ from sglang_omni.client import (
     GenerateRequest,
     SamplingParams,
 )
-from sglang_omni.serve.generation_params import record_explicit_generation_params
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     TranscriptionResponse,
@@ -161,7 +160,6 @@ def build_speech_to_text_generate_request(
     else:
         pass
     metadata: dict[str, object] = {"task": "asr"}
-    explicit_fields: list[str] = []
     if language is not None:
         params["language"] = language
     else:
@@ -170,28 +168,14 @@ def build_speech_to_text_generate_request(
         params["prompt"] = prompt
     else:
         pass
-    if temperature is not None:
-        explicit_fields.append("temperature")
-    else:
-        pass
-    if repetition_penalty is not None:
-        explicit_fields.append("repetition_penalty")
-    else:
-        pass
-    if max_new_tokens is not None:
-        explicit_fields.append("max_new_tokens")
-    else:
-        pass
     if segment_timestamps:
         params["segment_timestamps"] = True
     else:
         pass
-    record_explicit_generation_params(metadata, sorted(explicit_fields))
+    # note (ratish): 0.0 is the transcription API's own default temperature.
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
-        repetition_penalty=(
-            repetition_penalty if repetition_penalty is not None else 1.0
-        ),
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
     )
 

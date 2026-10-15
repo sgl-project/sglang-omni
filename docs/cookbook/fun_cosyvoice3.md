@@ -236,7 +236,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `temperature` | `0.7` | Sampling temperature |
 | `top_p` | `0.8` | Top-p sampling |
 | `top_k` | `20` | Top-k sampling |
-| `repetition_penalty` | `1.1` | Repetition penalty |
+| `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |

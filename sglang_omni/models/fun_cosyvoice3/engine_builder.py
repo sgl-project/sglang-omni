@@ -223,6 +223,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             tokenizer=tokenizer,
             speech_tokenizer=speech_tokenizer,
             speaker_encoder=speaker_encoder,
+            device=torch.device(device),
             use_mlx=use_mlx(),
             model_revision=root,
         )

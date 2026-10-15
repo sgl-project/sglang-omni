@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedRows
 from sglang_omni.models.fun_cosyvoice3.stages import (
+    FLOW_EULER_STEPS,
     FlowBatchInput,
     FunCosyVoice3Flow,
     pack_flow_inputs,
@@ -49,6 +50,14 @@ class RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
         self.is_ragged = False
+        self.build_modulations(
+            torch.linspace(0, 1, FLOW_EULER_STEPS + 1), torch.float32
+        )
+
+    def build_modulations(self, time_span: torch.Tensor, dtype: torch.dtype) -> None:
+        step_count = len(time_span) - 1
+        self.block_modulations = ((),) * step_count
+        self.final_modulations = (torch.zeros(1, dtype=dtype),) * step_count
 
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
@@ -64,18 +73,13 @@ class RecordingPackedEstimator:
         mu: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        t: torch.Tensor,
+        block_modulations: tuple[torch.Tensor, ...],
+        final_modulation: torch.Tensor,
         rows: PackedRows,
         attention: SimpleNamespace,
         rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        self.calls.append(
-            {
-                "lengths": rows.lengths,
-                "t": t.detach().clone(),
-                "streaming": attention.streaming,
-            }
-        )
+        self.calls.append({"lengths": rows.lengths, "streaming": attention.streaming})
         positions = rows.positions.to(x.dtype).view(1, -1, 1)
         return 0.1 * x + mu + spks + cond + 0.01 * positions
 

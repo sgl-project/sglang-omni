@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
+from sglang_omni.client.client import Client
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
@@ -737,9 +738,7 @@ def test_speech_websocket_streaming_accepts_speed() -> None:
         assert configured["type"] == "session.configured"
 
 
-def test_speech_websocket_default_config_does_not_mark_generation_params_explicit() -> (
-    None
-):
+def test_speech_websocket_default_config_leaves_sampling_fields_unset() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="tts")
         websocket = RecordingWebSocket()
@@ -766,8 +765,14 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
             uploaded_voice=session.config_uploaded_voice(),
         )
 
-        assert isinstance(gen_req.metadata["tts_params"], dict)
-        assert "explicit_generation_params" not in gen_req.metadata["tts_params"]
+        params = Client.build_omni_request(gen_req).params
+        assert not {
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+            "seed",
+        } & set(params)
 
     asyncio.run(run())
 
@@ -791,7 +796,7 @@ def test_speech_websocket_teardown_skips_close_after_application_close() -> None
     asyncio.run(run())
 
 
-def test_speech_websocket_preserves_explicit_generation_params() -> None:
+def test_speech_websocket_passes_the_set_sampling_fields() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="tts")
         websocket = RecordingWebSocket()
@@ -820,11 +825,10 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
             uploaded_voice=session.config_uploaded_voice(),
         )
 
-        assert isinstance(gen_req.metadata["tts_params"], dict)
-        assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
-            "temperature",
-            "top_k",
-        ]
+        params = Client.build_omni_request(gen_req).params
+        assert params["temperature"] == 0.7
+        assert params["top_k"] == 20
+        assert not {"top_p", "repetition_penalty", "seed"} & set(params)
 
     asyncio.run(run())
 

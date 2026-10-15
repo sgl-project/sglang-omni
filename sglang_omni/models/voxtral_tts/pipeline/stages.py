@@ -14,13 +14,16 @@ from typing import TYPE_CHECKING
 import torch
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
-from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
+from sglang_omni.models.voxtral_tts.pipeline.state_io import store_state
+from sglang_omni.models.voxtral_tts.vocoder import (
+    VoxtralStreamingVocoder,
+    VoxtralTTSVocoder,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
-from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
 
 if TYPE_CHECKING:
     from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
@@ -49,21 +52,12 @@ def validate_voxtral_speech_params(
     params: Mapping[str, object],
     tts_params: Mapping[str, object],
 ) -> None:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
     unsupported: set[str] = set()
-    for field in explicit_fields:
-        if field != "max_new_tokens":
+    for field in ("temperature", "top_p", "top_k", "repetition_penalty", "seed"):
+        if params.get(field) is not None:
             unsupported.add(field)
         else:
             pass
-    if params.get("seed") is not None:
-        unsupported.add("seed")
-    else:
-        pass
     if params.get("stage_sampling"):
         unsupported.add("stage_sampling")
     else:
@@ -86,17 +80,6 @@ def validate_voxtral_speech_params(
         raise ValueError(
             f"Voxtral TTS does not support these /v1/audio/speech fields: {fields}. Supported model-specific fields are voice and max_new_tokens."
         )
-    else:
-        pass
-
-
-def ensure_non_empty_audio_codes(audio_codes: object) -> None:
-    if audio_codes is None:
-        raise ValueError("Voxtral TTS generated no audio codes")
-    else:
-        pass
-    if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
-        raise ValueError("Voxtral TTS generated no audio codes")
     else:
         pass
 
@@ -292,99 +275,11 @@ def load_audio_tokenizer(
     return tokenizer
 
 
-class VoxtralTTSVocoder(BatchVocoderBase[VoxtralTTSState, torch.Tensor]):
-    """Decode audio codes with repeated initial frames as warmup context."""
-
-    N_WARMUP = 2
-    FADE_IN_MS = 10
-
-    def __init__(self, audio_tokenizer: "VoxtralTTSAudioTokenizer") -> None:
-        self.audio_tokenizer = audio_tokenizer
-
-    def prepare_item(
-        self, payload: StagePayload
-    ) -> tuple[VoxtralTTSState, torch.Tensor]:
-        state = load_state(payload)
-        audio_codes = state.audio_codes
-        ensure_non_empty_audio_codes(audio_codes)
-        if not isinstance(audio_codes, torch.Tensor):
-            audio_codes = torch.tensor(audio_codes)
-        else:
-            pass
-        if audio_codes.shape[0] > 0:
-            first_frame = audio_codes[0:1]
-            warmup = first_frame.repeat(self.N_WARMUP, 1)
-            codes_with_warmup = torch.cat([warmup, audio_codes], dim=0)
-        else:
-            codes_with_warmup = audio_codes
-        return (state, codes_with_warmup)
-
-    async def decode_batch(
-        self, items: list[tuple[VoxtralTTSState, torch.Tensor]]
-    ) -> list[tuple[torch.Tensor, int]]:
-        codes_list = [codes for _, codes in items]
-        results = self.audio_tokenizer.decode_helper_batch_async(codes_list)
-        sample_rate = self.audio_tokenizer.sampling_rate
-        return [(audio_np, sample_rate) for audio_np in results]
-
-    def store_result(
-        self,
-        payload: StagePayload,
-        state: VoxtralTTSState,
-        wav: torch.Tensor,
-        sample_rate: int,
-    ) -> StagePayload:
-        audio_np = wav
-        original_codes = state.audio_codes
-        original_len = (
-            original_codes.shape[0]
-            if isinstance(original_codes, torch.Tensor)
-            else len(original_codes)
-        )
-        warmup_samples = (
-            self.N_WARMUP * self.audio_tokenizer.downsample_factor
-            if original_len > 0
-            else 0
-        )
-        if warmup_samples > 0 and len(audio_np) > warmup_samples:
-            audio_np = audio_np[warmup_samples:]
-        else:
-            pass
-        fade_samples = min(int(self.FADE_IN_MS * sample_rate / 1000), len(audio_np))
-        if fade_samples > 0:
-            fade_in = torch.linspace(
-                0, 1, fade_samples, device=audio_np.device, dtype=audio_np.dtype
-            )
-            audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
-        else:
-            pass
-        audio_payload = audio_waveform_payload(audio_np, source_hint="Voxtral TTS")
-        state.audio_samples = None
-        state.sample_rate = sample_rate
-        payload = store_state(payload, state)
-        payload.data.update(audio_payload)
-        payload.data["sample_rate"] = sample_rate
-        payload.data["modality"] = "audio"
-        if state.prompt_tokens or state.completion_tokens:
-            payload.data["usage"] = {
-                "prompt_tokens": state.prompt_tokens,
-                "completion_tokens": state.completion_tokens,
-                "total_tokens": state.prompt_tokens + state.completion_tokens,
-            }
-        else:
-            pass
-        return payload
-
-
 def create_vocoder_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None
-) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.utils.device import resolve_concrete_device
-
+) -> VoxtralStreamingVocoder:
     device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = _resolve_checkpoint(model_path)
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = load_audio_tokenizer(checkpoint_dir, {}, device)
-    return VoxtralTTSVocoder(audio_tokenizer).build_scheduler(
-        max_batch_size=1, max_batch_wait_ms=0
-    )
+    return VoxtralStreamingVocoder(VoxtralTTSVocoder(audio_tokenizer), device=device)

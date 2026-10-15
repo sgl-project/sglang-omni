@@ -1107,10 +1107,7 @@ def test_build_generation_kwargs_streaming_rope_limit(stream):
 def test_build_generation_kwargs_explicit_overrides():
     kwargs = build_generation_kwargs(
         {"temperature": 0.9, "top_p": 0.7},
-        tts_params={
-            "explicit_generation_params": ["temperature", "top_p"],
-            "audio_top_k": 11,
-        },
+        tts_params={"audio_top_k": 11},
     )
     assert kwargs["text_temperature"] == 0.9
     assert kwargs["audio_temperature"] == 0.9
@@ -1411,10 +1408,7 @@ def test_build_generation_kwargs_precedence():
     # the MOSS Delay semantics); both override the explicit generic aliases.
     kwargs = build_generation_kwargs(
         {"temperature": 0.5, "audio_temperature": 1.2},
-        tts_params={
-            "explicit_generation_params": ["temperature"],
-            "audio_temperature": 1.9,
-        },
+        tts_params={"audio_temperature": 1.9},
     )
     assert kwargs["text_temperature"] == 0.5
     assert kwargs["audio_temperature"] == 1.2

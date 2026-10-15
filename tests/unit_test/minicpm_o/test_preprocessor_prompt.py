@@ -346,14 +346,11 @@ def build_speech_talker_request(talker_params: dict[str, int]) -> SGLangARReques
         request_id="speech",
         request=OmniRequest(
             inputs="你好",
-            params={"max_new_tokens": 30, "temperature": 0.3, "top_k": 30},
+            params={"max_new_tokens": 30, "temperature": 0.3},
             metadata={
                 "task": "tts",
                 "output_modalities": ["audio"],
-                "tts_params": {
-                    "language": "Chinese",
-                    "explicit_generation_params": ["max_new_tokens", "temperature"],
-                },
+                "tts_params": {"language": "Chinese"},
             },
         ),
         data=None,

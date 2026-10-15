@@ -76,7 +76,6 @@ class RequiredTTSParams(TypedDict):
 
 
 class TTSParams(RequiredTTSParams, total=False):
-    explicit_generation_params: list[str]
     task_type: str
     language: str
     instructions: str
@@ -1037,24 +1036,6 @@ class SpeechRequestValidator:
             pass
 
 
-def explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
-    """Generation fields the caller gave a value; null means unset."""
-    return sorted(
-        request.model_dump(
-            include={
-                "max_new_tokens",
-                "temperature",
-                "top_p",
-                "top_k",
-                "repetition_penalty",
-                "seed",
-            },
-            exclude_unset=True,
-            exclude_none=True,
-        )
-    )
-
-
 def build_tts_params(
     request: CreateSpeechRequest,
     *,
@@ -1065,11 +1046,6 @@ def build_tts_params(
         "response_format": request.response_format,
         "speed": request.speed,
     }
-    generation_params = explicit_generation_params(request)
-    if generation_params:
-        tts_params["explicit_generation_params"] = generation_params
-    else:
-        pass
     if request.task_type is not None:
         tts_params["task_type"] = request.task_type
     else:
@@ -1135,34 +1111,14 @@ def build_tts_params(
 
 
 def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
-    sampling = SamplingParams(
-        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    return SamplingParams(
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        repetition_penalty=request.repetition_penalty,
+        seed=request.seed,
+        max_new_tokens=request.max_new_tokens,
     )
-    if request.max_new_tokens is not None:
-        sampling.max_new_tokens = request.max_new_tokens
-    else:
-        pass
-    if request.temperature is not None:
-        sampling.temperature = request.temperature
-    else:
-        pass
-    if request.top_p is not None:
-        sampling.top_p = request.top_p
-    else:
-        pass
-    if request.top_k is not None:
-        sampling.top_k = request.top_k
-    else:
-        pass
-    if request.repetition_penalty is not None:
-        sampling.repetition_penalty = request.repetition_penalty
-    else:
-        pass
-    if request.seed is not None:
-        sampling.seed = request.seed
-    else:
-        pass
-    return sampling
 
 
 def build_speech_prompt(

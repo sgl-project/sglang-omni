@@ -382,9 +382,11 @@ Relevant model CI ownership:
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
-  setup: PR Test (`test.yaml` unit tests) → ASR CI → TTS CI → Qwen3-Omni CI. A
-  failure in an earlier suite does not skip later ones; only a failed setup
-  blocks the chain.
+  setup: PR Test (`test.yaml` unit tests) → ASR CI → TTS CI → MPS CI → Omni
+  model CI. Any CI stage label runs PR Test; each other suite runs only when
+  its stage is selected (see the CI section of the pull request template). A
+  failed or skipped suite does not skip later ones; only a failed setup blocks
+  the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
@@ -451,11 +453,11 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   `ASR_CI_MODEL` environment variable, then `fun`.
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
-  GitHub CI accepts the mutually exclusive `run-qwen3-omni` and `run-minicpmo`
-  labels, or the `omni_ci_model` manual-dispatch input. The input overrides
-  a single label; conflicting labels fail selection. Without either, Qwen3-Omni
-  remains selected. `/tag-and-rerun-ci minicpmo` selects MiniCPM-O 4.5 and
-  reruns Omni CI; it can be combined with one TTS and one ASR model target.
+  GitHub CI runs the Omni stage with `run-omni-ci` or `run-all-ci`. The
+  mutually exclusive `run-omni-qwen3-omni-30b-a3b-instruct` and
+  `run-omni-minicpm-o-4.5` labels select the model; without either, the stage
+  draws one at random. A manual dispatch takes the same labels through its
+  `ci_labels` input.
   Model selection does not imply calibrated performance or quality thresholds.
   MiniCPM uses two complete one-GPU workers behind the Rust router, with
   non-streaming speech output. The shared stages cover thinker length, SeedTTS,

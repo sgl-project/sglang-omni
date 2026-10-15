@@ -1166,15 +1166,5 @@ def test_client_speech_forces_non_streaming_request(
 
     assert result.audio_bytes == b"encoded-audio"
     assert coordinator.submitted_params == [
-        {
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "top_k": -1,
-            "min_p": 0.0,
-            "repetition_penalty": 1.0,
-            "stop": [],
-            "stop_token_ids": [],
-            "seed": None,
-            "stream": False,
-        }
+        {"stop": [], "stop_token_ids": [], "stream": False}
     ]

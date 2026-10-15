@@ -64,7 +64,6 @@ class VideoProcessorKwargs(TypedDict, total=False):
     max_frames: int
     min_pixels: int
     max_pixels: int
-    total_pixels: int
     use_audio_in_video: bool
     seconds_per_chunk: float
     position_id_per_seconds: float
@@ -915,10 +914,6 @@ class Qwen3OmniPreprocessor:
             pass
         if resolved_video_max_pixels is not None:
             videos_kwargs["max_pixels"] = resolved_video_max_pixels
-        else:
-            pass
-        if resolved_video_total_pixels is not None:
-            videos_kwargs["total_pixels"] = resolved_video_total_pixels
         else:
             pass
         if effective_use_audio_in_video is not None:

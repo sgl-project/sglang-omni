@@ -262,6 +262,16 @@ class SpeechState:
     clock_ms: float = 0
 
 
+def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
+    """A listening unit carries no codec tokens; only a turn or input end flushes the vocoder."""
+    talker_result = payload.data
+    return bool(
+        talker_result["end_of_turn"]
+        or chunk.eos
+        or (not talker_result["is_listen"] and talker_result["talker_conditions"])
+    )
+
+
 class SpeechHooks(BatchedSessionHooks):
     # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
     gather_window_ms = FORWARD_FLOOR_MS / 2
@@ -282,6 +292,9 @@ class SpeechHooks(BatchedSessionHooks):
     def warm_up_serving_thread(self) -> None:
         self.runtime.warm_up_vocoder()
 
+    def gathers_peers(self, payload: StagePayload, chunk: TimedChunk) -> bool:
+        return vocoder_runs_unit(payload, chunk)
+
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         is_turn_end = [
             append.payload.data["end_of_turn"] or append.chunk.eos for append in appends
@@ -289,11 +302,7 @@ class SpeechHooks(BatchedSessionHooks):
         speaking_indices = [
             index
             for index, append in enumerate(appends)
-            if is_turn_end[index]
-            or (
-                not append.payload.data["is_listen"]
-                and append.payload.data["talker_conditions"]
-            )
+            if vocoder_runs_unit(append.payload, append.chunk)
         ]
 
         def emit(index: int, waveform: np.ndarray | None) -> None:
@@ -473,6 +482,7 @@ def create_speech_scheduler(
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
     dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
     enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
+    enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
@@ -484,6 +494,7 @@ def create_speech_scheduler(
         n_timesteps=n_timesteps,
         prompt_wav=reference_audio,
         enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
         enable_flow_variable_length=False,
         enable_flow_cuda_graph=False,
         flow_cuda_graph_capture_shapes=(),

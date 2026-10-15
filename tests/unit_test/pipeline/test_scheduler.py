@@ -460,6 +460,8 @@ def test_take_deferred_request_payloads_is_event_driven() -> None:
 
     assert scheduler.take_deferred_request_payloads() == []
     assert scheduler.deferred_request_payloads == {"req-deferred": payload}
+    init_sync_request_build_state(scheduler)
+    assert scheduler.active_request_ids() == ["req-deferred"]
 
     OmniScheduler.on_stream_chunk(scheduler, "req-deferred", "chunk-1")
     assert scheduler.dirty_deferred_request_ids == {"req-deferred"}

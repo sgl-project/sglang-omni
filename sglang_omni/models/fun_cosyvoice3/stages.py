@@ -55,6 +55,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     DIT_INDUCTOR_OPTIONS,
     FA3_DTYPES,
     PackedDiT,
+    euler_step_times,
     gather_rows,
     pack_rows,
     scatter_rows,
@@ -359,8 +360,7 @@ def solve_flow_euler(
         dtype=dtype,
     )
     prompt_mel_cfg = torch.zeros_like(noisy_mel_cfg)
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for step in range(1, len(time_span)):
+    for t, dt in euler_step_times(time_span):
         noisy_mel_cfg[:batch_size] = noisy_mel
         noisy_mel_cfg[batch_size:] = noisy_mel
         mel_mask_cfg[:batch_size] = mel_mask
@@ -399,11 +399,6 @@ def solve_flow_euler(
             (1.0 + decoder.inference_cfg_rate) * conditional
             - decoder.inference_cfg_rate * unconditional
         )
-        t = t + dt
-        if step < len(time_span) - 1:
-            dt = time_span[step + 1] - t
-        else:
-            pass
     return noisy_mel.float()
 
 
@@ -2780,6 +2775,31 @@ def create_vocoder_executor(
         token_max_hop_len=token_max_hop_len,
         disable_hop_growth=disable_hop_growth,
     )
+    packed_estimator = vocoder.flow.packed_estimator
+    if packed_estimator is not None:
+        # note(ratish): a graph replays its captured dtypes; under autocast a hop's frames
+        # keep the token embedding's dtype and its speaker embedding does not.
+        with (
+            torch.inference_mode(),
+            torch.autocast(
+                device_type=device_obj.type,
+                dtype=autocast_dtype,
+                enabled=autocast_dtype is not None,
+            ),
+        ):
+            conditioning = prepare_flow_conditioning(
+                vocoder.flow,
+                pack_flow_inputs(
+                    vocoder.flow.flow,
+                    [scheduler.make_warmup_flow_input(token_hop_len)],
+                ),
+                finalize=False,
+            )
+            packed_estimator.build_modulations(
+                conditioning.time_span, conditioning.speaker_embedding.dtype
+            )
+    else:
+        pass
     if enable_dit_torch_compile:
         scheduler.warmup_packed_dit_compile()
     else:
@@ -2805,19 +2825,6 @@ def create_vocoder_executor(
         solve_graphs = SolveGraphCapture(
             graph_backend, device=device_obj, autocast_dtype=autocast_dtype
         )
-        # note(ratish): a graph replays its captured dtypes; under autocast a hop's frames
-        # keep the token embedding's dtype and its speaker embedding does not.
-        with (
-            torch.inference_mode(),
-            torch.autocast(device_type=device_obj.type, dtype=autocast_dtype),
-        ):
-            conditioning = prepare_flow_conditioning(
-                flow,
-                pack_flow_inputs(
-                    flow.flow, [scheduler.make_warmup_flow_input(token_hop_len)]
-                ),
-                finalize=False,
-            )
     else:
         pass
     if has_prefix_graphs:

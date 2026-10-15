@@ -46,6 +46,7 @@ from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.process import exit_without_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -563,14 +564,21 @@ def stage_process_main(
         apply_gpu_compat_env_defaults()
         prepare_weight_share_process_compat()
         run_process(spec, ready_event, log)
-    except (KeyboardInterrupt, SystemExit):
+    except (KeyboardInterrupt, SystemExit) as exc:
         destroy_torch_distributed_process_group(log)
         reclaim_process_gpu_memory(
             stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
-        raise
+        if isinstance(exc, SystemExit):
+            raise
+        else:
+            pass
+        # note (Richard Wang): a signal to the process group interrupts the
+        # stage, which has stopped by now. The exit code is the one an
+        # interrupted child had.
+        exit_without_teardown(1)
     except Exception as exc:
         import traceback
 
@@ -591,6 +599,10 @@ def stage_process_main(
         else:
             pass
         sys.exit(1)
+    # note (Richard Wang): tearing down every module and object of a stage that
+    # held a model takes seconds after the stage stopped, and the server's stop
+    # waits for it, while the operating system releases the process at exit.
+    exit_without_teardown(0)
 
 
 def run_process(
@@ -975,7 +987,7 @@ def construct_stage(
     )
 
     if spec.is_stream_receiver:
-        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue()
     else:
         pass
 

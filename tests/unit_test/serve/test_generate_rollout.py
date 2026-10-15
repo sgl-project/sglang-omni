@@ -9,13 +9,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from sglang_omni.client.client import Client
 from sglang_omni.client.types import (
     CompletionAudio,
     CompletionResult,
     GenerateRequest,
     UsageInfo,
 )
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_rollout_generate_request
 from sglang_omni.serve.protocol import RolloutGenerateRequest as RolloutRequest
@@ -451,47 +451,66 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     assert gen.extra_params["return_logprob"] is True
 
 
-def test_converter_omits_explicit_params_when_sampling_omitted() -> None:
-    req = RolloutRequest(prompt="hi", sampling_params={})
-
-    gen = build_rollout_generate_request(req)
-
-    assert gen.sampling.temperature == 1.0
-    assert gen.sampling.top_p == 1.0
-    assert gen.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
-
-
-def test_converter_preserves_explicit_rollout_sampling_default_values() -> None:
+@pytest.mark.parametrize(
+    "sampling_params",
+    [{}, {"temperature": None, "top_p": None, "top_k": None, "seed": None}],
+)
+def test_converter_leaves_unset_sampling_fields_out_of_params(
+    sampling_params: dict[str, None],
+) -> None:
     req = RolloutRequest(
         prompt="hi",
-        sampling_params={"temperature": 1.0, "top_p": 1.0, "top_k": -1},
+        sampling_params=sampling_params,
+        stage_sampling={"talker_ar": sampling_params},
     )
 
-    gen = build_rollout_generate_request(req)
+    params = Client.build_omni_request(build_rollout_generate_request(req)).params
 
-    assert gen.sampling.temperature == 1.0
-    assert gen.sampling.top_p == 1.0
-    assert gen.sampling.top_k == -1
-    assert gen.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
+    sampling_fields = {
         "temperature",
-        "top_k",
         "top_p",
-    ]
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "seed",
+    }
+    assert not sampling_fields & set(params)
+    assert not sampling_fields & set(params["stage_sampling"]["talker_ar"])
 
 
-def test_converter_does_not_mark_null_rollout_sampling_params_explicit() -> None:
+def test_converter_keeps_every_set_rollout_sampling_value() -> None:
     req = RolloutRequest(
         prompt="hi",
-        sampling_params={"temperature": None, "top_p": None, "top_k": None},
+        sampling_params={
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": -1,
+            "min_p": 0.0,
+            "repetition_penalty": 1.0,
+            "seed": 7,
+        },
     )
 
-    gen = build_rollout_generate_request(req)
+    params = Client.build_omni_request(build_rollout_generate_request(req)).params
 
-    assert gen.sampling.temperature == 1.0
-    assert gen.sampling.top_p == 1.0
-    assert gen.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
+    assert {
+        name: params[name]
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "seed",
+        )
+    } == {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": -1,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+        "seed": 7,
+    }
 
 
 def test_converter_preserves_rollout_metadata() -> None:

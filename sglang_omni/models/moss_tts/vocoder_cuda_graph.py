@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoder
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,16 +32,15 @@ class CapturedVocoderGraph:
 
 
 class MossVocoderCudaGraphRunner:
-    """Replay native streaming decode graphs keyed by ``(B, T)``.
+    """Replay native streaming decode graphs keyed by batch and frame count.
 
-    ``B`` is the smallest graph bucket covering the active rows, and batch
-    padding uses scratch state slots.  ``T`` is always exact because frame
+    Batch padding uses scratch state slots. Frame count is exact because frame
     padding would advance causal decoder state and change the waveform.
     """
 
     def __init__(
         self,
-        codec,
+        codec: MossAudioTokenizerVocoder,
         *,
         real_state_capacity: int,
         scratch_capacity: int,
@@ -49,28 +50,28 @@ class MossVocoderCudaGraphRunner:
         warmup_iters: int = 3,
         min_free_gb: float = 3.0,
     ) -> None:
-        self.codec = codec
-        self.real_state_capacity = int(real_state_capacity)
-        self._scratch_capacity = int(
+        self.codec: MossAudioTokenizerVocoder = codec
+        self.real_state_capacity: int = int(real_state_capacity)
+        self._scratch_capacity: int = int(
             scratch_capacity
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self.device = next(codec.parameters()).device
-        self.num_quantizers = int(num_quantizers)
-        self.warmup_iters = max(int(warmup_iters), 1)
-        self.min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._batch_sizes = sorted(  # noqa: leading-underscore
+        )  # noqa: leading-underscore  # private backing for a read-only configuration property
+        self.device: torch.device = next(codec.parameters()).device
+        self.num_quantizers: int = int(num_quantizers)
+        self.warmup_iters: int = max(int(warmup_iters), 1)
+        self.min_free_bytes: int = int(float(min_free_gb) * (1024**3))
+        self._batch_sizes: list[int] = sorted(  # noqa: leading-underscore
             {
                 int(size)
                 for size in batch_sizes
                 if 0 < int(size) <= self.real_state_capacity
             }
         )
-        self._frame_sizes = sorted(
+        self._frame_sizes: list[int] = sorted(
             {int(size) for size in frame_sizes if int(size) > 0}
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )  # noqa: leading-underscore  # private backing for a read-only configuration property
         self.graphs: dict[tuple[int, int], CapturedVocoderGraph] = {}
-        self.pool = None
-        self.sealed = False
+        self.pool: tuple[int, int] | None = None
+        self.sealed: bool = False
 
         if self.real_state_capacity <= 0:
             raise ValueError("real_state_capacity must be positive")
@@ -78,11 +79,11 @@ class MossVocoderCudaGraphRunner:
             pass
         if self._scratch_capacity < max(
             self.batch_sizes, default=0
-        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        ):  # noqa: leading-underscore  # private backing for a read-only configuration property
             raise ValueError(
                 "scratch_capacity must cover the largest compact graph bucket; "
-                f"got scratch_capacity={self._scratch_capacity}, "  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                f"largest_bucket={max(self.batch_sizes, default=0)}"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                f"got scratch_capacity={self._scratch_capacity}, "  # noqa: leading-underscore  # private backing for a read-only configuration property
+                f"largest_bucket={max(self.batch_sizes, default=0)}"  # noqa: leading-underscore  # private backing for a read-only configuration property
             )
         else:
             pass
@@ -107,13 +108,13 @@ class MossVocoderCudaGraphRunner:
     def frame_sizes(self) -> list[int]:
         return list(
             self._frame_sizes
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )  # noqa: leading-underscore  # private backing for a read-only configuration property
 
     @property
     def scratch_capacity(self) -> int:
         return (
             self._scratch_capacity
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )  # noqa: leading-underscore  # private backing for a read-only configuration property
 
     def capture_state_slots(
         self, batch_size: int, *, device: torch.device
@@ -198,13 +199,7 @@ class MossVocoderCudaGraphRunner:
 
     @torch.no_grad()
     def warmup(self, frames: Iterable[int] | None = None) -> list[tuple[int, int]]:
-        """Capture configured ``(batch_bucket, exact_frame_count)`` graphs.
-
-        Capture is best effort.  A low-VRAM device or an individual capture
-        error leaves that key on eager execution; other keys may still be
-        captured.  The runner is sealed after one attempt to prevent capture
-        work from happening on the serving hot path.
-        """
+        """Capture exact frame counts once; uncaptured shapes use eager decode."""
         if self.sealed:
             return self.capture_sizes
         else:
@@ -223,13 +218,13 @@ class MossVocoderCudaGraphRunner:
         else:
             pass
         frame_sizes = (
-            self._frame_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self._frame_sizes  # noqa: leading-underscore  # private backing for a read-only configuration property
             if frames is None
             else sorted({int(frame) for frame in frames if int(frame) > 0})
         )
         if (
             not self.batch_sizes or not frame_sizes
-        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        ):  # noqa: leading-underscore  # private backing for a read-only configuration property
             return []
         else:
             pass
@@ -239,7 +234,7 @@ class MossVocoderCudaGraphRunner:
         keys = sorted(
             (
                 (batch_size, frame_size)
-                for batch_size in self.batch_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                for batch_size in self.batch_sizes  # noqa: leading-underscore  # private backing for a read-only configuration property
                 for frame_size in frame_sizes
             ),
             reverse=True,
@@ -250,10 +245,9 @@ class MossVocoderCudaGraphRunner:
                 enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
-                        "MOSS-Audio-Tokenizer vocoder CUDA graphs: free VRAM %.1fGB < %.1fGB; "
-                        "skipping remaining captures",
-                        free / 1024**3,
-                        self.min_free_bytes / 1024**3,
+                        f"MOSS-Audio-Tokenizer vocoder CUDA graphs: free VRAM "
+                        f"{free / 1024**3:.1f}GB < {self.min_free_bytes / 1024**3:.1f}GB; "
+                        "skipping remaining captures"
                     )
                     break
                 else:
@@ -273,21 +267,17 @@ class MossVocoderCudaGraphRunner:
                         )
                     except Exception:
                         logger.exception(
-                            "failed to reset vocoder graph state slots after "
-                            "capture failure for (B,T)=%s",
-                            key,
+                            f"failed to reset vocoder graph state slots after "
+                            f"capture failure for (B,T)={key}"
                         )
                     logger.warning(
-                        "MOSS-Audio-Tokenizer vocoder CUDA graph capture failed for (B,T)=%s; "
+                        f"MOSS-Audio-Tokenizer vocoder CUDA graph capture failed for (B,T)={key}; "
                         "using eager",
-                        key,
                         exc_info=True,
                     )
         logger.info(
-            "MOSS-Audio-Tokenizer vocoder CUDA graphs sealed: %d/%d captured %s",
-            len(self.graphs),
-            len(keys),
-            self.capture_sizes,
+            f"MOSS-Audio-Tokenizer vocoder CUDA graphs sealed: "
+            f"{len(self.graphs)}/{len(keys)} captured {self.capture_sizes}"
         )
         return self.capture_sizes
 
@@ -301,7 +291,7 @@ class MossVocoderCudaGraphRunner:
         state_slot_ids: torch.Tensor,
         valid_rows: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """Replay a captured native decode shape, or return ``None`` for eager."""
+        """Replay a captured native decode shape, or return None for eager."""
         if not codes.is_cuda or torch.cuda.is_current_stream_capturing():
             return None
         else:
@@ -338,7 +328,7 @@ class MossVocoderCudaGraphRunner:
         batch_size = next(
             (
                 size for size in self.batch_sizes if size >= actual_batch_size
-            ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            ),  # noqa: leading-underscore  # private backing for a read-only configuration property
             None,
         )
         if batch_size is None:

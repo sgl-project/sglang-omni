@@ -43,7 +43,9 @@ from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.quantization import (
+    INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
+    ExpertDenseInt4Config,
     ExpertFp8Config,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
@@ -134,6 +136,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         AutoConfig.register(FishOmniConfig.model_type, FishOmniConfig, exist_ok=True)
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
+        QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
