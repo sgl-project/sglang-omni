@@ -74,7 +74,7 @@ def nemotron_voicechat_stages_factory() -> list[StageConfig]:
             name="code2wav",
             process="talker",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_code2wav_executor",
-            factory=FactoryArgs(dtype=MODEL_DTYPE),
+            factory=FactoryArgs(dtype=MODEL_DTYPE, chunk_frames=(1,)),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
