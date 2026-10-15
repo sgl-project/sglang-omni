@@ -123,6 +123,27 @@ def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> No
     assert result.can_run_cuda_graph is True
 
 
+def test_model_worker_sync_dllm_accepts_five_field_result() -> None:
+    class Algorithm:
+        fdfo = False
+
+        def run(self, model_runner, forward_batch, algo_states):
+            assert algo_states is None
+            return ("logits", [[10, 11]], None, None, False)
+
+    worker = object.__new__(ModelWorker)
+    worker.dllm_algorithm = Algorithm()
+    worker.model_runner = object()
+
+    result = ModelWorker.forward_batch_generation(worker, "forward-batch")
+
+    assert result.logits_output == "logits"
+    assert result.next_token_ids == [[10, 11]]
+    assert result.accept_length_per_req_cpu is None
+    assert result.dllm_algo_state is None
+    assert result.can_run_cuda_graph is False
+
+
 def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
