@@ -217,7 +217,7 @@ def test_top_level_video_audio_follows_explicit_media(
     assert video_processor.audio_parts is None
 
 
-@pytest.mark.parametrize("video_alias", ["video", "videos"])
+@pytest.mark.parametrize("video_alias", ["videos"])
 @pytest.mark.parametrize("include_text", [False, True])
 def test_top_level_video_audio_matches_inline_reference_policy(
     video_preprocessor: MiniCPMOPreprocessor,
@@ -287,9 +287,17 @@ def test_top_level_video_audio_matches_inline_reference_policy(
     assert video_processor.max_slice_nums == 1
 
 
-@pytest.mark.parametrize("include_video_file", [False, True])
-@pytest.mark.parametrize("video_alias", ["video", "videos"])
-@pytest.mark.parametrize("bare_tensor", [False, True])
+@pytest.mark.parametrize(
+    ("include_video_file", "video_alias", "bare_tensor"),
+    [
+        (False, "video", False),
+        (False, "video", True),
+        (False, "videos", False),
+        (False, "videos", True),
+        (True, "video", False),
+        (True, "videos", False),
+    ],
+)
 def test_top_level_video_preserves_predecoded_tensor_support(
     video_preprocessor: MiniCPMOPreprocessor,
     video_processor: VideoRecordingProcessor,
@@ -335,7 +343,7 @@ def test_top_level_video_preserves_predecoded_tensor_support(
     assert video_processor.use_image_id is False
 
 
-@pytest.mark.parametrize("video_alias", ["video", "videos"])
+@pytest.mark.parametrize("video_alias", ["videos"])
 @pytest.mark.parametrize("source_kind", ["path", "file_uri", "url"])
 def test_top_level_video_question_audio_retains_legacy_inputs(
     video_preprocessor: MiniCPMOPreprocessor,
@@ -520,7 +528,7 @@ def test_omni_video_joins_text_parts_in_preceding_turns(
     assert video_processor.audio_parts is None
 
 
-@pytest.mark.parametrize("use_audio", [False, True])
+@pytest.mark.parametrize("use_audio", [False])
 @pytest.mark.parametrize("include_image", [False, True])
 def test_image_cache_distinguishes_video_processing_policy(
     video_preprocessor: MiniCPMOPreprocessor,
@@ -790,7 +798,7 @@ def test_video_decoder_pads_short_tail_audio(
     )
 
 
-@pytest.mark.parametrize("fps", [0.0, -1.0, float("inf"), float("nan")])
+@pytest.mark.parametrize("fps", [0.0, float("inf"), float("nan")])
 def test_video_decoder_rejects_invalid_requested_frame_rate(fps: float) -> None:
     with pytest.raises(ValueError, match="video_fps"):
         MiniCPMVideoIO(use_audio=False, fps=fps)

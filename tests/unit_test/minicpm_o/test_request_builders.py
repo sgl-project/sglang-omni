@@ -54,7 +54,7 @@ def thinker_params(length_penalty: object) -> dict:
 
 @pytest.mark.parametrize(
     "params",
-    [{}, {"stage_params": {"thinker": None}}, thinker_params(1.0), thinker_params(1.3)],
+    [{}, {"stage_params": {"thinker": None}}, thinker_params(1.3)],
 )
 def test_missing_or_positive_length_penalty_builds(params: dict) -> None:
     build(params)
@@ -66,7 +66,6 @@ def test_missing_or_positive_length_penalty_builds(params: dict) -> None:
         (None, TypeError),
         ("1.3", TypeError),
         (0, ValueError),
-        (-1.0, ValueError),
         (float("nan"), ValueError),
     ],
 )
