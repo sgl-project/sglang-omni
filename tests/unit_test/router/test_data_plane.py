@@ -833,6 +833,30 @@ def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
         assert tc.post("/generate", json={}).status_code == 200
 
 
+def test_incarnation_unchanged_preserves_the_worker_object_and_counters() -> None:
+    view = DataPlaneWorkerView()
+
+    class Snap:
+        seq = 1
+        cp_epoch = "e"
+        workers = [entry(incarnation="inc-A")]
+
+    view.apply(Snap())
+    obj = view.workers()[0]
+    obj.increment_active()
+    obj.record_routed_request(status_code=200)
+
+    class Snap2:
+        seq = 2
+        cp_epoch = "e"
+        workers = [entry(incarnation="inc-A", state="unhealthy")]
+
+    view.apply(Snap2())
+    assert view.workers()[0] is obj  # same incarnation: same object
+    assert obj.active_requests == 1
+    assert obj.routed_requests == 1
+
+
 def test_control_traffic_survives_a_saturated_forwarding_pool(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): a forwarded admin call can sit behind the CP's update
     # lock for minutes; sharing one pool would starve the heartbeat and ACK
