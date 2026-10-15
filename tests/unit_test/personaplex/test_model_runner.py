@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prefill and decode hooks feed timeline rows to the model and frames to the codec."""
 
+from collections.abc import Sequence
 from types import SimpleNamespace
 
 import torch
@@ -68,6 +69,16 @@ def make_runner(model: FakeModel) -> PersonaPlexModelRunner:
     return runner
 
 
+def scheduled(
+    output_ids: Sequence[int] = (), cached_positions: int = 0
+) -> SimpleNamespace:
+    """A scheduled Req as the prefill hook reads it."""
+    return SimpleNamespace(
+        output_ids=list(output_ids),
+        prefix_indices=torch.zeros(cached_positions, dtype=torch.int64),
+    )
+
+
 def make_request(
     num_frames: int,
     *,
@@ -101,7 +112,7 @@ def test_prefill_uses_stored_voice_rows_and_embeds_the_rest():
     total = voice_timeline.num_prompt_positions + plain_timeline.num_prompt_positions
     forward_batch = SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(total))
 
-    fresh = SimpleNamespace(output_ids=[])
+    fresh = scheduled()
     runner.before_prefill(
         forward_batch,
         SimpleNamespace(reqs=[fresh, fresh]),
@@ -120,6 +131,57 @@ def test_prefill_uses_stored_voice_rows_and_embeds_the_rest():
     assert torch.equal(plain_rows, plain_timeline.prefill_tokens.float())
 
 
+def test_prefill_embeds_only_the_rows_after_the_cached_prefix() -> None:
+    runner = make_runner(FakeModel())
+    cached, uncached = make_request(3, voice=True), make_request(2)
+    resumed = make_request(4, voice=True, request_id="resumed")
+    cached_timeline = cached.data.talker_model_inputs["timeline"]
+    plain_timeline = uncached.data.talker_model_inputs["timeline"]
+    resumed_timeline = resumed.data.talker_model_inputs["timeline"]
+    num_cached = VOICE_FRAMES + 1
+    generated = [77, 78]
+    resumed.data.talker_model_inputs["agent_rows"] = [
+        torch.arange(8) + 900 + 10 * index for index in range(len(generated))
+    ]
+    resumed_prompt = resumed_timeline.num_prompt_positions
+    rows_per_request = [
+        cached_timeline.num_prompt_positions - num_cached,
+        plain_timeline.num_prompt_positions,
+        len(generated),
+    ]
+    forward_batch = SimpleNamespace(
+        replace_embeds=None, input_ids=torch.zeros(sum(rows_per_request))
+    )
+
+    runner.before_prefill(
+        forward_batch,
+        SimpleNamespace(
+            reqs=[
+                scheduled(cached_positions=num_cached),
+                scheduled(),
+                scheduled(generated, cached_positions=resumed_prompt),
+            ]
+        ),
+        [cached, uncached, resumed],
+    )
+
+    embeds = get_omni_prefill_inputs(forward_batch).input_embeds
+    cached_rows, plain_rows, resumed_rows = embeds.split(rows_per_request)
+    assert torch.equal(cached_rows, cached_timeline.prefill_tokens[num_cached:].float())
+    assert torch.equal(plain_rows, plain_timeline.prefill_tokens.float())
+    for index, token in enumerate(generated):
+        row = resumed_rows[index].long()
+        assert row[0].item() == token
+        assert torch.equal(
+            row[AGENT_STREAM_OFFSET:USER_STREAM_OFFSET],
+            resumed.data.talker_model_inputs["agent_rows"][index],
+        )
+        assert torch.equal(
+            row[USER_STREAM_OFFSET:],
+            resumed_timeline.user_rows[resumed_prompt + index],
+        )
+
+
 def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     model = FakeModel()
     runner = make_runner(model)
@@ -129,7 +191,7 @@ def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     first_position = timeline.num_prompt_positions
     runner.before_prefill(
         SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(first_position)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[])]),
+        SimpleNamespace(reqs=[scheduled()]),
         [request],
     )
 
@@ -185,7 +247,7 @@ def run_prefill(runner, requests, text_token_ids) -> None:
     )
     runner.before_prefill(
         SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(prompt_positions)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[]) for _ in requests]),
+        SimpleNamespace(reqs=[scheduled() for _ in requests]),
         requests,
     )
     runner.post_prefill(
@@ -333,7 +395,7 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
 
     runner.before_prefill(
         SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(prompt_positions)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[])]),
+        SimpleNamespace(reqs=[scheduled()]),
         [request],
     )
     runner.post_prefill(
@@ -361,9 +423,7 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
     )
     runner.before_prefill(
         forward_batch,
-        SimpleNamespace(
-            reqs=[SimpleNamespace(output_ids=generated), SimpleNamespace(output_ids=[])]
-        ),
+        SimpleNamespace(reqs=[scheduled(generated), scheduled()]),
         [request, fresh],
     )
 

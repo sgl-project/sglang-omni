@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import cache
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -17,8 +18,6 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_TEXT_TOP_K,
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
-    TEXT_CARD,
-    TEXT_PAD_ID,
 )
 from sglang_omni.models.personaplex.config import CODE2WAV_STAGE, LM_STAGE
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -28,6 +27,7 @@ from sglang_omni.models.personaplex.timeline import (
     build_prompt_frames,
     build_timeline,
 )
+from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.sampling.seed import derive_sampling_seed
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -35,6 +35,13 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.types import RequestOutput
 
 SEED_NAMESPACE = "personaplex"
+PROMPT_CACHE_KEY = "personaplex:prompt:v1"
+
+
+@cache
+def prompt_row_cache_keys(row_bytes: int) -> PromptRowCacheKeys:
+    """Radix-cache keys for prompt rows of one width, built once per width."""
+    return PromptRowCacheKeys.for_rows(row_bytes=row_bytes, device=torch.device("cpu"))
 
 
 @dataclass(frozen=True)
@@ -221,19 +228,35 @@ def build_lm_request(
     else:
         pass
 
-    # Note (wilsonzheng0327): Placeholder ids for SGLang's bookkeeping; the model runner
-    # embeds the real rows. The text stream's initial token is outside the vocabulary,
-    # so it is masked.
-    text_ids = timeline.prefill_tokens[:, 0].clone()
-    text_ids[text_ids >= TEXT_CARD] = TEXT_PAD_ID
-    input_ids = [int(i) for i in text_ids.tolist()]
+    # Note (Jinjie Guo): The model runner embeds the real rows. Each prompt id is a key
+    # of its row's content, so requests with one voice and role prompt share its KV.
+    token_rows = timeline.prefill_tokens.contiguous()
+    input_ids = prompt_row_cache_keys(
+        token_rows.shape[1] * token_rows.element_size()
+    ).key_ids(token_rows)
+    if timeline.prefill_embeddings is not None:
+        stored_rows = timeline.prefill_embeddings.to(torch.float32).contiguous()
+        stored_key_ids = prompt_row_cache_keys(
+            stored_rows.shape[1] * stored_rows.element_size()
+        ).key_ids(stored_rows)
+        for position, key_id in zip(
+            timeline.prefill_embedding_positions, stored_key_ids, strict=True
+        ):
+            input_ids[position] = key_id
+    else:
+        pass
     req = Req(
         rid=payload.request_id,
         origin_input_text="",
         origin_input_ids=input_ids,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
+        extra_key=PROMPT_CACHE_KEY,
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._omni_prompt_cache_key = (
+        req.extra_key
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     data = SGLangARRequestData(
         req=req,
         input_ids=torch.tensor(input_ids, dtype=torch.long),

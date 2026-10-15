@@ -119,7 +119,6 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             current_platform.is_cuda()
             and config.device == "cuda"
             and config.page_size == 1
-            and config.disable_radix_cache
         ):
             pass
         else:
@@ -131,9 +130,8 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             logger.info(
                 f"PersonaPlex uses the full KV pool on device={config.device}, "
                 f"platform={current_platform.device_type} "
-                f"with page_size={config.page_size}, "
-                f"disable_radix_cache={config.disable_radix_cache}; "
-                "window KV requires CUDA, page_size=1 and disabled radix caching"
+                f"with page_size={config.page_size}; "
+                "window KV requires CUDA and page_size=1"
             )
 
     def setup_model(
