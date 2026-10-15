@@ -179,6 +179,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
+        self.sampling_seed_batch_key: tuple[tuple[str | None, int | None], ...] = ()
+        self.sampling_seed_batch_tensor: torch.Tensor | None = None
 
     def stage_token_ids(self, result: GenerationBatchResult, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
@@ -1063,6 +1065,18 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         self.validate_seeded_sampling_supported(sampling_info)
+        # note (YifanLi3): the per-step sampling_info is a copy, so reuse the
+        # device tensor while the batch composition is unchanged instead of
+        # paying a blocking host-to-device copy every decode step.
+        batch_key = tuple(
+            (request.request_id, sp.sampling_seed)
+            for sp, request in zip(sampling_params, requests)
+        )
+        if batch_key == self.sampling_seed_batch_key:
+            sampling_info.sampling_seed = self.sampling_seed_batch_tensor
+            return
+        else:
+            pass
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed
@@ -1077,6 +1091,8 @@ class ModelRunner(Generic[RequestDataInput]):
         sampling_info.sampling_seed = torch.tensor(
             row_seeds, dtype=torch.long, device=sampling_info.device
         )
+        self.sampling_seed_batch_key = batch_key
+        self.sampling_seed_batch_tensor = sampling_info.sampling_seed
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:
