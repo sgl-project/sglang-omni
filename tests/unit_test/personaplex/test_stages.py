@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Preprocessing resolves the caller channel, the role prompt and the voice per request."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -178,9 +179,32 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
             )
 
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (_Codec(), "cpu"))
+    built_slots = {}
+
+    def build_slots(codec, **slot_kwargs):
+        # The streaming slots never run here: the whole reply decodes at once.
+        built_slots.update(slot_kwargs)
+        return SimpleNamespace(
+            codec=codec,
+            max_batch_size=slot_kwargs["max_batch_size"],
+            max_chunk_frames=slot_kwargs["max_chunk_frames"],
+        )
+
+    monkeypatch.setattr(stages, "MimiDecodeSlots", build_slots)
     scheduler = stages.create_code2wav_executor(
-        "m", num_decode_slots=0, max_graph_frames=0, chunk_ramp_frames=[1, 4]
+        "m",
+        num_decode_slots=4,
+        max_batch_size=2,
+        max_graph_frames=1,
+        chunk_ramp_frames=[1, 4],
     )
+    assert built_slots == {
+        "num_slots": 4,
+        "max_batch_size": 2,
+        "max_graph_frames": 1,
+        "max_chunk_frames": 4,
+    }
+    assert scheduler.max_batch_size == 2
     state = PersonaPlexState(
         num_samples=num_samples, codes=torch.zeros(frames, 8, dtype=torch.long)
     )
@@ -192,52 +216,6 @@ def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
     )
     assert rendered.shape[-1] == num_samples
     assert rendered[-1] == num_samples - 1
-
-
-@pytest.mark.parametrize(
-    "chunk_ramp_frames,max_graph_frames,expected_graph_frames",
-    [
-        ([1, 4], None, 4),
-        ([1, 16], None, 16),
-        ([1, 8, 2], None, 8),
-        ([1, 16], 0, 0),
-        ([1, 16], 2, 2),
-        ([1, 4], 16, 16),
-    ],
-)
-def test_code2wav_graph_limit_follows_resolved_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-    chunk_ramp_frames: list[int],
-    max_graph_frames: int | None,
-    expected_graph_frames: int,
-) -> None:
-    config = PersonaPlexPipelineConfig(model_path="dummy")
-    overrides: dict[str, int | list[int]] = {"chunk_ramp_frames": chunk_ramp_frames}
-    if max_graph_frames is not None:
-        overrides["max_graph_frames"] = max_graph_frames
-    else:
-        pass
-    patches = patches_from_stages_mapping(
-        {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
-    )
-    resolved = ConfigResolver(config).resolve(patches).config
-    codec = Mock()
-    decode_slots = Mock()
-    decode_slots.return_value.max_chunk_frames = max(
-        max(chunk_ramp_frames), expected_graph_frames
-    )
-    monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (codec, "cpu"))
-    monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
-    factory_args = resolve_stage_factory_args(
-        resolved.stage_named("code2wav"), resolved
-    )
-    stages.create_code2wav_executor(**factory_args)
-    decode_slots.assert_called_once_with(
-        codec,
-        num_slots=8,
-        max_graph_frames=expected_graph_frames,
-        max_chunk_frames=max(chunk_ramp_frames),
-    )
 
 
 def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch):
@@ -318,3 +296,52 @@ def test_voice_prompt_cache_byte_budget_preserves_request_results(
                 assert actual is None
             else:
                 torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "chunk_ramp_frames,max_graph_frames,expected_graph_frames",
+    [
+        ([1, 4], None, 4),
+        ([1, 16], None, 16),
+        ([1, 8, 2], None, 8),
+        ([1, 16], 0, 0),
+        ([1, 16], 2, 2),
+        ([1, 4], 16, 16),
+    ],
+)
+def test_code2wav_graph_limit_follows_resolved_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    chunk_ramp_frames: list[int],
+    max_graph_frames: int | None,
+    expected_graph_frames: int,
+) -> None:
+    config = PersonaPlexPipelineConfig(model_path="dummy")
+    overrides: dict[str, int | list[int]] = {"chunk_ramp_frames": chunk_ramp_frames}
+    if max_graph_frames is not None:
+        overrides["max_graph_frames"] = max_graph_frames
+    else:
+        pass
+    patches = patches_from_stages_mapping(
+        {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
+    )
+    resolved = ConfigResolver(config).resolve(patches).config
+    codec = Mock()
+    decode_slots = Mock(
+        return_value=SimpleNamespace(
+            max_batch_size=8,
+            max_chunk_frames=max(max(chunk_ramp_frames), expected_graph_frames),
+        )
+    )
+    monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (codec, "cpu"))
+    monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
+    factory_args = resolve_stage_factory_args(
+        resolved.stage_named("code2wav"), resolved
+    )
+    stages.create_code2wav_executor(**factory_args)
+    decode_slots.assert_called_once_with(
+        codec,
+        num_slots=1,
+        max_batch_size=8,
+        max_graph_frames=expected_graph_frames,
+        max_chunk_frames=max(chunk_ramp_frames),
+    )

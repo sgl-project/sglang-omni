@@ -174,4 +174,5 @@ Supported Models
    developer_reference/omni_offline_bench.md
    developer_reference/rl_admin_control.md
    developer_reference/mlx.md
+   developer_reference/ci_labels.md
    developer_reference/bump_version.md

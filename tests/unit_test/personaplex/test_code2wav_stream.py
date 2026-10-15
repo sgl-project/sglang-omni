@@ -33,12 +33,31 @@ def new_scheduler(
         MimiDecodeSlots(
             codec,
             num_slots=2,
+            max_batch_size=1,
             max_graph_frames=1,
             max_chunk_frames=max(chunk_ramp_frames),
         ),
         compute_fn=lambda payload: payload,
         chunk_ramp_frames=chunk_ramp_frames,
     )
+
+
+def deliver_chunk(
+    scheduler, request_id: str, item: StreamItem
+) -> list[OutgoingMessage]:
+    scheduler.handle_stream_chunk(request_id, item)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()
+    return drain_messages(scheduler)
+
+
+def finish_stream(scheduler, request_id: str) -> list[OutgoingMessage]:
+    if request_id not in scheduler.stream_states:
+        return []
+    scheduler.handle_stream_done(request_id)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()
+    return drain_messages(scheduler)
 
 
 def start_stream(
@@ -69,8 +88,10 @@ def test_interleaved_requests_stream_their_own_waveforms(
     streamed = {rid: [] for rid in codes}
 
     def push(rid: str, chunk: torch.Tensor) -> None:
-        for message in scheduler.on_stream_chunk(
-            rid, SimpleNamespace(data=chunk, metadata=None)
+        for message in deliver_chunk(
+            scheduler,
+            rid,
+            StreamItem(chunk_id=0, from_stage="lm", data=chunk, metadata=None),
         ):
             assert message.type == "stream"
             streamed[rid].append(decode_waveform(message.data))
@@ -84,7 +105,7 @@ def test_interleaved_requests_stream_their_own_waveforms(
         torch.testing.assert_close(
             torch.cat(streamed[rid]), whole[rid], atol=1e-5, rtol=1e-5
         )
-        (result,) = scheduler.on_stream_done(rid)
+        (result,) = finish_stream(scheduler, rid)
         assert result.type == "result"
         assert result.data.request is payloads[rid].request
         torch.testing.assert_close(
@@ -111,10 +132,10 @@ def test_a_reply_with_frames_streams_whatever_arrives_first(
 def test_abort_clears_stream_state(random_codec: MimiCodec) -> None:
     scheduler = new_scheduler(random_codec)
     start_stream(scheduler, "a")
-    assert scheduler.on_stream_done("a") != []
+    assert finish_stream(scheduler, "a") != []
     scheduler.clear_stream_state("a")
-    assert scheduler.on_stream_done("a") == []
-    assert scheduler.on_stream_done("never-started") == []
+    assert finish_stream(scheduler, "a") == []
+    assert finish_stream(scheduler, "never-started") == []
 
 
 @pytest.mark.parametrize(
@@ -137,10 +158,14 @@ def test_reply_length_matches_the_caller_in_chunks_and_final_payload(
 
     streamed = []
     for frame in range(frames):
-        (message,) = scheduler.on_stream_chunk(
+        (message,) = deliver_chunk(
+            scheduler,
             "a",
-            SimpleNamespace(
-                data=codes[frame : frame + 1], metadata={"num_samples": num_samples}
+            StreamItem(
+                chunk_id=0,
+                from_stage="lm",
+                data=codes[frame : frame + 1],
+                metadata={"num_samples": num_samples},
             ),
         )
         streamed.append(decode_waveform(message.data))
@@ -152,7 +177,7 @@ def test_reply_length_matches_the_caller_in_chunks_and_final_payload(
     # Note (wilsonzheng0327): The terminal payload lands after every chunk, as it does
     # when the LM stage finishes.
     start_stream(scheduler, "a")
-    (result,) = scheduler.on_stream_done("a")
+    (result,) = finish_stream(scheduler, "a")
     reply = decode_waveform(result.data.data)
     torch.testing.assert_close(reply, whole[:expected_samples], atol=1e-5, rtol=1e-5)
 
@@ -165,8 +190,10 @@ def push_frames(
 ) -> list[torch.Tensor]:
     return [
         decode_waveform(message.data)
-        for message in scheduler.on_stream_chunk(
-            request_id, SimpleNamespace(data=chunk, metadata=metadata)
+        for message in deliver_chunk(
+            scheduler,
+            request_id,
+            StreamItem(chunk_id=0, from_stage="lm", data=chunk, metadata=metadata),
         )
     ]
 
@@ -193,7 +220,7 @@ def test_chunk_ramp_holds_frames_until_each_target_width(
     assert chunk_widths_in_frames == [1, 3, 3]
 
     # note (nightdecode): Stream completion releases an incomplete chunk.
-    tail, result = scheduler.on_stream_done("a")
+    tail, result = finish_stream(scheduler, "a")
     assert decode_waveform(tail.data).shape[-1] == samples_per_frame
     assert result.type == "result"
     streamed.append(decode_waveform(tail.data))
@@ -221,7 +248,7 @@ def test_chunk_ramp_decodes_burst_messages_frame_exactly(
         samples_per_frame,
         4 * samples_per_frame,
     ]
-    tail, result = scheduler.on_stream_done("a")
+    tail, result = finish_stream(scheduler, "a")
     assert decode_waveform(tail.data).shape[-1] == samples_per_frame
     torch.testing.assert_close(
         torch.cat(streamed + [decode_waveform(tail.data)]), whole, atol=1e-5, rtol=1e-5
@@ -240,7 +267,7 @@ def test_a_streaming_client_gets_the_reply_once(random_codec: MimiCodec) -> None
 
     streamed = push_frames(scheduler, "a", codes, {"stream": True})
     assert scheduler.stream_states["a"].audio_parts == []
-    tail, result = scheduler.on_stream_done("a")
+    tail, result = finish_stream(scheduler, "a")
     streamed.append(decode_waveform(tail.data))
     torch.testing.assert_close(torch.cat(streamed), whole, atol=1e-5, rtol=1e-5)
     assert result.type == "result"
@@ -272,7 +299,7 @@ def test_chunk_ramp_trims_aggregated_chunks_to_the_caller_length(
             )
         )
     assert sum(waveform.shape[-1] for waveform in streamed) == num_samples
-    tail, result = scheduler.on_stream_done("a")
+    tail, result = finish_stream(scheduler, "a")
     assert decode_waveform(tail.data).shape[-1] == 0
     streamed.append(decode_waveform(tail.data))
     reply = torch.cat(streamed)
@@ -303,7 +330,7 @@ def test_chunk_ramp_keeps_interleaved_requests_apart(random_codec: MimiCodec) ->
 
     for rid in codes:
         parts = streamed[rid]
-        messages = scheduler.on_stream_done(rid)
+        messages = finish_stream(scheduler, rid)
         parts.extend(decode_waveform(message.data) for message in messages[:-1])
         assert messages[-1].type == "result"
         torch.testing.assert_close(torch.cat(parts), whole[rid], atol=1e-5, rtol=1e-5)
@@ -323,7 +350,7 @@ def test_chunk_ramp_pending_frames_die_with_a_cancelled_request(
     # note (nightdecode): Cancellation discards frames below the decode threshold.
     assert push_frames(scheduler, "a", codes[1:3]) == []
     scheduler.clear_stream_state("a")
-    assert scheduler.on_stream_done("a") == []
+    assert finish_stream(scheduler, "a") == []
     assert "a" not in scheduler.stream_states
 
     start_stream(scheduler, "b")
@@ -349,7 +376,7 @@ def test_chunk_ramp_matches_whole_decode_past_the_attention_ring(
     streamed: list[torch.Tensor] = []
     for frame in range(frame_count):
         streamed.extend(push_frames(scheduler, "reply", codes[frame : frame + 1]))
-    *tail, result = scheduler.on_stream_done("reply")
+    *tail, result = finish_stream(scheduler, "reply")
     streamed.extend(decode_waveform(message.data) for message in tail)
     torch.testing.assert_close(torch.cat(streamed), whole, atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(
@@ -394,6 +421,8 @@ def test_stream_done_flushes_tail_in_either_payload_order(
     messages = drain_messages(scheduler)
     assert len(messages) == 3
     scheduler.handle_stream_done("reply")
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()
     tail = drain_messages(scheduler)
     expected_types = ["stream"] if frame_count > 9 else []
     assert [message.type for message in tail] == expected_types + (
@@ -417,7 +446,7 @@ def test_stream_done_flushes_tail_in_either_payload_order(
     assert "reply" not in scheduler.stream_states
 
 
-def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monkeypatch):
+def test_platforms_without_codec_decode_graphs_batch_eagerly(random_codec, monkeypatch):
     monkeypatch.setattr(
         mimi_decode_graph,
         "current_platform",
@@ -427,10 +456,44 @@ def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monke
         ),
     )
     slots = MimiDecodeSlots(
-        random_codec, num_slots=8, max_graph_frames=1, max_chunk_frames=1
+        random_codec,
+        num_slots=8,
+        max_batch_size=8,
+        max_graph_frames=1,
+        max_chunk_frames=1,
     )
-    assert slots.graphs == {} and slots.decode_states == []
-    assert slots.acquire().index is None
+    assert slots.graphs == {}
+    assert [slots.acquire() for _ in range(8)] == list(range(8))
+    assert slots.acquire() is None
+    codes = torch.randint(
+        0, 2048, (2, 8, 1), generator=torch.Generator().manual_seed(5)
+    )
+    assert slots.decode_step(codes, [3, 6]).shape == (2, 1, SAMPLES_PER_FRAME)
+
+
+def decode_plan(
+    slots: MimiDecodeSlots,
+    codes: torch.Tensor,
+    plan: list[tuple[tuple[int, ...], int]],
+    slot_of_stream: list[int],
+) -> list[torch.Tensor]:
+    """Run each (streams, width) step of the plan on the streams' slots."""
+    parts: list[list[torch.Tensor]] = [[] for _ in slot_of_stream]
+    starts = [0] * len(slot_of_stream)
+    for streams, width in plan:
+        chunk = torch.stack(
+            [
+                codes[stream, :, starts[stream] : starts[stream] + width]
+                for stream in streams
+            ]
+        )
+        waveform = slots.decode_step(
+            chunk, [slot_of_stream[s] for s in streams]
+        ).clone()
+        for row, stream in enumerate(streams):
+            parts[stream].append(waveform[row])
+            starts[stream] += width
+    return [torch.cat(stream_parts, -1) for stream_parts in parts]
 
 
 @pytest.mark.accelerator
@@ -438,36 +501,58 @@ def test_platforms_without_codec_decode_graphs_keep_no_slots(random_codec, monke
     not current_platform.enable_codec_decode_graph(),
     reason="the platform does not capture codec decode graphs",
 )
-def test_graph_replay_matches_eager_decode_across_slot_reuse(random_codec):
+def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_codec):
     codec = random_codec.cuda()
-    slots = MimiDecodeSlots(codec, num_slots=2, max_graph_frames=2, max_chunk_frames=3)
-    assert len(slots.graphs) == 4
+    graphed = MimiDecodeSlots(
+        codec, num_slots=3, max_batch_size=2, max_graph_frames=2, max_chunk_frames=3
+    )
+    assert set(graphed.graphs) == {(1, 1), (1, 2), (2, 1), (2, 2)}
+    eager = MimiDecodeSlots(
+        codec, num_slots=3, max_batch_size=2, max_graph_frames=0, max_chunk_frames=3
+    )
+    assert eager.graphs == {}
     codes = torch.randint(
-        0, 2048, (2, 8, 140), generator=torch.Generator().manual_seed(6)
+        0, 2048, (3, 8, 140), generator=torch.Generator().manual_seed(6)
     ).cuda()
-    # Note (wilsonzheng0327): Width 3 has no graph and runs eager on the same slot;
-    # 140 frames are 280 steps, past the transformer's 250-step ring.
-    widths = [1, 2, 1, 3] * 20
+    # Note (nightdecode): Streams advance at different rates, so rows in one step
+    # sit at different offsets. Width 3 and the batch of three have no graph and
+    # run eager on the same slots; stream 2 takes 140 frames, 280 steps, past the
+    # transformer's 250-step ring.
+    plan = [
+        ((0, 1), 1),
+        ((0,), 2),
+        ((0, 1, 2), 1),
+        ((1, 2), 3),
+        ((2,), 1),
+        ((0, 2), 2),
+    ] * 20
     expected = []
-    for stream in range(2):
+    for stream in range(3):
         state = codec.init_decode_state(batch_size=1, max_chunk_frames=3)
         parts, start = [], 0
-        for width in widths:
-            chunk = codes[stream : stream + 1, :, start : start + width]
-            parts.append(codec.decode_step(chunk, state))
-            start += width
+        for streams, width in plan:
+            if stream in streams:
+                chunk = codes[stream : stream + 1, :, start : start + width]
+                parts.append(codec.decode_step(chunk, state)[0])
+                start += width
+            else:
+                pass
         expected.append(torch.cat(parts, -1))
 
     for _ in range(2):
-        pair = [slots.acquire(), slots.acquire()]
-        assert {slot.index for slot in pair} == {0, 1}
-        replayed = [[], []]
-        start = 0
-        for width in widths:
-            for stream, slot in enumerate(pair):
-                chunk = codes[stream : stream + 1, :, start : start + width]
-                replayed[stream].append(slots.decode_step(chunk, slot).clone())
-            start += width
-        for stream, slot in enumerate(pair):
-            assert torch.equal(torch.cat(replayed[stream], -1), expected[stream])
-            slots.release(slot)
+        outputs = {}
+        for name, slots in (("graphed", graphed), ("eager", eager)):
+            slot_of_stream = [slots.acquire() for _ in range(3)]
+            outputs[name] = decode_plan(slots, codes, plan, slot_of_stream)
+            # Released in stream order, so the next round maps the streams onto
+            # the slots in reverse.
+            for slot_index in slot_of_stream:
+                slots.release(slot_index)
+        for stream in range(3):
+            # The same steps replayed and run eagerly agree bit for bit.
+            assert torch.equal(outputs["graphed"][stream], outputs["eager"][stream])
+            # A batch of one rounds differently (TF32 convolutions pick kernels
+            # per shape), so against it only a row decoding the wrong stream,
+            # an error the size of the signal, is ruled out.
+            error = (outputs["graphed"][stream] - expected[stream]).abs().max()
+            assert error <= 0.05 * expected[stream].abs().max()

@@ -91,8 +91,8 @@ agree on it with a maintainer first.
 
 **CI and style**
 
-- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-ci`
-  label. Both Mac CI jobs must pass on a real run.
+- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci`
+  or `run-all-ci` label. Both Mac CI jobs must pass on a real run.
 - Run pre-commit and follow
   [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
 - Update `Voxt/backend/README.md`. Follow the PR format of

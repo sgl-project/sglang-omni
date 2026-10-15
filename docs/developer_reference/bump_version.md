@@ -323,15 +323,12 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-GPU CI needs the `run-ci` label. Model selectors choose presets within each
-family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
-`run-qwen3-tts-custom-voice`), ASR (`run-fun-asr`, `run-qwen3-asr`,
-`run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
-with `/tag-and-rerun-ci <selectors>`, for example
-`/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
-Qwen3-Omni. The
-selectors within a family are exclusive, so each preset gets its own run on
-the new image before merge.
+Run CI with `run-all-ci`. A stage without a model label draws its model at
+random, so give each preset its own run on the new image before merge: keep
+`run-all-ci` and add one model label per stage, for example
+`run-tts-moss-tts-local-transformer-v1.5`, `run-asr-fun-asr-nano-2512` and
+`run-omni-minicpm-o-4.5`. The model labels within a stage are exclusive. The
+CI section of the pull request template lists every label.
 
 After the merge, everyone pulls the new image and rebuilds their
 virtualenvs; an environment built against the old pins does not run `main`.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 import yaml
@@ -23,6 +23,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.process import exit_without_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,14 @@ logger = logging.getLogger(__name__)
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 
 
-def launch_server(*args: object, **kwargs: object) -> object:
+def launch_server(*args: object, **kwargs: object) -> NoReturn:
     from sglang_omni.serve.launcher import launch_server as _launch_server
 
-    return _launch_server(*args, **kwargs)
+    _launch_server(*args, **kwargs)
+    # note (Richard Wang): the launcher has stopped the pipeline and joined
+    # every stage by now. Tearing down the modules and objects the CLI
+    # imported took about a second more, and the server's stop waited for it.
+    exit_without_teardown(0)
 
 
 def validate_colocate_cli_request(
