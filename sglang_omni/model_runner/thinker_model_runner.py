@@ -19,6 +19,10 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -65,17 +69,27 @@ class ThinkerModelRunner(ModelRunner):
 
         omni_result = self.inject_multimodal_embeds(forward_batch, schedule_batch)
         if omni_result is not None and omni_result[0] is not None:
-            input_embeds, ds_embeds, vis_masks = omni_result
-            # note (jun): SGLang owns ordinary input embeds and attention
-            # dispatch; deepstack uses the custom forward because ForwardBatch
-            # cannot carry its residual embeddings.
-            if ds_embeds is None:
+            input_embeds, deepstack_visual_embeds, visual_pos_masks = omni_result
+            if deepstack_visual_embeds is None:
                 forward_batch.input_embeds = input_embeds
                 return None
             else:
                 pass
+            if getattr(self.outer_model, "enable_deepstack_prefill_graph", False):
+                attach_omni_prefill_inputs(
+                    forward_batch,
+                    OmniPrefillInputs(
+                        input_embeds=input_embeds,
+                        input_deepstack_embeds=self.compose_deepstack_inputs(
+                            input_embeds, deepstack_visual_embeds, visual_pos_masks
+                        ),
+                    ),
+                )
+                return None
+            else:
+                pass
             return self.forward_with_omni_embeds(
-                forward_batch, input_embeds, ds_embeds, vis_masks
+                forward_batch, input_embeds, deepstack_visual_embeds, visual_pos_masks
             )
         else:
             pass
@@ -438,6 +452,28 @@ class ThinkerModelRunner(ModelRunner):
     # Custom forward with multimodal embeddings + deepstack
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def compose_deepstack_inputs(
+        input_embeds: torch.Tensor,
+        deepstack_visual_embeds: list[torch.Tensor] | None,
+        visual_pos_masks: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if deepstack_visual_embeds is None:
+            return None
+        else:
+            pass
+        assert visual_pos_masks is not None
+        layer_embeddings = [
+            embeddings.to(device=input_embeds.device, dtype=input_embeds.dtype)
+            for embeddings in deepstack_visual_embeds
+        ]
+        visual_deepstack_embeddings = torch.cat(layer_embeddings, dim=-1)
+        input_deepstack_embeddings = input_embeds.new_zeros(
+            (input_embeds.shape[0], visual_deepstack_embeddings.shape[-1])
+        )
+        input_deepstack_embeddings[visual_pos_masks] = visual_deepstack_embeddings
+        return input_deepstack_embeddings
+
     def forward_with_omni_embeds(
         self,
         forward_batch: ForwardBatch,
@@ -456,21 +492,9 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
 
-        ds_input = None
-        if deepstack_visual_embeds is not None and visual_pos_masks is not None:
-            device = input_embeds.device
-            dtype = input_embeds.dtype
-            layer_tensors = [
-                t.to(device=device, dtype=dtype) for t in deepstack_visual_embeds
-            ]
-            ds_input = torch.cat(layer_tensors, dim=-1)
-            full_ds = torch.zeros(
-                input_embeds.shape[0], ds_input.shape[-1], device=device, dtype=dtype
-            )
-            full_ds[visual_pos_masks] = ds_input
-            ds_input = full_ds
-        else:
-            pass
+        input_deepstack_embeds = self.compose_deepstack_inputs(
+            input_embeds, deepstack_visual_embeds, visual_pos_masks
+        )
 
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
@@ -478,7 +502,7 @@ class ThinkerModelRunner(ModelRunner):
                 positions=positions,
                 forward_batch=forward_batch,
                 input_embeds=input_embeds,
-                input_deepstack_embeds=ds_input,
+                input_deepstack_embeds=input_deepstack_embeds,
             )
 
             logits_output = outer.logits_processor(

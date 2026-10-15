@@ -57,3 +57,28 @@ def test_attach_rejects_token_row_mismatch() -> None:
 
     with pytest.raises(RuntimeError, match="extend-window tokens"):
         attach_omni_prefill_inputs(forward_batch, make_payload(rows=4))
+
+
+@pytest.mark.parametrize(
+    "shape,dtype,device",
+    [
+        ((3, 24), torch.float32, "cpu"),
+        ((4, 3, 8), torch.float32, "cpu"),
+        ((4, 24), torch.float64, "cpu"),
+        ((4, 24), torch.float32, "meta"),
+    ],
+    ids=["token-rows", "rank", "dtype", "device"],
+)
+def test_attach_rejects_invalid_deepstack_inputs(
+    shape: tuple[int, ...], dtype: torch.dtype, device: str
+) -> None:
+    forward_batch = make_forward_batch()
+    with pytest.raises(ValueError, match="DeepStack inputs"):
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=torch.ones(4, 8),
+                input_deepstack_embeds=torch.ones(shape, dtype=dtype, device=device),
+            ),
+        )
+    assert get_omni_prefill_inputs(forward_batch) is None

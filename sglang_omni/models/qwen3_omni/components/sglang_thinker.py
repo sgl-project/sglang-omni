@@ -27,6 +27,7 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.runner_utils.buffers import PrefillInputBuffers
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
@@ -102,6 +103,20 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
     ) -> None:
         super().__init__()
         self.root_config = config
+        enable_deepstack_graph = getattr(
+            config, "enable_deepstack_prefill_graph", False
+        )
+        if not isinstance(enable_deepstack_graph, bool):
+            raise ValueError("enable_deepstack_prefill_graph must be boolean")
+        elif (
+            enable_deepstack_graph
+            and "input_deepstack_embeds" not in PrefillInputBuffers.__dataclass_fields__
+        ):
+            raise RuntimeError(
+                "DeepStack prefill graphs require the native DeepStack replay slot"
+            )
+        else:
+            self.enable_deepstack_prefill_graph = enable_deepstack_graph
         self.thinker_config = getattr(config, "thinker_config", config)
         self.config = getattr(self.thinker_config, "text_config", self.thinker_config)
         self.is_mrope_enabled = config_uses_mrope(self.config)
@@ -145,6 +160,12 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
         # Existing Qwen thinker runner/hook code expects model.thinker.model.
         return self
+
+    def get_num_deepstack_embeddings(self) -> int:
+        if self.enable_deepstack_prefill_graph:
+            return len(self.model.deepstack_embed_to_decoder_layer)
+        else:
+            return 0
 
     def forward(
         self,

@@ -1,52 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Omni-owned prefill inputs for breakable prefill CUDA graphs.
-
-Runner-composed embeddings must remain off ForwardBatch.input_embeds
-until after prefill-CUDA-graph admission because upstream rejects batches
-carrying that field. They also must not reuse ForwardBatch.mm_inputs,
-whose upstream contract belongs to multimodal request inputs. This module
-therefore attaches the embeddings to a private, short-lived Omni sidecar.
-SGLModelRunner._extend_forward_kwargs moves them into explicit model
-forward kwargs after admission, and the Omni runner clears the sidecar after
-the forward completes.
-"""
+"""Omni-owned conditioning passed to model forward after graph admission."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import torch
-
-if TYPE_CHECKING:
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-else:
-    pass
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 _OMNI_PREFILL_INPUTS_ATTR = "_sglang_omni_prefill_inputs"
 
 
 @dataclass(frozen=True)
 class OmniPrefillInputs:
-    """Per-forward prefill conditioning composed by an omni model runner.
-
-    input_embeds covers exactly the extend-window tokens of the batch, in
-    model dtype. Request identity remains owned by ForwardBatch.rids and is
-    forwarded separately by SGLModelRunner.
-
-    input_embeds_are_projected stays None for models whose forward does
-    not declare the parameter; only a runner composing embeddings already in
-    model space sets it, and only then is it forwarded.
-    """
+    """Model-dtype embeddings covering the current extend-window tokens."""
 
     input_embeds: torch.Tensor
     input_embeds_are_projected: bool | None = None
+    input_deepstack_embeds: torch.Tensor | None = None
 
 
 def attach_omni_prefill_inputs(
     forward_batch: ForwardBatch, prefill_inputs: OmniPrefillInputs
 ) -> None:
-    """Attach prefill_inputs without modifying upstream-owned fields."""
+    """Attach conditioning without changing graph-admission inputs."""
     if forward_batch.replace_embeds is not None:
         raise RuntimeError(
             "OmniPrefillInputs conflicts with forward_batch.replace_embeds"
@@ -59,6 +36,19 @@ def attach_omni_prefill_inputs(
             "OmniPrefillInputs embeddings must cover the extend-window tokens: "
             f"embeds rows={prefill_inputs.input_embeds.shape[0]}, "
             f"batch tokens={num_tokens}"
+        )
+    else:
+        pass
+    input_deepstack_embeds = prefill_inputs.input_deepstack_embeds
+    if input_deepstack_embeds is not None and (
+        input_deepstack_embeds.ndim != 2
+        or input_deepstack_embeds.shape[0] != num_tokens
+        or input_deepstack_embeds.dtype != prefill_inputs.input_embeds.dtype
+        or input_deepstack_embeds.device != prefill_inputs.input_embeds.device
+    ):
+        raise ValueError(
+            "DeepStack inputs must be a matrix matching the embedding token rows, "
+            "dtype and device"
         )
     else:
         pass

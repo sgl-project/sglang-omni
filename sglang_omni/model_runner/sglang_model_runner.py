@@ -349,6 +349,10 @@ class SGLModelRunner(ModelRunner):
         else:
             pass
         kwargs["input_embeds"] = prefill_inputs.input_embeds
+        if prefill_inputs.input_deepstack_embeds is not None:
+            kwargs["input_deepstack_embeds"] = prefill_inputs.input_deepstack_embeds
+        else:
+            pass
         kwargs["omni_prefill_rids"] = forward_batch.rids
         if prefill_inputs.input_embeds_are_projected is not None:
             kwargs["input_embeds_are_projected"] = (

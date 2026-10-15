@@ -27,6 +27,7 @@ AUDIO_ID = 53
 
 def make_runner() -> Qwen3OmniThinkerModelRunner:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
+    runner.outer_model = SimpleNamespace(enable_deepstack_prefill_graph=False)
     runner.tp_worker = SimpleNamespace(record_custom_prefill_eager=lambda: None)
     torch.manual_seed(0)
     runner.embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
@@ -103,6 +104,7 @@ def test_custom_prefill_forward_records_eager_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
+    runner.outer_model = SimpleNamespace(enable_deepstack_prefill_graph=False)
     calls: list[str] = []
     runner.tp_worker = SimpleNamespace(
         record_custom_prefill_eager=lambda: calls.append("recorded")
