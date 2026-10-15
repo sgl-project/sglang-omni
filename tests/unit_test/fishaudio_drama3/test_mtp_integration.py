@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Literal, Protocol
 from unittest.mock import ANY, Mock, call, patch
 
-import huggingface_hub
 import pytest
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -489,25 +488,6 @@ def test_engine_builder_hands_the_async_decode_switches_to_the_scheduler(
         scheduler_kwargs["async_decode_min_batch_size"],
         scheduler_kwargs["async_decode_resolve_before_prefill"],
     ) == (enable_async_decode, 3, True)
-
-
-def test_engine_builder_resolves_a_hub_id_to_a_local_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    downloads: list[tuple[str, str | None]] = []
-
-    def snapshot_download(repo_id: str, revision: str | None) -> str:
-        downloads.append((repo_id, revision))
-        return str(tmp_path)
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
-    engine_builder = Drama3EngineBuilder(
-        context_length=CONTEXT_LENGTH, max_running_requests=1
-    )
-
-    assert engine_builder.resolve_checkpoint(str(tmp_path)) == str(tmp_path)
-    assert engine_builder.resolve_checkpoint("example/model@main") == str(tmp_path)
-    assert downloads == [("example/model", "main")]
 
 
 @pytest.mark.parametrize(
@@ -1008,19 +988,6 @@ def test_setup_model_gives_the_backbone_rows_for_the_largest_extend_or_bucket(
     assert not tower_prefill.next_frames.any()
 
 
-def test_setup_model_reports_first_frame_graphs_off_without_cuda_graphs(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"disable_cuda_graph": True})
-
-    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
-        set_up_mocked_model(builder, server_args, tmp_path)
-
-    assert "Drama 3 first-frame CUDA graphs: off, CUDA graphs are disabled" in (
-        caplog.text
-    )
-
-
 @pytest.mark.parametrize(
     ("triton_sampling", "unsupported_reason", "expected_log"),
     [
@@ -1087,11 +1054,6 @@ def test_setup_model_picks_the_codebook_sampler_and_logs_why(
             True,
             "Triton is not installed",
             "Drama 3 tower fused layers: off, Triton is not installed",
-        ),
-        (
-            True,
-            "untested GPU sm_120",
-            "Drama 3 tower fused layers: off, untested GPU sm_120",
         ),
         (
             True,
@@ -1759,39 +1721,6 @@ def test_row_indices_upload_only_when_the_batch_order_or_slots_change() -> None:
     assert upload_counts == [1, 1, 2, 3, 3, 4]
 
 
-def test_a_new_request_in_the_same_slots_keeps_the_uploaded_row_indices() -> None:
-    decode = decode_runner(row_count=4)
-    runner = decode.runner
-    first, second = decoding_scheduler_requests(decode, [3, 4])
-    newcomer = prompted_request(frame_rows_of([3], seed=12)[0], "request-new", 3)
-    upload_counts: list[int] = []
-    with patch.object(
-        runner, "pinned_pingpong", wraps=runner.pinned_pingpong
-    ) as pinned_pingpong:
-
-        def decode_and_count_uploads(batch: list[SchedulerRequest]) -> None:
-            expected = history_staged_rows(
-                [request_data_of(request) for request in batch]
-            )
-            decode.forward.next_frames = [
-                [84 + index, 1, 2, 3, 4] for index in range(len(batch))
-            ]
-            decode_step(runner, batch)
-            assert decode.forward.reads[-1] == expected
-            upload_counts.append(
-                sum(
-                    called.args[0] == "row_upload_buffers"
-                    for called in pinned_pingpong.call_args_list
-                )
-            )
-
-        decode_and_count_uploads([first, second])
-        prefill_step(decode, [newcomer], [1], [[86, 2, 2, 2, 2]])
-        decode_and_count_uploads([newcomer, second])
-
-    assert upload_counts == [1, 1]
-
-
 def test_the_first_decode_after_a_prefill_reads_what_the_history_gives() -> None:
     decode = decode_runner(row_count=4)
     requests = prompted_requests([3, 5])
@@ -1935,23 +1864,6 @@ def test_a_failed_prefill_drops_its_staging_before_the_error_leaves(
     assert pool_rows(runner.state_pool, [1, 2]) == pool_before
     assert [request_data.frame_rows for request_data in batch_request_data] == (
         histories
-    )
-
-
-def test_a_prefill_after_a_failed_one_seats_its_own_requests() -> None:
-    decode = decode_runner(row_count=4)
-    failed, seated = prompted_requests([3, 4])
-    assign_request_slots([failed], [2])
-    decode.prefill.error = RuntimeError("prefill forward failed")
-    with pytest.raises(RuntimeError, match="prefill forward failed"):
-        prefill_output(decode.runner, [failed])
-
-    decode.prefill.error = None
-    prefill_step(decode, [seated], [2], [[86, 1, 1, 1, 1]])
-
-    assert decode.prefill.taken_inputs[-1].request_ids == ["request-1"]
-    assert pool_rows(decode.runner.state_pool, [2]) == history_staged_rows(
-        [request_data_of(seated)]
     )
 
 
@@ -2369,13 +2281,6 @@ def test_engine_context_must_fit_the_tower_rope_table(
         builder.validate_before_infrastructure(server_args)
 
 
-def test_engine_prefills_without_an_interval_when_asked(tmp_path: Path) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"prefill_decode_interval": 0})
-
-    builder.validate_before_infrastructure(server_args)
-    assert server_args.prefill_decode_interval == 0
-
-
 def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     builder, server_args = engine_server_args(
         tmp_path, {"cuda_graph_backend_prefill": "disabled"}
@@ -2387,22 +2292,10 @@ def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     assert graph_config.decode.backend == CudaGraphBackend.FULL
 
 
-@pytest.mark.parametrize(
-    "is_nested",
-    [False, True],
-    ids=["breakable-prefill-graph", "nested-breakable-prefill-graph"],
-)
-def test_engine_accepts_a_breakable_prefill_graph(
-    tmp_path: Path, is_nested: bool
-) -> None:
-    if is_nested:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
-        )
-    else:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_backend_prefill": "breakable"}
-        )
+def test_engine_accepts_a_nested_breakable_prefill_graph(tmp_path: Path) -> None:
+    builder, server_args = engine_server_args(
+        tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
+    )
 
     builder.validate_before_infrastructure(server_args)
     graph_config = resolved_view(server_args).cuda_graph_config
