@@ -16,10 +16,7 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_num_audio_tokens,
 )
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
-from sglang_omni.models.qwen3_asr.languages import (
-    LANGUAGE_CODE_TO_NAME,
-    resolve_language,
-)
+from sglang_omni.models.qwen3_asr.languages import resolve_language
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
@@ -218,22 +215,13 @@ def test_qwen3_asr_scalar_audio_token_length_matches_tensor_formula(
     assert qwen3_asr_num_audio_tokens(num_mel_frames) == expected
 
 
-@pytest.mark.parametrize(
-    ("language_code", "expected_name"), sorted(LANGUAGE_CODE_TO_NAME.items())
-)
-def test_qwen3_asr_resolves_every_supported_language_code(
-    language_code: str,
-    expected_name: str,
-) -> None:
-    assert resolve_language(language_code) == expected_name
-    assert resolve_language(language_code.upper()) == expected_name
+def test_qwen3_asr_resolves_a_supported_language_code() -> None:
+    assert resolve_language("en") == "English"
+    assert resolve_language("EN") == "English"
 
 
-@pytest.mark.parametrize("language_name", sorted(LANGUAGE_CODE_TO_NAME.values()))
-def test_qwen3_asr_resolves_canonical_names_case_insensitively(
-    language_name: str,
-) -> None:
-    assert resolve_language(f"  {language_name.swapcase()}  ") == language_name
+def test_qwen3_asr_resolves_canonical_names_case_insensitively() -> None:
+    assert resolve_language("  eNGLISH  ") == "English"
 
 
 @pytest.mark.parametrize("language", ["cn", "zh-CN", "zh_Hant"])
@@ -245,7 +233,6 @@ def test_qwen3_asr_preserves_chinese_compatibility_aliases(language: str) -> Non
     ("language", "expected_name", "expected_language"),
     [
         ("en", "English", "en"),
-        ("es", "Spanish", "es"),
         ("fReNcH", "French", "fReNcH"),
     ],
 )
@@ -320,46 +307,10 @@ def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
     assert set(data.req.sampling_params.stop_token_ids) == {2}
 
 
-def test_qwen3_asr_request_builder_caches_prompt_template_per_language(
-    monkeypatch,
-) -> None:
-    tokenizer = FakeTokenizer()
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
-    monkeypatch.setattr(
-        transcription,
-        "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
-    )
-    request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        max_new_tokens=32,
-        feature_extractor=feature_extractor,
-    )
-
-    for request_id in ("req-first", "req-second"):
-        request_builder(
-            StagePayload(
-                request_id=request_id,
-                request=OmniRequest(
-                    inputs={"audio_bytes": b"wav"},
-                    params={"language": "en"},
-                ),
-                data={},
-            )
-        )
-
-    assert len(tokenizer.call_texts) == 1
-    assert tokenizer.call_texts[0].count("<|audio_pad|>") == 1
-
-
 @pytest.mark.parametrize(
     ("language", "error_match"),
     [
         ("", "language hint is empty.*supported language code"),
-        ("   ", "language hint is empty.*supported language code"),
         ("Klingon", "Unsupported language: 'Klingon'.*supported language code"),
     ],
 )

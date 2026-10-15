@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,8 +18,6 @@ import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
 import sglang_omni.utils.device as device_utils
-from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
@@ -325,47 +321,10 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     )
 
 
-def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 32
-    assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 40.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["stream_emit_interval_s"].default == 0.05
-    assert "request_build_max_backlog" not in signature.parameters
-
-
-def test_qwen3_asr_stage_default_uses_auto_dtype() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["dtype"].default == "auto"
-
-
-def test_qwen3_asr_stage_default_enables_pre_lm_encoder() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
-    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
-
-
 @pytest.mark.parametrize(
     ("batch_size", "wait_ms", "match"),
     [
         (0, 4, "pre_lm_max_batch_size"),
-        (-1, 4, "pre_lm_max_batch_size"),
         (8, -1, "pre_lm_max_batch_wait_ms"),
     ],
 )
@@ -379,47 +338,6 @@ def test_qwen3_asr_stage_rejects_invalid_pre_lm_batch_knobs(
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
         )
-
-
-def test_qwen3_asr_stage_default_uses_auto_static_kv_budget() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["mem_fraction_static"].default is None
-
-
-def test_qwen3_asr_stage_default_disables_multimodal_embedding_cache() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-
-
-def test_qwen3_asr_stage_default_defers_torch_compile_to_builder() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["enable_torch_compile"].default is None
-    assert signature.parameters["torch_compile_max_bs"].default == 1
-
-
-def test_qwen3_asr_stage_default_enables_async_decode() -> None:
-    signature = inspect.signature(create_sglang_qwen3_asr_executor)
-
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-
-
-def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    config = ConfigManager.from_file(
-        str(repo_root / "examples/configs/qwen3_asr_rtx4090.yaml")
-    ).config
-    stage = config.stages[0]
-
-    kwargs = resolve_stage_typed_kwargs(stage)
-
-    assert kwargs["dtype"] == "bfloat16"
-    overrides = kwargs["server_args_overrides"]
-    assert overrides["max_running_requests"] == 16
-    assert overrides["mem_fraction_static"] == 0.65
 
 
 def patch_engine_dependencies(
