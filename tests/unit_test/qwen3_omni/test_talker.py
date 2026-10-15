@@ -1103,6 +1103,54 @@ def test_chunk_gate_ignores_prefill_batches() -> None:
     assert scheduler.chunk_wait_steps == 0
 
 
+def test_no_op_initialize_request_stream_state_prevents_replay() -> None:
+    """Talker's _initialize_request_stream_state must not replay prefetched chunks.
+
+    Comparison test: the base OmniScheduler initializer would walk prefetched
+    chunks and append them; the talker override is deliberately a no-op.
+    """
+    scheduler = object.__new__(QwenTalkerScheduler)
+
+    captured_appends: list[Any] = []
+    chunks_consumed_at_build = [
+        SimpleNamespace(data=torch.tensor([1.0]), metadata={}),
+        SimpleNamespace(data=torch.tensor([2.0]), metadata={}),
+    ]
+    req_data = SimpleNamespace(
+        pending_text_queue=deque(),
+        thinker_chunks_done=False,
+    )
+    payload = SimpleNamespace(
+        prefetched_chunks=chunks_consumed_at_build,
+        prefetched_stream_done=False,
+    )
+
+    scheduler.initialize_request_stream_state(req_data, payload)
+
+    # No-op override: no rows appended for chunks consumed at build time.
+    assert list(req_data.pending_text_queue) == []
+
+    # Comparison: the base initializer would have appended them, which would be wrong.
+    base_req_data = SimpleNamespace(
+        pending_text_queue=deque(),
+        thinker_chunks_done=False,
+    )
+
+    def record_append(_self: Any, req: Any, chunk: Any) -> None:
+        captured_appends.append(chunk)
+
+    base_scheduler = object.__new__(QwenTalkerScheduler)
+    base_scheduler.append_stream_chunk = record_append.__get__(
+        base_scheduler, QwenTalkerScheduler
+    )
+    base_scheduler.mark_stream_done = lambda req: None
+    # Call the upstream base implementation directly.
+    OmniScheduler.initialize_request_stream_state(
+        base_scheduler, base_req_data, payload
+    )
+    assert len(captured_appends) == len(chunks_consumed_at_build)
+
+
 def test_stream_done_after_partial_build_marks_thinker_done() -> None:
     """_on_stream_done after an early build flips the flag and appends EOS once."""
     builder = object.__new__(TalkerPrefillBuilder)
