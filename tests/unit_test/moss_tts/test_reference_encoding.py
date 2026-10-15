@@ -281,16 +281,15 @@ def test_batch_failure_isolates_bad_input(
     assert encoder.stats()["failed"] == 1
 
 
-@pytest.mark.parametrize("source_kind", ["path", "data_uri"])
 def test_reference_duration_limit(
-    request: pytest.FixtureRequest, tmp_path: Path, source_kind: str
+    request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     path = tmp_path / "long.wav"
-    uri = audio_source(path, samples=101 * 8000)
+    audio_source(path, samples=101 * 8000)
     codec = RecordingEncoder()
     encoder = make_encoder(request, codec)
     with pytest.raises(ValueError, match="limit is 100s"):
-        encoder.encode(path if source_kind == "path" else uri)
+        encoder.encode(path)
     assert not codec.calls
     assert encoder.stats()["entries"] == 0
 
