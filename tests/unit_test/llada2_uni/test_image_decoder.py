@@ -29,8 +29,8 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.llada2_uni import stages
-from sglang_omni.models.llada2_uni.components import decoder_runtime
 from sglang_omni.models.llada2_uni.components import common as common_module
+from sglang_omni.models.llada2_uni.components import decoder_runtime
 from sglang_omni.models.llada2_uni.components import image_decoder as decoder_module
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
@@ -735,7 +735,9 @@ def test_thinking_stops_at_boundary_then_generates_image(
         text_request.req._task_kind == "thinking"
     )  # noqa: leading-underscore  # DLLM protocol
     assert preprocessor.boi_id in text_request.req.eos_token_ids
-    assert not hasattr(text_request.req, "_uncond_input_ids")
+    assert (
+        text_request.req._uncond_input_ids is None
+    )  # noqa: leading-underscore  # DLLM protocol
 
     trace = "A red sailboat."
     text_request.output_ids = (
@@ -759,7 +761,9 @@ def test_thinking_stops_at_boundary_then_generates_image(
             image_request.req.origin_input_ids
         )
     else:
-        assert not hasattr(image_request.req, "_uncond_input_ids")
+        assert (
+            image_request.req._uncond_input_ids is None
+        )  # noqa: leading-underscore  # DLLM protocol
     image_request.output_ids = [IMAGE_TOKEN_OFFSET + 7] * 1024
     output = finish(image_request)
     state = LLaDA2UniPipelineState.from_dict(output.data)
