@@ -100,6 +100,75 @@ def test_provenance_labels_server_configuration_as_declared(
     assert result["dependency_inventory"] == []
 
 
+def collect_minimal_provenance(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Provenance with the host probes stubbed out, leaving only torch."""
+    monkeypatch.setattr(runtime_metrics.importlib.metadata, "distributions", lambda: [])
+    monkeypatch.setattr(runtime_metrics, "_command", lambda *_args: None)
+    monkeypatch.setattr(runtime_metrics, "_first_prefixed_line", lambda *_args: None)
+    monkeypatch.setattr(runtime_metrics, "_package_version", lambda _name: None)
+    return runtime_metrics.collect_benchmark_provenance(
+        model_id="model",
+        model_revision=None,
+        dataset_id="dataset",
+        dataset_revision=None,
+        launch_command=None,
+        server_config={},
+    )
+
+
+def test_provenance_records_the_xpu_driver_and_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale Level Zero driver changes results on the same torch wheel, and
+    nvidia-smi has no counterpart on this hardware, so the driver version has to
+    be recorded for an XPU benchmark row to mean anything.
+    """
+    import torch
+
+    fake_xpu = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 1,
+        get_device_properties=lambda index: SimpleNamespace(
+            name="Intel(R) Arc(TM) Pro B60 Graphics",
+            driver_version="1.15.38646+6",
+            total_memory=24 * 1024**3,
+            has_subgroup_matrix_multiply_accumulate=True,
+        ),
+    )
+    monkeypatch.setattr(torch, "xpu", fake_xpu)
+    monkeypatch.setattr(torch.version, "xpu", "20260000", raising=False)
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "6,7")
+
+    gpu = collect_minimal_provenance(monkeypatch)["gpu"]
+
+    assert gpu["torch_xpu_build"] == "20260000"
+    assert gpu["ze_affinity_mask"] == "6,7"
+    assert gpu["xpu_devices"] == [
+        {
+            "index": 0,
+            "name": "Intel(R) Arc(TM) Pro B60 Graphics",
+            "driver_version": "1.15.38646+6",
+            "total_memory_bytes": 24 * 1024**3,
+            "has_xmx": True,
+        }
+    ]
+
+
+def test_provenance_reports_no_xpu_metadata_without_a_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch
+
+    monkeypatch.setattr(
+        torch, "xpu", SimpleNamespace(is_available=lambda: False), raising=False
+    )
+
+    gpu = collect_minimal_provenance(monkeypatch)["gpu"]
+
+    assert gpu["torch_xpu_build"] is None
+    assert gpu["xpu_devices"] is None
+
+
 def test_nvml_handle_respects_explicitly_hidden_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

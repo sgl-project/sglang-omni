@@ -76,6 +76,19 @@ UTMOS_BATCH_SIZE = 8
 ReferenceAudioField = Literal["audios", "audio.ref_audio"]
 
 
+def set_scorer_device(device: str, scorer_name: str) -> None:
+    """Pin a scorer to the requested card on whatever accelerator names it.
+
+    A device string without an index names no card to select, so the scorer
+    keeps whichever one is already current.
+    """
+    resolved = torch.device(device)
+    if resolved.type == "cpu" or resolved.index is None:
+        return
+    torch.get_device_module(resolved).set_device(resolved)
+    logger.info(f"Set {scorer_name} device to {device}")
+
+
 # ---------------------------------------------------------------------------
 # WER result persistence
 # ---------------------------------------------------------------------------
@@ -184,9 +197,7 @@ def run_seedtts_similarity(
         for sample in load_seedtts_samples(config.meta, config.max_samples, split=split)
     }
     device = config.device
-    if "cuda" in device:
-        torch.cuda.set_device(device)
-        logger.info(f"Set speaker-similarity CUDA device to {device}")
+    set_scorer_device(device, "speaker-similarity")
 
     # Partition entries up-front. Only rows that have a successful generation
     # AND a readable WAV AND a known reference audio AND a readable reference
@@ -383,9 +394,7 @@ def run_seedtts_utmos(
         )
 
     device = config.device
-    if "cuda" in device:
-        torch.cuda.set_device(device)
-        logger.info(f"Set UTMOS CUDA device to {device}")
+    set_scorer_device(device, "UTMOS")
 
     scorer = UTMOSScorer(device=device)
     scores: list[float] = []
