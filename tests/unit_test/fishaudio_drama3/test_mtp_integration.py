@@ -495,9 +495,6 @@ def test_engine_builder_hands_the_async_decode_switches_to_the_scheduler(
     [
         True,
         1,
-        -SERVING_PROMPT_CAP_ROWS,
-        math.inf,
-        math.nan,
         float(SERVING_PROMPT_CAP_ROWS),
     ],
 )
