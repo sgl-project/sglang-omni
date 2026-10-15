@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections import deque
 from types import SimpleNamespace
 from typing import Any
@@ -2218,36 +2217,6 @@ def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
     assert len(sched_req.data.decode_input_embeds) == 3
     assert len(sched_req.data.pending_feedback_queue) == 0
     assert len(sched_req.data.pending_text_queue) == 0
-
-
-@pytest.mark.benchmark
-@pytest.mark.usefixtures("patch_sampling")
-@pytest.mark.parametrize("seq_len", [256, 2048, 4096])
-def test_build_talker_request_wall_clock(seq_len: int) -> None:
-    """Wall-clock for request build at representative seq_lens."""
-    embeds = torch.randn(seq_len, 2048)
-    ids = torch.arange(seq_len, dtype=torch.long)
-    tokenizer = FakeQwenTokenizer()
-
-    def build():
-        return build_sglang_talker_request(
-            thinker_hidden_states=torch.empty(0),
-            tokenizer=tokenizer,
-            codec_vocab_size=4096,
-            talker_input_embeds=embeds,
-            talker_input_ids=ids,
-            input_embeds_are_projected=True,
-        )
-
-    for _ in range(3):
-        build()
-
-    t0 = time.perf_counter()
-    for _ in range(20):
-        build()
-    mean_ms = (time.perf_counter() - t0) / 20 * 1000
-
-    print(f"\n[seq_len={seq_len}] mean={mean_ms:.2f}ms  floats={seq_len * 2048:,}")
 
 
 def talker_seed_self(
