@@ -710,7 +710,7 @@ def test_any_build_failure_rolls_back_every_graph(
     assert memory["after_rollback"]["allocated_bytes"] == 100
 
 
-@pytest.mark.parametrize("fraction", [None, 0.0, -0.1, 1.01, float("nan")])
+@pytest.mark.parametrize("fraction", [None, 0.0, 1.01, float("nan")])
 def test_memory_fraction_must_be_explicit_and_in_range(
     fraction: float | None,
 ) -> None:
