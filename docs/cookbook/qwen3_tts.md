@@ -408,9 +408,6 @@ sgl-omni serve \
   --port 8000
 ```
 
-Details and the full sweep are in
-[the leading-silence benchmark](../benchmarks/qwen3_tts_leading_silence.md).
-
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model
