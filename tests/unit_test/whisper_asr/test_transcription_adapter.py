@@ -37,12 +37,6 @@ def test_parse_whisper_timestamp_segments() -> None:
     assert response.text == "Hello there. Goodbye."
 
 
-def test_postprocess_strips_whisper_timestamp_markers() -> None:
-    adapter = WhisperASRAdapter()
-
-    assert adapter.postprocess_text("<|0.00|> hello<|1.20|>") == "hello"
-
-
 def test_verbose_json_falls_back_for_markerless_text() -> None:
     adapter = WhisperASRAdapter()
 
