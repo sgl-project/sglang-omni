@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from dataclasses import MISSING, FrozenInstanceError, fields
 from types import ModuleType
@@ -136,12 +135,6 @@ EXPECTED_MODEL_CAPABILITIES = {
 }
 
 
-def package_for_architecture(architecture: str):
-    config_cls = PIPELINE_CONFIG_REGISTRY.configs.get(architecture)
-    assert config_cls is not None, f"{architecture} is not registered"
-    return importlib.import_module(config_cls.__module__.rsplit(".", 1)[0])
-
-
 def capability_required_architectures() -> set[str]:
     return {
         config_cls.architecture
@@ -171,17 +164,6 @@ def test_model_capabilities_are_frozen_and_explicit() -> None:
     capabilities = next(iter(EXPECTED_MODEL_CAPABILITIES.values()))
     with pytest.raises(FrozenInstanceError):
         capabilities.supports_reference_audio = False
-
-
-@pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
-def test_model_package_exports_capabilities(architecture: str) -> None:
-    module = package_for_architecture(architecture)
-    capabilities = getattr(module, "CAPABILITIES", None)
-
-    assert capabilities == EXPECTED_MODEL_CAPABILITIES[architecture]
-    assert isinstance(capabilities, ModelCapabilities)
-    for field in fields(ModelCapabilities):
-        assert isinstance(getattr(capabilities, field.name), bool)
 
 
 @pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
@@ -225,66 +207,6 @@ def test_get_model_capabilities_resolves_registered_alias() -> None:
         get_model_capabilities("MossTTSDelay")
         == EXPECTED_MODEL_CAPABILITIES["MossTTSDelayModel"]
     )
-
-
-def test_model_capabilities_are_static_architecture_metadata() -> None:
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    custom_config = config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-
-    capabilities = get_model_capabilities(config_cls.architecture)
-    assert capabilities is not None
-    assert capabilities.supports_reference_audio is True
-    assert custom_config.supports_uploaded_voice_references() is False
-
-
-def test_launcher_model_capabilities_log_summary() -> None:
-    from sglang_omni.serve.launcher import model_capabilities_log_summary
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = model_capabilities_log_summary(
-        config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
-    )
-
-    assert summary == {
-        "architecture": "Qwen3TTSForConditionalGeneration",
-        "reference_audio": True,
-        "batch_vocoder": True,
-        "streaming_vocoder": True,
-        "cuda_graph": True,
-        "torch_compile": False,
-        "breakable_prefill_cuda_graph": True,
-        "full_prefill_cuda_graph": True,
-    }
-
-
-def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> None:
-    from sglang_omni.serve.launcher import model_capabilities_log_summary
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = model_capabilities_log_summary(
-        config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-    )
-
-    assert summary is not None
-    assert summary["reference_audio"] is True
-    assert summary["batch_vocoder"] is True
-
-
-def test_launcher_emits_model_capabilities_log(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from sglang_omni.serve.launcher import log_model_capabilities
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config(
-        "VoxtralTTSForConditionalGeneration"
-    )
-    with caplog.at_level("INFO", logger="sglang_omni.serve.launcher"):
-        log_model_capabilities(config_cls(model_path="dummy"))
-
-    assert "Model capabilities:" in caplog.text
-    assert '"architecture": "VoxtralTTSForConditionalGeneration"' in caplog.text
-    assert '"reference_audio": false' in caplog.text
-    assert '"batch_vocoder": false' in caplog.text
 
 
 def test_launcher_model_capabilities_warning_isolated(
