@@ -38,7 +38,7 @@ for details.
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
-| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
+| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`, or a precomputed x-vector via `speaker_embedding`. `language` defaults to `auto` |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml`, `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Text-only synthesis with built-in speakers; omit `voice` for Vivian. Both sizes support streaming; use 1.7B for instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
@@ -221,6 +221,29 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
+Qwen3-TTS Base also accepts a precomputed speaker embedding instead of
+reference audio, so callers that store x-vectors offline can skip shipping
+the reference clip:
+
+```bash
+EMB=$(python -c "import json; print(json.dumps([0.01] * 1024))")
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"Qwen/Qwen3-TTS-12Hz-0.6B-Base\",
+    \"voice\": \"default\",
+    \"input\": \"Get the trust fund to the bank early.\",
+    \"speaker_embedding\": $EMB
+  }" \
+  --output output.wav
+```
+
+`speaker_embedding` must be a non-empty list of numbers whose length matches
+the checkpoint's speaker encoder dimension (1024 for 0.6B, 2048 for 1.7B).
+It is mutually exclusive with `ref_audio`, `references`, and uploaded voices,
+and it implies `x_vector_only_mode`, so `ref_text` is neither required nor
+used.
+
 Qwen3-TTS CustomVoice uses a built-in speaker without reference audio:
 
 ```bash
@@ -236,7 +259,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output custom-voice.wav
 ```
 
-Omit cloning fields (`ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`) and omit `task_type` or set it to `CustomVoice`. For 0.6B, omit `instructions`: it remains accepted for compatibility, but reliable instruction control is not supported. See [CustomVoice checkpoints](../cookbook/qwen3_tts.md#customvoice-checkpoints) for speaker discovery, streaming, and Eric/Dylan language behavior.
+Omit cloning fields (`ref_audio`, `ref_text`, `references`, `x_vector_only_mode`, and `speaker_embedding`) and omit `task_type` or set it to `CustomVoice`. For 0.6B, omit `instructions`: it remains accepted for compatibility, but reliable instruction control is not supported. See [CustomVoice checkpoints](../cookbook/qwen3_tts.md#customvoice-checkpoints) for speaker discovery, streaming, and Eric/Dylan language behavior.
 
 Qwen3-TTS VoiceDesign uses text plus voice instructions:
 
@@ -651,12 +674,13 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
-| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
+| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text or `speaker_embedding` is present, otherwise `CustomVoice` |
 | `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `token_count` | int | `null` | Model-specific duration token target |
 | `duration_tokens` | int | `null` | Alias-style duration token target for models that expose duration control |
 | `x_vector_only_mode` | bool | `null` | Qwen3-TTS Base speaker-embedding mode |
+| `speaker_embedding` | list[float] | `null` | Qwen3-TTS Base only. Precomputed x-vector speaker embedding for Base cloning, mutually exclusive with `ref_audio` / `references` / uploaded voices. Implies x-vector-only mode, so `ref_text` is neither required nor used. Length must match the checkpoint's speaker encoder dimension (1024 for 0.6B, 2048 for 1.7B) |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |

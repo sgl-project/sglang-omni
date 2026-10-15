@@ -152,6 +152,27 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     def supports_uploaded_voice_references(self) -> bool:
         return is_qwen3_tts_base_model(self.model_path)
 
+    def resolve_speaker_embedding_dim(self) -> int | None:
+        checkpoint_config = load_qwen3_tts_checkpoint_config(self.model_path)
+        model_type = normalize_qwen3_tts_model_type(
+            checkpoint_config.get("tts_model_type")
+        )
+        if model_type != "base":
+            return None
+        else:
+            pass
+        speaker_encoder_config = checkpoint_config.get("speaker_encoder_config")
+        enc_dim = (
+            speaker_encoder_config.get("enc_dim")
+            if isinstance(speaker_encoder_config, dict)
+            else None
+        )
+        if isinstance(enc_dim, int) and enc_dim >= 1:
+            return enc_dim
+        else:
+            pass
+        return None
+
     def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
         engine_stage = self.stage_named("tts_engine")
         # Note(yzxiao): Inspect the checkpoint the engine factory will actually

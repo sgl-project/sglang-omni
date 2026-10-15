@@ -397,6 +397,9 @@ class CreateSpeechRequest(BaseModel):
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     x_vector_only_mode: bool | None = None
+    speaker_embedding: list[float] | None = (
+        None  # precomputed x-vector for Base cloning
+    )
     stream_codec_output: bool | None = None
     suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None  # MOSS-TTS duration token target
@@ -436,6 +439,7 @@ class SpeechBatchItem(BaseModel):
     ref_text: object = None
     references: object = None
     x_vector_only_mode: object = None
+    speaker_embedding: object = None
     stream_codec_output: object = None
     suppress_bootstrap_silence: object = None
     token_count: object = None
@@ -471,6 +475,7 @@ class CreateSpeechBatchRequest(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    speaker_embedding: list[float] | None = None
     stream_codec_output: bool | None = None
     suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
@@ -536,6 +541,7 @@ class SpeechStreamSessionConfig(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    speaker_embedding: list[float] | None = None
     stream_codec_output: bool | None = None
     suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
