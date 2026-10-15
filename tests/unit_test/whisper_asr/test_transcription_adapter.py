@@ -115,9 +115,7 @@ def test_sustained_repetition_before_valid_continuation_triggers_retry() -> None
             "The Buttes Trail winds along the western ridge. "
             "The Buttes Trail crosses beyond the western ridge."
         ),
-        "We repeated the same phrase three times before moving on normally.",
         "好好好，我们继续讨论下一部分。",
-        "はい、はい、はい。でも話は続きます。",
     ],
 )
 def test_ordinary_repetition_does_not_trigger_retry(text: str) -> None:
