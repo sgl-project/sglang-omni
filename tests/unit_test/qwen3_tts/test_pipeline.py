@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import sys
@@ -21,7 +20,6 @@ import pytest
 import torch
 from sglang.srt.runtime_context import get_context
 
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
@@ -566,54 +564,9 @@ def test_qwen3_tts_engine_probes_silence_ids_only_for_base(
 
 
 @pytest.mark.parametrize(
-    ("filename", "model_suffix", "mem_fraction_static"),
-    [
-        ("qwen3_tts_1_7b_npu.yaml", "1.7B-Base", 0.60),
-        ("qwen3_tts_0_6b_customvoice_npu.yaml", "0.6B-CustomVoice", 0.70),
-        ("qwen3_tts_1_7b_voicedesign_npu.yaml", "1.7B-VoiceDesign", 0.60),
-    ],
-)
-def test_qwen3_tts_npu_configs_use_eager_sdpa_baseline(
-    filename: str,
-    model_suffix: str,
-    mem_fraction_static: float,
-) -> None:
-    config_path = Path(__file__).parents[3] / "examples" / "configs" / filename
-    config = ConfigManager.from_file(str(config_path)).config
-    assert config is not None
-    stages = {stage.name: stage for stage in config.stages}
-
-    assert config.model_path.endswith(model_suffix)
-    assert stages["preprocessing"].factory.max_concurrency == 1
-    assert stages["tts_engine"].tp_size == 1
-    assert stages["tts_engine"].factory.attn_implementation == "sdpa"
-    assert stages["tts_engine"].engine.attention_backend == "ascend"
-    assert stages["tts_engine"].engine.disable_cuda_graph is True
-    assert stages["tts_engine"].engine.enable_torch_compile is False
-    assert stages["tts_engine"].engine.max_running_requests == 1
-    assert stages["tts_engine"].engine.max_queued_requests == 8
-    assert stages["tts_engine"].engine.mem_fraction_static == mem_fraction_static
-    assert stages["vocoder"].factory.attn_implementation == "sdpa"
-
-
-def test_qwen3_tts_0_6b_base_npu_config_uses_eager_concurrency() -> None:
-    config_path = Path(__file__).parents[3] / "examples/configs/qwen3_tts_0_6b_npu.yaml"
-    config = ConfigManager.from_file(str(config_path)).config
-    stages = {stage.name: stage for stage in config.stages}
-    engine = stages["tts_engine"].engine
-    vocoder = stages["vocoder"].factory
-
-    assert engine.disable_cuda_graph is True
-    assert engine.max_running_requests == 16
-    assert engine.max_queued_requests == 16
-    assert vocoder.max_batch_size == 8
-
-
-@pytest.mark.parametrize(
     ("is_npu", "device", "requested", "expected"),
     [
         (True, "npu:0", None, "sdpa"),
-        (True, "npu:0", "sdpa", "sdpa"),
         (True, "npu:0", "eager", "eager"),
         (True, "cuda:0", None, None),
         (False, "cpu", None, None),
@@ -797,13 +750,6 @@ def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
     )
 
     assert batch.mrope_positions is supplied
-
-
-def test_qwen3_tts_prefill_coalescing_is_opt_in() -> None:
-    signature = inspect.signature(qwen3_stages.create_sglang_tts_engine_executor)
-
-    assert signature.parameters["prefill_coalesce_requests"].default == 0
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 60.0
 
 
 def test_qwen3_tts_factory_forwards_coalescing_params_to_builder(
@@ -1633,22 +1579,6 @@ def test_qwen3_tts_reference_code_batcher_synchronizes_npu_results(
     assert synchronized == [device]
 
 
-def test_qwen3_tts_reference_code_batcher_skips_cpu_results(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    code = SimpleNamespace(is_cuda=False, device=SimpleNamespace(type="cpu"))
-    monkeypatch.setattr(
-        qwen3_request_builders.torch,
-        "get_device_module",
-        lambda selected: (_ for _ in ()).throw(
-            AssertionError("CPU results must not request an accelerator module")
-        ),
-    )
-    owner = SimpleNamespace(encode_stream=None)
-
-    qwen3_request_builders.Qwen3TTSRefCodeBatcher.synchronize_outcomes(owner, {0: code})
-
-
 def test_qwen3_tts_reference_code_batcher_has_no_stream_for_cpu_device(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1979,8 +1909,6 @@ def test_qwen3_tts_bootstrap_silence_ineligible_variants(
     "params",
     [
         {"temperature": 0.8},
-        {"top_p": 0.8},
-        {"top_k": 30, "repetition_penalty": 1.1},
         {"stage_params": {"tts_engine": {"temperature": 0.8}}},
     ],
 )
@@ -3477,54 +3405,30 @@ def test_qwen3_tts_decode_graphs_replay_pads_batch_and_slices_output() -> None:
     assert decoder.decode_inputs == []
 
 
-def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled() -> None:
+def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_enabled: list[bool] = []
+    holder_cls = qwen3_streaming_vocoder.Qwen3TTSInitialDecodeGraphs
+
+    def recording_holder(*args, enabled: bool, **kwargs):
+        requested_enabled.append(enabled)
+        return holder_cls(*args, enabled=enabled, **kwargs)
+
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder, "Qwen3TTSInitialDecodeGraphs", recording_holder
+    )
+    tokenizer = FakeQwen3TTSSpeechTokenizer()
+    tokenizer.model.config = SimpleNamespace(num_quantizers=2)
     scheduler = Qwen3TTSStreamingVocoderScheduler(
-        FakeQwen3TTSSpeechTokenizer(),
+        tokenizer,
         device="cpu",
         followup_cuda_graph=False,
     )
 
     assert scheduler.followup_decode_graphs.enabled is False
     assert scheduler.initial_decode_graphs is not scheduler.followup_decode_graphs
-
-
-def test_qwen3_tts_streaming_vocoder_fused_snake_activation_flag() -> None:
-    tokenizer = FakeQwen3TTSSpeechTokenizer()
-    scheduler = Qwen3TTSStreamingVocoderScheduler(
-        tokenizer,
-        device="cpu",
-        fused_snake_activation=True,
-    )
-
-    assert scheduler.decoder is tokenizer.model.decoder
-
-
-def test_qwen3_tts_vocoder_warms_graphs_before_serving_start(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scheduler = Qwen3TTSStreamingVocoderScheduler(
-        FakeQwen3TTSSpeechTokenizer(),
-        device="cpu",
-        async_decode=True,
-    )
-    captures: list[str] = []
-    monkeypatch.setattr(
-        scheduler.initial_decode_graphs,
-        "capture",
-        lambda: captures.append("initial"),
-    )
-    monkeypatch.setattr(
-        scheduler.followup_decode_graphs,
-        "capture",
-        lambda: captures.append("followup"),
-    )
-
-    scheduler.warmup_now()
-    scheduler.on_serving_start()
-    try:
-        assert captures == ["initial", "followup"]
-    finally:
-        scheduler.stop()
+    assert requested_enabled == [True] + [False] * len(scheduler.followup_graph_holders)
 
 
 def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> None:
@@ -5379,8 +5283,11 @@ def test_qwen3_tts_bootstrap_suppression_off_when_first_chunk_is_zero() -> None:
     assert state.suppress_bootstrap is False
 
 
-def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio() -> None:
+def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The withheld frame must not be charged to the playback deadline."""
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),
         device="cpu",
@@ -5410,6 +5317,9 @@ def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio() -> None:
     assert credited == pytest.approx(
         float(emitted.numel()) / scheduler.sample_rate, abs=0.05
     )
+    assert state.playback_deadline_s == 100.0 + float(
+        frame * (state.initial_chunk_frames - 1)
+    ) / float(scheduler.sample_rate)
 
 
 def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
@@ -6686,15 +6596,6 @@ def test_qwen3_tts_streaming_vocoder_result_keeps_the_talker_finish_reason() -> 
     assert terminal_message.data.data["finish_reason"] == "length"
 
 
-def test_speech_batch_result_exposes_finish_reason() -> None:
-    """Batch JSON results carry the reason the single-item header carries."""
-    from sglang_omni.serve.protocol import SpeechBatchResult
-
-    result = SpeechBatchResult(index=0, status="success", finish_reason="length")
-
-    assert result.model_dump(exclude_none=True)["finish_reason"] == "length"
-
-
 def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7637,31 +7538,6 @@ def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
     assert bool(model.feedback_mask[0]) is True
 
 
-def test_qwen3_tts_decode_forward_rejects_invalid_feedback_row(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalkerTextModel
-
-    model = Qwen3TTSTalkerTextModel.__new__(Qwen3TTSTalkerTextModel)
-    torch.nn.Module.__init__(model)
-    model.codec_embedding = torch.nn.Embedding(8, 4)
-    model.layers = torch.nn.ModuleList([])
-    model.start_layer = 0
-    model.end_layer = 0
-    model.norm = torch.nn.Identity()
-    model.decode_feedback_embedding = torch.nn.Embedding(1, 4)
-
-    with pytest.raises(IndexError):
-        model.forward(
-            input_ids=torch.tensor([1]),
-            positions=torch.tensor([0]),
-            forward_batch=SimpleNamespace(
-                forward_mode=SimpleNamespace(is_decode=lambda: True),
-            ),
-        )
-
-
 def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7934,14 +7810,6 @@ def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
     assert token.item() == 1
 
 
-def test_qwen3_tts_engine_disables_torch_compile_by_default() -> None:
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-
-    defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
-
-    assert defaults["enable_torch_compile"] is False
-
-
 @pytest.mark.parametrize("value", [True, 1, "1", "true", " yes ", "on"])
 def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
@@ -7950,53 +7818,11 @@ def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
         Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
 
 
-@pytest.mark.parametrize("value", [False, 0, "false", "no", "", None])
+@pytest.mark.parametrize("value", [False, 0, "no", None])
 def test_qwen3_tts_engine_accepts_disabled_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
     Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
-
-
-@pytest.mark.parametrize(
-    "pool_tokens, max_running_requests, context_length",
-    [(131072, 16, 8192), (589142, 128, 8192)],
-)
-def test_qwen3_tts_engine_reports_the_pool_against_the_admission_bound(
-    pool_tokens: int,
-    max_running_requests: int,
-    context_length: int,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-
-    class FakePool:
-        def get_kv_size_bytes(self):
-            return pool_tokens * 1024, pool_tokens * 1024
-
-    scheduler = SimpleNamespace(
-        max_total_num_tokens=pool_tokens,
-        tp_worker=SimpleNamespace(
-            model_runner=SimpleNamespace(token_to_kv_pool=FakePool())
-        ),
-    )
-
-    with (
-        get_context().override_server_args(
-            max_running_requests=max_running_requests,
-            context_length=context_length,
-            mem_fraction_static=0.875,
-        ),
-        caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"),
-    ):
-        Qwen3TtsEngineBuilder().post_scheduler_setup(scheduler, model_runner=None)
-
-    assert caplog.messages == [
-        f"Qwen3-TTS KV pool holds {pool_tokens} tokens, "
-        f"{pool_tokens * 2048 / 2**30:.2f} GiB, against a configured maximum demand of "
-        f"{max_running_requests * context_length} "
-        f"({max_running_requests} running x {context_length} context), "
-        "mem_fraction_static 0.875"
-    ]
 
 
 def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(

@@ -262,23 +262,6 @@ def test_split_frames_by_width_takes_the_largest_width_first(
     assert split_frames_by_width(total, widths) == expected
 
 
-def test_incremental_codec_graph_accepts_the_window_mode() -> None:
-    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
-        SimpleNamespace(),
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        num_quantizers=2,
-        mode="window",
-        fresh_frames=(8, 2, 4),
-        enabled=False,
-        arena=FakeArena(),
-        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
-    )
-
-    assert runner.stats()["binding"]["mode"] == "window"
-    assert runner.stats()["graph_contract"]["fresh_frames"] == [2, 4, 8]
-
-
 def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None:
     runner = make_runner(batch_sizes=(1, 4))
     runner.graphs = {

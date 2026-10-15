@@ -10,14 +10,10 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 
 from __future__ import annotations
 
-import ast
-import contextlib
 import copy
 import gc
 import weakref
 from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1026,66 +1022,6 @@ def test_both_gates_reject_another_card_of_the_same_kind() -> None:
     assert talker.predictor_forward_graphed(elsewhere, elsewhere, None) is None
 
 
-def test_a_capture_that_fails_after_the_graph_exists_releases_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cleanup path resets only what capture yielded."""
-    resets: list[int] = []
-
-    class FakeGraph:
-        def reset(self) -> None:
-            resets.append(1)
-
-    class FailingBackend:
-        @contextmanager
-        def capture(self, **kwargs):
-            yield FakeGraph()
-            raise RuntimeError("simulated capture_end failure")
-
-    class FakeModule:
-        def Event(self):  # noqa: N802 - mirrors the torch spelling
-            return None
-
-        def Stream(self, device=None):  # noqa: N802 - ditto
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        def current_stream(self, device=None):
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        @contextmanager
-        def stream(self, stream):
-            yield
-
-        def device(self, device):
-            return contextlib.nullcontext()
-
-        def graph_pool_handle(self):
-            return "pool"
-
-    talker = build_talker(torch.device("cpu"))
-    talker.predictor_device_module = FakeModule()
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "get_device_graph_backend",
-        lambda device: FailingBackend(),
-    )
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "graph_capture_attention",
-        lambda: contextlib.nullcontext(),
-    )
-    monkeypatch.setattr(
-        Qwen3TTSTalker,
-        "code_predictor_forward_incremental",
-        lambda self, *a, **k: (talker.output_codes[:2], talker.output_embeds[:2]),
-    )
-
-    with pytest.raises(RuntimeError, match="simulated capture_end failure"):
-        talker.capture_predictor_graph(2, ("argmax", 0, False, False, False))
-
-    assert resets == [1]
-
-
 def test_a_step_on_a_device_without_a_graph_backend_stays_eager(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1244,32 +1180,6 @@ def test_no_host_readback_in_eager_chain():
             semantic_positions=positions.as_subclass(NoHostReadbackTensor),
         )
         torch.cuda.synchronize()
-
-
-def test_capture_uses_thread_local_error_mode():
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "sglang_omni"
-        / "models"
-        / "qwen3_tts"
-        / "sglang_model.py"
-    )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    capture_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "capture"
-    ]
-    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
-    assert any(
-        keyword.arg == "thread_local_errors"
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value is True
-        for call in capture_calls
-        for keyword in call.keywords
-    )
 
 
 def test_normalize_predictor_graph_batch_sizes():

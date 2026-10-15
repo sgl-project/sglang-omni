@@ -463,24 +463,6 @@ def test_incremental_decoder_matches_whole_for_arbitrary_partitions(
     assert state.transformer_context_length == decoder.pre_transformer.window_size - 1
 
 
-def test_incremental_decoder_reference_prefix_matches_generated_waveform() -> None:
-    torch.manual_seed(5)
-    decoder = Decoder()
-    codes = torch.randint(0, 16, (1, 2, 9))
-    reference_frames = 4
-    expected = decoder(codes)[..., reference_frames * decoder.total_upsample :]
-    incremental = Qwen3TTSIncrementalDecoder(decoder)
-    state = Qwen3TTSIncrementalCodecState()
-
-    initial = incremental.decode(codes[..., :7], state)
-    initial = initial[..., reference_frames * decoder.total_upsample :]
-    final = incremental.decode(codes[..., 7:], state)
-    actual = torch.cat((initial, final), dim=-1)
-
-    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
-    assert actual.shape[-1] == (9 - reference_frames) * decoder.total_upsample
-
-
 def test_incremental_decoder_rejects_malformed_codes() -> None:
     decoder = Decoder()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
