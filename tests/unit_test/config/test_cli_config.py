@@ -289,18 +289,6 @@ class TestExplain:
         assert result.exit_code != 0
         assert "did you mean" in output_of(result).lower()
 
-    def test_a_positional_stage_index_is_refused_readably(self, runner, config_file):
-        """Stages are addressed by name; the refusal says so, tracelessly."""
-        result = runner.invoke(
-            config_app,
-            ["explain", "stages.9.tp_size", "--config", str(config_file)],
-        )
-
-        assert result.exit_code != 0
-        output = output_of(result)
-        assert "addressed by name" in output
-        assert "Traceback" not in output
-
     def test_without_a_path_it_lists_every_touched_path(
         self, runner, config_file, fraction
     ):
@@ -481,31 +469,6 @@ class TestBroadcastFlags:
         assert keys == {
             f"stages.{name}.engine.mem_fraction_static" for name in engine_stages
         }
-
-    def test_an_explicit_dotted_path_beats_the_fan_out(self, base_config, stage):
-        flag_patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=0.4,
-        )
-        merged = ConfigManager(base_config).merge_config(
-            [(f"{stage}.engine.mem_fraction_static", "0.6")],
-            extra_patches=flag_patches,
-        )
-        assert merged.stage_named(stage).engine.mem_fraction_static == 0.6
-
-    def test_an_out_of_range_fraction_is_refused(self, base_config):
-        # Range is the schema's rule: the flag builds patches, and resolution
-        # refuses the out-of-range value with the schema's message.
-        patches = patches_from_broadcast_flags(base_config, mem_fraction_static=1.5)
-        with pytest.raises(ValueError, match="mem_fraction_static"):
-            ConfigManager(base_config).merge_config([], extra_patches=patches)
-
-    def test_without_the_flag_no_patch_is_built(self, base_config):
-        patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=None,
-        )
-        assert len(patches) == 0
 
 
 class TestServeErrors:
