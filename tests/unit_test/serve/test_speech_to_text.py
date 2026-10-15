@@ -170,6 +170,20 @@ def test_probe_returns_zero_for_unreadable_bytes() -> None:
     assert speech_to_text.probe_audio_duration(b"\x00not-audio") == 0.0
 
 
+def test_verbose_response_uses_requested_task() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="hello world",
+        response_format="verbose_json",
+        endpoint_path="/v1/audio/transcriptions",
+        task="translate",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+    )
+
+    assert json.loads(response.body)["task"] == "translate"
+
+
 class Upload:
     def __init__(self, data: bytes, content_type: str | None, filename: str | None):
         self.data = data
