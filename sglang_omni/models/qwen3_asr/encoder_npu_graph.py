@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import accumulate
 from types import ModuleType
@@ -18,7 +17,7 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     CapturedGraph,
     Qwen3ASREncoderLayerStackGraphRunner,
 )
-from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 if TYPE_CHECKING:
     from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
@@ -155,11 +154,6 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         return output
 
 
-@dataclass
-class NpuCapturedGraph(CapturedGraph):
-    npu_update_tasks: tuple[NpuGraphUpdateTask, ...]
-
-
 class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
     """Capture FIA task groups lazily and update them alongside graph replay."""
 
@@ -178,6 +172,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
             graph_backend=graph_backend,
         )
         self.graph_pool = None
+        self.update_tasks: dict[int, tuple[NpuGraphUpdateTask, ...]] = {}
         self.update_stream = self.device_module.Stream(device=self.device)
         # The runner and executor live for the model's lifetime.
         self.update_executor = ThreadPoolExecutor(
@@ -203,11 +198,14 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
             max_seqlen=self.max_seqlen,
         )
 
-    @contextmanager
-    def capture_npu_attention_tasks(
-        self, context: NpuGraphCaptureContext
-    ) -> Iterator[None]:
-        """Temporarily route each Qwen3-ASR FIA call through task-group capture."""
+    def record_graph(
+        self, bucket_size: int, run_once: Callable[[], torch.Tensor]
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
+        context = NpuGraphCaptureContext(tasks=[])
+        if self.graph_pool is None:
+            self.graph_pool = self.graph_backend.graph_pool_handle()
+        else:
+            pass
         replacements: list[tuple[Any, torch.nn.Module]] = []
         try:
             for layer in self.tower.layers:
@@ -218,54 +216,32 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
                     )
                 else:
                     pass
-                original = attention.qkv_backend
-                replacements.append((attention, original))
+                replacements.append((attention, attention.qkv_backend))
                 attention.qkv_backend = NpuGraphCaptureAttention(
                     context, self.device_module
                 )
-            yield
-        finally:
-            for attention, original in replacements:
-                attention.qkv_backend = original
-
-    @torch.no_grad()
-    def record_graph(
-        self,
-        static_hs: torch.Tensor,
-        static_cu: torch.Tensor,
-        attention_metadata: VisionAttentionMetadata | None,
-    ) -> NpuCapturedGraph:
-        context = NpuGraphCaptureContext(tasks=[])
-        if self.graph_pool is None:
-            self.graph_pool = self.graph_backend.graph_pool_handle()
-        else:
-            pass
-        with self.capture_npu_attention_tasks(context):
             with self.graph_backend.capture(
                 pool=self.graph_pool, thread_local_errors=True
             ) as graph:
-                output = self.layer_stack(static_hs, static_cu)
+                output = run_once()
+        finally:
+            for attention, original in replacements:
+                attention.qkv_backend = original
         if len(context.tasks) != len(self.tower.layers):
             raise RuntimeError("NPU graph must capture one FIA task per encoder layer")
         else:
             pass
-        return NpuCapturedGraph(
-            graph=graph,
-            hidden_states=static_hs,
-            cu_seqlens=static_cu,
-            attention_metadata=attention_metadata,
-            output=output,
-            npu_update_tasks=tuple(context.tasks),
-        )
+        self.update_tasks[bucket_size] = tuple(context.tasks)
+        return graph, output
 
-    def replay(self, entry: NpuCapturedGraph, cu: torch.Tensor) -> None:
+    def replay(self, entry: CapturedGraph, cu: torch.Tensor) -> None:
         cumulative_window_lens = cu[1:].tolist()
         # Record the dependency before replay can enqueue waits for FIA updates.
         self.update_stream.wait_stream(self.device_module.current_stream())
 
         def update_attention_tasks() -> None:
             with self.device_module.stream(self.update_stream):
-                for task in entry.npu_update_tasks:
+                for task in self.update_tasks[entry.hidden_states.shape[0]]:
                     task.apply(
                         self.device_module, self.update_stream, cumulative_window_lens
                     )

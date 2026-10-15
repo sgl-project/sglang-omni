@@ -11,6 +11,7 @@ buckets only need to track total token count.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -153,41 +154,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         h = tower.act(h)
         return tower.proj2(h)[0]
 
-    def capture(
-        self, bucket_size: int, *, window_lens: tuple[int, ...] | None = None
-    ) -> CapturedGraph:
-        """Record one graph for a bucket-sized packed input."""
-        device, dtype = self.device, self.dtype
-        d_model = self.tower.ln_post.normalized_shape[0]
-        static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
-
-        static_cu, attention_metadata = self.capture_boundaries(
-            bucket_size, window_lens
-        )
-        self.capture_attention_metadata = attention_metadata
-
-        def run_once() -> torch.Tensor:
-            with torch.no_grad():
-                return self.layer_stack(static_hs, static_cu)
-
-        device_module = self.device_module
-        side = device_module.Stream(device)
-        side.wait_stream(device_module.current_stream(device))
-        with device_module.stream(side):
-            for _ in range(3):
-                run_once()
-        device_module.current_stream(device).wait_stream(side)
-        device_module.synchronize(device)
-
-        entry = self.record_graph(static_hs, static_cu, attention_metadata)
-        logger.info(
-            "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
-            bucket_size,
-            static_cu.numel() - 1,
-            tuple(entry.output.shape),
-        )
-        return entry
-
     def capture_boundaries(
         self, bucket_size: int, window_lens: tuple[int, ...] | None
     ) -> tuple[torch.Tensor, VisionAttentionMetadata | None]:
@@ -213,18 +179,40 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             pass
         return static_cu, attention_metadata
 
-    @torch.no_grad()
-    def record_graph(
-        self,
-        static_hs: torch.Tensor,
-        static_cu: torch.Tensor,
-        attention_metadata: VisionAttentionMetadata | None,
+    def capture(
+        self, bucket_size: int, *, window_lens: tuple[int, ...] | None = None
     ) -> CapturedGraph:
-        # Note (siju): each bucket keeps its own pool. Sharing one is only safe
-        # for graphs replayed in capture order, and a request picks its bucket
-        # from the clip length, so any order is possible.
-        with self.graph_backend.capture(thread_local_errors=True) as graph:
-            static_out = self.layer_stack(static_hs, static_cu)
+        """Record one graph for a bucket-sized packed input."""
+        device, dtype = self.device, self.dtype
+        d_model = self.tower.ln_post.normalized_shape[0]
+        static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
+
+        static_cu, attention_metadata = self.capture_boundaries(
+            bucket_size, window_lens
+        )
+        max_windows = static_cu.numel() - 1
+        self.capture_attention_metadata = attention_metadata
+
+        def run_once() -> torch.Tensor:
+            with torch.no_grad():
+                return self.layer_stack(static_hs, static_cu)
+
+        device_module = self.device_module
+        side = device_module.Stream(device)
+        side.wait_stream(device_module.current_stream(device))
+        with device_module.stream(side):
+            for _ in range(3):
+                run_once()
+        device_module.current_stream(device).wait_stream(side)
+        device_module.synchronize(device)
+
+        graph, static_out = self.record_graph(bucket_size, run_once)
+        logger.info(
+            "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
+            bucket_size,
+            max_windows,
+            tuple(static_out.shape),
+        )
         return CapturedGraph(
             graph=graph,
             hidden_states=static_hs,
@@ -232,6 +220,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             attention_metadata=attention_metadata,
             output=static_out,
         )
+
+    def record_graph(
+        self, bucket_size: int, run_once: Callable[[], torch.Tensor]
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
+        # Note (siju): each bucket keeps its own pool. Sharing one is only safe
+        # for graphs replayed in capture order, and a request picks its bucket
+        # from the clip length, so any order is possible.
+        with self.graph_backend.capture(thread_local_errors=True) as graph:
+            static_out = run_once()
+        return graph, static_out
 
     def run(
         self, hidden_states: torch.Tensor, window_lens: list[int]
