@@ -413,8 +413,6 @@ The interruption relevance is rated by `gpt-4-turbo` with seed 0, as the officia
 
 The official evaluator has a retry bug: when a rating does not parse, it resends the same request without limit, and each retry counts that sample's takeover again. The client stops after three identical requests, which fails the subset, and `summary.json` reports `retries`. A nonzero value means the interruption takeover rate is inflated.
 
-`transcribe` and `score` (`fdb-v10-synthetic-v4`) remain as a diagnostic beside the official numbers, not in their place. They add gates the official evaluator does not have: turn-taking samples where the model already speaks when the user's turn ends, and interruptions where the model was silent when the user cut in or talked straight through. Report their gate counts next to the official numbers.
-
 ### Measurement definitions
 
 - **Input pacing.** Audio is sent in 80 ms packets. A packet that starts more than 80 ms off its source cadence makes the session ineligible. This bounds transport jitter only.

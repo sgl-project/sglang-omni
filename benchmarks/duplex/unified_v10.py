@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import bisect
+import importlib.metadata
+import importlib.resources
 import json
 import math
 import random
@@ -14,7 +16,11 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import TypeVar
 
+import numpy as np
+import soundfile
+import torch
 from pydantic import JsonValue
+from silero_vad import get_speech_timestamps, load_silero_vad
 
 from benchmarks.duplex.reference_core import (
     atomic_write_bytes,
@@ -32,7 +38,7 @@ from benchmarks.duplex.v10_dataset import (
 )
 
 KIND = "full-duplex-bench-v1.0-unified"
-DEFINITIONS_VERSION = "fdb-v1.0-unified-3"
+DEFINITIONS_VERSION = "fdb-v1.0-unified-4"
 RESPONSE_WITHIN_S = (1, 2, 5)
 TIME_DECIMALS = 6
 BOOTSTRAP_REPLICATES = 2000
@@ -42,8 +48,20 @@ MEDIAN = Fraction(1, 2)
 P90 = Fraction(9, 10)
 INTERVAL_TAILS = (Fraction(1, 40), Fraction(39, 40))
 PAUSE_DIAGNOSTICS = ("inside_pause_onset", "pre_pause_speech", "carry_in", "any_speech")
+VAD_RATE = 16000
+# note (luojiaxuan): the model file load_silero_vad() loads by default.
+VAD_MODEL = "silero_vad.jit"
+# note (luojiaxuan): Silero's get_speech_timestamps defaults except the padding,
+# which widens every segment by 30 ms on each side and can move a reply that
+# starts just after R to before it.
+SILERO_VAD_CONFIG = {
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 100,
+    "speech_pad_ms": 0,
+}
 Span = tuple[float, float]
-Reference = list[Span] | float
+Reference = list[Span] | Span | float
 Resampled = TypeVar("Resampled")
 
 
@@ -57,6 +75,33 @@ def word_spans(chunks: list[dict[str, JsonValue]]) -> list[Span]:
     return [
         (seconds(start), seconds(start if end is None else end))
         for start, end in (chunk["timestamp"] for chunk in chunks)
+    ]
+
+
+def speech_segments(
+    wav_path: Path, window_s: float, vad: torch.jit.ScriptModule
+) -> list[Span]:
+    """Silero speech segments [start, end) of a reference output.wav covering [0, T]."""
+    info = soundfile.info(str(wav_path))
+    if (info.samplerate, info.channels, info.subtype) != (VAD_RATE, 1, "PCM_16"):
+        raise SystemExit(
+            f"{wav_path} is {info.samplerate} Hz, {info.channels} channels, "
+            f"{info.subtype}; the reference layout is {VAD_RATE} Hz mono PCM_16"
+        )
+    elif info.frames != round(window_s * VAD_RATE):
+        raise SystemExit(f"{wav_path} has {info.frames} samples; T is {window_s} s")
+    else:
+        pass
+    audio, _ = soundfile.read(str(wav_path), dtype="float32")
+    timestamps = get_speech_timestamps(
+        torch.from_numpy(np.ascontiguousarray(audio)),
+        vad,
+        sampling_rate=VAD_RATE,
+        **SILERO_VAD_CONFIG,
+    )
+    return [
+        (seconds(span["start"] / VAD_RATE), seconds(span["end"] / VAD_RATE))
+        for span in timestamps
     ]
 
 
@@ -144,8 +189,43 @@ def turn_taking_sample(
     return sample
 
 
+def interruption_sample(
+    starts: list[float], speech: list[Span], interruption: Span, window_s: float
+) -> dict[str, JsonValue]:
+    """Model speech around the interruption onset S and end R, and the reply after R.
+
+    A segment covers S when start <= S < end and carries over R when
+    start < R < end, so a reply that begins at R does not carry over.
+    """
+    onset_s, end_s = interruption
+    onset_ends = [end for start, end in speech if start <= onset_s < end]
+    sample = {
+        "onset_s": onset_s,
+        "speech_at_onset": bool(onset_ends),
+        "speech_at_end": any(start < end_s < end for start, end in speech),
+        "speech_before_onset": any(start < onset_s for start, _ in speech),
+        # note (luojiaxuan): a segment that runs to T has no observed stop.
+        "stop_s": (
+            seconds(onset_ends[0] - onset_s)
+            if onset_ends and onset_ends[0] < window_s
+            else None
+        ),
+        "interruption_s": seconds(end_s - onset_s),
+        "speech_in_interruption_s": seconds(overlap_s(speech, [interruption])),
+        "restarts": sum(onset_s < start < end_s for start, _ in speech),
+        **response_sample(starts, end_s, window_s),
+    }
+    if not sample["speech_at_onset"]:
+        sample.update(outcome="not_exercised", latency_s=None)
+    elif sample["speech_at_end"]:
+        sample.update(outcome="speaking_at_end", latency_s=None)
+    else:
+        pass
+    return sample
+
+
 def reference_times(task: Task, annotation: JsonValue) -> Reference:
-    """The pauses for pause handling, E for turn-taking, R for user interruption."""
+    """The pauses for pause handling, E for turn-taking, (S, R) for user interruption."""
     if task == "pause_handling":
         return [
             (seconds(start), seconds(end))
@@ -154,7 +234,8 @@ def reference_times(task: Task, annotation: JsonValue) -> Reference:
     elif task == "turn_taking":
         return seconds(annotation[0]["timestamp"][0])
     else:
-        return seconds(annotation[0]["timestamp"][1])
+        onset_s, end_s = annotation[0]["timestamp"]
+        return (seconds(onset_s), seconds(end_s))
 
 
 def timestamp_problems(
@@ -170,6 +251,12 @@ def timestamp_problems(
         ]
 
     problems = outside("word start", [start for start, _ in spans])
+    problems += outside("word end", [end for _, end in spans])
+    problems += [
+        f"word [{start}, {end}] ends before it starts"
+        for start, end in spans
+        if end < start
+    ]
     if task == "pause_handling":
         problems += ["pause.json lists no pause"] if not reference else []
         problems += [
@@ -189,36 +276,34 @@ def timestamp_problems(
     elif task == "turn_taking":
         problems += outside("turn end E", [reference])
     else:
-        problems += outside("interruption end R", [reference])
+        onset_s, end_s = reference
+        problems += outside("interruption bound", [onset_s, end_s])
+        problems += (
+            [f"interruption [{onset_s}, {end_s}] ends before it starts"]
+            if end_s < onset_s
+            else []
+        )
         # note (luojiaxuan): reference-asr cuts the audio at R and adds R back to
         # every word, so an earlier word start means a broken transcript.
         problems += [
-            f"word start {start} is before the interruption end R {reference}"
+            f"word start {start} is before the interruption end R {end_s}"
             for start, _ in spans
-            if start < reference
+            if start < end_s
         ]
     return problems
 
 
-def score_sample(
-    task: Task, spans: list[Span], reference: Reference, window_s: float
-) -> dict[str, JsonValue]:
-    starts = [start for start, _ in spans]
-    if task == "pause_handling":
-        return pause_sample(spans, reference, window_s)
-    elif task == "turn_taking":
-        return turn_taking_sample(starts, reference, window_s)
-    else:
-        return response_sample(starts, reference, window_s)
-
-
 def score_eligible(
-    tree: Path, row: dict[str, JsonValue], task: Task
+    tree: Path,
+    row: dict[str, JsonValue],
+    task: Task,
+    vad: torch.jit.ScriptModule | None,
 ) -> dict[str, JsonValue]:
     """Per-sample quantities; stops on a timestamp that timestamp_problems rejects."""
     sample_dir = tree / row["sample_id"]
     chunks = read_json(sample_dir / "output.json")["chunks"]
     spans = word_spans(chunks)
+    starts = [start for start, _ in spans]
     reference = reference_times(task, read_json(sample_dir / ANNOTATION_FILES[task]))
     window_s = seconds(row["window"]["T_s"])
     problems = timestamp_problems(task, spans, reference, window_s)
@@ -226,10 +311,17 @@ def score_eligible(
         raise SystemExit(f"{row['sample_id']}: {'; '.join(problems)}")
     else:
         pass
+    if task == "pause_handling":
+        quantities = pause_sample(spans, reference, window_s)
+    elif task == "turn_taking":
+        quantities = turn_taking_sample(starts, reference, window_s)
+    else:
+        speech = speech_segments(sample_dir / "output.wav", window_s, vad)
+        quantities = interruption_sample(starts, speech, reference, window_s)
     return {
         "words": len(chunks),
         "null_end_words": sum(chunk["timestamp"][1] is None for chunk in chunks),
-        **score_sample(task, spans, reference, window_s),
+        **quantities,
     }
 
 
@@ -254,10 +346,11 @@ def wilson(count: int, n: int) -> list[float] | None:
 
 
 def rate(flags: list[bool], selected: int) -> dict[str, JsonValue]:
-    """Share of the eligible samples (one flag each) out of `selected` samples.
+    """Share of the scored samples (one flag each) out of `selected` samples.
 
-    selected_bounds is the share over all selected samples with every
-    ineligible outcome taken as False, then as True.
+    The selected - n samples beyond the flags have an unknown outcome, and
+    selected_bounds is the share over all `selected` samples with each of them
+    taken as False, then as True.
     """
     count, n = sum(flags), len(flags)
     return {
@@ -265,7 +358,9 @@ def rate(flags: list[bool], selected: int) -> dict[str, JsonValue]:
         "n": n,
         "value": count / n if n else None,
         "ci95": wilson(count, n),
-        "selected_bounds": [count / selected, (count + selected - n) / selected],
+        "selected_bounds": (
+            [count / selected, (count + selected - n) / selected] if selected else None
+        ),
     }
 
 
@@ -359,27 +454,51 @@ def subset_metrics(
         }
     else:
         pass
-    latencies = [row["latency_s"] for row in rows]
-    metrics = (
-        {
+    if task == "turn_taking":
+        scored = rows
+        metrics = {
             "early_start_rate": rate(
                 [row["outcome"] == "early_start" for row in rows], selected
             )
         }
-        if task == "turn_taking"
-        else {}
-    )
+    else:
+        # note (luojiaxuan): how a not_exercised sample would have handled an
+        # interruption is unknown, so it counts as an unknown outcome in the
+        # selected bounds, like an ineligible one.
+        scored = [row for row in rows if row["outcome"] != "not_exercised"]
+        metrics = {
+            "exercised_rate": rate(
+                [row["outcome"] != "not_exercised" for row in rows], selected
+            ),
+            "speaking_at_end_rate": rate(
+                [row["outcome"] == "speaking_at_end" for row in scored], selected
+            ),
+        }
+    latencies = [row["latency_s"] for row in scored]
     for within_s in RESPONSE_WITHIN_S:
         metrics[f"response_rate_{within_s}s"] = rate(
             [latency is not None and latency <= within_s for latency in latencies],
             selected,
         )
     metrics["no_response_rate"] = rate(
-        [row["outcome"] == "no_response" for row in rows], selected
+        [row["outcome"] == "no_response" for row in scored], selected
     )
     metrics["response_latency_s"] = latency_summary(
         [math.inf if latency is None else latency for latency in latencies]
     )
+    if task == "user_interruption":
+        stop = latency_summary(
+            [math.inf if row["stop_s"] is None else row["stop_s"] for row in scored]
+        )
+        metrics["stop_latency_s"] = {**stop, "stopped": stop.pop("responses")}
+        metrics["speech_s_per_interruption_s"] = pooled_ratio(
+            scored, "speech_in_interruption_s", "interruption_s"
+        )
+        metrics["restart_rate"] = rate(
+            [row["restarts"] > 0 for row in scored], selected
+        )
+    else:
+        pass
     return metrics
 
 
@@ -396,6 +515,14 @@ def score_tree(tree: Path) -> dict[str, JsonValue]:
     else:
         pass
     subsets, samples = {}, []
+    vad = (
+        load_silero_vad()
+        if any(
+            row["eligible"] and SUBSET_TASKS[row["subset"]] == "user_interruption"
+            for row in manifest["samples"]
+        )
+        else None
+    )
     for subset in SUBSETS:
         task = SUBSET_TASKS[subset]
         members = [row for row in manifest["samples"] if row["subset"] == subset]
@@ -414,10 +541,15 @@ def score_tree(tree: Path) -> dict[str, JsonValue]:
         recorded = (
             asr["subsets"][subset]["transcripts"] if subset in asr["subsets"] else {}
         )
+        checked_files = (
+            [annotation_name, "output.wav"]
+            if task == "user_interruption"
+            else [annotation_name]
+        )
         if transcripts != recorded or any(
-            file_sha256(tree / row["sample_id"] / annotation_name)
-            != row["files"][annotation_name]
+            file_sha256(tree / row["sample_id"] / name) != row["files"][name]
             for row in eligible
+            for name in checked_files
         ):
             raise SystemExit(f"{tree / subset} differs from manifest.json or asr.json")
         else:
@@ -431,7 +563,7 @@ def score_tree(tree: Path) -> dict[str, JsonValue]:
                 "eligible": row["eligible"],
             }
             if row["eligible"]:
-                sample.update(score_eligible(tree, row, task))
+                sample.update(score_eligible(tree, row, task, vad))
                 scored.append(sample)
             else:
                 sample["reasons"] = row["reasons"]
@@ -467,6 +599,15 @@ def score_tree(tree: Path) -> dict[str, JsonValue]:
         "definitions_version": DEFINITIONS_VERSION,
         "manifest_sha256": file_sha256(manifest_path),
         "asr_sha256": file_sha256(asr_path),
+        "vad": {
+            "package": "silero-vad",
+            "version": importlib.metadata.version("silero-vad"),
+            "model": VAD_MODEL,
+            "model_sha256": file_sha256(
+                Path(str(importlib.resources.files("silero_vad.data") / VAD_MODEL))
+            ),
+            "config": SILERO_VAD_CONFIG,
+        },
         "intervals": {
             "confidence": 0.95,
             "sample_rates": "Wilson score",
@@ -499,15 +640,18 @@ def latency_text(value: float | None) -> str:
 
 
 def describe(metric: dict[str, JsonValue]) -> str:
+    key, verb = (
+        ("stopped", "stopped") if "stopped" in metric else ("responses", "responded")
+    )
     if "median_s" in metric and metric["n"] == 0:
-        return "n/a 0/0 responded"
+        return f"n/a 0/0 {verb}"
     elif "median_s" in metric:
         low, high = metric["median_ci95"]
         return (
             f"median {latency_text(metric['median_s'])} "
             f"[{latency_text(low)}, {latency_text(high)}] "
             f"p90 {latency_text(metric['p90_s'])} "
-            f"{metric['responses']}/{metric['n']} responded"
+            f"{metric[key]}/{metric['n']} {verb}"
         )
     elif "count" in metric:
         return (
@@ -534,22 +678,30 @@ def reference_label(entry: dict[str, JsonValue]) -> str:
 def render(unified: dict[str, JsonValue], official: dict[str, JsonValue]) -> str:
     """Per-subset summary; official holds summary.json subsets for the reference column."""
     lines = [f"definitions {unified['definitions_version']}"]
-    for subset, result in unified["subsets"].items():
-        counts = result["counts"]
-        header = (
-            f"{subset}: {counts['eligible']} eligible of {counts['selected']} "
-            f"selected (coverage {result['coverage']:.3f}), "
-            f"{counts['declared']} declared"
-        )
-        if "min_observable_s" in result and result["min_observable_s"] is not None:
-            header += f"; window after reference >= {result['min_observable_s']:.6f} s"
+    for subset in SUBSETS:
+        if subset in unified["subsets"]:
+            result = unified["subsets"][subset]
+            counts = result["counts"]
+            header = (
+                f"{subset}: {counts['eligible']} eligible of {counts['selected']} "
+                f"selected (coverage {result['coverage']:.3f}), "
+                f"{counts['declared']} declared"
+            )
+            if result.get("min_observable_s") is not None:
+                header += (
+                    f"; window after reference >= {result['min_observable_s']:.6f} s"
+                )
+            else:
+                pass
+            lines.append(header)
+            lines.extend(
+                f"  {name:<26} {describe(metric)}"
+                for name, metric in result["metrics"].items()
+            )
+        elif subset in official:
+            lines.append(f"{subset}: no unified metrics")
         else:
-            pass
-        lines.append(header)
-        lines.extend(
-            f"  {name:<26} {describe(metric)}"
-            for name, metric in result["metrics"].items()
-        )
+            continue
         if subset in official:
             prefix = reference_label(official[subset])
             lines.extend(

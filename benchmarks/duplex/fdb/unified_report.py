@@ -34,12 +34,14 @@ def render_unified(repeat_dirs: list[Path]) -> list[str]:
         "## FDB v1.0 unified metrics",
         "",
         "Each table describes one repeat. Sample rates are proportions among eligible "
-        "samples; their 95% Wilson intervals describe sampling uncertainty. "
-        "All-selected bounds allow every ineligible outcome to be either false "
-        "or true and are not confidence intervals. Other 95% intervals resample "
-        "whole samples. No metrics or intervals are averaged across repeats. "
-        "A response latency marked `not reached` includes eligible samples "
-        "without a response; `n/a` with 0 eligible means no data.",
+        "samples, and among exercised samples for user interruption except its "
+        "exercised rate; their 95% Wilson intervals describe sampling uncertainty. "
+        "All-selected bounds allow every ineligible outcome, and for those "
+        "interruption metrics every not-exercised one, to be either false or true, "
+        "and are not confidence intervals. Other 95% intervals resample whole "
+        "samples. No metrics or intervals are averaged across repeats. A latency "
+        "marked `not reached` includes samples without a response or a stop; "
+        "`n/a` with 0 eligible means no data.",
     ]
     for repeat_dir in selected_repeats:
         tree = repeat_dir / V10_DIR / "reference"

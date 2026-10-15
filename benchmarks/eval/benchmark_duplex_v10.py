@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Record, transcribe and score Full-Duplex-Bench v1.0 turn-taking sessions."""
+"""Record Full-Duplex-Bench v1.0 sessions and score them in the reference layout."""
 
 from __future__ import annotations
 
@@ -28,11 +28,9 @@ from benchmarks.duplex.reference_v10 import (
     exported_subsets,
     transcribe,
 )
-from benchmarks.duplex.run_artifacts import TIMELINES, accounting, load_run
+from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.unified_v10 import render, score_tree
-from benchmarks.duplex.v10_evaluation import RUN_KIND, score_run
 from benchmarks.duplex.v15_runner import run_samples
-from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 
 VARIANTS = {"input": "input"}
 
@@ -56,7 +54,7 @@ def record(args: argparse.Namespace) -> int:
             max_per_subset=args.max_per_subset,
             dataset=v10_dataset,
             variants=VARIANTS,
-            kind=RUN_KIND,
+            kind=v10_dataset.RUN_KIND,
             profile=args.profile,
             concurrency=args.concurrency,
             turn_detection=args.turn_detection,
@@ -69,32 +67,6 @@ def record(args: argparse.Namespace) -> int:
     return (
         0 if summary["variant_status"] == {"pass": summary["selected_variants"]} else 1
     )
-
-
-def score(args: argparse.Namespace) -> int:
-    result = score_run(
-        args.run,
-        args.output,
-        transcripts_dir=args.transcripts,
-        timeline=args.timeline,
-        backchannel_reference=args.backchannel_reference,
-    )
-    counts = result["accounting"]
-    print(
-        json.dumps(
-            {
-                "accounting": {
-                    key: value for key, value in counts.items() if key != "failures"
-                },
-                "failures": len(counts["failures"]),
-                "timeline": args.timeline,
-                "tasks": result["scoring"]["tasks"],
-            },
-            indent=2,
-            allow_nan=False,
-        )
-    )
-    return 0
 
 
 def reference_export(args: argparse.Namespace) -> int:
@@ -205,37 +177,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     selection.add_argument("--max-per-subset", type=int)
     record_parser.set_defaults(handler=record)
-
-    timeline_help = "; ".join(
-        f"{name}: {timeline['meaning']}" for name, timeline in TIMELINES.items()
-    )
-
-    transcribe_parser = commands.add_parser(
-        "transcribe", help="Word-timestamped Whisper ASR of generated output audio"
-    )
-    # note (Jeffro): align with upstream which v1.0 uses Parakeet.
-    add_transcribe_arguments(transcribe_parser, timeline_help, default_asr="parakeet")
-
-    score_parser = commands.add_parser(
-        "score", help="Offline takeover and latency scores from transcripts"
-    )
-    score_parser.add_argument("--run", type=Path, required=True)
-    score_parser.add_argument("--output", type=Path, required=True)
-    score_parser.add_argument(
-        "--transcripts",
-        type=Path,
-        required=True,
-        help="Directory written by the transcribe command",
-    )
-    score_parser.add_argument(
-        "--timeline", choices=TIMELINES, default="simulated_playout", help=timeline_help
-    )
-    score_parser.add_argument(
-        "--backchannel-reference",
-        type=Path,
-        help="Upstream icc_gt_distribution.json; without it backchannel timing is unscored",
-    )
-    score_parser.set_defaults(handler=score)
 
     export_parser = commands.add_parser(
         "reference-export",

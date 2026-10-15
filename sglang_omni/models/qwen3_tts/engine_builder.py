@@ -27,6 +27,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
 )
 from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
@@ -210,7 +211,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
-            "sampling_backend": "pytorch",
+            "sampling_backend": (
+                "flashinfer" if current_platform.is_cuda() else "pytorch"
+            ),
             "trust_remote_code": True,
             # note (luojiaxuan): under load prefills coalesce into one extend
             # batch, so the ladder must reach well past a single prompt.

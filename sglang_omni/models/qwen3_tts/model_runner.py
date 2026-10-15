@@ -177,21 +177,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         del batch
         return False
 
-    def sample_next_token_ids(
-        self,
-        logits_output: LogitsProcessorOutput,
-        forward_batch: ForwardBatch,
-        schedule_batch: ScheduleBatch | None,
-        requests: list[SchedulerRequest],
-    ) -> torch.Tensor:
-        self.install_semantic_sampling_seeds(forward_batch, requests)
-        return super().sample_next_token_ids(
-            logits_output,
-            forward_batch,
-            schedule_batch,
-            requests,
-        )
-
     # ------------------------------------------------------------------
     # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
@@ -241,15 +226,25 @@ class Qwen3TTSModelRunner(ModelRunner):
         else:
             pass
 
-    def install_semantic_sampling_seeds(
+    def install_sampling_seeds(
         self,
         forward_batch: ForwardBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        batch_size = len(requests)
-        forward_batch.sampling_info.sampling_seed = (
-            self.model.semantic_sampling_seed_tensor[:batch_size]
-        )
+        """Install the staged semantic seeds when a request in the batch carries a
+        seed, or deterministic inference has already seeded every row."""
+        sampling_info = forward_batch.sampling_info
+        if sampling_info.sampling_seed is None and all(
+            scheduled_request.data.req.sampling_params.sampling_seed is None
+            for scheduled_request in requests
+        ):
+            return
+        else:
+            pass
+        self.validate_seeded_sampling_supported(sampling_info)
+        sampling_info.sampling_seed = self.model.semantic_sampling_seed_tensor[
+            : len(requests)
+        ]
 
     def collect_codes(
         self,

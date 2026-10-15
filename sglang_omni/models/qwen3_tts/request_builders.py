@@ -1737,10 +1737,14 @@ def build_sglang_qwen3_tts_request(
     if state.seed is None:
         semantic_sampling_seed = new_qwen3_tts_sampling_seed()
         subtalker_sampling_seed = new_qwen3_tts_sampling_seed()
+        # note (ratish): only a request seed takes the seeded draw; the private seed
+        # fills this row when it shares a batch with a seeded request.
+        request_sampling_seed = None
     else:
         semantic_sampling_seed, subtalker_sampling_seed = (
             derive_qwen3_tts_sampling_seeds(state.seed)
         )
+        request_sampling_seed = semantic_sampling_seed
     sampling_params = SamplingParams(
         max_new_tokens=int(
             gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
@@ -1750,7 +1754,7 @@ def build_sglang_qwen3_tts_request(
         top_k=int(gen_kwargs.get("top_k", 50)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.05)),
         stop_token_ids=[int(model.config.codec_eos_token_id)],
-        sampling_seed=semantic_sampling_seed,
+        sampling_seed=request_sampling_seed,
     )
     sampling_params.normalize(None)
     sampling_params.verify(int(model.config.vocab_size))

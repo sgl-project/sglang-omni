@@ -6675,7 +6675,7 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert data.pending_text_queue.rows.dtype == prepared.trailing_text_hidden.dtype
     assert isinstance(data.semantic_sampling_seed, int)
     assert 0 <= data.semantic_sampling_seed <= 0x7FFFFFFF
-    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+    assert data.req.sampling_params.sampling_seed is None
     assert data.req.sampling_params.repetition_penalty == 1.1
     assert isinstance(data.subtalker_sampling_seed, int)
     assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
@@ -6723,7 +6723,7 @@ def test_qwen3_tts_request_data_uses_private_sampling_seeds(
 
     assert data.semantic_sampling_seed == 12345
     assert data.subtalker_sampling_seed == 67890
-    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+    assert data.req.sampling_params.sampling_seed is None
 
 
 def test_qwen3_tts_request_data_uses_public_seed_split(
@@ -7296,17 +7296,30 @@ def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
     assert get_omni_prefill_inputs(forward_batch) is None
 
 
-def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
+@pytest.mark.parametrize(
+    ("preset_seeds", "request_seeds", "sampled_seeds"),
+    [
+        (None, (123, None), [101, 202]),
+        (None, (None, None), None),
+        (torch.tensor([42, 42]), (None, None), [101, 202]),
+    ],
+    ids=["request_seed", "unseeded", "deterministic_inference"],
+)
+def test_qwen3_tts_sampling_installs_semantic_seeds_for_a_seeded_batch(
     monkeypatch: pytest.MonkeyPatch,
+    preset_seeds: torch.Tensor | None,
+    request_seeds: tuple[int | None, int | None],
+    sampled_seeds: list[int] | None,
 ) -> None:
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
-    sample_calls: list[list[int]] = []
+    sample_calls: list[list[int] | None] = []
 
     def sample(logits_output, forward_batch):
         del logits_output
-        sample_calls.append(forward_batch.sampling_info.sampling_seed.tolist())
+        sampling_seed = forward_batch.sampling_info.sampling_seed
+        sample_calls.append(None if sampling_seed is None else sampling_seed.tolist())
         return torch.tensor([2, 3], dtype=torch.long)
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
@@ -7317,10 +7330,10 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
     forward_batch = SimpleNamespace(
         sampling_info=SimpleNamespace(
-            sampling_seed=None,
+            sampling_seed=preset_seeds,
             need_min_p_sampling=False,
             need_top_p_sampling=False,
-            need_top_k_sampling=False,
+            need_top_k_sampling=True,
         )
     )
     logits_output = SimpleNamespace(next_token_logits=torch.zeros((2, 4)))
@@ -7328,21 +7341,15 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
         SimpleNamespace(
             data=SimpleNamespace(
                 req=SimpleNamespace(
-                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
+                    sampling_params=SimpleNamespace(
+                        repetition_penalty=1.0, sampling_seed=request_seed
+                    ),
                     output_ids=[],
                 ),
                 return_logprob=False,
             )
-        ),
-        SimpleNamespace(
-            data=SimpleNamespace(
-                req=SimpleNamespace(
-                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
-                    output_ids=[],
-                ),
-                return_logprob=False,
-            )
-        ),
+        )
+        for request_seed in request_seeds
     ]
 
     token_ids = runner.sample_next_token_ids(
@@ -7353,8 +7360,7 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
     )
 
     assert token_ids.tolist() == [2, 3]
-    assert sample_calls == [[101, 202]]
-    assert forward_batch.sampling_info.sampling_seed.tolist() == [101, 202]
+    assert sample_calls == [sampled_seeds]
 
 
 def test_qwen3_tts_collect_codes_excludes_semantic_eos(
@@ -8120,7 +8126,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["enable_torch_compile"] is False
-    assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_running_requests"] == 64
     assert build_kwargs["torch_compile_max_bs"] == 64

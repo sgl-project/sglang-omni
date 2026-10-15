@@ -51,8 +51,13 @@ from benchmarks.duplex.reference_core import (
 )
 from benchmarks.duplex.reference_export import send_receipts_required
 from benchmarks.duplex.run_artifacts import file_sha256
-from benchmarks.duplex.v10_dataset import DECLARED_COUNTS, SUBSET_TASKS, SUBSETS, Task
-from benchmarks.duplex.v10_evaluation import RUN_KIND
+from benchmarks.duplex.v10_dataset import (
+    DECLARED_COUNTS,
+    RUN_KIND,
+    SUBSET_TASKS,
+    SUBSETS,
+    Task,
+)
 from benchmarks.duplex.v15_audio import normalize_audio, write_json
 
 MANIFEST_KIND = "full-duplex-bench-v1.0-reference-audio"
