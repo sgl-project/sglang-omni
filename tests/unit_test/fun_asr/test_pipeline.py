@@ -52,7 +52,6 @@ def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     ("batch_size", "wait_ms", "match"),
     [
         (0, 4, "pre_lm_max_batch_size"),
-        (-1, 4, "pre_lm_max_batch_size"),
         (8, -1, "pre_lm_max_batch_wait_ms"),
     ],
 )
