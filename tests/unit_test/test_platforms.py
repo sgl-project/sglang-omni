@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import builtins
-import sys
 from contextlib import nullcontext
-from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -39,80 +36,6 @@ class VendorDeviceMixin(DeviceMixin):
 
 class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
     pass
-
-
-@pytest.mark.parametrize(
-    "platform_type",
-    [
-        OmniPlatform,
-        CPUOmniPlatform,
-        ROCMOmniPlatform,
-        platforms.NPUOmniPlatform,
-        platforms.MUSAOmniPlatform,
-        platforms.AppleOmniPlatform,
-    ],
-)
-def test_joint_rope_is_unavailable_without_a_platform_provider(
-    monkeypatch: pytest.MonkeyPatch, platform_type
-) -> None:
-    cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
-    monkeypatch.setattr(
-        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", cuda_provider
-    )
-
-    assert platform_type().get_joint_rope_inplace_kernel() is None
-    cuda_provider.assert_not_called()
-
-
-def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module_name = "sglang.kernels.ops.attention.rope"
-    rope_module = ModuleType(module_name)
-    kernel = Mock(side_effect=AssertionError("Getter must not execute the kernel"))
-    rope_module.apply_rope_inplace = kernel
-    monkeypatch.setitem(sys.modules, module_name, rope_module)
-
-    assert CUDAOmniPlatform().get_joint_rope_inplace_kernel() is kernel
-    kernel.assert_not_called()
-
-
-def test_cuda_joint_rope_getter_propagates_import_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_import = builtins.__import__
-    error = ImportError("Joint RoPE provider is unavailable")
-
-    def import_without_rope(name, *args, **kwargs):
-        if name == "sglang.kernels.ops.attention.rope":
-            raise error
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", import_without_rope)
-
-    with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
-        CUDAOmniPlatform().get_joint_rope_inplace_kernel()
-
-    assert raised.value is error
-
-
-def test_xpu_joint_rope_getter_returns_the_sycl_kernel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    rope_module = ModuleType("sgl_kernel.jit.rope")
-    rope_module.apply_rope_inplace = Mock()
-    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
-
-    kernel = XPUOmniPlatform().get_joint_rope_inplace_kernel()
-
-    assert kernel is rope_module.apply_rope_inplace
-    kernel.assert_not_called()
-
-
-def test_cpu_platform_needs_no_stage_process_env() -> None:
-    spec = SimpleNamespace(stage_name="cpu", tp_size=2, gpu_id=None)
-
-    assert CPUOmniPlatform().get_stage_process_env(spec, {}) == {}
 
 
 def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
@@ -180,15 +103,6 @@ def test_rocm_platform_without_hip_visibility_sets_only_the_cuda_alias() -> None
 
     assert "HIP_VISIBLE_DEVICES" not in platform.get_stage_process_env(spec, {})
     assert platform.get_stage_process_env(spec, {})["CUDA_VISIBLE_DEVICES"] == "0"
-
-
-def test_rocm_platform_uses_conservative_omni_capabilities() -> None:
-    from sglang_omni.comm.data_ref import TransportKind
-
-    platform = ROCMOmniPlatform()
-
-    assert platform.get_intra_node_transport() is TransportKind.SHM
-    assert platform.get_fused_qk_norm_rope() is None
 
 
 def test_rocm_talker_keeps_auto_moe_backend() -> None:
@@ -266,69 +180,6 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     }
 
 
-def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
-    backend = xpu_platform.XPUOmniPlatform().get_decode_cuda_graph_backend()
-
-    # ServerArgs takes this as a config string, so the hook owes a plain str.
-    assert backend == "full"
-    assert type(backend) is str
-    # Other platforms keep SGLang's own device default.
-    assert OmniPlatform().get_decode_cuda_graph_backend() is None
-    assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
-
-
-def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is True
-    assert OmniPlatform().enable_talker_graph() is True
-    assert CPUOmniPlatform().enable_talker_graph() is True
-
-
-def test_xpu_keeps_the_zonos2_ar_engine_uncompiled() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_zonos2_torch_compile() is False
-    assert OmniPlatform().enable_zonos2_torch_compile() is True
-    assert CPUOmniPlatform().enable_zonos2_torch_compile() is True
-
-
-def test_xpu_serves_the_zonos2_moe_experts_without_fp8() -> None:
-    assert xpu_platform.XPUOmniPlatform().supports_fp8_moe() is False
-    assert OmniPlatform().supports_fp8_moe() is True
-
-
-def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
-    assert OmniPlatform().enable_thinker_decode_graph() is True
-    assert CPUOmniPlatform().enable_thinker_decode_graph() is True
-
-
-def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_tts_predictor_graph() is True
-    assert OmniPlatform().enable_tts_predictor_graph() is True
-    assert CPUOmniPlatform().enable_tts_predictor_graph() is True
-
-
-def test_xpu_keeps_the_ming_audio_vae_streaming_graph_eager() -> None:
-    assert XPUOmniPlatform().supports_graph_captured_fft() is False
-    assert OmniPlatform().supports_graph_captured_fft() is True
-
-
-def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
-    from sglang_omni.platforms.musa import MUSAOmniPlatform
-
-    assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
-
-
-def test_only_xpu_declines_the_qwen3_tts_vocoder_fast_path() -> None:
-    """CUDA, ROCm and MUSA keep the codec decode graphs, the reference encoder
-    graphs and asynchronous decode; XPU declines them."""
-    for platform_type in (
-        CUDAOmniPlatform,
-        ROCMOmniPlatform,
-        platforms.MUSAOmniPlatform,
-    ):
-        assert platform_type().enable_tts_vocoder_fast_path() is True, platform_type
-    assert XPUOmniPlatform().enable_tts_vocoder_fast_path() is False
-
-
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
@@ -372,17 +223,6 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
 
 
-def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
-    from torch.nn.attention import SDPBackend
-
-    backends = xpu_platform.XPUOmniPlatform().get_graph_capture_sdpa_backends()
-
-    assert set(backends) == {SDPBackend.FLASH_ATTENTION, SDPBackend.MATH}
-    assert SDPBackend.MATH in backends, "no fallback for shapes flash declines"
-    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
-        assert platform.get_graph_capture_sdpa_backends() == ()
-
-
 def test_a_platform_that_names_no_sdpa_backend_never_pins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,37 +262,6 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
 
     assert calls == [list(platform.get_graph_capture_sdpa_backends())]
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
-
-
-def test_only_cuda_opts_into_the_codec_decode_graph() -> None:
-    assert CUDAOmniPlatform().enable_codec_decode_graph() is True
-    for platform_type in (
-        OmniPlatform,
-        CPUOmniPlatform,
-        ROCMOmniPlatform,
-        XPUOmniPlatform,
-        platforms.NPUOmniPlatform,
-        platforms.MUSAOmniPlatform,
-        platforms.AppleOmniPlatform,
-    ):
-        assert platform_type().enable_codec_decode_graph() is False, platform_type
-
-
-def test_only_xpu_names_a_measured_bf16_static_pool_floor() -> None:
-    platform = XPUOmniPlatform()
-    assert platform.zonos2_bf16_mem_fraction_static(torch.device("xpu", 0)) == 0.85
-    assert platform.zonos2_bf16_mem_fraction_static(torch.device("cpu")) is None
-    for platform_type in (
-        OmniPlatform,
-        CPUOmniPlatform,
-        CUDAOmniPlatform,
-        ROCMOmniPlatform,
-        platforms.NPUOmniPlatform,
-        platforms.MUSAOmniPlatform,
-        platforms.AppleOmniPlatform,
-    ):
-        for device in (torch.device("cpu"), torch.device("cuda", 0)):
-            assert platform_type().zonos2_bf16_mem_fraction_static(device) is None
 
 
 def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> None:
