@@ -156,6 +156,25 @@ def test_unequal_lengths_are_rejected_by_the_batched_forward() -> None:
         codec.encode_waveforms([make_waveform(3, seed=11), make_waveform(4, seed=12)])
 
 
+def test_consumed_prompt_latents_are_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec = make_codec()
+    waveforms = {
+        "a.wav": make_waveform(6, seed=16),
+        "b.wav": make_waveform(6, seed=17),
+    }
+    install_waveforms(monkeypatch, waveforms)
+
+    singles = [codec.encode_reference(name) for name in waveforms]
+    batched = codec.encode_reference_batch(list(waveforms))
+
+    for single, batch_item in zip(singles, batched):
+        expected = codec.sample_prompt_latents(single["latent_distribution"], seed=42)
+        actual = codec.sample_prompt_latents(batch_item["latent_distribution"], seed=42)
+        assert torch.equal(expected, actual)
+
+
 def test_length_groups_are_exact_not_bucketed() -> None:
     waveforms = [
         torch.zeros(1, 100),
