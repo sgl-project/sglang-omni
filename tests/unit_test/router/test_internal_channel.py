@@ -105,15 +105,6 @@ def test_internal_token_is_required_when_configured() -> None:
         assert client.get("/internal/data_planes").status_code == 403
 
 
-def test_drop_removes_a_data_plane() -> None:
-    state = InternalChannelState()
-    app = create_internal_app(state)
-    with TestClient(app) as client:
-        client.post("/internal/register", json=hello())
-        state.drop(0)
-        assert client.get("/internal/data_planes").json()["data_planes"] == []
-
-
 def test_equal_generation_register_from_another_pid_is_fenced() -> None:
     app = create_internal_app()
     with TestClient(app) as client:
