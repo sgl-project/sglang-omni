@@ -20,7 +20,10 @@ from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3GenerationInput,
+    Drama3GenerationResult,
     Drama3RequestBuilder,
+    Drama3RequestData,
+    Drama3ResultAdapter,
 )
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_s2_pro.stages import (
@@ -159,6 +162,21 @@ def generation_input_of(payload: StagePayload) -> Drama3GenerationInput:
     generation_input = payload.data
     assert isinstance(generation_input, Drama3GenerationInput)
     return generation_input
+
+
+def first_matching_row(haystack: torch.Tensor, needle: torch.Tensor) -> int:
+    """The first row where needle occurs as a contiguous span of haystack."""
+    length = needle.shape[0]
+    if length == 0:
+        raise AssertionError("an empty span matches every prompt")
+    else:
+        pass
+    for index in range(haystack.shape[0] - length + 1):
+        if torch.equal(haystack[index : index + length], needle):
+            return index
+        else:
+            pass
+    raise AssertionError("span is missing from the prompt")
 
 
 def refused(preprocessor: Drama3SpeechPreprocessor, payload: StagePayload) -> str:
@@ -712,3 +730,173 @@ def test_a_direct_client_request_cannot_set_a_repetition_penalty(
     )
 
     assert "repetition_penalty must be 1.0" in message
+
+
+def test_previous_takes_stay_in_the_conversation(tokenizer: Tokenizer) -> None:
+    old_codes = clip_codes(3, 4)
+    generation_input = generation_input_of(
+        speech_preprocessor(tokenizer)(
+            lowered(
+                {
+                    "input": "Thursday.",
+                    "references": [
+                        {"text": "clip", "vq_codes": clip_codes(2, 1).tolist()}
+                    ],
+                    "previous_takes": [
+                        {"text": "Wednesday.", "vq_codes": old_codes.tolist()}
+                    ],
+                }
+            )
+        )
+    )
+
+    assert generation_input.kept_prefix_rows is None
+    assert generation_input.kept_suffix_rows is None
+    prompt_audio = generation_input.prompt_rows[:, 1:]
+    reference_at = first_matching_row(prompt_audio, clip_codes(2, 1).T)
+    take_at = first_matching_row(prompt_audio, old_codes.T)
+    assert reference_at < take_at
+
+
+def test_infill_keeps_the_suffix_and_prefix_for_the_vocoder(
+    tokenizer: Tokenizer,
+) -> None:
+    prefix = clip_codes(2, 8)
+    suffix = clip_codes(3, 9)
+    generation_input = generation_input_of(
+        speech_preprocessor(tokenizer)(
+            lowered(
+                {
+                    "input": "Thursday.",
+                    "infill": {
+                        "prefix": {"vq_codes": prefix.tolist()},
+                        "suffix": {"vq_codes": suffix.tolist()},
+                        "audio_token_count": 4,
+                    },
+                }
+            )
+        )
+    )
+
+    assert generation_input.kept_prefix_rows is not None
+    assert generation_input.kept_suffix_rows is not None
+    assert generation_input.kept_prefix_rows[:, 1:].T.equal(prefix)
+    assert generation_input.kept_suffix_rows[:, 1:].T.equal(suffix)
+    suffix_at = first_matching_row(
+        generation_input.prompt_rows, generation_input.kept_suffix_rows
+    )
+    prefix_at = first_matching_row(
+        generation_input.prompt_rows, generation_input.kept_prefix_rows
+    )
+    assert suffix_at < prefix_at
+
+
+def test_infill_allows_one_empty_side(tokenizer: Tokenizer) -> None:
+    prefix = clip_codes(2, 8)
+    generation_input = generation_input_of(
+        speech_preprocessor(tokenizer)(
+            lowered(
+                {
+                    "input": "Thursday.",
+                    "infill": {
+                        "prefix": {"vq_codes": prefix.tolist()},
+                        "suffix": {},
+                    },
+                }
+            )
+        )
+    )
+
+    assert generation_input.kept_suffix_rows is not None
+    assert generation_input.kept_suffix_rows.shape[0] == 0
+    assert generation_input.kept_prefix_rows is not None
+    assert generation_input.kept_prefix_rows[:, 1:].T.equal(prefix)
+    assert (
+        first_matching_row(
+            generation_input.prompt_rows, generation_input.kept_prefix_rows
+        )
+        >= 0
+    )
+
+
+def test_infill_refuses_a_side_that_is_not_audio(tokenizer: Tokenizer) -> None:
+    message = refused(
+        speech_preprocessor(tokenizer),
+        lowered(
+            {
+                "input": "Thursday.",
+                "infill": {
+                    "prefix": {"vq_codes": clip_codes(1, 1).tolist()},
+                    "suffix": {"text": "after"},
+                },
+            }
+        ),
+    )
+
+    assert "infill.suffix needs audio or vq_codes" in message
+
+
+def test_infill_refuses_streaming_and_a_request_that_also_clones(
+    tokenizer: Tokenizer,
+) -> None:
+    infill = {
+        "prefix": {"vq_codes": clip_codes(1, 1).tolist()},
+        "suffix": {},
+    }
+    preprocessor = speech_preprocessor(tokenizer)
+
+    assert "does not stream" in refused(
+        preprocessor,
+        lowered(
+            {
+                "input": "Thursday.",
+                "stream": True,
+                "response_format": "pcm",
+                "infill": infill,
+            }
+        ),
+    )
+    assert "does not take references" in refused(
+        preprocessor,
+        lowered(
+            {
+                "input": "Thursday.",
+                "infill": infill,
+                "previous_takes": [
+                    {"text": "Wednesday.", "vq_codes": clip_codes(1, 2).tolist()}
+                ],
+            }
+        ),
+    )
+
+
+def test_result_splices_kept_audio_around_the_generated_span() -> None:
+    prefix_rows = torch.tensor([[8, 1, 2], [9, 3, 4]], dtype=torch.int64)
+    suffix_rows = torch.tensor([[10, 5, 6]], dtype=torch.int64)
+    request_data = Drama3RequestData(
+        frame_rows=[[1, 0, 0], [2, 0, 0], [11, 7, 8], [99, 0, 0]],
+        prompt_row_count=2,
+        finish_reason="stop",
+        stage_payload=StagePayload(
+            request_id="request-a",
+            request=OmniRequest(inputs="Thursday."),
+            data=Drama3GenerationInput(
+                prompt_rows=torch.zeros((2, 3), dtype=torch.int64),
+                max_new_tokens=4,
+                temperature=1.0,
+                top_k=30,
+                top_p=0.9,
+                kept_prefix_rows=prefix_rows,
+                kept_suffix_rows=suffix_rows,
+            ),
+        ),
+    )
+
+    result = Drama3ResultAdapter(eos_token_id=99)(request_data).data
+
+    assert isinstance(result, Drama3GenerationResult)
+    assert (
+        result.frames.tolist()
+        == prefix_rows.tolist() + [[11, 7, 8]] + suffix_rows.tolist()
+    )
+    assert result.kept_frame_count == prefix_rows.shape[0] + suffix_rows.shape[0]

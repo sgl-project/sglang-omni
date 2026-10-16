@@ -267,7 +267,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
 
     def final_result_data(self, payload: StagePayload) -> FinalAudioData:
         result = generation_result_of(payload)
-        completion_tokens = int(result.frames.shape[0])
+        completion_tokens = int(result.frames.shape[0] - result.kept_frame_count)
         final_data: FinalAudioData = {
             "modality": "audio",
             "sample_rate": int(self.codec.sample_rate),

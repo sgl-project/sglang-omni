@@ -258,7 +258,15 @@ def test_batch_items_without_a_supported_set_keep_ignoring_extras() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
-    response = client.post("/v1/audio/speech/batch", json={"items": MIXED_BATCH_ITEMS})
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "items": [
+                {"input": "unknown", "not_a_speech_field": True},
+                *MIXED_BATCH_ITEMS[1:],
+            ]
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["succeeded"] == len(MIXED_BATCH_ITEMS)

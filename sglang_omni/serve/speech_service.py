@@ -10,7 +10,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypeAlias, TypedDict
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ValidationError
@@ -33,7 +33,9 @@ from sglang_omni.serve.protocol import (
     SpeechBatchItem,
     SpeechBatchResponse,
     SpeechBatchResult,
+    SpeechInfill,
     SpeechReference,
+    SpeechTake,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -95,9 +97,17 @@ class TTSParams(RequiredTTSParams, total=False):
 SpeechReferenceDescriptor = dict[str, str | int | list[int] | list[list[int]]]
 
 
+class SpeechInfillPrompt(TypedDict):
+    prefix: SpeechReferenceDescriptor
+    suffix: SpeechReferenceDescriptor
+    audio_token_count: NotRequired[int]
+
+
 class SpeechPrompt(TypedDict):
     text: str
     references: list[SpeechReferenceDescriptor]
+    previous_takes: NotRequired[list[SpeechReferenceDescriptor]]
+    infill: NotRequired[SpeechInfillPrompt]
 
 
 class SpeechRequestUpdates(TypedDict, total=False):
@@ -107,6 +117,8 @@ class SpeechRequestUpdates(TypedDict, total=False):
     language: str
     ref_audio: str
     references: list[SpeechReference]
+    previous_takes: list[SpeechTake]
+    infill: SpeechInfill
 
 
 @dataclass(frozen=True)
@@ -479,6 +491,29 @@ class SpeechRequestValidator:
                     normalized_reference.model_dump(exclude_none=True)
                 )
             updates["references"] = references
+        else:
+            pass
+        if request.previous_takes:
+            updates["previous_takes"] = [
+                self.normalize_speech_reference(
+                    take, location=f"previous_takes.{index}"
+                )
+                for index, take in enumerate(request.previous_takes)
+            ]
+        else:
+            pass
+        infill = request.infill
+        if infill is not None:
+            updates["infill"] = infill.model_copy(
+                update={
+                    "prefix": self.normalize_speech_reference(
+                        infill.prefix, location="infill.prefix"
+                    ),
+                    "suffix": self.normalize_speech_reference(
+                        infill.suffix, location="infill.suffix"
+                    ),
+                }
+            )
         else:
             pass
 
@@ -936,7 +971,6 @@ class SpeechRequestValidator:
         else:
             pass
         field_names = accepted_field_names(protocol)
-        reference_field_names = accepted_field_names(SpeechReference)
         for key, value in payload.items():
             path = f"{prefix}{key}"
             field_name = field_names.get(key)
@@ -946,35 +980,26 @@ class SpeechRequestValidator:
                 pass
             elif field_name not in supported_fields:
                 raise bad_request(f"{path} is not supported by this model", param=path)
-            elif field_name == "references" and isinstance(value, list):
+            elif field_name in {"references", "previous_takes"} and isinstance(
+                value, list
+            ):
                 for index, reference in enumerate(value):
-                    unknown_keys = (
-                        [
-                            reference_key
-                            for reference_key in reference
-                            if reference_key not in reference_field_names
-                        ]
-                        if isinstance(reference, Mapping)
-                        else []
-                    )
-                    if unknown_keys:
-                        reference_path = f"{path}.{index}.{unknown_keys[0]}"
-                        raise bad_request(
-                            f"unknown speech reference field: {reference_path}",
-                            param=reference_path,
-                        )
-                    else:
-                        pass
+                    reject_unknown_reference_field(reference, f"{path}.{index}")
+            elif field_name == "infill" and isinstance(value, Mapping):
+                for side in ("prefix", "suffix"):
+                    reject_unknown_reference_field(value.get(side), f"{path}.{side}")
             else:
                 pass
 
-    def normalize_speech_reference(self, reference: SpeechReference) -> SpeechReference:
+    def normalize_speech_reference(
+        self, reference: SpeechReference, *, location: str = "references"
+    ) -> SpeechReference:
         updates: dict[str, str | None] = {
             field_name: None for field_name in _REFERENCE_AUDIO_FIELDS
         }
         if reference.data is not None:
             updates.update(
-                SpeechReferenceMediaIO("references.data").load_base64(
+                SpeechReferenceMediaIO(f"{location}.data").load_base64(
                     reference.media_type or "audio/wav", reference.data
                 )
             )
@@ -985,19 +1010,19 @@ class SpeechRequestValidator:
         if isinstance(reference.audio_path, str):
             updates.update(
                 self.load_media_reference_descriptor(
-                    reference.audio_path, param="references.audio_path"
+                    reference.audio_path, param=f"{location}.audio_path"
                 )
             )
         elif isinstance(reference.ref_audio, str):
             updates.update(
                 self.load_media_reference_descriptor(
-                    reference.ref_audio, param="references.ref_audio"
+                    reference.ref_audio, param=f"{location}.ref_audio"
                 )
             )
         elif isinstance(reference.audio, str):
             updates.update(
                 self.load_media_reference_descriptor(
-                    reference.audio, param="references.audio"
+                    reference.audio, param=f"{location}.audio"
                 )
             )
         else:
@@ -1121,6 +1146,10 @@ def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
     )
 
 
+def reference_descriptor(reference: SpeechReference) -> SpeechReferenceDescriptor:
+    return reference.model_dump(exclude_none=True)
+
+
 def build_speech_prompt(
     request: CreateSpeechRequest,
     reference_descriptors: list[SpeechReferenceDescriptor] | None,
@@ -1129,8 +1158,32 @@ def build_speech_prompt(
         reference_descriptors = reference_descriptors_from_request(request)
     else:
         pass
-    if reference_descriptors:
-        return {"text": request.input, "references": reference_descriptors}
+    previous_takes = [
+        reference_descriptor(take) for take in request.previous_takes or []
+    ]
+    infill = request.infill
+    if reference_descriptors or previous_takes or infill is not None:
+        prompt: SpeechPrompt = {
+            "text": request.input,
+            "references": reference_descriptors,
+        }
+        if previous_takes:
+            prompt["previous_takes"] = previous_takes
+        else:
+            pass
+        if infill is not None:
+            infill_prompt: SpeechInfillPrompt = {
+                "prefix": reference_descriptor(infill.prefix),
+                "suffix": reference_descriptor(infill.suffix),
+            }
+            if infill.audio_token_count is not None:
+                infill_prompt["audio_token_count"] = infill.audio_token_count
+            else:
+                pass
+            prompt["infill"] = infill_prompt
+        else:
+            pass
+        return prompt
     else:
         pass
     return request.input
@@ -1393,6 +1446,23 @@ def validation_error_message(exc: ValidationError) -> str:
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     message = first_error.get("msg") or "invalid speech request"
     return f"{location}: {message}" if location else str(message)
+
+
+def reject_unknown_reference_field(reference: object, path: str) -> None:
+    """Refuse a key SpeechReference does not define. path is that object's location."""
+    if isinstance(reference, Mapping):
+        reference_field_names = accepted_field_names(SpeechReference)
+        for reference_key in reference:
+            if reference_key not in reference_field_names:
+                reference_path = f"{path}.{reference_key}"
+                raise bad_request(
+                    f"unknown speech reference field: {reference_path}",
+                    param=reference_path,
+                )
+            else:
+                pass
+    else:
+        pass
 
 
 def accepted_field_names(protocol: type[BaseModel]) -> dict[str, str]:

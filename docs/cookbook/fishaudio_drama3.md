@@ -98,13 +98,16 @@ A plain `/v1/tts` request: one reference (`en0`), no history, and the tags writt
 
 ### Editing as continuation
 
-Just send the previous VQ tokens and sent it as normal language models do.
+A revision is another turn of the same conversation. Each earlier take keeps the text that was spoken and the audio of that take, and the model speaks the new text from there. `previous_takes` accepts the same audio fields as `references` (`audio_path`, `data`, or `vq_codes`).
 
 ```json
 {
-  "text": "The quarterly report is due on Thursday, so please finish it by noon.",
+  "input": "The quarterly report is due on Thursday, so please finish it by noon.",
   "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
-  "previous_takes": ["The quarterly report is due on Wednesday, so please finish it by noon."]
+  "previous_takes": [{
+    "text": "The quarterly report is due on Wednesday, so please finish it by noon.",
+    "audio_path": "wednesday.wav"
+  }]
 }
 ```
 
@@ -118,18 +121,41 @@ K5 chains a second edit: `by noon` becomes `by five`, with both earlier takes in
 
 ```json
 {
-  "text": "The quarterly report is due on Thursday, so please finish it by five.",
+  "input": "The quarterly report is due on Thursday, so please finish it by five.",
   "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
   "previous_takes": [
-    "The quarterly report is due on Wednesday, so please finish it by noon.",
-    "The quarterly report is due on Thursday, so please finish it by noon."
+    {
+      "text": "The quarterly report is due on Wednesday, so please finish it by noon.",
+      "audio_path": "wednesday.wav"
+    },
+    {
+      "text": "The quarterly report is due on Thursday, so please finish it by noon.",
+      "audio_path": "thursday_noon.wav"
+    }
   ]
 }
 ```
 
+A take can send `vq_codes`, a `[codebooks, frames]` grid, instead of an audio file.
+
 <audio controls>
   <source src="https://github.com/user-attachments/files/33393164/K5_second_edit_chained.wav" type="audio/wav">
 </audio>
+
+### Infilling
+
+Infilling regenerates one span and keeps the audio on either side. `prefix` is the recording before the edit and `suffix` is the recording after it. The model speaks only the middle; the response audio is prefix, then that middle, then suffix. A side with no audio (`{}`) is the start or the end of the clip, and `audio_token_count` is an optional duration hint in frames. Infill does not stream and does not take `references` or `previous_takes`.
+
+```json
+{
+  "input": "The quarterly report is due on Thursday, so please finish it by noon.",
+  "infill": {
+    "prefix": {"audio_path": "before.wav"},
+    "suffix": {"audio_path": "after.wav"},
+    "audio_token_count": 14
+  }
+}
+```
 
 ## Serving Limits
 

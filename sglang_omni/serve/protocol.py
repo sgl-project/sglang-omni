@@ -366,6 +366,26 @@ class SpeechReference(BaseModel):
     vq_codes: list[list[int]] | list[int] | None = None
 
 
+class SpeechTake(SpeechReference):
+    """One finished take: the spoken text and the audio of that take."""
+
+    text: str
+
+
+class SpeechInfill(BaseModel):
+    """Audio kept around one regenerated span.
+
+    prefix is the recording before the edit and suffix is the recording after
+    it. audio_token_count, when set, hints at the new span's length in frames.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefix: SpeechReference
+    suffix: SpeechReference
+    audio_token_count: int | None = Field(default=None, ge=1)
+
+
 class CreateSpeechRequest(BaseModel):
     """OpenAI-compatible text-to-speech request.
 
@@ -396,6 +416,8 @@ class CreateSpeechRequest(BaseModel):
     ref_audio: str | None = None  # path or URL to reference audio
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
+    previous_takes: list[SpeechTake] | None = None
+    infill: SpeechInfill | None = None
     x_vector_only_mode: bool | None = None
     stream_codec_output: bool | None = None
     suppress_bootstrap_silence: bool | None = None
@@ -435,6 +457,8 @@ class SpeechBatchItem(BaseModel):
     ref_audio: object = None
     ref_text: object = None
     references: object = None
+    previous_takes: object = None
+    infill: object = None
     x_vector_only_mode: object = None
     stream_codec_output: object = None
     suppress_bootstrap_silence: object = None
@@ -470,6 +494,8 @@ class CreateSpeechBatchRequest(BaseModel):
     ref_audio: str | None = None
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
+    previous_takes: list[SpeechTake] | None = None
+    infill: SpeechInfill | None = None
     x_vector_only_mode: bool | None = None
     stream_codec_output: bool | None = None
     suppress_bootstrap_silence: bool | None = None

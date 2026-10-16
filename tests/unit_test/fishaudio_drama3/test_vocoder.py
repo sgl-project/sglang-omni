@@ -109,7 +109,11 @@ def vocoder_with(
 
 
 def final_payload(
-    frames: torch.Tensor, *, is_streaming: bool, finish_reason: str = "length"
+    frames: torch.Tensor,
+    *,
+    is_streaming: bool,
+    finish_reason: str = "length",
+    kept_frame_count: int = 0,
 ) -> StagePayload:
     return StagePayload(
         request_id="request-a",
@@ -118,6 +122,7 @@ def final_payload(
             frames=frames,
             prompt_row_count=PROMPT_ROW_COUNT,
             finish_reason=finish_reason,
+            kept_frame_count=kept_frame_count,
         ),
     )
 
@@ -345,6 +350,21 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+
+
+def test_kept_infill_frames_are_not_completion_tokens() -> None:
+    vocoder = vocoder_with(FrameNumberCodec())
+    payload = final_payload(numbered_frames(5), is_streaming=False, kept_frame_count=2)
+
+    results = vocoder.vocode_payloads([payload])
+
+    result = results[0].data
+    assert isinstance(result, dict)
+    assert result["usage"] == {
+        "prompt_tokens": PROMPT_ROW_COUNT,
+        "completion_tokens": 3,
+        "total_tokens": PROMPT_ROW_COUNT + 3,
+    }
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:
@@ -576,7 +596,7 @@ def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
     ],
 )
 def test_a_ramp_with_a_non_positive_stride_is_refused(
-    stream_followup_stride_ramp: tuple[int, ...]
+    stream_followup_stride_ramp: tuple[int, ...],
 ) -> None:
     with pytest.raises(ValueError, match="stream_followup_stride_ramp"):
         Drama3VocoderScheduler(

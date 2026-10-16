@@ -114,6 +114,8 @@ class Drama3PipelineConfig(PipelineConfig):
             "stream",
             "stream_format",
             "references",
+            "previous_takes",
+            "infill",
             "ref_audio",
             "ref_text",
             "task_type",

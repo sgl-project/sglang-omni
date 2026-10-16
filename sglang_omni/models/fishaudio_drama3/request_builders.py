@@ -42,15 +42,20 @@ class Drama3GenerationInput:
     temperature: float
     top_k: int
     top_p: float
+    # Infill keeps these spans out of the generation and splices them around it.
+    kept_prefix_rows: torch.Tensor | None = None
+    kept_suffix_rows: torch.Tensor | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
 class Drama3GenerationResult:
-    """Sampled frames [frames, 1 + num_codebooks], without the end-of-speech frame."""
+    """Vocoder frames [frames, 1 + num_codebooks], kept infill audio spliced around the sample."""
 
     frames: torch.Tensor
     prompt_row_count: int
     finish_reason: str | None
+    # Spliced infill rows. They are prompt context, not sampled completion frames.
+    kept_frame_count: int = 0
 
 
 @dataclass
@@ -228,18 +233,30 @@ class Drama3ResultAdapter:
     def __call__(self, request_data: Drama3RequestData) -> StagePayload:
         payload = request_data.stage_payload
         assert payload is not None
+        generation_input = payload.data
+        assert isinstance(generation_input, Drama3GenerationInput)
         sampled_rows = request_data.frame_rows[request_data.prompt_row_count :]
         if sampled_rows and sampled_rows[-1][0] == self.eos_token_id:
             sampled_rows = sampled_rows[:-1]
         else:
             pass
         frame_width = len(request_data.frame_rows[0])
+        frames = torch.tensor(sampled_rows, dtype=torch.int64, device="cpu").reshape(
+            len(sampled_rows), frame_width
+        )
+        prefix_rows = generation_input.kept_prefix_rows
+        suffix_rows = generation_input.kept_suffix_rows
+        if prefix_rows is not None or suffix_rows is not None:
+            assert prefix_rows is not None and suffix_rows is not None
+            frames = torch.cat((prefix_rows, frames, suffix_rows))
+            kept_frame_count = prefix_rows.shape[0] + suffix_rows.shape[0]
+        else:
+            kept_frame_count = 0
         payload.data = Drama3GenerationResult(
-            frames=torch.tensor(sampled_rows, dtype=torch.int64, device="cpu").reshape(
-                len(sampled_rows), frame_width
-            ),
+            frames=frames,
             prompt_row_count=request_data.prompt_row_count,
             finish_reason=request_data.finish_reason,
+            kept_frame_count=kept_frame_count,
         )
         return payload
 

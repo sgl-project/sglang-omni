@@ -12,7 +12,12 @@ import pytest
 import torch
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from sglang_omni.models.fishaudio_drama3.prompt import ReferencePart, build_prompt_rows
+from sglang_omni.models.fishaudio_drama3.prompt import (
+    InfillSpan,
+    ReferencePart,
+    SpokenTake,
+    build_prompt_rows,
+)
 
 NUM_CODEBOOKS = 10
 CODEBOOK_SIZE = 4096
@@ -43,7 +48,7 @@ def build_toy_tokenizer() -> Tokenizer:
         add_prefix_space=False, use_regex=False
     )
     tokenizer.add_special_tokens(
-        ["<|im_start|>", "<|im_end|>", "<|voice|>"]
+        ["<|im_start|>", "<|im_end|>", "<|voice|>", "<|fim_suffix|>", "<|fim_prefix|>"]
         + [f"<|speaker:{speaker_id}|>" for speaker_id in range(16)]
         + [f"<|semantic:{code}|>" for code in range(CODEBOOK_SIZE)]
     )
@@ -292,7 +297,6 @@ def test_each_literal_and_part_is_tokenized_on_its_own(
             "<|speaker:0|> current part<|endofturn|>next part",
         ),
         ("hi <|audio_separator|> there", "<|speaker:0|> hi <|audio_separator|> there"),
-        ("<|fim_prefix|> hi", "<|speaker:0|> <|fim_prefix|> hi"),
         ("<|speaker:15|> x", "<|speaker:15|> x"),
         # U+001F is not Unicode White_Space, so this text is not empty.
         ("\x1f", "<|speaker:0|> \x1f"),
@@ -364,6 +368,8 @@ STRUCTURAL_TOKENS = [
     "<|text|>",
     "<|interleave|>",
     "<|semantic:3|>",
+    "<|fim_suffix|>",
+    "<|fim_prefix|>",
 ]
 MALFORMED_SPEAKER_TEXTS = [
     "<|speaker:99|> x",
@@ -451,10 +457,84 @@ def test_codebook_parameters_must_be_positive(
         )
 
 
+def test_previous_takes_are_finished_turns_before_the_new_one(
+    toy_tokenizer: Tokenizer,
+) -> None:
+    old_codes = clip_codes(3, 4)
+    rows = build_prompt_rows(
+        "Thursday.",
+        [reference("clip", clip_codes(2, 1))],
+        toy_tokenizer,
+        num_codebooks=NUM_CODEBOOKS,
+        codebook_size=CODEBOOK_SIZE,
+        previous_takes=[SpokenTake(text="Wednesday.", audio_codes=old_codes)],
+    )
+
+    assert torch.equal(
+        rows,
+        expected_rows(
+            toy_tokenizer,
+            [SYSTEM, REFERENCE_INSTRUCTION]
+            + [reference_header(1, "<|speaker:0|> clip"), clip_codes(2, 1), END]
+            + [USER, "<|speaker:0|> Wednesday.", END, VOICE_TURN, old_codes, END]
+            + [USER, "<|speaker:0|> Thursday.", END, VOICE_TURN],
+        ),
+    )
+
+
+def test_infill_writes_the_suffix_before_the_prefix(toy_tokenizer: Tokenizer) -> None:
+    prefix = clip_codes(2, 8)
+    suffix = clip_codes(3, 9)
+    rows = build_prompt_rows(
+        "Thursday.",
+        [],
+        toy_tokenizer,
+        num_codebooks=NUM_CODEBOOKS,
+        codebook_size=CODEBOOK_SIZE,
+        infill_span=InfillSpan(
+            prefix_codes=prefix, suffix_codes=suffix, audio_token_count=4
+        ),
+    )
+
+    prose = (
+        "fill in the missing part of the speech; the suffix follows <|fim_suffix|> "
+        "and the prefix follows\n"
+    )
+    assert torch.equal(
+        rows,
+        expected_rows(
+            toy_tokenizer,
+            [SYSTEM, prose, "<|fim_prefix|>", END, USER]
+            + ["<|speaker:0|> Thursday. [audio tokens: 4]\n", "<|fim_suffix|>", suffix]
+            + ["<|fim_prefix|>", prefix, END, VOICE_TURN],
+        ),
+    )
+
+
+def test_infill_rejects_a_span_with_no_kept_audio(toy_tokenizer: Tokenizer) -> None:
+    empty = torch.zeros((NUM_CODEBOOKS, 0), dtype=torch.long)
+    with pytest.raises(ValueError, match="needs audio before or after"):
+        build_prompt_rows(
+            "Thursday.",
+            [],
+            toy_tokenizer,
+            num_codebooks=NUM_CODEBOOKS,
+            codebook_size=CODEBOOK_SIZE,
+            infill_span=InfillSpan(prefix_codes=empty, suffix_codes=empty),
+        )
+
+
 def test_real_tokenizer_special_tokens_are_single_contiguous_ids(
     real_tokenizer: Tokenizer,
 ) -> None:
-    for token in ["<|im_start|>", "<|im_end|>", "<|voice|>", "<|endofturn|>"]:
+    for token in [
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|voice|>",
+        "<|endofturn|>",
+        "<|fim_suffix|>",
+        "<|fim_prefix|>",
+    ]:
         assert real_tokenizer.encode(token).ids == [real_tokenizer.token_to_id(token)]
     speaker_begin_id = real_tokenizer.token_to_id("<|speaker:0|>")
     for speaker_id in range(16):

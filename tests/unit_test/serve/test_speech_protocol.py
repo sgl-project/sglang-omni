@@ -463,7 +463,7 @@ SUPPORTED_SPEECH_FIELDS = frozenset(
 REFUSED_SPEECH_FIELDS: dict[str, tuple[dict[str, object], str]] = {
     "unknown-empty-dict": ({"stage_sampling": {}}, "stage_sampling"),
     "unknown-null": ({"stage_sampling": None}, "stage_sampling"),
-    "unknown-false": ({"infill": False}, "infill"),
+    "unknown-false": ({"not_a_speech_field": False}, "not_a_speech_field"),
     "unknown-zero": ({"prefix_audio_codes": 0}, "prefix_audio_codes"),
     "unsupported-empty-dict": ({"stage_params": {}}, "stage_params"),
     "unsupported-empty-string": ({"instructions": ""}, "instructions"),
@@ -1046,6 +1046,82 @@ def test_reference_list_canonicalizes_data_url() -> None:
             {"data": encoded, "media_type": "audio/wav", "text": "reference"}
         ],
     }
+
+
+def test_previous_take_requires_the_spoken_text() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_raw_request(
+            {"input": "hello", "previous_takes": [{"vq_codes": [[1]]}]}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "previous_takes.0.text" in exc_info.value.message
+
+
+def test_previous_takes_and_infill_canonicalize_audio_like_references(
+    tmp_path: Path,
+) -> None:
+    audio_path = tmp_path / "take.wav"
+    audio_path.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=tmp_path,
+    )
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "previous_takes": [{"text": "old", "audio": audio_path.as_uri()}],
+            "infill": {
+                "prefix": {"ref_audio": audio_path.as_uri()},
+                "suffix": {},
+                "audio_token_count": 4,
+            },
+        }
+    )
+    gen_req = service.build_generate_request(request, validate=False)
+
+    resolved = {"audio_path": str(audio_path.resolve())}
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [],
+        "previous_takes": [{"text": "old", **resolved}],
+        "infill": {
+            "prefix": resolved,
+            "suffix": {},
+            "audio_token_count": 4,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "path"),
+    [
+        (
+            {"previous_takes": [{"text": "old", "vq_codes": [[1]], "speaker": 0}]},
+            "previous_takes.0.speaker",
+        ),
+        (
+            {"infill": {"prefix": {"speaker": 1}, "suffix": {}}},
+            "infill.prefix.speaker",
+        ),
+    ],
+)
+def test_edit_audio_rejects_unknown_nested_fields(
+    fields: dict[str, object], path: str
+) -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        supported_speech_fields=SUPPORTED_SPEECH_FIELDS | {"previous_takes", "infill"},
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_raw_request({"input": "hello", **fields})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == path
 
 
 def test_allowed_local_media_path_must_be_directory(tmp_path: Path) -> None:

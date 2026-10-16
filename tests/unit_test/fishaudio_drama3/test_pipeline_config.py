@@ -270,6 +270,12 @@ def test_every_supported_speech_field_is_accepted() -> None:
             "stream": True,
             "stream_format": "sse",
             "references": [{"text": "take", "vq_codes": [[0]] * 10}],
+            "previous_takes": [{"text": "old", "vq_codes": [[0]] * 10}],
+            "infill": {
+                "prefix": {"vq_codes": [[1]] * 10},
+                "suffix": {"vq_codes": [[2]] * 10},
+                "audio_token_count": 4,
+            },
             "ref_audio": "data:audio/wav;base64,AAAA",
             "ref_text": "take",
             "task_type": "Base",
@@ -297,7 +303,6 @@ def test_every_supported_speech_field_is_accepted() -> None:
         ("duration_tokens", 1),
         ("initial_codec_chunk_frames", 0),
         ("stage_sampling", {}),
-        ("infill", None),
     ],
 )
 def test_speech_fields_the_model_cannot_honor_are_refused(
