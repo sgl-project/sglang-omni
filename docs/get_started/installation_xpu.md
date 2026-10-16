@@ -15,10 +15,12 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
 that model's CosyVoice dependencies — see
-[Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
+[Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). `[fishaudio]` adds the dependencies for [Fish Audio Drama 3](#fish-audio-drama-3-text-to-speech-two-xpus-with-cpu-offload), whose CPU-offloaded deployment requires additional SGLang fixes. ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
 families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
+
+The Fish Audio extra requires `uv pip`: `descript-audiotools==0.7.2` pins `protobuf<3.20`, which conflicts with ONNX. The XPU manifest's `[tool.uv] override-dependencies` preserves a compatible protobuf version; plain `pip` ignores that override.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
@@ -48,7 +50,7 @@ source oneAPI — see [Runtime environment](#runtime-environment-important).
 
 ## 🛠️ Option B: Install into an existing XPU env (recommended here)
 
-The helper swaps in `pyproject_xpu.toml`, installs with the XPU index, then restores the CUDA one:
+The helper swaps in `pyproject_xpu.toml`, installs with `uv pip` and the XPU index, then restores the CUDA one. Install `uv` first with `python -m pip install uv`:
 
 ```bash
 git clone git@github.com:sgl-project/sglang-omni.git
@@ -66,6 +68,7 @@ Pick extras with `--extras` (comma-separated):
 ```bash
 scripts/xpu/install_xpu.sh --extras eval           # core + SeedTTS/WER eval + tests
 scripts/xpu/install_xpu.sh --extras all            # alias for eval
+scripts/xpu/install_xpu.sh --extras fishaudio      # Fish Audio Drama 3 codec dependencies
 ```
 
 Or do it manually (the same steps the script automates):
@@ -73,7 +76,7 @@ Or do it manually (the same steps the script automates):
 ```bash
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
-pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+uv pip install --python "$(which python)" -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 # torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.
 pip install --no-deps openai-whisper==20250625
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
@@ -391,6 +394,51 @@ Set `model` to the checkpoint being served. The validation runs produced
 See the [dots.tts cookbook](../cookbook/dots_tts.md) for streaming and
 solver parameters.
 
+### Fish Audio Drama 3 (text-to-speech, two XPUs with CPU offload)
+
+The [`fishaudio/drama-3`](https://huggingface.co/fishaudio/drama-3) checkpoint can use two 24 GiB XPUs with 28 GiB of weights offloaded to host memory. Allow additional host memory for checkpoint loading.
+
+**CPU-offload prerequisite:** SGLang must support loading CPU-offloaded GemmaRMSNorm weights into its device buffer and preserve GDN's cached convolution weight views. Stock `v0.5.21` lacks these fixes: loading can fail, or serving can return incorrect speech. This recipe requires both fixes in the installed SGLang source.
+
+Install the optional codec dependencies:
+
+```bash
+scripts/xpu/install_xpu.sh --extras fishaudio
+```
+
+Save the following as `drama3_xpu.yaml`:
+
+```yaml
+config_cls: Drama3PipelineConfig
+model_path: fishaudio/drama-3
+stages:
+  preprocessing:
+    gpu: 1
+  tts_engine:
+    gpu: 0
+    engine:
+      cpu_offload_gb: 28
+      random_seed: 1234
+  vocoder:
+    gpu: 1
+    gpu_memory_fraction: 0.35
+    factory:
+      window_cuda_graphs: false
+```
+
+```bash
+ZE_AFFINITY_MASK=0,1 sgl-omni serve --config drama3_xpu.yaml --port 8000
+
+curl http://localhost:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Hello, how are you?","response_format":"wav","max_new_tokens":256}' \
+  --output speech.wav
+```
+
+The engine retains its graph defaults. Disable vocoder window graphs because the XPU SDPA path can fail capture with “Graph nodes cannot depend on events from outside the graph.” The vocoder's 0.35 memory share leaves room for the configured non-streaming decode capacity on a 24 GiB card. CUDA-only fused tower and codebook sampling kernels use the existing PyTorch fallbacks on XPU.
+
+See the [Fish Audio Drama 3 cookbook](../cookbook/fishaudio_drama3.md) for reference audio, streaming, and multi-speaker requests.
+
 ### ZONOS2 (MoE TTS, single XPU)
 
 ZONOS2 needs the Descript DAC codec. `--no-deps` is required:
@@ -564,3 +612,5 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
+
+> Fish Audio Drama 3 has a [two-card recipe with CPU offload](#fish-audio-drama-3-text-to-speech-two-xpus-with-cpu-offload), requiring the SGLang CPU-offload fixes described above. Its engine graphs remain enabled and its vocoder windows run eagerly.
