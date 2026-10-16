@@ -1113,6 +1113,19 @@ def first_frame_graph_setup(
     model = Mock(spec=Drama3ForCausalLM)
     model.config = FishOmniConfig(**fish_config_dict())
     model.lm_head = SimpleNamespace(weight=torch.zeros(1))
+    model.audio_decoder = SimpleNamespace(
+        main_token_candidate_ids=torch.tensor(
+            sorted(
+                {
+                    model.config.eos_token_id,
+                    *range(
+                        model.config.semantic_start_token_id,
+                        model.config.semantic_end_token_id + 1,
+                    ),
+                }
+            )
+        )
+    )
     model.first_frame_graphs = None
     return builder, model
 
@@ -1153,7 +1166,7 @@ def test_first_frame_graphs_cover_requests_up_to_the_decode_graph_batch(
         sample_first_frames=model.sample_first_frames,
         attention_backend=sglang_runner.attn_backend,
         max_request_count=max_request_count,
-        vocab_size=text_config.vocab_size,
+        vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
         hidden_size=text_config.hidden_size,
         hidden_dtype=torch.bfloat16,
         frame_width=FRAME_WIDTH,
