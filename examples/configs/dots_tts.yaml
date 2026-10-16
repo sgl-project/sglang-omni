@@ -27,6 +27,9 @@ stages:
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16
+      # Whole-request backbone prefills replay as breakable CUDA graphs.
+      # Set this to disabled to run them eagerly.
+      cuda_graph_backend_prefill: breakable
       # note (luojiaxuan): backbone decode runs through the SGLang CUDA graph
       # with the model-owned feedback buffer; delete these two lines (or set
       # disable_cuda_graph: true) to fall back to eager backbone decode.
