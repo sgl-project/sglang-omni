@@ -146,7 +146,7 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
 
 @pytest.mark.parametrize(
     "gpu_id,expected_device,expected_tf32",
-    [(0, "cuda:0", False), (None, "cpu", True)],
+    [(0, "cuda:0", False), (1, "cuda:1", False), (None, "cpu", True)],
 )
 def test_fish_preprocessing_encodes_references_on_the_placement_device(
     monkeypatch: pytest.MonkeyPatch,
