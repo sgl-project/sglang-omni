@@ -386,6 +386,7 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
 
 
 @pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
     device, backend = rvq_graph_target()
 

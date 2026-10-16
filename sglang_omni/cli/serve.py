@@ -304,6 +304,88 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def parse_stage_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    else:
+        pass
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--stage-offload-components must not be empty")
+    else:
+        pass
+    return components
+
+
+def apply_stage_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_offload_components: str | None,
+) -> PipelineConfig:
+    components = parse_stage_offload_components(stage_offload_components)
+    if not components:
+        return pipeline_config
+    else:
+        pass
+
+    role_to_stage_fn = getattr(
+        type(pipeline_config), "stage_offload_role_to_stage", None
+    )
+    role_to_stage = role_to_stage_fn() if role_to_stage_fn is not None else {}
+    if not role_to_stage:
+        raise typer.BadParameter(
+            "--stage-offload-components is not supported by this pipeline"
+        )
+    else:
+        pass
+
+    unknown = components - role_to_stage.keys()
+    if unknown:
+        raise typer.BadParameter(
+            "--stage-offload-components does not support: "
+            f"{', '.join(sorted(unknown))}; supported: "
+            f"{', '.join(sorted(role_to_stage))}"
+        )
+    else:
+        pass
+    missing = role_to_stage.keys() - components
+    if missing:
+        raise typer.BadParameter(
+            "--stage-offload-components currently requires all of: "
+            f"{', '.join(sorted(role_to_stage))} (missing "
+            f"{', '.join(sorted(missing))})"
+        )
+    else:
+        pass
+
+    ar_stage = pipeline_config.stage_named(role_to_stage["ar"])
+    dit_stage = pipeline_config.stage_named(role_to_stage["dit"])
+    if ar_stage.gpu != dit_stage.gpu:
+        raise typer.BadParameter(
+            "--stage-offload-components ar,dit requires the "
+            f"{ar_stage.name!r} and {dit_stage.name!r} stages on the same GPU "
+            f"(currently {ar_stage.gpu!r} and {dit_stage.gpu!r}); use the "
+            "'single-gpu' config variant"
+        )
+    else:
+        pass
+
+    config_cls = type(pipeline_config)
+    data = pipeline_config.model_dump()
+    process = ar_stage.process or ar_stage.name
+    writes: dict[str, object] = {
+        f"stages.{ar_stage.name}.process": process,
+        f"stages.{dit_stage.name}.process": process,
+        f"stages.{ar_stage.name}.factory.enable_serial_offload": True,
+        f"stages.{dit_stage.name}.factory.enable_serial_offload": True,
+    }
+    for path_text, value in writes.items():
+        ConfigPath.parse(path_text, config_cls).write(data, value)
+    return config_cls(**data)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -390,6 +472,17 @@ def serve(
                 "A dotted per-stage flag (--<stage>.engine.mem_fraction_static) "
                 "overrides this for that stage. If omitted, SGLang chooses "
                 "the value automatically."
+            ),
+        ),
+    ] = None,
+    stage_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--stage-offload-components",
+            "--stage_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs."
             ),
         ),
     ] = None,
@@ -512,6 +605,10 @@ def serve(
         validate_colocate_config(merged_config)
     else:
         pass
+    merged_config = apply_stage_offload_cli_overrides(
+        merged_config,
+        stage_offload_components=stage_offload_components,
+    )
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):

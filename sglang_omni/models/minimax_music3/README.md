@@ -3,6 +3,14 @@
 Text-to-music: a Qwen3 backbone with an eight-codebook RVQ frame, followed by a
 flow-matching DIT and a DAC decoder. Output is 32 kHz stereo.
 
+On Apple Silicon, use the native MLX path with a converted artifact:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path mlx-community/MiniMax-Music3-mxfp8 \
+  --port 8000
+```
+
 ```bash
 # Single GPU
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
@@ -23,6 +31,13 @@ second. Only the placement differs — both layouts run the acoustic stage
 in FP32. Defaults that are on without further flags: backbone decode
 CUDA graph, RVQ depth CUDA graph, compiled DIT blocks, compiled DAV decoder,
 and batched seeded sampling.
+
+For a lower-memory single-device mode, add
+`--stage-offload-components ar,dit`. This serializes the complete song request
+lifecycle. CUDA keeps canonical CPU weights and only the active stage's GPU
+replica; MLX reloads the active stage from its resolved local artifact. The
+tradeoff is stage-switch latency, and CUDA graphs/compiled acoustic blocks are
+disabled while offload is enabled.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \

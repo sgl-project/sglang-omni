@@ -33,6 +33,40 @@ uv pip install -v -e .   # drop -e for a non-editable install
 
 On Intel GPUs, first follow the [Intel XPU installation instructions](../get_started/installation_xpu.md), then replace `CUDA_VISIBLE_DEVICES` in the commands below with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0` or `ZE_AFFINITY_MASK=0,1`).
 
+### Apple Silicon (MLX)
+
+On Apple Silicon, set `SGLANG_USE_MLX=1` and serve a converted MLX artifact.
+The artifact contains the Qwen3/RVQ, Flow/DiT, DAV weights, and tokenizer, so
+the official modular PyTorch checkpoint is not loaded by this path.
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path mlx-community/MiniMax-Music3-mxfp8 \
+  --port 8000
+```
+
+`mlx-community/MiniMax-Music3-mxfp8` is the recommended balance of memory and
+lyric fidelity. BF16, affine 8/6/4-bit, MXFP4, and NVFP4 conversions using the
+same `mlx-audio` artifact layout are also accepted. For a reproducible
+snapshot, pass revision `d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e` to both
+stages:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path mlx-community/MiniMax-Music3-mxfp8 \
+  --minimax_music3_ar.factory.mlx_model_revision \
+    d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e \
+  --dit_dav.factory.mlx_model_revision \
+    d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e \
+  --port 8000
+```
+
+The MLX path currently processes one song at a time. It keeps the same
+two-stage hidden-chunk contract and 32 kHz stereo response as CUDA, but does
+not use CUDA graphs, `torch.compile`, Cache-DiT, or breakable CUDA graphs.
+The implementation is native to SGLang-Omni at runtime; `mlx-audio` is an
+implementation and artifact-format reference, not a dependency.
+
 **Single GPU** (colocate both stages):
 
 ```bash
@@ -48,6 +82,36 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
+
+### Low-memory stage offload
+
+Stage offload is opt-in and requires the single-device layout. It admits one
+song request for its complete AR-to-acoustic lifetime. On CUDA, immutable CPU
+weights remain canonical while the active stage has a GPU replica. On MLX, the
+inactive model is released and later reloaded from the local artifact snapshot.
+
+```bash
+# CUDA
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path MiniMaxAI/MiniMax-Music3 \
+  --stage-offload-components ar,dit \
+  --port 8000
+
+# Apple Silicon
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path mlx-community/MiniMax-Music3-mxfp8 \
+  --stage-offload-components ar,dit \
+  --port 8000
+```
+
+This mode trades stage-switch latency and host/file-cache traffic for lower
+active accelerator memory. CUDA graph replay and compiled acoustic blocks are
+disabled only in this mode because parameter addresses change across
+transitions. MLX keeps tokenizer/config metadata resident, resolves the remote
+revision once per stage at startup, keeps acoustic weights loaded across all
+chunks of a request, and clears them only after terminal cleanup. Logs report
+CUDA allocated/reserved/device-free memory and MLX active/cache memory at
+transitions; allocator counters are not the same as whole-system memory use.
 
 ## Generating Music
 

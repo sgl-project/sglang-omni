@@ -26,6 +26,19 @@ def visible_gpu_count() -> int:
     return torch.get_device_module(current_platform.device_type).device_count()
 
 
+class MiniMaxMusic3ARFactoryArgs(FactoryArgs):
+    """AR constructor knobs shared by CUDA and native MLX."""
+
+    mlx_model_revision: str | None = None
+    enable_serial_offload: bool | None = None
+
+
+class MiniMaxMusic3ARStageConfig(EngineStageConfig):
+    factory: MiniMaxMusic3ARFactoryArgs = Field(
+        default_factory=MiniMaxMusic3ARFactoryArgs
+    )
+
+
 class DitDavFactoryArgs(FactoryArgs):
     """Acoustic DIT/DAV constructor knobs, typed like the shared ones."""
 
@@ -35,6 +48,8 @@ class DitDavFactoryArgs(FactoryArgs):
     cache_dit: bool | None = None
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
+    mlx_model_revision: str | None = None
+    enable_serial_offload: bool | None = None
 
 
 class DitDavStageConfig(StageConfig):
@@ -49,11 +64,11 @@ def stages(*, acoustic_gpu: int) -> list[StageConfig]:
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="minimax_music3_ar",
         ),
-        EngineStageConfig(
+        MiniMaxMusic3ARStageConfig(
             name="minimax_music3_ar",
             process="minimax_music3_ar",
             factory_path=f"{_PKG}.stages.create_ar_executor",
-            factory=FactoryArgs(max_concurrency=16),
+            factory=MiniMaxMusic3ARFactoryArgs(max_concurrency=16),
             gpu=0,
             next="dit_dav",
             stream_to=["dit_dav"],
@@ -97,7 +112,7 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     requires_model_capabilities: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "minimax_music3_ar": EngineStageConfig,
+        "minimax_music3_ar": MiniMaxMusic3ARStageConfig,
         "dit_dav": DitDavStageConfig,
     }
 
@@ -115,6 +130,10 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("preprocessing", "minimax_music3_ar")})
+
+    @classmethod
+    def stage_offload_role_to_stage(cls) -> dict[str, str]:
+        return {"ar": "minimax_music3_ar", "dit": "dit_dav"}
 
 
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
