@@ -47,105 +47,6 @@ enum MLXConfigurationSummarySupport {
 }
 
 extension ModelSettingsView {
-    func promptBinding(for storage: Binding<String>, kind: AppPromptKind) -> Binding<String> {
-        Binding(
-            get: {
-                AppPromptDefaults.resolvedStoredText(storage.wrappedValue, kind: kind)
-            },
-            set: { newValue in
-                storage.wrappedValue = AppPromptDefaults.canonicalStoredText(newValue, kind: kind)
-            }
-        )
-    }
-
-    var remoteASRRows: [ModelTableRow] {
-        RemoteASRProvider.allCases.map { provider in
-            let config = RemoteModelConfigurationStore.resolvedASRConfiguration(
-                provider: provider,
-                stored: remoteASRConfigurations
-            )
-            let isSelected = selectedRemoteASRProvider == provider
-            let status = remoteASRStatusText(
-                for: provider,
-                configuration: config
-            )
-            return ModelTableRow(
-                id: provider.rawValue,
-                title: provider.title,
-                isActive: isSelected,
-                status: status,
-                badgeText: hasIssue(for: .remoteASRProvider(provider)) ? AppLocalization.localizedString("Needs Setup") : nil,
-                actions: [
-                    ModelTableAction(
-                        title: selectionActionTitle(isSelected: isSelected),
-                        isEnabled: !isSelected
-                    ) {
-                        useRemoteASRProvider(provider)
-                    },
-                    ModelTableAction(title: AppLocalization.localizedString("Configure")) {
-                        editingASRProvider = provider
-                    }
-                ]
-            )
-        }
-    }
-
-    var remoteLLMRows: [ModelTableRow] {
-        RemoteLLMProvider.allCases.map { provider in
-            let isConfigured = RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
-                provider: provider,
-                stored: remoteLLMConfigurations
-            )
-            let config = RemoteModelConfigurationStore.resolvedLLMConfiguration(
-                provider: provider,
-                stored: remoteLLMConfigurations
-            )
-            let status = isConfigured
-                ? AppLocalization.format("Configured model: %@", config.model)
-                : AppLocalization.localizedString("Not configured")
-            return ModelTableRow(
-                id: provider.rawValue,
-                title: provider.title,
-                isActive: selectedRemoteLLMProvider == provider,
-                status: status,
-                badgeText: remoteLLMBadgeText(for: provider),
-                actions: [
-                    ModelTableAction(
-                        title: selectionActionTitle(isSelected: selectedRemoteLLMProvider == provider),
-                        isEnabled: selectedRemoteLLMProvider != provider
-                    ) {
-                        useRemoteLLMProvider(provider)
-                    },
-                    ModelTableAction(title: AppLocalization.localizedString("Configure")) {
-                        editingLLMProvider = provider
-                    }
-                ]
-            )
-        }
-    }
-
-    var mlxRows: [ModelTableRow] {
-        mlxModelManager.displayModelsIncludingInstalled().map { model in
-            let snapshot = mlxInstallSnapshot(for: model.id)
-            return modelTableRow(
-                id: model.id,
-                title: model.title,
-                snapshot: snapshot
-            )
-        }
-    }
-
-    var customLLMRows: [ModelTableRow] {
-        customLLMManager.displayModelsIncludingInstalled().map { model in
-            let snapshot = customLLMInstallSnapshot(for: model.id)
-            return modelTableRow(
-                id: model.id,
-                title: model.title,
-                snapshot: snapshot
-            )
-        }
-    }
-
     func hasIssue(for scope: ModelConfigurationIssue.Scope) -> Bool {
         missingConfigurationIssues.contains(where: { $0.scope == scope })
     }
@@ -172,17 +73,15 @@ extension ModelSettingsView {
         return nil
     }
 
-    private func selectionActionTitle(isSelected: Bool) -> String {
-        AppLocalization.localizedString(isSelected ? "Using" : "Use")
-    }
-
     func useModel(_ repo: String) {
+        guard OmniASRBackend.unavailabilityReason(for: repo) == nil else { return }
         let canonicalRepo = MLXModelManager.canonicalModelRepo(repo)
         modelRepo = canonicalRepo
         mlxModelManager.updateModel(repo: canonicalRepo)
     }
 
     func downloadModel(_ repo: String) {
+        guard OmniASRBackend.unavailabilityReason(for: repo) == nil else { return }
         clearPresentedModelError(targetID: "mlx:\(MLXModelManager.canonicalModelRepo(repo))")
         Task {
             await mlxModelManager.downloadModel(repo: repo)
@@ -206,18 +105,6 @@ extension ModelSettingsView {
 
     func isCurrentModel(_ repo: String) -> Bool {
         MLXModelManager.canonicalModelRepo(repo) == MLXModelManager.canonicalModelRepo(modelRepo)
-    }
-
-    func isDownloadingModel(_ repo: String) -> Bool {
-        mlxInstallSnapshot(for: repo).state == .downloading
-    }
-
-    func isPausedModel(_ repo: String) -> Bool {
-        mlxInstallSnapshot(for: repo).state == .paused
-    }
-
-    func modelStatusText(for repo: String) -> String {
-        mlxInstallSnapshot(for: repo).statusText
     }
 
     func useCustomLLM(_ repo: String) {
@@ -333,18 +220,6 @@ extension ModelSettingsView {
         CustomLLMModelManager.canonicalModelRepo(repo) == CustomLLMModelManager.canonicalModelRepo(customLLMRepo)
     }
 
-    func isDownloadingCustomLLM(_ repo: String) -> Bool {
-        customLLMManager.isDownloading(repo: repo)
-    }
-
-    func isPausedCustomLLM(_ repo: String) -> Bool {
-        customLLMManager.isPaused(repo: repo)
-    }
-
-    func customLLMStatusText(for repo: String) -> String {
-        customLLMInstallSnapshot(for: repo).statusText
-    }
-
     func useGGUFTranslationModel(_ modelID: GGUFTranslationModelID) {
         translationGGUFModelIDRaw = modelID.rawValue
         ggufTranslationModelManager.updateModel(id: modelID)
@@ -352,11 +227,6 @@ extension ModelSettingsView {
 
     func downloadGGUFTranslationModel(_ modelID: GGUFTranslationModelID) {
         ggufTranslationModelManager.downloadModel(id: modelID)
-        refreshCatalogSnapshot()
-    }
-
-    func cancelGGUFTranslationDownload(_ modelID: GGUFTranslationModelID) {
-        ggufTranslationModelManager.cancelDownload(id: modelID)
         refreshCatalogSnapshot()
     }
 
@@ -368,19 +238,6 @@ extension ModelSettingsView {
 
     func openGGUFTranslationModelDirectory(_ modelID: GGUFTranslationModelID) {
         ggufTranslationModelManager.openModelDirectory(id: modelID)
-    }
-
-    func useRemoteASRProvider(_ provider: RemoteASRProvider) {
-        let resolved = RemoteModelConfigurationStore.resolvedASRConfiguration(
-            provider: provider,
-            from: remoteASRProviderConfigurationsRaw
-        )
-        switch saveRemoteASRConfiguration(resolved) {
-        case .success:
-            remoteASRSelectedProviderRaw = provider.rawValue
-        case .failure(let error):
-            showModelOperationToast(error.localizedDescription)
-        }
     }
 
     func saveRemoteASRConfiguration(
@@ -474,10 +331,6 @@ extension ModelSettingsView {
         )
     }
 
-    func useRemoteLLMProvider(_ provider: RemoteLLMProvider) {
-        remoteLLMSelectedProviderRaw = provider.rawValue
-    }
-
     func saveRemoteLLMConfiguration(
         _ configuration: RemoteProviderConfiguration
     ) -> Result<Void, RemoteModelConfigurationStore.SaveError> {
@@ -524,47 +377,6 @@ extension ModelSettingsView {
     func openCustomLLMModelDirectory(_ repo: String) {
         guard let folderURL = customLLMManager.modelDirectoryURL(repo: repo) else { return }
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folderURL.path)
-    }
-
-    func modelLocalizedDescription(for repo: String) -> LocalizedStringKey {
-        let canonicalRepo = MLXModelManager.canonicalModelRepo(repo)
-        if let description = MLXModelCatalog.description(for: canonicalRepo) {
-            return LocalizedStringKey(description)
-        }
-        return LocalizedStringKey("")
-    }
-
-    var mlxConfigurationSummary: String {
-        let tuning = resolvedMLXLocalTuningSettings(for: modelRepo)
-        return MLXConfigurationSummarySupport.summary(for: modelRepo, tuning: tuning)
-    }
-
-    var customLLMGenerationSummary: String {
-        let settings = resolvedCustomLLMGenerationSettings(for: customLLMRepo)
-        var parts = [String]()
-        switch settings.thinking.mode {
-        case .providerDefault:
-            parts.append(AppLocalization.localizedString("Think: Off"))
-        case .off:
-            parts.append(AppLocalization.localizedString("Think: Off"))
-        case .on:
-            parts.append(AppLocalization.localizedString("Think: On"))
-        case .effort, .budget:
-            break
-        }
-        if let maxOutputTokens = settings.maxOutputTokens {
-            parts.append(AppLocalization.format("Max Output: %@", String(maxOutputTokens)))
-        }
-        if let temperature = settings.temperature {
-            parts.append(AppLocalization.format("Temperature: %@", String(format: "%.2f", temperature)))
-        }
-        if let topP = settings.topP {
-            parts.append(AppLocalization.format("Top P: %@", String(format: "%.2f", topP)))
-        }
-        if let repetitionPenalty = settings.repetitionPenalty {
-            parts.append(AppLocalization.format("Repetition Penalty: %@", String(format: "%.2f", repetitionPenalty)))
-        }
-        return parts.isEmpty ? AppLocalization.localizedString("Configuration: Default") : parts.joined(separator: " · ")
     }
 
     func asrCredentialHint(for provider: RemoteASRProvider) -> String? {

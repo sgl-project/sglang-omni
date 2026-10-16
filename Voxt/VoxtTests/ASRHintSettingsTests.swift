@@ -2,7 +2,6 @@
 // Provides ASRHint Settings Tests for Voxt test coverage.
 
 import XCTest
-import MLXAudioSTT
 @testable import Voxt
 
 @MainActor
@@ -475,16 +474,16 @@ final class ASRHintSettingsTests: XCTestCase {
 
     func testMOSSStructuredSegmentsSanitizeTextWhilePreservingTimingAndSpeaker() {
         let segments = MLXTranscriber.mossStructuredSegments(from: [
-            STTTranscriptSegment(
+            ASRTranscriptSegment(
                 text: "[S02] Hello [sniff] world",
-                startTime: 1.25,
-                endTime: 2.75,
+                startSeconds: 1.25,
+                endSeconds: 2.75,
                 speakerID: "S02"
             ),
-            STTTranscriptSegment(
+            ASRTranscriptSegment(
                 text: "[S02] [breath]",
-                startTime: 2.80,
-                endTime: 3.10,
+                startSeconds: 2.80,
+                endSeconds: 3.10,
                 speakerID: "S02"
             )
         ])
@@ -504,9 +503,15 @@ final class ASRHintSettingsTests: XCTestCase {
 
     func testReliableStructuredSegmentsAcceptSentenceTimingAndRejectCoarseChunks() {
         let rawSegments = [
-            STTTranscriptSegment(text: " First sentence. ", startTime: 0.2, endTime: 1.4),
-            STTTranscriptSegment(text: "", startTime: 1.4, endTime: 2.0),
-            STTTranscriptSegment(text: "Invalid timing", startTime: 2.0, endTime: 2.0),
+            ASRTranscriptSegment(text: " First sentence. ", startSeconds: 0.2, endSeconds: 1.4),
+            ASRTranscriptSegment(text: "", startSeconds: 1.4, endSeconds: 2.0),
+            ASRTranscriptSegment(text: "Invalid timing", startSeconds: 2.0, endSeconds: 2.0),
+            ASRTranscriptSegment(text: "No timing"),
+            ASRTranscriptSegment(text: "Missing end", startSeconds: 2.0),
+            ASRTranscriptSegment(text: "Missing start", endSeconds: 3.0),
+            ASRTranscriptSegment(text: "Reversed timing", startSeconds: 3.0, endSeconds: 2.0),
+            ASRTranscriptSegment(text: "Nonfinite start", startSeconds: .nan, endSeconds: 3.0),
+            ASRTranscriptSegment(text: "Nonfinite end", startSeconds: 2.0, endSeconds: .infinity),
         ]
 
         XCTAssertEqual(
@@ -532,10 +537,10 @@ final class ASRHintSettingsTests: XCTestCase {
     }
 
     func testLiveEndedStructuredSegmentsAlignWithBatchReliability() {
-        let qwenOutput = STTOutput(
+        let qwenOutput = ASRTranscriptionResult(
             text: "hello",
             segments: [
-                STTTranscriptSegment(text: "hello", startTime: 0, endTime: 8, language: "English")
+                ASRTranscriptSegment(text: "hello", startSeconds: 0, endSeconds: 8, language: "English")
             ],
             language: "English",
             languageProvenance: .detected
@@ -548,10 +553,10 @@ final class ASRHintSettingsTests: XCTestCase {
             ).isEmpty
         )
 
-        let nemotronOutput = STTOutput(
+        let nemotronOutput = ASRTranscriptionResult(
             text: "Hello world",
             segments: [
-                STTTranscriptSegment(text: "Hello world", startTime: 0.1, endTime: 1.2)
+                ASRTranscriptSegment(text: "Hello world", startSeconds: 0.1, endSeconds: 1.2)
             ]
         )
         XCTAssertEqual(
@@ -569,13 +574,13 @@ final class ASRHintSettingsTests: XCTestCase {
             ]
         )
 
-        let mossOutput = STTOutput(
+        let mossOutput = ASRTranscriptionResult(
             text: "[S01] Hi",
             segments: [
-                STTTranscriptSegment(
+                ASRTranscriptSegment(
                     text: "[S01] Hi",
-                    startTime: 0.2,
-                    endTime: 0.9,
+                    startSeconds: 0.2,
+                    endSeconds: 0.9,
                     speakerID: "S01"
                 )
             ]
@@ -594,6 +599,25 @@ final class ASRHintSettingsTests: XCTestCase {
                     text: "Hi"
                 )
             ]
+        )
+    }
+
+    func testLiveEndedWithoutSegmentsDoesNotInventStructuredTiming() {
+        let output = ASRTranscriptionResult(text: "Hello world")
+
+        XCTAssertTrue(
+            MLXTranscriber.structuredSegmentsForLiveEnded(
+                output: output,
+                modelFamily: .nemotronASR,
+                timingGranularity: .sentence
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            MLXTranscriber.structuredSegmentsForLiveEnded(
+                output: output,
+                modelFamily: .mossTranscribeDiarize,
+                timingGranularity: .sentence
+            ).isEmpty
         )
     }
 
