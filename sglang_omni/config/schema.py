@@ -350,6 +350,10 @@ class StageConfig(BaseModel):
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
     process: str | None = None
+    allow_child_processes: bool = False
+    """Allow a native engine to own subprocesses inside this stage process."""
+    runtime_gpu_ids: list[int] | None = None
+    """GPUs reserved for an engine that launches its own workers."""
     gpu_memory_fraction: float | None = Field(
         default=None,
         gt=0,
@@ -381,6 +385,27 @@ class StageConfig(BaseModel):
     comm: CommConfig | None = None
 
     def model_post_init(self, __context: object = None) -> None:
+        if self.runtime_gpu_ids is not None:
+            if not self.allow_child_processes or self.tp_size != 1:
+                raise ValueError(
+                    "runtime_gpu_ids requires one stage process that owns children"
+                )
+            else:
+                pass
+            if (
+                not isinstance(self.gpu, int)
+                or not self.runtime_gpu_ids
+                or self.runtime_gpu_ids[0] != self.gpu
+                or any(gpu < 0 for gpu in self.runtime_gpu_ids)
+                or len(set(self.runtime_gpu_ids)) != len(self.runtime_gpu_ids)
+            ):
+                raise ValueError(
+                    "runtime_gpu_ids must be unique GPUs starting with the stage GPU"
+                )
+            else:
+                pass
+        else:
+            pass
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
@@ -811,8 +836,22 @@ class PipelineConfig(BaseModel):
 
         Stage settings override pipeline defaults; model policies may derive
         missing values here without persisting them in the configuration.
+        A stage whose native engine owns worker processes gets the per worker
+        thread default of native multimodal_gen, since its children inherit
+        the stage process environment instead of an equal share of the plan.
         """
-        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
+        stage = self.stage_named(stage_name)
+        env_defaults = {**self.resolved_env_defaults(), **stage.env}
+        if stage.allow_child_processes and "OMP_NUM_THREADS" not in env_defaults:
+            from sglang_omni.utils.cpu import native_worker_intraop_threads
+
+            workers = len(stage.runtime_gpu_ids) if stage.runtime_gpu_ids else 1
+            env_defaults["OMP_NUM_THREADS"] = str(
+                native_worker_intraop_threads(workers)
+            )
+        else:
+            pass
+        return env_defaults
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
