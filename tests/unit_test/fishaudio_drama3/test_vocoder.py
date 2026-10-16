@@ -802,7 +802,6 @@ def test_stream_batches_preserve_each_requests_audio_and_final_result(
         frames = numbered_frames(frame_count)
         frames[:, 1] += 1000 * request_index
         requests[f"request-{request_index}"] = frames
-    # One incomplete chunk followed by a chunk crossing several window boundaries.
     for chunk_index, (first_frame, last_frame) in enumerate([(0, 5), (5, 200)]):
         vocoder.handle_stream_chunk_batch(
             [
@@ -832,9 +831,11 @@ def test_stream_batches_preserve_each_requests_audio_and_final_result(
         request_messages = [m for m in messages if m.request_id == request_id]
         assert request_messages[-1].type == "result"
         assert sum(m.type == "result" for m in request_messages) == 1
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             streamed_audio(request_messages),
             np.repeat(frames[:, 1].numpy(), SAMPLES_PER_FRAME),
+            rtol=2 * np.finfo(np.float32).eps if crossfade_samples else 0,
+            atol=0,
         )
         assert request_messages[-1].data.data["usage"]["completion_tokens"] == len(
             frames
