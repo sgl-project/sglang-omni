@@ -30,10 +30,10 @@ def req(seed, request_id="req"):
     )
 
 
-def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False):
+def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False, device="cpu"):
     return SimpleNamespace(
         sampling_info=SimpleNamespace(
-            device="cpu",
+            device=device,
             sampling_seed=sampling_seed,
             need_top_p_sampling=top_p,
             need_top_k_sampling=top_k,
@@ -88,6 +88,20 @@ def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
     with get_context().override_server_args(sampling_backend="flashinfer"):
         runner.install_sampling_seeds(fb, [req(42)])
     assert int(fb.sampling_info.sampling_seed[0]) == 42
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_installs_cuda_seeds_without_a_host_wait() -> None:
+    runner = object.__new__(ModelRunner)
+    fb = make_fb(device="cuda")
+    torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
+    runner.install_sampling_seeds(fb, [req(42, "seeded"), req(None, "unseeded")])
+    assert not torch.cuda.current_stream().query()
+    assert fb.sampling_info.sampling_seed.tolist() == [
+        42,
+        derive_sampling_seed("sglang-omni-unseeded-row", "unseeded"),
+    ]
 
 
 def sampling_info_for(
