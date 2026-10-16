@@ -176,6 +176,8 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stream_followup_stride_ramp = tuple(stream_followup_stride_ramp)
         self.stream_window_counts: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
+        # note (yaourt): singleton graphs must not fall back to eager for coalesced streams.
+        self.can_batch_stream_chunks = not isinstance(decode_window, WindowGraphDecoder)
 
     def followup_stride(self, request_id: str) -> int:
         window_count = self.stream_window_counts.get(request_id, 0)
@@ -237,12 +239,16 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                     pass
                 for first_index in range(0, len(windows), batch_size):
                     batch = windows[first_index : first_index + batch_size]
+                    if len(batch) == 1:
+                        batched_codes = batch[0][1].unsqueeze(0)
+                    else:
+                        batched_codes = torch.stack([codes for _, codes in batch])
                     with torch.no_grad():
                         audio = (
                             self.codec.from_indices
                             if self.decode_window is None
                             else self.decode_window
-                        )(torch.stack([codes for _, codes in batch]))
+                        )(batched_codes)
                     for request_index, (request_id, _) in enumerate(batch):
                         state = self.stream_states[request_id]
                         audio_chunk = finish_stream_window(
