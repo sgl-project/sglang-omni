@@ -462,4 +462,11 @@ The official evaluator has a retry bug: when a rating does not parse, it resends
 
 ### Verification
 
+The unit tests run the official formulas on synthetic fixtures without a GPU or API key, and cover export, missing samples, valid silence, timing, ASR deduplication, bounded and concurrent judging, the semantic judge's control gate, resumption, and the runbook's selection, phase gating, server checks and aggregation for both datasets:
+
+```bash
+FDB_REFERENCE_SOURCE="$FDB_SOURCE" python -m pytest -q \
+    tests/unit_test/benchmarks/test_duplex*.py tests/unit_test/benchmarks/test_fdb*.py
+```
+
 Export is deterministic: exporting a recording again reproduces every eligible WAV byte for byte, and summarizing saved transcripts and intervals again reproduces the same summaries.

@@ -1,0 +1,416 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Unit coverage for the ASR bottleneck-profiling helpers (issue #1324)."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from benchmarks.benchmarker import fingerprint
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
+from benchmarks.eval import asr_profiling
+from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
+from benchmarks.eval.asr_profiling import (
+    UtilizationSampler,
+    build_stage_breakdown,
+    run_profiled_pass,
+    start_request_profile,
+    stop_request_profile,
+)
+from benchmarks.eval.benchmark_asr_seedtts import _aggregate, _print_table
+
+
+class FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self.payload
+
+
+def test_profile_control_posts_run_id_and_event_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    headers_sent: list[dict] = []
+
+    def fake_post(url, *, json, timeout, proxies, headers):
+        del timeout, proxies
+        calls.append((url, json))
+        headers_sent.append(headers)
+        return FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
+    monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
+
+    started = start_request_profile("http://127.0.0.1:8000/", "run-1", "/tmp/e")
+    stopped = stop_request_profile("http://127.0.0.1:8000")
+
+    assert started["run_id"] == "run-1"
+    assert stopped["run_id"] is None
+    assert calls[0][0] == "http://127.0.0.1:8000/start_request_profile"
+    assert calls[0][1] == {"run_id": "run-1", "event_dir": "/tmp/e"}
+    assert calls[1][0] == "http://127.0.0.1:8000/stop_request_profile"
+    assert headers_sent == [{}, {}]
+
+
+def test_profile_control_sends_the_admin_key_when_it_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchmarks.eval.benchmark_omni_rollout_stress import (
+        _start_request_profile,
+        _stop_request_profile,
+    )
+
+    sent: list[dict | None] = []
+
+    def fake_post(url, *, json, timeout, proxies, headers=None):
+        sent.append(headers)
+        return FakeResponse({"run_id": json.get("run_id")})
+
+    class FakeSession:
+        def post(self, url, *, json, headers=None):
+            sent.append(headers)
+            response = SimpleNamespace(raise_for_status=lambda: None)
+
+            async def body():
+                return {"run_id": json.get("run_id")}
+
+            response.json = body
+
+            class Context:
+                async def __aenter__(self):
+                    return response
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return Context()
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "admin-key")
+    monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
+    start_request_profile("http://127.0.0.1:8000", "run-1", "/tmp/e")
+    stop_request_profile("http://127.0.0.1:8000", "run-1")
+    session = FakeSession()
+    asyncio.run(
+        _start_request_profile(session, "http://h", run_id="r", event_dir="/tmp/e")
+    )
+    asyncio.run(_stop_request_profile(session, "http://h", run_id="r"))
+
+    assert sent == [{"Authorization": "Bearer admin-key"}] * 4
+
+
+def test_profiled_pass_runs_shared_lifecycle_and_builds_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[str, str, str]] = []
+    stopped: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        asr_profiling,
+        "start_request_profile",
+        lambda url, run_id, event_dir: started.append((url, run_id, event_dir)),
+    )
+    monkeypatch.setattr(
+        asr_profiling,
+        "stop_request_profile",
+        lambda url, run_id: stopped.append((url, run_id)),
+    )
+    monkeypatch.setattr(
+        asr_profiling,
+        "build_stage_breakdown",
+        lambda event_dir: {
+            "request_count": 1,
+            "stage_breakdown": {"asr": {"count": 1}},
+            "hop_breakdown": {},
+        },
+    )
+
+    async def run_pass() -> dict:
+        return {"wall_clock_s": 2.0}
+
+    profile = asyncio.run(
+        run_profiled_pass(
+            run_id="run-1",
+            event_dir="/tmp/profile/run-1",
+            profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+            run_pass=run_pass,
+            log_prefix="[conc=4]",
+        )
+    )
+
+    assert started == [
+        ("http://worker-0:8000", "run-1", "/tmp/profile/run-1"),
+        ("http://worker-1:8000", "run-1", "/tmp/profile/run-1"),
+    ]
+    assert stopped == [
+        ("http://worker-0:8000", "run-1"),
+        ("http://worker-1:8000", "run-1"),
+    ]
+    assert profile == {
+        "run_id": "run-1",
+        "event_dir": "/tmp/profile/run-1",
+        "pass_metrics": {"wall_clock_s": 2.0},
+        "request_count": 1,
+        "stage_breakdown": {"asr": {"count": 1}},
+        "hop_breakdown": {},
+    }
+
+
+def test_profiled_pass_cleans_up_after_partial_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped: list[tuple[str, str]] = []
+    pass_started = False
+    error_stream = io.StringIO()
+
+    def fake_start(url: str, run_id: str, event_dir: str) -> None:
+        if url.endswith("worker-1:8000"):
+            raise asr_profiling.requests.RequestException("unavailable")
+
+    async def run_pass() -> dict:
+        nonlocal pass_started
+        pass_started = True
+        return {}
+
+    monkeypatch.setattr(asr_profiling, "start_request_profile", fake_start)
+    monkeypatch.setattr(
+        asr_profiling,
+        "stop_request_profile",
+        lambda url, run_id: stopped.append((url, run_id)),
+    )
+
+    profile = asyncio.run(
+        run_profiled_pass(
+            run_id="run-1",
+            event_dir="/tmp/profile/run-1",
+            profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+            run_pass=run_pass,
+            log_prefix="[conc=4]",
+            error_stream=error_stream,
+        )
+    )
+
+    assert profile is None
+    assert pass_started is False
+    assert stopped == [("http://worker-0:8000", "run-1")]
+    assert "[conc=4] profiling unavailable, skipping: unavailable" in (
+        error_stream.getvalue()
+    )
+
+
+def test_seedtts_profiled_pass_delegates_shared_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle: dict[str, object] = {}
+    repeat_call: dict[str, object] = {}
+    args = SimpleNamespace(
+        profile_event_dir="/tmp/asr-profile",
+        profile_urls="http://worker-0:8000,http://worker-1:8000",
+    )
+
+    monkeypatch.setattr(seedtts_benchmark.time, "time", lambda: 123)
+
+    async def fake_run_repeat(args, samples, concurrency, repeat):
+        repeat_call.update(
+            args=args,
+            samples=samples,
+            concurrency=concurrency,
+            repeat=repeat,
+        )
+        return {"wall_clock_s": 2.0}
+
+    async def fake_run_profiled_pass(**kwargs):
+        lifecycle.update(kwargs)
+        return {"pass_metrics": await kwargs["run_pass"]()}
+
+    monkeypatch.setattr(seedtts_benchmark, "_run_repeat", fake_run_repeat)
+    monkeypatch.setattr(
+        seedtts_benchmark,
+        "run_profiled_pass",
+        fake_run_profiled_pass,
+    )
+
+    samples = [object()]
+    profile = asyncio.run(
+        seedtts_benchmark._run_profiled_pass(
+            args, samples, concurrency=4
+        )  # noqa: leading-underscore  # production name
+    )
+
+    assert lifecycle["run_id"] == "asrbench-c4-123"
+    assert lifecycle["event_dir"] == "/tmp/asr-profile/asrbench-c4-123"
+    assert lifecycle["profile_urls"] == [
+        "http://worker-0:8000",
+        "http://worker-1:8000",
+    ]
+    assert lifecycle["log_prefix"] == "[conc=4]"
+    assert repeat_call == {
+        "args": args,
+        "samples": samples,
+        "concurrency": 4,
+        "repeat": 0,
+    }
+    assert profile == {"pass_metrics": {"wall_clock_s": 2.0}}
+
+
+def test_build_stage_breakdown_pairs_queue_and_decode_intervals(tmp_path) -> None:
+    base_ns = 1_000_000_000
+    events = [
+        ("scheduler_request_build_start", base_ns),
+        ("scheduler_request_build_end", base_ns + 5_000_000),
+        ("scheduler_queue_enter", base_ns + 6_000_000),
+        ("scheduler_prefill_start", base_ns + 30_000_000),
+        ("scheduler_prefill_end", base_ns + 60_000_000),
+        ("scheduler_first_emit", base_ns + 80_000_000),
+        ("stage_complete", base_ns + 200_000_000),
+    ]
+    event_file = tmp_path / "events_run_1.jsonl"
+    with event_file.open("w") as handle:
+        for name, ts in events:
+            handle.write(
+                json.dumps(
+                    {
+                        "request_id": "req-1",
+                        "stage": "asr",
+                        "event_name": name,
+                        "timestamp_ns": ts,
+                        "run_id": "run-1",
+                        "pid": 1,
+                    }
+                )
+                + "\n"
+            )
+
+    report = build_stage_breakdown(str(tmp_path))
+
+    assert "timelines" not in report
+    assert report["request_count"] == 1
+    by_interval = {row["interval"]: row for row in report["stage_breakdown"]}
+    build = by_interval["scheduler_request_build_start->scheduler_request_build_end"]
+    assert build["avg_ms"] == pytest.approx(5.0)
+    queue = by_interval["scheduler_queue_enter->scheduler_prefill_start"]
+    assert queue["avg_ms"] == pytest.approx(24.0)
+    prefill = by_interval["scheduler_prefill_start->scheduler_prefill_end"]
+    assert prefill["avg_ms"] == pytest.approx(30.0)
+    decode_tail = by_interval["scheduler_prefill_end->stage_complete"]
+    assert decode_tail["avg_ms"] == pytest.approx(140.0)
+    decode = by_interval["scheduler_first_emit->stage_complete"]
+    assert decode["avg_ms"] == pytest.approx(120.0)
+
+
+def test_utilization_sampler_summarizes_cpu_and_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stat_values = iter([(100, 1000), (200, 1200), (350, 1400), (400, 1600)])
+    monkeypatch.setattr(
+        asr_profiling, "_read_proc_stat", lambda: next(stat_values, (400, 1600))
+    )
+    monkeypatch.setattr(
+        asr_profiling,
+        "_query_gpu_utilization",
+        lambda gpu_ids: {"3": {"util_percent": 40.0, "memory_mib": 1024.0}},
+    )
+
+    sampler = UtilizationSampler(gpu_ids=[3], interval_s=0.01)
+    sampler.start()
+    time.sleep(0.08)
+    summary = sampler.stop()
+
+    assert summary.samples >= 2
+    assert summary.cpu_percent_mean is not None
+    assert 0.0 < summary.cpu_percent_mean <= 100.0
+    assert summary.gpu["3"]["util_percent_max"] == pytest.approx(40.0)
+    assert summary.gpu["3"]["memory_mib_max"] == pytest.approx(1024.0)
+    assert summary.to_dict()["samples"] == summary.samples
+
+
+def test_environment_fingerprint_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fingerprint, "_run_command", lambda command: None)
+
+    environment = collect_environment_fingerprint("Qwen/Qwen3-ASR-1.7B")
+
+    assert environment["git"]["sha"] is None
+    assert environment["dependency_freeze_sha256"] is None
+    assert environment["gpus"] is None
+    assert environment["model_path"] == "Qwen/Qwen3-ASR-1.7B"
+    assert "torch" in environment["packages"]
+    assert "CUDA_VISIBLE_DEVICES" in environment["env"]
+
+
+def make_repeat_result(concurrency: int, repeat: int, median: float) -> dict:
+    return {
+        "concurrency": concurrency,
+        "repeat": repeat,
+        "evaluated": 10,
+        "total": 10,
+        "skipped": 0,
+        "corpus_wer": 0.01,
+        "per_sample_wer_max": 0.05,
+        "wall_clock_s": 2.0,
+        "throughput_samples_per_s": 5.0,
+        "rtfx": 20.0,
+        "latency_mean_s": 0.5,
+        "latency_median_s": median,
+        "latency_p95_s": 0.9,
+        "latency_p99_s": 1.1,
+        "rtf_mean": 0.1,
+        "rtf_p95": 0.2,
+        "worker": {},
+    }
+
+
+def test_aggregate_and_table_surface_latency_median() -> None:
+    aggregate = _aggregate(
+        [make_repeat_result(8, 1, 0.4), make_repeat_result(8, 2, 0.6)]
+    )
+
+    assert aggregate["latency_median_s"]["mean"] == pytest.approx(0.5)
+    assert aggregate["latency_median_s"]["n"] == 2
+    # note (luojiaxuan): the markdown table must render the p50 column without
+    # raising for both plain and profiled aggregates.
+    aggregate["profile"] = None
+    _print_table([aggregate])
+
+
+def test_server_identity_reports_models_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ModelsResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"data": [{"id": "Qwen/Qwen3-ASR-1.7B"}]}
+
+    monkeypatch.setattr(
+        fingerprint.requests,
+        "get",
+        lambda url, *, timeout, proxies: ModelsResponse(),
+    )
+    identity = collect_server_identity("http://127.0.0.1:8000/")
+    assert identity == {
+        "url": "http://127.0.0.1:8000",
+        "models": ["Qwen/Qwen3-ASR-1.7B"],
+    }
+
+    def down(url, *, timeout, proxies):
+        raise fingerprint.requests.ConnectionError("down")
+
+    monkeypatch.setattr(fingerprint.requests, "get", down)
+    identity = collect_server_identity("http://127.0.0.1:8000")
+    assert identity["url"] == "http://127.0.0.1:8000"
+    assert identity["models"] is None
