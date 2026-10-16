@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -969,3 +970,44 @@ def test_scheduler_coalesces_queued_streams_and_preserves_done_order() -> None:
             "stream",
             "result",
         ]
+
+
+def test_abort_during_batched_decode_drops_audio_and_releases_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    abort_recorded = threading.Event()
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(codec)
+    record_abort = vocoder.record_aborted_request_id
+
+    def record_and_signal(request_id: str) -> None:
+        record_abort(request_id)
+        abort_recorded.set()
+
+    monkeypatch.setattr(vocoder, "record_aborted_request_id", record_and_signal)
+    abort_thread = threading.Thread(target=vocoder.abort, args=("cancelled",))
+
+    def decode_with_abort(indices: torch.Tensor) -> torch.Tensor:
+        abort_thread.start()
+        assert abort_recorded.wait(timeout=2)
+        return codec.from_indices(indices)
+
+    vocoder.decode_window = decode_with_abort
+    vocoder.handle_stream_chunk_batch(
+        [
+            IncomingMessage(
+                request_id=request_id,
+                type="stream_chunk",
+                data=StreamItem(
+                    chunk_id=0, data=numbered_frames(10).T, from_stage="tts_engine"
+                ),
+            )
+            for request_id in ["cancelled", "healthy"]
+        ]
+    )
+    abort_thread.join(timeout=2)
+    assert not abort_thread.is_alive()
+    assert [(message.request_id, message.type) for message in drained(vocoder)] == [
+        ("healthy", "stream")
+    ]
+    assert "cancelled" not in vocoder.stream_states
