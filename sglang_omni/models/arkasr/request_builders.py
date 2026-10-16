@@ -154,27 +154,54 @@ def make_arkasr_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        # mel: pad to the clip's true length (short clips do not pay the full
-        # 30s of FFT). ARK's WhisperEncoder is variable-length; conv2 stride-2
-        # then merge_factor determines the audio-token count.
-        extracted = feature_extractor(
-            audio,
-            sampling_rate=_SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-            padding="longest",
-            truncation=True,
-        )
-        features = extracted.input_features  # [num_mel_bins, T]
-        feature_attention_mask = getattr(extracted, "attention_mask", None)
-        if feature_attention_mask is None:
-            feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+        cached_embedding: torch.Tensor | None = None
+        estimated_audio_tokens: int | None = None
+        if audio_encoder_service is not None:
+            hop_length = int(feature_extractor.hop_length)
+            max_mel_frames = int(feature_extractor.nb_max_frames)
+            if hop_length <= 0 or max_mel_frames <= 0:
+                raise ValueError(
+                    "ARK-ASR feature extractor has invalid audio-length metadata"
+                )
+            else:
+                pass
+            estimated_mel_frames = min(len(audio) // hop_length, max_mel_frames)
+            estimated_audio_tokens = arkasr_num_audio_tokens(
+                estimated_mel_frames, merge_factor
+            )
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint,
+                estimated_audio_tokens,
             )
         else:
             pass
-        num_mel_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+
+        if cached_embedding is None:
+            # note (zhaochen20): ARK accepts variable-length mel input, so short
+            # clips should not pay for padding to the full Whisper window.
+            extracted = feature_extractor(
+                audio,
+                sampling_rate=_SAMPLE_RATE,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding="longest",
+                truncation=True,
+            )
+            features = extracted.input_features  # [batch, num_mel_bins, frames]
+            feature_attention_mask = getattr(extracted, "attention_mask", None)
+            if feature_attention_mask is None:
+                feature_attention_mask = torch.ones(
+                    (features.shape[0], features.shape[-1]), dtype=torch.long
+                )
+            else:
+                pass
+            num_mel_frames = int(feature_attention_mask.sum().item())
+            num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+        else:
+            features = None
+            feature_attention_mask = None
+            assert estimated_audio_tokens is not None
+            num_audio_tokens = estimated_audio_tokens
 
         input_ids = _build_prompt_ids(num_audio_tokens)
 
@@ -243,12 +270,15 @@ def make_arkasr_scheduler_adapters(
         req.multimodal_inputs = mm_inputs
         req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
+        # note (Peterren): The hint describes the pre-mel lookup. A later
+        # single-flight hit has already paid build work and follows miss pacing.
         req_data = ArkASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
             req=req,
             prompt_token_ids=input_ids,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
+            prefill_coalesce_after_build_drain_hint=cached_embedding is not None,
             audio_duration_s=audio_duration_s,
             language=str(params.get("language") or "en"),
             engine_start_s=time.perf_counter(),
@@ -256,6 +286,13 @@ def make_arkasr_scheduler_adapters(
         )
         if audio_encoder_service is None:
             return req_data
+        elif cached_embedding is not None:
+            return DeferredAdmission(
+                value=req_data,
+                ready=audio_encoder_service.submit_cached_item(
+                    audio_item, cached_embedding
+                ),
+            )
         else:
             pass
         return DeferredAdmission(
