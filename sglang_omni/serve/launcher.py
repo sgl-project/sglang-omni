@@ -61,6 +61,12 @@ from sglang_omni.serve.protocol import (
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.serve.stage_routes import (
+    KEEP_ALIVE_S,
+    StageRoutes,
+    check_route_ownership,
+    export_server_port,
+)
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
@@ -577,6 +583,7 @@ async def run_server(
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
+    export_server_port(port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -666,6 +673,17 @@ async def run_server(
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        # Added last, and refused where a stage prefix reaches Omni's own routes.
+        omni_routes = list(app.router.routes)
+        for stage_name, prefixes, socket_path in mp_runner.stage_http_routes:
+            route = StageRoutes(stage_name, prefixes, socket_path)
+            check_route_ownership(omni_routes, route)
+            app.router.routes.append(route)
+            logger.info(
+                "Stage %s serves %s from its own process",
+                stage_name,
+                ", ".join(prefixes),
+            )
         app.state.server_status = ServerStatus.STARTING
 
         config = uvicorn.Config(
@@ -673,7 +691,7 @@ async def run_server(
             host=host,
             port=port,
             log_level=log_level,
-            timeout_keep_alive=120,
+            timeout_keep_alive=KEEP_ALIVE_S,
         )
         server = PipelineUvicornServer(config)
         # note (ratish): a wildcard bind address is not a destination, so the

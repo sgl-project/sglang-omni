@@ -670,6 +670,16 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         with pytest.raises(ValueError, match="does not support process replicas"):
             prepare_pipeline_runtime(config)
         return
+    elif any(
+        stage.http_routes for stage in config.stages if stage.name in replicated_stages
+    ):
+        # A stage that serves its own HTTP routes keeps route state in one
+        # instance, so its process refuses replicas.
+        with pytest.raises(ValueError, match="serves http_routes"):
+            prepare_pipeline_runtime(config)
+        return
+    else:
+        pass
 
     prep = prepare_pipeline_runtime(config)
     try:
