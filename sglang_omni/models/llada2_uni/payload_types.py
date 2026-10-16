@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 if TYPE_CHECKING:
     import torch
@@ -63,6 +63,10 @@ class LLaDA2UniPipelineState:
     stream_state: LLaDA2UniStreamState = field(default_factory=dict)
     request_metadata: dict[str, object] = field(default_factory=dict)
     task_kind: str = "chat"
+    thinking_phase: Literal["text", "image"] | None = None
+    thinking_text: str = ""
+    thinking_prompt_tokens: int = 0
+    thinking_completion_tokens: int = 0
 
     @classmethod
     def from_dict(cls, data: object) -> "LLaDA2UniPipelineState":
@@ -88,6 +92,10 @@ class LLaDA2UniPipelineState:
                 request_metadata if isinstance(request_metadata, dict) else {}
             ),
             task_kind=task_kind if isinstance(task_kind, str) else "chat",
+            thinking_phase=data.get("thinking_phase"),
+            thinking_text=data.get("thinking_text", ""),
+            thinking_prompt_tokens=data.get("thinking_prompt_tokens", 0),
+            thinking_completion_tokens=data.get("thinking_completion_tokens", 0),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -122,6 +130,13 @@ class LLaDA2UniPipelineState:
             pass
         if self.task_kind != "chat":
             data["task_kind"] = self.task_kind
+        else:
+            pass
+        if self.thinking_phase is not None:
+            data["thinking_phase"] = self.thinking_phase
+            data["thinking_text"] = self.thinking_text
+            data["thinking_prompt_tokens"] = self.thinking_prompt_tokens
+            data["thinking_completion_tokens"] = self.thinking_completion_tokens
         else:
             pass
         return data

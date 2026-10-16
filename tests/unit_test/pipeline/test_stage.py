@@ -6,6 +6,7 @@ import asyncio
 import logging
 import pickle
 import threading
+from typing import Literal
 
 import pytest
 import torch
@@ -20,6 +21,11 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
@@ -517,17 +523,17 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
 def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
     async def run() -> None:
         control_plane = RecordingStageControlPlane()
+        routes = iter(["decode", "talker"])
         stage_obj = make_stage(
             control_plane=control_plane,
             endpoints={"decode": "inproc://decode", "talker": "inproc://talker"},
-            get_next=lambda request_id, output: output.request.metadata["next"],
+            get_next=lambda request_id, output: next(routes),
             stream_targets=["talker", "decode"],
             get_stream_done_targets=lambda request_id, output: output.request.metadata[
                 "stream_targets"
             ],
         )
         payload = make_stage_payload(request_id="req-1")
-        payload.request.metadata["next"] = "decode"
         payload.request.metadata["stream_targets"] = ["decode"]
         stage_obj.active_requests.add("req-1")
 
@@ -541,6 +547,46 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
         assert routed_target == "decode"
         assert isinstance(routed_msg, DataReadyMessage)
         assert not routed_msg.is_done
+        assert list(routes) == ["talker"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["open", "append", "close"])
+def test_stage_calls_router_only_for_session_append(
+    operation: Literal["open", "append", "close"],
+) -> None:
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        routed_requests: list[str] = []
+        stage = make_stage(
+            control_plane=control_plane,
+            endpoints={"decode": "inproc://decode"},
+            get_next=lambda request_id, output: routed_requests.append(request_id)
+            or "decode",
+        )
+        payload = make_stage_payload(request_id="req-session")
+        payload.request.metadata[SESSION_METADATA_KEY] = SessionOperation(
+            operation=operation,
+            session_identity=SessionIdentity(id="session"),
+            stages=("stage", "decode"),
+        ).to_dict()
+        stage.active_requests.add(payload.request_id)
+
+        await stage.route_result(payload.request_id, payload)
+
+        if operation == "append":
+            assert routed_requests == [payload.request_id]
+            assert control_plane.completions == []
+            assert [target for target, _, _ in control_plane.sent_to_stage] == [
+                "decode"
+            ]
+        else:
+            assert routed_requests == []
+            assert control_plane.sent_to_stage == []
+            assert len(control_plane.completions) == 1
+            assert control_plane.completions[0].success
+            assert control_plane.completions[0].result == payload.data
 
     asyncio.run(run())
 

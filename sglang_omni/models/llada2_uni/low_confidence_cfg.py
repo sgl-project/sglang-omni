@@ -72,6 +72,7 @@ class LowConfidenceCFG(DllmAlgorithm):
         force_image_only = req._task_kind in (
             "t2i",
             "edit",
+            "interleaved_image",
         )  # noqa: leading-underscore  # DLLM protocol
         active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
@@ -112,7 +113,12 @@ class LowConfidenceCFG(DllmAlgorithm):
             num_to_transfer = base + (step < remainder)
             for row, row_logits, row_mask in zip(active_ids, logits, mask):
                 if force_image_only:
+                    allowed_stops = (
+                        req._allowed_stop_token_ids
+                    )  # noqa: leading-underscore  # DLLM protocol
+                    stop_logits = row_logits[:, allowed_stops].clone()
                     row_logits[:, : self.image_token_offset] = -torch.inf
+                    row_logits[:, allowed_stops] = stop_logits
                 else:
                     pass
                 predicted_ids = row_logits.argmax(dim=-1)
