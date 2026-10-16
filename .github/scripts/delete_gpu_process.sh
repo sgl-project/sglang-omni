@@ -42,6 +42,33 @@ selected_gpu_ids() {
     return 1
 }
 
+_print_gpu_cleanup_diagnostics() {
+    local gpu_index query_output
+
+    echo "=== GPU cleanup diagnostics ==="
+    for gpu_index in "${_SELECTED_GPUS[@]}"; do
+        gpu_index=$(printf '%s' "$gpu_index" | ${_TR} -d ' ')
+        [ -n "${gpu_index}" ] || continue
+        echo "--- nvidia-smi summary for GPU ${gpu_index} ---"
+        nvidia-smi --id="${gpu_index}" || true
+        echo "--- compute apps for GPU ${gpu_index} ---"
+        query_output="$(nvidia-smi --query-compute-apps=pid,process_name,used_memory \
+            --format=csv,noheader --id="${gpu_index}" 2>/dev/null || true)"
+        if [ -n "${query_output}" ]; then
+            printf '%s\n' "${query_output}"
+        else
+            echo "(nvidia-smi reports no compute apps)"
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            echo "--- fuser /dev/nvidia${gpu_index} ---"
+            fuser -v "/dev/nvidia${gpu_index}" 2>&1 || true
+        fi
+    done
+    echo "--- all GPU processes visible to nvidia-smi ---"
+    nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+        --format=csv,noheader 2>/dev/null || true
+}
+
 # note (Yue Yin): kill orphan processes that hold /dev/nvidia* fds but are
 # invisible to nvidia-smi (e.g. multiprocessing.spawn workers after a crash).
 _kill_orphan_gpu_processes() {
@@ -202,6 +229,7 @@ while true; do
     fi
 
     if [ "${SECONDS}" -ge "${deadline}" ]; then
+        _print_gpu_cleanup_diagnostics
         echo "::error::Timed out waiting for GPU memory.used < ${memory_threshold_mb} MiB; max memory.used=${max_used_mb} MiB."
         exit 1
     fi
