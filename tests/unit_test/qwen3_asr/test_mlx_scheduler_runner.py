@@ -165,7 +165,7 @@ def test_mlx_scheduler_runner_clears_chain_after_resolve_failure() -> None:
     assert runner.last_mlx_pending is None
 
 
-def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
+def test_mlx_scheduler_runner_allows_lookahead_for_multiple_requests() -> None:
     runner = Runner(Worker())
     sampling_params = SimpleNamespace(
         repetition_penalty=1.0,
@@ -182,9 +182,7 @@ def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
         )
 
     assert runner.lookahead_eligible(SimpleNamespace(reqs=[request("a")]))
-    assert not runner.lookahead_eligible(
-        SimpleNamespace(reqs=[request("a"), request("b")])
-    )
+    assert runner.lookahead_eligible(SimpleNamespace(reqs=[request("a"), request("b")]))
 
 
 def test_mlx_scheduler_stream_is_valid_on_its_execution_thread() -> None:

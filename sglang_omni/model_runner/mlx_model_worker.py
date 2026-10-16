@@ -82,10 +82,6 @@ class MlxSchedulerModelRunner(ModelRunner):
         return mx.stream(self.mlx_thread_stream)
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        if len(batch.reqs) != 1:
-            return False
-        else:
-            pass
         previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
