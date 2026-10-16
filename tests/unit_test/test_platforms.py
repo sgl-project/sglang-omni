@@ -48,7 +48,6 @@ class VendorSRTPlatform(SRTPlatform, VendorDeviceMixin):
         CPUOmniPlatform,
         ROCMOmniPlatform,
         platforms.NPUOmniPlatform,
-        platforms.MUSAOmniPlatform,
         platforms.AppleOmniPlatform,
     ],
 )
@@ -62,6 +61,34 @@ def test_joint_rope_is_unavailable_without_a_platform_provider(
 
     assert platform_type().get_joint_rope_inplace_kernel() is None
     cuda_provider.assert_not_called()
+
+
+def test_musa_joint_rope_getter_reuses_cuda_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "torchada", ModuleType("torchada"))
+    kernel = Mock()
+    monkeypatch.setattr(
+        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", lambda _: kernel
+    )
+
+    assert platforms.MUSAOmniPlatform().get_joint_rope_inplace_kernel() is kernel
+
+
+def test_musa_joint_rope_fails_fast_without_torchada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def import_without_torchada(name, *args, **kwargs):
+        if name == "torchada":
+            raise ImportError("torchada is not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_torchada)
+
+    with pytest.raises(RuntimeError, match="requires torchada"):
+        platforms.MUSAOmniPlatform().get_joint_rope_inplace_kernel()
 
 
 def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
