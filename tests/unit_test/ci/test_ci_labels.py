@@ -152,12 +152,7 @@ def test_two_model_labels_in_one_stage_fail(
 def test_label_names_are_unique_and_name_their_stage() -> None:
     all_labels = [RULES.RUN_ALL_LABEL]
     for stage in RULES.CI_STAGES:
-        expected_label = (
-            "run-unit-test-ci-only"
-            if stage.name == "unit_test"
-            else f"run-{stage.name.replace('_', '-')}-ci"
-        )
-        assert stage.label == expected_label
+        assert stage.label == f"run-{stage.name.replace('_', '-')}-ci"
         assert all(
             model_label.startswith(f"run-{stage.name}-")
             for model_label in stage.preset_by_model_label
@@ -193,7 +188,6 @@ def test_resolve_cli_writes_the_plan_to_github_output(tmp_path: Path) -> None:
         line.split("=", 1) for line in github_output.read_text().splitlines()
     )
     assert outputs == {
-        "run_unit_test": "false",
         "run_asr": "false",
         "asr_ci_model": "",
         "run_tts": "false",
