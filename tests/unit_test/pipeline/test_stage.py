@@ -6,6 +6,7 @@ import asyncio
 import logging
 import pickle
 import threading
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -276,6 +277,28 @@ class BlockingWarmUpHooks(SessionHooks):
         self.warm_up_thread_names.append(threading.current_thread().name)
         self.entered.set()
         self.release.wait()
+
+
+def test_stage_start_propagates_warmup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(
+        scheduler,
+        "warm_up_serving_thread",
+        Mock(
+            spec=scheduler.warm_up_serving_thread,
+            side_effect=RuntimeError("warmup failed"),
+        ),
+    )
+
+    async def run() -> None:
+        stage = make_stage(scheduler=scheduler)
+        try:
+            with pytest.raises(RuntimeError, match="warmup failed"):
+                await asyncio.wait_for(stage.start(), timeout=2.0)
+        finally:
+            await stage.stop()
+
+    asyncio.run(run())
 
 
 def test_stage_starts_only_after_its_session_hooks_warm_the_scheduler_thread() -> None:

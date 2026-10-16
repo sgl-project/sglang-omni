@@ -245,8 +245,10 @@ class Stage:
         # Start scheduler in dedicated thread
         if self.scheduler is not None:
             serving_thread_ready = threading.Event()
+            warmup_error: Exception | None = None
 
             def _run_scheduler() -> None:
+                nonlocal warmup_error
                 try:
                     try:
                         # Active-stage binding so ``emit(stage=None)`` from
@@ -267,6 +269,9 @@ class Stage:
                         else:
                             pass
                         self.scheduler.warm_up_serving_thread()
+                    except Exception as exc:
+                        warmup_error = exc
+                        raise
                     finally:
                         serving_thread_ready.set()
                     self.scheduler.start()
@@ -289,6 +294,10 @@ class Stage:
             )
             self.scheduler_thread.start()
             await asyncio.to_thread(serving_thread_ready.wait)
+            if warmup_error is not None:
+                raise warmup_error
+            else:
+                pass
         else:
             pass
 
