@@ -309,12 +309,44 @@ section below is the rule.
 - This repository already configures linting, formatting, and other checks in
   [.pre-commit-config.yaml](/.pre-commit-config.yaml). Run
   `pre-commit run --all-files` before completing a change.
+
+## TESTS
+
+- Every test case answers "which future diff turns this red?" If the only
+  answer is an edit to the test itself, the case does not belong.
+- A case is added for one of three reasons: a bug that happened (it fails on
+  the pre-fix code, and one docstring line states the behavior that must not
+  come back), a derived property (boundary math, an invariant, ordering,
+  ownership, graph output equal to eager), or bookkeeping that is easy to
+  forget (registry completeness, a field's lifecycle, a branch that must not
+  fire, a value copied from an outside spec).
+- These do not belong: a default or constant read back with no consumer, an
+  expected value computed with the code's own formula, library behavior, a
+  test of a fake or a test helper, a check of one function's source text, an
+  assertion that code ran fast enough, and a stress loop for a race. A race
+  or ordering case forces the order with an event or a barrier, not a sleep.
+- Mock an external or slow boundary only when the assertion still checks a
+  result, a state change, an output or an error. Counting calls to a real
+  operation, wrapped rather than replaced, is fine when skipping that work
+  is the contract.
+- One strong case beats several weak ones, and every parametrized row guards
+  a failure no other row guards. A case is redundant only when another case
+  makes the same assertions for the same input through the same code.
+  Running the same lines is not enough. Before deleting a case, name the
+  regression it would let through.
+- Do not weaken a case to make it pass or run faster: no dropped assertion,
+  shorter wait or stubbed code under test. A changed contract gets a
+  rewritten case, and a tolerance widens only from a measured distribution.
 - Test the public contract (inputs → outputs), not internal layout.
   Do not snapshot helper tuples, page tables, prefix sums, or other
   encodings that can change without changing behavior. A representation
   refactor that preserves the caller's result should not break tests.
+- Name a test file after the module or feature it tests. Fakes and fixtures
+  that several test files share go in a helper module; a test file does not
+  import another test file.
 - Do not add a new test file for one case that belongs next to the
   existing suite. Put GPU or optional-backend cases on the same module
-  with a marker; skip when that backend is absent.
+  with a marker; skip when that backend is absent. A case that needs CUDA
+  carries `pytest.mark.accelerator`, or no CI lane runs it.
 - Test actual failure contracts and supported fallback paths;
   do not add tests solely to preserve speculative recovery scaffolding.
