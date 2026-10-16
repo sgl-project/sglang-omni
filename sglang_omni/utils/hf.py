@@ -39,6 +39,7 @@ _AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
 _AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
 _PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 _PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
+IRODORI_ARCHITECTURE = "IrodoriTTSForConditionalGeneration"
 
 
 def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
@@ -307,6 +308,41 @@ def try_resolve_arch_from_auk_layout(
         else:
             pass
     return None
+
+
+def try_resolve_arch_from_irodori_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve Irodori from its model-card title, locally or on the Hub."""
+    local_path = Path(model_path).expanduser()
+    if local_path.is_file():
+        model_card_path = local_path.parent / "README.md"
+    elif local_path.is_dir():
+        model_card_path = local_path / "README.md"
+    else:
+        try:
+            model_card_path = Path(
+                hf_hub_download(
+                    repo_id=model_path, filename="README.md", revision=revision
+                )
+            )
+        except Exception:
+            return None
+        else:
+            pass
+    if not model_card_path.is_file():
+        return None
+    else:
+        pass
+    model_card = model_card_path.read_text(encoding="utf-8")
+    has_irodori_v4_title = any(
+        line.strip().casefold().startswith("# irodori-tts-v4")
+        for line in model_card.splitlines()
+    )
+    if has_irodori_v4_title:
+        return IRODORI_ARCHITECTURE
+    else:
+        return None
 
 
 @lru_cache(maxsize=8)
