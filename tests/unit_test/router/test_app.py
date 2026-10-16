@@ -1463,6 +1463,40 @@ async def test_admission_slot_released_when_stream_never_starts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admission_slot_released_when_upstream_close_raises() -> None:
+    class BrokenCloseStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"first": true}'
+            yield b'{"second": true}'
+
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenCloseStream(),
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = admission_proxy(handler, max_inflight=2)
+
+    response = await proxy.forward_model_request(chat_request(), "/v1/chat/completions")
+    iterator = response.body_iterator
+    assert await iterator.__anext__() == b'{"first": true}'
+
+    # Client vanishes mid-stream: the relay generator is closed while the
+    # upstream stream is unconsumed, and closing that stream itself raises.
+    with pytest.raises(RuntimeError, match="close boom"):
+        await iterator.aclose()
+
+    assert proxy.admission.inflight == 0
+
+
+@pytest.mark.asyncio
 async def test_streaming_response_send_failure_releases_all_resources_once() -> None:
     # Note (Jiaxin Deng): Starlette sends http.response.start before iterating the
     # body, so a send failure there never enters the iterator's finally. Failing
