@@ -261,12 +261,14 @@ With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded
 
 ### Streaming Vocoder Batches
 
-The vocoder coalesces already-queued chunks from distinct requests without waiting
-for a batch. Ready windows of the same length decode together, up to
+With `--vocoder.factory.window_cuda_graphs false`, the vocoder coalesces
+already-queued chunks from distinct requests without waiting for a batch.
+Ready windows of the same length decode together, up to
 `--vocoder.factory.max_batch_size` (8 by default) and the startup frame budget.
 Each request keeps its own window schedule, overlap and crossfade state. Tail
 windows flush immediately when that request completes.
 `--vocoder.factory.max_batch_wait_ms` applies only to non-streaming requests.
+The default singleton CUDA graphs retain per-request decoding.
 
 ### Non-Streaming Requests
 
