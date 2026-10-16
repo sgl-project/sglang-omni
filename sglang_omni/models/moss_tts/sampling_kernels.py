@@ -10,6 +10,12 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
+from sglang_omni.models.moss_tts.sampling_npu import (
+    moss_hash_shift_constants,
+    multinomial_with_seed_npu,
+)
+from sglang_omni.platforms import current_platform
+
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
 
@@ -148,7 +154,6 @@ def seeded_gumbel_argmax(
     return result
 
 
-@torch.compile(dynamic=True)
 def multinomial_with_seed_and_token_ids(
     logprobs: torch.Tensor,
     seed: torch.Tensor,
@@ -157,13 +162,57 @@ def multinomial_with_seed_and_token_ids(
 ) -> torch.Tensor:
     """Seeded Gumbel-max using original vocabulary ids as RNG columns."""
 
-    seed = seed.to(torch.uint64)
-    hashed = murmur_hash32(seed, positions, token_ids)
-    noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
-    noise.log_().clamp_(min=torch.finfo(noise.dtype).min, max=-(2.0**-32)).neg_()
-    noise.log_().neg_()
-    noise.add_(logprobs.to(torch.float64))
-    return torch.argmax(noise, dim=1)
+    if logprobs.device.type == "npu":
+        moss_hash_shift_constants(logprobs.device)
+        rows = logprobs.shape[0]
+        if rows == 0:
+            return torch.empty(0, dtype=torch.long, device=logprobs.device)
+        else:
+            pass
+        bucket = 1 << (rows - 1).bit_length()
+        if rows != bucket:
+            logprobs = torch.nn.functional.pad(
+                logprobs, (0, 0, 0, bucket - rows), value=-torch.inf
+            )
+            seed = torch.nn.functional.pad(seed, (0, bucket - rows))
+            positions = torch.nn.functional.pad(positions, (0, bucket - rows))
+        else:
+            pass
+        torch.compiler.npugraph_mark_step_begin()
+        return compiled_multinomial_with_seed_and_token_ids(
+            logprobs.contiguous(),
+            seed.contiguous(),
+            positions.contiguous(),
+            token_ids.contiguous(),
+        )[:rows]
+    else:
+        pass
+    return compiled_multinomial_with_seed_and_token_ids(
+        logprobs, seed, positions, token_ids
+    )
+
+
+@torch.compile(
+    dynamic=not current_platform.is_npu(),
+    backend="npugraphs" if current_platform.is_npu() else "inductor",
+    fullgraph=current_platform.is_npu(),
+)
+def compiled_multinomial_with_seed_and_token_ids(
+    logprobs: torch.Tensor,
+    seed: torch.Tensor,
+    positions: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> torch.Tensor:
+    if logprobs.device.type == "npu":
+        return multinomial_with_seed_npu(logprobs, seed, positions, token_ids)
+    else:
+        seed = seed.to(torch.uint64)
+        hashed = murmur_hash32(seed, positions, token_ids)
+        noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
+        noise.log_().clamp_(min=torch.finfo(noise.dtype).min, max=-(2.0**-32)).neg_()
+        noise.log_().neg_()
+        noise.add_(logprobs.to(torch.float64))
+        return torch.argmax(noise, dim=1)
 
 
 _F64_MIN = tl.constexpr(-1.7976931348623157e308)
