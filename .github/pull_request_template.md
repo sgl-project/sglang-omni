@@ -41,4 +41,6 @@ Lint, Test Layout, Docs Check, Rust Router and the NPU image build run on GitHub
   - MPS: `run-mps-higgs-tts-3-4b`, `run-mps-moss-tts-local-transformer-v1.5`
   - Omni: `run-omni-qwen3-omni-30b-a3b-instruct`, `run-omni-minicpm-o-4.5`
 
-For example, `run-tts-ci` with `run-tts-moss-tts-local-transformer-v1.5` runs the unit tests and the TTS stage on MOSS-TTS. The rules live in `.github/scripts/resolve_ci_labels.py`, and [docs/developer_reference/ci_labels.md](https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/ci_labels.md) describes what every stage covers.
+Use `/tag-and-rerun-ci` for all CI, or combine targets, for example `/tag-and-rerun-ci tts asr` or `/tag-and-rerun-ci asr qwen3-omni`. Existing stage selections stay enabled. Use `/rerun-failed-ci` to retry failed jobs.
+
+The rules live in `.github/scripts/resolve_ci_labels.py`, and [docs/developer_reference/ci_labels.md](https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/ci_labels.md) describes what every stage covers.
