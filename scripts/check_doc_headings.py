@@ -175,9 +175,7 @@ def run_check(paths: list[Path]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "paths", nargs="*", help="Markdown files (defaults to docs/)"
-    )
+    parser.add_argument("paths", nargs="*", help="Markdown files (defaults to docs/)")
     args = parser.parse_args(argv)
     targets = resolve_targets(args.paths)
     return run_check(targets)
