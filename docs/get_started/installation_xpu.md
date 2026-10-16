@@ -198,7 +198,7 @@ pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
-#### Base
+**Base**
 
 ```bash
 sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000
@@ -210,7 +210,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
-#### CustomVoice
+**CustomVoice**
 
 `CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:
 
@@ -226,7 +226,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "instructions":"Speak clearly and calmly.","response_format":"wav"}' -o out.wav
 ```
 
-#### VoiceDesign
+**VoiceDesign**
 
 The `VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:
 
@@ -243,7 +243,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "instructions":"A warm, natural young adult voice.","response_format":"wav"}' -o out.wav
 ```
 
-#### Codec decoding on XPU
+**Codec decoding on XPU**
 
 The stateful incremental codec decoder runs, but the pipeline starts it with
 `async_decode: false`, and the vocoder captures its decode graphs during the
