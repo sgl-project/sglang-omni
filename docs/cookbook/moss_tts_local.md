@@ -101,7 +101,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`.
 
-#### Python
+**Python**
 
 ```python
 import requests

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+import benchmarks.duplex.fdb.__main__ as runbook_cli
 from benchmarks.duplex.fdb import asr as asr_module
 from benchmarks.duplex.fdb import generate as generate_module
 from benchmarks.duplex.fdb import judge as judge_module
@@ -196,6 +197,50 @@ def test_each_dataset_has_its_own_selection_options(tmp_path: Path) -> None:
     ):
         with pytest.raises(SystemExit):
             parse_selection(*arguments)
+
+
+def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parser = build_parser()
+    assert not parser.parse_args(["generate"]).all_stages
+    args = parser.parse_args(
+        ["generate", "--repeat", "2", "--num-shards", "3", "--all-stages"]
+    )
+    selections = sample_selection(parser, args)
+    calls = []
+
+    def step(name: str, error: str | None = None):
+        def record(*arguments, **keywords) -> None:
+            calls.append((name, arguments, keywords))
+            if error is not None:
+                raise SystemExit(error)
+            else:
+                pass
+
+        return record
+
+    def chain(all_stages: bool) -> list[str]:
+        calls.clear()
+        runbook_cli.generate_stages(
+            settings, args.repeat, *selections, args.num_shards, all_stages
+        )
+        return [name for name, _, _ in calls]
+
+    for name in ("generate", "asr", "judge", "aggregate"):
+        monkeypatch.setattr(runbook_cli, name, step(name))
+    assert chain(False) == ["generate"]
+    assert chain(args.all_stages) == ["generate", "asr", "judge", "aggregate"]
+    assert calls == [
+        ("generate", (settings, 2, *selections, 3), {}),
+        ("asr", (settings, 2), {"retry_failed": False}),
+        ("judge", (settings, 2), {"retry_failed": False}),
+        ("aggregate", (settings,), {}),
+    ]
+    monkeypatch.setattr(runbook_cli, "asr", step("asr", "WARNING: rerun asr"))
+    with pytest.raises(SystemExit, match="rerun asr"):
+        chain(True)
+    assert [name for name, _, _ in calls] == ["generate", "asr"]
 
 
 def test_leave_out_hint_names_an_option_change_the_parser_accepts() -> None:

@@ -21,3 +21,5 @@ ASR model construction is in `MLXSTTModelLoader`. Catalog/state values and reusa
 This is not a native decode/Metal completion barrier: the dependency's synchronous `cancel()` has no awaitable internal-worker completion API. Verify actual model memory/cancellation behavior separately.
 
 Keep `nonisolated` inference, cancellation propagation and the existing buffer locks intact when moving code. The source split does not introduce another model/session owner. See the [phase record](../../docs/RefactoringProgress.zh-CN.md) before changing runtime ownership.
+
+Recording replaces its Silero frame decider on each activation. Dropping the streaming detector closes its native VAD sockets and returns its shared-runtime lease; otherwise each discarded session consumes a server worker until later activations cannot open a VAD stream. A VAD exchange has a two-second response deadline and propagates caller cancellation to its socket. Recording falls back to energy VAD for the remainder of a failed session and tries Silero again on the next activation, so an unresponsive VAD cannot indefinitely starve live ASR or block stopping.

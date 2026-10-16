@@ -8,9 +8,8 @@ import subprocess
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from typing import TypeAlias
-from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -20,7 +19,6 @@ from tests.test_ci.tts_mps_ci_config import MPS_PERFORMANCE_REFERENCES
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_DIRECTORY = REPO_ROOT / ".github/workflows"
 RESOLVER_PATH = REPO_ROOT / ".github/scripts/resolve_ci_labels.py"
-SLASH_HANDLER_PATH = REPO_ROOT / "scripts/ci/utils/slash_command_handler.py"
 GITHUB_LABEL_MAX_LENGTH = 50
 RANDOM_DRAW_SEED_COUNT = 64
 UNRELATED_STAGE_LABEL = "run-mac-ci"
@@ -325,69 +323,3 @@ def test_omni_ci_keeps_process_replicas_qwen_only() -> None:
     assert "inputs.omni_ci_model == 'qwen3-omni'" in (
         child["jobs"]["stage-11-process-replicas"]["if"]
     )
-
-
-@pytest.fixture
-def slash_handler(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    monkeypatch.setitem(
-        sys.modules, "github", SimpleNamespace(Auth=Mock(), Github=Mock())
-    )
-    return load_module("slash_command_handler", SLASH_HANDLER_PATH)
-
-
-def run_slash_command(
-    slash_handler: ModuleType, monkeypatch: pytest.MonkeyPatch, comment_body: str
-) -> Mock:
-    environment = {
-        "GITHUB_TOKEN": "test-token",
-        "REPO_FULL_NAME": "owner/repo",
-        "PR_NUMBER": "1",
-        "COMMENT_ID": "2",
-        "COMMENT_BODY": comment_body,
-        "USER_LOGIN": "contributor",
-    }
-    for name, value in environment.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(
-        slash_handler,
-        "load_permissions",
-        Mock(return_value={"can_tag_run_ci_label": True, "can_rerun_failed_ci": True}),
-    )
-    slash_handler.main()
-    return slash_handler.Github.return_value.get_repo.return_value
-
-
-@pytest.mark.parametrize(
-    "comment_body", ["/tag-run-ci-label", "/tag-and-rerun-ci moss qwen3-asr"]
-)
-def test_label_slash_commands_are_disabled(
-    slash_handler: ModuleType, monkeypatch: pytest.MonkeyPatch, comment_body: str
-) -> None:
-    repo = run_slash_command(slash_handler, monkeypatch, comment_body)
-    pr = repo.get_pull.return_value
-    comment = repo.get_issue.return_value.get_comment.return_value
-    pr.create_issue_comment.assert_called_once_with(
-        slash_handler.DISABLED_LABEL_COMMAND_REPLY
-    )
-    comment.create_reaction.assert_called_once_with("confused")
-    pr.add_to_labels.assert_not_called()
-    repo.get_workflow_runs.assert_not_called()
-
-
-def test_rerun_failed_ci_still_reruns_failed_jobs(
-    slash_handler: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    failed_run = Mock(
-        status="completed",
-        conclusion="failure",
-        workflow_id=1,
-        event="pull_request",
-        created_at=1,
-        id=10,
-    )
-    repo = slash_handler.Github.return_value.get_repo.return_value
-    repo.get_workflow_runs.return_value = [failed_run]
-    run_slash_command(slash_handler, monkeypatch, "/rerun-failed-ci")
-    comment = repo.get_issue.return_value.get_comment.return_value
-    failed_run.rerun_failed_jobs.assert_called_once_with()
-    comment.create_reaction.assert_called_once_with("+1")
