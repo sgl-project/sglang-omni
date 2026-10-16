@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from test_duplex_oracle import trace_fixture
 
 from benchmarks.duplex import artifacts
+from tests.unit_test.benchmarks.duplex_fixtures import trace_fixture
 
 
 @pytest.fixture
