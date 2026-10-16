@@ -1718,6 +1718,39 @@ def test_row_indices_upload_only_when_the_batch_order_or_slots_change() -> None:
     assert upload_counts == [1, 1, 2, 3, 3, 4]
 
 
+def test_a_new_request_in_the_same_slots_keeps_the_uploaded_row_indices() -> None:
+    decode = decode_runner(row_count=4)
+    runner = decode.runner
+    first, second = decoding_scheduler_requests(decode, [3, 4])
+    newcomer = prompted_request(frame_rows_of([3], seed=12)[0], "request-new", 3)
+    upload_counts: list[int] = []
+    with patch.object(
+        runner, "pinned_pingpong", wraps=runner.pinned_pingpong
+    ) as pinned_pingpong:
+
+        def decode_and_count_uploads(batch: list[SchedulerRequest]) -> None:
+            expected = history_staged_rows(
+                [request_data_of(request) for request in batch]
+            )
+            decode.forward.next_frames = [
+                [84 + index, 1, 2, 3, 4] for index in range(len(batch))
+            ]
+            decode_step(runner, batch)
+            assert decode.forward.reads[-1] == expected
+            upload_counts.append(
+                sum(
+                    called.args[0] == "row_upload_buffers"
+                    for called in pinned_pingpong.call_args_list
+                )
+            )
+
+        decode_and_count_uploads([first, second])
+        prefill_step(decode, [newcomer], [1], [[86, 2, 2, 2, 2]])
+        decode_and_count_uploads([newcomer, second])
+
+    assert upload_counts == [1, 1]
+
+
 def test_the_first_decode_after_a_prefill_reads_what_the_history_gives() -> None:
     decode = decode_runner(row_count=4)
     requests = prompted_requests([3, 5])
