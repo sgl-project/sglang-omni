@@ -2,6 +2,7 @@
 """The streaming codec stage renders per-request chunks into the whole-reply waveform."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -585,3 +586,208 @@ def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_code
             # an error the size of the signal, is ruled out.
             error = (outputs["graphed"][stream] - expected[stream]).abs().max()
             assert error <= 0.05 * expected[stream].abs().max()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("max_graph_frames", [0, 4], ids=["eager", "graph"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_codec_chunk_does_not_wait_for_unrelated_forward(
+    random_codec: MimiCodec, max_graph_frames: int, batch_size: int
+) -> None:
+    codec = random_codec.cuda()
+    scheduler = PersonaPlexCode2WavScheduler(
+        MimiDecodeSlots(
+            codec,
+            num_slots=batch_size,
+            max_batch_size=batch_size,
+            max_graph_frames=max_graph_frames,
+            max_chunk_frames=4,
+        ),
+        compute_fn=lambda payload: payload,
+        chunk_ramp_frames=(1, 4),
+    )
+    codes = torch.randint(
+        0, 2048, (batch_size, 6, 8), generator=torch.Generator().manual_seed(42)
+    )
+
+    def decode_requests(prefix: str, frame_count: int) -> list[torch.Tensor]:
+        request_ids = [f"{prefix}-{row}" for row in range(batch_size)]
+        for request_id in request_ids:
+            start_stream(scheduler, request_id)
+        scheduler.on_stream_chunk_batch(
+            [
+                (
+                    request_id,
+                    StreamItem(
+                        chunk_id=0,
+                        from_stage="lm",
+                        data=codes[row, :frame_count],
+                    ),
+                )
+                for row, request_id in enumerate(request_ids)
+            ]
+        )
+        for request_id in request_ids:
+            scheduler.handle_stream_done(request_id)
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
+        messages = drain_messages(scheduler)
+        assert not scheduler.stream_states
+        assert scheduler.decode_slots.active_slot_count == 0
+        return [
+            torch.cat(
+                [
+                    decode_waveform(message.data)
+                    for message in messages
+                    if message.request_id == request_id and message.type == "stream"
+                ]
+            )
+            for request_id in request_ids
+        ]
+
+    expected = decode_requests("warmup", 6)
+    torch.cuda.synchronize()
+    torch.cuda._sleep(500_000_000)  # noqa: leading-underscore
+    unrelated_done = torch.cuda.Event()
+    unrelated_done.record()
+    try:
+        actual = decode_requests("reply", 6)
+        assert not unrelated_done.query()
+        for waveform, reference in zip(actual, expected, strict=True):
+            assert torch.equal(waveform, reference)
+        reused = decode_requests("reused", 1)
+        assert not unrelated_done.query()
+        for waveform, reference in zip(reused, expected, strict=True):
+            assert torch.equal(waveform, reference[:SAMPLES_PER_FRAME])
+    finally:
+        unrelated_done.synchronize()
+
+
+def test_codec_rejects_non_cpu_codes_before_acquiring_a_slot(
+    random_codec: MimiCodec, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = new_scheduler(random_codec)
+    acquire = Mock(wraps=scheduler.decode_slots.acquire)
+    monkeypatch.setattr(scheduler.decode_slots, "acquire", acquire)
+    codes = torch.zeros((1, 8), dtype=torch.long, device="meta")
+    with scheduler.state_lock:
+        with pytest.raises(AssertionError, match="stream codes must be on CPU"):
+            scheduler.ingest_stream_item(
+                "reply", StreamItem(chunk_id=0, from_stage="lm", data=codes)
+            )
+    acquire.assert_not_called()
+    assert "reply" not in scheduler.stream_states
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available()
+                    or not current_platform.enable_codec_decode_graph(),
+                    reason="requires CUDA codec decode graphs",
+                ),
+            ],
+        ),
+    ],
+)
+def test_interleaved_requests_reuse_cancelled_slots_and_flush_late_payloads(
+    random_codec: MimiCodec, device: str
+) -> None:
+    slots = MimiDecodeSlots(
+        random_codec.to(device),
+        num_slots=2,
+        max_batch_size=1,
+        max_graph_frames=2,
+        max_chunk_frames=4,
+    )
+    scheduler = PersonaPlexCode2WavScheduler(
+        slots, compute_fn=lambda payload: payload, chunk_ramp_frames=(1, 4)
+    )
+    generator = torch.Generator().manual_seed(27892792)
+    codes = {
+        request_id: torch.randint(0, 2048, (frames, 8), generator=generator)
+        for request_id, frames in (("a", 6), ("aborted", 7), ("c", 9), ("d", 7))
+    }
+    payloads = {
+        request_id: StagePayload(
+            request_id,
+            request=OmniRequest(inputs={}),
+            data=PersonaPlexState(codes=request_codes).to_dict(),
+        )
+        for request_id, request_codes in codes.items()
+    }
+
+    def push(request_id: str, first_frame: int, last_frame: int) -> None:
+        scheduler.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=first_frame,
+                data=codes[request_id][first_frame:last_frame],
+                from_stage="lm",
+            ),
+        )
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
+
+    expected: dict[str, torch.Tensor] = {}
+    for request_id in ("a", "c", "d"):
+        reference_id = f"reference-{request_id}"
+        start_stream(scheduler, reference_id)
+        push_frames(scheduler, reference_id, codes[request_id])
+        *_, result = finish_stream(scheduler, reference_id)
+        expected[request_id] = decode_waveform(result.data.data)
+
+    for request_id in ("a", "aborted"):
+        push(request_id, 0, 1)
+    scheduler.handle_streaming_new_request("c", payloads["c"])
+    push("c", 0, 1)
+    assert scheduler.stream_states["a"].slot_index is not None
+    aborted_slot = scheduler.stream_states["aborted"].slot_index
+    assert aborted_slot is not None
+    assert scheduler.stream_states["c"].slot_index is None
+
+    push("aborted", 1, 3)
+    scheduler.abort("aborted")
+    assert "aborted" not in scheduler.stream_states
+    assert scheduler.stream_states["c"].slot_index == aborted_slot
+    push("aborted", 3, 4)
+    push("d", 0, 1)
+    assert scheduler.stream_states["d"].slot_index is None
+
+    for frame in range(1, 9):
+        for request_id in ("a", "c", "d"):
+            if frame < len(codes[request_id]):
+                push(request_id, frame, frame + 1)
+            else:
+                pass
+    for request_id in ("a", "c", "d"):
+        scheduler.handle_stream_done(request_id)
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
+        if request_id != "c":
+            scheduler.handle_streaming_new_request(request_id, payloads[request_id])
+        else:
+            pass
+        assert request_id not in scheduler.stream_states
+
+    messages = drain_messages(scheduler)
+    for request_id in ("a", "c", "d"):
+        selected = [message for message in messages if message.request_id == request_id]
+        assert [message.type for message in selected].count("result") == 1
+        assert selected[-1].type == "result"
+        actual = torch.cat([decode_waveform(message.data) for message in selected[:-1]])
+        assert torch.equal(actual, expected[request_id])
+        assert torch.equal(
+            decode_waveform(selected[-1].data.data), expected[request_id]
+        )
+    aborted = [message for message in messages if message.request_id == "aborted"]
+    assert len(aborted) == 1 and aborted[0].type == "stream"
+    assert not scheduler.stream_states and not scheduler.pending_done
+    assert sorted(slots.free_slots) == [0, 1]
