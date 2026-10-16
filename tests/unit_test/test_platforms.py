@@ -21,6 +21,7 @@ from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
@@ -264,6 +265,16 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     assert platform.get_stage_process_env(spec, {"ZE_AFFINITY_MASK": "0,1"}) == {
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"
     }
+
+
+class MusaSRTPlatform(SRTPlatform):
+    _enum = PlatformEnum.MUSA
+
+
+def test_musa_platform_resolves_to_the_omni_musa_platform() -> None:
+    platform = platforms.as_omni_platform(MusaSRTPlatform())
+
+    assert type(platform) is MUSAOmniPlatform
 
 
 def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
