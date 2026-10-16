@@ -16,6 +16,7 @@ from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.dots_tts.codec import (
     DotsReferenceEncoder,
+    ReferenceEncoderGraphs,
     load_dots_audio_codec,
 )
 from sglang_omni.models.dots_tts.compat import import_dots_tts
@@ -459,6 +460,8 @@ def create_reference_encode_executor(
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
+    enable_encoder_graphs: bool = False,
+    compile_speaker_model: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
@@ -466,6 +469,19 @@ def create_reference_encode_executor(
     else:
         pass
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
+    if enable_encoder_graphs and concrete_device.type == "cuda":
+        codec.encoder_graphs = ReferenceEncoderGraphs(
+            codec.inference,
+            samples_per_patch=codec.patch_size * codec.hop_size,
+            hop_size=codec.hop_size,
+            device=codec.device,
+        )
+    else:
+        pass
+    if compile_speaker_model and concrete_device.type == "cuda":
+        codec.compile_speaker_model()
+    else:
+        pass
     encoder = DotsReferenceEncoder(
         codec,
         model_id=str(model_path),

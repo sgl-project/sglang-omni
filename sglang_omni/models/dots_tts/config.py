@@ -17,6 +17,19 @@ from sglang_omni.config import (
 _PKG = "sglang_omni.models.dots_tts"
 
 
+class DotsReferenceEncodeFactoryArgs(FactoryArgs):
+    """dots.tts reference-encode constructor knobs, typed like the shared ones."""
+
+    enable_encoder_graphs: bool = False
+    compile_speaker_model: bool = False
+
+
+class DotsReferenceEncodeStageConfig(StageConfig):
+    factory: DotsReferenceEncodeFactoryArgs = Field(
+        default_factory=DotsReferenceEncodeFactoryArgs
+    )
+
+
 class DotsVocoderFactoryArgs(FactoryArgs):
     """dots.tts vocoder constructor knobs, typed like the shared ones."""
 
@@ -41,6 +54,7 @@ class DotsTTSPipelineConfig(PipelineConfig):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset({"auto_detect"})
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "reference_encode": DotsReferenceEncodeStageConfig,
         "latent_engine": EngineStageConfig,
         "vocoder": DotsVocoderStageConfig,
     }

@@ -79,6 +79,7 @@ def make_codec() -> DotsAudioCodec:
     codec.hop_size = HOP_SIZE
     codec.device = torch.device("cpu")
     codec.lock = threading.RLock()
+    codec.encoder_graphs = None
     return codec
 
 
@@ -572,3 +573,19 @@ def test_batched_long_references_are_also_deterministic(
         repeat = codec.encode_reference_batch(list(waveforms))
         for one, two in zip(baseline, repeat):
             assert torch.equal(one["speaker_embedding"], two["speaker_embedding"])
+
+
+def test_encode_does_not_wait_for_the_vocoder_lock() -> None:
+    """A vocoder step holding codec.lock must not stall reference encodes."""
+    codec = make_codec()
+    finished = threading.Event()
+    with codec.lock:
+        worker = threading.Thread(
+            target=lambda: (
+                codec.encode_waveforms([make_waveform(3, seed=31)]),
+                finished.set(),
+            )
+        )
+        worker.start()
+        assert finished.wait(timeout=10.0)
+    worker.join()
