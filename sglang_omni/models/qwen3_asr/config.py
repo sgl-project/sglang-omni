@@ -101,6 +101,15 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         )
     ]
 
+    def resolved_env_defaults(self) -> dict[str, str]:
+        from sglang_omni.platforms import current_platform
+
+        # Set before worker startup: torch_npu caches its Host queue settings.
+        if current_platform.is_npu():
+            return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
+        else:
+            return dict(self.env_defaults)
+
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
