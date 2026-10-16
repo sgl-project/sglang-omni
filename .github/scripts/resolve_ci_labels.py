@@ -29,6 +29,13 @@ class CiStage:
 
 CI_STAGES: tuple[CiStage, ...] = (
     CiStage(
+        name="unit_test",
+        label="run-unit-test-ci-only",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+    ),
+    CiStage(
         name="asr",
         label="run-asr-ci",
         workflow=OMNI_CI_WORKFLOW,

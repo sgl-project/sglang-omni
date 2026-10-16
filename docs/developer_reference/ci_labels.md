@@ -54,7 +54,7 @@ Only PR Test and the selected stages actually run; a stage that is not selected 
 | `unit-test` | `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden from the process |
 | `unit-test-accelerator` | `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
 
-PR Test has no label of its own. It runs whenever any stage label selects a stage, the hardware stages included.
+`run-unit-test-ci-only` selects PR Test without selecting model or hardware stages. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included.
 
 ### ASR
 
@@ -161,6 +161,7 @@ The stage label is `run-mac-ci`.
 | Stage label | Selects |
 | --- | --- |
 | `run-all-ci` | Every stage |
+| `run-unit-test-ci-only` | PR Test in Omni CI |
 | `run-asr-ci` | ASR in Omni CI |
 | `run-tts-ci` | TTS in Omni CI |
 | `run-mps-ci` | MPS in Omni CI |
@@ -176,6 +177,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 | Labels | What runs |
 | --- | --- |
 | none | Nothing. The self-hosted gates fail with `No CI label found`. |
+| `run-unit-test-ci-only` | PR Test only, after shared setup. |
 | `run-tts-ci` | PR Test, then TTS on a random model from its pool. |
 | `run-tts-ci`, `run-tts-moss-tts-local-transformer-v1.5` | PR Test, then TTS on MOSS-TTS. |
 | `run-tts-ci`, `run-mps-ci` | PR Test, TTS and MPS, each with its own random model. |
@@ -206,6 +208,7 @@ Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their
 Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` and re-run completed CI workflows. Combine short stage or model targets:
 
 ```text
+/tag-and-rerun-ci unit-test
 /tag-and-rerun-ci tts asr
 /tag-and-rerun-ci tts asr omni
 /tag-and-rerun-ci asr qwen3-omni
@@ -213,7 +216,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` 
 /tag-and-rerun-ci mps-higgs
 ```
 
-Stage targets are `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label. Full label names are also accepted; model labels alone still do not enable stages.
+Stage targets are `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label. Full label names are also accepted; model labels alone still do not enable stages.
 
 The command replaces conflicting model labels only in the requested stages and keeps other labels, including an existing `run-all-ci`. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.
 
