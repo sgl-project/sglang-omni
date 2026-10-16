@@ -207,7 +207,7 @@ def test_qwen3_asr_explicit_budget_overrides_scaling(monkeypatch) -> None:
 
 
 def test_qwen3_asr_scalar_audio_token_length_matches_tensor_formula() -> None:
-    expected = qwen3_asr_audio_token_lengths(torch.arange(401)).tolist()
+    expected = [int(qwen3_asr_audio_token_lengths(frames)) for frames in range(401)]
 
     assert [qwen3_asr_num_audio_tokens(frames) for frames in range(401)] == expected
 
