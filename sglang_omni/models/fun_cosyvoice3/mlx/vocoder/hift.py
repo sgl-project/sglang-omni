@@ -435,6 +435,9 @@ class CausalHiFTGenerator(nn.Module):
         """x: mel (B, in_channels, T); s: source (B, 1, T_wave). -> waveform (B, T_wave)."""
         s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = mx.concatenate([s_stft_real, s_stft_imag], axis=1)
+        # note(yuhui): FP32 source spectra must not promote the convolution backbone.
+        s_stft = s_stft.astype(self.conv_pre.weight.dtype)
+        x = x.astype(self.conv_pre.weight.dtype)
 
         x = mx.swapaxes(x, 1, 2)  # (B, T, C)
         x = self.conv_pre(x)
@@ -470,6 +473,8 @@ class CausalHiFTGenerator(nn.Module):
         x = mx.swapaxes(x, 1, 2)
         x = self.conv_post(x)
         x = mx.swapaxes(x, 1, 2)
+        # note(yuhui): Reconstruct magnitude, phase, and waveform in FP32.
+        x = x.astype(mx.float32)
 
         n_fft_half = self.istft_params["n_fft"] // 2 + 1
         magnitude = mx.exp(x[:, :n_fft_half, :])
@@ -480,7 +485,8 @@ class CausalHiFTGenerator(nn.Module):
         return x
 
     def __call__(self, speech_feat: mx.array) -> Tuple[mx.array, mx.array]:
-        f0 = self.f0_predictor(speech_feat)  # (B, T)
+        # note(yuhui): Pitch errors accumulate into the harmonic source's phase.
+        f0 = self.f0_predictor(speech_feat.astype(mx.float32))  # (B, T)
         s = self.f0_upsample(mx.expand_dims(f0, 1))  # (B, 1, T*scale)
         s = mx.swapaxes(s, 1, 2)  # (B, T*scale, 1)
         s, _, _ = self.m_source(s)
