@@ -96,3 +96,10 @@ def test_result_and_stream_use_pipeline_state(monkeypatch) -> None:
     assert restored.prompt_tokens == 1
     assert restored.completion_tokens == 1
     assert restored.engine_time_s == 2.5
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+
+    assert DotsTTSSGLangRequestData().enforce_request_limits is True

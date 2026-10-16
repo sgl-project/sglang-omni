@@ -120,3 +120,10 @@ def test_higgs_result_adapter_propagates_conversion_failure(
 
     with pytest.raises(RuntimeError, match="result conversion failed"):
         result_adapter(data)
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
+
+    assert HiggsSGLangRequestData().enforce_request_limits is True
