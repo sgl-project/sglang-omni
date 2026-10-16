@@ -188,7 +188,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 ## Label changes, re-runs and manual runs
 
-Adding a label, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
+Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
 Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
@@ -203,7 +203,21 @@ gh workflow run omni-ci.yaml --ref <branch> \
 
 Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests.
 
-The `/rerun-failed-ci` comment command still re-runs the failed jobs of a pull request. The `/tag-run-ci-label` and `/tag-and-rerun-ci` commands are disabled while they are redesigned around these labels; the bot replies that they are disabled.
+Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` and re-run completed CI workflows. Combine short stage or model targets:
+
+```text
+/tag-and-rerun-ci tts asr
+/tag-and-rerun-ci tts asr omni
+/tag-and-rerun-ci asr qwen3-omni
+/tag-and-rerun-ci qwen3-tts
+/tag-and-rerun-ci mps-higgs
+```
+
+Stage targets are `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label. Full label names are also accepted; model labels alone still do not enable stages.
+
+The command replaces conflicting model labels only in the requested stages and keeps other labels, including an existing `run-all-ci`. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.
+
+`/tag-run-ci-label` accepts the same arguments but only updates labels. Labels added by the bot do not start workflows; push a commit or use `/tag-and-rerun-ci` to start them. `/rerun-failed-ci` retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.
 
 ## Gate messages
 
