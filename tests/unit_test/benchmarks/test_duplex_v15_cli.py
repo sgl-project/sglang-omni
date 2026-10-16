@@ -24,7 +24,7 @@ from benchmarks.duplex.run_artifacts import (
     load_run,
 )
 from benchmarks.eval.benchmark_duplex_v15 import main
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     SERVER_REVISION,
     peer_server,
     write_dataset,

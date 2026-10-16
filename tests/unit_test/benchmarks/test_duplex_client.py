@@ -28,7 +28,7 @@ from benchmarks.duplex.client import (
     run_session,
 )
 from benchmarks.duplex.oracle import evaluate_trace
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     FATAL_CLOSE_DELAY_S,
     FIXTURE_PACKETS,
     FIXTURE_PCM,

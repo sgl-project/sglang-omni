@@ -23,7 +23,7 @@ from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_PCM,
     FIXTURE_SAMPLES,
     SERVER,

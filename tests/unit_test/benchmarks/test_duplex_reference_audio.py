@@ -17,7 +17,7 @@ from benchmarks.duplex import reference_audio
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.eval.benchmark_duplex_reference import main
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     SAMPLE_RATE,
     TRACE_ORIGIN_S,
     encode_audio,

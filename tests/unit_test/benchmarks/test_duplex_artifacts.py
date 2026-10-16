@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from benchmarks.duplex import artifacts
-from tests.unit_test.benchmarks.duplex_fixtures import trace_fixture
+from tests.unit_test.fixtures.duplex_fakes import trace_fixture
 
 
 @pytest.fixture

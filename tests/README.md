@@ -17,7 +17,6 @@ tests/
 │   └── test_fun_asr_realtime.py
 └── unit_test/
     ├── benchmarks/
-    │   ├── duplex_fixtures.py
     │   ├── test_duplex_*.py
     │   ├── test_fdb_*.py
     │   ├── test_dataset_regressions.py
@@ -35,6 +34,7 @@ tests/
     │   ├── test_integration.py
     │   └── test_weight_preprocess.py
     ├── fixtures/
+    │   ├── duplex_fakes.py
     │   ├── fish_fakes.py
     │   ├── mini_checkpoint.py
     │   ├── pipeline_fakes.py
@@ -538,8 +538,8 @@ that happened to contain an older version of the test.
     protocol invariant violations, percentile summaries). No GPU or server.
   - `test_duplex_*.py` and `test_fdb_*.py`: Full-Duplex-Bench recording,
     protocol oracle, scoring and runbook. The fake peers, traces, datasets and
-    scoring trees they share live in `duplex_fixtures.py`; test files do not
-    import each other.
+    scoring trees they share live in `fixtures/duplex_fakes.py`; test files do
+    not import each other.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation, plus the 8 kHz telephony fixtures under

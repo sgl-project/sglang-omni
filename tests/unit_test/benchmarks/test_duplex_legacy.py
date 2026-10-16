@@ -34,7 +34,7 @@ from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.eval.benchmark_duplex_reference import main as reference_main
 from benchmarks.eval.benchmark_duplex_v10 import main as v10_main
 from benchmarks.eval.benchmark_duplex_v15 import main as v15_main
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_PACKETS,
     FIXTURE_PCM,
     SERVER,

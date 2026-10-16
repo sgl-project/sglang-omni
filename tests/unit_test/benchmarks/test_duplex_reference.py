@@ -27,7 +27,7 @@ from benchmarks.duplex import (
 )
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.eval import benchmark_duplex_reference as cli_module
-from tests.unit_test.benchmarks.duplex_fixtures import (
+from tests.unit_test.fixtures.duplex_fakes import (
     REF,
     SR,
     StubBehavior,

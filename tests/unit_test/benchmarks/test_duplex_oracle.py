@@ -7,7 +7,7 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
-from tests.unit_test.benchmarks.duplex_fixtures import find_event, trace_fixture
+from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
 def test_known_good_trace_and_hand_calculated_metrics() -> None:
