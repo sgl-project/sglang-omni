@@ -2350,6 +2350,30 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     assert server_args.prefill_decode_interval == DECODE_STEPS_BETWEEN_PREFILLS
 
 
+@pytest.mark.parametrize(
+    ("overrides", "context_length", "expected_max_total_tokens"),
+    [
+        ({}, 128, 256),
+        ({"max_running_requests": 4}, 128, 512),
+        ({"max_total_tokens": 64}, 128, 64),
+        ({"max_total_tokens": 1024}, 128, 1024),
+        ({"max_total_tokens": None}, 64, 128),
+    ],
+)
+def test_engine_bounds_default_kv_capacity_and_honors_explicit_limits(
+    tmp_path: Path,
+    overrides: dict[str, int | None],
+    context_length: int,
+    expected_max_total_tokens: int,
+) -> None:
+    builder, server_args = engine_server_args(tmp_path, overrides, context_length)
+
+    builder.validate_before_infrastructure(server_args)
+
+    assert server_args.max_total_tokens == expected_max_total_tokens
+    assert server_args.context_length == context_length
+
+
 def test_engine_context_must_fit_the_tower_rope_table(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
