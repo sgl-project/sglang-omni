@@ -1,3 +1,5 @@
+"""MiniCPM-o profile: protocol checks, 24 kHz reconstruction, capture and replay."""
+
 import asyncio
 import base64
 import copy

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Replay of recorded duplex runs: oracle verdicts, denominators, server identity."""
 
 import base64
 import hashlib

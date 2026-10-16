@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.5 discovery, audio normalization and the session runner."""
 
 from __future__ import annotations
 

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.5 record and transcribe CLI and its run artifacts."""
 
 from __future__ import annotations
 

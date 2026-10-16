@@ -1,3 +1,5 @@
+"""Duplex serving metrics: unit lag, reply latency, capacity and the sweep."""
+
 import base64
 import json
 import math

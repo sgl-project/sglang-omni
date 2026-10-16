@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.0 dataset discovery, Parakeet transcription and recording."""
 
 from __future__ import annotations
 

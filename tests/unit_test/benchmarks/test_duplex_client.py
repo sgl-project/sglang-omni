@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Duplex client sessions against a fake native peer, and the recording CLI."""
 
 from __future__ import annotations
 

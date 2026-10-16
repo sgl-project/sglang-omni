@@ -1,3 +1,5 @@
+"""Protocol oracle verdicts and metrics on native duplex session traces."""
+
 import base64
 import copy
 
