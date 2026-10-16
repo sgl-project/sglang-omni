@@ -251,3 +251,47 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
             captured.graph.replay()
             self.replays += 1
             return captured.static_embedding.clone()
+
+    def embed_batch(self, waveforms: list[np.ndarray]) -> list[torch.Tensor]:
+        """Speaker embeddings in input order, batching only equal-length waveforms."""
+        if not waveforms:
+            return []
+        else:
+            pass
+        groups: dict[int, list[tuple[int, np.ndarray]]] = {}
+        for index, waveform in enumerate(waveforms):
+            groups.setdefault(len(waveform), []).append((index, waveform))
+
+        embeddings: list[torch.Tensor | None] = [None] * len(waveforms)
+        param = next(self.encoder.parameters())
+        for group in groups.values():
+            if len(group) == 1:
+                index, waveform = group[0]
+                embeddings[index] = self.embed(waveform)
+                continue
+            else:
+                pass
+            waveform_batch = torch.stack(
+                [torch.from_numpy(waveform) for _, waveform in group]
+            )
+            mels = self.mel(waveform_batch)
+            assert mels.shape[2] > max(self.pads)
+            group_embeddings = self.encoder(
+                mels.transpose(1, 2).to(device=param.device, dtype=param.dtype)
+            )
+            if group_embeddings.shape[0] != len(group):
+                raise RuntimeError(
+                    "Qwen3-TTS speaker encoder returned "
+                    f"{group_embeddings.shape[0]} embeddings for "
+                    f"{len(group)} references"
+                )
+            else:
+                pass
+            for (index, _), embedding in zip(group, group_embeddings, strict=True):
+                embeddings[index] = embedding
+
+        if any(embedding is None for embedding in embeddings):
+            raise RuntimeError("Qwen3-TTS speaker encoder dropped a reference")
+        else:
+            pass
+        return [embedding for embedding in embeddings if embedding is not None]

@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict, overload
 
+import librosa
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -72,6 +73,8 @@ QWEN3_TTS_TASK_VOICE_DESIGN = "VoiceDesign"
 QWEN3_TTS_DEFAULT_CUSTOM_VOICE = "Vivian"
 _QWEN3_TTS_PREPARED_MARKER = "_qwen3_tts_prepared_request"
 _QWEN3_TTS_REF_CODE_BATCH_STOP = object()
+QWEN3_TTS_REFERENCE_MAX_BATCH_SIZE = 8
+QWEN3_TTS_REFERENCE_MAX_BATCH_WAIT_MS = 0.0
 
 _GENERATION_FIELDS = (
     "do_sample",
@@ -1148,59 +1151,164 @@ class Qwen3TTSAdhocReferenceHook(
             separators=(",", ":"),
         )
 
+    def can_encode_batch(self) -> bool:
+        return True
+
     def encode_one(
         self, item: Qwen3TTSAdhocReferenceInput
     ) -> tuple[VoicePrompt, str | None]:
-        if not item.x_vector_only_mode and not item.ref_text:
-            raise ValueError(
-                "ref_text is required when x_vector_only_mode=False (ICL mode)"
-            )
+        outcome = self.encode_batch([item])[0]
+        if isinstance(outcome, Exception):
+            raise outcome
         else:
             pass
-        with torch.no_grad():
-            normalized = self.wrapper._normalize_audio_inputs(
-                [item.ref_audio]
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            if len(normalized) != 1:
-                raise ValueError("Qwen3-TTS expects exactly one reference audio")
-            else:
-                pass
-            waveform, sample_rate = normalized[0]
-            # note(ratish): the codes are only consumed in ICL mode, so x vector
-            # mode runs the speaker encoder alone.
-            ref_code_future = None
-            if not item.x_vector_only_mode:
-                ref_code_future = self.ref_code_batcher.submit(waveform, sample_rate)
-            else:
-                pass
-            speaker_waveform = waveform
-            speaker_sample_rate = self.model.speaker_encoder_sample_rate
-            if sample_rate != speaker_sample_rate:
-                import librosa
+        return outcome
 
-                speaker_waveform = librosa.resample(
-                    y=speaker_waveform.astype("float32"),
-                    orig_sr=int(sample_rate),
-                    target_sr=speaker_sample_rate,
+    def encode_batch(
+        self, items: list[Qwen3TTSAdhocReferenceInput]
+    ) -> list[tuple[VoicePrompt, str | None] | Exception]:
+        if not items:
+            return []
+        else:
+            pass
+        for item in items:
+            if not item.x_vector_only_mode and not item.ref_text:
+                raise ValueError(
+                    "ref_text is required when x_vector_only_mode=False (ICL mode)"
                 )
             else:
                 pass
-            speaker_embedding = self.model.extract_speaker_embedding(
-                audio=speaker_waveform,
-                sr=speaker_sample_rate,
-            )
-            ref_code = (
-                record_ref_code_consumer_stream(ref_code_future.result(timeout=130.0))
-                if ref_code_future is not None
-                else None
-            )
-        voice_clone_prompt: VoicePrompt = {
-            "ref_code": [ref_code],
-            "ref_spk_embedding": [speaker_embedding],
-            "x_vector_only_mode": [item.x_vector_only_mode],
-            "icl_mode": [not item.x_vector_only_mode],
-        }
-        return voice_clone_prompt, item.ref_text
+
+        with torch.no_grad():
+            normalized_items: list[tuple[npt.NDArray[np.generic], int]] = []
+            for item in items:
+                normalized = self.wrapper._normalize_audio_inputs(
+                    [item.ref_audio]
+                )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                if len(normalized) != 1:
+                    raise ValueError("Qwen3-TTS expects exactly one reference audio")
+                else:
+                    pass
+                normalized_items.append(normalized[0])
+
+            ref_code_futures: list[
+                concurrent.futures.Future[torch.Tensor] | None
+            ] = []
+            for item, (waveform, sample_rate) in zip(
+                items, normalized_items, strict=True
+            ):
+                if item.x_vector_only_mode:
+                    ref_code_futures.append(None)
+                else:
+                    ref_code_futures.append(
+                        self.ref_code_batcher.submit(waveform, sample_rate)
+                    )
+
+            speaker_sample_rate = self.model.speaker_encoder_sample_rate
+            speaker_waveforms: list[npt.NDArray[np.generic] | Exception] = []
+            for waveform, sample_rate in normalized_items:
+                try:
+                    if sample_rate != speaker_sample_rate:
+                        waveform = librosa.resample(
+                            y=np.asarray(waveform, dtype=np.float32),
+                            orig_sr=int(sample_rate),
+                            target_sr=speaker_sample_rate,
+                        )
+                    else:
+                        pass
+                    speaker_waveforms.append(np.asarray(waveform))
+                except Exception as exc:
+                    speaker_waveforms.append(exc)
+
+            speaker_embeddings: list[torch.Tensor | Exception] | None = None
+            batch_waveforms = [
+                waveform
+                for waveform in speaker_waveforms
+                if not isinstance(waveform, Exception)
+            ]
+            if len(batch_waveforms) == len(speaker_waveforms):
+                try:
+                    batch_embeddings = self.model.extract_speaker_embeddings(
+                        audios=batch_waveforms,
+                        sr=speaker_sample_rate,
+                    )
+                    if len(batch_embeddings) != len(items):
+                        raise RuntimeError(
+                            "Qwen3-TTS speaker encoder returned "
+                            f"{len(batch_embeddings)} embeddings for "
+                            f"{len(items)} references"
+                        )
+                    else:
+                        pass
+                    speaker_embeddings = list(batch_embeddings)
+                except Exception:
+                    logger.exception(
+                        "Qwen3-TTS batched speaker encode failed; retrying per item"
+                    )
+            else:
+                pass
+
+            if speaker_embeddings is None:
+                speaker_embeddings = []
+                for waveform in speaker_waveforms:
+                    if isinstance(waveform, Exception):
+                        speaker_embeddings.append(waveform)
+                        continue
+                    else:
+                        pass
+                    try:
+                        speaker_embeddings.append(
+                            self.model.extract_speaker_embedding(
+                                audio=waveform,
+                                sr=speaker_sample_rate,
+                            )
+                        )
+                    except Exception as exc:
+                        speaker_embeddings.append(exc)
+            else:
+                pass
+
+            ref_codes: list[torch.Tensor | Exception | None] = []
+            for future in ref_code_futures:
+                if future is None:
+                    ref_codes.append(None)
+                    continue
+                else:
+                    pass
+                try:
+                    ref_codes.append(
+                        record_ref_code_consumer_stream(
+                            future.result(timeout=130.0)
+                        )
+                    )
+                except Exception as exc:
+                    ref_codes.append(exc)
+
+        outcomes: list[tuple[VoicePrompt, str | None] | Exception] = []
+        for item, ref_code, speaker_embedding in zip(
+            items,
+            ref_codes,
+            speaker_embeddings,
+            strict=True,
+        ):
+            if isinstance(speaker_embedding, Exception):
+                outcomes.append(speaker_embedding)
+                continue
+            else:
+                pass
+            if isinstance(ref_code, Exception):
+                outcomes.append(ref_code)
+                continue
+            else:
+                pass
+            voice_clone_prompt: VoicePrompt = {
+                "ref_code": [ref_code],
+                "ref_spk_embedding": [speaker_embedding],
+                "x_vector_only_mode": [item.x_vector_only_mode],
+                "icl_mode": [not item.x_vector_only_mode],
+            }
+            outcomes.append((voice_clone_prompt, item.ref_text))
+        return outcomes
 
     def store_artifact(
         self, artifact: tuple[VoicePrompt, str | None]
@@ -1311,6 +1419,9 @@ def get_qwen3_tts_adhoc_reference_service_locked(
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
             log_prefix="Qwen3-TTS ad-hoc reference",
+            max_batch_size=QWEN3_TTS_REFERENCE_MAX_BATCH_SIZE,
+            max_batch_wait_ms=QWEN3_TTS_REFERENCE_MAX_BATCH_WAIT_MS,
+            batch_worker_name="qwen3-tts-reference-encode-batch",
         )
         entry = (owner, service)
         _ADHOC_REFERENCE_SERVICE_ENTRY = entry
