@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib
-from types import SimpleNamespace
 
 import huggingface_hub
 import pytest
@@ -71,9 +70,7 @@ def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
         raise AssertionError("discovery must not download weights")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fail_snapshot)
-    monkeypatch.setattr(
-        manager, "AutoConfig", SimpleNamespace(from_pretrained=fail_auto_config)
-    )
+    monkeypatch.setattr("transformers.AutoConfig.from_pretrained", fail_auto_config)
 
     path = tmp_path / "config.yaml"
     path.write_text("model:\n  name: AuK\n")

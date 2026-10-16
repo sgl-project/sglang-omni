@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import ClassVar, TypedDict
 
+from sglang_omni import platforms
 from sglang_omni.config import (
     CustomVoiceConfig,
     EngineStageConfig,
@@ -20,7 +21,6 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
 from sglang_omni.utils.json import JsonValue
@@ -118,7 +118,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         # warmup, so a platform that has not measured those captures starts
         # without that path.
         if stage_name == "vocoder" and (
-            not current_platform.enable_tts_vocoder_fast_path()
+            not platforms.current_platform.enable_tts_vocoder_fast_path()
         ):
             kwargs["async_decode"] = False
         else:

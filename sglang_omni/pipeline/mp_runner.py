@@ -34,7 +34,7 @@ from sglang_omni.config.schema import (
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
-from sglang_omni.pipeline.replicas import ReplicaTopology
+from sglang_omni.pipeline.replicas import ReplicaTopology, validate_device_assignment
 from sglang_omni.pipeline.runtime_config import (
     IpcRuntimeDir,
     PipelineRuntimePrep,
@@ -45,6 +45,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
     StageWorkerProcessSpec,
+    resolve_accelerator_facts,
     stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
@@ -780,6 +781,16 @@ class MultiProcessPipelineRunner:
             else:
                 pass
 
+            accelerator = await asyncio.to_thread(
+                resolve_accelerator_facts,
+                [spec for group in groups for spec in group.process_specs],
+                timeout,
+            )
+            validate_device_assignment(
+                prep.stages_cfg, device_count=accelerator.device_count
+            )
+            worker_envs = accelerator.worker_envs
+
             # Note (Jiaxin Deng): timeout is the budget for one startup wave,
             # not for the whole call: weight sharing makes startup genuinely
             # sequential, and splitting one budget would let a slow leader load
@@ -789,14 +800,17 @@ class MultiProcessPipelineRunner:
                     continue
                 else:
                     pass
+                spawn_kwargs: dict[str, object] = {}
+                if env_by_process is not None:
+                    spawn_kwargs["process_env_overrides"] = env_by_process
+                else:
+                    pass
+                if worker_envs:
+                    spawn_kwargs["worker_envs"] = worker_envs
+                else:
+                    pass
                 for group in wave:
-                    if env_by_process is None:
-                        group.spawn(ctx)
-                    else:
-                        group.spawn(
-                            ctx,
-                            process_env_overrides=env_by_process,
-                        )
+                    group.spawn(ctx, **spawn_kwargs)
 
                 await asyncio.gather(*(g.wait_ready(timeout) for g in wave))
 

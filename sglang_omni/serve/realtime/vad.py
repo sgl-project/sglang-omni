@@ -7,14 +7,19 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
-import torch
-from silero_vad import load_silero_vad
 
 logger = logging.getLogger(__name__)
 
 # silero-vad operates on 512-sample windows @ 16 kHz (32 ms each).
 VAD_FRAME_SAMPLES = 512
 VAD_SAMPLE_RATE = 16000
+
+
+def load_silero_vad(onnx: bool) -> object:
+    """silero-vad's model loader, imported when a session first needs it."""
+    from silero_vad import load_silero_vad as load_model
+
+    return load_model(onnx=onnx)
 
 
 @dataclass
@@ -53,6 +58,8 @@ class SileroSpeechModel:
         self.model = load_silero_vad(onnx=True)
 
     def predict(self, frame: np.ndarray, sample_rate: int) -> float:
+        import torch
+
         with torch.inference_mode():
             tensor = torch.from_numpy(frame).unsqueeze(0)
             return float(self.model(tensor, sample_rate).item())
@@ -243,6 +250,8 @@ class StreamingVAD:
         return emits
 
     def infer(self, frame: np.ndarray) -> float:
+        import torch
+
         with torch.inference_mode():
             tensor = torch.from_numpy(frame).unsqueeze(0)
             prob = self.vad_model(tensor, VAD_SAMPLE_RATE).item()

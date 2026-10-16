@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
+from sglang_omni import platforms
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -15,7 +16,6 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
 from sglang_omni.serve.server_warmup import WARMUP_MAX_TOKENS, warmup_tone_wav_bytes
 from sglang_omni.utils.cpu import effective_cpu_count
@@ -199,7 +199,7 @@ def decode_stage(*, process: str) -> StageConfig:
 
 
 def talker_stage_env() -> dict[str, str]:
-    if current_platform.is_rocm():
+    if platforms.current_platform.is_rocm():
         # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
         # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
         # greedy Talker request would corrupt its first codec token.
@@ -465,7 +465,7 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
             pass
         if stage_name == "code2wav":
             return {
-                "enable_cuda_graph": current_platform.enable_code2wav_graph(),
+                "enable_cuda_graph": platforms.current_platform.enable_code2wav_graph(),
                 "talker_in_process": code2wav_shares_talker_process,
             }
         else:

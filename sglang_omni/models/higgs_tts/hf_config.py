@@ -68,3 +68,8 @@ class HiggsMultimodalQwen3Config(transformers.PretrainedConfig):
     def get_text_config(self, decoder: bool = False) -> transformers.PretrainedConfig:
         del decoder
         return self.text_config
+
+
+transformers.AutoConfig.register(
+    "higgs_multimodal_qwen3", HiggsMultimodalQwen3Config, exist_ok=True
+)

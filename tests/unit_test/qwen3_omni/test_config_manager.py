@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from sglang_omni import platforms
 from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni import config as qwen3_omni_config
@@ -212,7 +213,7 @@ def test_qwen3_omni_talker_stage_env_defaults(
     expected_env: dict[str, str],
 ) -> None:
     """The talker stage disables aiter greedy sampling on ROCm only."""
-    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
+    monkeypatch.setattr(platforms.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (
         Qwen3OmniSpeechPipelineConfig,

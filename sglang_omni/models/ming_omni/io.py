@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
-import torch
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 
 class PromptInputs(TypedDict):

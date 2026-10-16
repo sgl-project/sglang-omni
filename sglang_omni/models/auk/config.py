@@ -3,9 +3,11 @@
 
 from typing import ClassVar
 
+from pydantic import Field
+
+from sglang_omni import platforms
 from sglang_omni.config import FactoryArgs, PipelineConfig, StageConfig
 from sglang_omni.models.auk import constants as C
-from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.auk"
 PREPROCESSING_STAGE = "preprocessing"
@@ -14,12 +16,9 @@ ENGINE_STAGE = "auk_engine"
 DECODE_STAGE = "decode"
 
 
-class AuKPipelineConfig(PipelineConfig):
-    architecture: ClassVar[str] = "AuKForConditionalGeneration"
-    architecture_aliases: ClassVar[tuple[str, ...]] = ("AuK", "AuK-Flash")
-    required_speech_reference_count: ClassVar[int | None] = None
-
-    stages: list[StageConfig] = [
+def stages() -> list[StageConfig]:
+    device = platforms.current_platform.device_type
+    return [
         StageConfig(
             name=PREPROCESSING_STAGE,
             process="pipeline",
@@ -32,7 +31,7 @@ class AuKPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_conditioning_executor",
             factory=FactoryArgs(
-                device=current_platform.device_type,
+                device=device,
                 dtype="bfloat16",
                 text_encoder_path=C.DEFAULT_TEXT_ENCODER,
                 max_batch_size=8,
@@ -46,7 +45,7 @@ class AuKPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_auk_engine_executor",
             factory=FactoryArgs(
-                device=current_platform.device_type,
+                device=device,
                 dtype="bfloat16",
                 nfe=C.DEFAULT_NFE,
                 enable_dit_fused_qk_norm_rope=True,
@@ -66,11 +65,19 @@ class AuKPipelineConfig(PipelineConfig):
             name=DECODE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_decode_executor",
-            factory=FactoryArgs(device=current_platform.device_type, max_batch_size=4),
+            factory=FactoryArgs(device=device, max_batch_size=4),
             gpu=0,
             terminal=True,
         ),
     ]
+
+
+class AuKPipelineConfig(PipelineConfig):
+    architecture: ClassVar[str] = "AuKForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("AuK", "AuK-Flash")
+    required_speech_reference_count: ClassVar[int | None] = None
+
+    stages: list[StageConfig] = Field(default_factory=stages)
 
 
 EntryClass = AuKPipelineConfig

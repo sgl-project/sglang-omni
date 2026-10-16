@@ -6,10 +6,14 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Generic
+from typing import TYPE_CHECKING, Generic
 
-import torch
 from typing_extensions import TypeVar
+
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,8 @@ class CacheEntry:
 
 
 def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
+    import torch
+
     if value.device.type == "cpu" and value.is_pinned():
         return value
     else:
@@ -33,6 +39,8 @@ def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
 def detach_value(
     value: object, *, device: torch.device | None, pin_memory: bool = False
 ) -> object:
+    import torch
+
     if isinstance(value, torch.Tensor):
         value = value.detach()
         if device is not None:
@@ -70,6 +78,8 @@ def detach_value(
 
 
 def value_size_bytes(value: object) -> int:
+    import torch
+
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
     else:
@@ -87,6 +97,12 @@ def value_size_bytes(value: object) -> int:
     else:
         pass
     return 0
+
+
+def cuda_available() -> bool:
+    import torch
+
+    return torch.cuda.is_available()
 
 
 CacheInput = TypeVar("CacheInput", default=object)
@@ -112,6 +128,8 @@ class StageOutputCache(Generic[CacheInput]):
         else:
             pass
         if isinstance(cache_device, str):
+            import torch
+
             cache_device = torch.device(cache_device)
         else:
             pass
@@ -125,7 +143,7 @@ class StageOutputCache(Generic[CacheInput]):
         self.cache_device = cache_device
         # note (Jeffro): pinning needs a CUDA context to be meaningful, so on
         # CUDA-less hosts (CI runners, dev boxes) it degrades to pageable storage.
-        self.pin_memory = bool(pin_memory) and torch.cuda.is_available()
+        self.pin_memory = bool(pin_memory) and cuda_available()
         self.current_bytes = 0
         self.eviction_count = 0
         self.size_fn = size_fn or value_size_bytes

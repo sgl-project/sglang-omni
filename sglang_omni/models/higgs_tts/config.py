@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from sglang_omni import platforms
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -11,7 +12,6 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.schema import stage_process_name
-from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
 from sglang_omni.utils.device import resolve_device_spec
 
@@ -91,7 +91,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "compile_decode": False,
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
-                    if current_platform.enable_codec_decode_graph()
+                    if platforms.current_platform.enable_codec_decode_graph()
                     else ()
                 ),
             }

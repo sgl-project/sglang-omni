@@ -12,8 +12,6 @@ from collections.abc import AsyncIterator, Collection, Coroutine
 from contextlib import aclosing
 from dataclasses import dataclass
 
-import av
-import soundfile as sf
 from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
@@ -343,6 +341,8 @@ def soundfile_duration(audio_bytes: bytes) -> float:
         return 0.0
     else:
         pass
+    import soundfile as sf
+
     try:
         info = sf.info(io.BytesIO(audio_bytes))
         if (
@@ -359,6 +359,8 @@ def soundfile_duration(audio_bytes: bytes) -> float:
 
 
 def av_duration(audio_bytes: bytes) -> float:
+    import av
+
     try:
         # note (cristianchiriac): PyAV 19 removed metadata_errors from av.open.
         open_kwargs = (

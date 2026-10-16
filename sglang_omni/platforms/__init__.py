@@ -1,22 +1,47 @@
+"""The platform this process runs on, resolved on first use.
+
+``current_platform`` is looked up lazily, so importing this package costs no
+torch or SGLang import. A process that never needs the platform, such as the
+HTTP server process of a pipeline whose stages run elsewhere, never resolves
+it, and its stage processes then resolve it themselves under the environment
+they inherit.
+"""
+
+from __future__ import annotations
+
+import importlib
 import os
 import pkgutil
 import platform as host_platform
+import threading
+from typing import TYPE_CHECKING
 
-import torch
-from sglang.srt import platforms as srt_platforms
-from sglang.srt.platforms.interface import SRTPlatform
+if TYPE_CHECKING:
+    from sglang.srt.platforms.interface import SRTPlatform
 
-from sglang_omni.platforms.apple import AppleOmniPlatform
-from sglang_omni.platforms.cpu import CPUOmniPlatform
-from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.platforms.interface import OmniPlatform
-from sglang_omni.platforms.musa import MUSAOmniPlatform
-from sglang_omni.platforms.npu import NPUOmniPlatform
-from sglang_omni.platforms.rocm import ROCMOmniPlatform
-from sglang_omni.platforms.xpu import XPUOmniPlatform
+    from sglang_omni.platforms.interface import OmniPlatform
+else:
+    pass
+
+_resolution_lock = threading.Lock()
+_resolved_platform: OmniPlatform | None = None
+
+# Classes this package exports, each imported from its module on first use.
+EXPORTED_CLASSES = {
+    "AppleOmniPlatform": "sglang_omni.platforms.apple",
+    "CPUOmniPlatform": "sglang_omni.platforms.cpu",
+    "CUDAOmniPlatform": "sglang_omni.platforms.cuda",
+    "MUSAOmniPlatform": "sglang_omni.platforms.musa",
+    "NPUOmniPlatform": "sglang_omni.platforms.npu",
+    "OmniPlatform": "sglang_omni.platforms.interface",
+    "ROCMOmniPlatform": "sglang_omni.platforms.rocm",
+    "XPUOmniPlatform": "sglang_omni.platforms.xpu",
+}
 
 
 def is_musa_available() -> bool:
+    import torch
+
     try:
         musa = torch.musa
     except AttributeError:
@@ -25,6 +50,8 @@ def is_musa_available() -> bool:
 
 
 def is_apple_silicon_mps_available() -> bool:
+    import torch
+
     return (
         host_platform.system() == "Darwin"
         and host_platform.machine() == "arm64"
@@ -33,6 +60,10 @@ def is_apple_silicon_mps_available() -> bool:
 
 
 def load_platform_class(qualname: str) -> type[OmniPlatform]:
+    from sglang.srt.platforms.interface import SRTPlatform
+
+    from sglang_omni.platforms.interface import OmniPlatform
+
     cls = pkgutil.resolve_name(qualname)
     if not isinstance(cls, type):
         raise TypeError(f"Expected a platform class, got {type(cls)}: {qualname}")
@@ -54,6 +85,16 @@ def load_platform_class(qualname: str) -> type[OmniPlatform]:
 
 
 def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
+    from sglang.srt.platforms.interface import SRTPlatform
+
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.cpu import CPUOmniPlatform
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+    from sglang_omni.platforms.rocm import ROCMOmniPlatform
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
     if platform.is_cuda():
         return CUDAOmniPlatform()
     else:
@@ -89,6 +130,8 @@ def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
 
 
 def resolve_platform() -> OmniPlatform:
+    from sglang.srt import platforms as srt_platforms
+
     return as_omni_platform(srt_platforms.current_platform)
 
 
@@ -104,7 +147,32 @@ def get_platform_spec(platform: OmniPlatform) -> str:
     return f"{type(platform).__module__}.{type(platform).__qualname__}"
 
 
-platform_spec = os.environ.get("SGLANG_OMNI_PLATFORM_SPEC")
-current_platform = (
-    load_platform_class(platform_spec)() if platform_spec else resolve_platform()
-)
+def get_current_platform() -> OmniPlatform:
+    """The process's platform, from the pinned spec or detected, once."""
+    global _resolved_platform
+    with _resolution_lock:
+        if _resolved_platform is None:
+            spec = os.environ.get("SGLANG_OMNI_PLATFORM_SPEC")
+            _resolved_platform = (
+                load_platform_class(spec)() if spec else resolve_platform()
+            )
+        else:
+            pass
+        return _resolved_platform
+
+
+def resolved_platform() -> OmniPlatform | None:
+    """The platform if this process has resolved it, without resolving it."""
+    return _resolved_platform
+
+
+def __getattr__(name: str):
+    if name == "current_platform":
+        return get_current_platform()
+    else:
+        pass
+    if name in EXPORTED_CLASSES:
+        return getattr(importlib.import_module(EXPORTED_CLASSES[name]), name)
+    else:
+        pass
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

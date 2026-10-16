@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 
 
 def visible_device_count() -> int | None:
+    """Visible CUDA devices, or None when unknown in this process.
+
+    A launcher that has not loaded the accelerator stack does not load it to
+    count devices. Its spawn probe counts them instead, and the runner checks
+    the stage GPUs against that count before any stage starts.
+    """
+    from sglang_omni import platforms
+
+    if platforms.resolved_platform() is None:
+        return None
+    else:
+        pass
     try:
         import torch
 

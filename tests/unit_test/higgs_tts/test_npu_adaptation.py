@@ -11,7 +11,6 @@ import torch
 
 import sglang_omni.platforms as platforms_mod
 import sglang_omni.utils.device as device_mod
-from sglang_omni.models.higgs_tts import config as higgs_config
 from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
@@ -110,7 +109,7 @@ def test_vocoder_decode_graph_domain_follows_platform_capability(
     config = HiggsTtsPipelineConfig(model_path="unused")
 
     monkeypatch.setattr(
-        higgs_config,
+        platforms_mod,
         "current_platform",
         SimpleNamespace(enable_codec_decode_graph=lambda: enabled),
     )

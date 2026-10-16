@@ -605,6 +605,10 @@ class PipelineConfig(BaseModel):
     # speech or transcription request the server sends itself before it reports
     # ready; None skips the warmup.
     server_warmup_request_factory: ClassVar[str | None] = None
+    # Whether requests to this pipeline carry or return audio. The HTTP server
+    # loads its audio decoders before the stages start when True, as every
+    # pipeline did before, and never loads them when False.
+    serves_audio: ClassVar[bool] = True
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
     min_tail_s: ClassVar[float] = 0.5

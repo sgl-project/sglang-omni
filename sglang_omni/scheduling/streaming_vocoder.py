@@ -40,13 +40,13 @@ from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
-INITIAL_CODEC_CHUNK_FRAMES_PARAM = "initial_codec_chunk_frames"
 
 _COMPLETED_STREAM_REQUEST_ID_LIMIT = 10000
 _COMPLETED_STREAM_REQUEST_ID_RETAINED = 5000

@@ -44,6 +44,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
     """4-stage DLLM pipeline: preprocessing → image_encoder → thinker → decode."""
 
     architecture: ClassVar[str] = "LLaDA2MoeModelLM"
+    serves_audio: ClassVar[bool] = False
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,

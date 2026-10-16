@@ -40,8 +40,6 @@ def test_resolve_checkpoint_honors_pinned_revision(monkeypatch) -> None:
 def test_pinned_spec_resolves_architecture_without_snapshot(
     monkeypatch, tmp_path
 ) -> None:
-    from types import SimpleNamespace
-
     from sglang_omni.config import manager
     from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 
@@ -55,11 +53,7 @@ def test_pinned_spec_resolves_architecture_without_snapshot(
         captured["auto"] = (path, revision)
         raise OSError("metadata offline in this test")
 
-    monkeypatch.setattr(
-        manager,
-        "AutoConfig",
-        SimpleNamespace(from_pretrained=fake_auto_config),
-    )
+    monkeypatch.setattr("transformers.AutoConfig.from_pretrained", fake_auto_config)
 
     def fake_hub_download(repo_id, filename, revision=None, **kwargs):
         captured["raw"] = (repo_id, filename, revision)
@@ -75,7 +69,8 @@ def test_pinned_spec_resolves_architecture_without_snapshot(
 
     assert config_cls is DotsTTSPipelineConfig
     revision = "c28105adc8228143392b4e346994ff613ee48a06"
-    assert captured["auto"] == ("dots-studio/dots.tts-mf", revision)
+    # The pinned config.json lists the architecture, so AutoConfig is not needed.
+    assert "auto" not in captured
     assert captured["raw"] == ("dots-studio/dots.tts-mf", "config.json", revision)
 
 
@@ -87,7 +82,7 @@ def test_unresolvable_pinned_spec_names_the_revision(monkeypatch) -> None:
     def fail_metadata(*args, **kwargs):
         raise OSError("metadata offline in this test")
 
-    monkeypatch.setattr(manager.AutoConfig, "from_pretrained", fail_metadata)
+    monkeypatch.setattr("transformers.AutoConfig.from_pretrained", fail_metadata)
     monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fail_metadata)
 
     with pytest.raises(ValueError, match="check that revision c28105ad"):

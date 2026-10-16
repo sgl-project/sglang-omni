@@ -55,12 +55,15 @@ from typing import BinaryIO, Protocol, TypedDict
 import torch
 from typing_extensions import NotRequired, ReadOnly
 
+from sglang_omni.utils.weight_share_env import (
+    ENV_WEIGHT_SHARE,
+    ENV_WEIGHT_SHARE_COMPAT,
+    ENV_WEIGHT_SHARE_RUN_ID,
+    ENV_WEIGHT_SHARE_TIMEOUT_S,
+)
+
 logger = logging.getLogger(__name__)
 
-ENV_WEIGHT_SHARE = "SGLANG_OMNI_WEIGHT_SHARE"
-ENV_WEIGHT_SHARE_TIMEOUT_S = "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S"
-ENV_WEIGHT_SHARE_RUN_ID = "SGLANG_OMNI_WEIGHT_SHARE_RUN_ID"
-ENV_WEIGHT_SHARE_COMPAT = "SGLANG_OMNI_WEIGHT_SHARE_COMPAT"
 DEFAULT_ATTACH_TIMEOUT_S = 1800.0
 # Note (Jiaxin Deng): version 2 added per-tensor share/private classification;
 # version-1 handles predate it and must not be attached.

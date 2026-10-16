@@ -8,8 +8,12 @@ accelerator runtime; everything else is string work.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
+from typing import TYPE_CHECKING
 
-import torch
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 
 def supports_device_streams(device: torch.device) -> bool:
@@ -22,6 +26,8 @@ def supports_device_streams(device: torch.device) -> bool:
 def device_guard(device: torch.device) -> AbstractContextManager[None]:
     """Pin the calling thread to device, or do nothing off an accelerator."""
     if supports_device_streams(device):
+        import torch
+
         return torch.get_device_module(device).device(device)
     else:
         return nullcontext()
@@ -75,6 +81,8 @@ def resolve_concrete_device(
     when neither the caller nor placement supplied an index, rather than
     assuming 0.
     """
+    import torch
+
     concrete = torch.device(resolve_device_spec(device, index))
     if concrete.type == "cpu" or concrete.index is not None:
         return concrete

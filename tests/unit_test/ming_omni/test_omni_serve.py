@@ -29,6 +29,15 @@ def server_args_overrides(config: PipelineConfig, name: str) -> dict[str, object
     return engine.overrides() if engine is not None else {}
 
 
+def keep_config_lookup_off_hub(monkeypatch) -> None:
+    # The config manager reads a listed architecture from config.json before
+    # AutoConfig, so a test that fakes AutoConfig keeps that lookup off the Hub.
+    def no_hub_download(*args, **kwargs):
+        raise OSError("no Hub access in this test")
+
+    monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", no_hub_download)
+
+
 def test_ming_config_manager_resolves_top_level_hf_architecture(monkeypatch) -> None:
     calls = []
 
@@ -38,8 +47,9 @@ def test_ming_config_manager_resolves_top_level_hf_architecture(monkeypatch) -> 
             architectures=["BailingMM2NativeForConditionalGeneration"]
         )
 
+    keep_config_lookup_off_hub(monkeypatch)
     monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        "transformers.AutoConfig.from_pretrained",
         fake_from_pretrained,
     )
 
@@ -54,8 +64,9 @@ def test_ming_config_manager_resolves_top_level_hf_architecture(monkeypatch) -> 
 def test_ming_config_manager_resolves_single_architecture_attribute(
     monkeypatch,
 ) -> None:
+    keep_config_lookup_off_hub(monkeypatch)
     monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        "transformers.AutoConfig.from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(
             architecture="BailingMM2NativeForConditionalGeneration"
         ),
@@ -123,8 +134,9 @@ def test_sglang_loads_a_ming_checkpoint_with_the_ming_config(tmp_path) -> None:
 
 
 def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
+    keep_config_lookup_off_hub(monkeypatch)
     monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        "transformers.AutoConfig.from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(
             architectures=["BailingMM2NativeForConditionalGeneration"]
         ),
@@ -396,8 +408,9 @@ def test_omni_serve_builds_ming_text_config_without_launching(monkeypatch) -> No
 
     captured: dict[str, object] = {}
 
+    keep_config_lookup_off_hub(monkeypatch)
     monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        "transformers.AutoConfig.from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(
             architectures=["BailingMM2NativeForConditionalGeneration"]
         ),
@@ -459,8 +472,9 @@ def test_omni_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
+    keep_config_lookup_off_hub(monkeypatch)
     monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        "transformers.AutoConfig.from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(
             architectures=["BailingMM2NativeForConditionalGeneration"]
         ),
