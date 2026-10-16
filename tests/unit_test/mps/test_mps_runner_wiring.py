@@ -20,7 +20,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.mps.devices import MpsPhysicalDevice
-from sglang_omni.mps.manager import MpsDirtyStateError, MpsError
+from sglang_omni.mps.manager import MPS_CLIENT_TOKEN_ENV, MpsDirtyStateError, MpsError
 from sglang_omni.mps.runtime import MpsPipelineRuntime
 from sglang_omni.mps.state import MpsGpuPaths
 from sglang_omni.pipeline import mp_runner
@@ -533,6 +533,65 @@ async def test_attempted_mps_process_start_keeps_fail_closed_cleanup(
     assert client.daemon_process_alive(999)
     with pytest.raises(MpsError, match="retained"):
         make_manager(short_base, client).acquire({"later": "later-owner"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_error", [False, True])
+async def test_server_status_failure_reaches_runner_watchdog(
+    short_base,
+    monkeypatch,
+    status_error,
+):
+    events: list[str] = []
+    group = FakeGroup(events)
+    client = FakeControlClient()
+    runtime = MpsPipelineRuntime.create(
+        mode="on",
+        process_specs=group.process_specs,
+        device_info=OneGpuDeviceInfo(),
+        client=client,
+        state_root=short_base / "mps",
+    )
+    assert runtime is not None
+    manager = runtime.managers[GPU_UUID]
+    manager.poll_interval = 0.0
+    manager.drain_timeout = 0.02
+    manager.stop_timeout = 0.02
+    wait_ready = group.wait_ready
+    shutdown = group.shutdown
+
+    async def attach_clients(timeout):
+        await wait_ready(timeout)
+        client.set_clients(manager.paths.pipe_dir, {7000: [101]})
+        client.client_tokens[101] = group.spawn_env["pipeline"][MPS_CLIENT_TOKEN_ENV]
+        if status_error:
+            client.status_error = "control query timed out"
+        else:
+            client.server_statuses[(str(manager.paths.pipe_dir), 7000)] = "FAULT"
+
+    async def detach_clients(before_signal=None):
+        await shutdown(before_signal=before_signal)
+        client.set_clients(manager.paths.pipe_dir, {})
+
+    monkeypatch.setattr(group, "wait_ready", attach_clients)
+    monkeypatch.setattr(group, "shutdown", detach_clients)
+    patch_runner(monkeypatch, events, group, runtime)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base, mps="on"))
+    try:
+        await runner.start()
+        with pytest.raises(RuntimeError, match="MPS health check failed") as exc_info:
+            await asyncio.wait_for(runner.wait_failed(), timeout=2)
+        assert GPU_UUID in str(exc_info.value)
+        reason = "control query timed out" if status_error else "not ACTIVE: 'FAULT'"
+        assert reason in str(exc_info.value)
+        assert client.status_queries == [(manager.paths.pipe_dir, 7000)]
+    finally:
+        await runner.stop()
+
+    assert not runtime.has_leases
+    assert not manager.paths.state_dir.exists()
+    assert not client.alive_pids
+    assert events.index("process shutdown") < events.index("coordinator stop")
 
 
 @pytest.mark.asyncio
