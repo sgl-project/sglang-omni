@@ -206,6 +206,34 @@ def test_sanm_fused_qkv_matches_separate_projections() -> None:
     assert q_ref.shape == k_ref.shape == v_ref.shape
 
 
+def test_encoder_layer_runs_attention_once() -> None:
+    torch.manual_seed(5)
+    layer = FunAsrNanoAudioEncoder(
+        input_size=8,
+        output_size=8,
+        attention_heads=2,
+        linear_units=16,
+        num_blocks=1,
+        tp_blocks=0,
+        kernel_size=3,
+        dropout_rate=0.0,
+        attention_dropout_rate=0.0,
+        activation_dropout_rate=0.0,
+    ).layers[0]
+    layer.eval()
+    calls = {"attn": 0}
+    original = layer.self_attn.forward
+
+    def counting_attn(x, mask=None):
+        calls["attn"] += 1
+        return original(x, mask)
+
+    layer.self_attn.forward = counting_attn  # type: ignore[method-assign]
+    with torch.no_grad():
+        layer(torch.randn(1, 6, 8), mask=None)
+    assert calls["attn"] == 1
+
+
 def test_fsmn_mask_zeros_pad_and_matches_unpadded() -> None:
     torch.manual_seed(1)
     fsmn = FunAsrNanoFSMN(size=4, kernel_size=3, dropout_rate=0.0)
