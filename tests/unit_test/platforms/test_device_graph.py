@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import inspect
+import runpy
 from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import torch
@@ -17,6 +19,15 @@ from sglang_omni.platforms.device_graph import (
     XpuDeviceGraphBackend,
 )
 from tests.unit_test.fixtures.accelerator import require_device_streams
+
+
+def test_graph_backend_import_without_xpu_pool_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(torch.xpu, "_POOL_HANDLE", raising=False)
+    module = runpy.run_path(inspect.getfile(CudaDeviceGraphBackend))
+
+    assert module["XpuGraphPoolHandle"] is module["CudaGraphPoolHandle"]
 
 
 def recording_module(graph_attr: str) -> SimpleNamespace:
@@ -99,17 +110,32 @@ def test_npu_backend_records_into_an_npu_graph(
     assert module.calls == [expected]
 
 
-def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
-    """The stub tests above accept any keyword, so pin the real ones here.
+@pytest.mark.parametrize(
+    "backend,graph_keyword,has_capture_error_mode",
+    [
+        ("cuda", "cuda_graph", True),
+        pytest.param(
+            "xpu",
+            "xpu_graph",
+            False,
+            marks=pytest.mark.skipif(
+                not hasattr(torch.xpu, "graph"),
+                reason="This PyTorch build does not provide XPU graph contexts",
+            ),
+        ),
+    ],
+)
+def test_each_backend_uses_the_keyword_its_torch_context_declares(
+    backend: Literal["cuda", "xpu"],
+    graph_keyword: str,
+    has_capture_error_mode: bool,
+) -> None:
+    """Verify the real graph context keywords for each available backend."""
+    graph_context = torch.cuda.graphs.graph if backend == "cuda" else torch.xpu.graph
+    parameters = inspect.signature(graph_context).parameters
 
-    Both contexts are plain Python classes that a build without the device still
-    exposes, so this runs anywhere.
-    """
-    cuda = inspect.signature(torch.cuda.graph).parameters
-    xpu = inspect.signature(torch.xpu.graph).parameters
-
-    assert "cuda_graph" in cuda and "capture_error_mode" in cuda
-    assert "xpu_graph" in xpu and "capture_error_mode" not in xpu
+    assert graph_keyword in parameters
+    assert ("capture_error_mode" in parameters) == has_capture_error_mode
 
 
 @pytest.mark.parametrize(
