@@ -277,6 +277,13 @@ def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
     assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
 
 
+def test_xpu_names_the_intel_xpu_attention_backend() -> None:
+    assert xpu_platform.XPUOmniPlatform().get_sglang_attention_backend() == "intel_xpu"
+    # Other platforms keep SGLang's own attention default.
+    assert OmniPlatform().get_sglang_attention_backend() is None
+    assert CPUOmniPlatform().get_sglang_attention_backend() is None
+
+
 def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is True
     assert OmniPlatform().enable_talker_graph() is True
