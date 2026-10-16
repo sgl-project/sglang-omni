@@ -40,12 +40,13 @@ class NemotronVoiceChatForCausalLM(nn.Module):
             device=embedding.device,
             dtype=embedding.dtype,
         )
-        self.fusion_mask = torch.zeros(
-            max_batch, dtype=torch.bool, device=embedding.device
-        )
         self.function_ids = torch.zeros(
             max_batch, dtype=torch.long, device=embedding.device
         )
+        self.fusion_token_ids: torch.Tensor = torch.zeros(
+            max_batch, 2, dtype=torch.long, device=embedding.device
+        )
+        self.has_staged_decode: bool = False
 
     def get_input_embeddings(self) -> nn.Module:
         return self.llm.get_input_embeddings()
@@ -55,15 +56,12 @@ class NemotronVoiceChatForCausalLM(nn.Module):
     ):
         del omni_kwargs
         if input_embeds is None:
-            input_embeds = self.llm.get_input_embeddings()(input_ids)
-            batch = input_embeds.shape[0]
-            mask = self.fusion_mask[:batch]
-            input_embeds = torch.where(
-                mask.unsqueeze(-1),
-                self.fusion_buffer[:batch].to(input_embeds.dtype),
-                input_embeds,
-            )
-            self.fusion_mask[:batch] = False
+            if self.has_staged_decode:
+                batch_size = input_ids.shape[0]
+                input_embeds = self.fusion_buffer[:batch_size]
+                self.has_staged_decode = False
+            else:
+                input_embeds = self.llm.get_input_embeddings()(input_ids)
         else:
             pass
         hidden = self.llm.model.forward(
