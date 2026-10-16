@@ -1363,6 +1363,11 @@ def test_real_builder_rejects_zero_chunks_without_done() -> None:
         drive_real_builder(prefetched_chunks=[], prefetched_stream_done=False)
 
 
+def test_real_builder_rejects_done_path_without_chunks() -> None:
+    with pytest.raises(RuntimeError, match="requires prefetched thinker chunks"):
+        drive_real_builder(prefetched_chunks=[], prefetched_stream_done=True)
+
+
 def build_state_machine_scheduler(
     *,
     enable_partial_start: bool = False,
