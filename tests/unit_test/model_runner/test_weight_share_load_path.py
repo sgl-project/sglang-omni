@@ -391,6 +391,41 @@ def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch
             runner.load_model()
 
 
+@pytest.mark.parametrize("update_fails", [False, True])
+def test_weight_updates_notify_the_model(update_fails):
+    runner = bare_runner()
+    notified = []
+    runner.model = SimpleNamespace(on_weights_updated=lambda: notified.append(1))
+
+    def update(*args, **kwargs):
+        if update_fails:
+            raise RuntimeError("partial load")
+        else:
+            return True, "ok"
+
+    runner.weight_updater = SimpleNamespace(
+        update_weights_from_disk=update,
+        update_weights_from_tensor=update,
+        receive_weights_from_distributed=lambda **kwargs: [],
+        load_weights_from_distributed=update,
+    )
+    for method, args in (
+        (runner.update_weights_from_disk, ()),
+        (runner.update_weights_from_tensor, ()),
+        (
+            runner.update_weights_from_distributed,
+            (["weight"], ["float32"], [[1]], "group"),
+        ),
+    ):
+        if update_fails:
+            with pytest.raises(RuntimeError, match="partial load"):
+                method(*args)
+        else:
+            assert method(*args) == (True, "ok")
+
+    assert notified == [1, 1, 1]
+
+
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
     runner = bare_runner()

@@ -662,7 +662,10 @@ class SGLModelRunner(ModelRunner):
             return False, reason
         else:
             pass
-        return self.weight_updater.update_weights_from_disk(*args, **kwargs)
+        try:
+            return self.weight_updater.update_weights_from_disk(*args, **kwargs)
+        finally:
+            self.notify_weights_updated()
 
     def update_weights_from_tensor(self, *args, **kwargs):
         reason = self.weight_update_blocked_reason()
@@ -670,7 +673,10 @@ class SGLModelRunner(ModelRunner):
             return False, reason
         else:
             pass
-        return self.weight_updater.update_weights_from_tensor(*args, **kwargs)
+        try:
+            return self.weight_updater.update_weights_from_tensor(*args, **kwargs)
+        finally:
+            self.notify_weights_updated()
 
     def update_weights_from_distributed(
         self,
@@ -697,7 +703,19 @@ class SGLModelRunner(ModelRunner):
             message = f"Failed to receive weights: {error}"
             logger.error(message)
             return False, message
-        return self.weight_updater.load_weights_from_distributed(weights)
+        try:
+            return self.weight_updater.load_weights_from_distributed(weights)
+        finally:
+            self.notify_weights_updated()
+
+    def notify_weights_updated(self) -> None:
+        # Note (Jiaxin Deng): runs after failed or partial loads too; a model that
+        # caches rows derived from its weights must drop them either way.
+        hook = getattr(self.model, "on_weights_updated", None)
+        if callable(hook):
+            hook()
+        else:
+            pass
 
     # Process-group lifecycle does not mutate weights, so it stays unguarded.
     def init_weights_update_group(self, *args, **kwargs):

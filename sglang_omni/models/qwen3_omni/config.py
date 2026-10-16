@@ -33,6 +33,11 @@ TALKER_START_MIN_CHUNKS = 1
 
 ENABLE_TALKER_START_TOPOLOGY = False
 
+# Note (Jiaxin Deng): a 4-frame first Code2Wav window cuts time-to-first-audio;
+# the talker's per-frame early prefix covers it plus one 10-frame window.
+CODE2WAV_INITIAL_CHUNK_FRAMES = 4
+CODE2WAV_STREAM_CHUNK_FRAMES = 10
+
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
 # precompile so that miss does not become a long post-ready compile session.
@@ -225,10 +230,12 @@ def talker_stage(
         factory=FactoryArgs(
             enable_partial_start=enable_partial_start,
             partial_start_min_chunks=5,
-            # Note (wenyao): Match the default serial Code2Wav window so later
-            # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
-            codec_coalesce_frames=10,
-            codec_coalesce_early_frames=10,
+            # Note (wenyao): Match the serial Code2Wav windows so later 10-row
+            # messages keep the captured 4/14/24/34/35-frame graph shapes.
+            codec_coalesce_frames=CODE2WAV_STREAM_CHUNK_FRAMES,
+            codec_coalesce_early_frames=(
+                CODE2WAV_INITIAL_CHUNK_FRAMES + CODE2WAV_STREAM_CHUNK_FRAMES
+            ),
             codec_coalesce_first_frames=0,
         ),
         gpu=gpu,
@@ -246,6 +253,10 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory_path=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
+        factory=FactoryArgs(
+            stream_chunk_size=CODE2WAV_STREAM_CHUNK_FRAMES,
+            initial_codec_chunk_frames=CODE2WAV_INITIAL_CHUNK_FRAMES,
+        ),
         gpu=gpu,
         gpu_memory_fraction=0.02,
         terminal=True,
@@ -492,7 +503,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
             thinker_gpu=0,
             talker_gpu=0,
             process_by_stage=COLOCATED_SPEECH_PROCESSES,
-            enable_partial_start=False,
+            enable_partial_start=True,
         )
     )
 

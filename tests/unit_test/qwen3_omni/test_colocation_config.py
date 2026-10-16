@@ -183,7 +183,7 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
     assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
-    assert make_stage(config, "talker_ar").factory.enable_partial_start is False
+    assert make_stage(config, "talker_ar").factory.enable_partial_start is True
     for stage_name in (
         "image_encoder",
         "audio_encoder",

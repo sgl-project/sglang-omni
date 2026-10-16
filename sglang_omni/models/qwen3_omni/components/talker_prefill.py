@@ -297,9 +297,20 @@ class TalkerPrefillBuilder:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
         if token_id is not None:
+            # Note (Jiaxin Deng): a streamed token projects alone, so its row depends
+            # only on the id; caching it keeps per-token launches off the talker loop.
+            cache = self.model.projected_text_rows
+            cached = cache.get(int(token_id))
+            if cached is not None:
+                return cached
+            else:
+                pass
             chunk_tensor = self.load_prompt_token_embeddings(
                 torch.tensor([int(token_id)], dtype=torch.long)
             )
+            projected = self.model.text_projection(chunk_tensor)[0].detach()
+            cache[int(token_id)] = projected
+            return projected
         else:
             chunk_tensor = chunk.data.to(
                 device=self.device, dtype=self.dtype

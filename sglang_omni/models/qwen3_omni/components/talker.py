@@ -816,6 +816,7 @@ class Qwen3OmniTalker(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("hidden_projection", prefix),
         )
+        self.projected_text_rows: dict[int, torch.Tensor] = {}
 
         # Main components
         self.model = Qwen3OmniMoeTalkerTextModel(
@@ -1029,6 +1030,9 @@ class Qwen3OmniTalker(nn.Module):
     @property
     def activation_dtype(self) -> torch.dtype:
         return self.model.codec_embedding.weight.dtype
+
+    def on_weights_updated(self) -> None:
+        self.projected_text_rows.clear()
 
     @staticmethod
     def sample_code_predictor_token(logits: torch.Tensor) -> torch.Tensor:

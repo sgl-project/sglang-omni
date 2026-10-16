@@ -337,6 +337,26 @@ def test_qwen_talker_assistant_part_handles_short_prefix() -> None:
     )
 
 
+def test_qwen_talker_reprojects_streamed_tokens_after_a_weight_update() -> None:
+    scale = [2.0]
+    model = SimpleNamespace(
+        text_projection=lambda tensor: tensor * scale[0], projected_text_rows={}
+    )
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder.model = model
+    builder.load_prompt_token_embeddings = lambda token_ids: (
+        token_ids.to(torch.float32).unsqueeze(-1)
+    )
+    chunk = SimpleNamespace(data=None, metadata={"token_id": 7})
+
+    assert builder.project_assistant_chunk(chunk).item() == 14.0
+    scale[0] = 3.0
+    assert builder.project_assistant_chunk(chunk).item() == 14.0
+    Qwen3OmniTalker.on_weights_updated(model)
+
+    assert builder.project_assistant_chunk(chunk).item() == 21.0
+
+
 def test_qwen_talker_prefill_ignores_late_text_after_thinker_done() -> None:
     """Preserves completed thinker streams against late text chunk appends."""
     builder = object.__new__(TalkerPrefillBuilder)

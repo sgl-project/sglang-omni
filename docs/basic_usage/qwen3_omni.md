@@ -204,33 +204,32 @@ both text (from the thinker) and audio (from the talker) output.
 ### Codec Coalescing and First-Audio Latency
 
 The speech pipeline sets `codec_coalesce_frames=10`,
-`codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under
-`stages.talker_ar.factory`. The first 10 codec frames are sent individually;
-later frames are coalesced into groups of 10. Omitting a YAML override keeps
-these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
-disable the early prefix. This aligns with the default Code2Wav 10-frame
-threshold: the first three windows contain 10, 20, and 30 frames, and
-subsequent full windows contain 35 frames including left context. These
-shapes can use the captured windows when CUDA Graph is enabled. Each window
-decodes one 10-frame chunk past its context, so an early prefix of 12 keeps
-these window lengths and its two extra frames wait for the next window.
+`codec_coalesce_early_frames=14`, and `codec_coalesce_first_frames=0` under
+`stages.talker_ar.factory`, and `initial_codec_chunk_frames=4` with
+`stream_chunk_size=10` under `stages.code2wav.factory`. The first 14 codec
+frames are sent individually; later frames are coalesced into groups of 10.
+Omitting a YAML override keeps these pipeline defaults; set
+`codec_coalesce_early_frames=0` explicitly to disable the early prefix. This
+aligns with the Code2Wav thresholds: the first four windows contain 4, 14, 24,
+and 34 frames, and subsequent full windows contain 35 frames including left
+context. These shapes can use the captured windows when CUDA Graph is enabled.
 
-With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set
-`codec_coalesce_early_frames=12` to make the first two windows eligible at
-generated frames 2 and 12.
+If you change `initial_codec_chunk_frames`, set `codec_coalesce_early_frames`
+to `initial_codec_chunk_frames + stream_chunk_size` (for example 12 for a
+2-frame first window) so the first two windows are eligible as soon as their
+frames are generated and later 10-row messages keep the captured lengths.
 Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
 first group at step 11: the sender retains the newest row until the next step
 can exclude EOS, or the request finishes. For a request that continues past
-step 10, first-window input readiness therefore moves from step 2 to step 11,
-adding nine Talker decode intervals. If the interval is approximately `d` ms,
-the added input wait is approximately `9d` ms. With the default 10-frame first
-window, readiness instead moves from step 10 to step 11. The default 10-frame
-early prefix preserves readiness at step 10; the next two windows become
-ready at steps 21 and 31. The extra step after the prefix retains the newest
-row for EOS detection, compared with steps 20 and 30 without coalescing.
+step 10, first-window input readiness therefore moves from step 4 to step 11,
+adding seven Talker decode intervals. If the interval is approximately `d` ms,
+the added input wait is approximately `7d` ms. The default 14-frame early
+prefix preserves readiness at steps 4 and 14; the next two windows become
+ready at steps 25 and 35. The extra step after the prefix retains the newest
+row for EOS detection, compared with steps 24 and 34 without coalescing.
 
 This is an input-readiness estimate, not a measured end-to-end TTFA delta or
-nine frames of audio playback time. Actual TTFA also depends on transport,
+seven frames of audio playback time. Actual TTFA also depends on transport,
 queueing, and vocoder execution; the overall coalescing benchmark does not
 isolate the early-prefix setting.
 
@@ -266,8 +265,8 @@ When replay is enabled, a custom Code2Wav stage must define
 the model.
 
 The feature derives the exact `B=1` threshold windows from
-`stream_chunk_size` and `left_context_size`; the defaults capture
-`T{10,20,30,35}`. It also captures, best effort, the final window of every
+`stream_chunk_size`, `left_context_size`, and `initial_codec_chunk_frames`;
+the defaults capture `T{4,14,24,34,35}`. It also captures, best effort, the final window of every
 stream length: the 1 to `stream_chunk_size - 1` frames left after a stream's
 last threshold window plus the context it holds. With the threshold windows
 this covers every length from `T1` to `T35` at the defaults. A final window

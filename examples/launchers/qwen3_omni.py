@@ -287,10 +287,7 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
         "--enable-partial-start",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=(
-            "Enable partial-prefix talker startup. Defaults to on for the "
-            "disaggregated topology and off for --colocated."
-        ),
+        help="Enable partial-prefix talker startup. Defaults to on.",
     )
     target.add_argument(
         "--partial-start-min-chunks",
@@ -335,11 +332,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
     ):
         validate_fraction(flag_name, value)
 
-    enable_partial_start = (
-        not args.colocated
-        if args.enable_partial_start is None
-        else bool(args.enable_partial_start)
-    )
+    enable_partial_start = args.enable_partial_start is not False
     if (
         enable_partial_start
         and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS

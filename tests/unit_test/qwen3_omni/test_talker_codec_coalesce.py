@@ -105,9 +105,18 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
     runner = make_runner(fake_model(1, 4, 2), coalesce=factory.codec_coalesce_frames)
     runner.codec_coalesce_early_frames = factory.codec_coalesce_early_frames
     runner.codec_coalesce_first_frames = factory.codec_coalesce_first_frames
+    code2wav_factory = next(
+        stage.factory for stage in config.stages if stage.name == "code2wav"
+    )
+    initial_frames = code2wav_factory.initial_codec_chunk_frames
     requests, batch = make_requests(1), sched_batch(1)
     model = FakeCode2WavModel()
-    scheduler = Code2WavScheduler(model, device="cpu", enable_output_overlap=False)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        initial_codec_chunk_frames=initial_frames,
+        enable_output_overlap=False,
+    )
     state = scheduler.create_stream_state("r0")
     decode_steps = []
     for step in range(1, 46):
@@ -119,9 +128,11 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
                 scheduler.decode_windows([("r0", state)])
                 decode_steps.append(step)
 
-    assert [shape[-1] for shape in model.calls] == [10, 20, 30, 35]
-    assert decode_steps == [10, 21, 31, 41]
-    captured_frames = {key.frames for key in window_graph_keys(10, 25, 1)}
+    assert [shape[-1] for shape in model.calls] == [4, 14, 24, 34, 35]
+    assert decode_steps == [4, 14, 25, 35, 45]
+    captured_frames = {
+        key.frames for key in window_graph_keys(10, 25, 1, initial_frames)
+    }
     assert all(shape[-1] in captured_frames for shape in model.calls)
 
 
