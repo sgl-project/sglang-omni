@@ -203,7 +203,7 @@ gh workflow run omni-ci.yaml --ref <branch> \
 
 Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests.
 
-Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` and restart CI. Combine short stage or model targets:
+Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` and re-run completed CI workflows. Combine short stage or model targets:
 
 ```text
 /tag-and-rerun-ci tts asr
@@ -215,7 +215,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` to add `run-all-ci` 
 
 Stage targets are `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label. Full label names are also accepted; model labels alone still do not enable stages.
 
-The command replaces conflicting model labels only in the requested stages and keeps other labels, including an existing `run-all-ci`. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest selected parent workflows on the current PR commit. A running workflow is cancelled first, then restarted. Path filters and PR gates still apply.
+The command replaces conflicting model labels only in the requested stages and keeps other labels, including an existing `run-all-ci`. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.
 
 `/tag-run-ci-label` accepts the same arguments but only updates labels. Labels added by the bot do not start workflows; push a commit or use `/tag-and-rerun-ci` to start them. `/rerun-failed-ci` retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.
 

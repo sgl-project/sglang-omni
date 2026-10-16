@@ -52,166 +52,16 @@ def load_permissions(user_login):
         sys.exit(1)
 
 
-def latest_workflow_runs(
-    runs: list[github.WorkflowRun.WorkflowRun],
-) -> list[github.WorkflowRun.WorkflowRun]:
-    """Select the newest run of each workflow and event."""
-    latest_runs: dict[tuple[int, str], github.WorkflowRun.WorkflowRun] = {}
-    for run in sorted(runs, key=lambda run: (run.created_at, run.id), reverse=True):
-        latest_runs.setdefault((run.workflow_id, run.event), run)
-    return list(latest_runs.values())
-
-
-def latest_pr_workflow_runs(
-    repository: github.Repository.Repository,
-    pull_request: github.PullRequest.PullRequest,
-) -> list[github.WorkflowRun.WorkflowRun]:
-    """Filter current-commit runs to this PR before choosing the newest ones."""
-    runs: list[github.WorkflowRun.WorkflowRun] = []
-    for run in repository.get_workflow_runs(
-        head_sha=pull_request.head.sha, event="pull_request"
-    ):
-        if run.pull_requests:
-            matches_pr = any(
-                pull.number == pull_request.number for pull in run.pull_requests
-            )
-        else:
-            matches_pr = (
-                pull_request.head.repo is not None
-                and run.head_repository is not None
-                and run.head_repository.full_name == pull_request.head.repo.full_name
-                and run.head_branch == pull_request.head.ref
-            )
-        if matches_pr:
-            runs.append(run)
-        else:
-            pass
-    return latest_workflow_runs(runs)
-
-
-def restart_ci_workflows(
-    repository: github.Repository.Repository,
-    pull_request: github.PullRequest.PullRequest,
-    workflow_names: frozenset[str],
-) -> bool:
-    """Restart the selected parent workflows on the current PR commit."""
-    head_sha = pull_request.head.sha
-    runs = [
-        run
-        for run in latest_pr_workflow_runs(repository, pull_request)
-        if run.name in workflow_names
-    ]
-
-    rerun_count = 0
-    errors: list[str] = []
-    for run in runs:
-        if run.conclusion == "action_required":
-            errors.append(
-                f"{run.name} needs GitHub workflow approval before it can run."
-            )
-            continue
-        else:
-            pass
-
-        try:
-            if run.status != "completed":
-                try:
-                    cancelled = run.cancel()
-                except github.GithubException:
-                    run = repository.get_workflow_run(run.id)
-                    if run.status != "completed":
-                        raise
-                    else:
-                        pass
-                else:
-                    if not cancelled:
-                        errors.append(
-                            f"GitHub did not accept cancellation of {run.name} ({run.id})."
-                        )
-                        continue
-                    else:
-                        pass
-
-                deadline = time.monotonic() + 120
-                while run.status != "completed" and time.monotonic() < deadline:
-                    time.sleep(5)
-                    run = repository.get_workflow_run(run.id)
-                if run.status != "completed":
-                    errors.append(
-                        f"Timed out waiting for {run.name} ({run.id}) to stop."
-                    )
-                    continue
-                else:
-                    pass
-            else:
-                pass
-
-            pull_request.update()
-            if pull_request.head.sha != head_sha:
-                errors.append(
-                    "The PR commit changed during the command. Run the command again."
-                )
-                break
-            else:
-                pass
-            current_run = next(
-                (
-                    candidate
-                    for candidate in latest_pr_workflow_runs(repository, pull_request)
-                    if candidate.workflow_id == run.workflow_id
-                ),
-                None,
-            )
-            if current_run is None or current_run.id != run.id:
-                errors.append(
-                    f"A newer {run.name} run replaced {run.id}. Run the command again to restart it."
-                )
-                continue
-            elif run.rerun():
-                rerun_count += 1
-                print(f"Restarted {run.name}: {run.html_url}")
-            else:
-                errors.append(
-                    f"GitHub did not accept the rerun of {run.name} ({run.id})."
-                )
-        except github.GithubException as error:
-            errors.append(f"Could not restart {run.name} ({run.id}): {error}")
-
-    missing_workflows = workflow_names - {run.name for run in runs}
-    if missing_workflows:
-        print(
-            f"No current-commit PR run found for: {', '.join(sorted(missing_workflows))}. Path filters may exclude these workflows."
-        )
-    else:
-        pass
-    if not runs:
-        errors.append(
-            "No selected CI workflow run exists for this PR commit. Update the branch from main and push before retrying."
-        )
-    else:
-        pass
-    if errors:
-        pull_request.create_issue_comment("\n\n".join(errors))
-    else:
-        pass
-    return rerun_count > 0 and not errors
-
-
 def handle_tag_run_ci(
-    repository: github.Repository.Repository,
     pull_request: github.PullRequest.PullRequest,
     comment: github.IssueComment.IssueComment,
     user_permissions: dict[str, bool | str],
     requested_targets: frozenset[str],
-    restart_workflows: bool,
+    react_on_success: bool = True,
 ) -> bool:
-    """Apply CI selectors and optionally restart their parent workflows."""
+    """Apply CI stage and model labels."""
     if not user_permissions.get("can_tag_run_ci_label", False):
         print("Permission denied: can_tag_run_ci_label is false.")
-        comment.create_reaction("confused")
-        return False
-    elif restart_workflows and not user_permissions.get("can_rerun_failed_ci", False):
-        print("Permission denied: can_rerun_failed_ci is false.")
         comment.create_reaction("confused")
         return False
     else:
@@ -264,67 +114,90 @@ def handle_tag_run_ci(
     for label in plan.ignored_model_labels:
         print(f"Ignoring {label}: its stage is not selected.")
 
-    if restart_workflows:
-        succeeded = restart_ci_workflows(
-            repository, pull_request, select_workflows(final_labels)
-        )
+    if react_on_success:
+        comment.create_reaction("+1")
     else:
-        succeeded = True
-    comment.create_reaction("+1" if succeeded else "confused")
-    return succeeded
+        pass
+    return True
 
 
-def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms):
-    """
-    Handles the /rerun-failed-ci command.
-    Reruns workflows with 'failure' or 'skipped' conclusions.
-    Returns True if action was taken, False otherwise.
-    """
+def handle_rerun_failed_ci(
+    gh_repo: github.Repository.Repository,
+    pr: github.PullRequest.PullRequest,
+    comment: github.IssueComment.IssueComment,
+    user_perms: dict[str, bool | str],
+    react_on_success: bool = True,
+    full_rerun_workflows: frozenset[str] | None = None,
+) -> bool:
+    """Retry failed jobs, or fully rerun selected completed PR workflows."""
     if not user_perms.get("can_rerun_failed_ci", False):
         print("Permission denied: can_rerun_failed_ci is false.")
         return False
+    else:
+        pass
 
     print("Permission granted. Triggering CI workflow reruns.")
 
     head_sha = pr.head.sha
     print(f"Checking workflows for commit: {head_sha}")
 
-    latest_runs = latest_workflow_runs(
-        list(gh_repo.get_workflow_runs(head_sha=head_sha))
-    )
+    runs = gh_repo.get_workflow_runs(head_sha=head_sha)
+    latest_runs: dict[tuple[int, str], github.WorkflowRun.WorkflowRun] = {}
+    for run in sorted(runs, key=lambda run: (run.created_at, run.id), reverse=True):
+        latest_runs.setdefault((run.workflow_id, run.event), run)
 
     rerun_count = 0
-    for run in latest_runs:
+    for run in latest_runs.values():
+        if full_rerun_workflows is not None and (
+            run.event != "pull_request" or run.name not in full_rerun_workflows
+        ):
+            continue
+        else:
+            pass
         if run.status != "completed":
             print(
                 f"Skipping latest workflow because it is still {run.status}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
-        if run.conclusion not in ("failure", "skipped"):
+        elif run.conclusion == "action_required":
+            print(f"GitHub workflow approval is required: {run.html_url}")
+            continue
+        elif full_rerun_workflows is None and run.conclusion not in (
+            "failure",
+            "skipped",
+        ):
             print(
                 f"Skipping latest workflow with conclusion {run.conclusion}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
+        else:
+            pass
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
-            if run.conclusion == "skipped":
+            if full_rerun_workflows is not None or run.conclusion == "skipped":
                 print("  Full rerun")
-                run.rerun()
+                rerun_started = run.rerun()
             else:
                 print("  rerun_failed_jobs")
-                run.rerun_failed_jobs()
-            rerun_count += 1
-        except Exception as e:
+                rerun_started = run.rerun_failed_jobs()
+            if rerun_started:
+                rerun_count += 1
+            else:
+                print(f"GitHub did not accept the rerun of workflow {run.id}.")
+        except github.GithubException as e:
             print(f"Failed to rerun workflow {run.id}: {e}")
 
     if rerun_count > 0:
         print(f"Triggered rerun for {rerun_count} workflows.")
-        comment.create_reaction("+1")
+        if react_on_success:
+            comment.create_reaction("+1")
+        else:
+            pass
     else:
-        print("No failed or skipped workflows found to rerun.")
+        print("No eligible completed workflows were rerun.")
     return rerun_count > 0
 
 
@@ -366,18 +239,56 @@ def main():
 
     command, *label_arguments = comment_body.split("\n")[0].split()
 
-    if command in ("/tag-run-ci-label", "/tag-and-rerun-ci"):
+    if command == "/tag-run-ci-label":
         handle_tag_run_ci(
-            repo,
             pr,
             comment,
             user_perms,
             frozenset(label_arguments or [RUN_ALL_LABEL]),
-            restart_workflows=command == "/tag-and-rerun-ci",
         )
 
     elif command == "/rerun-failed-ci":
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
+
+    elif command == "/tag-and-rerun-ci":
+        if not user_perms.get("can_rerun_failed_ci", False):
+            print("Permission denied: can_rerun_failed_ci is false.")
+            comment.create_reaction("confused")
+            return
+        else:
+            pass
+        tagged = handle_tag_run_ci(
+            pr,
+            comment,
+            user_perms,
+            frozenset(label_arguments or [RUN_ALL_LABEL]),
+            react_on_success=False,
+        )
+        if not tagged:
+            return
+        else:
+            pass
+        time.sleep(5)
+        pr.update()
+        labels = frozenset(label.name for label in pr.get_labels())
+        rerun = handle_rerun_failed_ci(
+            repo,
+            pr,
+            comment,
+            user_perms,
+            react_on_success=False,
+            full_rerun_workflows=select_workflows(labels),
+        )
+        if rerun:
+            comment.create_reaction("+1")
+        else:
+            comment.create_reaction("confused")
+            pr.create_issue_comment(
+                "Labels updated, but no workflow rerun was accepted. "
+                "Active workflows are left running; retry after they finish. "
+                "If GitHub requires workflow approval, approve it first. "
+                "If no PR run exists for this commit, push a commit to create one."
+            )
 
     else:
         print(f"Unknown or ignored command: {command}")
