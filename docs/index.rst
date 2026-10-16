@@ -105,14 +105,22 @@ Supported Models
    :maxdepth: 1
    :caption: Cookbook
 
+   cookbook/qwen3_tts.md
+   cookbook/moss_tts.md
+   cookbook/whisper_asr.md
+   cookbook/nemotron3_5_asr.md
+   cookbook/moss_transcribe_diarize.md
+   cookbook/fishaudio_s2_pro.md
+   cookbook/qwen3_omni.md
+   cookbook/fun_cosyvoice3.md
+   cookbook/personaplex.md
+   cookbook/minicpm_o.md
+   cookbook/llada2_uni.md
    cookbook/higgs_tts.md
    cookbook/nemotron_diarization.md
    cookbook/voxtral_tts.md
-   cookbook/fishaudio_s2_pro.md
    cookbook/fishaudio_drama3.md
-   cookbook/qwen3_tts.md
    cookbook/ming_tts.md
-   cookbook/moss_tts.md
    cookbook/moss_tts_local.md
    cookbook/dots_tts.md
    cookbook/minimax_music3.md
@@ -120,16 +128,8 @@ Supported Models
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
    cookbook/arkasr.md
-   cookbook/nemotron3_5_asr.md
-   cookbook/moss_transcribe_diarize.md
-   cookbook/whisper_asr.md
-   cookbook/qwen3_omni.md
-   cookbook/minicpm_o.md
    cookbook/ming_omni.md
    cookbook/nemotron_voicechat.md
-   cookbook/personaplex.md
-   cookbook/llada2_uni.md
-   cookbook/fun_cosyvoice3.md
    cookbook/auk.md
 
 .. toctree::
