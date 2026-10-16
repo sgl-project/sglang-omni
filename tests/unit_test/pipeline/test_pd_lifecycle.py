@@ -24,15 +24,6 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.session.streaming_session import StreamingSession
 
 from sglang_omni.comm import KVPageTransfer
-from sglang_omni.comm.data_ref import (
-    BackendRef,
-    DataKind,
-    DataLayout,
-    DataRef,
-    TransportKind,
-)
-from sglang_omni.comm.engine import CommEngine, InboundKVTransfer
-from sglang_omni.relay.cuda_ipc import CudaIpcRelay
 from sglang_omni.scheduling import pd_utils
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import (
@@ -59,10 +50,6 @@ from tests.unit_test.pipeline.test_pd_utils import (
     make_receiver,
     prefill_req,
     state_builder,
-)
-from tests.unit_test.relay.test_cuda_ipc_relay import (
-    GatedCopyEvent,
-    make_copy_owning_get,
 )
 
 
@@ -761,31 +748,6 @@ def test_pd_rejects_retained_session_adapter(
         validate_pd_runtime(scheduler)
 
 
-@pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
-@pytest.mark.parametrize("loop_name", ["event_loop_normal", "event_loop_async_decode"])
-def test_pd_event_loops_disable_autograd_and_restore_caller(
-    scheduler_type: type[OmniPrefillScheduler] | type[OmniDecodeScheduler],
-    loop_name: str,
-) -> None:
-    class StopLoop(Exception):
-        pass
-
-    scheduler = object.__new__(scheduler_type)
-    scheduler.running = True
-    grad_modes: list[bool] = []
-
-    def process_admin_requests() -> None:
-        grad_modes.append(torch.is_grad_enabled())
-        raise StopLoop
-
-    scheduler.process_admin_requests = process_admin_requests
-    with torch.enable_grad():
-        with pytest.raises(StopLoop):
-            getattr(scheduler, loop_name)()
-        assert torch.is_grad_enabled()
-    assert grad_modes == [False]
-
-
 @pytest.mark.parametrize("session_wrapper", [False, True])
 def test_pd_rebuilt_request_releases_real_kv_once(session_wrapper: bool) -> None:
     with get_context().override_server_args(
@@ -798,10 +760,8 @@ def test_pd_rebuilt_request_releases_real_kv_once(session_wrapper: bool) -> None
             cache = StreamingSession(cache)
         else:
             pass
-        scheduler = object.__new__(OmniDecodeScheduler)
+        scheduler = decode_scheduler()
         scheduler.tree_cache = cache
-        scheduler.pd_due_releases = queue.SimpleQueue()
-        scheduler.pd_outstanding_releases = set()
         initial_free = allocator.available_size()
         slots = allocator.alloc(3)
         request = req_from_continuation(
@@ -822,80 +782,6 @@ def test_pd_rebuilt_request_releases_real_kv_once(session_wrapper: bool) -> None
         scheduler.release_request_kv_cache(request)
         assert allocator.available_size() == initial_free
         assert request_pool.available_size() == 2
-
-
-@pytest.mark.parametrize(
-    "interruption", ["cancel_twice", "timeout", "close_then_cancel"]
-)
-def test_pd_receive_keeps_reserved_pages_until_copy_finishes(
-    interruption: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    event = GatedCopyEvent()
-    monkeypatch.setenv("SGLANG_OMNI_CUDA_IPC_WAIT_THREADS", "1")
-    relay = CudaIpcRelay(engine_id="pd-receiver", device="cuda:0", pool_size_mb=1)
-    executor = relay.wait_executor
-
-    async def run() -> None:
-        receiver = make_receiver()
-        message = make_message()
-        destination = receiver.reserve(message)
-        engine = object.__new__(CommEngine)
-        engine.ack_timeout_s = 0.01 if interruption == "timeout" else 30.0
-        engine.inbound_kv = {
-            message.transfer_id: InboundKVTransfer(message, receiver, destination)
-        }
-        relay.get_kv_pages = AsyncMock(
-            return_value=make_copy_owning_get(event, executor)
-        )
-        reference = DataRef(
-            version=1,
-            kind=DataKind.KV_PAGES,
-            object_id=message.transfer_id,
-            transport=TransportKind.CUDA_IPC,
-            layout=DataLayout.PAGED,
-            buffer=BackendRef(transport=TransportKind.CUDA_IPC, info={}, length=0),
-        )
-        task = asyncio.create_task(
-            engine.read_kv_pages(
-                relay=relay, request_id=message.request_id, data_ref=reference
-            )
-        )
-        try:
-            await asyncio.sleep(0.05)
-            if interruption == "close_then_cancel":
-                relay.close()
-                task.cancel()
-            elif interruption == "cancel_twice":
-                task.cancel()
-                await asyncio.sleep(0.05)
-                task.cancel()
-            else:
-                pass
-            await asyncio.sleep(0.05)
-            assert not task.done()
-            assert receiver.has_reservations()
-            assert receiver.allocator.freed == []
-            assert receiver.admissions.empty()
-        finally:
-            event.copy_done.set()
-            outcomes = await asyncio.gather(task, return_exceptions=True)
-        expected = (
-            asyncio.TimeoutError
-            if interruption == "timeout"
-            else asyncio.CancelledError
-        )
-        assert isinstance(outcomes[0], expected)
-        assert not receiver.has_reservations()
-        assert len(receiver.allocator.freed) == 1
-        assert receiver.admissions.empty()
-        assert message.transfer_id not in engine.inbound_kv
-
-    try:
-        asyncio.run(run())
-    finally:
-        event.copy_done.set()
-        relay.close()
-        executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])

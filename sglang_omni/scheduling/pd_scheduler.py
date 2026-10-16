@@ -442,30 +442,43 @@ class OmniDecodeScheduler(PDKVLifecycle):
         skip_req: Req | None = None,
     ) -> None:
         if not self.emit_transferred_token:
-            return super().stream_output(reqs, return_logprob, skip_req)
+            super().stream_output(reqs, return_logprob, skip_req)
+            return
         else:
             pass
         step_messages: list[OutgoingMessage] = []
-        for req in reqs:
+        for request in reqs:
             if (
-                req is skip_req
-                or req.rid in self.aborted_request_ids
-                or isinstance(req.finished_reason, FINISH_ABORT)
-                or req.rid in self.first_emit_done
-                or req.omni_data is None
-                or len(req.output_ids) != 1
+                request is skip_req
+                or request.rid in self.aborted_request_ids
+                or isinstance(request.finished_reason, FINISH_ABORT)
+                or request.rid in self.first_emit_done
+                or request.omni_data is None
+                or len(request.output_ids) != 1
                 or self.stream_output_builder is None
             ):
                 continue
             else:
                 pass
-            # note (Codex): PREBUILT has no model forward; emit its sample on the Decode stream lane.
-            messages = self.stream_output_builder(
-                req.rid,
-                req.omni_data,
-                RequestOutput(request_id=req.rid, data=req.output_ids[0]),
-            )
-            self.stage_stream_messages(req.rid, messages, step_messages)
+            try:
+                messages = list(
+                    self.stream_output_builder(
+                        request.rid,
+                        request.omni_data,
+                        RequestOutput(
+                            request_id=request.rid, data=request.output_ids[0]
+                        ),
+                    )
+                )
+            except Exception as error:
+                logger.exception(f"PD first-token stream failed for {request.rid}")
+                request.finished_reason = FINISH_ABORT(str(error))
+                self.release_request_kv_cache(request)
+                self.emit_model_path_end_once(request.rid, status="error")
+                self.close_completed_request(request)
+                self.emit_request_error(request.rid, error)
+            else:
+                self.stage_stream_messages(request.rid, messages, step_messages)
         put_messages(self.outbox, step_messages)
         super().stream_output(reqs, return_logprob, skip_req)
 
