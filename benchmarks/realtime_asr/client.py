@@ -13,6 +13,12 @@ The event flow:
     input_audio_buffer.commit      ->   manual mode only
     transcription.done             ->
     ... transcription.completed    <-   terminal event
+
+Native sessions use the same handshake, with output_modalities=[text] in
+session.update and event_id/sglang.seq on audio appends. Input ends with
+sglang.input_audio.end; text arrives through response.output_text.delta/done.
+The client waits for sglang.input_audio.drained, then closes the session.
+Native wall time ends at drain, excluding the close handshake.
 """
 
 from __future__ import annotations
@@ -22,9 +28,11 @@ import base64
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 import websockets
+from pydantic import JsonValue
+from websockets.asyncio.client import ClientConnection
 
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2
@@ -64,6 +72,9 @@ class SessionTrace:
     """Everything one session did, with timestamps, and nothing derived."""
 
     url: str
+    protocol: Literal["transcription", "native"] = field(
+        default="transcription", kw_only=True
+    )
     session: dict[str, Any] = field(default_factory=dict)
     """The session payload from session.created/session.updated."""
     sent: list[SentPacket] = field(default_factory=list)
@@ -94,7 +105,7 @@ class SessionTrace:
 
     @property
     def completed_text(self) -> str | None:
-        completed = self.events(TERMINAL_EVENT)
+        completed = self.events(SESSION_PROTOCOLS[self.protocol].text_event)
         if not completed:
             return None
         return str(completed[-1].event.get("text", ""))
@@ -106,8 +117,77 @@ class SessionTrace:
         return self.end_s - self.first_send_s
 
 
-def realtime_url(host: str, port: int) -> str:
-    return f"ws://{host}:{port}/v1/realtime?intent=transcription"
+@dataclass(frozen=True, kw_only=True)
+class TranscriptionProtocol:
+    language: str | None = None
+    turn_detection: dict[str, JsonValue] | None = None
+    query: ClassVar[str] = "?intent=transcription"
+    text_event: ClassVar[str] = TERMINAL_EVENT
+    terminal_event: ClassVar[str] = TERMINAL_EVENT
+    pace_input_end: ClassVar[bool] = False
+    stop_on_error: ClassVar[bool] = False
+    end_event: ClassVar[dict[str, JsonValue]] = {"type": "transcription.done"}
+
+    def session_update(self) -> dict[str, JsonValue]:
+        session: dict[str, JsonValue] = {"turn_detection": self.turn_detection}
+        if self.language is not None:
+            session["language"] = self.language
+        else:
+            pass
+        return {"type": "session.update", "session": session}
+
+    def append(self, encoded_audio: str, sequence: int) -> dict[str, JsonValue]:
+        """The transcription wire format does not carry a packet sequence."""
+        return {"type": "input_audio_buffer.append", "audio": encoded_audio}
+
+    async def finish(self, trace: SessionTrace, websocket: ClientConnection) -> None:
+        """The transcription session needs no explicit close handshake."""
+
+
+class NativeProtocol:
+    query: ClassVar[str] = ""
+    text_event: ClassVar[str] = "response.output_text.done"
+    terminal_event: ClassVar[str] = "sglang.input_audio.drained"
+    pace_input_end: ClassVar[bool] = True
+    stop_on_error: ClassVar[bool] = True
+    end_event: ClassVar[dict[str, JsonValue]] = {
+        "event_id": "input_end",
+        "type": "sglang.input_audio.end",
+    }
+
+    def session_update(self) -> dict[str, JsonValue]:
+        return {
+            "event_id": "session_update",
+            "type": "session.update",
+            "session": {"output_modalities": ["text"]},
+        }
+
+    def append(self, encoded_audio: str, sequence: int) -> dict[str, JsonValue]:
+        return {
+            "event_id": f"append_{sequence}",
+            "type": "input_audio_buffer.append",
+            "audio": encoded_audio,
+            "sglang": {"seq": sequence},
+        }
+
+    async def finish(self, trace: SessionTrace, websocket: ClientConnection) -> None:
+        await _send_event(websocket, {"event_id": "close", "type": "session.close"})
+        await _wait_for(trace, websocket, "session.closed")
+
+
+SESSION_PROTOCOLS: dict[
+    Literal["transcription", "native"], TranscriptionProtocol | NativeProtocol
+] = {"transcription": TranscriptionProtocol(), "native": NativeProtocol()}
+
+
+def realtime_url(
+    host: str,
+    port: int,
+    *,
+    protocol: Literal["transcription", "native"] = "transcription",
+) -> str:
+    suffix = SESSION_PROTOCOLS[protocol].query
+    return f"ws://{host}:{port}/v1/realtime{suffix}"
 
 
 def split_packets(pcm: bytes, *, packet_ms: int) -> list[bytes]:
@@ -148,6 +228,7 @@ async def _sender(
     paced: bool,
     manual_commit: bool,
 ) -> None:
+    wire = SESSION_PROTOCOLS[trace.protocol]
     packet_s = packet_ms / 1000.0
     audio_end_samples = 0
     encoded_packets = [base64.b64encode(packet).decode("ascii") for packet in packets]
@@ -162,13 +243,7 @@ async def _sender(
                 await asyncio.sleep(delay)
         audio_end_samples += len(packet) // BYTES_PER_SAMPLE
         send_s = time.perf_counter()
-        await _send_event(
-            websocket,
-            {
-                "type": "input_audio_buffer.append",
-                "audio": encoded_audio,
-            },
-        )
+        await _send_event(websocket, wire.append(encoded_audio, index))
         trace.sent.append(
             SentPacket(
                 send_s=send_s,
@@ -176,19 +251,31 @@ async def _sender(
                 num_bytes=len(packet),
             )
         )
+    if paced and wire.pace_input_end:
+        await asyncio.sleep(
+            max(0, t0 + audio_end_samples / SAMPLE_RATE - time.perf_counter())
+        )
+    else:
+        pass
     if manual_commit:
         trace.commit_sent_s = time.perf_counter()
         await _send_event(websocket, {"type": "input_audio_buffer.commit"})
     trace.done_sent_s = time.perf_counter()
-    await _send_event(websocket, {"type": "transcription.done"})
+    await _send_event(websocket, wire.end_event)
 
 
 async def _receiver(trace: SessionTrace, websocket: Any) -> None:
+    wire = SESSION_PROTOCOLS[trace.protocol]
     while True:
         event = await _recv_event(websocket)
         trace.received.append(ReceivedEvent(recv_s=time.perf_counter(), event=event))
-        if event.get("type") == TERMINAL_EVENT:
+        if event.get("type") == wire.terminal_event:
+            trace.end_s = trace.received[-1].recv_s
             return
+        elif wire.stop_on_error and event.get("type") == "error":
+            raise RuntimeError(f"native session failed: {event}")
+        else:
+            pass
 
 
 async def run_session(
@@ -202,6 +289,7 @@ async def run_session(
     language: str | None = None,
     trailing_silence_ms: int = 0,
     timeout_s: float = 120.0,
+    protocol: Literal["transcription", "native"] = "transcription",
 ) -> SessionTrace:
     """Stream pcm (mono 16 kHz PCM16) through one realtime session.
 
@@ -219,7 +307,7 @@ async def run_session(
     Never raises for server-side errors: they are recorded as events. Client
     failures (timeout, transport) set trace.error and return the partial trace.
     """
-    trace = SessionTrace(url=url)
+    trace = SessionTrace(url=url, protocol=protocol)
     trace.audio_duration_s = len(pcm) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
     if trailing_silence_ms > 0:
         pcm = pcm + b"\x00" * (
@@ -227,18 +315,19 @@ async def run_session(
         )
     packets = split_packets(pcm, packet_ms=packet_ms)
 
-    session_update: dict[str, Any] = {"turn_detection": turn_detection}
-    if language is not None:
-        session_update["language"] = language
+    wire = (
+        TranscriptionProtocol(language=language, turn_detection=turn_detection)
+        if protocol == "transcription"
+        else SESSION_PROTOCOLS[protocol]
+    )
+    update_event = wire.session_update()
 
     async def _drive() -> None:
         async with websockets.connect(url, max_size=None) as websocket:
             trace.connect_s = time.perf_counter()
             created = await _wait_for(trace, websocket, "session.created")
             trace.session = dict(created.get("session", {}))
-            await _send_event(
-                websocket, {"type": "session.update", "session": session_update}
-            )
+            await _send_event(websocket, update_event)
             updated = await _wait_for(trace, websocket, "session.updated")
             trace.session = dict(updated.get("session", trace.session))
 
@@ -253,6 +342,7 @@ async def run_session(
                     manual_commit=manual_commit,
                 )
                 await receiver
+                await wire.finish(trace, websocket)
             finally:
                 if not receiver.done():
                     receiver.cancel()
@@ -266,7 +356,10 @@ async def run_session(
     except (OSError, RuntimeError, websockets.WebSocketException) as exc:
         trace.error = f"{type(exc).__name__}: {exc}"
     finally:
-        trace.end_s = time.perf_counter()
+        if trace.end_s is None or protocol == "transcription":
+            trace.end_s = time.perf_counter()
+        else:
+            pass
     return trace
 
 

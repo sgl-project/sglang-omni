@@ -151,6 +151,7 @@ Supported Models
    :caption: Developer Reference
 
    developer_reference/main.md
+   developer_reference/nemotron_asr.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
    developer_reference/config.md

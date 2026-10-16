@@ -18,6 +18,8 @@ tests/
 └── unit_test/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
+    │   ├── test_nemotron_benchmark.py
+    │   ├── test_realtime_asr_benchmark.py
     │   └── test_runtime_metrics.py
     ├── ci/
     │   ├── test_cpu_contention.py
@@ -539,7 +541,11 @@ that happened to contain an older version of the test.
     manual commit, trailing silence, timeout reporting), and the metric
     definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
     traces (first-partial refresh-point lookup, partial gaps, committed→final,
-    protocol invariant violations, percentile summaries). No GPU or server.
+    protocol invariant violations, percentile summaries, first nonempty text).
+    No GPU or external server is required.
+  - `test_nemotron_benchmark.py`: native ASR protocol validation, timeout traces,
+    request and scoring languages, PCM preservation, and warmup/repeat handling
+    against in-process HTTP and WebSocket servers. No model weights or GPU required.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation, plus the 8 kHz telephony fixtures under

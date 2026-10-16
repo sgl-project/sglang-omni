@@ -24,6 +24,13 @@ Three groups, each a function of the trace alone:
 
 * :func:`wer_metrics` - transcription.completed text against a reference,
   reusing the SeedTTS ASR normalization and jiwer path.
+
+For native ASR, text comes from response.output_text.delta/done. The first
+partial is timed from the packet reaching its media-time boundary
+(t_start_ms + duration_ms); missing media time leaves it unavailable.
+Partial gaps are within one response. Final latency runs from input end to
+text done; done-to-completed runs from input end to input drained.
+Failed or incomplete native sessions are excluded from WER.
 """
 
 from __future__ import annotations
@@ -50,6 +57,75 @@ def check_invariants(trace: SessionTrace) -> list[str]:
 
     for record in trace.events("error"):
         violations.append(f"server error event: {record.event.get('error')}")
+
+    if trace.protocol == "native":
+        accepted_sequences = [
+            record.event.get("seq")
+            for record in trace.events("sglang.input_audio.accepted")
+        ]
+        expected_sequences = list(range(len(trace.sent)))
+        if accepted_sequences != expected_sequences:
+            violations.append(
+                f"accepted sequences {accepted_sequences} do not match sent packets "
+                f"{expected_sequences}"
+            )
+        else:
+            pass
+        text_done = trace.events("response.output_text.done")
+        drained = trace.events("sglang.input_audio.drained")
+        if len(text_done) != 1:
+            violations.append(f"expected one completed text, got {len(text_done)}")
+        else:
+            pass
+        if len(drained) != 1:
+            violations.append(f"expected one drained event, got {len(drained)}")
+        elif text_done and drained[0].recv_s < text_done[0].recv_s:
+            violations.append("input drained before completed text")
+        else:
+            pass
+        deltas = trace.events("response.output_text.delta")
+        if text_done:
+            final = text_done[0]
+            if trace.done_sent_s is None or final.recv_s < trace.done_sent_s:
+                violations.append("completed text before input end")
+            else:
+                pass
+            response_id = final.event.get("response_id")
+            if not isinstance(response_id, str) or any(
+                delta.event.get("response_id") != response_id
+                or delta.recv_s > final.recv_s
+                for delta in deltas
+            ):
+                violations.append("text response identity or ordering violated")
+            elif "".join(
+                str(delta.event.get("delta", "")) for delta in deltas
+            ) != final.event.get("text"):
+                violations.append("text deltas do not match completed text")
+            else:
+                pass
+        else:
+            pass
+        if drained:
+            consumed_milliseconds = drained[0].event.get("consumed_ms")
+            if not isinstance(consumed_milliseconds, (float, int)) or not math.isclose(
+                consumed_milliseconds, trace.audio_duration_s * 1000, abs_tol=0.001
+            ):
+                violations.append("drained audio duration does not match input")
+            else:
+                pass
+        else:
+            pass
+        responses = trace.events("response.done")
+        if (
+            len(responses) != 1
+            or responses[0].event.get("response", {}).get("status") != "completed"
+        ):
+            violations.append("native response did not complete successfully")
+        else:
+            pass
+        return violations
+    else:
+        pass
 
     indexes = [record.event.get("event_index") for record in trace.received]
     if any(type(index) is not int for index in indexes):
@@ -174,6 +250,56 @@ def _packet_reaching(trace: SessionTrace, audio_ms: float) -> float | None:
 
 
 def latency_metrics(trace: SessionTrace) -> dict[str, Any]:
+    if trace.protocol == "native":
+        partials = trace.events("response.output_text.delta")
+        finals = trace.events("response.output_text.done")
+        drained = trace.events("sglang.input_audio.drained")
+        first_partial_latency: list[float] = []
+        media_time = (
+            partials[0].event.get("sglang", {}).get("media_time") if partials else None
+        )
+        if media_time is not None:
+            trigger_s = _packet_reaching(
+                trace, media_time["t_start_ms"] + media_time["duration_ms"]
+            )
+            first_partial_latency = (
+                [partials[0].recv_s - trigger_s] if trigger_s is not None else []
+            )
+        else:
+            pass
+        return {
+            "first_text_s": next(
+                (
+                    record.recv_s - trace.first_send_s
+                    for record in partials
+                    if record.event.get("delta") and trace.first_send_s is not None
+                ),
+                None,
+            ),
+            "decode_interval_ms": None,
+            "segment_count": len(finals),
+            "partial_count": len(partials),
+            "first_partial_latency_s": first_partial_latency,
+            "partial_interval_s": [
+                later.recv_s - earlier.recv_s
+                for earlier, later in zip(partials, partials[1:])
+            ],
+            "final_latency_s": (
+                [item.recv_s - trace.done_sent_s for item in finals]
+                if trace.done_sent_s is not None
+                else []
+            ),
+            "done_to_completed_s": (
+                drained[-1].recv_s - trace.done_sent_s
+                if drained and trace.done_sent_s is not None
+                else None
+            ),
+            "audio_duration_s": trace.audio_duration_s,
+            "wall_s": trace.wall_s,
+        }
+    else:
+        pass
+
     decode_interval_ms = trace.session.get("decode_interval_ms")
     partials = trace.segments(is_final=False)
     finals = trace.segments(is_final=True)
@@ -213,6 +339,14 @@ def latency_metrics(trace: SessionTrace) -> dict[str, Any]:
         done_to_completed = completed[-1].recv_s - trace.done_sent_s
 
     return {
+        "first_text_s": next(
+            (
+                record.recv_s - trace.first_send_s
+                for record in partials
+                if record.event.get("text") and trace.first_send_s is not None
+            ),
+            None,
+        ),
         "decode_interval_ms": decode_interval_ms,
         "segment_count": len(finals),
         "partial_count": len(partials),
@@ -234,6 +368,11 @@ def wer_metrics(trace: SessionTrace, ref_text: str, *, lang: str) -> SampleOutpu
     output = SampleOutput(target_text=ref_text, audio_duration_s=trace.audio_duration_s)
     if trace.wall_s is not None:
         output.latency_s = trace.wall_s
+    if trace.protocol == "native" and (violations := check_invariants(trace)):
+        output.error = "; ".join(violations)
+        return output
+    else:
+        pass
     text = trace.completed_text
     if text is None:
         output.error = trace.error or "No transcription.completed event"
