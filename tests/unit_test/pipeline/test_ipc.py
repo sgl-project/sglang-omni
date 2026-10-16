@@ -28,7 +28,11 @@ from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerPro
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
-from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    ChatMessage,
+    CreateSpeechRequest,
+)
 from sglang_omni.serve.server_warmup import (
     TranscriptionWarmupRequest,
     warmup_tone_wav_bytes,
@@ -725,6 +729,41 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
         "json",
         False,
     )
+
+
+@pytest.mark.asyncio
+async def test_speech_warmup_posts_its_request_to_the_speech_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[tuple[str, CreateSpeechRequest]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(
+            (
+                request.url.path,
+                CreateSpeechRequest.model_validate_json(request.content),
+            )
+        )
+        return httpx.Response(200)
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = SimpleNamespace(started=True, should_exit=False)
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = CreateSpeechRequest(
+        input="Hi", voice="Ryan", response_format="pcm", stream=True
+    )
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        base_url="http://127.0.0.1:8000",
+        requests=[request],
+        timeout_s=5,
+    )
+
+    assert posted == [("/v1/audio/speech", request)]
+    assert app.state.server_status is ServerStatus.UP
 
 
 @pytest.mark.asyncio

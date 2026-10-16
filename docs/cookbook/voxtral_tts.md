@@ -75,7 +75,7 @@ MODEL_PATH="$(hf download mistralai/Voxtral-4B-TTS-2603 --quiet)"
 ls "${MODEL_PATH}/voice_embedding"
 ```
 
-#### Python
+**Python**
 
 ```python
 import requests

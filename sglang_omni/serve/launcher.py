@@ -57,6 +57,7 @@ from sglang_omni.serve.openai_api import ServerStatus, create_app
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
     ChatCompletionRequest,
+    CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
@@ -481,7 +482,9 @@ async def warm_up_server(
     app: FastAPI,
     *,
     base_url: str,
-    requests: list[ChatCompletionRequest | TranscriptionWarmupRequest],
+    requests: list[
+        ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
+    ],
     timeout_s: float,
 ) -> None:
     """Mark the server up once its warmup requests have crossed every stage.
@@ -509,6 +512,11 @@ async def warm_up_server(
                 if isinstance(request, ChatCompletionRequest):
                     post = http_client.post(
                         "/v1/chat/completions",
+                        json=request.model_dump(exclude_none=True),
+                    )
+                elif isinstance(request, CreateSpeechRequest):
+                    post = http_client.post(
+                        "/v1/audio/speech",
                         json=request.model_dump(exclude_none=True),
                     )
                 else:

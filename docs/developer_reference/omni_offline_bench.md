@@ -192,7 +192,7 @@ It must print `RUN_READY`. `OUT` must be new and port 8000 must be free.
 test ! -e "$OUT" && ! curl -s -o /dev/null localhost:8000/health && mkdir -p "$OUT/videoamme" "$OUT/seedtts" && git rev-parse HEAD > "$OUT/commit.txt" && git status --porcelain > "$OUT/dirty.txt" && echo RUN_READY
 ```
 
-#### Video-AMME Talker
+**Video-AMME Talker**
 
 Start the server. It must print `READY`. `/tmp/omni_server.pid` holds the server's process group, so the stop command stops all of it.
 
@@ -228,7 +228,7 @@ kill -- -"$(cat /tmp/omni_server.pid)"
 timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
 ```
 
-#### seed-tts voice clone
+**seed-tts voice clone**
 
 Start the server. It must print `READY`.
 
@@ -258,7 +258,7 @@ kill -- -"$(cat /tmp/omni_server.pid)"
 timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
 ```
 
-#### Score
+**Score**
 
 Start Qwen3-ASR. It must print `READY`.
 

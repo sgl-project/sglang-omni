@@ -19,6 +19,7 @@ from benchmarks.duplex.artifacts import (
     add_server_identity_args,
     server_identity,
 )
+from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_core import V10_REFERENCE_FILES, read_json
 from benchmarks.duplex.reference_source import verify_reference
 from benchmarks.duplex.reference_v10 import (
@@ -70,7 +71,7 @@ def record(args: argparse.Namespace) -> int:
 
 
 def reference_export(args: argparse.Namespace) -> int:
-    manifest = export(args.run, args.dataset_root, args.out)
+    manifest = export(args.run, args.dataset_root, args.out, args.trace_format)
     print(json.dumps(manifest["counts"], indent=2))
     return 0
 
@@ -186,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--dataset-root", type=Path, required=True)
     export_parser.add_argument(
         "--out", type=Path, required=True, help="New reference tree directory"
+    )
+    export_parser.add_argument(
+        "--trace-format",
+        choices=[trace_format.value for trace_format in TraceFormat],
+        help="Capture trace format of the runs. Default: the native realtime format",
     )
     export_parser.set_defaults(handler=reference_export)
 

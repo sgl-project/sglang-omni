@@ -75,7 +75,13 @@ A judge starts only when the step has a request for it: the v1.5 pairs and the v
 
 ## Run the benchmark
 
-A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits.
+A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
+
+```bash
+python -m benchmarks.duplex.fdb generate --run-name minicpmo-10 --v15-per-subset 10 --v10-per-subset 10 --all-stages
+```
+
+Without `--all-stages`, `generate` only records, and each later step is its own subcommand.
 
 | Step | Subcommand | What it does |
 |---|---|---|
@@ -87,26 +93,22 @@ A run has three steps, then an aggregation. Each step starts the server it needs
 Run a small preflight first. It takes one pair per v1.5 category and three samples per v1.0 subset (about 15 minutes) and catches environment problems before a long run. v1.0 needs three samples rather than one because the official turn-taking and interruption evaluators divide by the number of takeovers and fail when no selected sample takes the turn.
 
 ```bash
-python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3
-python -m benchmarks.duplex.fdb asr --run-name preflight
-python -m benchmarks.duplex.fdb judge --run-name preflight
-python -m benchmarks.duplex.fdb aggregate --run-name preflight
+python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3 --all-stages
 ```
 
 The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}` for v1.5 and `{"pass": 15}` with 3 eligible samples per v1.0 subset; `asr` prints `{"ok": 16}`, `{"ok": 8}` and 3 transcripts per v1.0 subset; and `judge` prints `{"valid": 4}`, `controls: 18/18 axis statuses match` and the parsed v1.0 results of each subset as JSON (the evaluator's own `[Result]` block is in `repeat-N/v10/reference/logs/evaluate-<subset>.log`). If anything differs, see [Troubleshooting](#troubleshooting).
 
-A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the three steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
+A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
 
 ```bash
 for repeat in 1 2 3; do
-    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12
-    python -m benchmarks.duplex.fdb asr --run-name minicpmo-12 --repeat "$repeat"
-    python -m benchmarks.duplex.fdb judge --run-name minicpmo-12 --repeat "$repeat"
+    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12 --all-stages
 done
-python -m benchmarks.duplex.fdb aggregate --run-name minicpmo-12
 ```
 
-`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
+Each repeat ends with `aggregate`, so `RESULTS.md` covers every repeat finished so far.
+
+`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. When `asr` or `judge` stops a `--all-stages` run, its message names the command that continues it; run that step and the ones after it on their own. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
 
 Every subcommand takes `--log-level` (`info` by default). With `--log-level debug`, a step also prints the server and recorder logs it writes, each line prefixed with the log's name, such as `[judge-server]` or `[record-shard-0]`. The logs are written under `repeat-N/` at either level (see the files table in [Results](#results)).
 
@@ -235,6 +237,42 @@ python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
 ```
 
 The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
+
+## Serving metrics
+
+Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
+
+Start the server yourself, with `max_sessions` at least the largest level, then sweep:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
+  --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
+  --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754 \
+  --max-per-subset 4
+```
+
+The options after `--` go unchanged to the `record` command of `benchmark_duplex_v15` (or `benchmark_duplex_v10` with `--dataset v1.0`); the sweep adds `--concurrency N` and `--output <output>/concurrency-N` for each level. It writes `serving.json`, `SERVING.md` and one run directory per level, and keeps going when a level has failed sessions, since those are part of the result. `report --run <run> --run <run> ... --output serving.json` builds the same table from runs that are already recorded.
+
+Each level is one row:
+
+| Column | Meaning |
+|---|---|
+| `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
+| `sessions failed` | Sessions whose protocol replay failed or that broke off |
+| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
+| `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
+| `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
+| `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
+| `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
+| `meets targets` | `yes`, or the targets the level misses |
+
+A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 
 ## Notes
 
@@ -404,7 +442,7 @@ CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v1
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
 ```
 
-- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest.
+- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with a turn-based profile needs `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
 - `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
 - `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
 - `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.

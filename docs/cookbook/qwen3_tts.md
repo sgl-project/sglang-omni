@@ -155,6 +155,19 @@ New requests are not refused because of the cap. `/health` reports the
 backlog under `stream_delivery`, including the held bytes, open streams and
 failed streams.
 
+### Server Readiness
+
+Before it reports ready, the server sends itself a streaming speech request in
+its checkpoint's mode, once per replica of its most replicated process, one
+after another: CustomVoice uses its first built-in speaker, VoiceDesign a short
+voice description, and Base a one-second tone as its reference clip. `/health`
+returns 503 with status `starting` until these requests finish, so the first
+requests after that do not wait for the kernel loading and first-use setup of
+the speech path. The sampler is compiled for single and batched requests while
+the model loads, so the first concurrent requests need no warmup of their own.
+A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default
+600) bounds each request, and `--skip-server-warmup` reports ready without them.
+
 ### Prefill CUDA graphs
 
 Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to a
@@ -350,7 +363,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`.
 
-#### Python
+**Python**
 
 ```python
 import requests
@@ -378,7 +391,7 @@ response still contains decodable audio, but the utterance may be incomplete.
 Models that do not report how generation ended send `X-Finish-Reason: unknown`.
 Batch responses expose the same value as each item's `finish_reason`.
 
-#### Leading silence in x-vector mode
+**Leading silence in x-vector mode**
 
 Without a reference transcript the talker starts cold, and on most requests it
 opens with several frames of room-tone silence before speaking, which the
@@ -407,9 +420,6 @@ sgl-omni serve \
   --tts_engine.factory.leading_silence_mask_frames 0 \
   --port 8000
 ```
-
-Details and the full sweep are in
-[the leading-silence benchmark](../benchmarks/qwen3_tts_leading_silence.md).
 
 ### Language Hint
 
@@ -482,7 +492,7 @@ explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
-#### Codec decoding defaults
+**Codec decoding defaults**
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
@@ -517,7 +527,7 @@ The follow-up workers also commit each in-flight cohort as soon as its decode
 has finished, checked at the top of the worker loop and before each launch,
 instead of at the next drain.
 
-#### First-audio chunk ramp
+**First-audio chunk ramp**
 
 For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with `stream_chunk_ramp` on the vocoder stage: entry
