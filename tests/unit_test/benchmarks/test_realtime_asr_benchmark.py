@@ -232,7 +232,7 @@ def test_trailing_silence_extends_sent_audio_but_not_duration(fake_server):
 def test_timeout_is_reported_not_raised():
     async def hang(websocket):
         await websocket.send(json.dumps({"type": "session.created", "session": {}}))
-        await asyncio.sleep(5)
+        await websocket.wait_closed()
 
     async def run():
         async with websockets.serve(hang, "127.0.0.1", 0) as ws_server:
