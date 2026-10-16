@@ -1,73 +1,147 @@
 from __future__ import annotations
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 NUM_ITER = 8
 
 
-def char_vocab_from_tokenizer(tokenizer) -> dict[str, int]:
-    vocab = tokenizer.get_vocab()
-    chars = sorted(
-        (token for token in vocab if len(token) == 1), key=lambda t: vocab[t]
+def char_vocab_from_tokenizer(tokenizer: PreTrainedTokenizerBase) -> dict[str, int]:
+    token_vocabulary = tokenizer.get_vocab()
+    characters = sorted(
+        (token for token in token_vocabulary if len(token) == 1),
+        key=lambda token: token_vocabulary[token],
     )
-    return {char: index for index, char in enumerate(chars)}
+    return {character: index for index, character in enumerate(characters)}
 
 
 class NemotronVoiceChatTalkerModelRunner(ModelRunner):
-    def __init__(self, tp_worker, output_processor):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         speech = self.model.config.nemotron_speech
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
             speech["tokenizer_name"],
             bos_token=speech.get("bos_token"),
             eos_token=speech.get("eos_token"),
             pad_token=speech.get("pad_token"),
         )
-        self.char_vocab = char_vocab_from_tokenizer(self.tokenizer)
-        self.char_padding_idx = len(self.char_vocab)
+        self.char_vocab: dict[str, int] = char_vocab_from_tokenizer(self.tokenizer)
+        self.char_padding_idx: int = len(self.char_vocab)
+        self.initialize_character_lookup()
         # From the checkpoint's names above: the tokenizer's own eos_token_id
         # is <SPECIAL_12>, the text channel's PAD, which means still speaking.
-        self.text_pad_id = int(self.tokenizer.pad_token_id)
-        self.text_eos_id = int(self.tokenizer.eos_token_id)
-        self.exponent = float(speech["tts_config"]["exponent"])
-        self.top_p = float(speech["inference_top_p_or_k"])
-        self.noise_scale = float(speech["inference_noise_scale"])
-        self.force_silence = bool(speech["inference_force_speech_silence_on_eos"])
-        self.speech_pad_id = int(speech["codec_config"]["codebook_size"])
-        self.warmup_rows = None
+        self.text_pad_id: int = int(self.tokenizer.pad_token_id)
+        self.text_eos_id: int = int(self.tokenizer.eos_token_id)
+        self.exponent: float = float(speech["tts_config"]["exponent"])
+        self.top_p: float = float(speech["inference_top_p_or_k"])
+        self.noise_scale: float = float(speech["inference_noise_scale"])
+        self.force_silence: bool = bool(speech["inference_force_speech_silence_on_eos"])
+        self.speech_pad_id: int = int(speech["codec_config"]["codebook_size"])
+        self.warmup_rows: torch.Tensor | None = None
 
     def fusion_device(self) -> torch.device:
         return self.model.fusion_buffer.device
 
-    def char_batch(self, token_ids: list[int]):
-        device = self.fusion_device()
-        sequences = [
+    def initialize_character_lookup(self) -> None:
+        self.token_id_count: int = (
+            max(self.tokenizer.get_vocab().values(), default=-1) + 1
+        )
+        character_sequences = [
             [
-                self.char_vocab[c]
-                for c in (self.tokenizer.convert_ids_to_tokens(t) or "")
-                if c in self.char_vocab
+                self.char_vocab[character]
+                for character in (self.tokenizer.convert_ids_to_tokens(token_id) or "")
+                if character in self.char_vocab
             ]
             or [self.char_padding_idx]
-            for t in token_ids
+            for token_id in range(self.token_id_count)
         ]
-        width = max(len(s) for s in sequences)
-        char_ids = torch.full(
-            (len(sequences), width),
+        self.character_lengths_cpu: list[int] = [
+            len(sequence) for sequence in character_sequences
+        ]
+        character_ids_cpu = torch.full(
+            (len(character_sequences), max(self.character_lengths_cpu, default=1)),
             self.char_padding_idx,
             dtype=torch.long,
-            device=device,
+            device="cpu",
         )
-        for row, sequence in enumerate(sequences):
-            char_ids[row, : len(sequence)] = torch.tensor(sequence, device=device)
-        lengths = torch.tensor([len(s) for s in sequences], device=device)
-        return torch.tensor(token_ids, device=device), char_ids, lengths
+        for row, sequence in enumerate(character_sequences):
+            character_ids_cpu[row, : len(sequence)] = torch.tensor(
+                sequence, dtype=torch.long, device="cpu"
+            )
+        device = self.fusion_device()
+        self.token_ids_by_token: torch.Tensor = torch.arange(
+            self.token_id_count, dtype=torch.long, device=device
+        )
+        self.character_ids_by_token: torch.Tensor = character_ids_cpu.to(device)
+        self.character_lengths_by_token: torch.Tensor = torch.tensor(
+            self.character_lengths_cpu, dtype=torch.long, device=device
+        )
+
+    def char_batch(
+        self, token_ids: list[int]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if len(token_ids) == 1 and 0 <= token_ids[0] < self.token_id_count:
+            token_id = token_ids[0]
+            character_width = self.character_lengths_cpu[token_id]
+            return (
+                self.token_ids_by_token[token_id : token_id + 1],
+                self.character_ids_by_token[token_id : token_id + 1, :character_width],
+                self.character_lengths_by_token[token_id : token_id + 1],
+            )
+        elif all(0 <= token_id < self.token_id_count for token_id in token_ids):
+            character_width = max(
+                self.character_lengths_cpu[token_id] for token_id in token_ids
+            )
+            batch_token_ids = torch.tensor(token_ids, device=self.fusion_device())
+            return (
+                batch_token_ids,
+                self.character_ids_by_token[:, :character_width].index_select(
+                    0, batch_token_ids
+                ),
+                self.character_lengths_by_token.index_select(0, batch_token_ids),
+            )
+        else:
+            device = self.fusion_device()
+            character_sequences = [
+                [
+                    self.char_vocab[character]
+                    for character in (
+                        self.tokenizer.convert_ids_to_tokens(token_id) or ""
+                    )
+                    if character in self.char_vocab
+                ]
+                or [self.char_padding_idx]
+                for token_id in token_ids
+            ]
+            character_width = max(len(sequence) for sequence in character_sequences)
+            character_ids = torch.full(
+                (len(character_sequences), character_width),
+                self.char_padding_idx,
+                dtype=torch.long,
+                device=device,
+            )
+            for row, sequence in enumerate(character_sequences):
+                character_ids[row, : len(sequence)] = torch.tensor(
+                    sequence, device=device
+                )
+            character_lengths = torch.tensor(
+                [len(sequence) for sequence in character_sequences], device=device
+            )
+            return (
+                torch.tensor(token_ids, device=device),
+                character_ids,
+                character_lengths,
+            )
 
     def warmup(self):
         if self.warmup_rows is None:
