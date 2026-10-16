@@ -800,18 +800,10 @@ def pack_tensors(
     target_device = torch.device(device)
     entries, chunks, offset = [], [], 0
     for path, tensor in tensors.items():
-        flat = tensor.contiguous().view(torch.uint8).reshape(-1)
-        if flat.device != target_device:
-            flat = flat.to(device=target_device)
-        else:
-            pass
+        size = tensor.numel() * tensor.element_size()
         padding = pad_offset(offset, dtype_alignment(tensor.dtype))
-        if padding:
-            chunks.append(torch.zeros(padding, dtype=torch.uint8, device=target_device))
-            offset += padding
-        else:
-            pass
-        chunks.append(flat)
+        offset += padding
+        chunks.append(tensor)
         entries.append(
             TensorMeta(
                 path=path,
@@ -819,15 +811,53 @@ def pack_tensors(
                 dtype=str(tensor.dtype),
                 device=str(tensor.device),
                 offset=offset,
-                size=int(flat.numel()),
+                size=size,
             )
         )
-        offset += int(flat.numel())
-    if not chunks:
-        chunks.append(torch.zeros(1, dtype=torch.uint8, device=target_device))
+        offset += size
+    if (
+        target_device.type == "cpu"
+        and len(chunks) > 1
+        and any(chunk.is_cuda for chunk in chunks)
+    ):
+        packed = torch.empty(offset, dtype=torch.uint8, device=target_device)
+        previous_end = 0
+        for entry, chunk in zip(entries, chunks, strict=True):
+            packed[previous_end : entry.offset].zero_()
+            # note (Tokha233): Blocking copies finish the snapshot before relay backpressure can yield.
+            packed[entry.offset : entry.offset + entry.size].copy_(
+                chunk.contiguous().reshape(-1).view(torch.uint8)
+            )
+            previous_end = entry.offset + entry.size
+        return packed, entries
     else:
-        pass
-    return torch.cat(chunks), entries
+        padded_chunks = []
+        previous_end = 0
+        for entry, chunk in zip(entries, chunks, strict=True):
+            if entry.offset > previous_end:
+                padded_chunks.append(
+                    torch.zeros(
+                        entry.offset - previous_end,
+                        dtype=torch.uint8,
+                        device=target_device,
+                    )
+                )
+            else:
+                pass
+            padded_chunks.append(
+                chunk.contiguous()
+                .reshape(-1)
+                .view(torch.uint8)
+                .to(device=target_device)
+            )
+            previous_end = entry.offset + entry.size
+        if not padded_chunks:
+            padded_chunks.append(
+                torch.zeros(1, dtype=torch.uint8, device=target_device)
+            )
+        else:
+            pass
+        return torch.cat(padded_chunks), entries
 
 
 async def read_transfer_buffer(
