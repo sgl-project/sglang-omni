@@ -55,7 +55,9 @@ def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
 
 def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
     platform = platforms.as_omni_platform(RocmSRTPlatform())
-    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+    spec = SimpleNamespace(
+        stage_name="thinker", tp_size=2, allow_child_processes=False, gpu_id=1
+    )
 
     assert platform.is_rocm()
     assert not isinstance(platform, CUDAOmniPlatform)
@@ -70,7 +72,9 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
 
 def test_rocm_platform_maps_tp_rank_through_hip_visible_devices() -> None:
     platform = ROCMOmniPlatform()
-    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+    spec = SimpleNamespace(
+        stage_name="thinker", tp_size=2, allow_child_processes=False, gpu_id=1
+    )
 
     mapped_env = platform.get_stage_process_env(spec, {"HIP_VISIBLE_DEVICES": "3,4"})
 
@@ -83,7 +87,9 @@ def test_rocm_platform_prefers_hip_visibility_over_cuda_alias() -> None:
     """HIP_VISIBLE_DEVICES wins in the HIP runtime, so the rank maps through it;
     the CUDA alias mirrors the same physical id for the CUDA-named helpers."""
     platform = ROCMOmniPlatform()
-    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+    spec = SimpleNamespace(
+        stage_name="thinker", tp_size=2, allow_child_processes=False, gpu_id=1
+    )
 
     mapped_env = platform.get_stage_process_env(
         spec,
@@ -99,7 +105,9 @@ def test_rocm_platform_prefers_hip_visibility_over_cuda_alias() -> None:
 
 def test_rocm_platform_without_hip_visibility_sets_only_the_cuda_alias() -> None:
     platform = ROCMOmniPlatform()
-    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=0)
+    spec = SimpleNamespace(
+        stage_name="thinker", tp_size=2, allow_child_processes=False, gpu_id=0
+    )
 
     assert "HIP_VISIBLE_DEVICES" not in platform.get_stage_process_env(spec, {})
     assert platform.get_stage_process_env(spec, {})["CUDA_VISIBLE_DEVICES"] == "0"

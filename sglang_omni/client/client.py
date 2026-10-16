@@ -32,6 +32,10 @@ from sglang_omni.client.types import (
     GenerateChunk,
     GenerateRequest,
     SpeechResult,
+    UMMCompletionResult,
+    UMMCompletionStreamChunk,
+    UMMGenerateChunk,
+    UMMSegment,
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
@@ -211,11 +215,20 @@ class Client:
         omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
+        streamed_segments: list[UMMSegment] | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
             if chunk.text:
                 text_parts.append(chunk.text)
+            else:
+                pass
+            if isinstance(chunk, UMMGenerateChunk) and chunk.segment is not None:
+                if streamed_segments is None:
+                    streamed_segments = []
+                else:
+                    pass
+                streamed_segments.append(chunk.segment)
             else:
                 pass
             if chunk.audio_data is not None:
@@ -254,7 +267,13 @@ class Client:
             pass
 
         full_text = "".join(text_parts)
-        stop_start = stop_string_start(full_text, request.sampling.stop)
+        # Stop strings never apply to an interleaved result, whose text the
+        # adapter builds from its decisions, so the text matches the segments.
+        stop_start = (
+            None
+            if isinstance(last_chunk, UMMGenerateChunk)
+            else stop_string_start(full_text, request.sampling.stop)
+        )
         if stop_start is not None:
             full_text = full_text[:stop_start]
         else:
@@ -281,10 +300,11 @@ class Client:
         else:
             pass
 
-        return CompletionResult(
+        result = CompletionResult(
             request_id=request_id,
             text=full_text,
             audio=audio,
+            media=last_chunk.media,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -295,6 +315,14 @@ class Client:
             language=language,
             diarization=last_chunk.diarization,
         )
+        if isinstance(last_chunk, UMMGenerateChunk):
+            return UMMCompletionResult(
+                **vars(result),
+                segments=completed_segments(last_chunk, streamed_segments),
+            )
+        else:
+            pass
+        return result
 
     # ------------------------------------------------------------------
     # High-level: streaming completion
@@ -341,7 +369,12 @@ class Client:
                         pass
                 else:
                     pass
-                if stop_trimmer is not None and chunk.modality == "text" and text:
+                if (
+                    stop_trimmer is not None
+                    and chunk.modality == "text"
+                    and text
+                    and not isinstance(chunk, UMMGenerateChunk)
+                ):
                     text = stop_trimmer.push(text) or None
                 else:
                     pass
@@ -358,7 +391,7 @@ class Client:
                 else:
                     pass
 
-                yield CompletionStreamChunk(
+                stream_chunk = CompletionStreamChunk(
                     request_id=request_id,
                     text=text,
                     modality=chunk.modality,
@@ -367,6 +400,13 @@ class Client:
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
                 )
+                if isinstance(chunk, UMMGenerateChunk):
+                    stream_chunk = UMMCompletionStreamChunk(
+                        **vars(stream_chunk), segment=chunk.segment
+                    )
+                else:
+                    pass
+                yield stream_chunk
             held_text = stop_trimmer.finish() if stop_trimmer is not None else ""
             if held_text:
                 yield CompletionStreamChunk(
@@ -689,6 +729,10 @@ class Client:
         else:
             pass
         if isinstance(result, dict):
+            if result.get("type") == "umm_result":
+                return umm_result_chunk(request_id, result)
+            else:
+                pass
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
             # talker_stream.
             audio_result = None
@@ -780,6 +824,7 @@ class Client:
                 )
             else:
                 pass
+            chunk.media = result.get("media")
             chunk.stage_id = result.get("stage_id")
             chunk.stage_name = result.get("stage_name")
             modality = result.get("modality")
@@ -840,6 +885,10 @@ class Client:
         else:
             pass
         if isinstance(data, dict):
+            if data.get("type") == "segment":
+                return umm_segment_chunk(chunk, data)
+            else:
+                pass
             text = data.get("text")
             if isinstance(text, str):
                 chunk.text = text
@@ -993,6 +1042,70 @@ def extract_inputs(request: GenerateRequest) -> object:
     else:
         pass
     return messages
+
+
+def umm_segment_chunk(chunk: GenerateChunk, data: dict[str, object]) -> GenerateChunk:
+    """Carry one streamed segment of an interleaved (UMM) request."""
+    segment = UMMSegment.from_dict(data)
+    return UMMGenerateChunk(
+        request_id=chunk.request_id,
+        index=segment.segment_index,
+        text=segment.data if segment.kind == "text" else "",
+        stage_id=chunk.stage_id,
+        stage_name=chunk.stage_name,
+        modality=segment.kind,
+        segment=segment,
+    )
+
+
+def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChunk:
+    """Validate the final result of an interleaved (UMM) request."""
+    raw_segments = result.get("segments")
+    execution_id = result.get("execution_id")
+    if not isinstance(raw_segments, list) or not isinstance(execution_id, str):
+        raise ValueError("Invalid UMM final result")
+    else:
+        pass
+    segments = [UMMSegment.from_dict(item) for item in raw_segments]
+    if any(
+        segment.execution_id != execution_id or segment.segment_index != index
+        for index, segment in enumerate(segments)
+    ):
+        raise ValueError("UMM final segments must be one ordered execution")
+    else:
+        pass
+    finish_reason = result.get("finish_reason")
+    return UMMGenerateChunk(
+        request_id=request_id,
+        text="".join(
+            segment.data
+            for segment in segments
+            if segment.kind == "text" and isinstance(segment.data, str)
+        ),
+        finish_reason=finish_reason if isinstance(finish_reason, str) else "stop",
+        model_finish_reason="",
+        modality="mixed",
+        segments=segments,
+    )
+
+
+def completed_segments(
+    final: UMMGenerateChunk, streamed: list[UMMSegment] | None
+) -> list[UMMSegment]:
+    """The final segments with their data, taken from the stream when streamed."""
+    segments = final.segments or []
+    if all(segment.data is not None for segment in segments):
+        return segments
+    elif streamed is not None and [
+        (segment.execution_id, segment.segment_index, segment.kind)
+        for segment in streamed
+    ] == [
+        (segment.execution_id, segment.segment_index, segment.kind)
+        for segment in segments
+    ]:
+        return streamed
+    else:
+        raise ValueError("Streamed UMM segments do not match the final result")
 
 
 def build_params(request: GenerateRequest) -> dict[str, object]:

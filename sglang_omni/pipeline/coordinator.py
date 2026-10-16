@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -39,6 +40,32 @@ from sglang_omni.proto import (
 from sglang_omni.proto.admin import AdminResponse
 
 logger = logging.getLogger(__name__)
+
+
+def discard_saved_media(result: object) -> None:
+    """Remove the saved media of a completion that no caller receives.
+
+    Saved media files belong to whoever receives the completion naming them
+    (CompletionResult.media), so a completion the coordinator drops leaves
+    them with the coordinator. Results without saved media are untouched.
+    """
+    media = result.get("media") if isinstance(result, dict) else None
+    if not isinstance(media, list):
+        return
+    else:
+        pass
+    for item in media:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str):
+            continue
+        else:
+            pass
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not remove dropped media %s", path, exc_info=True)
 
 
 class StreamDeliveryHealth(TypedDict):
@@ -848,6 +875,7 @@ class Coordinator(CoordinatorSessions):
                 request_id,
                 msg.from_stage,
             )
+            discard_saved_media(msg.result)
             return
         else:
             pass

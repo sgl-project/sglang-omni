@@ -84,6 +84,7 @@ def test_an_unrelated_failure_stays_internal() -> None:
         "index out of range in self",
         "decoder said Media URL returned HTTP 404: internal",
         "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id",
+        "Invalid request: session id s1 does not exist",
     ):
         assert not is_bad_request_error(RuntimeError(message))
 
