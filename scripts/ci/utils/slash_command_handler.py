@@ -67,10 +67,9 @@ def handle_tag_run_ci(
     else:
         pass
 
-    labels_by_target = {RUN_ALL_LABEL: frozenset({RUN_ALL_LABEL})}
+    labels_by_target: dict[str, frozenset[str]] = {}
     for stage in CI_STAGES:
         labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
-        labels_by_target[stage.label] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
             if stage.name == "asr":
                 target = f"{preset}-asr"
@@ -79,7 +78,6 @@ def handle_tag_run_ci(
             else:
                 target = preset
             labels_by_target[target] = frozenset({stage.label, label})
-            labels_by_target[label] = frozenset({label})
     unknown_targets = requested_targets - labels_by_target.keys()
     if unknown_targets:
         pull_request.create_issue_comment(
@@ -89,9 +87,12 @@ def handle_tag_run_ci(
         return False
     else:
         pass
-    requested_labels = frozenset(
-        label for target in requested_targets for label in labels_by_target[target]
-    )
+    if requested_targets:
+        requested_labels = frozenset(
+            label for target in requested_targets for label in labels_by_target[target]
+        )
+    else:
+        requested_labels = frozenset({RUN_ALL_LABEL})
     current_labels = frozenset(label.name for label in pull_request.get_labels())
     removed_labels: set[str] = set()
     for stage in CI_STAGES:
@@ -244,14 +245,25 @@ def main():
             pr,
             comment,
             user_perms,
-            frozenset(label_arguments or [RUN_ALL_LABEL]),
+            frozenset(label_arguments),
         )
 
     elif command == "/rerun-failed-ci":
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
-    elif command == "/tag-and-rerun-ci":
-        if not user_perms.get("can_rerun_failed_ci", False):
+    elif command in ("/tag-and-rerun-ci", "/tag-and-rerun-full-ci"):
+        if command == "/tag-and-rerun-ci" and not label_arguments:
+            pr.create_issue_comment(
+                "Specify CI targets, for example /tag-and-rerun-ci tts asr, "
+                "or use /tag-and-rerun-full-ci for all stages."
+            )
+            comment.create_reaction("confused")
+            return
+        elif command == "/tag-and-rerun-full-ci" and label_arguments:
+            pr.create_issue_comment("/tag-and-rerun-full-ci does not accept arguments.")
+            comment.create_reaction("confused")
+            return
+        elif not user_perms.get("can_rerun_failed_ci", False):
             print("Permission denied: can_rerun_failed_ci is false.")
             comment.create_reaction("confused")
             return
@@ -261,7 +273,7 @@ def main():
             pr,
             comment,
             user_perms,
-            frozenset(label_arguments or [RUN_ALL_LABEL]),
+            frozenset(label_arguments),
             react_on_success=False,
         )
         if not tagged:
