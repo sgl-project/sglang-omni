@@ -16,15 +16,6 @@ tests/
 │   ├── test_asr_ci_seedtts.py
 │   └── test_fun_asr_realtime.py
 └── unit_test/
-    ├── benchmarks/
-    │   ├── test_dataset_regressions.py
-    │   └── test_runtime_metrics.py
-    ├── ci/
-    │   ├── test_cpu_contention.py
-    │   ├── test_cpuset_pinning.py
-    │   ├── test_ci_model_pick.py
-    │   ├── test_tts_mps_runtime.py
-    │   └── test_tts_mps_workflow_contract.py
     ├── cli/
     │   └── test_sglang_backend.py
     ├── client/
@@ -98,7 +89,6 @@ tests/
     │   ├── test_fp8_backend_config.py
     │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
-    │   ├── test_model_fixture_overrides.py
     │   ├── test_mrope_positions.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -528,18 +518,6 @@ that happened to contain an older version of the test.
   - these tests prove transport mechanics, not full pipeline throughput,
     NVLink selection, or production backpressure behavior; keep those covered
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
-- `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
-  runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
-  `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
-  isolation, failure reporting, disabled warmup, and CLI configuration using
-  the real benchmark runner with a fake speech generator.
-  - `test_realtime_asr_benchmark.py`: the realtime ASR benchmark client
-    (`benchmarks/realtime_asr/client.py`) against an in-process fake
-    `/v1/realtime` WebSocket server (packet splitting, wall-clock pacing,
-    manual commit, trailing silence, timeout reporting), and the metric
-    definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
-    traces (first-partial refresh-point lookup, partial gaps, committed→final,
-    protocol invariant violations, percentile summaries). No GPU or server.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation, plus the 8 kHz telephony fixtures under
@@ -902,11 +880,6 @@ that happened to contain an older version of the test.
 - `unit_test/audar_tts/`: Audar-TTS protocol, pipeline configuration, public
   speech validation, reference-audio encoding and caching, llama.cpp generation,
   and 24 kHz vocoder output contracts.
-
-- `unit_test/ci/`: CPU unit tests for CI configuration and infrastructure,
-  including CPU allocation and contention accounting, TTS model rotation, and
-  same-GPU MPS launcher, evidence, cleanup, and workflow contracts. These tests
-  use synthetic state and do not launch an MPS workload.
 
 - `unit_test/cli/`: SGLang backend registration, option forwarding,
   configuration-only launch behavior, and backend-specific help ownership.
