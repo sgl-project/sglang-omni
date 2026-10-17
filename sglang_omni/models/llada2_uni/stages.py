@@ -196,10 +196,20 @@ def create_decode_executor(model_path: str):
         else:
             pass
 
-        events = decode_events(
-            thinker_out=thinker_out,
-            tokenizer=tokenizer,
-        )
+        if state.thinking_phase == "image":
+            events = [
+                LLaDA2UniEvent(
+                    type="text_final",
+                    modality="text",
+                    payload={"text": state.thinking_text},
+                    is_final=True,
+                )
+            ]
+        else:
+            events = decode_events(
+                thinker_out=thinker_out,
+                tokenizer=tokenizer,
+            )
         event_dicts = [event_to_dict(event) for event in events]
 
         result: LLaDA2UniDecodeResult = {"events": event_dicts}
@@ -218,7 +228,9 @@ def create_decode_executor(model_path: str):
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
         )
-        if input_ids is None:
+        if state.thinking_phase == "image":
+            prompt_tokens = state.thinking_prompt_tokens
+        elif input_ids is None:
             prompt_tokens = 0
         elif hasattr(input_ids, "numel"):
             prompt_tokens = int(input_ids.numel())
@@ -226,7 +238,7 @@ def create_decode_executor(model_path: str):
             prompt_tokens = len(input_ids)
 
         completion_ids = thinker_out.get("output_ids") or []
-        completion_tokens = len(completion_ids)
+        completion_tokens = len(completion_ids) + state.thinking_completion_tokens
 
         result.setdefault(
             "usage",

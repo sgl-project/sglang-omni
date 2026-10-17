@@ -52,6 +52,7 @@ dependencies = [
 
     # --- API server ---------------------------------------------------------
     "fastapi>=0.110.0",
+    "python-multipart>=0.0.9",
     "uvicorn>=0.23.0",
     "websockets>=12.0",
     "openai==2.6.1",

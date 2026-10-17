@@ -191,6 +191,7 @@ class GenerateChunk:
     audio_data: object = None
     sample_rate: int | None = None
     diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG from the terminal result
 
     @property
     def reported_finish_reason(self) -> str:
@@ -218,6 +219,7 @@ class GenerateChunk:
             "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "image": self.image,
         }
 
 
@@ -265,6 +267,7 @@ class CompletionResult:
     weight_version: str | None = None
     language: str | None = None
     diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG
 
 
 @dataclass
