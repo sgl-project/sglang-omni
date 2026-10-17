@@ -195,6 +195,27 @@ CohereModel::CohereModel(const std::filesystem::path &model_directory)
     }
   }
 
+  // Note (Jiaxin Deng): each step needs only the cross-attention queries; the
+  // keys and values are projected once per request.
+  const int width = config_.decoder_width;
+  for (int layer = 0; layer < config_.decoder_layer_count; ++layer) {
+    const std::string prefix =
+        "decoder.core.layers." + std::to_string(layer) + ".second_sub_layer";
+    for (const char *suffix : {".weight", ".bias"}) {
+      const mx::array fused = Weight(prefix + ".qkv_proj" + suffix);
+      const int columns = fused.ndim() == 2 ? fused.shape(1) : 0;
+      const auto rows = [&](int first, int last) {
+        return fused.ndim() == 2 ? mx::slice(fused, {first, 0}, {last, columns})
+                                 : mx::slice(fused, {first}, {last});
+      };
+      weights_.insert_or_assign(prefix + ".query_proj" + suffix,
+                                rows(0, width));
+      weights_.insert_or_assign(prefix + ".key_value_proj" + suffix,
+                                rows(width, 3 * width));
+      weights_.erase(prefix + ".qkv_proj" + suffix);
+    }
+  }
+
   std::vector<mx::array> parameters = {
       hann_window_, mel_filters_, relative_position_table_, decoder_positions_};
   for (const auto &[name, array] : weights_)
@@ -282,9 +303,10 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
       mx::slice(position_scores, {0, 0, 0, 0},
                 {batch, head_count, length, content_scores.shape(3)});
   const float scale = std::pow(static_cast<float>(head_width), -0.5f);
-  const mx::array attention = mx::softmax(
-      mx::multiply(mx::add(content_scores, position_scores), mx::array(scale)),
-      -1);
+  const mx::array attention =
+      mx::softmax(mx::multiply(mx::add(content_scores, position_scores),
+                               mx::array(scale, content_scores.dtype())),
+                  -1, true);
   return Linear(
       mx::reshape(mx::transpose(mx::matmul(attention, values), {0, 2, 1, 3}),
                   {batch, -1, head_count * head_width}),
@@ -375,7 +397,11 @@ mx::array CohereModel::Encode(const std::vector<float> &samples) const {
   // Note (khazic): subsampling on [batch, frames, mel_bins, 1] images.
   const std::string prefix = "encoder.subsampling.";
   const int channels = Weight(prefix + "conv0.bias").shape(0);
-  mx::array x = mx::expand_dims(mx::transpose(features, {0, 2, 1}), -1);
+  // Note (Jiaxin Deng): the encoder and decoder run in the weights' dtype; a
+  // float32 input would promote every layer and cast every weight per call.
+  mx::array x =
+      mx::astype(mx::expand_dims(mx::transpose(features, {0, 2, 1}), -1),
+                 Weight(prefix + "conv0.weight").dtype());
   x = swift_port::Relu(Conv2d(x, prefix + "conv0", kSubsamplingStride, 1, 1));
   x = Conv2d(x, prefix + "conv2", kSubsamplingStride, 1, channels);
   x = swift_port::Relu(Conv2d(x, prefix + "conv3", 1, 0, 1));
@@ -422,11 +448,12 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
       mx::take(decoder_positions_,
                mx::array(position_values.data(), {length}, mx::int32), 0),
       {1, length, width});
-  mx::array hidden = LayerNorm(
-      mx::add(mx::take(Weight("decoder.embedding.token_embedding.weight"),
-                       token_ids, 0),
-              positions),
-      "decoder.embedding.layer_norm");
+  const mx::array &embedding_table =
+      Weight("decoder.embedding.token_embedding.weight");
+  mx::array hidden =
+      LayerNorm(mx::add(mx::take(embedding_table, token_ids, 0),
+                        mx::astype(positions, embedding_table.dtype())),
+                "decoder.embedding.layer_norm");
   std::optional<mx::array> mask;
   if (length > 1) {
     std::vector<int32_t> index_values(length);
@@ -448,31 +475,25 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
         mx::split(Linear(LayerNorm(hidden, prefix + ".layer_norm_1"),
                          prefix + ".first_sub_layer.qkv_proj"),
                   3, -1);
-    mx::array keys = SplitHeads(self_parts[1], head_count);
-    mx::array values = SplitHeads(self_parts[2], head_count);
-    if (cache.self_keys.has_value()) {
-      keys = mx::concatenate({*cache.self_keys, keys}, 2);
-      values = mx::concatenate({*cache.self_values, values}, 2);
-    } else {
-    }
-    cache.self_keys = keys;
-    cache.self_values = values;
+    const auto [keys, values] = cache.self_attention.UpdateAndFetch(
+        SplitHeads(self_parts[1], head_count),
+        SplitHeads(self_parts[2], head_count));
     hidden = mx::add(
         hidden, DecoderAttention(SplitHeads(self_parts[0], head_count), keys,
                                  values, prefix + ".first_sub_layer", mask));
     if (!cache.cross_keys.has_value()) {
       const std::vector<mx::array> source_parts = mx::split(
-          Linear(encoder_states, prefix + ".second_sub_layer.qkv_proj"), 3, -1);
-      cache.cross_keys = SplitHeads(source_parts[1], head_count);
-      cache.cross_values = SplitHeads(source_parts[2], head_count);
+          Linear(encoder_states, prefix + ".second_sub_layer.key_value_proj"),
+          2, -1);
+      cache.cross_keys = SplitHeads(source_parts[0], head_count);
+      cache.cross_values = SplitHeads(source_parts[1], head_count);
     } else {
     }
-    const std::vector<mx::array> cross_parts =
-        mx::split(Linear(LayerNorm(hidden, prefix + ".layer_norm_2"),
-                         prefix + ".second_sub_layer.qkv_proj"),
-                  3, -1);
+    const mx::array cross_queries =
+        Linear(LayerNorm(hidden, prefix + ".layer_norm_2"),
+               prefix + ".second_sub_layer.query_proj");
     hidden = mx::add(
-        hidden, DecoderAttention(SplitHeads(cross_parts[0], head_count),
+        hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
                                  *cache.cross_keys, *cache.cross_values,
                                  prefix + ".second_sub_layer", std::nullopt));
     hidden =

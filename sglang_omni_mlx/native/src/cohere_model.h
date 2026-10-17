@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "mlx/mlx.h"
+#include "qwen3_decoder.h"
 
 namespace cohere_transcribe {
 
@@ -30,8 +31,7 @@ struct CohereConfig {
 // Self-attention keys and values grow by one token per step; cross-attention
 // keys and values are projected once from the encoder output.
 struct DecoderLayerCache {
-  std::optional<mlx::core::array> self_keys;
-  std::optional<mlx::core::array> self_values;
+  qwen3_asr::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };

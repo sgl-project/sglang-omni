@@ -166,6 +166,9 @@ int main(int argc, char **argv) {
                         .count()},
     };
     std::cout << line.dump() << std::endl;
+    // Note (Jiaxin Deng): as the server does between requests; buffers of one
+    // clip's sizes rarely fit the next, so the cache would grow without end.
+    mlx::core::clear_cache();
   }
   return 0;
 }
