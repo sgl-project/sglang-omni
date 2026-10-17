@@ -2,6 +2,7 @@
 #include "common/http.h"
 
 #include <cstring>
+#include <stdexcept>
 
 namespace omni_server {
 
@@ -29,12 +30,16 @@ int BadRequest(mg_connection *connection, const std::string &detail) {
   return WriteJson(connection, 400, {{"detail", detail}});
 }
 
-std::string ReadBody(mg_connection *connection) {
+std::string ReadBody(mg_connection *connection, size_t maximum_bytes) {
   std::string body;
   char buffer[65536];
   int read = 0;
   while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
     body.append(buffer, static_cast<size_t>(read));
+    if (maximum_bytes != 0 && body.size() > maximum_bytes) {
+      throw std::length_error("request body exceeds size limit");
+    } else {
+    }
   }
   return body;
 }
