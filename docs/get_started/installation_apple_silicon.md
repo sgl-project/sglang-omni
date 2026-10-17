@@ -2,8 +2,13 @@
 
 <a id="macos-apple-silicon"></a>
 
-Installs `sglang-omni` on macOS Apple Silicon (arm64) with the `./install.sh`
-source installer. CUDA users should follow the [CUDA installation](./installation.md) instead.
+Install the Python Torch/MPS path of `sglang-omni` for Qwen3-ASR and Fun-ASR
+on macOS Apple Silicon (arm64) with `./install.sh`. CUDA users should follow
+the [CUDA installation](./installation.md).
+
+The native C++ MLX runtime under `sglang_omni_mlx/native/` has a separate build
+and run workflow. See the [MLX path documentation](../developer_reference/mlx.md)
+and the [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md) for that path.
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
@@ -70,3 +75,8 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 `SGLANG_OMNI_REF` explicitly. The hosted mode stores the project checkout at
 `~/.cache/sglang-omni/sglang-omni-<ref>` by default; override it with
 `SGLANG_OMNI_PROJECT_DIR`.
+
+## Next steps
+
+- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon-torch-mps).
+- [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).
