@@ -21,8 +21,8 @@
   "Apple M5": {
    "metrics": {
     "wer_en": 0.02932,
-    "cer_zh": 0.06706,
-    "mer_mixed": 0.16624
+    "cer_zh": 0.06793,
+    "mer_mixed": 0.16538
    },
    "clips": {
     "0000_en_short": {
@@ -326,7 +326,7 @@
      "finish_reason": "stop"
     },
     "0050_en_short": {
-     "text": "Don't I though? I'm so sorry to hear it. How did her son turn out?",
+     "text": "Don't I? Though I'm so sorry to hear it. How did her son turn out?",
      "language": "English",
      "generated_token_count": 20,
      "finish_reason": "stop"
@@ -398,9 +398,9 @@
      "finish_reason": "stop"
     },
     "0062_en_short": {
-     "text": "Miss Lake declined the carriage to night.",
+     "text": "Miss Lake declined the carriage tonight.",
      "language": "English",
-     "generated_token_count": 8,
+     "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0063_en_short": {
@@ -476,7 +476,7 @@
      "finish_reason": "stop"
     },
     "0075_en_mid": {
-     "text": "A narrow channel formed a passage through the ridge of rocks, that protected it from the open sea and which, even in the roughest weather, would ensure the calmness of its waters.",
+     "text": "A narrow channel formed a passage through the ridge of rocks, that protected it from the open sea and which, even in the roughest weather, would insure the calmness of its waters.",
      "language": "English",
      "generated_token_count": 38,
      "finish_reason": "stop"
@@ -560,9 +560,9 @@
      "finish_reason": "stop"
     },
     "0089_en_mid": {
-     "text": "Now, for a one little half hour, she had been a woman talking to a boy—no, not even that—she had been talking, just talking. There were no persons in the conversation; just things, one thing, cotton.",
+     "text": "Now, for one little half hour, she had been a woman talking to a boy—no, not even that—she had been talking, just talking. There were no persons in the conversation; just things, one thing, cotton.",
      "language": "English",
-     "generated_token_count": 49,
+     "generated_token_count": 48,
      "finish_reason": "stop"
     },
     "0090_en_mid": {
@@ -686,7 +686,7 @@
      "finish_reason": "stop"
     },
     "0110_en_mid": {
-     "text": "Bishops, virgins, and even spotless infants were subjected to the disgrace of a public penance before they could be admitted to the communion of the Donatists.",
+     "text": "Bishops, virgins, and even spotless infants were subjected to the disgrace of a public penance before they could be admitted to the communion of the donatists.",
      "language": "English",
      "generated_token_count": 36,
      "finish_reason": "stop"
@@ -716,13 +716,13 @@
      "finish_reason": "stop"
     },
     "0115_en_mid": {
-     "text": "He was in the midst of that when your return caused him to make a very hurried retreat, very hurried, since he had not time to replace the papers which would tell you that he had been there.",
+     "text": "He was in the midst of that when your return caused him to make a very hurried retreat. Very hurried, since he had not time to replace the papers which would tell you that he had been there.",
      "language": "English",
      "generated_token_count": 41,
      "finish_reason": "stop"
     },
     "0116_en_mid": {
-     "text": "Control yourselves, my dears,\" replied the Boulerou, \"The worst punishment I know how to inflict on any one this prisoner is about to suffer. You will see a very pretty patching, my royal daughters.\"",
+     "text": "Control yourselves, my dears,\" replied the Boulerou, \"The worst punishment I know how to inflict on any one—this prisoner is about to suffer—you will see a very pretty patching, my royal daughters.\"",
      "language": "English",
      "generated_token_count": 45,
      "finish_reason": "stop"
@@ -782,7 +782,7 @@
      "finish_reason": "stop"
     },
     "0126_en_mid": {
-     "text": "When she came to her senses and blushing to find herself in Rodolfo's arms, would have disengaged herself. No, Signora, he said, \"That must not be. Strive not to withdraw from the arms of him who holds you in his soul.\"",
+     "text": "When she came to her senses and blushing to find herself in Rodolfo's arms, would have disengaged herself. No, Senora, he said, \"That must not be. Strive not to withdraw from the arms of him who holds you in his soul.\"",
      "language": "English",
      "generated_token_count": 57,
      "finish_reason": "stop"
@@ -806,7 +806,7 @@
      "finish_reason": "stop"
     },
     "0130_zh_numbers": {
-     "text": "1990年，由于沙漠的威胁，它被列入了濒危世界遗产名录。",
+     "text": "一九九零年，由于沙漠的威胁，它被列入了濒危世界遗产名录。",
      "language": "English",
      "generated_token_count": 20,
      "finish_reason": "stop"
@@ -824,7 +824,7 @@
      "finish_reason": "stop"
     },
     "0133_zh_numbers": {
-     "text": "全天都有公交车从城区间公交站跨河发车，但大部分车次，特别是开往东部和加卡尔（Bumtang）的公交车，都在六点半到七点半之间发车。",
+     "text": "全天都有公交车从城区间公交站跨河发车，但大部分车次，特别是开往东部和加卡尔（Bumthang）的公交车，都在六点半到七点半之间发车。",
      "language": "English",
      "generated_token_count": 45,
      "finish_reason": "stop"
@@ -986,7 +986,7 @@
      "finish_reason": "stop"
     },
     "0160_zh_short": {
-     "text": "苍龙是那个时代的顶级掠食者，除了同类，他什么都不怕。",
+     "text": "苍龙是那个时代的顶级猎食者，除了同类，他什么都不怕。",
      "language": "English",
      "generated_token_count": 17,
      "finish_reason": "stop"
@@ -1232,7 +1232,7 @@
      "finish_reason": "stop"
     },
     "0201_zh_mid": {
-     "text": "哲学家亚里士多德提出一种理论：即任何事物都是由土、水、空气和火四种元素中的一种或多种组成的。",
+     "text": "哲学家亚里士多德提出一种理论，即任何事物都是由土、水、空气和火四种元素中的一种或多种组成的。",
      "language": "English",
      "generated_token_count": 31,
      "finish_reason": "stop"
@@ -1298,15 +1298,15 @@
      "finish_reason": "stop"
     },
     "0212_zh_mid": {
-     "text": "更传统的教堂常常在复活节周末的周六晚上举行复活节首夜活动，会众通常在午夜钟声敲响之时，用入侵点庆祝基督的复活。",
+     "text": "更传统的教堂常常在复活节周末的周六晚上举行复活节首夜活动，会众通常在午夜钟声敲响之时用入侵点庆祝基督的复活。",
      "language": "English",
-     "generated_token_count": 38,
+     "generated_token_count": 37,
      "finish_reason": "stop"
     },
     "0213_zh_mid": {
-     "text": "莱顿在与首相会面期间要求修改保守党的环境法案，他要求彻底重写保守党的环境法案。",
+     "text": "莱顿在与首相会面期间，要求修改保守党的环境法案。他要求彻底重写保守党的环境法案。",
      "language": "English",
-     "generated_token_count": 25,
+     "generated_token_count": 26,
      "finish_reason": "stop"
     },
     "0214_zh_mid": {
@@ -1370,7 +1370,7 @@
      "finish_reason": "stop"
     },
     "0224_zh_mid": {
-     "text": "我们用植物做房子，用植物做衣服。我们吃的大部分食物都是植物，没有植物，动物就不能生存。",
+     "text": "我们用植物做房子，用植物做衣服。我们吃的大部分食物都是植物。没有植物，动物就不能生存。",
      "language": "English",
      "generated_token_count": 25,
      "finish_reason": "stop"
@@ -1388,9 +1388,9 @@
      "finish_reason": "stop"
     },
     "0227_zh_mid": {
-     "text": "他们因其严格防守、控球技术和出色的团队合作脱颖而出。很显然，这是一支无往不胜的队伍。",
+     "text": "他们因其严格防守控球技术和出色的团队合作脱颖而出，很显然这是一支无往不胜的队伍。",
      "language": "English",
-     "generated_token_count": 26,
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0228_zh_mid": {
@@ -1550,9 +1550,9 @@
      "finish_reason": "stop"
     },
     "0254_zh_short": {
-     "text": "For me, I feel they cooperate well.",
+     "text": "For me, I feel they work well together.",
      "language": "English",
-     "generated_token_count": 9,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0255_zh_short": {
@@ -1604,9 +1604,9 @@
      "finish_reason": "stop"
     },
     "0263_zh_short": {
-     "text": "会有一些数据泄露，还有他们怕资金泄露这样子。",
+     "text": "会有一些数据泄露，还有他们怕资金泄露，这样子。",
      "language": "English",
-     "generated_token_count": 13,
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0264_zh_short": {
@@ -1616,13 +1616,13 @@
      "finish_reason": "stop"
     },
     "0265_zh_short": {
-     "text": "So I will go back to the mainland, but this semester, I have adjusted more.",
+     "text": "So I will go back, choose to go back to mainland China. But this semester, I have adjusted more.",
      "language": "English",
-     "generated_token_count": 18,
+     "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0266_zh_short": {
-     "text": "我只被我只被足球砸到。我没有踢过足球。",
+     "text": "我只被我只被足球砸到，我没有踢过足球。",
      "language": "English",
      "generated_token_count": 15,
      "finish_reason": "stop"
@@ -1736,9 +1736,9 @@
      "finish_reason": "stop"
     },
     "0285_mixed": {
-     "text": "听起来蛮make sense。我当初来。",
+     "text": "听起来也蛮make sense。我当初来。",
      "language": "English",
-     "generated_token_count": 9,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0286_mixed": {
@@ -1826,19 +1826,19 @@
      "finish_reason": "stop"
     },
     "0300_mixed": {
-     "text": "Activities, so when I was young, I was very shy.",
+     "text": "Activities, so when I was young, I was very interested in sports.",
      "language": "English",
-     "generated_token_count": 13,
+     "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0301_mixed": {
-     "text": "对，因为就是很经常，就是我们早上上午有一个lecture刚上完，然后中午去听一个Lunch Talk。",
+     "text": "对，因为就是很经常，就是我们早上上午有一个lecture刚上完，然后中午去听一个 lunch talk。",
      "language": "English",
-     "generated_token_count": 26,
+     "generated_token_count": 25,
      "finish_reason": "stop"
     },
     "0302_mixed": {
-     "text": "We've previously talked about a AI robot.",
+     "text": "我们之前有聊过一个AI robot.",
      "language": "English",
      "generated_token_count": 9,
      "finish_reason": "stop"
@@ -1868,9 +1868,9 @@
      "finish_reason": "stop"
     },
     "0307_mixed": {
-     "text": "会有那种活动，或者是你去参加Launch Talk，就会请一些，比如说Fin Tech，就是你感兴趣的Fin Tech，然后或者是AI啊。",
+     "text": "会有那种活动，或者是你去参加 lunch talk，就会请一些，比如说 fintech，就是你感兴趣的 fintech，然后或者是 AI 等等。",
      "language": "English",
-     "generated_token_count": 30,
+     "generated_token_count": 33,
      "finish_reason": "stop"
     },
     "0308_mixed": {
@@ -1898,7 +1898,7 @@
      "finish_reason": "stop"
     },
     "0312_mixed": {
-     "text": "就是我可以，就是swing properly.",
+     "text": "就是我可以，就是swing properly。",
      "language": "English",
      "generated_token_count": 7,
      "finish_reason": "stop"
@@ -2000,9 +2000,9 @@
      "finish_reason": "stop"
     },
     "0329_mixed": {
-     "text": "This is also the previous one. A project.",
+     "text": "This is also the previous one. Created a project.",
      "language": "English",
-     "generated_token_count": 10,
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0330_mixed": {
@@ -2042,7 +2042,7 @@
      "finish_reason": "stop"
     },
     "0336_mixed": {
-     "text": "So we're going to start talk about our research topics.",
+     "text": "So we're going to start talking about our research topics.",
      "language": "English",
      "generated_token_count": 12,
      "finish_reason": "stop"
@@ -2120,7 +2120,7 @@
      "finish_reason": "stop"
     },
     "0349_en_long": {
-     "text": "The grateful applause of the clergy has consecrated the memory of a prince who indulged their passions and promoted their interest. The Edict of Milan, the great charter of toleration, had confirmed to each individual of the Roman world the privilege of choosing and professing his own religion. But this inestimable privilege was soon violated with the knowledge of truth. The emperor imbibed the maxims of persecution, and the sects which descended from the Catholic Church were afflicted and oppressed by the triumph of Christianity. Constantine easily believed that the heretics who presumed to dispute his opinions or to oppose his commands were guilty of the most absurd and criminal obstinacy, and that a seasonable application of moderate severities might save those unhappy men from the danger of an everlasting condemnation. Some of the penal regulations were copied from the Edicts of Diocletian, and this method of conversion was applauded by the same bishops who had felt the hand of oppression and pleaded for the rights of humanity.",
+     "text": "The grateful applause of the clergy has consecrated the memory of a prince who indulged their passions and promoted their interest. The Edict of Milan, the great charter of toleration, had confirmed to each individual of the Roman world the privilege of choosing and professing his own religion. But this inestimable privilege was soon violated with the knowledge of truth. The emperor imbibed the maxims of persecution, and the sects which descended from the Catholic Church were afflicted and oppressed by the triumph of Christianity. Constantine easily believed that the heretics who presumed to dispute his opinions or to oppose his commands were guilty of the most absurd and criminal obstinacy, and that a seasonable application of moderate severities might save those unhappy men from the danger of an everlasting condemnation. Some of the penal regulations were copied from the Edict of Diocletian, and this method of conversion was applauded by the same bishops who had felt the hand of oppression and pleaded for the rights of humanity.",
      "language": "English",
      "generated_token_count": 201,
      "finish_reason": "stop"
@@ -2132,9 +2132,9 @@
      "finish_reason": "stop"
     },
     "0351_en_long": {
-     "text": "Length of service fourteen years three months and five days. He seemed born to please without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. \"We don't spin tops\" is a favorite saying amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. But it must be confessed that Servideac, being naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff. Altogether, being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Benzueff's most ambitious desire was to induce the captain to go with him and end his days in his much loved home. And so incessantly were Servideac's ears besieged with descriptions of the unparalleled beauties and advantages of this 18th arrondissement of Paris, that he could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
+     "text": "Length of service fourteen years three months and five days. He seemed born to please without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. \"We don't spin tops\" is a favorite saying amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. But it must be confessed that Servideac, being naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff, altogether being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Benzueff's most ambitious desire was to induce the captain to go with him and end his days in his much loved home, and so incessantly were Servideac's ears besieged with descriptions of the unparalleled beauties and advantages of this 18th arrondissement of Paris, that he could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
      "language": "English",
-     "generated_token_count": 247,
+     "generated_token_count": 245,
      "finish_reason": "stop"
     },
     "0352_en_long": {
@@ -2150,7 +2150,7 @@
      "finish_reason": "stop"
     },
     "0354_en_long": {
-     "text": "Notwithstanding the high resolution of Hawkey, he fully comprehended all the difficulties and danger he was about to incur. In his return to the camp, his acute and practised intellects were intently engaged in devising means to counteract a watchfulness and suspicion on the part of his enemies, that he knew were in no degree inferior to his own. In other words, while he had implicit faith in the ability of Balaam's ass to speak, he was somewhat skeptical on the subject of a bear's singing, and yet he had been assured of the latter on the testimony of his own exquisite organs. There was something in his air and manner that betrayed to the scout the utter confusion of the state of his mind. The ingenious Hawkey, who recalled the hasty manner in which the other had abandoned his post at the bedside of the sick woman, was not without his suspicions concerning the subject of so much solemn deliberation. The bear shook his shaggy sides, and then a well known voice replied.",
+     "text": "Notwithstanding the high resolution of Hawkey, he fully comprehended all the difficulties and danger he was about to incur. In his return to the camp, his acute and practised intellects were intently engaged in devising means to counteract a watchfulness and suspicion on the part of his enemies, that he knew were in no degree inferior to his own. In other words, while he had implicit faith in the ability of Balaam's ass to speak, he was somewhat skeptical on the subject of a bear's singing, and yet he had been assured of the latter on the testimony of his own exquisite organs. There was something in his air and manner that betrayed to the scout the utter confusion of the state of his mind. The ingenious Hawkey, who recalled the hasty manner in which the other had abandoned his post at the bedside of the sick woman, was not without his suspicions concerning the subject of so much solemn deliberation. The bear shook his shaggy sides, and then a well-known voice replied.",
      "language": "English",
      "generated_token_count": 207,
      "finish_reason": "stop"
@@ -2162,9 +2162,9 @@
      "finish_reason": "stop"
     },
     "0356_en_long": {
-     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time, the blast of trumpets and roll of drums and clashing of symbols told Trot and Captain Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the blue skin saw Gipca Sizzled, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gipca Sizzled, have been the lawful bularoo of the blue country. But now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no bularoo at all. When he finished, she said cheerfully, \"Don't worry, Sizzled dear, it all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starving myself, for this conquering kingdom's is hard work.\"",
+     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time, the blast of trumpets and roll of drums and clashing of symbols told Trot and Captain Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the blue skin saw Gipca Sizzled, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gipca Sizzled, have been the lawful bullaroo of the blue country. But now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no bullaroo at all. When he finished, she said cheerfully, \"Don't worry, Sizzled dear, it all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starving myself, for this conquering kingdom's is hard work.\"",
      "language": "English",
-     "generated_token_count": 225,
+     "generated_token_count": 223,
      "finish_reason": "stop"
     },
     "0357_en_long": {
@@ -2174,19 +2174,19 @@
      "finish_reason": "stop"
     },
     "0358_en_long": {
-     "text": "Those pretty wrongs that liberty commits. When I am some time absent from thy heart. Thy beauty, and thy years fall well befits. For still temptation follows where thou art. I me. No matter then, although my foot did stand upon the farthest earth, removed from thee. For nimble thought can jump both sea and land. As soon as think the place where he would be, but ah, thought kills me that I am not thought. To leap large lengths of miles when thou art gone, but that so much of earth and water wrought. I must attend, time's leisure with my moan, receiving not, by elements so slow, but heavy tears, badges of either's woe.",
+     "text": "Those pretty wrongs that liberty commits. When I am some time absent from thy heart. Thy beauty, and thy years fall well befits. For still temptation follows where thou art. I me. No matter then, although my foot did stand upon the farthest earth, removed from thee. For nimble thought can jump both sea and land. As soon as think the place where he would be, but ah. Thought kills me that I am not thought. To leap large lengths of miles when thou art gone. But that so much of earth and water wrought, I must attend, time's leisure with my moan. Receiving not, by elements so slow, but heavy tears, badges of either's woe.",
      "language": "English",
-     "generated_token_count": 145,
+     "generated_token_count": 146,
      "finish_reason": "stop"
     },
     "0359_en_long": {
-     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates, images, and expectations of their usual correlates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, everyone would agree that it has a broad measure of truth. Though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
+     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates—images and expectations of their usual correlates—all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, everyone would agree that it has a broad measure of truth. Though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible—there is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
      "language": "English",
-     "generated_token_count": 159,
+     "generated_token_count": 157,
      "finish_reason": "stop"
     },
     "0360_zh_long": {
-     "text": "中国的古代的不同时期各有特点。中国的每个时期或每个执掌天下的家族都是一个鲜明特点的王朝。野孩子在被抛弃或离家出走之前，可能经历过严重的儿童虐待或创伤。例如，世界上最常见的静态图像摄影格式是三十五毫米格式，这是胶片电影时代末期占主导地位的电影尺寸。除去表示“您”的C之外的所有名词都应以大写字母开头，即便在句子中间也应如此。在往北的广袤地区人烟稀少，有些地方是杳无人烟的荒野。报道称他年仅二十多岁，比伯发表声明表示：“虽然我当时并不在场，也没有直接经历这起悲惨事故，但我仍为死者家属感到悲伤，为他们祈祷。”",
+     "text": "中国的古代的不同时期各有特点。中国的每个时期或每个执掌天下的家族都是一个鲜明特点的王朝。野孩子在被抛弃或离家出走之前，可能经历过严重的儿童虐待或创伤。例如，世界上最常见的静态图像摄影格式是三十五毫米格式，这是胶片电影时代末期占主导地位的电影尺寸。除去表示“您”的C之外的所有名词都应以大写字母开头，即便在句子中间也应如此。在往北的广袤地区人烟稀少，有些地方是养无人烟的荒野。报道称他年仅二十多岁，比伯发表声明表示：“虽然我当时并不在场，也没有直接经历这起悲惨事故，但我仍为死者家属感到悲伤，为他们祈祷。”",
      "language": "English",
      "generated_token_count": 160,
      "finish_reason": "stop"
@@ -2198,21 +2198,21 @@
      "finish_reason": "stop"
     },
     "0362_zh_long": {
-     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程以满足客户的需求。结果两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括公背龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。他们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但他们与地下深穴的情况很相似。亚利桑那州奇甘镇，美国地质调查局太空地质团队和北亚利桑纳大学的格伦·库辛说道。",
+     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程以满足客户的需求。结果两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括公贝龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。他们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但他们与地下深穴的情况很相似。亚利桑那州奇甘镇，美国地质调查局太空地质团队和北亚历桑纳大学的格伦·库辛说道。",
      "language": "English",
      "generated_token_count": 168,
      "finish_reason": "stop"
     },
     "0363_zh_long": {
-     "text": "科学家们可以得出结论：暗物质对其他暗物质的影响方式与普通物质相同。普利特韦茨湖国家公园森林茂盛，主要树种有山毛榉、云杉和冷杉，以高山和地中海植被混合为特色。因为地球更薄，所以近的一面可能会有更多的阴暗部，熔岩更容易上升到地表。它会攻击任何进入水中的东西，即使像霸王龙之类的巨型恐龙也不是它的对手。支架式教学不是一种学习方法，而是一种辅助刚学习使用新电脑程序或启动新项目的人的手段。",
+     "text": "科学家们可以得出结论：暗物质对其他暗物质的影响方式与普通物质相同。普利特韦茨湖国家公园森林茂盛，主要树种有山毛榉、云杉和冷杉，以高山和地中海植被混合为特色。因为地壳更薄，所以近的一面可能会有更多的阴暗部，熔岩更容易上升到地表。它会攻击任何进入水中的东西，即使像霸王龙之类的巨型恐龙也不是它的对手。支架式教学不是一种学习方法，而是一种辅助刚学习使用新电脑程序或启动新项目的人的手段。",
      "language": "English",
-     "generated_token_count": 121,
+     "generated_token_count": 122,
      "finish_reason": "stop"
     },
     "0364_zh_long": {
-     "text": "这并不是告别，这是一个篇章的结束，也是新篇章的开始。你也可以咨询除贵国以外其他政府的建议，但他们的建议是为他们的公民而制定的。对儿童来说，金字塔的声光表演是该地区最有趣的活动之一。除了周三的比赛，卡帕内多还参加了锦标赛的两项个人竞赛。要说明社会化的重要性，最常用的方法之一是利用少数不幸儿童的案例。这些儿童由于被忽视，遭遇不幸或遭到故意虐待，在成长过程中在没有成年人人的帮助下实现社会化。除了清澈美丽的天空和周围的群山，什么也看不见，在洞穴中，几乎看不到也听不到外界的景象和声音。",
+     "text": "这并不是告别，这是一个篇章的结束，也是新篇章的开始。你也可以咨询除贵国以外其他政府的建议，但他们的建议是为他们的公民而制定的。对儿童来说，金字塔的声光表演是该地区最有趣的活动之一。除了周三的比赛，卡帕内多还参加了锦标赛的两项个人竞赛。要说明社会化的重要性，最常用的方法之一是利用少数不幸儿童的案例。这些儿童由于被忽视，遭遇不幸或遭到故意虐待，在成长过程中在没有成年人人的帮助下实现社会化。除了清澈美丽的天空和周围的群山，什么也看不见。在洞穴中，几乎看不到也听不到外界的景象和声音。",
      "language": "English",
-     "generated_token_count": 140,
+     "generated_token_count": 141,
      "finish_reason": "stop"
     },
     "0365_zh_long": {
@@ -2240,15 +2240,15 @@
      "finish_reason": "stop"
     },
     "0369_zh_long": {
-     "text": "对于哪些加工物品是古董，没有统一的定义。一些税务机构，将一百年以上的物品定义为古董。这些夫妇可能会为他们的孩子制定收养计划。这一发现也有助于深入了解鸟类羽毛的进化。切勿在建筑物上做标记或涂鸦，以免破坏遗址。该服务经常用于航运，包括游艇以及有远程数据和语音需求的探险。我们同意美国奥委会的声明：，与其吊销执照，不如在我们组织内部继续推进有意义的变革，可能更有利于维护运动员和俱乐部的利益及其运动。",
+     "text": "对于哪些加工物品是古董，没有统一的定义。一些税务机构，将一百年以上的物品定义为古董。这些夫妇可能会为他们的孩子制定收养计划。这一发现也有助于深入了解鸟类羽毛的进化。切勿在建筑物上做标记或涂鸦，以免破坏遗址。该服务经常用于航运，包括游艇以及有远程数据和语音需求的探险。我们同意美国奥委会的声明：“，与其吊销执照，不如在我们组织内部继续推进有意义的变革，可能更有利于维护运动员和俱乐部的利益及其运动。”",
      "language": "English",
      "generated_token_count": 119,
      "finish_reason": "stop"
     },
     "0370_zh_long": {
-     "text": "这被称为化学物质的pH值。你可以用红甘蓝汁制作指示剂。二十世纪的研究表明，基因变异有有两种：酷显性和隐性。人们自古以来就知道金银铜等基本化学元素，因为这些元素都能以自然形态在自然界中发现，并且比较容易使用原始工具进行开采。文明一词来自拉丁语，civilis意为公民的，与拉丁语，civilis意为公民及cititas意为城市和城邦都有关，这也以某种方式定位了社会的规模。它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理，有了深根签证，你就不必分别向每个深根成员国申请签证，从而节省了时间、金钱和手续。",
+     "text": "这被称为化学物质的pH值。你可以用红甘蓝汁制作指示剂。二十世纪的研究表明，基因变异有有两种：酷显性和隐性。人们自古以来就知道金银铜等基本化学元素，因为这些元素都能以自然形态在自然界中发现，并且比较容易使用原始工具进行开采。文明一词来自拉丁语，civilis意为公民的，与拉丁语，civilis意为公民及civitas意为城市和城邦都有关，这也以某种方式定位了社会的规模。它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理，有了深根签证，你就不必分别向每个深根成员国申请签证，从而节省了时间、金钱和手续。",
      "language": "English",
-     "generated_token_count": 159,
+     "generated_token_count": 160,
      "finish_reason": "stop"
     },
     "0371_zh_long": {
@@ -2258,9 +2258,9 @@
      "finish_reason": "stop"
     },
     "0372_zh_long": {
-     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为学习和智能适应。也可以到北部参观法蒂马圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全以是隔绝了。取消政策各不相同，但截止三月末，大多数由于新冠病毒而出台的取消政策并没有延长到二零二零年七月，原定奥运会举办时间。",
+     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为、学习和智能适应。也可以到北部参观法蒂马圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全以是隔绝了。取消政策各不相同，但截止三月末，大多数由于新冠病毒而出台的取消政策并没有延长到二零二零年七月，原定奥运会举办时间。",
      "language": "English",
-     "generated_token_count": 152,
+     "generated_token_count": 153,
      "finish_reason": "stop"
     },
     "0373_zh_long": {
@@ -2272,7 +2272,7 @@
     "0374_zh_long": {
      "text": "例如，北卡罗来纳州本尼特学校的学生每一年都会设计一个有关他们的州政府之行的网站。网站每年都会重新设计，但是老版本会在线保存用作剪切布。这里几乎都是沙滩，游泳很安全，大部分地方都有新西兰圣诞树的树荫。狮群由一到三只有亲属关系的成成年雄性，以及多可多达三十只的雌性和幼崽组成。佩里表示他会返回德克萨斯，评估今晚党团会议的结果，明确表示，明确自己在这次较量中是否有胜算的余地。但后来他又表示会继续参加竞选，并参加于一月二十一日在南卡罗来纳州举行的初选。",
      "language": "English",
-     "generated_token_count": 152,
+     "generated_token_count": 153,
      "finish_reason": "stop"
     },
     "0375_zh_long": {
@@ -2324,9 +2324,9 @@
      "finish_reason": "stop"
     },
     "0383_noise": {
-     "text": "The.",
+     "text": "",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 0,
      "finish_reason": "stop"
     },
     "0384_snr10_zh": {
@@ -2348,13 +2348,13 @@
      "finish_reason": "stop"
     },
     "0387_snr10_zh": {
-     "text": "奥利佛·萨克斯（Oliver Sacks）在他的论文《总统的演讲》中指出：“那些因为脑损伤而无法理解语言的人，仍然能够准确地判断说话人是否有诚意。”",
+     "text": "奥利弗萨克斯（Oliver Sacks）在他的论文《总统的演讲》中指出：“那些因为脑损伤而无法理解语言的人，仍然能够准确地判断说话人是否有诚意。”",
      "language": "English",
-     "generated_token_count": 42,
+     "generated_token_count": 41,
      "finish_reason": "stop"
     },
     "0388_snr10_en": {
-     "text": "Little by little, however, the ladder became hemmed and bound in the meshes of the various devices and proceedings which the territorial officials evolved from the bogus walls.",
+     "text": "Little by little, however, the latter became hemmed and bound in the meshes of the various devices and proceedings which the territorial officials evolved from the bogus laws.",
      "language": "English",
      "generated_token_count": 32,
      "finish_reason": "stop"

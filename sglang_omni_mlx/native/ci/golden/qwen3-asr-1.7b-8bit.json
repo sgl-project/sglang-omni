@@ -21,8 +21,8 @@
   "Apple M5": {
    "metrics": {
     "wer_en": 0.0206,
-    "cer_zh": 0.05256,
-    "mer_mixed": 0.12939
+    "cer_zh": 0.04946,
+    "mer_mixed": 0.13025
    },
    "clips": {
     "0000_en_short": {
@@ -566,15 +566,15 @@
      "finish_reason": "stop"
     },
     "0090_en_mid": {
-     "text": "Edison was intolerant of sham and shoddy, and nothing would satisfy him that could not stand cross examination by microscope, test tube, and galvanometer.",
+     "text": "Edison was intolerant of sham and shoddy, and nothing would satisfy him that could not stand cross-examination by microscope, test tube, and galvanometer.",
      "language": "English",
-     "generated_token_count": 34,
+     "generated_token_count": 35,
      "finish_reason": "stop"
     },
     "0091_en_mid": {
-     "text": "Nothing will be more precious to you, I think, in the practical study of art than the conviction, which will force itself on you more and more every hour, of the way all things are bound together, little and great, in spirit and in matter.",
+     "text": "Nothing will be more precious to you, I think, in the practical study of art, than the conviction, which will force itself on you more and more every hour, of the way all things are bound together, little and great, in spirit and in matter.",
      "language": "English",
-     "generated_token_count": 52,
+     "generated_token_count": 53,
      "finish_reason": "stop"
     },
     "0092_en_mid": {
@@ -662,9 +662,9 @@
      "finish_reason": "stop"
     },
     "0106_en_mid": {
-     "text": "The fact that it was churning day was another reason why it was inconvenient to have the widows, and why consequently Mrs. Poyser should scold Molly, the housemaid, with unusual severity.",
+     "text": "The fact that it was churning day was another reason why it was inconvenient to have the widows, and why consequently Mrs. Poyser should scold Molly the housemaid with unusual severity.",
      "language": "English",
-     "generated_token_count": 42,
+     "generated_token_count": 40,
      "finish_reason": "stop"
     },
     "0107_en_mid": {
@@ -680,7 +680,7 @@
      "finish_reason": "stop"
     },
     "0109_en_mid": {
-     "text": "Well, you know, Rady, women like wicked fellows. It is contrast, I suppose, but they do, and I'm sure, from what Bracton has said to me, I know him intimately, that Dorcas likes him, and I can't conceive why they are not married.",
+     "text": "Well, you know, Rady, women like wicked fellows. It is contrast, I suppose, but they do. And I'm sure, from what Bracton has said to me, I know him intimately, that Dorcas likes him, and I can't conceive why they are not married.",
      "language": "English",
      "generated_token_count": 61,
      "finish_reason": "stop"
@@ -938,9 +938,9 @@
      "finish_reason": "stop"
     },
     "0152_zh_short": {
-     "text": "Internet combines elements of mass and interpersonal communication.",
+     "text": "互联网结合了大众传播和人际传播的要素。",
      "language": "English",
-     "generated_token_count": 9,
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0153_zh_short": {
@@ -956,7 +956,7 @@
      "finish_reason": "stop"
     },
     "0155_zh_short": {
-     "text": "然而，在这方面，深根区有点像一个国家。",
+     "text": "然而，在这方面，生根区有点像一个国家。",
      "language": "English",
      "generated_token_count": 12,
      "finish_reason": "stop"
@@ -1142,9 +1142,9 @@
      "finish_reason": "stop"
     },
     "0186_zh_mid": {
-     "text": "他指出，对主体来说，最有效的位置是将图像垂直和水平分为三部分的线的交叉点，检视力。",
+     "text": "他指出，对主体来说，最有效的位置是将图像垂直和水平分为三部分的线的交叉点，见示例。",
      "language": "English",
-     "generated_token_count": 28,
+     "generated_token_count": 29,
      "finish_reason": "stop"
     },
     "0187_zh_mid": {
@@ -1736,9 +1736,9 @@
      "finish_reason": "stop"
     },
     "0285_mixed": {
-     "text": "听起来也蛮 make sense. 我当初来。",
+     "text": "听起来也蛮 makes sense.我当初来。",
      "language": "English",
-     "generated_token_count": 11,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0286_mixed": {
@@ -1808,9 +1808,9 @@
      "finish_reason": "stop"
     },
     "0297_mixed": {
-     "text": "就是你申请那些 university，你不是要 apply 就是。",
+     "text": "就是你申请那些 university，你不是要 apply，就是。",
      "language": "English",
-     "generated_token_count": 14,
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0298_mixed": {
@@ -1910,7 +1910,7 @@
      "finish_reason": "stop"
     },
     "0314_mixed": {
-     "text": "嗯，但是像 running 啊，或者是举重这种东西，就比较不可能。男男生肯定会比女。",
+     "text": "嗯，但是像 running 啊，或者是举重这种东西，就比较不可能，男男生肯定会比女。",
      "language": "English",
      "generated_token_count": 24,
      "finish_reason": "stop"
@@ -2126,15 +2126,15 @@
      "finish_reason": "stop"
     },
     "0350_en_long": {
-     "text": "Eleven o'clock had struck. It was a fine, clear night. There were the only persons on the road, and they sauntered leisurely along, to avoid paying the price of fatigue for the recreation provided for the Toledans in the valley or on the banks of their river. Secure as he thought in the careful administration of justice in that city and the character of its well-disposed inhabitants, the good hidalgo was far from thinking that any disaster could befall his family. Rodolfo and his companions, with their faces muffled in their cloaks, stared rudely and insolently at the mother, the daughter, and the servant maid. In a moment he communicated his thoughts to his companions, and in the next moment they resolved to turn back and carry her off to please Rodolfo, for the rich who are open-handed always find parasites ready to encourage their bad propensities, and thus to conceive this wicked design, to communicate it, approve it, resolve on ravishing Leocadia, and to carry that design into effect was the work of a moment.",
+     "text": "Eleven o'clock had struck. It was a fine, clear night. There were the only persons on the road, and they sauntered leisurely along, to avoid paying the price of fatigue for the recreation provided for the Toledans in the valley or on the banks of their river. Secure as he thought in the careful administration of justice in that city and the character of its well-disposed inhabitants, the good hidalgos was far from thinking that any disaster could befall his family. Rodolfo and his companions, with their faces muffled in their cloaks, stared rudely and insolently at the mother, the daughter, and the servant maid. In a moment he communicated his thoughts to his companions, and in the next moment they resolved to turn back and carry her off to please Rodolfo, for the rich who are open-handed always find parasites ready to encourage their bad propensities, and thus to conceive this wicked design, to communicate it, approve it, resolve on ravishing Leocadia, and to carry that design into effect was the work of a moment.",
      "language": "English",
      "generated_token_count": 223,
      "finish_reason": "stop"
     },
     "0351_en_long": {
-     "text": "Length of service: fourteen years, three months, and five days. He seemed born to please, without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. We don't spin tops is a favourite saying amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. But it must be confessed that Servadac, being naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff. Altogether, being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Benzoof's most ambitious desire was to induce the captain to go with him and end his days in his much loved home. And so incessantly were Servadac's ears besieged with descriptions of the unparalleled beauties and advantages of this eighteenth arrondissement of Paris, that he could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
+     "text": "Length of service: fourteen years, three months, and five days. He seemed born to please, without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. We don't spin tops is a favourite saying amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. But it must be confessed that Servadac, being naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff. Altogether, being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Benjouff's most ambitious desire was to induce the captain to go with him and end his days in his much loved home. And so incessantly were Servadac's ears besieged with descriptions of the unparalleled beauties and advantages of this eighteenth arrondissement of Paris, that he could scarcely hear the name of Montmartre without a conscious thrill of aversion.",
      "language": "English",
-     "generated_token_count": 246,
+     "generated_token_count": 247,
      "finish_reason": "stop"
     },
     "0352_en_long": {
@@ -2144,9 +2144,9 @@
      "finish_reason": "stop"
     },
     "0353_en_long": {
-     "text": "Natty Harmon tried the kitchen pump secretly several times during the evening, for the water had to run uphill all the way from the well to the kitchen sink, and he believed this to be a continual miracle that might give out at any moment. Tonight there was no need of extra heat, and there were great ceremonies to be observed in lighting the fires on the hearthstones. Kathleen waved the torch to and fro as she recited some beautiful lines written for some such purpose as that which called them together tonight. Burn, fire, burn, flicker, flicker, flame. Next came Olive's turn to help in the ceremonies. Ralph Thurston had found a line of Latin for them in his beloved Horace, \"Tibi splendet focus,\" for you the hearth fire shines. Olive had painted the motto on a long narrow panel of canvas, and giving it to Mister Popham, stood by the fireside while he deftly fitted it into the place prepared for it.",
+     "text": "Natty Harmon tried the kitchen pump secretly several times during the evening, for the water had to run uphill all the way from the well to the kitchen sink, and he believed this to be a continual miracle that might give out at any moment. Tonight there was no need of extra heat, and there were great ceremonies to be observed in lighting the fires on the hearthstones. Kathleen waved the torch to and fro as she recited some beautiful lines written for some such purpose as that which called them together tonight. Burn, fire, burn! Flicker, flicker, flame. Next came Olive's turn to help in the ceremonies. Ralph Thurston had found a line of Latin for them in his beloved Horace, \"Tibi splendet focus,\" for you the hearth fire shines. Olive had painted the motto on a long narrow panel of canvas, and giving it to Mister Popham, stood by the fireside while he deftly fitted it into the place prepared for it.",
      "language": "English",
-     "generated_token_count": 201,
+     "generated_token_count": 202,
      "finish_reason": "stop"
     },
     "0354_en_long": {
@@ -2162,9 +2162,9 @@
      "finish_reason": "stop"
     },
     "0356_en_long": {
-     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time the blast of trumpets and roll of drums and clashing of cymbals told Trot and Captain Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the Blueskins saw Gitka Sizzle, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gitka Sizzle, have been the lawful Boolooroo of the Blue Country, but now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no Boolooroo at all. When he finished, she said cheerfully, \"Don't worry, Sizzle dear, it'll all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starved myself, for this conquering kingdoms is hard work.\"",
+     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time the blast of trumpets and roll of drums and clashing of cymbals told Trot and Cap'n Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the Blueskins saw Gitka Sizzle, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gitka Sizzle, have been the lawful Boolooroo of the Blue Country, but now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no Boolooroo at all. When he finished, she said cheerfully, \"Don't worry, Sizzle dear, it'll all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starved myself, for this conquering kingdoms is hard work.\"",
      "language": "English",
-     "generated_token_count": 222,
+     "generated_token_count": 223,
      "finish_reason": "stop"
     },
     "0357_en_long": {
@@ -2180,9 +2180,9 @@
      "finish_reason": "stop"
     },
     "0359_en_long": {
-     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture, and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates, images, and expectations of their usual correlates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, every one would agree that it has a broad measure of truth, though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
+     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture, and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates, images and expectations of their usual correlates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, every one would agree that it has a broad measure of truth, though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
      "language": "English",
-     "generated_token_count": 161,
+     "generated_token_count": 160,
      "finish_reason": "stop"
     },
     "0360_zh_long": {
@@ -2192,15 +2192,15 @@
      "finish_reason": "stop"
     },
     "0361_zh_long": {
-     "text": "小心不要让衣服变得太热，这可能会产生收缩现象，在极端情况下会把衣服烤焦。这场辩论是因为对卡特里娜飓风后的救济和重建支出有争议而开始的，一些财政保守派幽默地将其称为“不实的新爱尔兰症”。睡眠中断是指这样的过程：在正常睡眠期间有意的醒来，并且在短时间之后（10到60分钟）睡着。二十世纪六十年代，布热津斯基先是为约翰·福特·肯尼迪效力，担任他的顾问，后来又为林登·贝恩斯·约翰逊政府工作。",
+     "text": "小心不要让衣服变得太热，这可能会产生收缩现象，在极端情况下会把衣服烤焦。这场辩论是因为对卡特里娜飓风后的救济和重建支出有争议而开始的。一些财政保守派幽默地将其称为“不实的新爱尔兰症”。睡眠中断是指这样的过程：在正常睡眠期间有意的醒来，并且在短时间之后（10到60分钟）睡着。二十世纪六十年代，布热津斯基先是为约翰·福特·肯尼迪效力，担任他的顾问，后来又为林登·贝恩斯·约翰逊政府工作。",
      "language": "English",
      "generated_token_count": 128,
      "finish_reason": "stop"
     },
     "0362_zh_long": {
-     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。结果，两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括弓背龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。它们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但它们与地下深穴的情况很相似。亚利桑那州旗杆镇，美国地质调查局太空地质团队和北亚利桑那大学的格伦·库辛说道。",
+     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。结果，两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括弓背龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。它们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但它们与地下深穴的情况很相似。亚利桑那州旗杆镇美国地质调查局太空地质团队和北亚利桑那大学的格伦·库辛说道。",
      "language": "English",
-     "generated_token_count": 172,
+     "generated_token_count": 171,
      "finish_reason": "stop"
     },
     "0363_zh_long": {
@@ -2252,13 +2252,13 @@
      "finish_reason": "stop"
     },
     "0371_zh_long": {
-     "text": "当所有可用的资源在一个组织的职能部门之间得到有效利用时，创造力和独创性就会发生。起初，他被送往位于大雅茅茨的詹姆斯·佩吉特医院进行救治。平时你总能在这里听到游客和小摊贩的声音，声光交织，就像在讲述一个动人的故事。该洞穴坐落在麦加北部的一座山顶上，与外界完全隔绝。一名观察者形容比什凯克正在陷入无政府状态，成群的人们在街上游荡，掠夺商店里的消费品。",
+     "text": "当所有可用的资源在一个组织的职能部门之间得到有效利用时，创造力和独创性就会发生。起初，他被送往位于大雅茅茨的詹姆斯佩吉特医院进行救治。平时，你总能在这里听到游客和小摊贩的声音，声光交织，就像在讲述一个动人的故事。该洞穴坐落在麦加北部的一座山顶上，与外界完全隔绝。一名观察者形容比什凯克正在陷入无政府状态，成群的人们在街上游荡，掠夺商店里的消费品。",
      "language": "English",
      "generated_token_count": 115,
      "finish_reason": "stop"
     },
     "0372_zh_long": {
-     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为、学习和智能适应。也可以到北部参观法蒂玛圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德·特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全与世隔绝了。取消政策各不相同，但截至三月末，大多数由于新冠病毒而出台的取消政策，并没有延长到二零二零年七月原定奥运会举办时间。",
+     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为、学习和智能适应。也可以到北部参观法蒂玛圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德·特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全与世隔绝了。取消政策各不相同，但截至三月末，大多数由于新冠病毒而出台的取消政策，并没有延长到2020年七月原定奥运会举办时间。",
      "language": "English",
      "generated_token_count": 154,
      "finish_reason": "stop"
@@ -2318,9 +2318,9 @@
      "finish_reason": "stop"
     },
     "0382_noise": {
-     "text": "Okay.",
+     "text": "I'm not sure.",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0383_noise": {
