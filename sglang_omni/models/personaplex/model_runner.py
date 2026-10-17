@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runs one PersonaPlex request through the timeline, one row per forward.
 
-Prefill embeds every prompt row at once. Each decode step then fuses the row
-for the next position from the last sampled text token, the agent codes the
-depformer produced for that position, and the caller's codes for it. The
+Prefill embeds at once every prompt row that the radix cache did not supply.
+Each decode step then fuses the row for the next position from the last
+sampled text token, the agent codes the depformer produced for that position,
+and the caller's codes for it. The
 text token is sampled *before* the post hook so the depformer can consume it
 in the same step; the codes it spells out become the next row's input and,
 one position later, a finished output frame streamed to the codec.
@@ -223,12 +224,13 @@ class PersonaPlexModelRunner(ModelRunner):
             data = request.data
             inputs = data.talker_model_inputs
             generated = [int(token) for token in req.output_ids]
+            num_cached_positions = len(req.prefix_indices)
             prompt_rows = self.prefill_rows(data)
             if not generated:
                 inputs["prefill_forced"] = self.request_timeline(
                     data
                 ).forced_agent_at_start.to(self.model_device)
-                rows.append(prompt_rows)
+                rows.append(prompt_rows[num_cached_positions:])
                 continue
             else:
                 pass
@@ -239,7 +241,9 @@ class PersonaPlexModelRunner(ModelRunner):
             ]
             inputs["prefill_forced"] = self.free_codes()
             rows.append(
-                torch.cat([prompt_rows, self.generated_rows(data, generated)], dim=0)
+                torch.cat([prompt_rows, self.generated_rows(data, generated)], dim=0)[
+                    num_cached_positions:
+                ]
             )
         attach_omni_prefill_inputs(
             forward_batch,

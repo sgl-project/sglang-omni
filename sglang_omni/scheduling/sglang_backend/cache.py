@@ -10,6 +10,7 @@ from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.chunk_cache import ChunkCache, PureSWAChunkCache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.mem_cache.pure_swa_radix_cache import PureSWARadixCache
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
 from sglang.srt.session.streaming_session import StreamingSession
@@ -59,6 +60,10 @@ def create_tree_cache(
             cache: BasePrefixCache = PureSWAChunkCache(params)
         else:
             cache = ChunkCache(params)
+    elif isinstance(token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator):
+        # Note (Jinjie Guo): Window eviction starts above the tree-owned prefix,
+        # so a shared prompt stays until the tree evicts it.
+        cache = PureSWARadixCache(params)
     elif params.eviction_policy.lower() == "lru":
         cache = EvictHeapRadixCache(params)
     else:

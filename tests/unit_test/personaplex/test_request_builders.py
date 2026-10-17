@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """One decode step per caller frame; sampling knobs and seeds resolve as documented."""
 
+from collections.abc import Sequence
 from typing import Literal
 
 import pytest
@@ -13,10 +14,12 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TOP_K,
     DEFAULT_TEXT_TEMPERATURE,
     DEFAULT_TEXT_TOP_K,
+    NUM_STREAMS,
     TEXT_PAD_ID,
 )
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
+    PROMPT_CACHE_KEY,
     apply_lm_result,
     build_lm_request,
     lm_stream_output_builder,
@@ -31,17 +34,39 @@ from sglang_omni.serve.openai_api import (
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import ChatCompletionRequest, RolloutGenerateRequest
 
+VOICE_FRAMES = 4
+
 
 def make_payload(
-    num_frames: int, params=None, metadata=None, num_samples: int = 0
+    num_frames: int,
+    params=None,
+    metadata=None,
+    num_samples: int = 0,
+    *,
+    text_prompt_ids: Sequence[int] = (11, 12, 13),
+    voice_seed: int | None = None,
+    caller_code: int = 0,
 ) -> StagePayload:
     state = PersonaPlexState(
-        text_prompt_ids=[11, 12, 13],
-        user_codes=torch.zeros(num_frames, 8, dtype=torch.long),
+        text_prompt_ids=list(text_prompt_ids),
+        user_codes=torch.full((num_frames, 8), caller_code, dtype=torch.long),
         num_samples=num_samples,
     )
+    if voice_seed is not None:
+        generator = torch.Generator().manual_seed(voice_seed)
+        state.voice_frames = VOICE_FRAMES
+        state.voice_embeddings = torch.randn(
+            VOICE_FRAMES - 1, NUM_STREAMS, generator=generator
+        )
+        state.voice_tail_codes = torch.randint(0, 2048, (2, 8), generator=generator)
+    else:
+        pass
     request = OmniRequest(inputs={}, params=params or {}, metadata=metadata or {})
     return StagePayload("r", request=request, data=state.to_dict())
+
+
+def prompt_ids(payload: StagePayload) -> list[int]:
+    return build_lm_request(payload, vocab_size=32000).input_ids.tolist()
 
 
 def test_decode_budget_is_the_frame_count():
@@ -51,8 +76,34 @@ def test_decode_budget_is_the_frame_count():
     assert data.req.sampling_params.ignore_eos
     timeline = data.talker_model_inputs["timeline"]
     assert len(data.input_ids) == timeline.num_prompt_positions
-    assert data.input_ids[0].item() == TEXT_PAD_ID
+    assert list(data.req.origin_input_ids) == data.input_ids.tolist()
     assert timeline.num_prompt_positions == 0 + 6 + 3 + 6
+
+
+def test_prompt_ids_key_the_prompt_rows_for_the_radix_cache() -> None:
+    """Requests share prompt ids exactly as far as their prompt rows agree."""
+    data = build_lm_request(make_payload(2, voice_seed=0), vocab_size=32000)
+    assert data.req.extra_key == PROMPT_CACHE_KEY
+    assert (
+        data.req._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # production name
+    assert (
+        data.req._omni_prompt_cache_key == PROMPT_CACHE_KEY
+    )  # noqa: leading-underscore  # production name
+
+    voice = prompt_ids(make_payload(2, voice_seed=0))
+    assert prompt_ids(make_payload(5, voice_seed=0, caller_code=7)) == voice
+
+    other_voice = prompt_ids(make_payload(2, voice_seed=1))
+    assert len(other_voice) == len(voice)
+    assert voice[0] != other_voice[0]
+
+    # Note (Jinjie Guo): Positions 0..V-1 are the voice and V..V+5 silence, so a
+    # role prompt that differs in its third token first differs at V+8.
+    first_text = VOICE_FRAMES + 6
+    other_text = prompt_ids(make_payload(2, voice_seed=0, text_prompt_ids=(11, 12, 14)))
+    assert other_text[: first_text + 2] == voice[: first_text + 2]
+    assert other_text[first_text + 2] != voice[first_text + 2]
 
 
 def test_sampling_defaults_and_overrides():
