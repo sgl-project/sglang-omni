@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,19 @@ class NemotronTalkerScheduler(OmniScheduler):
     @staticmethod
     def mark_stream_done(req_data) -> None:
         req_data.thinker_chunks_done = True
+
+    def is_request_build_ready(
+        self, payload: StagePayload, *, pending_stream_done: bool
+    ) -> bool:
+        # note (Xinhao Tan): a request without text yet would stall the batch it joins.
+        is_talker_idle = (
+            self.running_batch.is_empty()
+            and (self.last_batch is None or self.last_batch.is_empty())
+            and self.queued_admission_count() == 0
+        )
+        return (
+            pending_stream_done or len(payload.prefetched_chunks) > 0 or is_talker_idle
+        )
 
     def get_next_batch_to_run(self):
         batch = super().get_next_batch_to_run()
