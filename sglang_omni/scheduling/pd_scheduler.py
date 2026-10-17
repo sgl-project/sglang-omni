@@ -12,11 +12,16 @@ from contextlib import nullcontext
 from typing import Callable
 from uuid import uuid4
 
-from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.mem_cache.allocator.swa import (
+    PureSWATokenToKVPoolAllocator,
+    SWATokenToKVPoolAllocator,
+)
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
 from sglang_omni.comm import KVPageTransfer
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
@@ -29,6 +34,7 @@ from sglang_omni.scheduling.pd_utils import (
     request_page_indices,
     serialize_kv_allocator,
 )
+from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -295,12 +301,14 @@ class OmniDecodeScheduler(PDKVLifecycle):
         stage_name: str,
         state_restorer: Callable,
         resume_schema: str,
+        emit_transferred_token: bool = False,
         **kwargs,
     ) -> None:
         self.pd_admissions = queue.SimpleQueue()
         self.pd_deferred_admission = None
         self.pd_lifecycle_lock = threading.RLock()
         self.pd_state_restorer = state_restorer
+        self.emit_transferred_token = emit_transferred_token
         super().__init__(*args, **kwargs)
         validate_pd_runtime(self)
         serialize_kv_allocator(
@@ -427,6 +435,40 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 self.waiting_queue.append(req)
                 self.outbox.put(admitted)
 
+    def stream_output(
+        self,
+        reqs: list[Req],
+        return_logprob: bool = False,
+        skip_req: Req | None = None,
+    ) -> None:
+        if not self.emit_transferred_token:
+            return super().stream_output(reqs, return_logprob, skip_req)
+        else:
+            pass
+        step_messages: list[OutgoingMessage] = []
+        for req in reqs:
+            if (
+                req is skip_req
+                or req.rid in self.aborted_request_ids
+                or isinstance(req.finished_reason, FINISH_ABORT)
+                or req.rid in self.first_emit_done
+                or req.omni_data is None
+                or len(req.output_ids) != 1
+                or self.stream_output_builder is None
+            ):
+                continue
+            else:
+                pass
+            # note (Codex): PREBUILT has no model forward; emit its sample on the Decode stream lane.
+            messages = self.stream_output_builder(
+                req.rid,
+                req.omni_data,
+                RequestOutput(request_id=req.rid, data=req.output_ids[0]),
+            )
+            self.stage_stream_messages(req.rid, messages, step_messages)
+        put_messages(self.outbox, step_messages)
+        super().stream_output(reqs, return_logprob, skip_req)
+
     def discard_pending_request_admissions(self) -> None:
         super().discard_pending_request_admissions()
         self.pd_receiver.close()
@@ -461,6 +503,21 @@ class OmniDecodeScheduler(PDKVLifecycle):
 
 
 def validate_pd_runtime(scheduler: OmniScheduler) -> None:
+    if scheduler.session_adapter is not None:
+        raise NotImplementedError(
+            "PD session adapters require a retained-state ownership contract"
+        )
+    else:
+        pass
+    if isinstance(scheduler.req_to_token_pool, HybridReqToTokenPool):
+        raise NotImplementedError("PD does not transfer linear-attention state")
+    elif isinstance(
+        scheduler.token_to_kv_pool_allocator,
+        (PureSWATokenToKVPoolAllocator, SWATokenToKVPoolAllocator),
+    ):
+        raise NotImplementedError("PD does not transfer sliding-window KV ownership")
+    else:
+        pass
     if scheduler.tp_size != 1:
         raise NotImplementedError("PD currently requires tp_size == 1")
     else:
