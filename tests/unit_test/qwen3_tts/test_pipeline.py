@@ -431,6 +431,9 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
         def warmup_now(self) -> None:
             pass
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            pass
+
     class FakeTalker:
         device = torch.device("cpu")
         model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
@@ -2327,6 +2330,9 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            captured["running_stream_count"] = running_stream_count
+
     monkeypatch.setattr(
         qwen3_stages,
         "load_qwen3_tts_tokenizer",
@@ -2384,6 +2390,9 @@ def vocoder_factory_capture(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            captured["running_stream_count"] = running_stream_count
+
     monkeypatch.setattr(
         qwen3_stages,
         "load_qwen3_tts_tokenizer",
@@ -2419,7 +2428,12 @@ def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
         raising=False,
     )
 
-    assert config.stage_factory_kwargs("vocoder") == {"async_decode": False}
+    assert config.stage_factory_kwargs("vocoder") == {
+        "async_decode": False,
+        "running_stream_count": config.generation_admission_defaults()[
+            "max_running_requests"
+        ],
+    }
     assert config.stage_factory_kwargs("tts_engine") == {}
 
 
@@ -2434,7 +2448,11 @@ def test_qwen3_tts_config_leaves_a_measured_platform_alone(
         raising=False,
     )
 
-    assert config.stage_factory_kwargs("vocoder") == {}
+    assert config.stage_factory_kwargs("vocoder") == {
+        "running_stream_count": config.generation_admission_defaults()[
+            "max_running_requests"
+        ]
+    }
     assert config.stage_factory_kwargs("tts_engine") == {}
 
 
@@ -9491,6 +9509,120 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
     assert waited == [ready]
     assert [stream for _, stream in recorded] == [scheduler_stream] * 4
     assert any(tensor is embeds for tensor, _ in recorded)
+
+
+@pytest.mark.parametrize(
+    ("running_stream_count", "warning_count"), [(None, 0), (64, 0), (65, 1)]
+)
+def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    running_stream_count: int | None,
+    warning_count: int,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(running_stream_count)
+
+    info_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ]
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert any(
+        message.startswith("Qwen3-TTS vocoder CUDA graphs: cold ")
+        and message.endswith("; Codec slots 64")
+        for message in info_messages
+    )
+    assert len(warning_messages) == warning_count
+    assert all(
+        message.endswith(f"to at least {running_stream_count}.")
+        for message in warning_messages
+    )
+
+
+def test_qwen3_tts_vocoder_lists_every_decode_graph_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    two_graphs = {
+        "enabled": True,
+        "disable_reason": None,
+        "build": {"captured_keys": [{"batch": 1}, {"batch": 2}]},
+    }
+    one_graph = {
+        "enabled": True,
+        "disable_reason": None,
+        "build": {"captured_keys": [{"batch": 4}]},
+    }
+    failed_capture = {
+        "enabled": False,
+        "disable_reason": "capture_failed: out of memory",
+        "build": {"captured_keys": []},
+    }
+    monkeypatch.setattr(
+        scheduler,
+        "codec_state_stats",
+        lambda: {
+            "enabled": True,
+            "slots": 8,
+            "cuda_graphs": {
+                "cold": two_graphs,
+                "window": {"enabled": False},
+                "tail": failed_capture,
+                "warm": [two_graphs, one_graph],
+            },
+        },
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(8)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Qwen3-TTS vocoder CUDA graphs: cold 2 captured, window off (not built), "
+        "tail off (capture_failed: out of memory), warm0 2 captured, "
+        "warm1 1 captured; Codec slots 8"
+    ]
+
+
+def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        enable_stateful_codec_decoder=False,
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(128)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream decodes on "
+        "the left-context path"
+    ]
+
+
+def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_running_stream_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        vocoder_factory_capture(monkeypatch, running_stream_count=96)[
+            "running_stream_count"
+        ]
+        == 96
+    )
+    assert vocoder_factory_capture(monkeypatch)["running_stream_count"] is None
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(

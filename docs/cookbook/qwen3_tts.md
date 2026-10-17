@@ -516,6 +516,13 @@ each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
 for the left-context decoder, with first playable audio at 55 to 58 ms
 against 82 to 89 ms.
 
+Each stream holds one of `codec_state_slots` (default 64, matching the default
+`max_running_requests`) while it decodes; streams past the slots decode eagerly
+on the left-context path. At startup the vocoder logs the decode graphs it
+captured and warns when the slots are fewer than the requests the engine can run
+per vocoder replica, so raise `--vocoder.factory.codec_state_slots` together
+with `max_running_requests`.
+
 Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
 in on Intel GPUs, follow the
 [Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).

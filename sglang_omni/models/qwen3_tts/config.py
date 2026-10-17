@@ -14,12 +14,14 @@ from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
+    ProcessConfig,
     StageConfig,
 )
 from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.config.schema import stage_process_name
 from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
@@ -42,6 +44,7 @@ class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     initial_cuda_graph: bool
     followup_cuda_graph: bool
     async_decode: bool
+    running_stream_count: int
 
 
 class Qwen3TTSPipelineConfig(PipelineConfig):
@@ -112,6 +115,28 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         # loads its own prompt frontend and ships prepared tensors in the payload.
         if stage_name == "preprocessing" and self.preprocessing_in_own_process():
             kwargs["load_frontend"] = True
+        else:
+            pass
+        if stage_name == "vocoder":
+            engine_stage = self.stage_named("tts_engine")
+            engine_args = engine_stage.engine
+            if engine_args is not None and engine_args.max_running_requests is not None:
+                running_request_count = engine_args.max_running_requests
+            else:
+                running_request_count = type(self).generation_admission_defaults()[
+                    "max_running_requests"
+                ]
+            engine_replicas = self.processes.get(
+                stage_process_name(engine_stage), ProcessConfig()
+            ).num_replicas
+            vocoder_replicas = self.processes.get(
+                stage_process_name(self.stage_named(stage_name)), ProcessConfig()
+            ).num_replicas
+            # note (Haoling Pu): requests bind to vocoder replicas round-robin,
+            # so this is the average per replica, rounded up.
+            kwargs["running_stream_count"] = (
+                running_request_count * engine_replicas + vocoder_replicas - 1
+            ) // vocoder_replicas
         else:
             pass
         # The vocoder captures its decode graphs during the asynchronous decode

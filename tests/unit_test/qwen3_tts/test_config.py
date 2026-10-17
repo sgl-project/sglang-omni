@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from sglang_omni.config.schema import EngineArgs, ProcessConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
@@ -168,3 +169,33 @@ def test_speech_route_accepts_the_warmup_stream_of_each_checkpoint(
         prepared.request.task_type,
         [reference["text"] for reference in prepared.reference_descriptors],
     ) == (voice, task_type, reference_texts)
+
+
+@pytest.mark.parametrize(
+    ("engine_args", "vocoder_process", "processes", "running_stream_count"),
+    [
+        (EngineArgs(), "pipeline", {}, 64),
+        (EngineArgs(max_running_requests=96), "pipeline", {}, 96),
+        (EngineArgs(), "pipeline", {"pipeline": ProcessConfig(num_replicas=2)}, 64),
+        (EngineArgs(), "vocoder", {"pipeline": ProcessConfig(num_replicas=2)}, 128),
+        (EngineArgs(), "vocoder", {"vocoder": ProcessConfig(num_replicas=3)}, 22),
+    ],
+    ids=[
+        "default",
+        "engine_override",
+        "two_pipeline_replicas",
+        "two_engine_replicas",
+        "three_vocoder_replicas",
+    ],
+)
+def test_vocoder_receives_the_streams_the_engine_runs_per_replica(
+    engine_args, vocoder_process, processes, running_stream_count
+) -> None:
+    config = Qwen3TTSPipelineConfig(model_path="org/model")
+    config.stage_named("tts_engine").engine = engine_args
+    config.stage_named("vocoder").process = vocoder_process
+    config.processes = processes
+
+    factory_kwargs = config.stage_factory_kwargs("vocoder")
+
+    assert factory_kwargs["running_stream_count"] == running_stream_count

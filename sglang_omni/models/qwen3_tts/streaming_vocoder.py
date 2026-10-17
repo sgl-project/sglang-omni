@@ -1236,6 +1236,53 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.codec_stats_last_log_s = now
         logger.info("Qwen3-TTS incremental Codec state: %s", self.codec_state_stats())
 
+    def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+        """Log the decode graphs startup captured; warn when the engine can run more streams than slots."""
+        codec_stats = self.codec_state_stats()
+        if not codec_stats["enabled"]:
+            logger.info(
+                "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream "
+                "decodes on the left-context path"
+            )
+            return
+        else:
+            pass
+        graph_stats = codec_stats["cuda_graphs"]
+        runner_stats = {
+            "cold": graph_stats["cold"],
+            "window": graph_stats["window"],
+            "tail": graph_stats["tail"],
+            **{
+                f"warm{index}": stats for index, stats in enumerate(graph_stats["warm"])
+            },
+        }
+        # note (Haoling Pu): a runner that was never built reports only "enabled".
+        coverage = ", ".join(
+            (
+                f"{name} {len(stats['build']['captured_keys'])} captured"
+                if stats["enabled"]
+                else f"{name} off ({stats.get('disable_reason') or 'not built'})"
+            )
+            for name, stats in runner_stats.items()
+        )
+        logger.info(
+            f"Qwen3-TTS vocoder CUDA graphs: {coverage}; "
+            f"Codec slots {codec_stats['slots']}"
+        )
+        if (
+            running_stream_count is not None
+            and codec_stats["slots"] < running_stream_count
+        ):
+            logger.warning(
+                f"Qwen3-TTS vocoder has {codec_stats['slots']} Codec slots, fewer "
+                f"than the {running_stream_count} requests the engine can run at "
+                "once; streams past the slots decode eagerly on the left-context "
+                "path. Set --vocoder.factory.codec_state_slots to at least "
+                f"{running_stream_count}."
+            )
+        else:
+            pass
+
     def admin(
         self, action: str, payload: dict[str, object] | None = None
     ) -> VocoderAdminResult:
