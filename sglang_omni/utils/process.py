@@ -41,11 +41,13 @@ def exit_without_teardown(code: int) -> NoReturn:
 
 
 def release_cuda_ipc_file() -> None:
-    """Remove torch's CUDA IPC reference counter file from shared memory.
+    """Remove torch's CUDA IPC reference counter files from shared memory.
 
-    A process that sent CUDA tensors to another process keeps that file, and
-    the C++ teardown that os._exit skips removes it once no consumer holds a
-    sent tensor. A process that never initialized CUDA has no such file.
+    A process that sent CUDA tensors to another process keeps such a file, and
+    the C++ teardown that os._exit skips removes it. ipc_collect removes it
+    once no sent tensor is held, while a sent tensor this process still holds,
+    such as a weight shared with another replica, keeps it. A process that
+    never initialized CUDA has no such file.
     """
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_initialized():
@@ -56,3 +58,25 @@ def release_cuda_ipc_file() -> None:
         torch.cuda.ipc_collect()
     except Exception:
         traceback.print_exc()
+    # note (Richard Wang): under the default sharing strategy torch unlinks the
+    # shared memory file of a CPU tensor as soon as it creates it, so a file of
+    # this process left now is a CUDA reference counter file, and a consumer
+    # that mapped it keeps its mapping. Under file_system, CPU tensor files use
+    # the same names and consumers open them by name, so they stay.
+    if torch.multiprocessing.get_sharing_strategy() != "file_descriptor":
+        return
+    else:
+        pass
+    prefix = f"torch_{os.getpid()}_"
+    try:
+        names = os.listdir("/dev/shm")
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(prefix):
+            try:
+                os.unlink(os.path.join("/dev/shm", name))
+            except OSError:
+                pass
+        else:
+            pass

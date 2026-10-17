@@ -65,8 +65,10 @@ def test_serve_exits_without_interpreter_teardown(
 
 
 # A process that sent a CUDA tensor to another one keeps a reference counter
-# file in shared memory, named after its pid.
+# file in shared memory, named after its pid. A sent tensor the process still
+# holds at exit keeps its slot in that file.
 SEND_CUDA_TENSOR = """
+import sys
 import torch
 import torch.multiprocessing as mp
 from sglang_omni.utils.process import exit_without_teardown
@@ -82,7 +84,12 @@ if __name__ == "__main__":
     queue, done = ctx.Queue(), ctx.Event()
     child = ctx.Process(target=receive, args=(queue, done))
     child.start()
-    queue.put(torch.ones(4, device="cuda"))
+    sent = torch.ones(4, device="cuda")
+    queue.put(sent)
+    if sys.argv[1] == "temporary":
+        del sent
+    else:
+        pass
     done.wait(120)
     child.join(120)
     exit_without_teardown(0)
@@ -91,11 +98,14 @@ if __name__ == "__main__":
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_fast_exit_removes_the_cuda_ipc_reference_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("sent", ["temporary", "held"])
+def test_fast_exit_removes_the_cuda_ipc_reference_file(
+    tmp_path: Path, sent: str
+) -> None:
     script = tmp_path / "send_cuda_tensor.py"
     script.write_text(SEND_CUDA_TENSOR)
 
-    sender = subprocess.Popen([sys.executable, str(script)])
+    sender = subprocess.Popen([sys.executable, str(script), sent])
 
     assert sender.wait(timeout=300) == 0
     assert glob.glob(f"/dev/shm/torch_{sender.pid}_*") == []
