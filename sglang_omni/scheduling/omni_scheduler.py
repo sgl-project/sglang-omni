@@ -1848,22 +1848,24 @@ class OmniScheduler(Generic[RequestDataT]):
 
         from sglang.srt.runtime_context import get_schedule
 
+        # note (0xtoward): Every AR stage shares this check, so the message names the stage that ran out.
+        stage = _get_active_stage() or "stage"
         kv_cache_bytes = getattr(
             getattr(self, "tp_worker", None), "kv_cache_bytes", None
         )
         mem_fraction = get_schedule().mem_fraction_static
         if kv_cache_bytes is not None:
-            mem_hint = " Try raising engine.kv_cache_bytes."
+            mem_hint = f" Try raising {stage}.engine.kv_cache_bytes."
         elif mem_fraction is not None:
             mem_hint = (
                 f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
-                "--thinker-mem-fraction-static higher."
+                f"{stage}.engine.mem_fraction_static higher."
             )
         else:
-            mem_hint = " Try setting a higher --thinker-mem-fraction-static value."
+            mem_hint = f" Try setting a higher {stage}.engine.mem_fraction_static."
 
         return (
-            "Request requires more tokens than the thinker KV cache can hold "
+            f"Request requires more tokens than the {stage} KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
             f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
             f"{mem_hint}"

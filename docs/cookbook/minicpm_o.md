@@ -99,6 +99,8 @@ While the server starts, the speech stage records the voice decoder as CUDA grap
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 
+The voice of one spoken turn keeps up to 4096 tokens of talker history, about two minutes of speech. A longer turn restarts that history from its newest speech, up to half of it, instead of failing the session.
+
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
 ```bash
