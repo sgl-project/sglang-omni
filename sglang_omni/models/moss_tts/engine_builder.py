@@ -40,8 +40,16 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
     supports_context_length_override = True
     supports_breakable_prefill_cuda_graph = True
 
-    def __init__(self, *, total_gpu_memory_fraction: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        enable_async_decode: bool = False,
+        async_decode_min_batch_size: int = 2,
+        total_gpu_memory_fraction: float | None = None,
+    ) -> None:
         super().__init__()
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
 
     def infra_kwargs(self) -> InfrastructureOptions:
@@ -125,7 +133,11 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
         return request_builders.make_moss_tts_scheduler_adapters(model=model)
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[MossTTSSGLangRequestData]:
-        return {"stream_output_builder": self.stream_output_builder}
+        return {
+            "stream_output_builder": self.stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+        }
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_moss_tts_request

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -10,12 +11,17 @@ import pytest
 import torch
 
 from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
-from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+from sglang_omni.models.moss_tts.model_runner import (
+    MossDelayLaunchBuffer,
+    MossTTSModelRunner,
+)
 from sglang_omni.models.moss_tts.sampler import (
     DelayGraphBatch,
     MossTTSDelayAudioGraphSampler,
+    MossTTSDelayMixedGraphSampler,
 )
 from sglang_omni.models.moss_tts.sampling_cuda_graph import (
+    MossTTSDelayMixedSamplingCudaGraphRunner,
     MossTTSDelaySamplingCudaGraphRunner,
 )
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
@@ -431,3 +437,164 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
             assert not torch.count_nonzero(static_inputs.seeds[1:2])
             assert not torch.count_nonzero(static_inputs.generation_steps[1:2])
     runner.clear()
+
+
+@pytest.mark.parametrize("use_mixed_graph", [False, True])
+def test_lookahead_routes_delay_boundary_and_rejects_custom_sampling(
+    use_mixed_graph: bool,
+) -> None:
+    config = make_config()
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        config=config,
+        sampling_graph_available=lambda batch_size: True,
+        mixed_sampling_graph_available=lambda batch_size: use_mixed_graph,
+        is_sampling_cuda_graph_compatible=MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible,
+    )
+    state = sampling_data(profile="default")
+    state.is_audio = True
+    state.output_rows = [torch.tensor([config.audio_assistant_delay_slot_token_id])]
+    state.audio_end_step = None
+    state.audio_end_scanned_rows = 0
+    state.generation_steps = 1
+    state.sampling_steps = 2
+    batch = SimpleNamespace(reqs=[SimpleNamespace(omni_data=state)])
+    assert runner.lookahead_eligible(batch)
+    state.sampling_steps = 3
+    assert runner.lookahead_eligible(batch) == use_mixed_graph
+    state.audio_temperature = 0.0
+    assert not runner.lookahead_eligible(batch)
+    assert not runner.lookahead_eligible(SimpleNamespace(reqs=[]))
+
+
+def test_lookahead_resolve_preserves_owned_rows_and_skips_dropped_requests() -> None:
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(config=make_config())
+    requests = []
+    for index in range(3):
+        state = SimpleNamespace(
+            req=SimpleNamespace(
+                is_retracted=index == 1, finished=lambda i=index: i == 2
+            ),
+            delay_state=torch.tensor([99, 99, 1]),
+            sampling_steps=12,
+            pending_feedback_queue=deque(),
+            output_rows=[],
+            is_audio=True,
+        )
+        requests.append(SimpleNamespace(request_id=str(index), data=state))
+    host_rows = torch.tensor([[12, 1, 2], [12, 2, 3], [12, 3, 1]])
+    before = [torch.tensor([7, INT64_MAX, 1]) for _ in requests]
+    launch = MossDelayLaunchBuffer(
+        host_rows=host_rows,
+        delay_states_before=before,
+        sampling_steps_before=[8, 9, 10],
+        feedback_embeds=torch.zeros(3, 4),
+    )
+    result = SimpleNamespace()
+    runner.post_decode_resolve(launch, result, None, None, requests)
+    host_rows.zero_()
+    assert result.next_token_ids.tolist() == [12, 12, 12]
+    assert requests[1].data.sampling_steps == 9
+    assert torch.equal(requests[1].data.delay_state, before[1])
+    outputs = {str(index): SimpleNamespace(data=12) for index in range(3)}
+    runner.post_process_outputs(result, SimpleNamespace(requests=requests), outputs)
+    assert requests[0].data.output_rows[0].tolist() == [12, 1, 2]
+    assert not requests[1].data.output_rows
+    assert not requests[2].data.output_rows
+    assert not requests[0].data.pending_feedback_queue
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("ties", [False, True])
+def test_mixed_sampling_graph_matches_eager_at_text_audio_boundaries(
+    ties: bool,
+) -> None:
+    device = torch.device("cuda")
+    config = make_config(n_vq=32, audio_vocab=1025)
+    config.vocab_size_list[0] = 128
+    sampler = MossTTSDelayMixedGraphSampler(config).to(device)
+    model = SimpleNamespace(
+        config=config,
+        device=device,
+        sample_mixed_fixed_shape=sampler,
+    )
+    graph = MossTTSDelayMixedSamplingCudaGraphRunner.capture(
+        model=model, capture_bs=(8,), disable_padding=False
+    )
+    assert graph.can_replay(7)
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = model
+    states = torch.tensor(
+        [
+            [0, INT64_MAX, 0],
+            [1, INT64_MAX, 1],
+            [40, INT64_MAX, 1],
+            [40, 0, 1],
+            [40, 31, 1],
+            [40, 32, 1],
+            [0, INT64_MAX, 0],
+        ],
+        dtype=torch.long,
+        device=device,
+    )
+    seeds = torch.arange(7, device=device, dtype=torch.long) + 123
+    steps = torch.tensor([0, 1, 40, 41, 72, 73, 74], device=device)
+    generator = torch.Generator(device=device).manual_seed(42)
+    for _ in range(3):
+        text_logits = torch.randn(7, 128, device=device, generator=generator)
+        audio_logits = torch.randn(7, 32, 1025, device=device, generator=generator)
+        if ties:
+            text_logits.round_()
+            audio_logits.round_()
+        requests = [
+            request_data(
+                states[index].clone(),
+                seed=int(seeds[index]),
+                generation_steps=int(steps[index]),
+            )
+            for index in range(7)
+        ]
+        expected = runner.sample_rows(
+            [
+                text_logits.clone(),
+                *[audio_logits[:, index].clone() for index in range(32)],
+            ],
+            requests,
+            n_vq=32,
+            is_audio=False,
+        )
+        actual = graph.replay(
+            text_logits,
+            audio_logits,
+            DelayGraphBatch(
+                delay_state=states,
+                seeds=seeds,
+                generation_steps=steps,
+            ),
+        )
+        assert torch.equal(actual.rows, expected)
+        assert torch.equal(
+            actual.next_delay_state,
+            torch.stack([request.delay_state for request in requests]),
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_sampling_metadata_upload_owns_values_across_growth_and_reuse() -> None:
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.sampling_metadata_host_bufs = []
+    runner.sampling_metadata_slot = 0
+    runner.sampling_metadata_events = [None, None]
+    copies = []
+    for index, rows in enumerate([1, 3, 2, 8, 1, 8, 2, 4]):
+        seeds = [1000 * index + row for row in range(rows)]
+        positions = [100 * index + row for row in range(rows)]
+        actual = runner.sampling_metadata(seeds, positions, torch.device("cuda"))
+        copies.append((actual, seeds, positions))
+    torch.cuda.synchronize()
+    for (actual_seeds, actual_positions), seeds, positions in copies:
+        assert actual_seeds.tolist() == seeds
+        assert actual_positions.tolist() == positions

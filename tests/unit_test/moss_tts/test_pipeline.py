@@ -137,6 +137,7 @@ def test_moss_tts_config_and_registry_contracts() -> None:
         "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
     }
     assert vocoder.factory.model_dump(exclude_none=True) == {
+        "segment_graph_max_frames": 128,
         "dtype": "float32",
         "compute_dtype": "bfloat16",
     }
@@ -2169,10 +2170,10 @@ def test_default_topology_isolates_vocoder_process() -> None:
     assert stages["tts_engine"].process == "pipeline"
     assert stages["vocoder"].process == "vocoder"
     assert stages["preprocessing"].gpu_memory_fraction == pytest.approx(0.10)
-    assert stages["tts_engine"].gpu_memory_fraction == pytest.approx(0.72)
+    assert stages["tts_engine"].gpu_memory_fraction == pytest.approx(0.60)
     assert stages["vocoder"].gpu_memory_fraction == pytest.approx(0.18)
     placement = build_stage_placement_plan(config)
-    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
+    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.88)
     assert placement.gpus[0].missing_fraction_stage_names == ()
     topology = build_compiled_process_topology(config)
     assert topology.stage_to_process == {
@@ -2182,7 +2183,7 @@ def test_default_topology_isolates_vocoder_process() -> None:
     }
     # A declared fraction only reserves the card on paper unless the engine is told.
     engine_args = resolve_stage_factory_args(stages["tts_engine"], config, gpu_id=0)
-    assert engine_args["total_gpu_memory_fraction"] == pytest.approx(0.72)
+    assert engine_args["total_gpu_memory_fraction"] == pytest.approx(0.60)
 
 
 def test_single_process_variant_keeps_legacy_topology() -> None:

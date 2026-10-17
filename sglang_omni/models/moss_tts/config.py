@@ -9,18 +9,23 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import (
+    EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 _PKG = "sglang_omni.models.moss_tts"
 _REF_AUDIO_CACHE_MAX_ITEMS = 8192
 _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 _COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION = 0.10
-_COLOCATED_AR_GPU_MEMORY_FRACTION = 0.72
+# note (Zhuofeng Li): dense prefill graphs need headroom beyond the KV budget.
+_COLOCATED_AR_GPU_MEMORY_FRACTION = 0.60
 _COLOCATED_VOCODER_GPU_MEMORY_FRACTION = 0.18
+# note (Zhuofeng Li): exact token counts preserve the eager prefill shape.
+COLOCATED_PREFILL_CUDA_GRAPH_MAX_TOKENS = 512
 
 
 def uses_rocm_wsl_dxg() -> bool:
@@ -70,6 +75,7 @@ class MossTTSPreprocessingStageConfig(StageConfig):
 
 class MossTTSVocoderFactoryArgs(FactoryArgs):
     compute_dtype: str | None = None
+    segment_graph_max_frames: int = Field(default=0, ge=0)
 
 
 class MossTTSVocoderStageConfig(StageConfig):
@@ -104,6 +110,16 @@ def stages(*, colocated: bool) -> list[StageConfig]:
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
+            engine=(
+                EngineArgs(
+                    cuda_graph_backend_prefill=CudaGraphBackend.BREAKABLE,
+                    cuda_graph_bs_prefill=list(
+                        range(1, COLOCATED_PREFILL_CUDA_GRAPH_MAX_TOKENS + 1)
+                    ),
+                )
+                if colocated
+                else EngineArgs()
+            ),
             gpu_memory_fraction=(
                 _COLOCATED_AR_GPU_MEMORY_FRACTION if colocated else None
             ),
@@ -116,7 +132,9 @@ def stages(*, colocated: bool) -> list[StageConfig]:
             process="vocoder" if colocated else "pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=MossTTSVocoderFactoryArgs(
-                dtype="float32", compute_dtype="bfloat16"
+                dtype="float32",
+                compute_dtype="bfloat16",
+                segment_graph_max_frames=128 if colocated else 0,
             ),
             gpu_memory_fraction=(
                 _COLOCATED_VOCODER_GPU_MEMORY_FRACTION if colocated else None
