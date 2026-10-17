@@ -68,6 +68,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import WeightCheckResult
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
+from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
 from sglang_omni.profiler.duplex_events import emit_session_stage_bypassed
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
@@ -1075,11 +1076,41 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
 
         recv_msgs = self.drain_local_inbox() if self.is_entry_rank else []
+        if self.is_entry_rank:
+            # Relay-backed CPU tensors in StagePayload are views over a single
+            # transfer buffer.  pickle.dumps serialises each view's entire
+            # underlying storage, so N tensors pickle the buffer N times.
+            # Compact them before broadcasting so TP followers don't pay the
+            # extra unpickling cost and the gloo bus doesn't carry the extra bytes.
+            recv_msgs = [self._compact_tensor_views(msg) for msg in recv_msgs]
+        else:
+            pass
         return broadcast_pyobj(
             recv_msgs,
             self.tp_group.rank,
             self.tp_cpu_group,
             src=self.tp_group.ranks[0],
+        )
+
+    def _compact_tensor_views(self, msg: IncomingMessage) -> IncomingMessage:
+        """Return a shallow copy of `msg` where any tensor whose storage
+        is larger than its own nbytes (i.e. a slice/view over a bigger buffer)
+        has been replaced with a compact contiguous clone.
+
+        Only touched when ``tp_size > 1`` and only used at the broadcast site,
+        so cached / original payloads are never mutated.
+        """
+        msg_without_tensors, tensors = extract_tensors(msg.data)
+        compacted: dict[str, torch.Tensor] = {}
+        for path, tensor in tensors.items():
+            if tensor.is_cpu and tensor.untyped_storage().nbytes() > tensor.nbytes:
+                compacted[path] = tensor.clone()
+            else:
+                compacted[path] = tensor
+        return IncomingMessage(
+            request_id=msg.request_id,
+            type=msg.type,
+            data=restore_tensors(msg_without_tensors, compacted),
         )
 
     def drain_local_inbox(self) -> list[IncomingMessage]:
