@@ -245,6 +245,9 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   const mx::array encoder_states = model_.Encode(window_samples);
   std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
   const auto next_token = [&](mx::array logits, bool first_step) {
+    // Note (Jiaxin Deng): the float16 decoder's logits are suppressed and
+    // ranked in float32, as the reference Whisper decoder does.
+    logits = mx::astype(logits, mx::float32);
     if (first_step && begin_suppression_.has_value()) {
       logits = mx::add(logits, mx::astype(*begin_suppression_, logits.dtype()));
     } else {

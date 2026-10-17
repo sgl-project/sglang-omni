@@ -155,7 +155,8 @@ WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
   if (weights_.count("encoder.positional_embedding") == 0) {
     weights_.insert_or_assign(
         "encoder.positional_embedding",
-        Sinusoids(config_.audio_context_length, config_.audio_width));
+        mx::astype(Sinusoids(config_.audio_context_length, config_.audio_width),
+                   Weight("encoder.conv1.weight").dtype()));
   } else {
   }
   std::vector<mx::array> parameters = {hann_window_, mel_filters_};
@@ -261,13 +262,21 @@ mx::array WhisperModel::Encode(const std::vector<float> &window_samples) const {
       log_mel, mx::subtract(mx::max(log_mel), mx::array(kLogMelDynamicRange)));
   log_mel = mx::divide(mx::add(log_mel, mx::array(4.0f)), mx::array(4.0f));
 
-  mx::array x = mx::expand_dims(mx::transpose(log_mel, {1, 0}), 0);
+  // Note (Jiaxin Deng): the float32 log-mel is cast to the weights' dtype, as
+  // the reference Whisper does; fed as float32 it promotes the whole encoder,
+  // and through the cross-attention the decoder, to float32.
+  mx::array x = mx::astype(mx::expand_dims(mx::transpose(log_mel, {1, 0}), 0),
+                           Weight("encoder.conv1.weight").dtype());
   x = Gelu(Conv1d(x, "encoder.conv1", 1));
   x = Gelu(Conv1d(x, "encoder.conv2", 2));
   x = mx::add(x, mx::slice(Weight("encoder.positional_embedding"), {0, 0},
                            {x.shape(1), x.shape(2)}));
   for (int layer = 0; layer < config_.audio_layer_count; ++layer) {
     x = EncoderLayer(x, layer);
+    // Note (Jiaxin Deng): evaluated layer by layer; as one graph the whole
+    // encoder keeps each layer's temporaries until it finishes, about 0.6 GB
+    // more at its peak for large-v3-turbo, at no measurable speed gain.
+    mx::eval(x);
   }
   return LayerNorm(x, "encoder.ln_post");
 }

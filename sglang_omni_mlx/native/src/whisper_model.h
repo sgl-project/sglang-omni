@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Whisper on MLX: checkpoint loading, the log-mel front end, encoder and
-// decoder, op for op as Voxt's Swift port runs them.
+// decoder, op for op as Voxt's Swift port runs them, except that the encoder
+// and decoder run in the weights' dtype.
 #pragma once
 
 #include <filesystem>
