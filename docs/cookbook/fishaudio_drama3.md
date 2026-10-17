@@ -26,6 +26,42 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Local and offline checkpoints
+
+When `--model-path` points to a local directory containing `codec.pth`, both
+preprocessing and the vocoder use that file by default. Use the compatible codec
+distributed with the Drama 3 checkpoint. If no local codec is present, the server
+falls back to the pinned S2-Pro codec on the Hugging Face Hub.
+
+For a fully downloaded local checkpoint, start without Hub network requests:
+
+```bash
+HF_HUB_OFFLINE=1 sgl-omni serve \
+  --model-path /models/drama-3 \
+  --port 8000
+```
+
+To use a codec stored elsewhere, explicitly set its file or directory:
+
+```bash
+HF_HUB_OFFLINE=1 sgl-omni serve \
+  --model-path /models/drama-3 \
+  --vocoder.factory.codec_path /models/audio-codec/codec.pth \
+  --port 8000
+```
+
+An explicit `--vocoder.factory.codec_path` takes precedence over the codec in the
+model directory. An invalid explicit path fails instead of silently selecting a
+different codec. A Hub override must include a full commit: `<repo_id>@<40-hex commit>`.
+
+For offline or mirror deployments, set `HF_HUB_OFFLINE=1` before startup.
+Hub references then use cached files only and fail if the codec is missing.
+
+Hub codec resolution times out after 120 seconds with an error identifying the
+codec and local override option. For slow downloads, pre-download the codec or
+increase `--vocoder.factory.codec_download_timeout_seconds`. The overall stage
+startup timeout still applies.
+
 ## Synthesize Speech
 
 The server supports plain text-to-speech, optionally cloning a voice from reference audio, returned as one response or

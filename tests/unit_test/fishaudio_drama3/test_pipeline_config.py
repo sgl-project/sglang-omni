@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,6 +13,7 @@ from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
+    Drama3VocoderStageConfig,
 )
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -61,6 +64,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "max_reference_audio_seconds": 60.0,
         "max_prompt_rows": 8192,
         "codec_path": DEFAULT_CODEC_PATH,
+        "codec_download_timeout_seconds": 120.0,
     }
     assert launch_kwargs(config, "tts_engine") == {
         "model_path": "checkpoint",
@@ -84,11 +88,48 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "gpu_id": 0,
         "total_gpu_memory_fraction": 0.10,
         "codec_path": DEFAULT_CODEC_PATH,
+        "codec_download_timeout_seconds": 120.0,
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
         "decode_dtype": "float16",
         "max_new_tokens": 2048,
     }
+
+
+@pytest.mark.parametrize("has_local_codec", [False, True])
+def test_automatic_codec_selection_is_shared_by_both_stages(
+    tmp_path: Path, has_local_codec: bool
+) -> None:
+    local_codec_path = tmp_path / "codec.pth"
+    if has_local_codec:
+        local_codec_path.write_bytes(b"")
+    else:
+        pass
+    config = Drama3PipelineConfig(model_path=str(tmp_path))
+    expected_codec_path = (
+        str(local_codec_path) if has_local_codec else DEFAULT_CODEC_PATH
+    )
+
+    for candidate in (config, Drama3PipelineConfig(**config.model_dump())):
+        for stage_name in ("preprocessing", "vocoder"):
+            assert (
+                launch_kwargs(candidate, stage_name)["codec_path"]
+                == expected_codec_path
+            )
+
+
+@pytest.mark.parametrize("codec_path", ["custom/codec.pth", DEFAULT_CODEC_PATH])
+def test_explicit_codec_overrides_a_bundled_local_codec(
+    tmp_path: Path, codec_path: str
+) -> None:
+    (tmp_path / "codec.pth").write_bytes(b"")
+    config = ConfigManager(Drama3PipelineConfig(model_path=str(tmp_path))).merge_config(
+        [("vocoder.factory.codec_path", codec_path)]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    for stage_name in ("preprocessing", "vocoder"):
+        assert launch_kwargs(config, stage_name)["codec_path"] == codec_path
 
 
 def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
@@ -108,6 +149,7 @@ def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
         "max_reference_audio_seconds": 60.0,
         "max_prompt_rows": 4096,
         "codec_path": "local/codec.pth",
+        "codec_download_timeout_seconds": 120.0,
     }
     assert launch_kwargs(config, "tts_engine")["max_prompt_rows"] == 4096
     assert launch_kwargs(config, "vocoder")["codec_path"] == "local/codec.pth"
@@ -245,3 +287,27 @@ def test_speech_fields_the_model_cannot_honor_are_refused(
         speech_validator().parse_raw_request({"input": "hello", field_name: value})
 
     assert rejection.value.param == field_name
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.1, 30.0, 240.0])
+def test_codec_download_timeout_is_shared_by_both_stages(
+    timeout_seconds: float,
+) -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [("vocoder.factory.codec_download_timeout_seconds", str(timeout_seconds))]
+    )
+    for stage_name in ("preprocessing", "vocoder"):
+        assert (
+            launch_kwargs(config, stage_name)["codec_download_timeout_seconds"]
+            == timeout_seconds
+        )
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, float("inf"), float("nan")])
+def test_codec_download_timeout_must_be_positive_and_finite(
+    timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        Drama3VocoderStageConfig(
+            factory={"codec_download_timeout_seconds": timeout_seconds}
+        )
