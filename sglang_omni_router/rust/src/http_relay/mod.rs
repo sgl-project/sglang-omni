@@ -218,7 +218,7 @@ impl HttpRelay {
         }
         let response: axum::http::Response<reqwest::Body> = response.into();
         let (parts, body) = response.into_parts();
-        let headers = match sanitize(parts.status, &parts.headers) {
+        let mut headers = match sanitize(parts.status, &parts.headers) {
             Ok(headers) => headers,
             Err(fault) => {
                 drop(body);
@@ -226,6 +226,11 @@ impl HttpRelay {
                 return Err(fault);
             }
         };
+        headers.insert(
+            "x-sglang-omni-worker",
+            HeaderValue::from_str(lease.worker_id()).map_err(|_| HttpFault::InternalError)?,
+        );
+        headers.insert("x-sglang-omni-route-attempt", HeaderValue::from_static("1"));
         let relay = DirectResponseBody::new(body, lease, Arc::clone(&self.metrics));
         let mut downstream = Response::new(Body::new(relay));
         *downstream.status_mut() = parts.status;

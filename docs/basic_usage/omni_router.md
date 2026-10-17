@@ -183,8 +183,19 @@ A canonical `x-request-id` identifies each request. A valid caller value is
 preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.
 
-Media responses carry `x-sglang-omni-worker`, the configured id of the worker
-that answered. A streaming PCM speech response also carries
+Relayed HTTP responses also include router-generated diagnostics:
+
+- `x-sglang-omni-worker`: the selected configured `worker_id`.
+- `x-sglang-omni-route-attempt`: `1`, because the router does not retry requests.
+
+These headers cover JSON, SSE, audio, and voice-control responses, including
+worker-returned errors. The router replaces any upstream values with its own
+values. Client-supplied diagnostic headers are not forwarded to workers.
+Router-generated errors, including connection failures and timeouts before
+response commitment, omit these two headers, as do health and administrative
+responses. The canonical `x-request-id` remains available on these responses.
+
+A streaming PCM speech response also carries
 `x-sglang-omni-speech-id`, a generated resource ID independent of `x-request-id`.
 After the stream ends, use that speech ID in `GET /v1/audio/speech/{request_id}`
 and echo the worker ID as `x-sglang-omni-route-worker`. The router pins the lookup
