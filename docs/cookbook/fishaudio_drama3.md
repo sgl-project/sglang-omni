@@ -197,7 +197,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB; the KV cache is still bounded by the configured request capacity. GPTQ-Marlin needs compute capability 8.0 or newer.
+The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB. GPTQ-Marlin needs compute capability 8.0 or newer.
 
 Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.
 
@@ -275,7 +275,7 @@ by default) and logs:
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB
 ```
 
-The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. Increasing the engine's share and request capacity, or overriding its automatic KV capacity limit, can leave too little memory for concurrent non-streaming requests. Keep the engine's default share of 0.70 on the GPU that runs the vocoder, stream those requests (`"stream": true`), or put the vocoder on a second GPU, as under [Deployment](#deployment). All declared stage budgets must fit the GPU's capacity.
+The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. Increasing the engine's share or request capacity, or overriding its automatic KV capacity limit, can leave too little memory for concurrent non-streaming requests. Keep the engine's default share of 0.70 on the GPU that runs the vocoder, stream those requests (`"stream": true`), or put the vocoder on a second GPU, as under [Deployment](#deployment). All declared stage budgets must fit the GPU's capacity.
 
 ## Defaults Parameters
 

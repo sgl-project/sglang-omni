@@ -160,7 +160,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         if overrides.get("max_total_tokens") is None:
             max_request_count = overrides["max_running_requests"]
             assert isinstance(max_request_count, int)
-            # note (Codex): Without radix caching, only live contexts consume KV rows.
+            # Drama 3 disables prefix caching, so only live contexts consume KV rows.
             max_kv_token_count = self.context_length * max_request_count
             overrides["max_total_tokens"] = max_kv_token_count
             logger.info(
