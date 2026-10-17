@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from torch import nn
 
 from sglang_omni.client.client import Client
 from sglang_omni.comm import stage_io
@@ -28,6 +29,7 @@ from sglang_omni.models.audar_tts.config import AudarTTSPipelineConfig
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.models.audar_tts.protocol import build_prompt, parse_speech_codes
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.models.audar_tts.vocoder_graph import capture_decode_graphs
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
@@ -634,9 +636,75 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
+    monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
+    with pytest.raises(ValueError, match="cuda, xpu or cpu"):
+        stages.create_tts_engine_executor("unused", device="mps", gpu_id=1)
+
+
+def test_llama_cpp_stage_refuses_xpu_without_a_sycl_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: None)
+        ),
+    )
     monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
-    with pytest.raises(ValueError, match="cuda or cpu"):
+    with pytest.raises(RuntimeError, match="GGML_SYCL=ON"):
         stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+
+def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLlama:
+        instance: "FakeLlama"
+
+        def __init__(self, **kwargs: str | int | bool) -> None:
+            self.kwargs = kwargs
+            self.calls: list[list[int] | str] = []
+            FakeLlama.instance = self
+
+        def tokenize(self, text: bytes, *, add_bos: bool, special: bool) -> list[int]:
+            return [99]
+
+        def eval(self, tokens: list[int]) -> None:
+            self.calls.append(tokens)
+
+        def reset(self) -> None:
+            self.calls.append("reset")
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+
+    stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+    assert FakeLlama.instance.kwargs["main_gpu"] == 1
+    assert FakeLlama.instance.kwargs["n_gpu_layers"] == -1
+    assert FakeLlama.instance.calls == [[99] * 256, [99], "reset"]
 
 
 def test_llama_cpp_stage_matches_official_generation_loop(
@@ -758,3 +826,74 @@ def test_vocoder_does_not_claim_batching_without_tensor_batch_decode(
 
     assert scheduler.batch_fn is None
     assert scheduler.max_batch_size == 1
+
+
+def test_vocoder_replays_a_captured_code_count_and_decodes_others_eagerly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDecodeGraph:
+        def __init__(self) -> None:
+            self.replayed: list[list[int]] = []
+
+        def replay(self, codes: torch.Tensor) -> torch.Tensor:
+            self.replayed.append(codes.flatten().tolist())
+            return torch.zeros(1, 2, 8)
+
+    codec = FakeCodec()
+    codec.generator = types.SimpleNamespace(
+        head=lambda hidden_states: (torch.ones(1, 1, 4),)
+    )
+    decode_graph = FakeDecodeGraph()
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(
+        stages, "capture_decode_graphs", lambda *args: {2: decode_graph}
+    )
+    scheduler = stages.create_vocoder_executor(
+        device="cpu", decode_graph_code_counts=[2]
+    )
+
+    hit = asyncio.run(
+        scheduler.fn(make_payload(state=AudarTTSState(audio_codes=[1, 2])))
+    )
+    miss = asyncio.run(
+        scheduler.fn(make_payload(state=AudarTTSState(audio_codes=[1, 2, 3])))
+    )
+
+    assert decode_graph.replayed == [[1, 2]]
+    assert codec.decode_calls == 1
+    assert hit.data["audio_waveform_shape"] == [4]
+    assert miss.data["audio_waveform_shape"] == [3]
+
+
+def test_vocoder_graph_capture_rejects_non_positive_code_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(
+        current_platform, "get_device_graph_backend", lambda device: object()
+    )
+    with pytest.raises(ValueError, match="must be positive"):
+        capture_decode_graphs(nn.Module(), torch.device("cpu"), [50, 0])
+
+
+@pytest.mark.skipif(not torch.xpu.is_available(), reason="requires XPU")
+def test_vocoder_graph_replay_matches_eager_decode_on_xpu() -> None:
+    codec_decoder_vocos = pytest.importorskip("neucodec.codec_decoder_vocos")
+    neucodec_model = pytest.importorskip("neucodec.model")
+    torch.manual_seed(0)
+    codec = nn.Module()
+    codec.generator = codec_decoder_vocos.CodecDecoderVocos(hop_length=480)
+    codec.fc_post_a = nn.Linear(2048, 1024)
+    codec = codec.eval().to("xpu")
+
+    graphs = capture_decode_graphs(codec, torch.device("xpu", 0), [50, 150])
+
+    for code_count in (50, 150, 50):
+        codes = torch.randint(0, 4**8, (1, 1, code_count), device="xpu")
+        with torch.inference_mode():
+            hidden_states = graphs[code_count].replay(codes)
+            replayed = codec.generator.head(hidden_states)[0].cpu()
+            expected = neucodec_model.NeuCodec.decode_code(codec, codes).cpu()
+        assert replayed.shape == (1, 1, code_count * 480)
+        torch.testing.assert_close(replayed, expected, atol=1e-5, rtol=0)
