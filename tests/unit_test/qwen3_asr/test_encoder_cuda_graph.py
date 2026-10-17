@@ -9,6 +9,9 @@ from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
     build_buckets,
+    eager_preamble,
+    plan_mel_chunks,
+    planned_preamble,
     window_lens_from_token_counts,
 )
 from sglang_omni.platforms import current_platform
@@ -239,3 +242,32 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
     )
 
     assert model.encoder_graph_runner == "untouched"
+
+
+@pytest.mark.parametrize("frame_counts", [[1], [99, 100, 101], [200, 307]])
+@pytest.mark.parametrize("convolution_batch_size", [1, 16])
+def test_host_planned_preamble_matches_eager(frame_counts, convolution_batch_size):
+    class Projection(torch.nn.Linear):
+        def forward(self, hidden_states):
+            return super().forward(hidden_states), None
+
+    torch.manual_seed(7)
+    tower = SimpleNamespace(
+        n_window=50,
+        conv_chunksize=convolution_batch_size,
+        conv2d1=torch.nn.Conv2d(1, 2, 3, stride=2, padding=1),
+        conv2d2=torch.nn.Conv2d(2, 2, 3, stride=2, padding=1),
+        conv2d3=torch.nn.Conv2d(2, 2, 3, stride=2, padding=1),
+        conv_out=Projection(32, 8),
+        positional_embedding=SimpleNamespace(positional_embedding=torch.randn(128, 8)),
+    )
+    features = [torch.randn(1, 128, frames + 11) for frames in frame_counts]
+    packed_features = torch.cat(
+        [feature[0, :, :frames] for feature, frames in zip(features, frame_counts)],
+        dim=1,
+    )
+    plan = plan_mel_chunks(features, frame_counts, chunk_width=100, dtype=torch.float32)
+    with torch.no_grad():
+        expected = eager_preamble(tower, packed_features, torch.tensor(frame_counts))
+        actual = planned_preamble(tower, plan, torch.device("cpu"))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
