@@ -54,6 +54,10 @@ from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_t
 
 logger = logging.getLogger(__name__)
 
+# note (Richard Wang): startup checks ready groups as often as wait_ready polls
+# its own ranks.
+STARTUP_SUPERVISION_POLL_S = 1.0
+
 
 class StageByteBudgets(TypedDict):
     kv_cache_bytes: int | None
@@ -801,10 +805,11 @@ class MultiProcessPipelineRunner:
             else:
                 pass
 
-            # Note (Jiaxin Deng): timeout is the budget for one startup wave,
-            # not for the whole call: weight sharing makes startup genuinely
-            # sequential, and splitting one budget would let a slow leader load
-            # starve the follower attach that follows it into a false timeout.
+            # Note (Jiaxin Deng): weight sharing makes startup genuinely
+            # sequential, so waves start one after another. timeout bounds the
+            # gap between startup progress signals of each process still
+            # starting, so a slow leader load never shortens the follower attach.
+            ready_groups: list[StageGroup] = []
             for wave in self.spawn_waves():
                 if not wave:
                     continue
@@ -819,7 +824,7 @@ class MultiProcessPipelineRunner:
                             process_env_overrides=env_by_process,
                         )
 
-                await asyncio.gather(*(g.wait_ready(timeout) for g in wave))
+                await self.wait_wave_ready(wave, ready_groups, timeout)
 
                 for group in wave:
                     if group.any_dead():
@@ -891,6 +896,40 @@ class MultiProcessPipelineRunner:
             pass
         followers = self.weight_share.follower_process_names
         return any(spec.process_name in followers for spec in group.process_specs)
+
+    async def wait_wave_ready(
+        self, wave: list[StageGroup], ready_groups: list[StageGroup], timeout: float
+    ) -> None:
+        """Wait for every group of wave while watching each group already ready.
+
+        A ready group stays checked until the runtime monitor takes over, so it
+        cannot die unnoticed while another group keeps starting.
+        """
+        waits = {
+            asyncio.ensure_future(group.wait_ready(timeout)): group for group in wave
+        }
+        try:
+            while waits:
+                done, _ = await asyncio.wait(
+                    waits,
+                    timeout=STARTUP_SUPERVISION_POLL_S,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    ready_groups.append(waits.pop(task))
+                    task.result()
+                for group in ready_groups:
+                    if group.any_dead():
+                        raise RuntimeError(
+                            f"Stage process(es) died during startup: "
+                            f"{group.dead_summary()}"
+                        )
+                    else:
+                        pass
+        finally:
+            for task in waits:
+                task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
 
     def spawn_waves(self) -> list[list[StageGroup]]:
         """Partition groups so every weight-share follower starts last.
