@@ -32,6 +32,7 @@ _BAD_REQUEST_MARKERS = (
     "MiniCPM-o video frames must have",
     "video_url requires a media URL",
     "chat content part",
+    "more media placeholders than the request has media inputs",
     "max_new_tokens must be",
     "Fun-ASR Apple currently requires temperature=0",
     "exceeds the maximum allowed length",

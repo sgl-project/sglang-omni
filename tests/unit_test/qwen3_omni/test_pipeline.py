@@ -377,12 +377,19 @@ def test_merge_extracted_video_audio_rejects_mixed_audio_presence(missing) -> No
         merge_extracted_video_audio([], [np.ones(3), missing])
 
 
-@pytest.mark.parametrize("total_pixels", [None, 28 * 28 * 8])
-@pytest.mark.parametrize("sampled_fps", [[2.0, 2.0], [2.0, 4.0]])
-def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
-    monkeypatch, sampled_fps, total_pixels
-) -> None:
-    """Keep audio features and tokens aligned through the real processor call."""
+REAL_PROCESSOR_TOKENS = {
+    "image_token": "<image>",
+    "audio_token": "<audio>",
+    "video_token": "<video>",
+    "vision_bos_token": "<vision_start>",
+    "vision_eos_token": "<vision_end>",
+    "audio_bos_token": "<audio_start>",
+    "audio_eos_token": "<audio_end>",
+}
+
+
+def real_qwen_processor():
+    """A real Qwen3-Omni processor over small local tokenizer and media parts."""
     from transformers import (
         Qwen2Tokenizer,
         Qwen2VLImageProcessor,
@@ -393,33 +400,34 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
         Qwen3OmniMoeProcessor,
     )
 
-    from sglang_omni.models.qwen3_omni.components import (
-        preprocessor as preprocessor_mod,
-    )
-
-    tokens = {
-        "image_token": "<image>",
-        "audio_token": "<audio>",
-        "video_token": "<video>",
-        "vision_bos_token": "<vision_start>",
-        "vision_eos_token": "<vision_end>",
-        "audio_bos_token": "<audio_start>",
-        "audio_eos_token": "<audio_end>",
-    }
-    tokenizer = Qwen2Tokenizer(extra_special_tokens=tokens)
     template = (
         "{% for message in messages %}{% for part in message['content'] %}"
         "{% if part['type'] == 'video' %}<vision_start><video><vision_end>"
         "{% elif part['type'] == 'audio' %}<audio_start><audio><audio_end>"
         "{% else %}{{ part['text'] }}{% endif %}{% endfor %}{% endfor %}"
     )
-    processor = Qwen3OmniMoeProcessor(
-        tokenizer=tokenizer,
+    return Qwen3OmniMoeProcessor(
+        tokenizer=Qwen2Tokenizer(extra_special_tokens=REAL_PROCESSOR_TOKENS),
         image_processor=Qwen2VLImageProcessor(),
         video_processor=Qwen2VLVideoProcessor(),
         feature_extractor=WhisperFeatureExtractor(feature_size=128),
         chat_template=template,
     )
+
+
+@pytest.mark.parametrize("total_pixels", [None, 28 * 28 * 8])
+@pytest.mark.parametrize("sampled_fps", [[2.0, 2.0], [2.0, 4.0]])
+def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
+    monkeypatch, sampled_fps, total_pixels
+) -> None:
+    """Keep audio features and tokens aligned through the real processor call."""
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    tokens = REAL_PROCESSOR_TOKENS
+    processor = real_qwen_processor()
+    tokenizer = processor.tokenizer
     embedded = [np.ones(3200, dtype=np.float32), np.ones(6400, dtype=np.float32)]
     explicit = np.ones(9600, dtype=np.float32)
 
@@ -775,6 +783,47 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
         assert str(exc_info.value).startswith(rejection)
         assert is_bad_request_error(exc_info.value)
         assert tokenized_prompts == []
+
+
+@pytest.mark.parametrize("with_audio", [False, True])
+def test_qwen_preprocessor_handles_placeholder_text_with_real_processor(
+    with_audio: bool,
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    text = "the tokenizer uses <audio> for audio"
+    processor = real_qwen_processor()
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    pre.processor = processor
+    content = [{"type": "text", "text": text}]
+    inputs: dict[str, object] = {"messages": [{"role": "user", "content": content}]}
+    if with_audio:
+        inputs["audios"] = [np.ones(3200, dtype=np.float32)]
+    else:
+        pass
+    payload = StagePayload(
+        request_id="placeholder-text", request=OmniRequest(inputs=inputs), data={}
+    )
+
+    if with_audio:
+        # The chat template adds one placeholder for the audio input, so the
+        # literal one in the text runs past the inputs.
+        with pytest.raises(
+            ValueError, match="2 <audio> for 1 audio inputs"
+        ) as exc_info:
+            asyncio.run(pre.call_impl(payload))
+        assert is_bad_request_error(exc_info.value)
+    else:
+        state = Qwen3OmniPipelineState.from_dict(
+            asyncio.run(pre.call_impl(payload)).data
+        )
+        expected = processor.tokenizer(text, add_special_tokens=False)["input_ids"]
+        assert list(state.prompt["input_ids"]) == expected
 
 
 def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_loading_media(
