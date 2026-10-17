@@ -180,6 +180,10 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     }
 
 
+def test_npu_captures_the_qwen3_tts_code_predictor() -> None:
+    assert platforms.NPUOmniPlatform().enable_tts_predictor_graph() is True
+
+
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 

@@ -357,7 +357,19 @@ def create_vocoder_executor(
     else:
         pass
     if incremental_codec_compile is None:
-        incremental_codec_compile = enable_stateful_codec_decoder
+        incremental_codec_compile = (
+            enable_stateful_codec_decoder and torch.device(device).type != "npu"
+        )
+    else:
+        pass
+    if (
+        torch.device(device).type == "npu"
+        and async_decode is not False
+        and incremental_codec_cuda_graph
+        and not enable_deterministic_inference
+    ):
+        # note (cocoa): Internal-format convolutions use aclop, which cannot be captured.
+        torch.npu.config.allow_internal_format = False
     else:
         pass
     tokenizer = load_qwen3_tts_tokenizer(

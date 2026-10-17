@@ -23,6 +23,7 @@ import pytest
 import torch
 from sglang.srt.runtime_context import get_context
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
@@ -569,6 +570,52 @@ def test_qwen3_tts_engine_probes_silence_ids_only_for_base(
     assert builder.silence_codec_ids.tolist() == expected_ids
     assert builder.leading_silence_mask_frames == expected_frames
     assert bool(encoded_batches) == (tts_model_type == "base")
+
+
+@pytest.mark.parametrize(
+    ("filename", "model_suffix", "mem_fraction_static"),
+    [
+        ("qwen3_tts_1_7b_npu.yaml", "1.7B-Base", 0.60),
+        ("qwen3_tts_0_6b_customvoice_npu.yaml", "0.6B-CustomVoice", 0.70),
+        ("qwen3_tts_1_7b_voicedesign_npu.yaml", "1.7B-VoiceDesign", 0.60),
+    ],
+)
+def test_qwen3_tts_npu_configs_use_sdpa_with_graphs(
+    filename: str,
+    model_suffix: str,
+    mem_fraction_static: float,
+) -> None:
+    config_path = Path(__file__).parents[3] / "examples" / "configs" / filename
+    config = ConfigManager.from_file(str(config_path)).config
+    assert config is not None
+    stages = {stage.name: stage for stage in config.stages}
+
+    assert config.model_path.endswith(model_suffix)
+    assert stages["preprocessing"].factory.max_concurrency == 1
+    assert stages["tts_engine"].tp_size == 1
+    assert stages["tts_engine"].factory.attn_implementation == "sdpa"
+    assert stages["tts_engine"].engine.attention_backend == "ascend"
+    assert stages["tts_engine"].engine.disable_cuda_graph is False
+    assert stages["tts_engine"].engine.enable_torch_compile is False
+    assert stages["tts_engine"].engine.max_running_requests == 1
+    assert stages["tts_engine"].engine.max_queued_requests == 8
+    assert stages["tts_engine"].engine.mem_fraction_static == mem_fraction_static
+    assert stages["vocoder"].factory.attn_implementation == "sdpa"
+    if model_suffix == "1.7B-Base":
+        assert stages["vocoder"].factory.stream_chunk_ramp == [1, 2, 2, 2, 4, 4]
+
+
+def test_qwen3_tts_0_6b_base_npu_config_uses_graph_concurrency() -> None:
+    config_path = Path(__file__).parents[3] / "examples/configs/qwen3_tts_0_6b_npu.yaml"
+    config = ConfigManager.from_file(str(config_path)).config
+    stages = {stage.name: stage for stage in config.stages}
+    engine = stages["tts_engine"].engine
+    vocoder = stages["vocoder"].factory
+
+    assert engine.disable_cuda_graph is False
+    assert engine.max_running_requests == 16
+    assert engine.max_queued_requests == 16
+    assert vocoder.max_batch_size == 8
 
 
 @pytest.mark.parametrize(
@@ -2402,6 +2449,52 @@ def vocoder_factory_capture(
     )
     qwen3_stages.create_vocoder_executor("model", device=device, **factory_kwargs)
     return captured
+
+
+@pytest.mark.parametrize(
+    ("device", "async_decode", "codec_graph", "deterministic", "internal_format"),
+    [
+        ("npu", True, True, False, False),
+        ("npu", None, True, False, False),
+        ("npu", False, True, False, True),
+        ("npu", True, False, False, True),
+        ("npu", True, True, True, True),
+        ("cuda", True, True, False, True),
+        ("cpu", True, True, False, True),
+    ],
+)
+def test_vocoder_factory_selects_capture_compatible_npu_convolutions(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    async_decode: bool | None,
+    codec_graph: bool,
+    deterministic: bool,
+    internal_format: bool,
+) -> None:
+    configuration = SimpleNamespace(allow_internal_format=True)
+    monkeypatch.setattr(
+        qwen3_stages,
+        "torch",
+        SimpleNamespace(
+            device=lambda value: SimpleNamespace(type=value.partition(":")[0]),
+            npu=SimpleNamespace(config=configuration),
+        ),
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "resolve_concrete_device", lambda value, gpu_id: value
+    )
+
+    captured = vocoder_factory_capture(
+        monkeypatch,
+        device=device,
+        async_decode=async_decode,
+        incremental_codec_cuda_graph=codec_graph,
+        enable_deterministic_inference=deterministic,
+    )
+
+    assert configuration.allow_internal_format is internal_format
+    assert captured["async_decode"] is async_decode
+    assert captured["incremental_codec_cuda_graph"] is codec_graph
 
 
 def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
@@ -4945,11 +5038,14 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
     assert len(scheduler.decoder.decode_inputs) == 2
 
 
-def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None:
+@pytest.mark.parametrize("ramp", [(2, 4, 8), (1, 2, 2, 2, 4, 4)])
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks(
+    ramp: tuple[int, ...],
+) -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),
         device="cpu",
-        stream_chunk_ramp=(2, 4, 8),
+        stream_chunk_ramp=ramp,
     )
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler.handle_streaming_new_request(payload.request_id, payload)
@@ -4974,20 +5070,14 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None
 
     # note (Junnan Li): each schedule point is locked behaviorally by feeding
     # one frame short of it (must not emit) and then the last frame (must).
-    feed(1)
-    assert emitted_frames == []
-    feed(1)
-    assert emitted_frames == [2]
-    feed(3)
-    assert emitted_frames == [2]
-    feed(1)
-    assert emitted_frames == [2, 4]
-    feed(7)
-    assert emitted_frames == [2, 4]
-    feed(1)
-    assert emitted_frames == [2, 4, 8]
+    for index, frames in enumerate(ramp):
+        if frames > 1:
+            feed(frames - 1)
+            assert emitted_frames == list(ramp[:index])
+        feed(1)
+        assert emitted_frames == list(ramp[: index + 1])
     feed(8)
-    assert emitted_frames == [2, 4, 8, 8], "past the ramp the steady stride rules"
+    assert emitted_frames == [*ramp, 8], "past the ramp the steady stride rules"
 
 
 def test_decode_graph_frame_counts_cover_startup_and_steady() -> None:
@@ -5367,11 +5457,26 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     assert payload.request_id not in scheduler.stream_states
 
 
-def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
+@pytest.mark.parametrize(
+    "device_type",
+    [
+        "cpu",
+        pytest.param("cuda", marks=pytest.mark.accelerator),
+        pytest.param("npu", marks=pytest.mark.accelerator),
+    ],
+)
+def test_qwen3_tts_stream_output_prepends_reference_once(device_type: str) -> None:
     from sglang_omni.models.qwen3_tts.request_builders import (
         make_qwen3_tts_scheduler_adapters,
     )
 
+    if device_type == "npu":
+        pytest.importorskip("torch_npu")
+    elif device_type == "cuda" and not (torch.version.cuda or torch.version.hip):
+        pytest.skip("CUDA/ROCm is unavailable")
+    device_module = torch.get_device_module(device_type)
+    if device_type != "cpu" and not device_module.is_available():
+        pytest.skip(f"{device_type} is unavailable")
     payload = make_payload(inputs="target", params={"stream": True})
     _, _, stream_output_builder = make_qwen3_tts_scheduler_adapters(
         model=None,
@@ -5379,22 +5484,41 @@ def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
     )
     data = Qwen3TTSSGLangRequestData(
         ref_code=torch.tensor([[10, 11], [12, 13]]),
-        latest_stream_code_chunk=torch.tensor([1, 2]),
+        latest_stream_code_chunk=torch.tensor([1, 2], device=device_type),
         stream_codec_output=True,
         stage_payload=payload,
     )
 
+    previous_event = None
+    if device_type != "cpu":
+        previous_event = device_module.Event()
+        previous_event.record()
+        data.codes_ready_event = previous_event
     first = stream_output_builder(payload.request_id, data, None)
     assert len(first) == 1
-    assert first[0].data.tolist() == [[10, 11], [12, 13], [1, 2]]
-    assert first[0].data.device.type == "cpu"
+    if device_type != "cpu":
+        ready = first[0].metadata["codes_ready_event"]
+        assert ready is not previous_event
+        consumer = device_module.Stream()
+        with device_module.stream(consumer):
+            consumer.wait_event(ready)
+            actual = first[0].data.cpu().tolist()
+    else:
+        actual = first[0].data.tolist()
+    assert actual == [[10, 11], [12, 13], [1, 2]]
+    assert first[0].data.device.type == device_type
     assert first[0].metadata["ref_code_len"] == 2
     assert first[0].metadata["num_quantizers"] == 2
 
-    data.latest_stream_code_chunk = torch.tensor([3, 4])
+    data.latest_stream_code_chunk = torch.tensor([3, 4], device=device_type)
+    if device_type != "cpu":
+        data.codes_ready_event = device_module.Event()
+        data.codes_ready_event.record()
     second = stream_output_builder(payload.request_id, data, None)
     assert second[0].data.tolist() == [[3, 4]]
     assert "ref_code_len" not in second[0].metadata
+    if device_type != "cpu":
+        assert second[0].metadata["codes_ready_event"] is data.codes_ready_event
 
 
 def test_qwen3_tts_stream_output_marks_bootstrap_silence_suppression() -> None:

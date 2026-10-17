@@ -25,7 +25,7 @@ from sglang_omni.platforms.device_graph import (
     DeviceGraphPool,
     ReplayableGraph,
 )
-from sglang_omni.utils.device import device_guard, supports_device_streams
+from sglang_omni.utils.device import device_guard, has_device_streams
 from sglang_omni.utils.gpu_memory import format_bytes_gib
 
 logger = logging.getLogger(__name__)
@@ -103,15 +103,15 @@ def split_frames_by_width(
 
 
 class Qwen3TTSIncrementalCodecCudaGraphRunner:
-    """Fixed-shape CUDA Graph runner for incremental Codec decoding.
+    """Fixed-shape device Graph runner for incremental Codec decoding.
 
-    One instance is configured for one CUDA device and one lifecycle mode. It
+    One instance is configured for one accelerator and one lifecycle mode. It
     captures configured ``(fresh_frames, batch_bucket)`` shapes before serving,
     owns their mutable fixed-address code/state buffers, and replays the
     smallest captured batch bucket that fits a compatible cohort.
 
     COLD and WARM use separate instances because the initial and follow-up
-    workers run on different CUDA streams; each mutable buffer set must be
+    workers run on different device streams; each mutable buffer set must be
     replayed serially by only one worker. WINDOW is a second instance on the
     initial worker's stream holding the widths a wider decode is split into,
     so a failed capture there leaves the COLD shapes in place. TAIL, also on
@@ -183,7 +183,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         )
         self.configured = bool(
             enabled
-            and supports_device_streams(self.device)
+            and has_device_streams(self.device)
             and (self.graph_backend is not None)
             and (self.device.index is not None)
             and (self.num_quantizers > 0)
