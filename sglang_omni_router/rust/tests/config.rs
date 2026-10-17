@@ -648,3 +648,33 @@ fn normalized_worker_origins_are_unique() {
     assert!(message.contains("workers.base_url"));
     assert!(!message.contains("worker.invalid"));
 }
+
+#[test]
+fn request_circuit_configuration_is_optional_and_bounded() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info");
+    assert!(load_bytes(base.as_bytes()).is_ok());
+    for threshold in [1, 32] {
+        for cooldown_ms in [100, 300_000] {
+            let configured = base.replace("[health]", &format!(
+                "[health]\nrequest_failure_threshold = {threshold}\nrequest_failure_cooldown_ms = {cooldown_ms}"
+            ));
+            assert!(load_bytes(configured.as_bytes()).is_ok());
+        }
+    }
+    for setting in [
+        "request_failure_threshold = 0",
+        "request_failure_threshold = 33",
+        "request_failure_cooldown_ms = 0",
+        "request_failure_cooldown_ms = 99",
+        "request_failure_cooldown_ms = 300001",
+        "request_failure_threshold = true",
+    ] {
+        assert!(
+            load_bytes(
+                base.replace("[health]", &format!("[health]\n{setting}"))
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+}

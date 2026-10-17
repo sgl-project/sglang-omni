@@ -302,6 +302,41 @@ applies the configured consecutive success and failure thresholds.
 Transport and upstream protocol failures can request an immediate coalesced
 probe. Application responses do not directly change worker health.
 
+For request-driven fault isolation, enable the optional per-worker circuit
+breaker in the `[health]` section:
+
+```toml
+[health]
+request_failure_threshold = 3
+request_failure_cooldown_ms = 30000
+```
+
+The circuit opens after the configured number of consecutive HTTP upstream
+failures: connection or protocol errors, pre-response upstream timeouts,
+HTTP 5xx responses, or response-body failures after streaming begins. A 5xx
+response counts once even if its body also fails. A completed non-5xx response,
+including a worker 4xx, resets the consecutive failure count. Invalid client
+uploads, client cancellations, and router admission rejections do not count.
+An HTTP request is never retried or replayed.
+
+An open circuit excludes the worker from all new HTTP and WebSocket selections,
+including uploaded-voice owner routing. Existing requests and sessions continue.
+If no eligible replica remains, requests receive the existing `503` unavailable
+response and `/ready` becomes unavailable for the affected service; `/live`
+continues to report process liveness. WebSocket session failures themselves do
+not contribute to the HTTP request failure count.
+
+Recovery requires `health.success_threshold` consecutive successful health
+probes **started after** the cooldown expires. Failed recovery probes reset
+that streak. Results from requests or probes belonging to an older circuit
+generation cannot close or reopen the current circuit. Recovery uses the
+configured health endpoint, so that endpoint should reflect worker readiness.
+
+The breaker is disabled when `request_failure_threshold` is omitted. Its valid
+range is 1–32; `request_failure_cooldown_ms` accepts 100–300000 and defaults to
+30000. `/diagnostics` exposes each worker's `circuit_open` flag, and `/metrics`
+exposes `sglang_omni_router_workers_circuit_open`.
+
 `GET /ready` returns `200` while the process is serving and every enabled
 generation, media, and WebSocket service has a compatible healthy worker.
 Readiness also requires the configured uploaded-voice owner to be healthy and

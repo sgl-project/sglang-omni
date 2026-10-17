@@ -24,7 +24,7 @@ pub(crate) use profile::{
 pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
-use health::{AtomicHealth, ProbeState};
+use health::{AtomicHealth, CircuitBreaker, ProbeState};
 use profile::{
     CAPACITY_CLASS_COUNT, MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy,
     WorkerCapacityConfig, WorkerId,
@@ -74,6 +74,7 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) health: WorkerHealth,
     pub(crate) probe: ProbeSnapshot,
     pub(crate) routable: bool,
+    pub(crate) circuit_open: bool,
     pub(crate) active_requests: usize,
     pub(crate) dispatches: [u64; CAPACITY_CLASS_COUNT],
     pub(crate) voice_control_dispatches: u64,
@@ -101,6 +102,7 @@ pub(super) struct WorkerRecord {
     health: AtomicHealth,
     probe: ProbeState,
     immediate_probe: Notify,
+    circuit: Option<CircuitBreaker>,
 }
 
 impl WorkerRecord {
@@ -123,6 +125,7 @@ impl WorkerRecord {
 
     fn is_routable(&self) -> bool {
         self.health.load() == WorkerHealth::Healthy
+            && self.circuit.as_ref().is_none_or(CircuitBreaker::is_closed)
     }
 
     fn load(&self) -> usize {
@@ -260,6 +263,9 @@ impl WorkerPool {
                 health: AtomicHealth::unknown(),
                 probe: ProbeState::pending(),
                 immediate_probe: Notify::new(),
+                circuit: config.health.request_failure_threshold.map(|threshold| {
+                    CircuitBreaker::new(threshold, config.health.request_failure_cooldown())
+                }),
             }));
         }
         let voice_owner = config
@@ -659,6 +665,10 @@ impl WorkerPool {
             .iter()
             .map(|record| {
                 let health = record.health.load();
+                let circuit_open = record
+                    .circuit
+                    .as_ref()
+                    .is_some_and(|circuit| !circuit.is_closed());
                 WorkerSnapshot {
                     worker_id: record.worker_id.as_str().to_owned(),
                     registration_ordinal: record.registration_id.startup_ordinal(),
@@ -668,7 +678,8 @@ impl WorkerPool {
                         .is_some_and(|owner| Arc::ptr_eq(owner, record)),
                     health,
                     probe: record.probe.snapshot(),
-                    routable: health == WorkerHealth::Healthy,
+                    routable: health == WorkerHealth::Healthy && !circuit_open,
+                    circuit_open,
                     active_requests: record.load(),
                     dispatches: record.dispatches(),
                     voice_control_dispatches: record
@@ -1087,6 +1098,7 @@ mod tests {
             health,
             probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
+            circuit: None,
         })
     }
 
@@ -2008,6 +2020,7 @@ mod tests {
             health,
             probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
+            circuit: None,
         })
     }
 
@@ -2133,6 +2146,7 @@ mod tests {
             health,
             probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
+            circuit: None,
         })
     }
 
@@ -2188,6 +2202,65 @@ mod tests {
             },
             TrustDomain::new(String::from("local")),
         )
+    }
+
+    #[test]
+    fn request_circuit_blocks_uploaded_voice_http_batch_and_websocket_without_fallback() {
+        let mut owner = voice_speech_record(0);
+        Arc::get_mut(&mut owner)
+            .expect("unique owner registration")
+            .circuit = Some(CircuitBreaker::new(1, std::time::Duration::from_secs(1)));
+        let mut pool = media_pool(vec![Arc::clone(&owner), voice_speech_record(1)]);
+        pool.voice_owner = Some(owner);
+        pool.admission = AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
+        let lease = pool
+            .dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("owner admission"),
+                &speech_requirement(true),
+            )
+            .expect("owner dispatch");
+        lease.record_upstream_failure();
+        drop(lease);
+        assert!(!pool.voice_owner_ready());
+        assert!(matches!(
+            pool.pinned_worker(&TrustDomain::new(String::from("local")), "voice-0")
+                .expect("known pinned worker")
+                .dispatch(pool.try_admit_envelope().expect("pinned admission")),
+            Err(DispatchError::Unavailable)
+        ));
+        assert!(matches!(
+            pool.dispatch_voice_owner(pool.try_admit_envelope().expect("voice control admission"),),
+            Err(DispatchError::Unavailable)
+        ));
+        for (class, requirement) in [
+            (CapacityClass::SpeechHttp, speech_requirement(true)),
+            (CapacityClass::SpeechBatch, batch_requirement(true)),
+        ] {
+            assert!(matches!(
+                pool.dispatch(
+                    pool.try_admit(class, 1).expect("named voice admission"),
+                    &requirement,
+                ),
+                Err(DispatchError::Unavailable)
+            ));
+        }
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("session admission"),
+                &speech_websocket_requirement(true),
+            ),
+            Err(DispatchError::Unavailable)
+        ));
+        let fallback = pool
+            .dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("stateless admission"),
+                &speech_requirement(false),
+            )
+            .expect("stateless traffic may use another worker");
+        assert_eq!(fallback.registration_ordinal(), 1);
     }
 
     #[test]

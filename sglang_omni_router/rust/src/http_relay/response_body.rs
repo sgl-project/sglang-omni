@@ -19,6 +19,7 @@ pub(crate) struct DirectResponseBody {
     lease: Option<RequestLease>,
     metrics: Arc<RouterMetrics>,
     terminal: bool,
+    outcome_recorded: bool,
 }
 
 impl DirectResponseBody {
@@ -26,12 +27,14 @@ impl DirectResponseBody {
         inner: reqwest::Body,
         lease: RequestLease,
         metrics: Arc<RouterMetrics>,
+        outcome_recorded: bool,
     ) -> Self {
         Self {
             inner: Some(inner),
             lease: Some(lease),
             metrics,
             terminal: false,
+            outcome_recorded,
         }
     }
 
@@ -45,6 +48,15 @@ impl DirectResponseBody {
             self.metrics.record_relay_failure();
             if let Some(lease) = self.lease.as_ref() {
                 lease.request_immediate_probe();
+            }
+        }
+        if !self.outcome_recorded
+            && let Some(lease) = self.lease.as_ref()
+        {
+            match termination {
+                HttpBodyTermination::Complete => lease.record_upstream_success(),
+                HttpBodyTermination::UpstreamError => lease.record_upstream_failure(),
+                HttpBodyTermination::Dropped => {}
             }
         }
         drop(self.inner.take());
@@ -130,6 +142,7 @@ mod tests {
             lease: None,
             metrics: Arc::clone(&metrics),
             terminal: false,
+            outcome_recorded: false,
         };
 
         let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
