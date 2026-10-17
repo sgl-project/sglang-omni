@@ -24,6 +24,10 @@ else:
 
 logger = logging.getLogger(__name__)
 
+# note (Zhitong Guo): the kernel gives the initial PID namespace this fixed
+# inode (PROC_PID_INIT_INO). NVML reports PIDs from that namespace only.
+INITIAL_PID_NAMESPACE_INODE = 0xEFFFFFFC
+
 
 class InvalidGpuDeviceError(RuntimeError):
     pass
@@ -107,9 +111,11 @@ def is_process_scoped_memory_available() -> bool:
 def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     """Return current-process GPU memory on a CUDA logical device.
 
-    The returned value is in bytes. None means NVML is unavailable or the
-    process-scoped query failed. Invalid device mappings raise RuntimeError
-    because those are launch/configuration errors.
+    The returned value is in bytes. None means NVML is unavailable, the
+    process-scoped query failed, or this process runs in a separate PID
+    namespace (for example a container), where NVML's host PIDs cannot be
+    matched. Invalid device mappings raise RuntimeError because those are
+    launch/configuration errors.
     """
 
     visible_devices = parse_cuda_visible_devices()
@@ -154,6 +160,14 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
                 return int(proc.usedGpuMemory)
             else:
                 pass
+        if os.stat("/proc/self/ns/pid").st_ino != INITIAL_PID_NAMESPACE_INODE:
+            logger.debug(
+                "NVML reports host PIDs but this process runs in a separate PID "
+                "namespace; process GPU memory is unavailable"
+            )
+            return None
+        else:
+            pass
         return 0
     except InvalidGpuDeviceError:
         raise
