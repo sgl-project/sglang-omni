@@ -209,6 +209,7 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.temperature[:row_count],
                 decode_buffers.top_k[:row_count],
                 decode_buffers.top_p[:row_count],
+                decode_buffers.seeds[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
@@ -254,6 +255,7 @@ class Drama3ForCausalLM(nn.Module):
                         temperature=step_inputs.temperature,
                         top_k=step_inputs.top_k,
                         top_p=step_inputs.top_p,
+                        seeds=step_inputs.seeds,
                         request_pool_indices=forward_batch.req_pool_indices,
                         sequence_lengths=forward_batch.seq_lens,
                         cache_slots=forward_batch.out_cache_loc[last_rows],
@@ -283,6 +285,7 @@ class Drama3ForCausalLM(nn.Module):
             step_inputs.temperature,
             step_inputs.top_k,
             step_inputs.top_p,
+            step_inputs.seeds,
             step_batch,
         )
         self.step_exchange.publish(sampled_frames)
@@ -298,6 +301,7 @@ class Drama3ForCausalLM(nn.Module):
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         return self.audio_decoder.decode_step(
@@ -309,6 +313,7 @@ class Drama3ForCausalLM(nn.Module):
             temperature,
             top_k,
             top_p,
+            seeds,
             PagedTowerAttention(self.tower_attention, forward_batch),
         )
 

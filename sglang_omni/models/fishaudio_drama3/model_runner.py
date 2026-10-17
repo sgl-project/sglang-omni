@@ -191,6 +191,9 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         torch.index_select(
             state_pool.top_p, 0, row_indices, out=buffers.top_p[:row_count]
         )
+        torch.index_select(
+            state_pool.seeds, 0, row_indices, out=buffers.seeds[:row_count]
+        )
 
     def publish_decode_frames(self, row_count: int) -> torch.Tensor:
         state_pool = self.state_pool
@@ -233,6 +236,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             state_pool.temperature.index_copy_(0, rows, prefill_inputs.temperature)
             state_pool.top_k.index_copy_(0, rows, prefill_inputs.top_k)
             state_pool.top_p.index_copy_(0, rows, prefill_inputs.top_p)
+            state_pool.seeds.index_copy_(0, rows, prefill_inputs.seeds)
 
     def prepare_and_forward(
         self,
@@ -280,6 +284,11 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             top_p=torch.tensor(
                 [data.top_p for data in request_data],
                 dtype=torch.float32,
+                device=self.device,
+            ),
+            seeds=torch.tensor(
+                [data.seed for data in request_data],
+                dtype=torch.int64,
                 device=self.device,
             ),
         )

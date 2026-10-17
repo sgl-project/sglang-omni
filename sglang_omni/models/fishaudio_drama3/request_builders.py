@@ -17,6 +17,7 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 )
 from sglang_omni.models.fishaudio_drama3.text_config import checked_int
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import RequestOutput
@@ -34,6 +35,8 @@ VOCODER_STAGE = "vocoder"
 class Drama3GenerationInput:
     """One request: prompt frame rows [rows, 1 + num_codebooks] and sampling knobs.
 
+    seed is the non-negative int31 that, with the row's position, fixes every draw.
+
     max_new_tokens None lets the engine fill the remaining context, up to its cap.
     """
 
@@ -42,6 +45,7 @@ class Drama3GenerationInput:
     temperature: float
     top_k: int
     top_p: float
+    seed: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -60,6 +64,7 @@ class Drama3RequestData(SGLangARRequestData):
     frame_rows: list[list[int]] = field(default_factory=list)
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
+    seed: int = field(kw_only=True)
 
 
 class Drama3RequestBuilder:
@@ -181,6 +186,11 @@ class Drama3RequestBuilder:
                 f"{REQUEST_ERROR_PREFIX} top_p must be in (0, 1]; got "
                 f"{generation_input.top_p}"
             )
+        elif not 0 <= generation_input.seed <= SAMPLING_SEED_MASK:
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} seed must be in [0, {SAMPLING_SEED_MASK}]; "
+                f"got {generation_input.seed}"
+            )
         else:
             pass
         max_new_tokens = (
@@ -216,6 +226,7 @@ class Drama3RequestBuilder:
             top_p=generation_input.top_p,
             frame_rows=frame_rows,
             prompt_row_count=len(frame_rows),
+            seed=generation_input.seed,
         )
 
 

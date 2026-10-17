@@ -131,6 +131,16 @@ K5 chains a second edit: `by noon` becomes `by five`, with both earlier takes in
   <source src="https://github.com/user-attachments/files/33393164/K5_second_edit_chained.wav" type="audio/wav">
 </audio>
 
+## Reproducible Sampling
+
+`/v1/audio/speech` accepts a non-negative integer `seed`. A request without one gets a fresh random seed, so unseeded requests stay random. Every response, streaming or not, returns the seed it was generated with in the `X-Seed` header, so a take you like can be replayed by sending that value back as `seed`.
+
+```json
+{"model": "drama-3", "input": "Hello there.", "seed": 1234}
+```
+
+A seed is masked to 31 bits, and every sampling draw depends only on the seed and the position of the frame being sampled, not on the other requests in the batch. The same request with the same seed on the same server settings therefore repeats its take. This is best effort, not bitwise determinism: the logits can still differ in the last bits when the batch size, the prefix cache or the CUDA graph setting changes, and Triton sampling and the PyTorch sampler draw the same noise but round the top-p cut differently, so they can pick different tokens from one seed.
+
 ## Serving Limits
 
 ### Reference Audio Length
@@ -279,7 +289,7 @@ The limit does not count the memory the vocoder process holds outside PyTorch's 
 | Breakable prefill CUDA graph, up to 2048 tokens | Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size. | `--tts_engine.engine.cuda_graph_backend_prefill disabled`; the token cap with `--tts_engine.engine.cuda_graph_max_bs_prefill` |
 | First-frame CUDA graphs, up to 16 requests | Replays the step that samples each request's first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph's largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory. | `--tts_engine.factory.first_frame_cuda_graphs false`; the request cap with `--tts_engine.factory.first_frame_cuda_graph_max_requests` |
 | `prefill_decode_interval` 4 | After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding. | `--tts_engine.engine.prefill_decode_interval 0` schedules prefills without the wait |
-| Triton sampling | Samples each frame's main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p. | `--tts_engine.factory.triton_sampling false` |
+| Triton sampling | Samples each frame's main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. A seed gives the same noise to both samplers, but the tokens can still differ. Rounding can keep or drop a candidate whose cumulative probability lies at top_p. | `--tts_engine.factory.triton_sampling false` |
 | Fused codebook tower layers, up to 16 rows | Runs the codebook tower layers of decode and first-frame steps of up to 16 rows as fused Triton kernels, eagerly or inside the CUDA graphs; larger steps and the tower's prefill keep the module path. The kernels add in a different order, so the tower's outputs can differ in the last bits and the sampled frames can differ. | `--tts_engine.factory.tower_fused_layers false` |
 | Vocoder window CUDA graphs | Replays the decode of each streaming window length at batch 1 as a CUDA graph; batches and longer windows decode eagerly. | `--vocoder.factory.window_cuda_graphs false` |
 | Vocoder fp16 decoding | Decodes frames into audio in fp16. | `--vocoder.factory.decode_dtype float32` |

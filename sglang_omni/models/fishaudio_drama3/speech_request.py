@@ -28,6 +28,7 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
     fish_reference_payload_is_supported,
 )
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.sampling.seed import resolve_row_seed
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 DEFAULT_TEMPERATURE = 1.0
@@ -43,9 +44,8 @@ UNSUPPORTED_TTS_PARAMS = (
     "token_count",
     "duration_tokens",
     "initial_codec_chunk_frames",
-    "seed",
 )
-UNSUPPORTED_PARAMS = ("seed", "stage_params", "stage_sampling")
+UNSUPPORTED_PARAMS = ("stage_params", "stage_sampling")
 INT64_LIMITS = torch.iinfo(torch.int64)
 
 
@@ -176,6 +176,13 @@ class Drama3SpeechPreprocessor:
                 for field_name in UNSUPPORTED_PARAMS
                 if request.params.get(field_name) is not None
             }
+            # The seed is read from params; one only in tts_params would be dropped.
+            | (
+                {"seed"}
+                if tts_params.get("seed") is not None
+                and request.params.get("seed") is None
+                else set()
+            )
         )
         voice = tts_params.get("voice")
         is_default_voice = voice is None or (
@@ -203,6 +210,13 @@ class Drama3SpeechPreprocessor:
         top_k = given_integer(request.params, "top_k", DEFAULT_TOP_K)
         assert top_k is not None
         max_new_tokens = given_integer(request.params, "max_new_tokens", None)
+        seed = given_integer(request.params, "seed", None)
+        if seed is not None and seed < 0:
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} seed must be a non-negative integer; got {seed}"
+            )
+        else:
+            pass
         repetition_penalty = given_number(request.params, "repetition_penalty", 1.0)
         if repetition_penalty != 1.0:
             raise ValueError(
@@ -271,6 +285,7 @@ class Drama3SpeechPreprocessor:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                seed=resolve_row_seed(seed),
             ),
         )
 

@@ -207,6 +207,11 @@ class SpeechRequestValidator:
         )
         self.tts_batch_max_items = int(tts_batch_max_items)
         self.supported_speech_fields = supported_speech_fields
+        # A pipeline that declares seed honors it, so an unseeded request gets a
+        # seed the response can echo for replaying the take.
+        self.assigns_unseeded_seeds = (
+            supported_speech_fields is not None and "seed" in supported_speech_fields
+        )
 
     def parse_request(self, payload: object) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""

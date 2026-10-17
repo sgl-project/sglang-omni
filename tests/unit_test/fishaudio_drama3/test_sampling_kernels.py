@@ -15,6 +15,7 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     RAS_TOP_K,
     RAS_TOP_P,
     RAS_WINDOW_FRAMES,
+    philox_exponential_noise,
     sample_semantic_with_ras,
     sample_top_k_top_p,
 )
@@ -27,7 +28,6 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     SELECTED_CANDIDATES,
     TAIL_BLOCK_WIDTH,
     VALIDATED_COMPUTE_CAPABILITY,
-    CodebookSampler,
     triton_sampling_unsupported_reason,
 )
 
@@ -46,8 +46,8 @@ if HAS_TRITON:
 
     @triton.jit
     def noise_kernel(
-        seed,
-        step_pointer,
+        seed_pointer,
+        position_pointer,
         stream_id,
         noise_pointer,
         WIDTH: tl.constexpr,
@@ -57,7 +57,12 @@ if HAS_TRITON:
         columns = tl.arange(0, BLOCK_WIDTH)
         tl.store(
             noise_pointer + row * WIDTH + columns,
-            exponential_noise(seed, tl.load(step_pointer), row, stream_id, columns),
+            exponential_noise(
+                tl.load(seed_pointer + row),
+                tl.load(position_pointer + row),
+                stream_id,
+                columns,
+            ),
             mask=columns < WIDTH,
         )
 
@@ -67,8 +72,8 @@ if HAS_TRITON:
         temperature_pointer,
         top_k_pointer,
         top_p_pointer,
-        step_pointer,
-        seed,
+        seed_pointer,
+        position_pointer,
         stream_id,
         force_search,
         kept_probabilities_pointer,
@@ -93,7 +98,8 @@ if HAS_TRITON:
         )
         top_k = tl.load(top_k_pointer + row)
         top_p = tl.load(top_p_pointer + row)
-        step = tl.load(step_pointer)
+        seed = tl.load(seed_pointer + row)
+        position = tl.load(position_pointer + row)
         (
             main_keys,
             main_weights,
@@ -130,7 +136,7 @@ if HAS_TRITON:
                 > 0
             )
             sampled_code = race_selected(
-                selected_indices, selected_weights, is_kept, seed, step, row, stream_id
+                selected_indices, selected_weights, is_kept, seed, position, stream_id
             )
         else:
             threshold_key = search_threshold(
@@ -157,8 +163,7 @@ if HAS_TRITON:
                 threshold_key,
                 top_key,
                 seed,
-                step,
-                row,
+                position,
                 stream_id,
                 INDEX_BITS,
             )
@@ -203,19 +208,25 @@ def require_validated_gpu() -> None:
         pass
 
 
-def sampler(step: int) -> CodebookSampler:
-    return CodebookSampler(
-        step=torch.tensor(step, dtype=torch.int64, device="cuda"), seed=SEED
+@dataclass(frozen=True, kw_only=True)
+class DrawKeys:
+    seeds: torch.Tensor
+    positions: torch.Tensor
+
+
+def draw_keys(position: int, rows: int) -> DrawKeys:
+    """A distinct seed per row and one shared position, as rows of separate requests."""
+    return DrawKeys(
+        seeds=SEED + torch.arange(rows, dtype=torch.int64, device="cuda"),
+        positions=torch.full((rows,), position, dtype=torch.int64, device="cuda"),
     )
 
 
-def kernel_noise(
-    codebook_sampler: CodebookSampler, stream_id: int, rows: int, width: int
-) -> torch.Tensor:
+def kernel_noise(keys: DrawKeys, stream_id: int, rows: int, width: int) -> torch.Tensor:
     noise = torch.empty(rows, width, dtype=torch.float32, device="cuda")
     noise_kernel[(rows,)](
-        codebook_sampler.seed,
-        codebook_sampler.step,
+        keys.seeds,
+        keys.positions,
         stream_id,
         noise,
         WIDTH=width,
@@ -343,10 +354,17 @@ def test_head_kernel_draws_what_the_reference_draws_with_the_same_noise(
     logits = head_logits(rows, width, generator)
     temperature, top_k, top_p = mixed_parameters(rows, generator)
     stream_id = FIRST_CODEBOOK_HEAD_STREAM + 3
-    codebook_sampler = sampler(11)
+    keys = draw_keys(11, rows)
 
     sampled = sample_top_k_top_p(
-        logits, temperature, top_k, top_p, codebook_sampler, stream_id
+        logits,
+        temperature,
+        top_k,
+        top_p,
+        keys.seeds,
+        keys.positions,
+        True,
+        stream_id,
     )
 
     reference = reference_draws(
@@ -354,10 +372,27 @@ def test_head_kernel_draws_what_the_reference_draws_with_the_same_noise(
         temperature,
         top_k,
         top_p,
-        kernel_noise(codebook_sampler, stream_id, rows, width),
+        kernel_noise(keys, stream_id, rows, width),
     )
     problems = draw_problems(sampled, reference)
     assert not problems, problems
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    "stream_id", [FIRST_DRAW_STREAM, FIRST_CODEBOOK_HEAD_STREAM + 2]
+)
+def test_pytorch_noise_matches_the_kernel_noise(stream_id: int) -> None:
+    require_triton_device()
+    rows, width = 8, 100
+    keys = draw_keys(7, rows)
+
+    torch.testing.assert_close(
+        philox_exponential_noise(keys.seeds, keys.positions, stream_id, width),
+        kernel_noise(keys, stream_id, rows, width),
+        rtol=1e-5,
+        atol=0.0,
+    )
 
 
 def semantic_inputs(
@@ -390,21 +425,21 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
     semantic_logits, candidates = semantic_inputs(rows, codebook_size, generator)
     temperature, top_k, top_p = mixed_parameters(rows, generator)
     candidate_logits = semantic_logits[:, candidates]
-    codebook_sampler = sampler(5)
+    keys = draw_keys(5, rows)
     candidate_count = candidates.shape[0]
     first_reference = reference_draws(
         candidate_logits,
         temperature,
         top_k,
         top_p,
-        kernel_noise(codebook_sampler, FIRST_DRAW_STREAM, rows, candidate_count),
+        kernel_noise(keys, FIRST_DRAW_STREAM, rows, candidate_count),
     )
     ras_reference = reference_draws(
         candidate_logits,
         torch.full((rows,), RAS_TEMPERATURE, device="cuda"),
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
-        kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidate_count),
+        kernel_noise(keys, RAS_DRAW_STREAM, rows, candidate_count),
     )
     first_tokens = candidates[first_reference.tokens]
     ras_tokens = candidates[ras_reference.tokens]
@@ -423,7 +458,9 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
         top_p,
         SYNTHETIC_SEMANTIC_BEGIN_ID,
         codebook_size,
-        codebook_sampler,
+        keys.seeds,
+        keys.positions,
+        True,
     )
 
     is_semantic = (first_tokens >= SYNTHETIC_SEMANTIC_BEGIN_ID) & (
@@ -479,13 +516,13 @@ def test_semantic_kernel_keeps_repeated_eos_and_replaces_repeated_semantic(
     )
     windows[:, 3] = eos_token_id
     windows[:, 9] = repeated_semantic_token
-    codebook_sampler = sampler(9)
+    keys = draw_keys(9, rows)
     ras_reference = reference_draws(
         semantic_logits[:, candidates],
         torch.full((rows,), RAS_TEMPERATURE, device="cuda"),
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
-        kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidates.shape[0]),
+        kernel_noise(keys, RAS_DRAW_STREAM, rows, candidates.shape[0]),
     )
     ras_tokens = candidates[ras_reference.tokens]
 
@@ -498,7 +535,9 @@ def test_semantic_kernel_keeps_repeated_eos_and_replaces_repeated_semantic(
         torch.ones(rows, device="cuda"),
         SYNTHETIC_SEMANTIC_BEGIN_ID,
         codebook_size,
-        codebook_sampler,
+        keys.seeds,
+        keys.positions,
+        True,
     )
 
     assert not bool((ras_reference.is_near_cut | ras_reference.is_near_tie).any())
@@ -516,7 +555,7 @@ def kept_probabilities(
     temperature: torch.Tensor,
     top_k: torch.Tensor,
     top_p: torch.Tensor,
-    codebook_sampler: CodebookSampler,
+    keys: DrawKeys,
     stream_id: int,
     force_search: bool,
     search_rounds_short_by: int,
@@ -530,8 +569,8 @@ def kept_probabilities(
         temperature.float(),
         top_k.long(),
         top_p.float(),
-        codebook_sampler.step,
-        codebook_sampler.seed,
+        keys.seeds,
+        keys.positions,
         stream_id,
         int(force_search),
         probabilities,
@@ -559,11 +598,11 @@ def test_kept_probabilities_follow_the_rule_on_both_branches(
     generator = torch.Generator().manual_seed(3)
     logits = head_logits(rows, width, generator)
     temperature, top_k, top_p = mixed_parameters(rows, generator)
-    codebook_sampler = sampler(2)
+    keys = draw_keys(2, rows)
     stream_id = FIRST_CODEBOOK_HEAD_STREAM
 
     probabilities, sampled_codes = kept_probabilities(
-        logits, temperature, top_k, top_p, codebook_sampler, stream_id, force_search, 0
+        logits, temperature, top_k, top_p, keys, stream_id, force_search, 0
     )
 
     reference = reference_draws(
@@ -571,7 +610,7 @@ def test_kept_probabilities_follow_the_rule_on_both_branches(
         temperature,
         top_k,
         top_p,
-        kernel_noise(codebook_sampler, stream_id, rows, width),
+        kernel_noise(keys, stream_id, rows, width),
     )
     is_away_from_cut = ~reference.is_near_cut
     has_same_kept_set = ((probabilities > 0) == (reference.kept_probabilities > 0)).all(
@@ -592,7 +631,14 @@ def test_kept_probabilities_follow_the_rule_on_both_branches(
     )
     assert not problems, problems
     production_codes = sample_top_k_top_p(
-        logits, temperature, top_k, top_p, codebook_sampler, stream_id
+        logits,
+        temperature,
+        top_k,
+        top_p,
+        keys.seeds,
+        keys.positions,
+        True,
+        stream_id,
     )
     problems = mismatch_problems(
         sampled_codes != production_codes, reference.is_near_cut | reference.is_near_tie
@@ -614,15 +660,15 @@ def test_tied_and_signed_zero_scores_split_by_column() -> None:
         torch.full((2,), 33, dtype=torch.int64, device="cuda"),
         torch.ones(2, device="cuda"),
     )
-    codebook_sampler = sampler(0)
+    keys = draw_keys(0, 2)
 
     probabilities, _ = kept_probabilities(
-        logits, *parameters, codebook_sampler, FIRST_CODEBOOK_HEAD_STREAM, True, 0
+        logits, *parameters, keys, FIRST_CODEBOOK_HEAD_STREAM, True, 0
     )
     reference = reference_draws(
         logits,
         *parameters,
-        kernel_noise(codebook_sampler, FIRST_CODEBOOK_HEAD_STREAM, 2, 64),
+        kernel_noise(keys, FIRST_CODEBOOK_HEAD_STREAM, 2, 64),
     )
 
     for row in range(2):
@@ -644,14 +690,16 @@ def test_non_finite_rows_stay_in_range_and_leave_other_rows_alone(
     generator = torch.Generator().manual_seed(9)
     logits = head_logits(rows, width, generator)
     temperature, top_k, top_p = mixed_parameters(rows, generator)
-    codebook_sampler = sampler(4)
-    clean = sample_top_k_top_p(logits, temperature, top_k, top_p, codebook_sampler, 2)
+    keys = draw_keys(4, rows)
+    clean = sample_top_k_top_p(
+        logits, temperature, top_k, top_p, keys.seeds, keys.positions, True, 2
+    )
     bad_logits = logits.clone()
     bad_logits[3, ::7] = bad_value
     bad_logits[11] = bad_value
 
     sampled = sample_top_k_top_p(
-        bad_logits, temperature, top_k, top_p, codebook_sampler, 2
+        bad_logits, temperature, top_k, top_p, keys.seeds, keys.positions, True, 2
     )
 
     assert bool(((sampled >= 0) & (sampled < width)).all())
@@ -661,7 +709,7 @@ def test_non_finite_rows_stay_in_range_and_leave_other_rows_alone(
 
 
 @pytest.mark.accelerator
-def test_graph_replays_read_the_step_and_parameters_at_replay() -> None:
+def test_graph_replays_read_the_seeds_positions_and_parameters_at_replay() -> None:
     require_validated_gpu()
     rows, width, codebook_size = 64, 4096, 4096
     generator = torch.Generator().manual_seed(17)
@@ -673,10 +721,9 @@ def test_graph_replays_read_the_step_and_parameters_at_replay() -> None:
     temperature, top_k, top_p = (
         tensor.clone() for tensor in mixed_parameters(rows, generator)
     )
-    codebook_sampler = sampler(0)
+    keys = draw_keys(0, rows)
 
     def step() -> tuple[torch.Tensor, torch.Tensor]:
-        codebook_sampler.step.add_(1)
         main_tokens, _ = sample_semantic_with_ras(
             semantic_logits,
             candidates,
@@ -686,14 +733,18 @@ def test_graph_replays_read_the_step_and_parameters_at_replay() -> None:
             top_p,
             SYNTHETIC_SEMANTIC_BEGIN_ID,
             codebook_size,
-            codebook_sampler,
+            keys.seeds,
+            keys.positions,
+            True,
         )
         return main_tokens, sample_top_k_top_p(
             logits,
             temperature,
             top_k,
             top_p,
-            codebook_sampler,
+            keys.seeds,
+            keys.positions,
+            True,
             FIRST_CODEBOOK_HEAD_STREAM,
         )
 
@@ -706,8 +757,8 @@ def test_graph_replays_read_the_step_and_parameters_at_replay() -> None:
     with torch.cuda.graph(graph):
         replayed_main_tokens, replayed_codes = step()
     for replay_index in range(4):
-        replay_step = 10 * replay_index
-        codebook_sampler.step.fill_(replay_step)
+        keys.positions.fill_(10 * replay_index)
+        keys.seeds.add_(1000)
         new_temperature, new_top_k, new_top_p = mixed_parameters(rows, generator)
         temperature.copy_(new_temperature)
         top_k.copy_(new_top_k)
@@ -717,25 +768,22 @@ def test_graph_replays_read_the_step_and_parameters_at_replay() -> None:
 
         replay_main_tokens = replayed_main_tokens.clone()
         replay_codes = replayed_codes.clone()
-        assert int(codebook_sampler.step) == replay_step + 1
-        codebook_sampler.step.fill_(replay_step)
         eager_main_tokens, eager_codes = step()
         assert torch.equal(replay_main_tokens, eager_main_tokens)
         assert torch.equal(replay_codes, eager_codes)
-        codebook_sampler.step.fill_(replay_step + 1)
         reference = reference_draws(
             logits,
             temperature,
             top_k,
             top_p,
-            kernel_noise(codebook_sampler, FIRST_CODEBOOK_HEAD_STREAM, rows, width),
+            kernel_noise(keys, FIRST_CODEBOOK_HEAD_STREAM, rows, width),
         )
         problems = draw_problems(replay_codes, reference)
         assert not problems, problems
 
 
 @pytest.mark.accelerator
-def test_streams_and_steps_draw_independent_noise() -> None:
+def test_streams_and_positions_draw_independent_noise() -> None:
     require_validated_gpu()
     rows, width = 4096, 64
     pair_count = rows // 2
@@ -752,15 +800,25 @@ def test_streams_and_steps_draw_independent_noise() -> None:
 
     head_codes = [
         sample_top_k_top_p(
-            logits, *parameters, sampler(step), FIRST_CODEBOOK_HEAD_STREAM + head
+            logits,
+            *parameters,
+            draw_keys(position, rows).seeds,
+            draw_keys(position, rows).positions,
+            True,
+            FIRST_CODEBOOK_HEAD_STREAM + head,
         )
-        for step, head in ((1, 0), (1, 1), (2, 0), (3, 0))
+        for position, head in ((1, 0), (1, 1), (2, 0), (3, 0))
     ]
-    same_stream_and_step = sample_top_k_top_p(
-        logits, *parameters, sampler(1), FIRST_CODEBOOK_HEAD_STREAM
+    same_stream_and_position = sample_top_k_top_p(
+        logits,
+        *parameters,
+        draw_keys(1, rows).seeds,
+        draw_keys(1, rows).positions,
+        True,
+        FIRST_CODEBOOK_HEAD_STREAM,
     )
 
-    assert torch.equal(same_stream_and_step, head_codes[0])
+    assert torch.equal(same_stream_and_position, head_codes[0])
     expected = rows * collision_probability
     tolerance = 5 * (rows * collision_probability * (1 - collision_probability)) ** 0.5
     for first, second in ((0, 1), (0, 2), (2, 3)):
@@ -883,13 +941,27 @@ def test_head_kernel_breaks_top_k_one_ties_like_the_pytorch_sampler(
         torch.ones(len(rows), device="cuda"),
     )
 
+    keys = draw_keys(0, len(rows))
+
     sampled = sample_top_k_top_p(
-        logits, *parameters, sampler(0), FIRST_CODEBOOK_HEAD_STREAM
+        logits,
+        *parameters,
+        keys.seeds,
+        keys.positions,
+        True,
+        FIRST_CODEBOOK_HEAD_STREAM,
     )
 
     assert torch.equal(
         sampled,
-        sample_top_k_top_p(logits, *parameters, None, FIRST_CODEBOOK_HEAD_STREAM),
+        sample_top_k_top_p(
+            logits,
+            *parameters,
+            keys.seeds,
+            keys.positions,
+            False,
+            FIRST_CODEBOOK_HEAD_STREAM,
+        ),
     )
 
 
@@ -919,6 +991,7 @@ def test_semantic_kernel_breaks_top_k_one_ties_like_the_pytorch_sampler(
         torch.ones(len(rows), device="cuda"),
     )
 
+    keys = draw_keys(0, len(rows))
     sampled = sample_semantic_with_ras(
         semantic_logits,
         candidates,
@@ -926,7 +999,9 @@ def test_semantic_kernel_breaks_top_k_one_ties_like_the_pytorch_sampler(
         *parameters,
         SYNTHETIC_SEMANTIC_BEGIN_ID,
         codebook_size,
-        sampler(0),
+        keys.seeds,
+        keys.positions,
+        True,
     )
     expected = sample_semantic_with_ras(
         semantic_logits,
@@ -935,7 +1010,9 @@ def test_semantic_kernel_breaks_top_k_one_ties_like_the_pytorch_sampler(
         *parameters,
         SYNTHETIC_SEMANTIC_BEGIN_ID,
         codebook_size,
-        None,
+        keys.seeds,
+        keys.positions,
+        False,
     )
 
     assert torch.equal(sampled[0], expected[0])

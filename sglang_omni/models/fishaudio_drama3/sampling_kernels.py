@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import dataclasses
-
 import torch
 
 try:
@@ -21,7 +19,6 @@ except ImportError:
     HAS_TRITON = False
 
 __all__ = [
-    "CodebookSampler",
     "sample_codebook_head",
     "sample_semantic_candidates",
     "triton_sampling_unsupported_reason",
@@ -43,17 +40,10 @@ TAIL_BLOCK_WIDTH = 32
 MAX_BLOCK_WIDTH = 4096
 SCORE_KEY_BITS = 32
 SAMPLER_WARPS = 8
-PHILOX_SEED_MODULUS = 1 << 63
 FIRST_DRAW_STREAM = 0
 RAS_DRAW_STREAM = 1
 FIRST_CODEBOOK_HEAD_STREAM = 2
 VALIDATED_COMPUTE_CAPABILITY = (9, 0)
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class CodebookSampler:
-    step: torch.Tensor
-    seed: int
 
 
 if HAS_TRITON:
@@ -77,9 +67,9 @@ if HAS_TRITON:
         temperature_pointer: tl.tensor,
         top_k_pointer: tl.tensor,
         top_p_pointer: tl.tensor,
-        step_pointer: tl.tensor,
+        seed_pointer: tl.tensor,
+        position_pointer: tl.tensor,
         sampled_codes_pointer: tl.tensor,
-        seed: tl.tensor,
         stream_id: tl.tensor,
         CODEBOOK_SIZE: tl.constexpr,
         BLOCK_WIDTH: tl.constexpr,
@@ -128,9 +118,8 @@ if HAS_TRITON:
             top_keys,
             tl.load(top_k_pointer + row),
             tl.load(top_p_pointer + row),
-            seed,
-            tl.load(step_pointer),
-            row,
+            tl.load(seed_pointer + row),
+            tl.load(position_pointer + row),
             stream_id,
             INDEX_BITS,
             KEY_BITS,
@@ -147,10 +136,10 @@ if HAS_TRITON:
         temperature_pointer: tl.tensor,
         top_k_pointer: tl.tensor,
         top_p_pointer: tl.tensor,
-        step_pointer: tl.tensor,
+        seed_pointer: tl.tensor,
+        position_pointer: tl.tensor,
         main_tokens_pointer: tl.tensor,
         codebook_zero_pointer: tl.tensor,
-        seed: tl.tensor,
         semantic_begin_id: tl.tensor,
         CANDIDATE_COUNT: tl.constexpr,
         MAIN_WIDTH: tl.constexpr,
@@ -189,7 +178,8 @@ if HAS_TRITON:
         temperature = tl.maximum(
             tl.load(temperature_pointer + row), MINIMUM_TEMPERATURE
         )
-        step = tl.load(step_pointer)
+        seed = tl.load(seed_pointer + row)
+        position = tl.load(position_pointer + row)
         (
             first_main_keys,
             first_main_weights,
@@ -246,8 +236,7 @@ if HAS_TRITON:
             tl.load(top_k_pointer + row),
             tl.load(top_p_pointer + row),
             seed,
-            step,
-            row,
+            position,
             FIRST_STREAM,
             INDEX_BITS,
             KEY_BITS,
@@ -263,8 +252,7 @@ if HAS_TRITON:
             tl.full([], RAS_TOP_K, tl.int64),
             tl.full([], RAS_TOP_P, tl.float32),
             seed,
-            step,
-            row,
+            position,
             RAS_STREAM,
             INDEX_BITS,
             KEY_BITS,
@@ -344,7 +332,8 @@ def sample_codebook_head(
     temperature: torch.Tensor,
     top_k: torch.Tensor,
     top_p: torch.Tensor,
-    sampler: CodebookSampler,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
     stream_id: int,
     minimum_temperature: float,
 ) -> torch.Tensor:
@@ -358,9 +347,9 @@ def sample_codebook_head(
         temperature.float().contiguous(),
         top_k.long().contiguous(),
         top_p.float().contiguous(),
-        sampler.step,
+        seeds.long().contiguous(),
+        positions.long().contiguous(),
         sampled_codes,
-        sampler.seed,
         stream_id,
         CODEBOOK_SIZE=codebook_size,
         BLOCK_WIDTH=triton.next_power_of_2(codebook_size),
@@ -383,7 +372,8 @@ def sample_semantic_candidates(
     top_p: torch.Tensor,
     semantic_begin_id: int,
     codebook_size: int,
-    sampler: CodebookSampler,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
     *,
     minimum_temperature: float,
     ras_temperature: float,
@@ -407,10 +397,10 @@ def sample_semantic_candidates(
         temperature.float().contiguous(),
         top_k.long().contiguous(),
         top_p.float().contiguous(),
-        sampler.step,
+        seeds.long().contiguous(),
+        positions.long().contiguous(),
         main_tokens,
         codebook_zero,
-        sampler.seed,
         semantic_begin_id,
         CANDIDATE_COUNT=candidate_count,
         MAIN_WIDTH=main_block_width(candidate_count),

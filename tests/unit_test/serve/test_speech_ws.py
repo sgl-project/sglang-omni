@@ -764,6 +764,47 @@ def test_speech_websocket_default_config_leaves_sampling_fields_unset() -> None:
     asyncio.run(run())
 
 
+def test_an_unseeded_session_of_a_seed_declaring_pipeline_sends_no_seed() -> None:
+    """A seed fixed at session.config would give every sentence the same draws."""
+
+    async def run() -> None:
+        speech_service = SpeechRequestValidator(
+            default_model="tts",
+            supported_speech_fields=WS_SUPPORTED_SPEECH_FIELDS | {"seed"},
+        )
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=StreamingSpeechClient(),
+            speech_service=speech_service,
+        )
+
+        session.config = await session.parse_config(
+            {
+                "type": "session.config",
+                "model": "tts",
+                "voice": "default",
+                "stream_audio": True,
+                "response_format": "pcm",
+            }
+        )
+        sentence_params = [
+            Client.build_omni_request(
+                speech_service.build_generate_request(
+                    session.speech_request_from_config(sentence=sentence, stream=True),
+                    validate=False,
+                    reference_descriptors=session.config_reference_descriptors(),
+                    uploaded_voice=session.config_uploaded_voice(),
+                )
+            ).params
+            for sentence in ("Hello.", "Hello.")
+        ]
+
+        assert session.config.seed is None
+        assert all("seed" not in params for params in sentence_params)
+
+    asyncio.run(run())
+
+
 def test_speech_websocket_teardown_skips_close_after_application_close() -> None:
     async def run() -> None:
         websocket = RecordingWebSocket()

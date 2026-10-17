@@ -28,7 +28,6 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
 )
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     FIRST_CODEBOOK_HEAD_STREAM,
-    CodebookSampler,
 )
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FusedTowerLayers,
@@ -98,10 +97,7 @@ class AudioDecoder(nn.Module):
             ),
             persistent=False,
         )
-        self.register_buffer(
-            "sampling_step", torch.zeros((), dtype=torch.int64), persistent=False
-        )
-        self.sampler: CodebookSampler | None = None
+        self.use_triton_kernels = False
         self.fused_layers: FusedTowerLayers | None = None
 
     def fused_layers_unsupported_reason(
@@ -309,6 +305,7 @@ class AudioDecoder(nn.Module):
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         attention: DecoderAttention,
     ) -> torch.Tensor:
         """Sample the next int64 frame [rows, 1 + num_codebooks] per backbone row,
@@ -316,13 +313,8 @@ class AudioDecoder(nn.Module):
 
         semantic_logits are the raw lm_head logits (no bias or temperature) of
         hidden_states, the backbone's final-norm output; an end-of-speech frame still
-        runs every layer.
+        runs every layer. A row's draws depend only on its seed and position.
         """
-        sampler = self.sampler
-        if sampler is not None:
-            sampler.step.add_(1)
-        else:
-            pass
         main_tokens, codebook_zero = sample_semantic_with_ras(
             semantic_logits,
             self.main_token_candidate_ids,
@@ -332,7 +324,9 @@ class AudioDecoder(nn.Module):
             top_p,
             self.semantic_begin_id,
             self.codebook_size,
-            sampler,
+            seeds,
+            positions,
+            self.use_triton_kernels,
         )
         label_is_semantic = self.is_semantic(main_tokens)
         hidden_states = self.run_shared_layers(
@@ -365,7 +359,9 @@ class AudioDecoder(nn.Module):
                     temperature,
                     top_k,
                     top_p,
-                    sampler,
+                    seeds,
+                    positions,
+                    self.use_triton_kernels,
                     FIRST_CODEBOOK_HEAD_STREAM + residual_index,
                 )
             )

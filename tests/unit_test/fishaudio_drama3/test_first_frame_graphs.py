@@ -60,6 +60,7 @@ def first_frame_inputs(
         temperature=numbered((request_count,), torch.float32, start, device),
         top_k=numbered((request_count,), torch.int64, start, device),
         top_p=numbered((request_count,), torch.float32, start, device),
+        seeds=numbered((request_count,), torch.int64, start, device),
         request_pool_indices=numbered((request_count,), torch.int64, start, device),
         sequence_lengths=numbered((request_count,), torch.int64, start, device),
         cache_slots=numbered((request_count,), torch.int64, start, device),
@@ -148,6 +149,7 @@ def never_sampled(
     temperature: torch.Tensor,
     top_k: torch.Tensor,
     top_p: torch.Tensor,
+    seeds: torch.Tensor,
     forward_batch: ForwardBatch,
 ) -> torch.Tensor:
     raise AssertionError("a refused capture samples nothing")
@@ -202,6 +204,7 @@ def test_capture_records_every_request_count_largest_first_in_capture_mode() -> 
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         is_capturing = torch.cuda.is_current_stream_capturing()
@@ -272,6 +275,7 @@ def test_a_failed_capture_names_its_request_count_and_the_switch() -> None:
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         if torch.cuda.is_current_stream_capturing() and forward_batch.batch_size == 2:
