@@ -49,7 +49,7 @@ source .venv/bin/activate
 uv pip install --prerelease=allow "sglang-omni==0.1.8"
 ```
 
-## 🛠️ Option B: Manual install
+##  Option B: Manual install
 
 Build prerequisites first:
 
