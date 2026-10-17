@@ -84,6 +84,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
+    should_run_top_priority_stream: bool
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
