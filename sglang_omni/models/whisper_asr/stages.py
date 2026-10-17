@@ -26,6 +26,7 @@ def create_sglang_whisper_asr_executor(
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
     prefill_coalesce_after_builds_during_decode: bool = False,
+    pre_lm_pipeline_batches: bool = False,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 1024,
     pre_lm_cache_size_bytes: int | None = None,
@@ -55,6 +56,7 @@ def create_sglang_whisper_asr_executor(
         prefill_coalesce_after_builds_during_decode=(
             prefill_coalesce_after_builds_during_decode
         ),
+        pre_lm_pipeline_batches=pre_lm_pipeline_batches,
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,
         pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,

@@ -25,6 +25,7 @@ class WhisperASRFactoryArgs(FactoryArgs):
     """Whisper's own constructor knobs, typed like the shared ones."""
 
     enable_encoder_cuda_graph: bool | None = None
+    pre_lm_pipeline_batches: bool | None = None
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)

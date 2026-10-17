@@ -196,6 +196,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         prefill_coalesce_when_idle: bool = True,
         prefill_coalesce_requires_pending_builds: bool = True,
         prefill_coalesce_after_builds_during_decode: bool = False,
+        pre_lm_pipeline_batches: bool = False,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 1024,
         pre_lm_cache_size_bytes: int | None = None,
@@ -236,6 +237,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.prefill_coalesce_after_builds_during_decode = (
             prefill_coalesce_after_builds_during_decode
         )
+        self.pre_lm_pipeline_batches = pre_lm_pipeline_batches
         self.enable_pre_lm_encoder = bool(enable_pre_lm_encoder)
         self.pre_lm_cache_max_entries = int(pre_lm_cache_max_entries)
         # None: derive the byte budget from the entry count (see encoder_service).
@@ -337,6 +339,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             max_batch_size=self.pre_lm_max_batch_size,
             max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
             pin_host_memory=self.pre_lm_cache_pin_host_memory,
+            pipeline_batches=self.pre_lm_pipeline_batches,
         )
         service = self.audio_encoder_service
         logger.info(
