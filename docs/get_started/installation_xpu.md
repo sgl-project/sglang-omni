@@ -1,4 +1,4 @@
-# 🚀 Installation — Intel XPU
+# Installation — Intel XPU
 
 Installs `sglang-omni` for **Intel GPUs (XPU)**. The default
 [installation](./installation.md) pins CUDA-only wheels and would clobber a `torch+xpu` stack.
