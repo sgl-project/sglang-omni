@@ -197,7 +197,7 @@ def create_codec(
     gpu_id: int | None = None,
 ) -> SessionScheduler:
     codec_executor = create_code2wav_executor(
-        model_path, dtype=dtype, device=device, gpu_id=gpu_id
+        model_path, max_batch_size=1, dtype=dtype, device=device, gpu_id=gpu_id
     )
     hooks = CodecHooks(codec_executor.decoder, codec_executor.device)
     # Capture before serving to keep its startup cost off live audio processing.
