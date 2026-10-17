@@ -1596,18 +1596,25 @@ class FakeUnevenHiggsStreamingCodec:
         class config:
             hop_length = 5
 
-    def __init__(self, tail_samples: int = 3) -> None:
-        self.model = self.Model()
+    def __init__(
+        self, tail_samples: int = 3, *, expose_hop_length: bool = True
+    ) -> None:
+        self.frame_samples = self.Model.config.hop_length
+        self.model = (
+            self.Model()
+            if expose_hop_length
+            else SimpleNamespace(config=SimpleNamespace())
+        )
         self.tail_samples = tail_samples
 
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         frames = []
         offsets = torch.arange(
-            self.model.config.hop_length,
+            self.frame_samples,
             dtype=torch.float32,
         )
         for row in codes_TN:
-            frames.append(row.sum().float().repeat(self.model.config.hop_length))
+            frames.append(row.sum().float().repeat(self.frame_samples))
             frames[-1] = frames[-1] + offsets / 10.0
         body = torch.cat(frames) if frames else torch.empty(0, dtype=torch.float32)
         tail = torch.arange(self.tail_samples, dtype=torch.float32) + 10_000
@@ -1768,9 +1775,11 @@ def test_higgs_streaming_vocoder_honors_initial_codec_chunk_frames() -> None:
     assert codec.decode_inputs[0].shape[0] == 1
 
 
+@pytest.mark.parametrize("expose_hop_length", [False, True])
 @pytest.mark.parametrize("payload_first", [False, True])
 def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
     payload_first: bool,
+    expose_hop_length: bool,
 ) -> None:
     raw_codes = torch.tensor(
         [
@@ -1784,10 +1793,10 @@ def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
         dtype=torch.long,
     )
     delayed = apply_delay_pattern(raw_codes)
-    codec = FakeUnevenHiggsStreamingCodec()
+    codec = FakeUnevenHiggsStreamingCodec(expose_hop_length=expose_hop_length)
     scheduler = HiggsStreamingVocoderScheduler(
         codec,
-        stream_stride=3,
+        stream_stride=3 if expose_hop_length else 8,
         stream_followup_stride=2,
         stream_overlap_tokens=1,
         stream_holdback_tokens=0,
@@ -1821,6 +1830,76 @@ def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
     ]
     streamed = np.concatenate(stream_chunks)
     np.testing.assert_array_equal(streamed, full.numpy())
+
+
+def test_higgs_streaming_vocoder_keeps_codec_right_context_for_holdback() -> None:
+    class FollowingFrameCodec:
+        def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
+            current = codes_TN[:, 0].to(torch.float32) * 10
+            following = torch.cat([codes_TN[1:, 0], codes_TN[-1:, 0]]).to(torch.float32)
+            return current + following
+
+        def decode_batch(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
+            return [self.decode(codes) for codes in codes_list]
+
+    raw_codes = torch.tensor(
+        [
+            [1, 11, 21],
+            [2, 12, 22],
+            [3, 13, 23],
+            [4, 14, 24],
+            [5, 15, 25],
+            [6, 16, 26],
+            [7, 17, 27],
+            [8, 18, 28],
+        ],
+        dtype=torch.long,
+    )
+    delayed = apply_delay_pattern(raw_codes)
+    scheduler = HiggsStreamingVocoderScheduler(
+        FollowingFrameCodec(),
+        stream_stride=5,
+        stream_followup_stride=2,
+        initial_chunk_frames=0,
+        stream_overlap_tokens=8,
+        stream_holdback_tokens=1,
+    )
+    payload = higgs_stream_payload(
+        "req",
+        stream=True,
+        delayed_rows=delayed.tolist(),
+        codebook_size=64,
+    )
+    full = scheduler.decode_state_to_audio(HiggsTtsState.from_dict(payload.data))
+    assert full is not None
+
+    scheduler.handle_streaming_new_request("req", payload)
+    streamed_parts: list[np.ndarray[tuple[int], np.dtype[np.float32]]] = []
+    for idx, row in enumerate(delayed):
+        item = higgs_stream_item(row, codebook_size=64)
+        item.chunk_id = idx
+        scheduler.handle_stream_chunk("req", item)
+        new_parts = [
+            np.frombuffer(msg.data["audio_waveform"], dtype=np.float32).copy()
+            for msg in drain_higgs_outbox(scheduler)
+            if msg.type == "stream"
+        ]
+        streamed_parts.extend(new_parts)
+        raw_total = max(0, idx + 1 - raw_codes.shape[1] + 1)
+        assert sum(part.size for part in streamed_parts) <= max(raw_total - 1, 0)
+        if streamed_parts:
+            np.testing.assert_array_equal(
+                np.concatenate(streamed_parts),
+                full[: sum(part.size for part in streamed_parts)].numpy(),
+            )
+
+    scheduler.handle_stream_done("req")
+    streamed_parts.extend(
+        np.frombuffer(msg.data["audio_waveform"], dtype=np.float32).copy()
+        for msg in drain_higgs_outbox(scheduler)
+        if msg.type == "stream"
+    )
+    np.testing.assert_array_equal(np.concatenate(streamed_parts), full.numpy())
 
 
 def test_higgs_streaming_vocoder_accepts_batched_code_rows() -> None:
