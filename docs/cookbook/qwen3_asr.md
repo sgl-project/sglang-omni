@@ -6,7 +6,7 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 
 ## Prerequisites
 
-Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
+Install `sglang-omni` by following the [CUDA installation](../get_started/installation_CUDA.md)
 or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
 then download the model:
 

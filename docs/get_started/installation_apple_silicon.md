@@ -4,7 +4,7 @@
 
 Install the Python Torch/MPS path of `sglang-omni` for Qwen3-ASR and Fun-ASR
 on macOS Apple Silicon (arm64) with `./install.sh`. CUDA users should follow
-the [CUDA installation](./installation.md).
+the [CUDA installation](./installation_CUDA.md).
 
 The native C++ MLX runtime under `sglang_omni_mlx/native/` has a separate build
 and run workflow. See the [MLX path documentation](../developer_reference/mlx.md)
