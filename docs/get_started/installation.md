@@ -1,6 +1,6 @@
 # 🚀 Installation
 
-Current stable release: **v0.1.7** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.1.8** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 Choose the path for your platform. Docker is recommended for NVIDIA CUDA —
 UCX, flash-attn, SGLang, and CUDA are prebuilt. Apple Silicon has a dedicated
@@ -50,7 +50,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.7"
+uv pip install --prerelease=allow "sglang-omni==0.1.8"
 ```
 
 <a id="macos-apple-silicon"></a>
@@ -89,7 +89,7 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 This path currently supports macOS 14 or newer on `arm64` only (the pinned
 `torch==2.13.0`, `torchvision==0.28.0` and `torchcodec==0.15.0` wheels are built
 for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
-MLX/Torch-MPS paths and the
+Torch-MPS path and the
 [Fun-ASR Torch/MPS path](../cookbook/fun_asr.md#apple-silicon).
 Other platforms should use the
 Docker, manual, or Intel XPU instructions below. Common failures are a missing
@@ -140,7 +140,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.7"
+uv pip install --prerelease=allow "sglang-omni==0.1.8"
 ```
 
 Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.
@@ -161,3 +161,5 @@ source .venv/bin/activate
 
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
+
+For installation problems, see [Troubleshooting](./troubleshooting.md).

@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
+import signal
+import subprocess
+import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -19,6 +24,7 @@ from sglang_omni.pipeline.stage_workers import (
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
+from tests.unit_test.fixtures import affinity_probe
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -102,6 +108,31 @@ def test_spawn_env_cpu_plan_preserves_configured_omp(
 
     assert "OMP_NUM_THREADS" not in os.environ
     assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "sched_setaffinity") or len(os.sched_getaffinity(0)) < 2,
+    reason="needs control over the CPU mask of two or more CPUs",
+)
+def test_spawned_process_threads_start_on_the_planned_cpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher_cpus = os.sched_getaffinity(0)
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_affinity = frozenset({min(launcher_cpus)})
+    monkeypatch.setattr(
+        stage_workers, "stage_process_main", affinity_probe.report_thread_cpus
+    )
+    monkeypatch.setenv(affinity_probe.SPAWNED_ENV, "1")
+    group = stage_workers.StageGroup("probe", [spec])
+
+    group.spawn(multiprocessing.get_context("spawn"))
+    import_thread_cpus, thread_cpus = group.startup_error_channels[0].get(timeout=120)
+    group.processes[0].join(timeout=30)
+
+    assert os.sched_getaffinity(0) == launcher_cpus
+    assert import_thread_cpus == sorted(spec.cpu_affinity)
+    assert all(cpus == sorted(spec.cpu_affinity) for cpus in thread_cpus)
 
 
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
@@ -217,22 +248,6 @@ def test_xpu_tp_rejects_a_gpu_id_outside_the_mask() -> None:
         XPUOmniPlatform().get_stage_process_env(
             tp_spec(gpu_id=2), {"ZE_AFFINITY_MASK": "4,5"}
         )
-
-
-def test_spawn_env_leaves_a_group_affinity_mask_intact_for_the_child(
-    monkeypatch,
-) -> None:
-    """End-to-end through the spawn hook: the child inherits the operator's mask
-    unchanged, so its xpu:N indices keep meaning the cards the operator chose."""
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
-    monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
-    monkeypatch.setenv("ZE_AFFINITY_MASK", "4,5")
-
-    with patched_spawn_env(worker_spec(tp_spec(gpu_id=1))):
-        assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
-
-    assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
 
 
 def test_xpu_tp_process_env_requires_gpu_id() -> None:
@@ -403,27 +418,6 @@ class RecordingLog:
         self.messages.append(message)
 
 
-def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
-    """GPU stage factory construction is serialized per visible device."""
-    seen_gpu_ids: list[int] = []
-
-    @contextmanager
-    def fake_lock(gpu_id: int):
-        seen_gpu_ids.append(gpu_id)
-        yield Path("/tmp/test.lock")
-
-    monkeypatch.setattr(stage_workers, "gpu_startup_lock", fake_lock)
-    spec = StageLaunchConfig(
-        stage_name="thinker",
-        factory=fake_factory_path("make_scheduler"),
-    )
-
-    scheduler = stage_workers.construct_scheduler(spec, 0, RecordingLog())
-
-    assert isinstance(scheduler, FakeScheduler)
-    assert seen_gpu_ids == [0]
-
-
 def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     monkeypatch,
 ) -> None:
@@ -504,17 +498,18 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
         StageLaunchConfig(
             stage_name=f"gpu_stage_{idx}",
             factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
-            factory_arg_defaults={"gpu_id": 0},
-            gpu_id=0,
+            factory_arg_defaults={"gpu_id": idx},
+            gpu_id=idx,
+            placement_gpu_id=idx + 2,
         )
         for idx in range(2)
     ]
 
     stages = [stage_workers.construct_stage(spec, RecordingLog()) for spec in specs]
 
-    assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
-    assert set_device_calls == [0, 0]
-    assert seen_gpu_ids == [0, 0]
+    assert [stage.scheduler.gpu_id for stage in stages] == [0, 1]
+    assert set_device_calls == [0, 1]
+    assert seen_gpu_ids == [0, 1]
 
 
 def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
@@ -608,3 +603,155 @@ def test_stage_teardown_reclaims_through_the_platform(
     )
 
     assert calls == expected
+
+
+STAGE_PROCESS_WITH_LIVE_PARENT = """
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+
+def block_after_registration() -> None:
+    Path(marker_dir, "registered").touch()
+    Event().wait()
+
+stage_workers.configure_dependency_loggers = block_after_registration
+stage_workers.stage_process_main(
+    SimpleNamespace(log_level=20, stage_specs=[], process_name="p"), None
+)
+"""
+
+
+def process_has_exited(pid: int) -> bool:
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        return True
+    else:
+        return stat_path.read_text().rsplit(") ", 1)[1].split()[0] == "Z"
+
+
+def test_stage_process_asks_to_die_with_its_parent(tmp_path: Path) -> None:
+    spawn_and_wait = (
+        "import multiprocessing, sys, time\n"
+        "child = multiprocessing.get_context('spawn').Process(target=exec, args=("
+        "sys.argv[1], {'marker_dir': sys.argv[2]}))\n"
+        "child.start()\n"
+        "open(sys.argv[2] + '/child.pid', 'w').write(str(child.pid))\n"
+        "time.sleep(600)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", spawn_and_wait, STAGE_PROCESS_WITH_LIVE_PARENT]
+        + [str(tmp_path)]
+    )
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 300
+        while not (tmp_path / "registered").exists():
+            assert parent.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        child_pid = int((tmp_path / "child.pid").read_text())
+
+        parent.kill()
+        parent.wait(timeout=30)
+
+        deadline = time.monotonic() + 30
+        while not process_has_exited(child_pid):
+            assert time.monotonic() < deadline, "stage process outlived its parent"
+            time.sleep(0.05)
+    finally:
+        parent.kill()
+        if child_pid is not None and not process_has_exited(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+        else:
+            pass
+
+
+# note (Richard Wang): the worker spawned below runs this once its parent is
+# gone, so the parent dies before the worker registers its death signal. The
+# worker inherits the output pipes, so the run returns once it exits.
+STAGE_PROCESS_AFTER_PARENT_DIED = """
+import multiprocessing, time
+from pathlib import Path
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+parent = multiprocessing.parent_process()
+while parent.is_alive():
+    time.sleep(0.01)
+try:
+    stage_workers.stage_process_main(
+        SimpleNamespace(log_level=20, stage_specs=[], process_name="p"), None
+    )
+except ValueError:
+    Path(marker_dir, "built").touch()
+finally:
+    Path(marker_dir, "exited").touch()
+"""
+
+
+def test_stage_process_exits_when_its_parent_died_before_it_started(
+    tmp_path: Path,
+) -> None:
+    spawn_and_die = (
+        "import multiprocessing, os, sys\n"
+        "multiprocessing.get_context('spawn').Process(target=exec, args=("
+        "sys.argv[1], {'marker_dir': sys.argv[2]})).start()\n"
+        "os._exit(0)\n"
+    )
+    command = [sys.executable, "-c", spawn_and_die, STAGE_PROCESS_AFTER_PARENT_DIED]
+
+    subprocess.run([*command, str(tmp_path)], capture_output=True, timeout=300)
+
+    assert (tmp_path / "exited").exists()
+    assert not (tmp_path / "built").exists()
+
+
+# note (Richard Wang): run_process stands in for a stage that stopped or was
+# interrupted. The object in the script's globals reports interpreter teardown.
+STAGE_PROCESS_THAT_STOPS = """
+import atexit, sys, threading, time
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+
+marker, interrupted = sys.argv[1], sys.argv[2] == "1"
+
+def note(text):
+    with open(marker, "a") as fh:
+        fh.write(text)
+
+class Teardown:
+    # Module globals are cleared before this runs at teardown.
+    def __del__(self, open=open, marker=marker):
+        with open(marker, "a") as fh:
+            fh.write("teardown,")
+
+def run_process(spec, ready_event, log):
+    threading.Thread(target=lambda: (time.sleep(0.2), note("thread,"))).start()
+    atexit.register(note, "atexit,")
+    sys.stdout.write("unflushed")
+    if interrupted:
+        raise KeyboardInterrupt
+
+teardown = Teardown()
+stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
+stage_workers.run_process = run_process
+stage = SimpleNamespace(gpu_id=None)
+spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
+stage_workers.stage_process_main(spec, None)
+"""
+
+
+@pytest.mark.parametrize("interrupted, code", [(False, 0), (True, 1)])
+def test_stage_process_exits_without_interpreter_teardown(
+    tmp_path: Path, interrupted: bool, code: int
+) -> None:
+    marker = tmp_path / "marker.txt"
+    command = [sys.executable, "-c", STAGE_PROCESS_THAT_STOPS, str(marker)]
+
+    done = subprocess.run(
+        [*command, str(int(interrupted))], capture_output=True, text=True, timeout=300
+    )
+
+    assert done.returncode == code, done.stderr
+    assert "unflushed" in done.stdout
+    # Threads finish before the atexit callbacks, as at a normal exit.
+    assert marker.read_text() == "thread,atexit,"

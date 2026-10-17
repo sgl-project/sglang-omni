@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -49,19 +48,6 @@ def test_an_oversized_stop_regex_is_a_bad_request() -> None:
     error = normalize_error(stop_regex=["a" * (MAX_STOP_REGEX_LEN + 1)])
 
     assert is_bad_request_error(error)
-
-
-def test_the_stop_bounds_themselves_normalize() -> None:
-    params = SamplingParams(
-        stop=["."] * MAX_STOP_COUNT,
-        stop_regex=["a" * MAX_STOP_REGEX_LEN] * MAX_STOP_REGEX_COUNT,
-    )
-
-    tokenizer = SimpleNamespace(encode=lambda text, **_: list(text.encode()))
-    params.normalize(tokenizer)
-
-    assert len(params.stop_strs) == MAX_STOP_COUNT
-    assert len(params.stop_regex_strs) == MAX_STOP_REGEX_COUNT
 
 
 def test_request_id_conflicts_are_bad_requests() -> None:

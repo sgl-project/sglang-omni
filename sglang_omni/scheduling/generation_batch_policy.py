@@ -152,18 +152,19 @@ def operator_selected_prefill_backend(
 
 class GenerationStageDefaults(TypedDict, total=False):
     cuda_graph_bs_prefill: list[int]
+    cuda_graph_max_bs_prefill: int
     disable_cuda_graph: bool
     disable_overlap_schedule: bool
     disable_radix_cache: bool
     enable_torch_compile: bool | None
     enable_mixed_chunk: bool
     trust_remote_code: bool
-    mlx_enable_sampling: bool
     max_prefill_tokens: int
     chunked_prefill_size: int
     max_total_tokens: int
     context_length: int
     max_queued_requests: int
+    prefill_decode_interval: int
     random_seed: int
     mem_fraction_static: float | None
     dtype: str

@@ -3,12 +3,13 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import AsyncIterator, TypedDict
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
@@ -40,6 +41,14 @@ from sglang_omni.proto.admin import AdminResponse
 logger = logging.getLogger(__name__)
 
 
+class StreamDeliveryHealth(TypedDict):
+    stream_backlog_bytes: int
+    open_stream_count: int
+    generation_finished_stream_count: int
+    longest_reader_idle_s: float
+    failed_stream_count: int
+
+
 class CoordinatorHealth(TypedDict):
     running: bool
     stages: list[str]
@@ -47,6 +56,28 @@ class CoordinatorHealth(TypedDict):
     total_requests: int
     pending_completions: int
     request_states: dict[str, int]
+    stream_delivery: StreamDeliveryHealth
+
+
+def stream_message_payload_bytes(msg: CompleteMessage | StreamMessage) -> int:
+    """Binary payload bytes a stream reader gets with msg, such as an audio waveform."""
+    if isinstance(msg, CompleteMessage):
+        payload = msg.result
+    else:
+        payload = msg.chunk
+    if isinstance(payload, dict):
+        return sum(len(value) for value in payload.values() if isinstance(value, bytes))
+    else:
+        return 0
+
+
+@dataclass(kw_only=True)
+class StreamBacklog:
+    """Payload bytes queued for one stream reader that it has not taken yet."""
+
+    undelivered_bytes: int
+    # note (Haoling Pu): time of the last read, or when the backlog became non-empty.
+    reader_idle_since_s: float
 
 
 @dataclass
@@ -81,6 +112,7 @@ class Coordinator(CoordinatorSessions):
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
+        max_total_backlog_bytes: int | None = None,
     ) -> None:
         """Initialize coordinator.
 
@@ -96,6 +128,9 @@ class Coordinator(CoordinatorSessions):
             max_in_flight: If set, reject new submits once this many requests
                 are already tracked. Intended as generation capacity
                 (max_running_requests + max_queued_requests).
+            max_total_backlog_bytes: If set, once all streams together hold
+                more undelivered bytes than this, fail the streams whose
+                readers have been idle longest until the total fits.
         """
         super().__init__()
         self.entry_stage = entry_stage
@@ -134,6 +169,11 @@ class Coordinator(CoordinatorSessions):
         self.stream_queues: dict[
             str, asyncio.Queue[CompleteMessage | StreamMessage]
         ] = {}
+        self.max_total_backlog_bytes = max_total_backlog_bytes
+        # note (Haoling Pu): removed on reader close, failed submit, or cap failure.
+        self.stream_backlogs: dict[str, StreamBacklog] = {}
+        self.stream_backlog_bytes = 0
+        self.failed_stream_count = 0
         # Abort messages carry only the request ID. A strongly held task keeps
         # local admission closed and lets the broadcast survive caller cancellation.
         self.abort_tasks: dict[str, asyncio.Task[bool]] = {}
@@ -286,12 +326,23 @@ class Coordinator(CoordinatorSessions):
         stages: Sequence[str] | None = None,
         timeout_s: float = 60.0,
     ) -> AdminResponse:
-        return await self.admin(
-            "pause_generation",
-            payload,
-            stages=stages,
-            timeout_s=timeout_s,
-        )
+        # note (Richard Wang): a pause of every stage in abort mode ends every
+        # request in flight, as SGLang does, even when a stage fails or the call
+        # times out. Requests a stage drops end through their own output path.
+        mode = str((payload or {}).get("mode") or "abort")
+        in_flight = list(self.requests) if mode == "abort" and stages is None else []
+        try:
+            return await self.admin(
+                "pause_generation",
+                payload,
+                stages=stages,
+                timeout_s=timeout_s,
+            )
+        finally:
+            await asyncio.gather(
+                *(self.abort(request_id) for request_id in in_flight),
+                return_exceptions=True,
+            )
 
     async def continue_generation(
         self,
@@ -403,12 +454,17 @@ class Coordinator(CoordinatorSessions):
             completed_stages: set[str] = set()
             while True:
                 msg = await queue.get()
+                if isinstance(msg, CompleteMessage) and not msg.success:
+                    raise QueueFullError.from_message(msg.error)
+                else:
+                    pass
+                backlog = self.stream_backlogs[request_id]
+                payload_bytes = stream_message_payload_bytes(msg)
+                backlog.undelivered_bytes -= payload_bytes
+                backlog.reader_idle_since_s = time.monotonic()
+                self.stream_backlog_bytes -= payload_bytes
+                yield msg
                 if isinstance(msg, CompleteMessage):
-                    if not msg.success:
-                        raise QueueFullError.from_message(msg.error)
-                    else:
-                        pass
-                    yield msg
                     completed_stages.add(
                         self.replica_topology.logical_name(msg.from_stage)
                     )
@@ -420,7 +476,7 @@ class Coordinator(CoordinatorSessions):
                     else:
                         pass
                 else:
-                    yield msg
+                    pass
         finally:
             if self.stream_queues.get(request_id) is queue:
                 try:
@@ -437,6 +493,11 @@ class Coordinator(CoordinatorSessions):
                     if self.stream_queues.get(request_id) is queue:
                         self.stream_queues.pop(request_id, None)
                         self.completion_futures.pop(request_id, None)
+                        backlog = self.stream_backlogs.pop(request_id, None)
+                        if backlog is not None:
+                            self.stream_backlog_bytes -= backlog.undelivered_bytes
+                        else:
+                            pass
                     else:
                         pass
             else:
@@ -527,6 +588,9 @@ class Coordinator(CoordinatorSessions):
         self.completion_futures[request_id] = future
         if stream_queue is not None:
             self.stream_queues[request_id] = stream_queue
+            self.stream_backlogs[request_id] = StreamBacklog(
+                undelivered_bytes=0, reader_idle_since_s=time.monotonic()
+            )
         else:
             pass
 
@@ -602,6 +666,11 @@ class Coordinator(CoordinatorSessions):
             if self.completion_futures.get(request_id) is future:
                 self.completion_futures.pop(request_id, None)
                 self.stream_queues.pop(request_id, None)
+                backlog = self.stream_backlogs.pop(request_id, None)
+                if backlog is not None:
+                    self.stream_backlog_bytes -= backlog.undelivered_bytes
+                else:
+                    pass
             else:
                 pass
 
@@ -791,6 +860,26 @@ class Coordinator(CoordinatorSessions):
         else:
             pass
 
+        if not msg.success and AdminDroppedRequestError.matches(msg.error):
+            # A stage dropped this request in an admin action, so it ends as an
+            # abort, the same as a client or pause abort.
+            try:
+                await self.abort(request_id)
+            except Exception:
+                # note (Richard Wang): an abort whose broadcast fails falls back
+                # to the failure path below, which keeps the request owned for a
+                # later abort and still ends it for its caller, so one request
+                # never stops this completion loop.
+                logger.warning(
+                    "Abort of admin-dropped request %s failed, ending it as failed",
+                    request_id,
+                    exc_info=True,
+                )
+            else:
+                return
+        else:
+            pass
+
         # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
             info.state = RequestState.FAILED
@@ -847,11 +936,11 @@ class Coordinator(CoordinatorSessions):
                     pass
             else:
                 pass
+            self.requests.pop(request_id, None)
             if request_id in self.stream_queues:
-                await self.stream_queues[request_id].put(msg)
+                await self.queue_stream_message(request_id, msg)
             else:
                 pass
-            self.requests.pop(request_id, None)
             return
         else:
             pass
@@ -860,32 +949,29 @@ class Coordinator(CoordinatorSessions):
         partials = self.partial_results.setdefault(request_id, {})
         partials[from_stage] = msg.result
 
-        # Forward stream completion per-stage
-        if request_id in self.stream_queues:
-            await self.stream_queues[request_id].put(msg)
-        else:
-            pass
-
-        if set(partials) < expected_terminal_stages:
-            return  # still waiting
-        else:
-            pass
-
-        # All terminal stages done -> merge and resolve
-        merged = dict(partials)
-        self.partial_results.pop(request_id)
-        info.state = RequestState.COMPLETED
-        info.result = merged
-
-        if request_id in self.completion_futures:
-            future = self.completion_futures[request_id]
-            if not future.done():
-                future.set_result(merged)
+        if set(partials) >= expected_terminal_stages:
+            # All terminal stages done -> merge and resolve
+            merged = dict(partials)
+            self.partial_results.pop(request_id)
+            info.state = RequestState.COMPLETED
+            info.result = merged
+            if request_id in self.completion_futures:
+                future = self.completion_futures[request_id]
+                if not future.done():
+                    future.set_result(merged)
+                else:
+                    pass
             else:
                 pass
+            self.requests.pop(request_id, None)
         else:
             pass
-        self.requests.pop(request_id, None)
+
+        # note (Haoling Pu): queued last; it can trip the cap and fail this request.
+        if request_id in self.stream_queues:
+            await self.queue_stream_message(request_id, msg)
+        else:
+            pass
 
     async def handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
@@ -896,7 +982,7 @@ class Coordinator(CoordinatorSessions):
             return
         else:
             pass
-        if request_id not in self.stream_queues:
+        if request_id not in self.stream_backlogs:
             return
         else:
             pass
@@ -933,7 +1019,72 @@ class Coordinator(CoordinatorSessions):
             msg = replace(msg, from_stage=logical, stage_name=stage_name)
         else:
             pass
+        await self.queue_stream_message(request_id, msg)
+
+    async def queue_stream_message(
+        self, request_id: str, msg: CompleteMessage | StreamMessage
+    ) -> None:
+        """Queue msg for its stream reader and enforce max_total_backlog_bytes.
+
+        Over the cap, the streams whose readers have been idle longest fail first.
+        """
+        backlog = self.stream_backlogs[request_id]
+        payload_bytes = stream_message_payload_bytes(msg)
+        if backlog.undelivered_bytes == 0:
+            backlog.reader_idle_since_s = time.monotonic()
+        else:
+            pass
+        backlog.undelivered_bytes += payload_bytes
+        self.stream_backlog_bytes += payload_bytes
         await self.stream_queues[request_id].put(msg)
+
+        # note (Haoling Pu): fail whole streams; dropping chunks corrupts the audio.
+        streams_to_fail: list[
+            tuple[str, asyncio.Queue[CompleteMessage | StreamMessage]]
+        ] = []
+        while (
+            self.max_total_backlog_bytes is not None
+            and self.stream_backlog_bytes > self.max_total_backlog_bytes
+        ):
+            failed_request_id = min(
+                (
+                    stream_request_id
+                    for stream_request_id, stream_backlog in self.stream_backlogs.items()
+                    if stream_backlog.undelivered_bytes > 0
+                ),
+                key=lambda stream_request_id: self.stream_backlogs[
+                    stream_request_id
+                ].reader_idle_since_s,
+            )
+            failed_backlog = self.stream_backlogs.pop(failed_request_id)
+            self.stream_backlog_bytes -= failed_backlog.undelivered_bytes
+            # note (Haoling Pu): no reader awaits this future; it holds the result.
+            self.completion_futures.pop(failed_request_id)
+            self.failed_stream_count += 1
+            failed_queue = self.stream_queues[failed_request_id]
+            while not failed_queue.empty():
+                failed_queue.get_nowait()
+            reader_idle_s = time.monotonic() - failed_backlog.reader_idle_since_s
+            logger.warning(
+                f"Failing stream {failed_request_id} over max_total_backlog_bytes: "
+                f"undelivered_bytes={failed_backlog.undelivered_bytes} "
+                f"reader_idle_s={reader_idle_s:.1f} "
+                f"remaining_backlog_bytes={self.stream_backlog_bytes}"
+            )
+            streams_to_fail.append((failed_request_id, failed_queue))
+        for failed_request_id, failed_queue in streams_to_fail:
+            failure = CompleteMessage(
+                request_id=failed_request_id,
+                from_stage="coordinator",
+                success=False,
+                error=QueueFullError.MESSAGE,
+            )
+            # note (Haoling Pu): handle_completion ignores a still-owned FAILED request.
+            failed_request = self.requests.get(failed_request_id)
+            if failed_request is None or failed_request.state == RequestState.FAILED:
+                failed_queue.put_nowait(failure)
+            else:
+                await self.handle_completion(failure)
 
     def handle_admin_result(self, result: AdminResult) -> None:
         pending = self.admin_ops.get(result.op_id)
@@ -1071,6 +1222,25 @@ class Coordinator(CoordinatorSessions):
         for info in self.requests.values():
             state = info.state.value
             state_counts[state] = state_counts.get(state, 0) + 1
+        now_s = time.monotonic()
+        stream_delivery: StreamDeliveryHealth = {
+            "stream_backlog_bytes": self.stream_backlog_bytes,
+            "open_stream_count": len(self.stream_queues),
+            "generation_finished_stream_count": sum(
+                1
+                for request_id in self.stream_queues
+                if request_id not in self.requests
+            ),
+            "longest_reader_idle_s": max(
+                (
+                    now_s - backlog.reader_idle_since_s
+                    for backlog in self.stream_backlogs.values()
+                    if backlog.undelivered_bytes > 0
+                ),
+                default=0.0,
+            ),
+            "failed_stream_count": self.failed_stream_count,
+        }
 
         return {
             "running": self.running,
@@ -1079,4 +1249,5 @@ class Coordinator(CoordinatorSessions):
             "total_requests": len(self.requests),
             "pending_completions": len(self.completion_futures),
             "request_states": state_counts,
+            "stream_delivery": stream_delivery,
         }

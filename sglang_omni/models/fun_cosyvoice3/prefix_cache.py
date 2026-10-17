@@ -20,9 +20,13 @@ import torch._dynamo as dynamo
 import torch.nn.functional as F
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    CONV_CONTEXT_FRAMES,
     FA3_PAGE_SIZE,
     PACKED_INDUCTOR_OPTIONS,
     PackedDiT,
+    euler_step_times,
+    modulate_block,
+    modulate_final,
     packed_fa3,
     ragged_fa3,
     rotate_in_place,
@@ -30,9 +34,6 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
 )
 
 BLOCK_FRAMES = 64
-# Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
-# frames before its input frame.
-CONV_CONTEXT_FRAMES = 30
 # note(ratish): FA3's pick for these segments with a tight page table; pinned, since a
 # graph's wider table would change the pick and the result.
 PREFIX_FA3_SPLITS = 1
@@ -48,7 +49,8 @@ class PrefixForward(Protocol):
         mu: torch.Tensor,
         speaker_embeddings: torch.Tensor,
         mel_conditioning: torch.Tensor,
-        t: torch.Tensor,
+        block_modulations: tuple[torch.Tensor, ...],
+        final_modulation: torch.Tensor,
         attention: PrefixRowAttention,
         rope: tuple[torch.Tensor, torch.Tensor],
         first_context: torch.Tensor,
@@ -410,7 +412,6 @@ def conv_pos_embed_prefix(
     embedding and the two next contexts."""
     # Note (Jiaxin Deng): the whole-sequence call zero-pads conv2's input,
     # not conv1's output, so the second conv needs its own cached tail.
-    conv_pos_embed = estimator.dit.input_embed.conv_pos_embed
     hidden_size = hidden_states.shape[2]
     first_input = torch.cat(
         (
@@ -418,14 +419,14 @@ def conv_pos_embed_prefix(
             hidden_states[0],
         )
     )[attention.extended_index]
-    first_output = conv_pos_embed.conv1(first_input.T.unsqueeze(0))[0].T
+    first_output = estimator.positional_conv(first_input, 0)
     second_input = torch.cat(
         (
             second_context.reshape(-1, hidden_size).to(first_output.dtype),
             first_output[attention.conv_output_index],
         )
     )[attention.extended_index]
-    second_output = conv_pos_embed.conv2(second_input.T.unsqueeze(0))[0].T
+    second_output = estimator.positional_conv(second_input, 1)
     return (
         second_output[attention.conv_output_index].unsqueeze(0),
         first_input[attention.tail_index],
@@ -441,7 +442,8 @@ def forward_prefix(
     mu: torch.Tensor,
     speaker_embeddings: torch.Tensor,
     mel_conditioning: torch.Tensor,
-    t: torch.Tensor,
+    block_modulations: tuple[torch.Tensor, ...],
+    final_modulation: torch.Tensor,
     attention: PrefixRowAttention,
     rope: tuple[torch.Tensor, torch.Tensor],
     first_context: torch.Tensor,
@@ -450,10 +452,11 @@ def forward_prefix(
     """DiT.forward over the new frames only. keys, values: each layer's
     (pages, 1, head_num, head_dim) pool for this Euler step; x, mu,
     mel_conditioning, speaker_embeddings: (1, total new frames, channels);
+    block_modulations: each block's (1, 6 * hidden) at the Euler step,
+    final_modulation: (1, 2 * hidden);
     rope covers the rows' absolute positions. Returns the vector field and
     the two next positional-conv contexts."""
     dit = estimator.dit
-    t = dit.time_embed(t)
     hidden_states = dit.input_embed.proj(
         torch.cat((x, mel_conditioning, mu, speaker_embeddings), dim=-1)
     )
@@ -463,8 +466,8 @@ def forward_prefix(
     hidden_states = embedded + hidden_states
     residual = hidden_states
     for layer, block in enumerate(dit.transformer_blocks):
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(
-            hidden_states, emb=t
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulate_block(
+            block.attn_norm.norm, hidden_states, block_modulations[layer]
         )
         attn = block.attn
         query, key, value = F.linear(
@@ -499,7 +502,7 @@ def forward_prefix(
         )
     else:
         pass
-    hidden_states = dit.norm_out(hidden_states, t)
+    hidden_states = modulate_final(dit.norm_out.norm, hidden_states, final_modulation)
     return dit.proj_out(hidden_states), first_tail, second_tail
 
 
@@ -543,12 +546,8 @@ def run_prefix_solve(
     )[attention.speaker_index].unsqueeze(0)
     angles = angles[:, attention.positions]
     rope = (angles.cos(), angles.sin())
-    flow_time = torch.zeros(1, device=noise.device, dtype=speaker_embeddings.dtype)
-    euler_steps = len(time_span) - 1
     x = noise
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for euler_step in range(euler_steps):
-        flow_time[:] = t
+    for euler_step, (_, dt) in enumerate(euler_step_times(time_span)):
         (
             vector_field,
             next_context[euler_step, :, 0],
@@ -561,7 +560,8 @@ def run_prefix_solve(
             mu_cfg,
             speaker_embeddings_cfg,
             mel_conditioning_cfg,
-            flow_time,
+            estimator.block_modulations[euler_step],
+            estimator.final_modulations[euler_step],
             attention,
             rope,
             context[euler_step, :, 0],
@@ -570,11 +570,6 @@ def run_prefix_solve(
         conditional = vector_field[:, :half_frames]
         unconditional = vector_field[:, half_frames:]
         x = x + dt * ((1.0 + cfg_rate) * conditional - cfg_rate * unconditional)
-        t = t + dt
-        if euler_step < euler_steps - 1:
-            dt = time_span[euler_step + 2] - t
-        else:
-            pass
     return x.float()
 
 

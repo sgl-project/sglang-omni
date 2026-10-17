@@ -134,6 +134,40 @@ HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
+A finished request no longer counts toward that capacity, but its streamed
+audio waits in the API process until the client reads it.
+`--stream_delivery.max_total_backlog_bytes` caps the undelivered stream bytes
+all requests may hold together, per API process (default `1073741824`,
+1 GiB; `none` turns it off).
+
+A client that reads at least as fast as audio is generated holds almost
+nothing in the API process. A slower client holds the audio that is
+generated but not yet in its socket buffers; 24 kHz float32 audio is
+about 96 kB per second. This includes a client that reads at playback
+speed while generation runs faster than real time, once its socket
+buffers are full.
+
+Over the cap, the streams whose readers have been idle longest fail first,
+until the total fits. A failed stream's generation is aborted if it is
+still running. SSE (`stream_format=sse`) and WebSocket clients get an error
+event with `The request queue is full.`; a raw PCM stream is closed early.
+New requests are not refused because of the cap. `/health` reports the
+backlog under `stream_delivery`, including the held bytes, open streams and
+failed streams.
+
+### Server Readiness
+
+Before it reports ready, the server sends itself a streaming speech request in
+its checkpoint's mode, once per replica of its most replicated process, one
+after another: CustomVoice uses its first built-in speaker, VoiceDesign a short
+voice description, and Base a one-second tone as its reference clip. `/health`
+returns 503 with status `starting` until these requests finish, so the first
+requests after that do not wait for the kernel loading and first-use setup of
+the speech path. The sampler is compiled for single and batched requests while
+the model loads, so the first concurrent requests need no warmup of their own.
+A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default
+600) bounds each request, and `--skip-server-warmup` reports ready without them.
+
 ### Prefill CUDA graphs
 
 Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to a
@@ -329,7 +363,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`.
 
-#### Python
+**Python**
 
 ```python
 import requests
@@ -357,7 +391,7 @@ response still contains decodable audio, but the utterance may be incomplete.
 Models that do not report how generation ended send `X-Finish-Reason: unknown`.
 Batch responses expose the same value as each item's `finish_reason`.
 
-#### Leading silence in x-vector mode
+**Leading silence in x-vector mode**
 
 Without a reference transcript the talker starts cold, and on most requests it
 opens with several frames of room-tone silence before speaking, which the
@@ -386,9 +420,6 @@ sgl-omni serve \
   --tts_engine.factory.leading_silence_mask_frames 0 \
   --port 8000
 ```
-
-Details and the full sweep are in
-[the leading-silence benchmark](../benchmarks/qwen3_tts_leading_silence.md).
 
 ### Language Hint
 
@@ -461,7 +492,7 @@ explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
-#### Codec decoding defaults
+**Codec decoding defaults**
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
@@ -489,7 +520,14 @@ Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
 in on Intel GPUs, follow the
 [Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
-#### First-audio chunk ramp
+Each follow-up batch sorts the stateful decoder's cohorts, and the rows within
+each, by playback deadline: the nearest cohort launches first and its nearest
+rows fill the first graph-sized group. Left-context decodes keep queue order.
+The follow-up workers also commit each in-flight cohort as soon as its decode
+has finished, checked at the top of the worker loop and before each launch,
+instead of at the next drain.
+
+**First-audio chunk ramp**
 
 For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with `stream_chunk_ramp` on the vocoder stage: entry

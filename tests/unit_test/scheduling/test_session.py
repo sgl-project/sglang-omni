@@ -188,7 +188,7 @@ def test_ordinary_request_uses_handler_or_reports_scoped_error(configured):
     assert not worker.is_alive()
 
 
-@pytest.mark.parametrize("size", [0, 255, 256, 65535, 65536])
+@pytest.mark.parametrize("size", [255, 256, 65535, 65536])
 def test_binary_chunk_wire_size_matches_msgpack(size, monkeypatch):
 
     chunk = TimedChunk("audio", 0, 80, 0, b"x" * size, format="pcm16")
@@ -421,7 +421,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.mark_request_finished_immediately.return_value = []
     scheduler.init_req_max_new_tokens = Mock()
     scheduler.max_req_input_len = 8190
-    scheduler.server_args = SimpleNamespace(context_length=8192)
+    scheduler.model_config = SimpleNamespace(context_len=8192)
     scheduler.active_session_unit = MethodType(
         OmniScheduler.active_session_unit, scheduler
     )

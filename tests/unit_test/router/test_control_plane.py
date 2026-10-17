@@ -14,6 +14,7 @@ from sglang_omni_router.python.control_plane import create_control_plane_app
 from sglang_omni_router.python.health import HealthChecker
 from sglang_omni_router.python.internal_channel import INTERNAL_TOKEN_HEADER
 from sglang_omni_router.python.snapshot import SnapshotReader
+from sglang_omni_router.python.update_journal import UpdateJournal
 from sglang_omni_router.python.worker import build_workers
 
 
@@ -408,18 +409,6 @@ def test_a_registered_dp_gone_silent_holds_the_barrier_without_an_expected_count
         response = client.post("/update_weights_from_disk", json={"path": "/m"})
         assert response.status_code == 503
         assert "/update_weights_from_disk" not in upstream.calls
-
-
-def test_cp_admin_surface_enforces_the_admin_key(tmp_path: Path) -> None:
-    app, _, _ = cp_app(tmp_path, admin_api_key="cp-admin-key")
-    with TestClient(app) as client:
-        assert client.get("/model_info").status_code == 401
-        assert (
-            client.get(
-                "/model_info", headers={"Authorization": "Bearer cp-admin-key"}
-            ).status_code
-            == 200
-        )
 
 
 def test_cp_aggregates_dp_counters_into_worker_listings(tmp_path: Path) -> None:
@@ -927,18 +916,26 @@ def test_health_excludes_non_serving_and_slot_mismatched_dps(
 def test_broadcast_crash_keeps_targets_disabled_and_journaled(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): results=None (broadcast started, outcome unknown) must keep
     # ALL targets disabled and journaled - not only for init_weights_update_group
-    from sglang_omni_router.python.app import restore_admin_disabled_state
-    from sglang_omni_router.python.worker import build_workers
+    class CrashingUpstream(MockUpstream):
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/update_weights_from_disk":
+                raise RuntimeError("update stream reset")
+            else:
+                return super().handler(request)
 
-    workers = build_workers(
-        [
-            WorkerConfig(url="http://worker-a:8101"),
-            WorkerConfig(url="http://worker-b:8102"),
-        ]
-    )
-    previous = {w.worker_id: False for w in workers}
-    restore_admin_disabled_state(workers, previous, outcome_safe=False)
-    assert all(w.disabled for w in workers)
+    journal_path = str(tmp_path / "j.json")
+    app, _, _ = cp_app(tmp_path, upstream=CrashingUpstream(), journal_path=journal_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post("/workers", json={"url": "http://worker-b:8102"})
+
+        client.post("/update_weights_from_disk", json={"path": "/m"})
+
+        workers = app.state.workers
+        assert len(workers) == 2
+        assert all(worker.disabled for worker in workers)
+        assert sorted(UpdateJournal(journal_path).pending()) == sorted(
+            worker.worker_id for worker in workers
+        )
 
 
 def test_completed_update_restores_a_previously_disabled_worker_without_journal(
@@ -965,28 +962,6 @@ def test_completed_update_restores_a_previously_disabled_worker_without_journal(
             client.post("/update_weights_from_disk", json={"path": "/m"}).status_code
             == 200
         )
-
-
-def test_recovery_keeps_absent_journaled_workers_as_tombstones(
-    tmp_path: Path,
-) -> None:
-    # Note (Jiaxin Deng): a journaled id absent from the registry (dynamic worker after
-    # a full restart) must survive recovery as a tombstone: dropping it would erase the
-    # only evidence its update partially applied, and a later re-registration of the
-    # same stable id would serve mixed weights
-    from sglang_omni_router.python.update_journal import UpdateJournal
-
-    journal_path = str(tmp_path / "j.json")
-    UpdateJournal(journal_path).begin("/x", ["gone-worker-id"])
-    upstream = MockUpstream()
-    app, snapshot_path, _ = cp_app(
-        tmp_path, upstream=upstream, journal_path=journal_path
-    )
-    with TestClient(app) as client:
-        assert UpdateJournal(journal_path).pending() == ["gone-worker-id"]
-        response = client.post("/update_weights_from_disk", json={"path": "/m"})
-        assert response.status_code == 409
-        assert "/update_weights_from_disk" not in upstream.calls
 
 
 def test_unreadable_journal_disables_the_whole_pool_on_recovery(

@@ -183,30 +183,114 @@ extension MLXTranscriber {
         )
     }
 
-    /// Qwen3-ASR decodes on the local Omni server with the chunking, budget and
+    /// A model on the local Omni server decodes with the chunking, budget and
     /// stop rules its MLXAudio model used.
     nonisolated static func runOmniInferenceDetached(
         runtime: OmniASRRuntime,
         audioSamples: [Float],
         inferenceConfiguration: ResolvedInferenceConfiguration,
-        targetSampleRate: Int
+        targetSampleRate: Int,
+        speechSegments: OmniSpeechSegments?
     ) async throws -> MLXDetachedInferenceResult {
         try Task.checkCancellation()
         let parameters = inferenceConfiguration.generationParameters
-        let result = try await runtime.transcribeQwenFinal(
-            samples: audioSamples,
-            sampleRate: targetSampleRate,
-            language: inferenceConfiguration.languageHint,
-            context: inferenceConfiguration.qwenContextBias,
-            maxTokens: parameters.maxTokens,
-            chunkDurationSeconds: parameters.chunkDuration,
-            minChunkDurationSeconds: parameters.minChunkDuration
-        )
-        // Qwen3-ASR chunk segments have chunk timing, which Voxt discards.
-        return MLXDetachedInferenceResult(rawText: result.text, senseVoiceMetadata: nil, structuredSegments: [])
+        let text: String
+        switch runtime.kind {
+        case .qwen3ASR:
+            text = try await runtime.transcribeQwenFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                context: inferenceConfiguration.qwenContextBias,
+                maxTokens: parameters.maxTokens,
+                chunkDurationSeconds: parameters.chunkDuration,
+                minChunkDurationSeconds: parameters.minChunkDuration
+            ).text
+        case .whisper:
+            text = try await runtime.transcribe(OmniASRRuntime.whisperFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                maxNewTokens: parameters.maxTokens,
+                temperature: parameters.temperature
+            )).text
+        case .cohereTranscribe:
+            text = try await runtime.transcribe(OmniASRRuntime.cohereFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                usePunctuation: parameters.usePunctuation,
+                maxNewTokens: parameters.maxTokens,
+                temperature: parameters.temperature,
+                chunkDuration: parameters.chunkDuration,
+                minChunkDuration: parameters.minChunkDuration,
+                speechSegments: speechSegments
+            )).text
+        case .mossTranscribeDiarize:
+            let result = try await runtime.transcribeMossFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                prompt: inferenceConfiguration.mossPrompt,
+                maxTokens: parameters.maxTokens
+            )
+            return MLXDetachedInferenceResult(
+                rawText: MossASRTranscriptRendering.renderedText(
+                    result.text,
+                    outputMode: inferenceConfiguration.mossOutputMode
+                ),
+                senseVoiceMetadata: nil,
+                structuredSegments: mossStructuredSegments(from: result.segments.map(\.transcriptSegment))
+            )
+        case .nemotronASR:
+            let result = try await runtime.transcribeNemotronFinal(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint
+            )
+            return MLXDetachedInferenceResult(
+                rawText: result.text,
+                senseVoiceMetadata: nil,
+                structuredSegments: reliableStructuredSegments(
+                    from: result.segments.map(\.transcriptSegment),
+                    timingGranularity: inferenceConfiguration.timingGranularity
+                )
+            )
+        case .parakeet:
+            let result = try await runtime.transcribe(OmniASRRuntime.parakeetFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                chunkDuration: parameters.chunkDuration
+            ))
+            return MLXDetachedInferenceResult(
+                rawText: result.text,
+                senseVoiceMetadata: nil,
+                structuredSegments: reliableStructuredSegments(
+                    from: result.segments.map(\.transcriptSegment),
+                    timingGranularity: inferenceConfiguration.timingGranularity
+                )
+            )
+        case .senseVoice:
+            let result = try await runtime.transcribe(OmniASRRuntime.senseVoiceFinalRequest(
+                samples: audioSamples,
+                sampleRate: targetSampleRate,
+                language: inferenceConfiguration.languageHint,
+                useITN: inferenceConfiguration.senseVoiceUseITN,
+                speechSegments: speechSegments
+            ))
+            return try senseVoiceOmniResult(
+                result,
+                durationSeconds: Double(audioSamples.count) / Double(targetSampleRate),
+                usedVADSegmentation: speechSegments != nil
+            )
+        case .sileroVAD, .sortformer:
+            // Note (khazic): a Silero VAD or Sortformer server is never a loaded ASR model.
+            preconditionFailure("a Silero VAD or Sortformer server transcribes nothing")
+        }
+        // Note (khazic): chunk and window segments have chunk timing, which Voxt discards.
+        return MLXDetachedInferenceResult(rawText: text, senseVoiceMetadata: nil, structuredSegments: [])
     }
 
-    private nonisolated static func longFormSpeechSegmentConfig(
+    nonisolated static func longFormSpeechSegmentConfig(
         chunkMaximumDurationSeconds: Double,
         vadThreshold: Float,
         vadMinSpeechDurationMs: Int,
@@ -350,6 +434,64 @@ extension MLXTranscriber {
             languageProvenance: .detected
         )
         return SenseVoiceInferenceResult(output: output, metadata: metadata)
+    }
+
+    /// Note (Dayuxiaoshui): the server's text, and the metadata runSenseVoiceInferenceDetached
+    /// builds, from the server's segments: one per pass, with that pass's chunk bounds.
+    private nonisolated static func senseVoiceOmniResult(
+        _ result: OmniTranscriptionResult,
+        durationSeconds: Double,
+        usedVADSegmentation: Bool
+    ) throws -> MLXDetachedInferenceResult {
+        if usedVADSegmentation, result.segments.isEmpty {
+            let structuredError = MLXStructuredTranscriptionError.senseVoiceLongFormNoSpeechSegments(
+                durationSeconds
+            )
+            VoxtLog.asrError(structuredError.diagnosticDescription)
+            throw structuredError
+        }
+        let passMetadata = result.segments.map { segment in
+            SenseVoiceTranscriptMetadata.fromOutput(
+                STTOutput(
+                    text: segment.text,
+                    segments: [
+                        STTTranscriptSegment(
+                            text: segment.text,
+                            language: segment.language,
+                            emotion: segment.emotion,
+                            event: segment.event
+                        ),
+                    ],
+                    language: segment.language,
+                    languageProvenance: .detected
+                ),
+                startSeconds: usedVADSegmentation ? segment.startSeconds : 0,
+                endSeconds: usedVADSegmentation ? segment.endSeconds : durationSeconds,
+                usedVADSegmentation: usedVADSegmentation
+            )
+        }
+        let metadata: SenseVoiceTranscriptMetadata?
+        if usedVADSegmentation {
+            var metadataSegments: [SenseVoiceSegmentMetadata] = []
+            for pass in passMetadata {
+                guard let pass else { continue }
+                metadataSegments = SenseVoiceTranscriptMetadata.mergeSequentialSegments(
+                    base: metadataSegments,
+                    next: pass.segments
+                )
+            }
+            metadata = SenseVoiceTranscriptMetadata.aggregated(
+                segments: metadataSegments,
+                usedVADSegmentation: true
+            )
+        } else {
+            metadata = passMetadata.first ?? nil
+        }
+        return MLXDetachedInferenceResult(
+            rawText: result.text,
+            senseVoiceMetadata: metadata,
+            structuredSegments: []
+        )
     }
 
     private nonisolated static func resolvedSenseVoiceSegmentRangesDetached(

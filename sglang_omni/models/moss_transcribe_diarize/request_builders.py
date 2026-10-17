@@ -26,7 +26,7 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
@@ -164,25 +164,9 @@ def unwrap_source_dict(source: object) -> object:
     return source
 
 
-def explicit_generation_fields(metadata: dict[str, object]) -> set[str]:
-    """Sampling fields the caller set explicitly (see EXPLICIT_GENERATION_PARAMS_KEY).
-
-    Anything not listed here resolves to the model's own default, so a client
-    layer that fills every SamplingParams field with a placeholder no longer
-    shadows the MOSS defaults.
-    """
-    fields = metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
-    if isinstance(fields, (list, tuple)):
-        return {str(field) for field in fields}
-    else:
-        pass
-    return set()
-
-
 @overload
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: int,
     cast: type[int],
@@ -192,7 +176,6 @@ def sampling_param(
 @overload
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: float,
     cast: type[float],
@@ -201,15 +184,10 @@ def sampling_param(
 
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: int | float,
     cast: type[int] | type[float],
 ) -> int | float:
-    if field not in explicit_fields:
-        return default
-    else:
-        pass
     value = params.get(field)
     return default if value is None else cast(value)
 
@@ -430,8 +408,6 @@ def make_moss_transcribe_diarize_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> MossTranscribeDiarizeRequestData:
         params = payload.request.params or {}
-        metadata = payload.request.metadata or {}
-        explicit_fields = explicit_generation_fields(metadata)
         prepared = prepare_audio(
             payload,
             source_name="MOSS-Transcribe-Diarize",
@@ -545,16 +521,12 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             audio_end_id=audio_end_id,
         )
 
-        temperature = sampling_param(
-            params, explicit_fields, "temperature", DEFAULT_TEMPERATURE, float
-        )
-        top_p = sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
-        top_k = sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
+        temperature = sampling_param(params, "temperature", DEFAULT_TEMPERATURE, float)
+        top_p = sampling_param(params, "top_p", DEFAULT_TOP_P, float)
+        top_k = sampling_param(params, "top_k", DEFAULT_TOP_K, int)
         # Opt-in mitigation for repetition loops (#975): honoured only when
         # the caller sets it explicitly, so greedy defaults stay unchanged.
-        repetition_penalty = sampling_param(
-            params, explicit_fields, "repetition_penalty", 1.0, float
-        )
+        repetition_penalty = sampling_param(params, "repetition_penalty", 1.0, float)
         # Same range SamplingParams enforces; failing here keeps the error
         # on the request path instead of inside the scheduler.
         if not 0.0 < repetition_penalty <= 2.0:

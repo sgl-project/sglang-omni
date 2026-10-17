@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Managed benchmark servers launch with the revision pinned in the model config."""
 
 from __future__ import annotations
 

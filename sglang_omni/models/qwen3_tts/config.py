@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -20,6 +21,8 @@ from sglang_omni.config.runtime import (
     resolve_stage_typed_kwargs,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.serve.protocol import CreateSpeechRequest
+from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
 from sglang_omni.utils.json import JsonValue
 
 _PKG = "sglang_omni.models.qwen3_tts"
@@ -46,6 +49,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3TTSForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    server_warmup_request_factory: ClassVar[str] = (
+        f"{_PKG}.config.build_server_warmup_request"
+    )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,
@@ -152,7 +158,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     def supports_uploaded_voice_references(self) -> bool:
         return is_qwen3_tts_base_model(self.model_path)
 
-    def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
+    def load_engine_checkpoint_config(self) -> dict[str, JsonValue]:
         engine_stage = self.stage_named("tts_engine")
         # Note(yzxiao): Inspect the checkpoint the engine factory will actually
         # receive, including pipeline-authored and user-set factory overrides.
@@ -161,9 +167,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             **resolve_stage_factory_kwargs(engine_stage, self),
             **resolve_stage_typed_kwargs(engine_stage),
         }
-        checkpoint_config = load_qwen3_tts_checkpoint_config(
-            engine_factory_kwargs["model_path"]
-        )
+        return load_qwen3_tts_checkpoint_config(engine_factory_kwargs["model_path"])
+
+    def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
+        checkpoint_config = self.load_engine_checkpoint_config()
         model_type = normalize_qwen3_tts_model_type(
             checkpoint_config.get("tts_model_type")
         )
@@ -190,6 +197,35 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         else:
             pass
         return None
+
+
+def build_server_warmup_request(
+    pipeline_config: Qwen3TTSPipelineConfig,
+) -> CreateSpeechRequest:
+    """One streaming request in the checkpoint's mode: speaker, design or reference."""
+    custom_voice_config = pipeline_config.resolve_custom_voice_config()
+    model_type = normalize_qwen3_tts_model_type(
+        pipeline_config.load_engine_checkpoint_config().get("tts_model_type")
+    )
+    if custom_voice_config is not None:
+        mode_fields = {"voice": custom_voice_config.speakers[0]}
+    elif model_type == "voice_design":
+        mode_fields = {
+            "task_type": "VoiceDesign",
+            "instructions": "A calm adult voice at a steady pace.",
+        }
+    else:
+        tone_base64 = base64.b64encode(warmup_tone_wav_bytes()).decode("ascii")
+        mode_fields = {
+            "ref_audio": f"data:audio/wav;base64,{tone_base64}",
+            "ref_text": "A short tone.",
+        }
+    return CreateSpeechRequest(
+        input="The server reads this sentence to itself once before it reports ready.",
+        response_format="pcm",
+        stream=True,
+        **mode_fields,
+    )
 
 
 def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, JsonValue]:

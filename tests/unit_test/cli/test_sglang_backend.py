@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from click import unstyle
 
 from sglang_omni.cli.sglang_backend import run
 from sglang_omni.config import PipelineConfig, StageConfig
@@ -117,11 +116,3 @@ def test_adapter_preserves_config_only_launch(monkeypatch) -> None:
 
     assert captured["config"].model_path == "from:pipeline.yaml"
     assert captured["kwargs"]["port"] == 8124
-
-
-def test_adapter_owns_backend_specific_help(capsys) -> None:
-    run_and_expect_success("--help")
-
-    output = unstyle(capsys.readouterr().out)
-    assert "Usage: sglang serve" in output
-    assert "--model-path" in output

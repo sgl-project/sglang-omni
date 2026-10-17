@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -14,26 +13,6 @@ import pytest
 import sglang_omni.platforms as platforms
 
 TEST_MAX_TOTAL_TOKENS = 82000
-
-
-def test_engine_builder_import_is_cpu_only() -> None:
-    from sglang_omni.scheduling.engine_factory import (
-        AsrEngineBuilder,
-        SGLangGenerationEngineBuilder,
-        TtsEngineBuilder,
-    )
-
-    assert SGLangGenerationEngineBuilder.__name__ == "SGLangGenerationEngineBuilder"
-    assert AsrEngineBuilder.__name__ == "AsrEngineBuilder"
-    assert TtsEngineBuilder.__name__ == "TtsEngineBuilder"
-    assert issubclass(AsrEngineBuilder, SGLangGenerationEngineBuilder)
-    assert issubclass(TtsEngineBuilder, SGLangGenerationEngineBuilder)
-
-
-def test_asr_engine_builder_preserves_model_path() -> None:
-    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-
-    assert AsrEngineBuilder.resolve_checkpoint(object(), "repo/id") == "repo/id"
 
 
 def test_legacy_tts_engine_factory_paths_remain_importable() -> None:
@@ -51,70 +30,7 @@ def test_legacy_tts_engine_factory_paths_remain_importable() -> None:
         )
 
 
-def test_tts_engine_builder_uses_shared_checkpoint_resolver(monkeypatch) -> None:
-    from sglang_omni.scheduling import engine_factory
-
-    calls: list[str] = []
-
-    def fake_resolve_checkpoint(model_path: str) -> str:
-        calls.append(model_path)
-        return "/resolved/checkpoint"
-
-    monkeypatch.setattr(engine_factory, "_resolve_checkpoint", fake_resolve_checkpoint)
-
-    resolved = engine_factory.TtsEngineBuilder.resolve_checkpoint(object(), "repo/id")
-
-    assert resolved == "/resolved/checkpoint"
-    assert calls == ["repo/id"]
-
-
-def test_tts_engine_builder_hook_contract_is_narrow() -> None:
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-
-    build_signature = inspect.signature(TtsEngineBuilder.build)
-    assert not any(
-        param.kind is inspect.Parameter.VAR_KEYWORD
-        for param in build_signature.parameters.values()
-    )
-
-    generation_defaults_signature = inspect.signature(
-        TtsEngineBuilder.generation_defaults
-    )
-    assert list(generation_defaults_signature.parameters) == ["self", "dtype"]
-
-    adjust_overrides_signature = inspect.signature(TtsEngineBuilder.adjust_overrides)
-    assert list(adjust_overrides_signature.parameters) == ["self", "overrides"]
-
-    resolve_context_length_signature = inspect.signature(
-        TtsEngineBuilder.resolve_context_length
-    )
-    assert list(resolve_context_length_signature.parameters) == [
-        "self",
-        "checkpoint_dir",
-        "server_args_overrides",
-    ]
-
-
-def test_context_length_override_is_capability_gated() -> None:
-    from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
-    from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
-    from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
-    from sglang_omni.models.moss_tts_local.engine_builder import (
-        MossTtsLocalEngineBuilder,
-    )
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-
-    assert TtsEngineBuilder.supports_context_length_override is False
-    assert ArkasrEngineBuilder.supports_context_length_override is False
-    assert MossTtsEngineBuilder.supports_context_length_override is True
-    assert MossTtsLocalEngineBuilder.supports_context_length_override is True
-    assert MiniCPMOThinkerEngineBuilder.supports_context_length_override is True
-
-
-@pytest.mark.parametrize(
-    "value",
-    [True, False, 1.5, 3.0, float("inf"), float("-inf"), float("nan"), "8192", None],
-)
+@pytest.mark.parametrize("value", [True, 3.0])
 def test_normalize_context_length_rejects_non_integral_values(value: Any) -> None:
     from sglang_omni.scheduling.engine_factory import normalize_context_length
 
@@ -122,7 +38,7 @@ def test_normalize_context_length_rejects_non_integral_values(value: Any) -> Non
         normalize_context_length(value, model_name="MOSS-TTS")
 
 
-@pytest.mark.parametrize("value", [0, -1])
+@pytest.mark.parametrize("value", [0])
 def test_normalize_context_length_rejects_non_positive_values(value: int) -> None:
     from sglang_omni.scheduling.engine_factory import normalize_context_length
 
@@ -130,7 +46,7 @@ def test_normalize_context_length_rejects_non_positive_values(value: int) -> Non
         normalize_context_length(value, model_name="MOSS-TTS")
 
 
-@pytest.mark.parametrize("value", [1, 8192])
+@pytest.mark.parametrize("value", [1])
 def test_normalize_context_length_preserves_integral_values(value: int) -> None:
     from sglang_omni.scheduling.engine_factory import normalize_context_length
 

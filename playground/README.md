@@ -99,5 +99,5 @@ ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 
 ## Native full duplex
 
-See [realtime/README.md](realtime/README.md) to set up microphone and camera
-chat with MiniCPM-o, including remote access from your browser.
+See the [MiniCPM-o cookbook](../docs/cookbook/minicpm_o.md#browser-demo) to start
+microphone and camera chat with MiniCPM-o, including remote access from your browser.

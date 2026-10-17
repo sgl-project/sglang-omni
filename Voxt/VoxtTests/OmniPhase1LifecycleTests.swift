@@ -1,9 +1,10 @@
 // OmniPhase1LifecycleTests.swift
-// Lifecycle and fault acceptance for local Qwen on the Omni server.
+// Lifecycle and fault acceptance for a local model on its Omni server.
 //
-// Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni with the backend
-// variables, VOXT_MODEL_STORAGE_ROOT, and VOXT_LIFECYCLE_CLIPS (a directory with
-// short.wav and long.wav, 16 kHz mono). VOXT_LIFECYCLE_OUT receives a JSONL
+// Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni with VOXT_OMNI_RUNTIME
+// (the native qwen3_asr_server binary), VOXT_MODEL_STORAGE_ROOT, and VOXT_LIFECYCLE_CLIPS (a directory with
+// short.wav and long.wav, 16 kHz mono). VOXT_LIFECYCLE_REPO picks the model
+// (Qwen3-ASR 0.6B 4-bit by default). VOXT_LIFECYCLE_OUT receives a JSONL
 // record per round; VOXT_LIFECYCLE_ROUNDS defaults to 200.
 
 import Darwin
@@ -12,7 +13,17 @@ import XCTest
 
 @MainActor
 final class OmniPhase1LifecycleTests: XCTestCase {
-    private let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    private let repo = ProcessInfo.processInfo.environment["VOXT_LIFECYCLE_REPO"]
+        ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
+
+    /// The executable name of the server Voxt launches for `repo`.
+    private var serverName: String {
+        get throws {
+            let kind = try XCTUnwrap(OmniASRBackend.modelKind(for: repo), "\(repo) has no Omni server")
+            let configuration = try XCTUnwrap(OmniASRBackend.configuration(for: kind))
+            return configuration.runtimeExecutable.lastPathComponent
+        }
+    }
 
     private struct Fixtures {
         let short: (samples: [Float], sampleRate: Double)
@@ -24,8 +35,8 @@ final class OmniPhase1LifecycleTests: XCTestCase {
     private func fixtures() throws -> Fixtures {
         try ModelTestGate.requireEnabled("Omni phase 1 lifecycle")
         let environment = ProcessInfo.processInfo.environment
-        guard environment["VOXT_ASR_BACKEND"] == "omni" else {
-            throw XCTSkip("Set VOXT_ASR_BACKEND=omni and the Omni backend variables.")
+        guard OmniASRBackend.LaunchSettings(environment: environment) != nil else {
+            throw XCTSkip("Set VOXT_ASR_BACKEND=omni and VOXT_OMNI_RUNTIME.")
         }
         guard let clips = environment["VOXT_LIFECYCLE_CLIPS"], !clips.isEmpty else {
             throw XCTSkip("Set VOXT_LIFECYCLE_CLIPS to a directory with short.wav and long.wav.")
@@ -104,6 +115,127 @@ final class OmniPhase1LifecycleTests: XCTestCase {
 
     // MARK: - Faults
 
+    func testRepeatedLiveActivationsProducePreviewAcrossIdleUnloads() async throws {
+        let fixtures = try fixtures()
+        let manager = try await makeManager()
+        let records = try fixtures.output.map { try LifecycleRecords($0) }
+
+        for round in 1...fixtures.rounds {
+            let decider = RecordingVoiceActivityFrameDecider(mode: .automatic, useCase: .transcription, energyThreshold: 0.01)
+            let transcriber = MLXTranscriber(modelManager: manager)
+            let preview = expectation(description: "live preview for activation \(round)")
+            preview.assertForOverFulfill = false
+            transcriber.onPartialTranscription = { _ in preview.fulfill() }
+            transcriber.isRecording = true
+            transcriber.configureVoiceActivityFinalizationFiltering(enabled: true)
+            await transcriber.startNativeLiveSession(revision: 0).value
+            let stats = await feedLiveFixture(fixtures.short, transcriber: transcriber, decider: decider)
+            await fulfillment(of: [preview], timeout: 15)
+            XCTAssertFalse(transcriber.transcribedText.isEmpty, "Live activation \(round) produced no preview")
+            XCTAssertEqual(stats.fallbacks, 0, "Healthy Silero activation \(round) fell back to energy")
+            records?.write(["event": "live_round", "round": round, "preview_characters": transcriber.transcribedText.count,
+                            "vad_frames": stats.frames, "vad_fallbacks": stats.fallbacks])
+            transcriber.isRecording = false
+            transcriber.releaseNativeLiveSession(cancelSession: true)
+            let deadline = ContinuousClock.now + .seconds(5)
+            while manager.hasActiveUse, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(manager.hasActiveUse, "Live activation \(round) retained its model use")
+            if round.isMultiple(of: 10) {
+                manager.releaseLoadedModelIfIdle(reason: "live-activation-regression")
+            }
+        }
+
+        await manager.shutdownForApplicationTermination()
+        let gone = await ProcessTree.waitUntilNoDescendants(timeoutSeconds: 10)
+        XCTAssertTrue(gone)
+    }
+
+    /// The real live ASR must still receive speech when its upstream VAD accepts
+    /// audio but never replies. The next recording must try Silero again.
+    func testStalledVADFallsBackAndProducesRealASRPreview() async throws {
+        let fixtures = try fixtures()
+        let manager = try await makeManager()
+        let server = try VADTestWebSocketServer()
+        defer { server.stop() }
+        XCTAssertEqual(server.ready.wait(timeout: .now() + 5), .success)
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("voxt-stalled-vad-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let executable = scratch.appendingPathComponent("vad-server")
+        try """
+        #!/bin/sh
+        echo '{"event":"ready","host":"127.0.0.1","port":\(server.endpoint.port),"model_name":"silero","server_pid":'"$$"'}'
+        read -r command
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let configuration = OmniBackendConfiguration(runtimeExecutable: executable)
+        let runtime = OmniSharedModelRuntime(kind: .sileroVAD, configuration: { configuration })
+        let detector = ASRSileroStreamingVoiceActivityDetector(omniRuntime: runtime)
+        let decider = RecordingVoiceActivityFrameDecider(
+            mode: .automatic, useCase: .transcription, energyThreshold: 0.01, sileroDetector: detector
+        )
+
+        for round in 1...2 {
+            await decider.reset()
+            if round == 2 { server.respond(with: #"{"probability":0.875}"#) }
+            let transcriber = MLXTranscriber(modelManager: manager)
+            let preview = expectation(description: "preview after VAD stall, recording \(round)")
+            preview.assertForOverFulfill = false
+            transcriber.onPartialTranscription = { _ in preview.fulfill() }
+            transcriber.isRecording = true
+            transcriber.configureVoiceActivityFinalizationFiltering(enabled: true)
+            await transcriber.startNativeLiveSession(revision: 0).value
+            let beganFeeding = ContinuousClock.now
+            let requestsBefore = server.messageCount
+            let stats = await feedLiveFixture(fixtures.short, transcriber: transcriber, decider: decider)
+            XCTAssertLessThan(beganFeeding.duration(to: .now), .seconds(5))
+            if round == 1 {
+                XCTAssertEqual(server.messageCount - requestsBefore, 1, "A stalled VAD must not be retried on every frame")
+                XCTAssertEqual(stats.fallbacks, stats.frames)
+            } else {
+                XCTAssertEqual(stats.fallbacks, 0, "The next recording must retry Silero")
+                XCTAssertGreaterThan(server.messageCount - requestsBefore, 10)
+            }
+            await fulfillment(of: [preview], timeout: 15)
+            XCTAssertFalse(transcriber.transcribedText.isEmpty)
+            transcriber.isRecording = false
+            transcriber.releaseNativeLiveSession(cancelSession: true)
+        }
+        await decider.releaseResources()
+        await runtime.shutdownForApplicationTermination()
+        await manager.shutdownForApplicationTermination()
+        let gone = await ProcessTree.waitUntilNoDescendants(timeoutSeconds: 10)
+        XCTAssertTrue(gone)
+    }
+
+    private func feedLiveFixture(
+        _ fixture: (samples: [Float], sampleRate: Double),
+        transcriber: MLXTranscriber,
+        decider: RecordingVoiceActivityFrameDecider
+    ) async -> (frames: Int, fallbacks: Int) {
+        var segmenter = ASRVoiceActivitySegmenter(configuration: ASRVoiceActivityConfiguration.profile(for: .transcription))
+        var frames = 0
+        var fallbacks = 0
+        for start in stride(from: 0, to: fixture.samples.count, by: 1600) {
+            let end = min(start + 1600, fixture.samples.count)
+            let frame = ASRVoiceActivityAudioFrame(
+                samples: Array(fixture.samples[start..<end]), sampleRate: fixture.sampleRate,
+                startSeconds: Double(start) / fixture.sampleRate, endSeconds: Double(end) / fixture.sampleRate,
+                level: 0.5
+            )
+            guard let result = await decider.decision(for: frame) else {
+                XCTFail("VAD returned no frame decision")
+                continue
+            }
+            let resolved = segmenter.appendWithResolvedSpeechState(result.decision)
+            transcriber.appendVoiceActivityFinalizationFrame(frame, isSpeech: resolved.isSpeech)
+            frames += 1
+            if result.source == .fallbackEnergy { fallbacks += 1 }
+        }
+        return (frames, fallbacks)
+    }
+
     /// A server crash mid-Final fails that request, and the next load starts a
     /// fresh server that serves the next Final.
     func testServerKilledDuringFinalFailsThatRequestAndRecovers() async throws {
@@ -122,10 +254,11 @@ final class OmniPhase1LifecycleTests: XCTestCase {
             )
         }
         try await Task.sleep(for: .milliseconds(400))
+        let serverName = try serverName
         let servers = ProcessTree.descendants().filter {
-            ProcessTree.commandLine(of: $0).contains("sglang_omni_mlx.qwen3_asr.server")
+            ProcessTree.commandLine(of: $0).contains(serverName)
         }
-        XCTAssertFalse(servers.isEmpty, "no Qwen3-ASR server process found")
+        XCTAssertFalse(servers.isEmpty, "no \(serverName) process found")
         servers.forEach { kill($0, SIGKILL) }
 
         let failedAt = ContinuousClock.now
@@ -158,11 +291,9 @@ final class OmniPhase1LifecycleTests: XCTestCase {
         let manager = try await makeManager()
         let load = Task { @MainActor in try await manager.loadModel() }
         let started = await ProcessTree.waitForDescendants(timeoutSeconds: 10)
-        XCTAssertTrue(started, "the cold start never spawned the supervisor")
-        // The server is ready about a second after the supervisor starts; give
-        // up well inside that window.
-        try await Task.sleep(for: .milliseconds(200))
-
+        XCTAssertTrue(started, "the cold start never spawned the server")
+        // Note (Jiaxin Deng): the native server is ready about 150 ms after its process starts;
+        // give up as soon as the process appears, inside that window.
         manager.cancelPendingModelLoadForApplicationTermination()
         load.cancel()
         let loaded = try? await load.value
@@ -199,6 +330,9 @@ final class OmniPhase1LifecycleTests: XCTestCase {
     /// Cancelling a live session mid-stream leaves the server idle, so the Final
     /// that follows does not wait behind a stale live decode.
     func testCancelledLiveSessionLeavesTheServerIdle() async throws {
+        guard OmniASRBackend.modelKind(for: repo) == .qwen3ASR else {
+            throw XCTSkip("Only Qwen3-ASR has live sessions on its Omni server.")
+        }
         let fixtures = try fixtures()
         let manager = try await makeManager()
         let transcriber = MLXTranscriber(modelManager: manager)
@@ -280,7 +414,7 @@ private final class LifecycleRecords {
 }
 
 /// Processes this test process started, directly or not.
-private enum ProcessTree {
+enum ProcessTree {
     static func descendants(of root: pid_t = getpid()) -> [pid_t] {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size = 0

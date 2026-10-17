@@ -12,7 +12,8 @@ name: XPU CI
 # change image inputs (docker/xpu.Dockerfile or pyproject_xpu.toml).
 #
 # preflight (ubuntu-latest) enforces the PR gate: fetches live label/draft
-# state, blocks draft PRs, requires the `run-ci` label, and runs
+# state, blocks draft PRs, resolves the CI labels (xpu-ci runs with
+# `run-intel-xpu-ci` or `run-all-ci`), and runs
 # .github/scripts/pr_ci_gate.py for lint + mergeability. It pins the exact
 # SHA that xpu-ci checks out, so a force-push mid-run cannot split
 # preflight and test across two commits.
@@ -98,8 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      labels: ${{ steps.pr.outputs.labels || '[]' }}
       exact_sha: ${{ steps.meta.outputs.exact_sha }}
+      run_intel_xpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_intel_xpu }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -128,14 +129,6 @@ jobs:
           echo "PR is draft. Blocking XPU CI."
           exit 1
 
-      - name: Require run-ci label
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
-            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into XPU CI."
-            exit 1
-          fi
-
       - name: Checkout workflow scripts
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@v4
@@ -145,6 +138,17 @@ jobs:
       - name: Checkout workflow scripts for manual dispatch
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
+
+      - name: Resolve CI stages
+        if: ${{ github.event_name == 'pull_request' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+        run: |
+          python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Resolve exact SHA
         id: meta
@@ -167,7 +171,10 @@ jobs:
   xpu-ci:
     name: xpu-ci (device_layer)
     needs: [check-changes, preflight]
-    if: needs.check-changes.outputs.xpu == 'true' && needs.preflight.result == 'success'
+    if: >-
+      needs.check-changes.outputs.xpu == 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.run_intel_xpu == 'true'
     runs-on: [self-hosted, intel-omni-bmg]
     timeout-minutes: 120
     env:

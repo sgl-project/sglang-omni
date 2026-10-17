@@ -84,6 +84,11 @@ def create_talker_scheduler(
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
+    if session_mode:
+        # note (0xtoward): a session's units replay host history, so it keeps the host sampler.
+        pass
+    else:
+        model_runner.enable_device_sampling()
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(
@@ -105,6 +110,9 @@ def create_talker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
+        # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
+        enable_async_decode=not session_mode,
+        async_decode_min_batch_size=1,
     )
 
 
@@ -116,7 +124,7 @@ def create_thinker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""

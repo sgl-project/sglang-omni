@@ -76,6 +76,11 @@ def add_server_args(
         default=model_name,
         help="Model name exposed by /v1/models.",
     )
+    target.add_argument(
+        "--skip-server-warmup",
+        action="store_true",
+        help="Report ready without sending the pipeline's warmup requests first.",
+    )
 
 
 def add_offline_args(

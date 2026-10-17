@@ -16,7 +16,8 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
-# sequence: PR Test -> ASR -> TTS -> Qwen3-Omni). Restores omni only.
+# sequence: PR Test -> ASR -> TTS -> MPS -> Omni). Any CI stage label runs it.
+# Restores omni only.
 
 jobs:
   unit-test:

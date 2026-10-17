@@ -10,6 +10,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.scheduling.types import (
     RequestOutput,
@@ -146,14 +147,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 continue
             else:
                 pass
-            if sched_req.data.req.inflight_middle_chunks > 0:
+            prompt = (sched_req.data.stage_payload.data or {}).get("prompt") or {}
+            known_tts = prompt.get("known_tts_output_ids") is not None
+            if sched_req.data.req.inflight_middle_chunks > 0 and not known_tts:
                 continue
             else:
                 pass
-            hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
-            # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
-            seq.append(hidden.detach().clone())
+            hidden_rows = hidden.reshape(-1, hidden.shape[-1])
+            if known_tts:
+                seq.extend(hidden_rows.detach().clone().unbind(0))
+            else:
+                # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
+                seq.append(hidden_rows[-1].detach().clone())
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
@@ -170,6 +176,14 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
+        else:
+            pass
+        payload = req_data.stage_payload
+        prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt or {}
+        known_tts_output_ids = prompt.get("known_tts_output_ids")
+        if known_tts_output_ids is not None:
+            # Keep only the text rows, excluding <|tts_eos|>.
+            seq = seq[-len(known_tts_output_ids) - 1 : -1]
         else:
             pass
         stacked = torch.stack(seq).to("cpu")

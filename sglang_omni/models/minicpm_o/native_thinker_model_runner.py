@@ -16,7 +16,7 @@ from sglang_omni.model_runner.prefill_inputs import (
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import (
     build_forbidden_token_index,
-    duplex_sample,
+    duplex_sample_batch,
 )
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
@@ -41,7 +41,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
-        # note (ruinique): duplex_sample owns the native runner's termination tokens.
+        # note (ruinique): duplex_sample_batch owns the native runner's termination tokens.
         super().__init__(tp_worker, output_processor, eos_token_ids=[])
         self.special_tokens: MiniCPMOSpecialTokenIds | None = None
         self.forbidden_token_index: torch.Tensor | None = None
@@ -108,29 +108,28 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         logits = logits_output.next_token_logits
-        result = torch.empty(len(requests), dtype=torch.long, device=logits.device)
-        for index, request in enumerate(requests):
-            data = request.data
-            special_tokens = self.resolve_special_tokens(data)
-            if self.forbidden_token_index is None:
-                self.forbidden_token_index = build_forbidden_token_index(
-                    special_tokens, logits.shape[-1], logits.device
-                )
-            else:
-                pass
-            result[index] = duplex_sample(
-                logits[index],
-                data.thinker_state,
-                special_tokens=special_tokens,
-                forbidden_token_index=self.forbidden_token_index,
-                generation_step=data.generation_steps,
-                is_listen_forced=data.is_listen_forced,
+        special_tokens = self.resolve_special_tokens(requests[0].data)
+        if self.forbidden_token_index is None:
+            self.forbidden_token_index = build_forbidden_token_index(
+                special_tokens, logits.shape[-1], logits.device
             )
+        else:
+            pass
+        token_ids = duplex_sample_batch(
+            logits,
+            [request.data.thinker_state for request in requests],
+            special_tokens=special_tokens,
+            forbidden_token_index=self.forbidden_token_index,
+            generation_steps=[request.data.generation_steps for request in requests],
+            listen_forced_flags=[request.data.is_listen_forced for request in requests],
+        )
+        for request in requests:
+            data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return result
+        return torch.tensor(token_ids, dtype=torch.long, device=logits.device)
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(
