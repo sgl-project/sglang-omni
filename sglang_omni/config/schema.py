@@ -866,6 +866,13 @@ class PipelineConfig(BaseModel):
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
 
+    def entry_stage_admission_limit(self) -> int | None:
+        """Requests one entry stage replica admits at once, when it owns admission.
+
+        None derives the coordinator in-flight cap from the generation engine.
+        """
+        return None
+
     @classmethod
     def code2wav_stage(cls) -> str | None:
         """Return the code2wav stage name when the pipeline supports it."""

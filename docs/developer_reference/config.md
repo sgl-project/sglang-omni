@@ -217,6 +217,12 @@ Class-level hooks a model config may declare:
 - `tensor_parallel_server_args_overrides(stage_name, tp_size)` /
   `topology_gated_custom_all_reduce_stages()` — engine overrides derived from
   the resolved TP topology at launch.
+- `entry_stage_admission_limit()` returns how many requests one entry stage
+  replica admits at once when that stage owns admission, such as a UMM
+  controller. The coordinator caps in-flight requests at this value times the
+  entry process replicas, or at the running+queued capacity of an engine stage
+  when that is lower, since the entry stage may send any request to any engine
+  stage. `None` (the default) derives the cap from the generation engine.
 
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
