@@ -619,10 +619,14 @@ def register_voices(app: FastAPI) -> None:
     ) -> JSONResponse:
         voice_store: SpeakerSampleStore = app.state.speaker_sample_store
         try:
-            response = voice_store.upload(
+            audio_bytes = await read_voice_upload(audio_sample)
+            # note (Richard Wang): decoding and saving run off the event loop,
+            # so one upload never stalls the server's other routes.
+            response = await asyncio.to_thread(
+                voice_store.upload,
                 name=name,
                 consent=consent,
-                audio_bytes=await read_voice_upload(audio_sample),
+                audio_bytes=audio_bytes,
                 filename=audio_sample.filename,
                 content_type=audio_sample.content_type,
                 ref_text=ref_text,
