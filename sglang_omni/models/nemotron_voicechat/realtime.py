@@ -4,7 +4,10 @@
 from collections.abc import Iterable
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.nemotron_voicechat.duplex_config import STAGES
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    STAGES,
+    NemotronVoiceChatDuplexPipelineConfig,
+)
 from sglang_omni.models.nemotron_voicechat.payload_types import (
     INPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_RATE,
@@ -99,7 +102,10 @@ def make_adapter(
 
 
 def deployment(
-    client: Client, *, session_limits: SessionLimits | None = None
+    client: Client,
+    config: NemotronVoiceChatDuplexPipelineConfig,
+    *,
+    session_limits: SessionLimits | None = None,
 ) -> RealtimeDeployment:
     return RealtimeDeployment(
         Capabilities(
@@ -116,5 +122,5 @@ def deployment(
             if session_limits is not None
             else RuntimeLimits()
         ),
-        max_connections=1,
+        max_connections=config.max_sessions,
     )
