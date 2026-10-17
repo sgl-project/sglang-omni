@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
@@ -13,10 +14,14 @@ import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
+from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
+    WhisperPrefillCudaGraphRunner,
+)
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
@@ -454,3 +459,58 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1
+
+
+@pytest.mark.parametrize("device_type", ["cpu", "cuda"])
+def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    """Other devices must not enter torch.cuda capture during resource setup."""
+    captured_request_counts: list[int] = []
+
+    class DenseCapture:
+        def __init__(
+            self,
+            model: WhisperForConditionalGeneration,
+            pool: MHATokenToKVPool,
+            *,
+            encoder_token_count: int,
+            max_requests: int,
+            prompt_lengths: tuple[int, ...],
+        ) -> None:
+            self.max_requests: int = max_requests
+
+        def capture(self) -> None:
+            captured_request_counts.append(self.max_requests)
+
+    builder = encoder_graph_builder(
+        enable_encoder_cuda_graph=False, max_running_requests=2
+    )
+    graph_runner = object.__new__(WhisperPrefillCudaGraphRunner)
+    graph_runner.dense_prefill_runner = None
+    builder.sglang_runner = SimpleNamespace(
+        prefill_cuda_graph_runner=graph_runner, token_to_kv_pool=object()
+    )
+    model = SimpleNamespace(
+        model=SimpleNamespace(
+            decoder=SimpleNamespace(
+                embed_tokens=SimpleNamespace(
+                    weight=SimpleNamespace(device=SimpleNamespace(type=device_type))
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(whisper_asr_builder, "WhisperDensePrefillRunner", DenseCapture)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=2),
+    )
+    builder.setup_model_resources(
+        model, SimpleNamespace(), generation_cuda_graph_enabled=True
+    )
+    if device_type == "cuda":
+        assert captured_request_counts == [2]
+        assert isinstance(graph_runner.dense_prefill_runner, DenseCapture)
+    else:
+        assert captured_request_counts == []
+        assert graph_runner.dense_prefill_runner is None
