@@ -13,11 +13,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
+from numpy.typing import ArrayLike
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.preprocessing.audio import AudioMediaIO
@@ -104,7 +105,9 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     return codec
 
 
-def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
+def to_codes_TN(
+    raw: ArrayLike | torch.Tensor | None, num_codebooks: int
+) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
         return None
@@ -124,7 +127,9 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
     return t.to(torch.long)
 
 
-def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
+def load_audio_to_24k(
+    reference_audio: str | Path | Mapping[str, object],
+) -> tuple[np.ndarray, int]:
     """Load ``inputs["reference_audio"]`` as 24 kHz mono float32.
 
     Accepts local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict.

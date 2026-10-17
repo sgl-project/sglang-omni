@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
-from typing import Any, Generic, TypeVar
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from types import ModuleType
 
 import torch
+from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
@@ -55,7 +56,7 @@ StepPlanT = TypeVar("StepPlanT")
 
 
 def resolve_initial_codec_chunk_frames(
-    params: Mapping[str, Any] | None,
+    params: Mapping[str, object] | None,
     *,
     steady_chunk_frames: int,
     default_frames: int = 0,
@@ -87,6 +88,18 @@ def resolve_initial_codec_chunk_frames(
     return min(frames, int(steady_chunk_frames))
 
 
+def vocoder_decode_stream_priority(device_module: ModuleType) -> int:
+    """The second-highest stream priority of the device: ahead of the talker's
+    default-priority stream, with the top level left free. A device with two levels
+    uses the top one."""
+    least_priority, greatest_priority = device_module.Stream.priority_range()
+    if greatest_priority + 1 < least_priority:
+        return greatest_priority + 1
+    else:
+        pass
+    return greatest_priority
+
+
 class StreamingVocoderBase(
     StreamingSimpleScheduler, ABC, Generic[StreamStateT, StepPlanT]
 ):
@@ -109,15 +122,27 @@ class StreamingVocoderBase(
 
     def __init__(
         self,
-        compute_fn: Callable[[Any], Any] | None,
+        compute_fn: (
+            Callable[
+                [StagePayload],
+                StagePayload | Coroutine[None, None, StagePayload],
+            ]
+            | None
+        ),
         *,
         sample_rate: int,
         stream_source_hint: str | None = None,
         stream_input_modality: str = "audio_codes",
-        batch_compute_fn: Callable[[list[Any]], list[Any]] | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StagePayload]],
+                Sequence[StagePayload] | Coroutine[None, None, Sequence[StagePayload]],
+            ]
+            | None
+        ) = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -235,7 +260,7 @@ class StreamingVocoderBase(
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
-    def handle_stream_chunk(self, request_id: str, item: Any) -> None:
+    def handle_stream_chunk(self, request_id: str, item: object) -> None:
         """Coalescing schedulers route single-chunk deliveries through the
         batch backbone, so the deferred abort cleanup stays off ``state_lock``
         (the inherited path would run ``on_stream_chunk`` with the lock held)."""
@@ -462,7 +487,7 @@ class StreamingVocoderBase(
         self,
         request_id: str,
         state: StreamStateT,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -497,7 +522,9 @@ class StreamingVocoderBase(
         """All cursor/overlap/crossfade/holdback math plus the codec call;
         ``is_final`` flushes the remainder at stream-done. None emits nothing."""
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform,
@@ -509,7 +536,7 @@ class StreamingVocoderBase(
     @abstractmethod
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: StreamStateT
-    ) -> dict[str, Any]:
+    ) -> Mapping[str, object]:
         """Terminal ``result`` payload data (metadata-only or full audio)."""
 
     def fallback_full_decode(
@@ -588,4 +615,5 @@ __all__ = [
     "INITIAL_CODEC_CHUNK_FRAMES_PARAM",
     "StreamingVocoderBase",
     "resolve_initial_codec_chunk_frames",
+    "vocoder_decode_stream_priority",
 ]

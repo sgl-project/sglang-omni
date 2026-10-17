@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Type
+from collections.abc import Mapping
+from typing import Dict, Optional, Type
 
 import torch
 
@@ -92,7 +93,7 @@ class RelayOperation(ABC):
 
     @property
     @abstractmethod
-    def metadata(self) -> Any:
+    def metadata(self) -> Mapping[str, object] | None:
         """Returns metadata required by the receiver (e.g., SHM name, memory pointer)."""
 
     @abstractmethod
@@ -130,7 +131,10 @@ class Relay(ABC):
 
     @abstractmethod
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: dict[str, object],
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
     ) -> RelayOperation:
         """
         Asynchronously retrieves data into dest_tensor using provided metadata.

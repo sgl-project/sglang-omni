@@ -3,18 +3,35 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Protocol
 
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.fishaudio_s2_pro.request_builders import S2ProSGLangRequestData
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
+    _NO_SEED,
+    S2ProSGLangTextModel,
+)
 from sglang_omni.sampling.seed import resolve_row_seed
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.vendor.sglang.core import (
+    ForwardBatch,
+    GenerationBatchResult,
+    ScheduleBatch,
+)
+
+
+class PrefillInputIds(Protocol):
+    @property
+    def input_ids(self) -> object: ...
 
 
 def collect_s2pro_step_outputs(
-    result: Any,
-    requests: list,
+    result: GenerationBatchResult,
+    requests: list[SchedulerRequest],
     *,
     output_codes: torch.Tensor,
     output_semantic_ids: torch.Tensor,
@@ -54,7 +71,9 @@ def collect_s2pro_step_outputs(
         data.latest_stream_code_chunk = codes
 
 
-def append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -> None:
+def append_semantic_history(
+    data: S2ProSGLangRequestData, token: torch.Tensor, history_len: int
+) -> None:
     history = data.semantic_history_tokens
     if (
         history is None
@@ -79,19 +98,28 @@ def append_semantic_history(data: Any, token: torch.Tensor, history_len: int) ->
 class FishS2ProModelRunner(ModelRunner):
     """Fish TTS runner with unified forward-owned decode and persistent buffers."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    model: S2ProSGLangTextModel
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         self.semantic_begin_id = int(self.model.semantic_begin_id)
         self.semantic_end_id = int(self.model.semantic_end_id)
         self.im_end_token_id = int(self.model.im_end_token_id)
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         # note (Junnan Li): not supported yet; semantic_history_tokens is
         # appended at resolve, one step late under lookahead.
         del batch
         return False
 
-    def before_prefill(self, forward_batch, schedule_batch, requests):
+    def before_prefill(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del schedule_batch
         self.sync_decode_state(requests)
         input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
@@ -102,12 +130,12 @@ class FishS2ProModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch,
-        schedule_batch,
-        requests,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
-    ):
+    ) -> None:
         del is_lookahead
         del schedule_batch
         input_ids = forward_batch.input_ids
@@ -133,19 +161,31 @@ class FishS2ProModelRunner(ModelRunner):
                 )
             )
 
-    def post_prefill(self, result, forward_batch, schedule_batch, requests):
+    def post_prefill(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del forward_batch, schedule_batch
         self.collect_step_outputs(result, requests)
 
-    def post_decode(self, result, forward_batch, schedule_batch, requests):
+    def post_decode(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del forward_batch, schedule_batch
         self.collect_step_outputs(result, requests)
 
-    def sync_decode_state(self, requests: list) -> None:
+    def sync_decode_state(self, requests: list[SchedulerRequest]) -> None:
         for row_idx, sched_req in enumerate(requests):
             self.sync_decode_row_state(row_idx, sched_req.data)
 
-    def sync_decode_row_state(self, row_idx: int, data: Any) -> None:
+    def sync_decode_row_state(self, row_idx: int, data: S2ProSGLangRequestData) -> None:
         self.model.sampling_temperature[row_idx] = data.temperature
         self.model.sampling_top_p[row_idx] = data.top_p
         self.model.sampling_top_k[row_idx] = data.top_k
@@ -176,8 +216,8 @@ class FishS2ProModelRunner(ModelRunner):
 
     def build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: PrefillInputIds,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         input_ids = forward_batch.input_ids
         if not isinstance(input_ids, torch.Tensor):
@@ -244,7 +284,9 @@ class FishS2ProModelRunner(ModelRunner):
 
         return text_embeds
 
-    def collect_step_outputs(self, result: Any, requests: list) -> None:
+    def collect_step_outputs(
+        self, result: GenerationBatchResult, requests: list[SchedulerRequest]
+    ) -> None:
         collect_s2pro_step_outputs(
             result,
             requests,

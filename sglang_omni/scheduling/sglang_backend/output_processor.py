@@ -3,12 +3,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 import torch
 
-from sglang_omni.scheduling.types import RequestOutput, SchedulerOutput
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+else:
+    pass
 
 
 class SGLangOutputProcessor:
@@ -17,14 +26,14 @@ class SGLangOutputProcessor:
     def __init__(
         self,
         capture_hidden: bool = False,
-        should_emit_hidden: Callable[[Any], bool] | None = None,
-    ):
+        should_emit_hidden: Callable[[SchedulerRequest], bool] | None = None,
+    ) -> None:
         self.capture_hidden = capture_hidden
         self.should_emit_hidden = should_emit_hidden
 
     def process(
         self,
-        model_output: Any,
+        model_output: GenerationBatchResult,
         scheduler_output: SchedulerOutput,
         host_token_ids: torch.Tensor | None = None,
     ) -> dict[str, RequestOutput]:
@@ -35,7 +44,7 @@ class SGLangOutputProcessor:
             pass
         token_list = ids.tolist() if ids is not None else []
 
-        hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
+        hidden_extras_by_request: Mapping[int, dict[str, torch.Tensor]] = {}
         if self.capture_hidden:
             should_emit_hidden_by_request = [
                 self.should_emit_hidden_for_request(request)
@@ -61,7 +70,7 @@ class SGLangOutputProcessor:
             )
         return outputs
 
-    def should_emit_hidden_for_request(self, request: Any) -> bool:
+    def should_emit_hidden_for_request(self, request: SchedulerRequest) -> bool:
         if self.should_emit_hidden is None:
             return True
         else:
@@ -70,11 +79,11 @@ class SGLangOutputProcessor:
 
     def build_hidden_extras_by_request(
         self,
-        model_output: Any,
+        model_output: GenerationBatchResult,
         *,
         scheduler_output: SchedulerOutput,
         should_emit_hidden_by_request: list[bool],
-    ) -> dict[int, dict[str, Any] | None]:
+    ) -> Mapping[int, dict[str, torch.Tensor]]:
         request_indexes = [
             i
             for i, should_emit in enumerate(should_emit_hidden_by_request)

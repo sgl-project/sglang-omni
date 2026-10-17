@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from queue import Queue
+from typing import TYPE_CHECKING
 
 import torch
-from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
+from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN, Req, ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
@@ -33,6 +36,18 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 )
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
+from sglang_omni.scheduling.types import ARRequestData, SchedulerRequest
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+
+    from sglang_omni.models.higgs_tts.model import HiggsTTSModel
+    from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +71,13 @@ def syncfree_launch_enabled() -> bool:
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
+    model: HiggsTTSModel
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self.outbox: Any | None = None
+        self.outbox: Queue[OutgoingMessage] | None = None
         self.vocoder_target = "vocoder"
         # Ping-pong pinned host buffers for the async-decode rollout-logprob D2H.
         self.logprob_host_buffers: list[torch.Tensor] | None = None
@@ -67,7 +86,7 @@ class HiggsTTSModelRunner(ModelRunner):
         # composition-invariant sampling-param extraction/upload when the batch
         # composition is unchanged since the previous decode step.
         self.syncfree_launch: bool = syncfree_launch_enabled()
-        self.cg_launch_key: tuple | None = None
+        self.cg_launch_key: tuple[tuple[str, ...], tuple[int, ...], int] | None = None
 
     def next_logprob_host_staging(self, device_buf: torch.Tensor) -> torch.Tensor:
         return self.pinned_pingpong(
@@ -78,14 +97,19 @@ class HiggsTTSModelRunner(ModelRunner):
             realloc_on_grow=True,
         )
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self.outbox = outbox
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(self, request_id: str, req_data: ARRequestData) -> None:
         """Flush a partial streaming-code window before terminal output."""
         self.flush_code_chunks(request_id, req_data, force=True)
 
-    def before_prefill(self, forward_batch, schedule_batch, requests):
+    def before_prefill(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del schedule_batch
         for req in requests:
             self.model.set_request_seed(
@@ -98,26 +122,43 @@ class HiggsTTSModelRunner(ModelRunner):
             ),
         )
 
-    def post_prefill(self, result, forward_batch, schedule_batch, requests):
+    def post_prefill(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del schedule_batch
         self.collect_step_outputs(result, requests, forward_batch)
 
     def before_decode(
         self,
-        forward_batch,
-        schedule_batch,
-        requests,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
-    ):
+    ) -> None:
         del schedule_batch
         self.populate_cg_buffers(forward_batch, requests, is_lookahead=is_lookahead)
 
-    def post_decode(self, result, forward_batch, schedule_batch, requests):
+    def post_decode(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del schedule_batch
         self.collect_step_outputs_cg(result, forward_batch, requests)
 
-    def post_decode_launch(self, result, forward_batch, requests):
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | None:
         """Async-decode GPU half: scatter + pack (GPU->GPU), then a
         non-blocking copy of the staging snapshot into a pinned host staging buffer.
         Returns the buffer; the base runner records the event right after, so
@@ -159,7 +200,12 @@ class HiggsTTSModelRunner(ModelRunner):
         )
         return host_buf, logprob_host
 
-    def next_input_token_ids(self, result, forward_batch, requests):
+    def next_input_token_ids(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
         """Return Higgs' device-native cb0 rail for the next decode step.
 
         Reporting tokens are reconstructed from the combined CPU collect, but
@@ -180,8 +226,13 @@ class HiggsTTSModelRunner(ModelRunner):
         return self.model.cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long)
 
     def post_decode_resolve(
-        self, host_buf, result, forward_batch, schedule_batch, requests
-    ):
+        self,
+        host_buf: tuple[torch.Tensor, torch.Tensor | None] | None,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
         """Async-decode host half: read the already-copied pinned snapshot and
         run the per-request collect loop. Mirrors the tail of
         ``_collect_step_outputs_cg`` (shares ``_decode_collect_host``).
@@ -192,17 +243,21 @@ class HiggsTTSModelRunner(ModelRunner):
         else:
             pass
         n_real = len(requests)
-        host_buf, logprob_host = host_buf
+        combined_cpu, logprob_host = host_buf
         logprobs_cpu = None if logprob_host is None else logprob_host[:n_real]
         self.decode_collect_host(
-            host_buf[:n_real],
+            combined_cpu[:n_real],
             logprobs_cpu,
             result,
             requests,
         )
 
     def populate_cg_buffers(
-        self, forward_batch, requests, *, is_lookahead: bool = False
+        self,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+        *,
+        is_lookahead: bool = False,
     ) -> None:
         """Fill the model's CG buffers for one decode step.
 
@@ -304,7 +359,9 @@ class HiggsTTSModelRunner(ModelRunner):
         model.cg_active_step_count[:bs] = pool.step_count[rows_t]
 
     @staticmethod
-    def extract_decode_sampling_params(requests):
+    def extract_decode_sampling_params(
+        requests: list[SchedulerRequest],
+    ) -> tuple[list[float], list[float], list[int | None]]:
         """Read per-row sampling parameters from request-side host state.
 
         SGLang's ``sampling_info`` stores these values on CUDA. Copying its
@@ -327,7 +384,10 @@ class HiggsTTSModelRunner(ModelRunner):
         return temps, top_ps, top_ks
 
     def collect_step_outputs_cg(
-        self, result: Any, forward_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Synchronous collect: scatter + pack (GPU->GPU), one blocking D2H,
         then the host collect loop. Used when async decode is off; behavior is
@@ -387,8 +447,8 @@ class HiggsTTSModelRunner(ModelRunner):
         self,
         combined_cpu: torch.Tensor,
         logprobs_cpu: torch.Tensor | None,
-        result: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Host-side collect loop over an already-D2H'd staging snapshot:
         append per-request codes, mark finishes, build ``result.next_token_ids``.
@@ -449,8 +509,8 @@ class HiggsTTSModelRunner(ModelRunner):
 
     def build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         input_ids = forward_batch.input_ids
         device = input_ids.device
@@ -505,7 +565,10 @@ class HiggsTTSModelRunner(ModelRunner):
         return text_embeds
 
     def collect_step_outputs(
-        self, result: Any, requests: list, forward_batch: Any | None = None
+        self,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
+        forward_batch: ForwardBatch | None = None,
     ) -> None:
         """Pull per-request newly emitted codes from the model into
         ``data.output_codes`` and overwrite ``result.next_token_ids``
@@ -564,15 +627,17 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
     @staticmethod
-    def request_captures_rollout_logprobs(sched_req: Any) -> bool:
+    def request_captures_rollout_logprobs(sched_req: SchedulerRequest) -> bool:
         data = sched_req.data
         return bool(data.return_omni_rollout and data.return_logprob)
 
-    def should_capture_rollout_logprobs(self, requests: list) -> bool:
+    def should_capture_rollout_logprobs(self, requests: list[SchedulerRequest]) -> bool:
         return any(self.request_captures_rollout_logprobs(req) for req in requests)
 
     @staticmethod
-    def append_output_code(data: Any, codes_N: torch.Tensor) -> torch.Tensor:
+    def append_output_code(
+        data: "HiggsSGLangRequestData", codes_N: torch.Tensor
+    ) -> torch.Tensor:
         try:
             max_new_tokens = int(data.max_new_tokens)
             num_codebooks = int(data.num_codebooks)
@@ -611,7 +676,9 @@ class HiggsTTSModelRunner(ModelRunner):
         data.output_code_count = count + 1
         return row
 
-    def decode_step_logprobs(self, result: Any, n_real: int) -> torch.Tensor:
+    def decode_step_logprobs(
+        self, result: GenerationBatchResult, n_real: int
+    ) -> torch.Tensor:
         model = self.model
         hidden_states = result.logits_output.hidden_states
         if hidden_states.ndim == 3:
@@ -630,7 +697,10 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
     def prefill_step_logprobs(
-        self, result: Any, requests: list, forward_batch: Any | None
+        self,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
+        forward_batch: ForwardBatch | None,
     ) -> torch.Tensor:
         del forward_batch
         model = self.model
@@ -677,7 +747,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
     @staticmethod
-    def mark_sampler_finished(req: Any, generation_done: bool) -> None:
+    def mark_sampler_finished(req: Req, generation_done: bool) -> None:
         """Bridge Higgs sampler completion into upstream SGLang finish state."""
         if generation_done and req.finished_reason is None:
             req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
@@ -685,7 +755,7 @@ class HiggsTTSModelRunner(ModelRunner):
             pass
 
     @staticmethod
-    def is_final_code_step(data: Any) -> bool:
+    def is_final_code_step(data: "HiggsSGLangRequestData") -> bool:
         if bool(data.generation_done):
             return True
         else:
@@ -701,7 +771,11 @@ class HiggsTTSModelRunner(ModelRunner):
         return max_new_tokens > 0 and output_count >= max_new_tokens
 
     def queue_or_emit_code_chunk(
-        self, sched_req: Any, codes_N: torch.Tensor, *, force: bool = False
+        self,
+        sched_req: SchedulerRequest,
+        codes_N: torch.Tensor,
+        *,
+        force: bool = False,
     ) -> None:
         if self.outbox is None:
             return
@@ -729,7 +803,7 @@ class HiggsTTSModelRunner(ModelRunner):
             pass
 
     @staticmethod
-    def stream_params(data: Any) -> tuple[int, int, int, int]:
+    def stream_params(data: HiggsSGLangRequestData) -> tuple[int, int, int, int]:
         num_codebooks = max(int(data.num_codebooks or 1), 1)
         metadata = data.stream_metadata or {}
         stride = max(
@@ -769,7 +843,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
     @classmethod
-    def initial_stream_flush_rows(cls, data: Any) -> int:
+    def initial_stream_flush_rows(cls, data: HiggsSGLangRequestData) -> int:
         num_codebooks, stride, _, initial_frames = cls.stream_params(data)
         steady_codec_frames = max(1, stride - num_codebooks + 1)
         if 0 < initial_frames < steady_codec_frames:
@@ -779,7 +853,9 @@ class HiggsTTSModelRunner(ModelRunner):
         return max(num_codebooks, stride)
 
     @classmethod
-    def next_stream_flush_rows(cls, data: Any, flushed_rows: int) -> int:
+    def next_stream_flush_rows(
+        cls, data: HiggsSGLangRequestData, flushed_rows: int
+    ) -> int:
         num_codebooks, stride, followup, initial_frames = cls.stream_params(data)
         steady_codec_frames = max(1, stride - num_codebooks + 1)
         emitted_initial_chunk = (
@@ -795,7 +871,7 @@ class HiggsTTSModelRunner(ModelRunner):
     def flush_code_chunks(
         self,
         request_id: str,
-        data: Any,
+        data: HiggsSGLangRequestData,
         *,
         force: bool = False,
     ) -> None:
@@ -822,7 +898,7 @@ class HiggsTTSModelRunner(ModelRunner):
     def emit_code_chunk(
         self,
         request_id: str,
-        data: Any,
+        data: HiggsSGLangRequestData,
         codes_N: torch.Tensor,
     ) -> None:
         if self.outbox is None:

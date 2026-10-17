@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 import torch
+from typing_extensions import Self
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
-if TYPE_CHECKING:
-    from sglang_omni.platforms.interface import JointRopeInplaceKernel
-else:
-    pass
+from sglang_omni.platforms.interface import JointRopeInplaceKernel
+
+
+class TensorTransform(Protocol):
+    def __call__(self, tensor: torch.Tensor, /) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class CachedRotaryEmbedding(RotaryEmbedding):
             cache = torch.cat((phase.cos(), phase.sin()), dim=-1).contiguous()
 
         self.kernel = kernel
+        self.master_cos_sin_cache = cache.cpu()
         self.register_buffer("cos_sin_cache", cache, persistent=False)
         self.register_buffer(
             "positions",
@@ -75,6 +78,15 @@ class CachedRotaryEmbedding(RotaryEmbedding):
             ).repeat(max_batch_size),
             persistent=False,
         )
+
+    def _apply(  # noqa: leading-underscore
+        self, fn: TensorTransform, recurse: bool = True
+    ) -> Self:
+        result = super()._apply(fn, recurse)
+        # note (yzxiao): The CUDA kernel requires the cache produced from the
+        # canonical FP32 frequencies even when the surrounding model is BF16.
+        self.cos_sin_cache = self.master_cos_sin_cache.to(self.positions.device)
+        return result
 
     def for_batch(self, batch_size: int) -> RotaryInputs:
         seq_len = self.cos_sin_cache.shape[0]
@@ -144,8 +156,7 @@ def apply_rotary_inplace(
     query: torch.Tensor, key: torch.Tensor, rope: RotaryInputs
 ) -> None:
     batch_size, heads, seq_len, head_dim = query.shape
-    # Note(yzxiao): Undo the attention head view to recover the Linear outputs'
-    # token-major layout. view must alias the original Q/K, never copy them.
+    # note (yzxiao): Preserve the packed Q/K views so RoPE writes to their source.
     query_tokens = query.transpose(1, 2).view(batch_size * seq_len, heads, head_dim)
     key_tokens = key.transpose(1, 2).view(batch_size * seq_len, heads, head_dim)
     rope.kernel(

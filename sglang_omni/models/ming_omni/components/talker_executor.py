@@ -67,15 +67,10 @@ class MingTalkerExecutor:
         """Load talker model and VAE (runs in thread pool)."""
         from transformers import AutoTokenizer
 
-        from sglang_omni.models.ming_omni.talker import (
-            MingOmniTalker,
-            MingOmniTalkerConfig,
-            SpkembExtractor,
-        )
+        from sglang_omni.models.ming_omni.talker import MingOmniTalker, SpkembExtractor
         from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
             AudioVAE,
         )
-        from sglang_omni.models.weight_loader import load_weights_by_prefix
 
         logger.info(
             "[TALKER] Loading MingOmniTalker from %s (device=%s)",
@@ -83,22 +78,11 @@ class MingTalkerExecutor:
             self.device,
         )
 
-        # 1. Load config from checkpoint
+        # 1-3. Load config, create the model, and stream weights before moving it
         t0 = time.time()
-        config = MingOmniTalkerConfig.from_pretrained_dir(self.talker_model_path)
-        if torch.device(self.device).type == "npu":
-            config.use_torch_attention()
-        else:
-            pass
-
-        # 2. Create model (no weights yet)
-        self.talker = MingOmniTalker(config)
-        self.talker.eval()
-
-        # 3. Stream weights, then move to device with bf16
-        weights = load_weights_by_prefix(self.talker_model_path, prefix="")
-        self.talker.load_weights(weights.items())
-        self.talker.to(device=self.device, dtype=torch.bfloat16)
+        self.talker = MingOmniTalker.from_pretrained(
+            self.talker_model_path, device=self.device
+        )
         logger.info("[TALKER] MingOmniTalker loaded in %.1fs", time.time() - t0)
 
         # 4. Load tokenizer externally

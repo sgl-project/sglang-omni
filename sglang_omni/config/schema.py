@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.main import IncEx
+from typing_extensions import Unpack
 
 if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
@@ -168,7 +171,7 @@ class EngineArgs(BaseModel):
     def parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.quantization is not None and (not self.quantization.strip()):
             raise ValueError("engine.quantization must not be empty")
         else:
@@ -186,7 +189,7 @@ class EngineArgs(BaseModel):
         else:
             pass
 
-    def overrides(self) -> dict[str, Any]:
+    def overrides(self) -> dict[str, object]:
         """Return the keys set on this block, declared and free-form alike.
 
         A declared key left at ``None`` means "not set" and is omitted, so
@@ -234,7 +237,7 @@ class FactoryArgs(BaseModel):
     enable_partial_start: bool | None = None
     partial_start_min_chunks: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.prefill_coalesce_requests == 1:
             logger.warning(
                 "prefill_coalesce_requests=1 disables coalescing: the admission gate only engages at >= 2 (a batch of one has nothing to coalesce with). Use 0 to disable explicitly, or >= 2 to enable."
@@ -264,7 +267,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices", mode="before")
     @classmethod
-    def parse_replica_devices(cls, value: Any) -> Any:
+    def parse_replica_devices(cls, value: object) -> object:
         if value is None:
             return None
         else:
@@ -306,11 +309,41 @@ class ProcessConfig(BaseModel):
             pass
         return value
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.num_replicas < 1:
             raise ValueError("processes.num_replicas must be >= 1")
         else:
             pass
+
+
+def normalize_route_prefixes(stage: str, prefixes: Iterable[str]) -> tuple[str, ...]:
+    """Validate the path prefixes a stage declares and return them in order.
+
+    A prefix starts with a slash, names at least one path segment, and covers
+    itself and everything below it.
+    """
+    out: list[str] = []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not prefix.startswith("/"):
+            raise ValueError(
+                f"stages.{stage}.http_routes entries must be paths starting "
+                f"with '/', got {prefix!r}"
+            )
+        else:
+            pass
+        stripped = prefix.rstrip("/")
+        if not stripped or "?" in stripped or "#" in stripped:
+            raise ValueError(
+                f"stages.{stage}.http_routes entry {prefix!r} must name a path "
+                "below '/'"
+            )
+        elif stripped in out:
+            raise ValueError(
+                f"stages.{stage}.http_routes lists {stripped!r} more than once"
+            )
+        else:
+            out.append(stripped)
+    return tuple(out)
 
 
 class StageConfig(BaseModel):
@@ -376,8 +409,18 @@ class StageConfig(BaseModel):
     disable_direct_cuda_ipc_payload: bool = False
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None
+    http_routes: list[str] = Field(
+        default_factory=list,
+        description="Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, whose scheduler provides the app through http_app(), so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage must run as one instance.",
+    )
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
+        if self.http_routes:
+            self.http_routes = list(
+                normalize_route_prefixes(self.name, self.http_routes)
+            )
+        else:
+            pass
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
@@ -496,7 +539,7 @@ class AudioChunkingConfig(BaseModel):
     max_concurrent_chunks: int = Field(default=8, ge=1)
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if (
             self.max_total_audio_s is not None
             and self.max_total_audio_s < self.max_audio_clip_s
@@ -506,6 +549,16 @@ class AudioChunkingConfig(BaseModel):
             )
         else:
             pass
+
+
+class StreamDeliveryConfig(BaseModel):
+    """Cap on undelivered stream bytes the coordinator holds for all readers together.
+
+    None turns it off.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    max_total_backlog_bytes: int | None = Field(default=1024 * 1024 * 1024, ge=1)
 
 
 @dataclass(frozen=True)
@@ -548,6 +601,27 @@ class CustomVoiceConfig:
     task_type: str
 
 
+class SerializationFallback(Protocol):
+    def __call__(self, value: object, /) -> object: ...
+
+
+class ModelDumpOptions(TypedDict, total=False):
+    mode: Literal["json", "python"] | str
+    include: IncEx | None
+    exclude: IncEx | None
+    context: object
+    by_alias: bool | None
+    exclude_unset: bool
+    exclude_defaults: bool
+    exclude_none: bool
+    exclude_computed_fields: bool
+    round_trip: bool
+    warnings: bool | Literal["none", "warn", "error"]
+    fallback: SerializationFallback | None
+    serialize_as_any: bool
+    polymorphic_serialization: bool | None
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -566,15 +640,23 @@ class PipelineConfig(BaseModel):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
+    is_realtime_only: ClassVar[bool] = False
+    # Import path of the function that builds, from this config, the chat,
+    # speech or transcription request the server sends itself before it reports
+    # ready; None skips the warmup.
+    server_warmup_request_factory: ClassVar[str | None] = None
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
     min_tail_s: ClassVar[float] = 0.5
     condition_on_previous_text: ClassVar[bool] = False
     max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
+    # None accepts every speech request field and ignores unknown ones.
+    supported_speech_fields: ClassVar[frozenset[str] | None] = None
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
     "Stage name -> ``StageConfig`` subclass for this pipeline's stage types.\n\n    The mapping is what makes a stage's type survive a dump/rebuild round\n    trip: the resolver mutates ``model_dump()`` output and reconstructs the\n    config, and this is how each stage document gets validated against its\n    own subclass (engine marker, model-specific ``model.*`` fields) instead\n    of the base ``StageConfig``. Stage names absent from the mapping --\n    including stages a user file adds -- validate as plain ``StageConfig``.\n    "
     model_path: str
     audio_chunking: AudioChunkingConfig = Field(default_factory=AudioChunkingConfig)
+    stream_delivery: StreamDeliveryConfig = Field(default_factory=StreamDeliveryConfig)
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None
@@ -588,7 +670,7 @@ class PipelineConfig(BaseModel):
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+    def model_dump(self, **kwargs: Unpack[ModelDumpOptions]) -> dict[str, object]:
         """Dump with each stage serialized by its runtime class.
 
         Pydantic serializes a ``list[StageConfig]`` field by the declared
@@ -604,13 +686,13 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def materialize_stage_types(cls, data: Any) -> Any:
+    def materialize_stage_types(cls, data: object) -> object:
         """Validate stage documents against their declared per-stage types."""
         if not isinstance(data, dict) or not isinstance(data.get("stages"), list):
             return data
         else:
             pass
-        stages: list[Any] = []
+        stages: list[object] = []
         for stage in data["stages"]:
             stage_cls = (
                 cls.stage_config_types.get(stage.get("name"))
@@ -622,9 +704,10 @@ class PipelineConfig(BaseModel):
             )
         return {**data, "stages": stages}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         self.validate_general()
         self.validate_processes()
+
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
             raise ValueError(
@@ -737,7 +820,7 @@ class PipelineConfig(BaseModel):
                 pass
         raise KeyError(stage_name)
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         """Constructor kwargs the pipeline author passes to this stage's factory.
 
         This is a code-level hook, not a configuration surface: values
@@ -763,8 +846,16 @@ class PipelineConfig(BaseModel):
         """
         return dict(self.env_defaults)
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        """Resolve launch-time environment defaults for a logical stage.
+
+        Stage settings override pipeline defaults; model policies may derive
+        missing values here without persisting them in the configuration.
+        """
+        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
+
     @classmethod
-    def generation_admission_defaults(cls) -> dict[str, Any]:
+    def generation_admission_defaults(cls) -> dict[str, int]:
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
 
@@ -841,6 +932,23 @@ class PipelineConfig(BaseModel):
             raise ValueError("Stage names must be unique")
         else:
             pass
+        # The server relays a path to the first stage whose prefix covers it.
+        claimed: list[tuple[str, str]] = []
+        for s in self.stages:
+            for prefix in s.http_routes:
+                for owner, other in claimed:
+                    if owner != s.name and (
+                        f"{prefix}/".startswith(f"{other}/")
+                        or f"{other}/".startswith(f"{prefix}/")
+                    ):
+                        raise ValueError(
+                            f"Stages {owner!r} and {s.name!r} both declare "
+                            f"http_routes over {min(prefix, other, key=len)!r}. "
+                            "Give each path prefix one stage."
+                        )
+                    else:
+                        pass
+                claimed.append((s.name, prefix))
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")
@@ -968,5 +1076,5 @@ class PipelineConfig(BaseModel):
             pass
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> PipelineConfig:
+    def from_dict(data: dict[str, object]) -> PipelineConfig:
         return PipelineConfig(**data)

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -232,6 +232,10 @@ def project_preprocessing_to_encoder(
     encoder_inputs = (
         {stage_name: dict(stage_inputs)} if isinstance(stage_inputs, dict) else {}
     )
+    if stage_name == IMAGE_STAGE and isinstance(stage_inputs, dict):
+        encoder_inputs[stage_name]["pixel_values"] = list(stage_inputs["pixel_values"])
+    else:
+        pass
     projected = MiniCPMOPipelineState(encoder_inputs=encoder_inputs)
     return payload_with_state(payload, projected)
 
@@ -247,15 +251,15 @@ def payload_with_state(
 
 
 def project_encoder_input_metadata(
-    encoder_inputs: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    projected: dict[str, dict[str, Any]] = {}
+    encoder_inputs: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    projected: dict[str, dict[str, object]] = {}
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
         else:
             pass
-        stage_metadata: dict[str, Any] = {}
+        stage_metadata: dict[str, object] = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             stage_metadata["cache_key"] = cache_key
@@ -273,7 +277,7 @@ def project_encoder_input_metadata(
 
 
 def encoder_stages_with_model_inputs(
-    encoder_inputs: dict[str, dict[str, Any]],
+    encoder_inputs: Mapping[str, object],
 ) -> list[str]:
     return [
         stage_name
@@ -282,7 +286,7 @@ def encoder_stages_with_model_inputs(
     ]
 
 
-def has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+def has_encoder_model_input(stage_name: str, stage_inputs: object) -> bool:
     if not isinstance(stage_inputs, dict):
         return False
     else:

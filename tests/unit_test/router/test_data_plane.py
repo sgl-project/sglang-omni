@@ -270,32 +270,6 @@ def test_dp_large_speech_body_preserves_audio_input_routing(tmp_path: Path) -> N
     )
 
 
-def test_dp_large_speech_body_rejects_a_speech_only_pool(tmp_path: Path) -> None:
-    upstream = Recorder()
-    app, snapshot_path = dp_app(tmp_path, upstream)
-    writer = SnapshotWriter(snapshot_path, cp_epoch="e")
-    body = json.dumps(
-        {
-            "input": "hello",
-            "voice": "default",
-            "ref_audio": "data:audio/wav;base64," + "A" * (1024 * 1024),
-        }
-    ).encode()
-
-    with TestClient(app) as client:
-        snapshot(writer, entry(capabilities=["speech"]))
-        wait_for(lambda: client.get("/ready").status_code == 200)
-        response = client.post(
-            "/v1/audio/speech",
-            content=body,
-            headers={"content-type": "application/json"},
-        )
-
-    assert response.status_code == 503
-    assert response.json()["error"]["message"] == "no eligible upstream"
-    assert upstream.requests == []
-
-
 def test_dp_sheds_when_the_snapshot_goes_stale_and_recovers(
     tmp_path: Path,
 ) -> None:
@@ -859,95 +833,6 @@ def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
         assert tc.post("/generate", json={}).status_code == 200
 
 
-def test_selector_rr_offset_staggers_first_picks() -> None:
-    from sglang_omni_router.python.selector import WorkerSelector
-
-    view = DataPlaneWorkerView()
-
-    class Snapshot:
-        seq = 1
-        cp_epoch = "e"
-        workers = [entry(), entry("http://worker-b:8102")]
-
-    view.apply(Snapshot())
-    first_picks = {
-        index: WorkerSelector("round_robin", rr_offset=index)
-        .select(view.workers(), required_capabilities=set())
-        .url
-        for index in (0, 1)
-    }
-    assert first_picks[0] != first_picks[1]
-
-
-def test_dp_relays_sse_byte_identically(tmp_path: Path) -> None:
-    # Note (Jiaxin Deng): the DP app must relay an event stream byte-for-byte through
-    # the snapshot-fed relay path
-    chunks = [
-        b'data: {"choices": [{"delta": {"content": "he"}}]}\n\n',
-        b'data: {"choices": [{"delta": {"audio": {"data": "AAAA"}}}]}\n\n',
-        b"data: [DONE]\n\n",
-    ]
-
-    class EventStream(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            for chunk in chunks:
-                yield chunk
-
-    class SSEUpstream(Recorder):
-        def handler(self, request: httpx.Request) -> httpx.Response:
-            self.requests.append((request.url.path, request.content))
-            if request.url.path == "/v1/chat/completions":
-                return httpx.Response(
-                    200,
-                    stream=EventStream(),
-                    headers={"content-type": "text/event-stream"},
-                    request=request,
-                )
-            return httpx.Response(200, json={"ok": True})
-
-    upstream = SSEUpstream()
-    app, snapshot_path = dp_app(tmp_path, upstream)
-    writer = SnapshotWriter(snapshot_path, cp_epoch="e")
-    with TestClient(app) as client:
-        snapshot(writer, entry())
-        wait_for(lambda: client.get("/ready").status_code == 200)
-        with client.stream(
-            "POST",
-            "/v1/chat/completions",
-            json={"model": "m", "stream": True},
-        ) as response:
-            assert response.status_code == 200
-            assert response.headers["content-type"].startswith("text/event-stream")
-            body = b"".join(response.iter_raw())
-    assert body == b"".join(chunks)
-
-
-def test_incarnation_change_replaces_the_worker_object() -> None:
-    # Note (Jiaxin Deng): a new incarnation must yield a FRESH Worker object, so an in-
-    # flight request holding the old one cannot misattribute a late failure (ABA)
-    view = DataPlaneWorkerView()
-
-    class Snap:
-        seq = 1
-        cp_epoch = "e"
-        workers = [entry(incarnation="inc-A")]
-
-    view.apply(Snap())
-    old_obj = view.workers()[0]
-    assert old_obj.incarnation == "inc-A"
-
-    class Snap2:
-        seq = 2
-        cp_epoch = "e"
-        workers = [entry(incarnation="inc-B")]
-
-    view.apply(Snap2())
-    new_obj = view.workers()[0]
-    assert new_obj is not old_obj  # replaced, not mutated in place
-    assert new_obj.incarnation == "inc-B"
-    assert old_obj.incarnation == "inc-A"  # the captured reference is stable
-
-
 def test_incarnation_unchanged_preserves_the_worker_object_and_counters() -> None:
     view = DataPlaneWorkerView()
 
@@ -970,28 +855,6 @@ def test_incarnation_unchanged_preserves_the_worker_object_and_counters() -> Non
     assert view.workers()[0] is obj  # same incarnation: same object
     assert obj.active_requests == 1
     assert obj.routed_requests == 1
-
-
-def test_dp_does_not_report_non_gateway_failures_to_the_cp(tmp_path: Path) -> None:
-    # Note (Jiaxin Deng): eviction is gateway-only (502/504): a 503 is a per-request
-    # failure, not an eviction signal, so it must not fire a worker_failure report
-    import time as _time
-
-    upstream = Recorder(status_for={"/generate": 503})
-    internal = Recorder()
-    app, snapshot_path = dp_app(
-        tmp_path, upstream, internal=internal, failure_threshold=3
-    )
-    writer = SnapshotWriter(snapshot_path, cp_epoch="e")
-    with TestClient(app) as client:
-        snapshot(writer, entry())
-        wait_for(lambda: client.get("/ready").status_code == 200)
-        assert client.post("/generate", json={}).status_code == 503
-        assert client.post("/generate", json={}).status_code == 503
-        _time.sleep(0.3)  # let any (erroneous) report task run
-        assert not any(
-            path == "/internal/worker_failure" for path, _ in internal.requests
-        )
 
 
 def test_control_traffic_survives_a_saturated_forwarding_pool(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from sglang_omni.models.ming_tts.model_runner import (
     MingTTSRequestState,
     MingTTSTPStepUpdate,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 
 def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
@@ -287,7 +288,7 @@ def test_runner_reads_tp_size_from_the_published_parallel_bag(monkeypatch) -> No
         model_runner=SimpleNamespace(model=object()),
     )
     with get_context().override_server_args(tp_size=2):
-        runner = MingTTSModelRunner(tp_worker, output_processor=None)
+        runner = MingTTSModelRunner(tp_worker, output_processor=SGLangOutputProcessor())
 
     assert runner.tp_rank == 1
     assert runner.tp_size == 2

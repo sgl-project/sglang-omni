@@ -155,6 +155,7 @@ class DiT(nn.Module):
                     num_heads,
                     mlp_ratio=mlp_ratio,
                     norm_layer=norm_layer,
+                    qkv_layer=execution_config.qkv_layer,
                     **kwargs,
                 )
                 for _ in range(depth)

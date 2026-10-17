@@ -26,7 +26,7 @@ from sglang_omni.serve.realtime.types import (
 
 
 def envelope_size_bytes(envelope: Envelope) -> int:
-    return len(repr(envelope).encode())
+    return len(repr(envelope.event).encode())
 
 
 @dataclass(kw_only=True)

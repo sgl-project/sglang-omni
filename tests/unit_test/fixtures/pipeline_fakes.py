@@ -134,6 +134,9 @@ class FakeScheduler:
         self.stopped = False
         self.aborted: list[str] = []
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.started = True
         if self.fail_start is not None:
@@ -300,6 +303,9 @@ class ReplicaProcessProbeScheduler:
         self.running = False
         self.stream_chunks: dict[str, list[Any]] = {}
         self.stream_done: set[str] = set()
+
+    def warm_up_serving_thread(self) -> None:
+        pass
 
     def start(self) -> None:
         self.running = True

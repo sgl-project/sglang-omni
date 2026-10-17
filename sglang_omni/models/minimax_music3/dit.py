@@ -385,7 +385,7 @@ class MiniMaxMusic3DIT(nn.Module):
     ) -> bool:
         """Capture the fixed full-window DiT step, falling back on failure."""
         device = next(self.parameters()).device
-        free_bytes, _ = torch.cuda.mem_get_info(device)
+        free_bytes, _ = torch.get_device_module(device).mem_get_info(device)
         free_gb = free_bytes / 2**30
         if free_gb < min_free_gb:
             logger.warning(

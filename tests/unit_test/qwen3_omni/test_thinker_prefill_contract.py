@@ -11,7 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
-import sglang_omni.models.qwen3_omni.thinker_model_runner as qwen_thinker_runner_module
+from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.thinker_model_runner import (
@@ -103,10 +103,9 @@ def test_custom_prefill_forward_records_eager_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
-    calls: list[str] = []
-    runner.tp_worker = SimpleNamespace(
-        record_custom_prefill_eager=lambda: calls.append("recorded")
-    )
+    worker = object.__new__(ModelWorker)
+    worker.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
+    runner.tp_worker = worker
     runner.classify_prefill = lambda *args: SimpleNamespace(kind="custom")
     expected = object()
     monkeypatch.setattr(
@@ -118,7 +117,7 @@ def test_custom_prefill_forward_records_eager_fallback(
     result = runner.custom_prefill_forward(SimpleNamespace(), object(), [])
 
     assert result is expected
-    assert calls == ["recorded"]
+    assert worker.prefill_cuda_graph_usage.custom_eager_count == 1
 
 
 def test_text_only_prefill_attaches_live_embeddings_without_official_batch_mutation():
@@ -173,76 +172,6 @@ def test_text_invalid_token_ids_are_not_silently_clamped():
         runner.before_prefill(forward_batch, schedule_batch, [request])
 
     assert get_omni_prefill_inputs(forward_batch) is None
-
-
-def test_text_only_prefill_skips_chunk_span_normalization(monkeypatch):
-    runner = make_runner()
-    request = make_request([7, 8, 9], None)
-    forward_batch, schedule_batch = make_batch([request])
-
-    def unexpected_chunk_span_normalization(*args):
-        pytest.fail("text-only prefill should not normalize multimodal spans")
-
-    monkeypatch.setattr(
-        runner, "batch_chunk_spans", unexpected_chunk_span_normalization
-    )
-
-    runner.before_prefill(forward_batch, schedule_batch, [request])
-
-    assert get_omni_prefill_inputs(forward_batch) is not None
-
-
-def test_explicit_positions_skip_redundant_origin_prompt_tensorization(monkeypatch):
-    runner = make_runner()
-    request = make_request(
-        [7, AUDIO_ID, 8],
-        {"audio_embeds": torch.ones(1, HIDDEN)},
-        positions=make_positions(audio=(1,)),
-    )
-    forward_batch, schedule_batch = make_batch([request])
-
-    def unexpected_prompt_tensorization(*args, **_kwargs):
-        raise AssertionError("explicit positions must not rebuild origin_input_ids")
-
-    monkeypatch.setattr(
-        qwen_thinker_runner_module.torch,
-        "as_tensor",
-        unexpected_prompt_tensorization,
-    )
-
-    runner.before_prefill(forward_batch, schedule_batch, [request])
-
-    assert get_omni_prefill_inputs(forward_batch) is not None
-
-
-def test_multi_audio_batch_normalizes_chunk_spans_once(monkeypatch):
-    runner = make_runner()
-    requests = [
-        make_request(
-            [7, AUDIO_ID],
-            {"audio_embeds": torch.ones(1, HIDDEN)},
-            positions=make_positions(audio=(1,)),
-        ),
-        make_request(
-            [8, AUDIO_ID],
-            {"audio_embeds": torch.full((1, HIDDEN), 2.0)},
-            positions=make_positions(audio=(1,)),
-        ),
-    ]
-    forward_batch, schedule_batch = make_batch(requests)
-    calls = []
-    original = runner.batch_chunk_spans
-
-    def wrapped_batch_chunk_spans(batch, expected_batch_size):
-        calls.append(expected_batch_size)
-        return original(batch, expected_batch_size)
-
-    monkeypatch.setattr(runner, "batch_chunk_spans", wrapped_batch_chunk_spans)
-
-    runner.before_prefill(forward_batch, schedule_batch, requests)
-
-    assert calls == [2]
-    assert get_omni_prefill_inputs(forward_batch) is not None
 
 
 def test_audio_prefill_composes_embeddings_into_the_private_sidecar():

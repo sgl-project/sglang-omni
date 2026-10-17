@@ -3,19 +3,24 @@
 
 from __future__ import annotations
 
+import _thread
 import dataclasses
 import inspect
 import logging
 import queue
 import threading
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Literal
+from typing import Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
 from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
@@ -25,9 +30,15 @@ logger = logging.getLogger(__name__)
 
 CONTINUATION_VERSION = 1
 _TRANSFER_TOMBSTONE_LIMIT = 10000
+Params = ParamSpec("Params")
+ResultT = TypeVar("ResultT")
 
 
-def serialize_kv_allocator(allocator: Any, *, lock: Any | None = None):
+def serialize_kv_allocator(
+    allocator: BaseTokenToKVPoolAllocator,
+    *,
+    lock: _thread.RLock | None = None,
+) -> _thread.RLock:
     """Synchronize the existing allocator, including calls through other holders.
 
     Wrap bound methods in place so concrete types and existing aliases survive.
@@ -41,9 +52,11 @@ def serialize_kv_allocator(allocator: Any, *, lock: Any | None = None):
     else:
         pass
 
-    def synchronized(method):
+    def synchronized(
+        method: Callable[Params, ResultT],
+    ) -> Callable[Params, ResultT | None]:
         @wraps(method)
-        def call(*args, **kwargs):
+        def call(*args: Params.args, **kwargs: Params.kwargs) -> ResultT | None:
             with lock:
                 return method(*args, **kwargs)
 
@@ -67,8 +80,8 @@ class DecodeContinuation:
     origin_input_ids: list[int]
     output_ids: list[int]
     vocab_size: int
-    sampling_params: dict[str, Any]
-    stage_payload: dict[str, Any]
+    sampling_params: dict[str, object]
+    stage_payload: dict[str, object]
     origin_input_ids_unpadded: list[int] | None = None
     eos_token_ids: list[int] | None = None
     cached_tokens: int = 0
@@ -79,7 +92,9 @@ class DecodeContinuation:
     mm_audio_tokens: int = 0
     mm_video_tokens: int = 0
     return_logprob: bool = False
-    output_token_logprobs: list[Any] = dataclasses.field(default_factory=list)
+    output_token_logprobs: list[list[float | int]] = dataclasses.field(
+        default_factory=list
+    )
     top_logprobs_num: int = 0
     token_ids_logprob: list[int] | None = None
     logprob_start_len: int = -1
@@ -87,7 +102,7 @@ class DecodeContinuation:
     return_sampling_mask: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
-    multimodal_resume: dict[str, Any] | None = None
+    multimodal_resume: dict[str, object] | None = None
     version: int = CONTINUATION_VERSION
 
     def __post_init__(self) -> None:
@@ -166,12 +181,14 @@ class DecodeAdmission:
     replica_bindings: dict[str, int] = dataclasses.field(default_factory=dict)
 
 
-StateBuilder = Callable[[Any], tuple[dict[str, Any], dict[str, Any] | None, list[int]]]
-StateRestorer = Callable[[Any, SGLangARRequestData, dict[str, Any] | None], None]
+StateBuilder = Callable[
+    [Req], tuple[dict[str, object], dict[str, object] | None, list[int]]
+]
+StateRestorer = Callable[[Req, SGLangARRequestData, dict[str, object] | None], None]
 
 
 def continuation_from_req(
-    req: Any,
+    req: Req,
     transfer_id: str,
     state_builder: StateBuilder,
 ) -> DecodeContinuation:
@@ -251,9 +268,9 @@ def req_from_continuation(
     continuation: DecodeContinuation,
     allocation: ReservedKV,
     *,
-    req_to_token_pool: Any,
+    req_to_token_pool: ReqToTokenPool,
     state_restorer: StateRestorer,
-) -> Any:
+) -> Req:
     """Install a transferred request as SGLang's existing PREBUILT input."""
 
     from sglang.srt.managers.schedule_batch import Req
@@ -344,7 +361,7 @@ def req_from_continuation(
     return req
 
 
-def sampling_params_to_dict(params: Any) -> dict[str, Any]:
+def sampling_params_to_dict(params: SamplingParams) -> dict[str, object]:
     allowed = inspect.signature(type(params)).parameters
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
@@ -360,7 +377,7 @@ def sampling_params_to_dict(params: Any) -> dict[str, Any]:
 
 
 @contextmanager
-def defer_first_token_finish(reqs: list[Any]):
+def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
     """Let normal Prefill accounting run while Decode owns stop decisions."""
 
     saved = []
@@ -389,7 +406,7 @@ def defer_first_token_finish(reqs: list[Any]):
             ) = values
 
 
-def build_kv_pool(token_to_kv_pool: Any, *, pool_id: str) -> KVPool:
+def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
     getter = getattr(
         token_to_kv_pool, "_pd_registerable_tensors", None
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -427,7 +444,9 @@ def build_kv_pool(token_to_kv_pool: Any, *, pool_id: str) -> KVPool:
     )
 
 
-def request_page_indices(req_to_token_pool: Any, req: Any) -> tuple[int, ...]:
+def request_page_indices(
+    req_to_token_pool: ReqToTokenPool, req: Req
+) -> tuple[int, ...]:
     if req.kv.req_pool_idx is None:
         raise RuntimeError(f"request {req.rid!r} has no KV mapping")
     else:
@@ -452,10 +471,10 @@ class DecodeKVReceiver:
         self,
         *,
         pool_id: str,
-        allocator: Any,
+        allocator: BaseTokenToKVPoolAllocator,
         admissions: queue.SimpleQueue[DecodeAdmission],
         resume_schema: str,
-        lifecycle_lock: Any | None = None,
+        lifecycle_lock: _thread.RLock | None = None,
     ) -> None:
         self.pool_id = pool_id
         self.allocator = allocator
@@ -600,7 +619,7 @@ class DecodeKVReceiver:
             return bool(self.reservations)
 
     @contextmanager
-    def suspend_reservations(self):
+    def suspend_reservations(self) -> Generator[None, None, None]:
         """Reject new reservations while a destructive scheduler operation runs."""
 
         with self.lock:
@@ -623,8 +642,8 @@ class DecodeKVReceiver:
 class SGLangKVLease:
     """Keep source pages owned until the receiver ACKs the copy."""
 
-    def __init__(self, req: Any, due_releases: queue.SimpleQueue) -> None:
-        self.req = req
+    def __init__(self, req: Req | None, due_releases: queue.SimpleQueue[Req]) -> None:
+        self.req: Req | None = req
         self.due_releases = due_releases
         self.lock = threading.Lock()
 

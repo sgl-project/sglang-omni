@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 from torch import Tensor
@@ -59,7 +58,7 @@ def resample_waveform(waveform: Tensor) -> Tensor:
     return AF.resample(waveform.float(), DAV_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
 
 
-def positive_int(name: str, value: Any) -> int:
+def positive_int(name: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"MiniMax Music 3 {name} must be a positive integer")
     else:
@@ -67,7 +66,7 @@ def positive_int(name: str, value: Any) -> int:
     return value
 
 
-def non_negative_number(name: str, value: Any) -> float:
+def non_negative_number(name: str, value: object) -> float:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
@@ -80,7 +79,7 @@ def non_negative_number(name: str, value: Any) -> float:
     return float(value)
 
 
-def boolean(name: str, value: Any) -> bool:
+def boolean(name: str, value: object) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"MiniMax Music 3 {name} must be a boolean")
     else:
@@ -140,18 +139,22 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
     ) -> None:
-        if not (current_platform.is_cuda() or current_platform.is_musa()):
+        if not (
+            current_platform.is_cuda()
+            or current_platform.is_musa()
+            or current_platform.is_xpu()
+        ):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/XPU backend"
             )
         else:
             pass
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa"):
+        if self.device.type not in ("cuda", "musa", "xpu"):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
+                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/XPU device"
             )
         else:
             pass
@@ -369,7 +372,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         self.stream_states: dict[str, AcousticStreamState] = {}
         super().__init__(compute_fn=None, max_batch_size=1)
 
-    def is_streaming_payload(self, payload: Any) -> bool:
+    def is_streaming_payload(self, payload: object) -> bool:
         if not isinstance(payload, StagePayload):
             return False
         else:
@@ -477,12 +480,16 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         waveform_44k = torch.cat(state.wave_chunks, dim=1)
         waveform_32k = resample_waveform(waveform_44k)
         final_state = state.final_state
-        payload_data = audio_waveform_payload(
-            waveform_32k,
-            sample_rate=OUTPUT_SAMPLE_RATE,
-            modality="audio",
-            source_hint="MiniMax Music 3",
-            keep_channels=True,
+        payload_data: dict[
+            str, bytes | list[int] | str | int | dict[str, int | float]
+        ] = dict(
+            audio_waveform_payload(
+                waveform_32k,
+                sample_rate=OUTPUT_SAMPLE_RATE,
+                modality="audio",
+                source_hint="MiniMax Music 3",
+                keep_channels=True,
+            )
         )
         usage = build_usage(final_state)
         if usage is not None:

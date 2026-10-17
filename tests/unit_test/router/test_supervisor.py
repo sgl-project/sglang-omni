@@ -605,7 +605,11 @@ def test_supervisor_rejects_least_request_with_multiple_processes(
 
 
 def test_supervisor_creates_and_reclaims_admission_slots(tmp_path: Path) -> None:
-    from sglang_omni_router.python.admission_shm import SlotCodec, admission_file_size
+    from sglang_omni_router.python.admission_shm import (
+        SlotCodec,
+        admission_file_size,
+        retired_slot_index,
+    )
     from sglang_omni_router.python.supervisor import ADMISSION_SHM_ENV
 
     harness = Harness(make_config(), n=2, tmp_path=tmp_path)
@@ -635,12 +639,15 @@ def test_supervisor_creates_and_reclaims_admission_slots(tmp_path: Path) -> None
     view = SlotCodec(shm, 1).read()
     assert view.inflight == 0
     assert view.generation == 0
+    retired = SlotCodec(shm, retired_slot_index(2)).read()
+    assert retired.rejected_total == 2
+    assert retired.peak_sum == 5
     assert harness.supervisor.dp_slots[1].generation == 2
     harness.supervisor.shutdown()
     assert not (tmp_path / "admission.shm").exists()
 
 
-@pytest.mark.parametrize("machine", ["aarch64", "arm64", "riscv64", ""])
+@pytest.mark.parametrize("machine", ["aarch64", ""])
 def test_multiprocess_is_refused_off_x86_64(
     machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

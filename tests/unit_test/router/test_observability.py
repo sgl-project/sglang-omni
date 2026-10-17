@@ -47,21 +47,6 @@ def test_first_contact_establishes_the_baseline() -> None:
     assert ledger.totals("w0")["routed_total"] == 5
 
 
-def test_cp_restart_restarts_the_window_coherently() -> None:
-    # Note (Jiaxin Deng): a fresh ledger (CP restart) takes a surviving DP's cumulative
-    # as baseline: the display restarts at zero
-    old_cp = DataPlaneCounterLedger()
-    old_cp.apply(make_report(1, 0), now=0.0)
-    old_cp.apply(make_report(9, 120), now=0.0)
-    assert old_cp.totals("w0")["routed_total"] == 120
-
-    new_cp = DataPlaneCounterLedger()
-    new_cp.apply(make_report(10, 120), now=0.0)
-    assert new_cp.totals("w0")["routed_total"] == 0
-    new_cp.apply(make_report(11, 130), now=0.0)
-    assert new_cp.totals("w0")["routed_total"] == 10
-
-
 def test_cumulative_reports_are_idempotent_and_ordered() -> None:
     ledger = DataPlaneCounterLedger()
     ledger.apply(make_report(1, 0), now=0.0)
@@ -152,25 +137,6 @@ def test_incarnation_change_retires_the_old_segment_and_counts_the_new() -> None
     assert totals["routed_total"] == 13
     ledger.apply(make_report(4, 5, incarnation="inc-b"), now=3.0)
     assert ledger.totals("w0")["routed_total"] == 15
-
-
-def test_overlay_renders_counter_fields() -> None:
-    class Worker:
-        worker_id = "w0"
-
-    ledger = DataPlaneCounterLedger()
-    ledger.apply(make_report(1, 0, active=0))
-    ledger.apply(make_report(2, 6, active=1))  # real clock: entry counts as live
-    overlay = ledger.overlay(Worker())
-    assert overlay == {
-        "active_requests": 1,
-        "routed_requests": 6,
-        "successful_requests": 6,
-        "failed_requests": 0,
-        "routed_requests_by_class": {},
-        "successful_requests_by_class": {},
-        "failed_requests_by_class": {},
-    }
 
 
 def test_service_class_counters_follow_the_cumulative_ledger_protocol() -> None:

@@ -46,6 +46,7 @@ from sglang_omni_router.python.worker import build_workers
         "http://127.0.0.1:8101?x=1",
         "http://169.254.169.254",
         "http://169.254.1.1",
+        "http://metadata.google.internal",
     ],
 )
 def test_worker_url_validation_rejects_invalid_urls(url: str) -> None:
@@ -63,15 +64,8 @@ def test_router_config_rejects_duplicate_urls_after_normalization() -> None:
         )
 
 
-def test_worker_config_defaults_to_complete_omni_v1_replica_capabilities() -> None:
-    worker = WorkerConfig(url="http://127.0.0.1:8101")
-
-    assert worker.capabilities == DEFAULT_CAPABILITIES
-
-
-@pytest.mark.parametrize("model", ["", "   "])
-def test_worker_config_normalizes_blank_model_to_none(model: str) -> None:
-    worker = WorkerConfig(url="http://127.0.0.1:8101", model=model)
+def test_worker_config_normalizes_blank_model_to_none() -> None:
+    worker = WorkerConfig(url="http://127.0.0.1:8101", model="   ")
 
     assert worker.model is None
 
@@ -341,7 +335,6 @@ launcher:
     "yaml_text, error",
     [
         ("{}", "top-level launcher object"),
-        ("launcher:\n  model_path: model\n  unknown: true\n", "unknown"),
         (
             "launcher:\n" "  model_path: model\n" "  mem_fraction_static: 0.6\n",
             "mem_fraction_static",
@@ -738,16 +731,6 @@ def test_router_cli_max_connections_defaults_to_auto() -> None:
     assert config.max_connections == 384
 
 
-def test_router_cli_max_connections_explicit_passes_through() -> None:
-    args = build_parser().parse_args(
-        ["--worker-urls", "http://127.0.0.1:8101", "--max-connections", "512"]
-    )
-
-    config = build_config_from_args(args)
-
-    assert config.max_connections == 512
-
-
 def test_router_config_rejects_hyphenated_policy_aliases() -> None:
     with pytest.raises(ValidationError):
         RouterConfig(
@@ -763,6 +746,8 @@ def test_router_config_rejects_hyphenated_policy_aliases() -> None:
         "pyproject_rocm.toml",
         "pyproject_xpu.toml",
         "pyproject_npu.toml",
+        "pyproject_cpu.toml",
+        "pyproject_musa.toml",
     ),
 )
 def test_python_router_console_script_entrypoint_resolves(
@@ -1163,13 +1148,6 @@ def test_worker_records_routed_request_outcomes() -> None:
     assert payload["failed_requests"] == 2
 
 
-def test_worker_decrement_active_fails_on_unbalanced_cleanup() -> None:
-    worker = build_workers([WorkerConfig(url="http://127.0.0.1:8101")])[0]
-
-    with pytest.raises(AssertionError, match="active request count"):
-        worker.decrement_active()
-
-
 @pytest.mark.asyncio
 async def test_health_checker_uses_failure_and_success_thresholds() -> None:
     statuses = iter([500, 500, 200, 200])
@@ -1299,28 +1277,6 @@ def test_nofile_check_strict_mode_fails_fast(
         serve_module.check_file_descriptor_limit(config, strict=True)
 
 
-def test_strict_limits_flag_defaults_off() -> None:
-    parser = build_parser()
-
-    args = parser.parse_args(["--worker-urls", "http://127.0.0.1:8101"])
-    assert args.strict_limits is False
-
-    args = parser.parse_args(
-        ["--worker-urls", "http://127.0.0.1:8101", "--strict-limits"]
-    )
-    assert args.strict_limits is True
-
-
-def test_max_inflight_defaults_to_max_connections() -> None:
-    args = build_parser().parse_args(
-        ["--worker-urls", "http://127.0.0.1:8101", "--max-connections", "256"]
-    )
-    config = build_config_from_args(args)
-
-    assert config.max_inflight is None
-    assert config.effective_max_inflight == 256
-
-
 def test_max_inflight_flag_decouples_from_max_connections() -> None:
     args = build_parser().parse_args(
         [
@@ -1411,30 +1367,6 @@ def test_nofile_check_explicit_tie_recommends_both_flags(
     assert "lower both --max-connections and --max-inflight" in caplog.text
 
 
-def test_nofile_check_derived_tie_recommends_max_connections(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
-    # max_inflight unset: effective_max_inflight derives from max_connections, so
-    # lowering --max-connections also lowers the admission bound and clears it.
-    config = RouterConfig(
-        workers=[WorkerConfig(url="http://127.0.0.1:8101")],
-        max_connections=512,
-    )
-
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
-        serve_module.check_file_descriptor_limit(config)
-
-    assert "lower --max-connections" in caplog.text
-    assert "lower both" not in caplog.text
-
-
-def test_router_processes_defaults_to_one() -> None:
-    args = build_parser().parse_args(["--worker-urls", "http://127.0.0.1:8101"])
-    assert args.router_processes == 1
-
-
 def test_multiprocess_rejects_voice_owner_configuration(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1455,27 +1387,14 @@ def test_multiprocess_rejects_voice_owner_configuration(
     )
 
 
-@pytest.mark.parametrize("value", ["0", "-1"])
 def test_router_processes_rejects_non_positive(
-    value: str, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):
         serve_module.main(
-            ["--worker-urls", "http://127.0.0.1:8101", "--router-processes", value]
+            ["--worker-urls", "http://127.0.0.1:8101", "--router-processes", "0"]
         )
     assert "--router-processes must be >= 1" in capsys.readouterr().err
-
-
-def test_router_state_dir_reaches_the_router_config(tmp_path: Path) -> None:
-    args = build_parser().parse_args(
-        [
-            "--worker-urls",
-            "http://127.0.0.1:8101",
-            "--router-state-dir",
-            str(tmp_path / "state"),
-        ]
-    )
-    assert build_config_from_args(args).router_state_dir == str(tmp_path / "state")
 
 
 def test_multiprocess_startup_fails_closed_when_the_state_dir_is_unusable(

@@ -4,18 +4,38 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
 )
-from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.models.whisper_asr.request_builders import (
+    MAX_PREV_CONTEXT_TOKENS,
+    WhisperASRRequestData,
+)
+from sglang_omni.platforms import current_platform
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    AsrEngineBuilder,
+    GenerationDefaults,
+    SchedulerExtras,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.whisper_asr.sglang_model import (
+        WhisperForConditionalGeneration,
+    )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +82,7 @@ def max_reachable_decoder_prefill_tokens(
 
 
 def reachable_prefill_cuda_graph_max_bs(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     encoder_token_count: int,
     max_running_requests: int | None,
@@ -139,7 +159,7 @@ def resolve_encoder_graph_buckets(
     if max_running_requests is not None:
         if max_running_requests < 1:
             raise ValueError(
-                "max_running_requests must be >= 1, " f"got {max_running_requests}"
+                f"max_running_requests must be >= 1, got {max_running_requests}"
             )
         else:
             pass
@@ -154,7 +174,7 @@ def resolve_encoder_graph_buckets(
     return tuple(sorted(resolved))
 
 
-class WhisperASREngineBuilder(AsrEngineBuilder):
+class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
@@ -169,7 +189,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
-        async_decode_min_batch_size: int = 2,
+        async_decode_min_batch_size: int = 1,
         request_build_max_pending: int | None = 16,
         prefill_coalesce_requests: int = 2,
         prefill_coalesce_wait_ms: float = 6.0,
@@ -225,13 +245,13 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_size = int(pre_lm_max_batch_size)
         self.pre_lm_max_batch_wait_ms = int(pre_lm_max_batch_wait_ms)
         self.pre_lm_cache_pin_host_memory = bool(pre_lm_cache_pin_host_memory)
-        self.processor: Any = None
-        self.tokenizer: Any = None
-        self.generation_config: Any = None
+        self.processor: WhisperProcessor | None = None
+        self.tokenizer: WhisperTokenizer | None = None
+        self.generation_config: GenerationConfig | None = None
         self.encoder_token_count = 0
         self.context_length = 0
         self.decoder_context_len = 0
-        self.audio_encoder_service: Any | None = None
+        self.audio_encoder_service: WhisperPreLMEncoderService | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -254,8 +274,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_model_resources(
         self,
-        model: Any,
-        server_args: Any,
+        model: WhisperForConditionalGeneration | None,
+        server_args: object,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
@@ -295,7 +315,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             int(self.processor.feature_extractor.nb_max_frames),
         )
 
-    def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
+    def setup_runtime_resources(
+        self, model: WhisperForConditionalGeneration | None, server_args: object
+    ) -> None:
         del server_args
         if not self.enable_pre_lm_encoder:
             return
@@ -330,7 +352,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
                 "Whisper ASR requires chunked_prefill_size=0 because its encoder "
@@ -361,8 +383,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             pass
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -374,8 +396,17 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        attention_backend = current_platform.get_encoder_decoder_attention_backend()
+        if attention_backend is not None:
+            defaults["attention_backend"] = attention_backend
+        else:
+            pass
+        return defaults
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], WhisperASRRequestData],
+        Callable[[WhisperASRRequestData], StagePayload],
+    ]:
         del model
         from sglang_omni.models.whisper_asr.request_builders import (
             make_whisper_scheduler_adapters,
@@ -391,7 +422,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             audio_encoder_service=self.audio_encoder_service,
         )
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[WhisperASRRequestData]:
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
@@ -408,7 +439,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             ),
         }
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
         if self.audio_encoder_service is None:
             return {}
         else:

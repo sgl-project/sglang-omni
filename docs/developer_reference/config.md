@@ -180,6 +180,7 @@ overrode. Both run the same merge as `serve`.
 | `stream_done_to_fn` | `str` or `None` | `None` | Dotted function path for request-aware stream-completion targets. |
 | `project_payload` | `dict[str, str]` | `{}` | Optional target-stage to dotted projection function mapping used before writing a downstream payload. |
 | `comm` | `CommConfig` or `None` | `None` | Per-stage communication pool and Mooncake options. |
+| `http_routes` | `list[str]` | `[]` | Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage's scheduler provides the ASGI app through `http_app()`, and the stage must run as one instance. |
 
 Routing rule: set exactly one of `next` or `terminal=True`. `route_fn` is an
 optional request-aware override for stages that already declare `next`.
@@ -201,6 +202,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
 | `placement` | `PlacementConfig` | defaults | Placement planning limits, e.g. `max_total_gpu_memory_fraction_per_gpu`. |
+| `stream_delivery` | `StreamDeliveryConfig` | 1 GiB | `max_total_backlog_bytes`: undelivered stream bytes the coordinator may hold for all readers together; over it, the longest-idle streams fail. `none` turns it off. |
 | `terminal_stages_fn` | `str` or `None` | `None` | Dotted function path for request-aware terminal-stage resolution. |
 | `config_cls` | `str` | class name | Stored automatically and used when loading a saved config file. |
 

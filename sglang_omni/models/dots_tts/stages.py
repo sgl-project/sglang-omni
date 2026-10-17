@@ -7,10 +7,12 @@ import json
 import logging
 import math
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, overload
 
 import torch
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.dots_tts.codec import (
     DotsReferenceEncoder,
@@ -18,12 +20,20 @@ from sglang_omni.models.dots_tts.codec import (
 )
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
+from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
+
+if TYPE_CHECKING:
+    from dots_tts.models.dots_tts.config import ModelConfig
+
+else:
+    pass
 
 _DEFAULT_CONTEXT_LENGTH = 2048
 
@@ -62,15 +72,23 @@ def configure_optimized_kernels() -> None:
     dit_inference.compile_module_forward = _compile_dit_step
 
 
-def first_not_none(*values: Any, default: Any = None) -> Any:
+@overload
+def first_not_none(*values: str | None, default: str | None = None) -> str | None: ...
+
+
+@overload
+def first_not_none(*values: object, default: object = None) -> object: ...
+
+
+def first_not_none(*values: object, default: object = None) -> object:
     return next((value for value in values if value is not None), default)
 
 
-def as_dict(value: Any) -> dict[str, Any]:
+def as_dict(value: object) -> dict[str, object]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def inputs(value: Any) -> dict[str, Any]:
+def inputs(value: object) -> dict[str, object]:
     if isinstance(value, str):
         return {"text": value}
     else:
@@ -78,7 +96,7 @@ def inputs(value: Any) -> dict[str, Any]:
     return as_dict(value)
 
 
-def reference_path(value: Any) -> str | None:
+def reference_path(value: object) -> str | None:
     if value is None:
         return None
     else:
@@ -102,8 +120,8 @@ def reference_path(value: Any) -> str | None:
 def preprocess_dots_tts_payload(
     payload: StagePayload,
     *,
-    tokenizer: Any,
-    model_config: Any,
+    tokenizer: PreTrainedTokenizerBase,
+    model_config: "ModelConfig",
     max_generate_length: int,
     max_sequence_length: int,
     num_steps: int = 4,
@@ -378,7 +396,9 @@ def preprocess_dots_tts_payload(
     return payload
 
 
-def load_model_metadata(model_path: str) -> tuple[str, Any, Any, int]:
+def load_model_metadata(
+    model_path: str,
+) -> tuple[str, "ModelConfig", PreTrainedTokenizerBase, int]:
     import_dots_tts()
     from dots_tts.models.dots_tts.config import ModelConfig
     from transformers import AutoTokenizer
@@ -402,7 +422,7 @@ def create_preprocessing_executor(
     max_generate_length: int = 500,
     num_steps: int = 4,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     _root, config, tokenizer, context_length = load_model_metadata(model_path)
     from dots_tts.utils.tokenizer import (
         AUDIO_COMP_SPAN_TOKEN,
@@ -439,9 +459,7 @@ def create_reference_encode_executor(
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
-) -> SimpleScheduler:
-    from sglang_omni.utils.device import resolve_concrete_device
-
+) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
@@ -470,12 +488,13 @@ def create_sglang_latent_engine_executor(
     num_steps: int = 4,
     device: str | None = None,
     gpu_id: int | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
-) -> OmniScheduler:
+    server_args_overrides: Mapping[str, object] | None = None,
+) -> OmniScheduler[DotsTTSSGLangRequestData]:
     from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("dots.tts requires CUDA")
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type == "cpu":
+        raise RuntimeError("dots.tts requires an accelerator")
     else:
         pass
     return DotsTTSEngineBuilder(
@@ -497,23 +516,22 @@ def create_vocoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     optimize: bool = True,
+    enable_streaming_audio_vae_cuda_graph: bool = True,
     vocoder_merge_steps: int = 4,
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
 ) -> DotsTTSStreamingVocoder:
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("dots.tts requires CUDA")
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type == "cpu":
+        raise RuntimeError("dots.tts requires an accelerator")
     else:
         pass
-    codec = load_dots_audio_codec(
-        model_path, device=str(resolve_concrete_device(device, gpu_id))
-    )
+    codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
+        enable_streaming_audio_vae_cuda_graph=enable_streaming_audio_vae_cuda_graph,
         merge_steps=vocoder_merge_steps,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
@@ -522,16 +540,16 @@ def create_vocoder_executor(
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.
     vocoder.ensure_slot_pool()
+    backend = (
+        f"{vocoder.cuda_graph_count} step CUDA graphs"
+        if vocoder.cuda_graph_count
+        else "eager step"
+    )
     logging.getLogger(__name__).info(
-        "dots.tts vocoder backend: slot-pooled eager streaming "
-        "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
-        "stream_batch_cap=%d, wait_ms=%d)",
-        optimize,
-        vocoder.merge_steps,
-        vocoder.stream_slots,
-        max_batch_size,
-        vocoder.stream_chunk_batch_max,
-        max_batch_wait_ms,
+        f"dots.tts vocoder backend: slot-pooled streaming, {backend} "
+        f"(optimize={optimize}, merge_steps={vocoder.merge_steps}, "
+        f"stream_slots={vocoder.stream_slots}, batch_size={max_batch_size}, "
+        f"stream_batch_cap={vocoder.stream_chunk_batch_max}, wait_ms={max_batch_wait_ms})"
     )
     return vocoder
 

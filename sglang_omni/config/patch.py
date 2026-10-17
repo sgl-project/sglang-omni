@@ -31,7 +31,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -129,7 +128,7 @@ class ConfigPatch:
     """A single ``path = value`` assignment with its provenance."""
 
     path: ConfigPath
-    value: Any
+    value: object
     source: ConfigSource
     layer: Layer
     specificity: Specificity = Specificity.EXPLICIT
@@ -138,7 +137,7 @@ class ConfigPatch:
     def create(
         cls,
         path: str | ConfigPath,
-        value: Any,
+        value: object,
         source: ConfigSource,
         *,
         root: type[BaseModel] = PipelineConfig,

@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.6"
+uv pip install --prerelease=allow "sglang-omni==0.1.8"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -80,7 +80,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
-| `temperature` | float | `1.0` | Thinker |
+| `temperature` | float | `0.0` (greedy) | Thinker |
 | `top_p` | float | `1.0` | Thinker |
 | `top_k` | int | `-1` | Thinker |
 | `min_p` | float | `0.0` | Thinker |
@@ -103,10 +103,20 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_min_pixels` | int | `null` | Minimum pixels per video frame |
 | `video_max_pixels` | int | `null` | Maximum pixels per video frame |
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
+| `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
+
+Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other
+server failures. With `stream=true`, errors detected after the event stream
+starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
+followed by `data: [DONE]`. A full request queue uses `type: "server_error"` and `code: 503`. Other server failures use `type: "server_error"` and
+`code: 500`. The HTTP status remains 200 once streaming has started; clients
+must check for an `error` event, including after partial output.
 
 ### Known Limitations
+
+- **Multiple videos must have the same sampled frame rate.** The processor accepts one frame rate for video token timestamps. Requests with different sampled frame rates follow the invalid-input error contract above.
 
 - **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
 - **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
-- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.
+- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit. Without `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's context in the checkpoint config (65,536 tokens for the Instruct checkpoint). Setting both to a lower value caps it. The talker's context is likewise the checkpoint's unless `--talker_ar.factory.max_seq_len` sets it. When a long spoken prompt leaves less room than `talker_max_new_tokens`, the talker generates only the frames that fit, so the audio can end before the text.

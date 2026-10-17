@@ -30,11 +30,12 @@ from sglang_omni_router.python.route_metadata import (
 )
 from sglang_omni_router.python.selector import (
     NoEligibleWorkerError,
+    UnknownRouteWorkerError,
     WorkerSelector,
     require_eligible_worker,
 )
 from sglang_omni_router.python.voice_routing import VoiceMutation, VoiceRoutingState
-from sglang_omni_router.python.worker import Worker
+from sglang_omni_router.python.worker import Worker, find_worker
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,18 @@ class ProxyHandler:
     ) -> Response:
         try:
             worker = self.select_worker(metadata)
+        except UnknownRouteWorkerError:
+            self.log_route_rejection(
+                request=request,
+                path=path,
+                status_code=404,
+                reason="unknown_route_worker",
+                metadata=metadata,
+            )
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"message": "unknown route worker"}},
+            )
         except NoEligibleWorkerError:
             self.log_route_rejection(
                 request=request,
@@ -471,6 +484,17 @@ class ProxyHandler:
         self,
         metadata: RouteMetadata,
     ) -> Worker:
+        if metadata.route_kind is RouteKind.SPEECH_OUTCOME:
+            # Note (Yucheng Hu): the outcome lives on the worker that streamed
+            # the speech; the caller names it by echoing X-SGLang-Omni-Worker.
+            pinned = find_worker(self.current_workers(), metadata.route_worker_id)
+            if pinned is None:
+                raise UnknownRouteWorkerError(metadata.route_worker_id)
+            return require_eligible_worker(
+                pinned,
+                required_capabilities=metadata.required_capabilities,
+                requested_model=metadata.model,
+            )
         if self._voice_routing is not None:
             is_voice_control = metadata.route_kind is RouteKind.VOICE_CONTROL
             if is_voice_control:

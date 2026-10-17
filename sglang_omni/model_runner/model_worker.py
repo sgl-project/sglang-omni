@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
-import socket
 from bisect import bisect_left
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypedDict
 
+from sglang_omni.model_runner.weight_checker import WeightCheckResult
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
@@ -20,6 +21,7 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.server_args import ServerArgs
 else:
     pass
@@ -35,8 +37,6 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
-    mlx_model_path: str | None = None
-    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +45,18 @@ class PrefillCudaGraphUsage:
     standard_eager_count: int = 0
     custom_eager_count: int = 0
     replay_buckets: Counter[int] = field(default_factory=Counter)
+
+
+class PrefillCudaGraphInfo(TypedDict):
+    backend: str
+    runner: str | None
+    backend_runner: str | None
+    capture_num_tokens: list[int] | None
+    input_embeds_slot: bool
+    replay_count: int
+    standard_eager_count: int
+    custom_eager_count: int
+    replay_buckets: dict[str, int]
 
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
@@ -82,9 +94,35 @@ class ModelWorker:
         self.tp_rank = tp_rank
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
-        from sglang.srt.runtime_context import publish
+        from sglang.srt.distributed import bootstrap
+        from sglang.srt.runtime_context import (
+            SpawnRanks,
+            get_device,
+            publish,
+            spawn_world_rank,
+        )
+        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
-        publish(self.server_args, role="scheduler")
+        publish(
+            self.server_args,
+            role="scheduler",
+            ranks=SpawnRanks(
+                world_rank=spawn_world_rank(
+                    self.server_args, tp_rank=tp_rank, pp_rank=0
+                ),
+                gpu_id=gpu_id,
+            ),
+        )
+        if self.nccl_port is None:
+            self.nccl_port = resolve_nccl_port()
+        else:
+            pass
+        bootstrap.init_parallel_runtime(
+            server_args=self.server_args,
+            device=get_device().device,
+            dist_port=self.nccl_port,
+        )
+        bootstrap.init_layer_runtime(model_config=self.model_config)
         initialize_model_worker_backend_globals(
             self.model_config, effective_quantization
         )
@@ -93,8 +131,6 @@ class ModelWorker:
         self.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
-        from sglang.srt.runtime_context import get_device
-        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
         self.random_seed = broadcast_pyobj(
             [get_device().random_seed],
@@ -245,7 +281,7 @@ class ModelWorker:
             self.model_runner.effective_max_total_num_tokens
         )
         max_req_len = min(
-            self.server_args.context_length - 1,
+            self.model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         max_req_input_len = max_req_len - 1
@@ -281,19 +317,11 @@ class ModelWorker:
     def init_model_runner(self):
         from .sglang_model_runner import SGLModelRunner
 
-        nccl_port = (
-            self.nccl_port if self.nccl_port is not None else resolve_nccl_port()
-        )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
             gpu_id=self.gpu_id,
-            tp_rank=self.tp_rank,
-            moe_ep_rank=0,
-            moe_ep_size=1,
-            pp_rank=0,
-            pp_size=1,
-            nccl_port=nccl_port,
+            nccl_port=self.nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
@@ -362,7 +390,7 @@ class ModelWorker:
 
     def record_prefill_cuda_graph_usage(
         self,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         *,
         can_run_graph: bool,
     ) -> None:
@@ -390,7 +418,7 @@ class ModelWorker:
         """Record a custom prefill forward that bypasses SGLang graph dispatch."""
         self.prefill_cuda_graph_usage.custom_eager_count += 1
 
-    def prefill_cuda_graph_info(self) -> dict[str, Any]:
+    def prefill_cuda_graph_info(self) -> PrefillCudaGraphInfo:
         from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
             PrefillCudaGraphRunner,
         )
@@ -421,7 +449,7 @@ class ModelWorker:
             },
         }
 
-    def model_info(self) -> dict[str, Any]:
+    def model_info(self) -> dict[str, object]:
         from sglang.srt.runtime_context import get_model, get_parallel, get_serving
 
         return {
@@ -436,7 +464,9 @@ class ModelWorker:
             "prefill_cuda_graph": self.prefill_cuda_graph_info(),
         }
 
-    def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def update_weights_from_disk(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         model_path = payload.get("model_path")
         if not model_path:
             return False, "model_path is required"
@@ -464,7 +494,9 @@ class ModelWorker:
             pass
         return bool(success), str(message)
 
-    def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def update_weights_from_tensor(
+        self, payload: dict[str, object]
+    ) -> tuple[bool, str]:
         if payload.get("serialized_named_tensors") is not None:
             return (
                 False,
@@ -475,7 +507,9 @@ class ModelWorker:
             pass
         return self.call_optional_weight_method("update_weights_from_tensor", payload)
 
-    def init_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def init_weights_update_group(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         init = self.model_runner.init_weights_update_group
         master_address = payload.get("master_address")
         master_port = payload.get("master_port")
@@ -500,13 +534,15 @@ class ModelWorker:
         )
         return bool(success), str(message)
 
-    def destroy_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def destroy_weights_update_group(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         destroy = self.model_runner.destroy_weights_update_group
         success, message = destroy(payload.get("group_name") or "weight_update_group")
         return bool(success), str(message)
 
     def update_weights_from_distributed(
-        self, payload: dict[str, Any]
+        self, payload: Mapping[str, object]
     ) -> tuple[bool, str]:
         update = self.model_runner.update_weights_from_distributed
         names = payload.get("names")
@@ -551,7 +587,7 @@ class ModelWorker:
             pass
         return bool(success), str(message)
 
-    def weights_checker(self, action: str) -> dict[str, Any]:
+    def weights_checker(self, action: str) -> WeightCheckResult:
         checker = getattr(self, "strict_weight_checker", None)
         if checker is None:
             from sglang_omni.model_runner.weight_checker import StrictWeightChecker
@@ -565,7 +601,7 @@ class ModelWorker:
     def call_optional_weight_method(
         self,
         method_name: str,
-        payload: dict[str, Any],
+        payload: dict[str, object],
     ) -> tuple[bool, str]:
         method = getattr(self.model_runner, method_name)
         recv_req = SimpleNamespace(**payload)
@@ -580,16 +616,15 @@ def resolve_nccl_port() -> int:
     else:
         pass
 
+    from sglang_omni.utils.port_claim import NCCL_PORT_BASE, claim_tcp_port
+
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("", 0))
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            port = sock.getsockname()[1]
+        port = claim_tcp_port()
     except PermissionError:
-        # Some restricted CI / sandbox environments do not allow ephemeral socket
-        # binding during test-time configuration. Fall back to a stable default so
+        # Some restricted CI / sandbox environments do not allow socket binding
+        # during test-time configuration. Fall back to a stable default so
         # callers still receive a valid NCCL port choice.
-        port = 29500
+        port = NCCL_PORT_BASE
 
     os.environ["MASTER_PORT"] = str(port)
     return port
@@ -608,8 +643,7 @@ def apply_model_worker_backend_common_policy(
     )
     if is_qwen3_omni_arch and cfg.ep_size != 1:
         raise ValueError(
-            "Qwen3-Omni ModelWorker does not support expert parallelism; "
-            "use ep_size=1."
+            "Qwen3-Omni ModelWorker does not support expert parallelism; use ep_size=1."
         )
     else:
         pass

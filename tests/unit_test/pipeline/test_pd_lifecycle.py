@@ -15,6 +15,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling import pd_utils
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import (
     OmniDecodeScheduler,
@@ -119,6 +120,29 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     scheduler.get_next_batch_to_run()
     assert released == [(req, threading.get_ident())]
     assert scheduler.is_fully_idle() is True
+
+
+def upstream_idle_by_waiting_queue(self, for_health_check=False, ignore_waiting=False):
+    return ignore_waiting or len(self.waiting_queue) == 0
+
+
+def test_paused_flush_skips_the_waiting_queue_on_prefill_only(monkeypatch):
+    monkeypatch.setattr(_Upstream, "is_fully_idle", upstream_idle_by_waiting_queue)
+    prefill = object.__new__(OmniPrefillScheduler)
+    prefill.pd_outstanding_releases = set()
+    prefill.waiting_queue = [SimpleNamespace(rid="retracted")]
+    decode = object.__new__(OmniDecodeScheduler)
+    decode.pd_lifecycle_lock = threading.RLock()
+    decode.pd_deferred_admission = None
+    decode.pd_admissions = queue.SimpleQueue()
+    decode.pd_receiver = SimpleNamespace(has_reservations=lambda: False)
+    decode.pd_outstanding_releases = set()
+    decode.waiting_queue = [SimpleNamespace(rid="admitted")]
+
+    assert prefill.is_fully_idle(ignore_waiting=True) is True
+    assert decode.is_fully_idle(ignore_waiting=True) is False
+    decode.waiting_queue = []
+    assert decode.is_fully_idle(ignore_waiting=True) is True
 
 
 def prefill_scheduler_for_handoff(*, request_finished_callback=None):
@@ -300,6 +324,7 @@ def decode_scheduler():
     scheduler.token_to_kv_pool_allocator = KVAllocator()
     scheduler.waiting_queue = []
     scheduler.outbox = queue.Queue()
+    scheduler.decode_offload_manager = None
     scheduler.pd_receiver = DecodeKVReceiver(
         pool_id="decode:kv",
         allocator=scheduler.token_to_kv_pool_allocator,
@@ -492,6 +517,29 @@ def test_discarded_stage_transfer_releases_source_lease():
     make_stage().discard_kv_transfer(transfer)
 
     transfer.lease.release.assert_called_once_with()
+
+    async def wait_for_release(inactive: KVPageTransfer) -> None:
+        while not inactive.lease.release.called:
+            await asyncio.sleep(0.01)
+
+    async def run() -> None:
+        stage = make_stage()
+        stage.running = True
+        inactive = make_transfer("inactive")
+        stage.scheduler.outbox.put(
+            OutgoingMessage(inactive.request_id, "kv_transfer", inactive)
+        )
+        drain = asyncio.create_task(stage.drain_outbox())
+        try:
+            await asyncio.wait_for(wait_for_release(inactive), 5)
+            inactive.lease.release.assert_called_once_with()
+            assert not stage.receive_tasks
+        finally:
+            stage.running = False
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+    asyncio.run(run())
 
 
 def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():

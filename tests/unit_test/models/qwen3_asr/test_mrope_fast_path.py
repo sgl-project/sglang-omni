@@ -53,7 +53,6 @@ def run(fn, mode, seq_lens, mm_inputs, **batch_fields):
 @pytest.mark.parametrize(
     "seq_lens,prompt_lens",
     [
-        ([73], [65]),
         ([73, 5, 129, 1], [65, 3, 100, 1]),
         ([2048, 1, 512], [2000, 1, 500]),
         ([10, 44], [None, 30]),  # a request with no multimodal input

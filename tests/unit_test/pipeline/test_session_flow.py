@@ -167,13 +167,20 @@ async def test_next_input_is_accepted_while_one_unit_is_in_flight(
         *,
         owner: str | None = None,
         chunk: TimedChunk | None = None,
+        request_id: str | None = None,
     ) -> None:
         if operation == "append" and chunk is not None:
             append_seqs.append(chunk.seq)
             if chunk.seq == 0:
                 entered.set()
                 await release.wait()
-        return await original(session, operation, owner=owner, chunk=chunk)
+        return await original(
+            session,
+            operation,
+            owner=owner,
+            chunk=chunk,
+            request_id=request_id,
+        )
 
     monkeypatch.setattr(coordinator, "session_operation", hold_first_append)
     outputs = coordinator.session_outputs(session_identity)

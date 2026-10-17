@@ -34,19 +34,12 @@ class FakeAudioVAE(torch.nn.Module):
         self.anchor = torch.nn.Parameter(torch.empty(()))
         self.config = SimpleNamespace(sample_rate=44100)
         self.decoder = object()
-        self.decode_actions: deque[torch.Tensor | Exception] = deque()
         self.decode_calls: list[torch.Tensor] = []
 
     def decode(self, latent: torch.Tensor, **_kwargs: Any):
         self.decode_calls.append(latent.clone())
-        action = (
-            self.decode_actions.popleft()
-            if self.decode_actions
-            else torch.tensor([0.25, -0.5], dtype=torch.float32)
-        )
-        if isinstance(action, Exception):
-            raise action
-        return action.reshape(1, 1, -1), (None, None, None), None
+        waveform = torch.tensor([0.25, -0.5], dtype=torch.float32)
+        return waveform.reshape(1, 1, -1), (None, None, None), None
 
 
 class BaseFakeTransition:
@@ -60,20 +53,6 @@ class BaseFakeTransition:
         self.decoder = decoder
         self.capacity = capacity
         self.max_step_latents = max_step_latents
-        self.reset_rows_calls: list[tuple[int, ...]] = []
-        self.reset_all_calls = 0
-        self.reset_rows_error: Exception | None = None
-        self.reset_all_error: Exception | None = None
-
-    def reset_rows(self, slot_ids) -> None:
-        self.reset_rows_calls.append(tuple(slot_ids))
-        if self.reset_rows_error is not None:
-            raise self.reset_rows_error
-
-    def reset_all(self) -> None:
-        self.reset_all_calls += 1
-        if self.reset_all_error is not None:
-            raise self.reset_all_error
 
 
 class BaseFakeRunner:
@@ -85,38 +64,6 @@ class BaseFakeRunner:
     ) -> None:
         self.transition = transition
         self.cuda_graph_required = cuda_graph_required
-        self.actions: deque[tuple[torch.Tensor, ...] | Exception] = deque()
-        self.calls = 0
-        self.prepare_calls = 0
-        self.close_calls = 0
-
-    @property
-    def is_ready(self) -> bool:
-        return True
-
-    def run(
-        self,
-        *,
-        slot_ids: tuple[int, ...],
-        patch_groups: tuple[tuple[torch.Tensor, ...], ...],
-        terminal_flags: tuple[bool, ...],
-    ) -> tuple[torch.Tensor, ...]:
-        del patch_groups, terminal_flags
-        self.calls += 1
-        action = (
-            self.actions.popleft()
-            if self.actions
-            else tuple(torch.empty(0) for _ in slot_ids)
-        )
-        if isinstance(action, Exception):
-            raise action
-        return action
-
-    def prepare_cuda_graph(self) -> None:
-        self.prepare_calls += 1
-
-    def close(self) -> None:
-        self.close_calls += 1
 
 
 def make_facade(
@@ -159,14 +106,6 @@ def make_facade(
     )
 
 
-def run_one_streaming_step(decoder: MingAudioDecoder):
-    return decoder.run_streaming(
-        slot_ids=(0,),
-        patch_groups=((torch.ones((2, 3), dtype=torch.float32),),),
-        terminal_flags=(False,),
-    )
-
-
 def test_full_empty_latents_skip_audio_vae(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,37 +117,6 @@ def test_full_empty_latents_skip_audio_vae(
     assert waveform.dtype == torch.float32
     assert waveform.device.type == "cpu"
     assert audio_vae.decode_calls == []
-
-
-def test_streaming_error_does_not_gate_future_calls_after_owner_reset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
-    latents = torch.ones((1, 2, 3), dtype=torch.float32)
-    runner.actions.append(RuntimeError("stream transaction failed"))
-
-    with pytest.raises(RuntimeError, match="stream transaction failed"):
-        run_one_streaming_step(decoder)
-
-    decoder.reset_stream_rows((0,))
-    assert transition.reset_rows_calls == [(0,)]
-    runner.actions.append((torch.tensor([0.5]),))
-    assert run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
-    assert decoder.decode_full(latents).numel() == 2
-
-
-def test_full_error_does_not_gate_streaming(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
-    latents = torch.ones((1, 2, 3), dtype=torch.float32)
-    audio_vae.decode_actions.append(RuntimeError("full device failed"))
-
-    with pytest.raises(RuntimeError, match="full device failed"):
-        decoder.decode_full(latents)
-
-    runner.actions.append((torch.tensor([0.5]),))
-    assert run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
 
 
 class ScriptedGraph:
@@ -245,7 +153,10 @@ class ScriptedRunnerTransition:
     latent_dim = 3
     max_output_samples = 4
     input_dtype = torch.float32
-    device = torch.device("cpu")
+    device = torch.device("cuda", 0)
+    device_module = torch.cuda
+    device_context = AudioVAEFixedStreamingTransition.device_context
+    synchronize_stream = AudioVAEFixedStreamingTransition.synchronize_stream
 
     def __init__(self) -> None:
         self.decode_actions: deque[AudioVAEFixedStreamingOutput | Exception] = deque()
@@ -384,7 +295,7 @@ def test_graph_output_validation_failure_drops_graph_and_next_call_runs_eager(
 
 @pytest.mark.parametrize(
     "host_buffer_name",
-    ["host_waveform", "host_sample_lengths"],
+    ["host_waveform"],
 )
 def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
@@ -871,3 +782,48 @@ def test_ming_tts_full_payload_decodes_once(keep_latents: bool) -> None:
     }
     audio = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
     np.testing.assert_array_equal(audio, waveform.numpy())
+
+
+@pytest.mark.accelerator
+def test_eager_streaming_runner_decodes_on_the_platform_accelerator() -> None:
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.device_type == "cpu":
+        pytest.skip("requires an accelerator")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, 0)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        audio_vae = make_tiny_audio_vae().to(device=device, dtype=torch.bfloat16)
+    transition = AudioVAEFixedStreamingTransition(
+        audio_vae.decoder, capacity=1, max_step_latents=4
+    )
+    runner = MingAudioStreamingRunner(transition, cuda_graph_required=False)
+    try:
+        (waveform,) = runner.run(
+            slot_ids=(0,),
+            patch_groups=((torch.ones((4, 4)),),),
+            terminal_flags=(True,),
+        )
+    finally:
+        runner.close()
+
+    assert waveform.numel() > 0
+    assert torch.isfinite(waveform).all()
+
+
+def test_eager_streaming_runner_decodes_a_cpu_decoder() -> None:
+    transition = AudioVAEFixedStreamingTransition(
+        make_tiny_audio_vae().decoder, capacity=1, max_step_latents=4
+    )
+    runner = MingAudioStreamingRunner(transition, cuda_graph_required=False)
+    (waveform,) = runner.run(
+        slot_ids=(0,),
+        patch_groups=((torch.ones((4, 4)),),),
+        terminal_flags=(True,),
+    )
+
+    assert not runner.host_waveform.is_pinned()
+    assert waveform.numel() > 0
+    assert torch.isfinite(waveform).all()

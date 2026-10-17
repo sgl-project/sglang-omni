@@ -8,12 +8,13 @@ import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from itertools import accumulate
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
+    MossAudioTokenizerVocoder,
     MossAudioTokenizerVocoderDecoder,
     MossAudioVocoder,
 )
@@ -29,17 +30,24 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.hf_loading import MossProcessorConfigSource
+else:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
-def codec_device(codec: Any, fallback: str) -> torch.device:
+def codec_device(
+    codec: MossAudioTokenizerVocoder | None, fallback: str
+) -> torch.device:
     try:
         return next(codec.parameters()).device
     except (AttributeError, StopIteration):
         return torch.device(fallback)
 
 
-def module_dtype(module: Any) -> torch.dtype | None:
+def module_dtype(module: torch.nn.Module | None) -> torch.dtype | None:
     try:
         return next(
             parameter.dtype
@@ -238,10 +246,10 @@ def decode_codes_batch(
     return decoded
 
 
-class MossTTSVocoder(BatchVocoderBase):
+class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
     def __init__(
         self,
-        processor: Any,
+        processor: "MossProcessorConfigSource | None",
         audio_vocoder: MossAudioVocoder,
         device: str,
         *,
@@ -310,6 +318,17 @@ class MossTTSVocoder(BatchVocoderBase):
             pass
         return state, delayed_codes
 
+    def decode_segments(self, segments: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Standalone per-segment decode under the codec's autocast boundary."""
+        codec_decoder = getattr(self.codec, "decoder", self.codec)
+        codec_dtype = module_dtype(codec_decoder) or module_dtype(self.codec)
+        resolved_codec_device = codec_device(self.codec, self.device)
+        decoded = []
+        with autocast_if_supported(resolved_codec_device, codec_dtype):
+            for segment in segments:
+                decoded.extend(self.audio_vocoder.decode_codes([segment]))
+        return decoded
+
     def decode_audio(
         self,
         state: MossTTSState,
@@ -324,13 +343,7 @@ class MossTTSVocoder(BatchVocoderBase):
             audio_pad_code=audio_pad_code,
             assistant_start_length=int(state.assistant_start_length),
         )
-        codec_decoder = getattr(self.codec, "decoder", self.codec)
-        codec_dtype = module_dtype(codec_decoder) or module_dtype(self.codec)
-        resolved_codec_device = codec_device(self.codec, self.device)
-        decoded = []
-        with autocast_if_supported(resolved_codec_device, codec_dtype):
-            for segment in segments:
-                decoded.extend(self.audio_vocoder.decode_codes([segment]))
+        decoded = self.decode_segments(segments)
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         else:

@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA graphs for the Qwen3-TTS reference encoder at bucketed lengths."""
+"""Device graphs for the Qwen3-TTS reference encoder at bucketed lengths."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import torch
+from transformers import MimiModel
 from transformers.models.mimi.modeling_mimi import MimiConv1d
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
+from sglang_omni.utils.device import device_guard
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +22,15 @@ logger = logging.getLogger(__name__)
 # 32 MiB, so keys below 32 frames save nothing measurable; the step keeps the padding
 # under half a clip, and clips past 256 frames run eager.
 DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES = (32, 48, 64, 96, 128, 192, 256)
+
+
+class ReferenceEncoderGraphStats(TypedDict):
+    enabled: bool
+    disable_reason: str | None
+    bucket_frames: list[int]
+    captured: list[int]
+    replays: int
+    misses: int
 
 
 def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
@@ -43,7 +57,7 @@ def smallest_bucket(frames: int, buckets: Iterable[int]) -> int | None:
 
 @dataclass
 class CapturedEncoderGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     static_input: torch.Tensor
     static_codes: torch.Tensor
 
@@ -53,12 +67,12 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
 
     def __init__(
         self,
-        encoder: Any,
+        encoder: MimiModel,
         *,
         hop: int,
         num_quantizers: int,
         bucket_frames: Iterable[int],
-        stream: torch.cuda.Stream,
+        stream: torch.Stream,
     ) -> None:
         self.encoder = encoder
         self.hop = int(hop)
@@ -67,18 +81,27 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         self.stream = stream
         param = next(encoder.parameters())
         self.device = param.device
+        self.device_module = torch.get_device_module(self.device)
+        self.graph_backend: DeviceGraphBackend | None = (
+            current_platform.get_device_graph_backend(self.device)
+        )
         self.dtype = param.dtype
         self.graphs: dict[int, CapturedEncoderGraph] = {}
-        self.pool: Any | None = None
+        self.pool: tuple[int, int] | None = None
         self.disable_reason: str | None = None
         self.replays = 0
         self.misses = 0
 
     def capture(self) -> None:
+        if self.graph_backend is None:
+            self.disable_reason = f"no graph backend on {self.device.type}"
+            return
+        else:
+            pass
         graphs: dict[int, CapturedEncoderGraph] = {}
         try:
-            with torch.cuda.device(self.device):
-                pool = torch.cuda.graph_pool_handle()
+            with device_guard(self.device):
+                pool = self.graph_backend.graph_pool_handle()
                 # note(ratish): largest first so the shared pool is sized once.
                 for frames in reversed(self.bucket_frames):
                     graphs[frames] = self.capture_bucket(frames, pool)
@@ -97,23 +120,23 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
             list(self.bucket_frames),
         )
 
-    def capture_bucket(self, frames: int, pool: Any) -> CapturedEncoderGraph:
+    def capture_bucket(
+        self, frames: int, pool: tuple[int, int]
+    ) -> CapturedEncoderGraph:
         static_input = torch.zeros(
             (1, 1, frames * self.hop), device=self.device, dtype=self.dtype
         )
-        self.stream.wait_stream(torch.cuda.current_stream(self.device))
-        with torch.inference_mode(), torch.cuda.stream(self.stream):
+        self.stream.wait_stream(self.device_module.current_stream(self.device))
+        with torch.inference_mode(), self.device_module.stream(self.stream):
             for _ in range(2):
                 self._encode(static_input)
-        graph = torch.cuda.CUDAGraph()
         with (
             torch.inference_mode(),
-            torch.cuda.graph(
-                graph,
+            self.graph_backend.capture(
                 pool=pool,
                 stream=self.stream,
-                capture_error_mode="thread_local",
-            ),
+                thread_local_errors=True,
+            ) as graph,
         ):
             static_codes = self._encode(static_input)
         self.stream.synchronize()
@@ -147,7 +170,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         # note(ratish): the graph rewrites its output on the next replay.
         return captured.static_codes[0, :, :frames].transpose(0, 1).clone()
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> ReferenceEncoderGraphStats:
         return {
             "enabled": bool(self.graphs),
             "disable_reason": self.disable_reason,

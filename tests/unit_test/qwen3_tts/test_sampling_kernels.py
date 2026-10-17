@@ -9,10 +9,18 @@ from unittest import mock
 import pytest
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
-from sglang.srt.layers.sampler import multinomial_with_seed
+from sglang.srt.layers.sampler import (
+    multinomial_with_seed,
+    top_k_top_p_min_p_sampling_from_probs_torch,
+)
+from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
 from sglang_omni.models.qwen3_tts import sampling_kernels as sampling_kernels_module
 from sglang_omni.models.qwen3_tts import sglang_model as sglang_model_module
+from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_sorted_logprobs_with_seed_small_k,
@@ -484,8 +492,10 @@ def test_fused_raw_logit_sampler_matches_reference_for_signed_zero_order(
         assert torch.equal(actual, expected), f"seed_offset={seed_offset}"
 
 
+@pytest.mark.parametrize("max_top_k", [32, 50])
 def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     monkeypatch: pytest.MonkeyPatch,
+    max_top_k: int,
 ) -> None:
     batch_size = 4
     logits = torch.randn(
@@ -497,7 +507,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     temperatures = torch.tensor(
         [0.7, 0.8, 0.9, 1.0], device="cuda", dtype=torch.float32
     )
-    top_ks = torch.tensor([32, 31, 30, 29], device="cuda", dtype=torch.long)
+    top_ks = max_top_k - torch.arange(batch_size, device="cuda", dtype=torch.long)
     top_ps = torch.full((batch_size,), 0.8, device="cuda", dtype=torch.float32)
     seeds = torch.arange(700, 700 + batch_size, device="cuda", dtype=torch.long)
     positions = torch.arange(30, 30 + batch_size, device="cuda", dtype=torch.long)
@@ -506,7 +516,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
         top_ks,
         top_ps,
         seeds,
-        max_top_k=32,
+        max_top_k=max_top_k,
     )
 
     expected = reference_seeded_tokens(
@@ -599,6 +609,42 @@ def test_fused_raw_logit_sampler_capture_falls_back_without_triton_gather(
     assert torch.equal(captured, expected)
 
 
+@pytest.mark.parametrize("max_top_k", [50, 128])
+def test_fused_raw_logit_sampler_keeps_the_single_kernel_off_sm90(
+    monkeypatch: pytest.MonkeyPatch,
+    max_top_k: int,
+) -> None:
+    batch_size = 64
+    generator = torch.Generator().manual_seed(max_top_k)
+    logits = (torch.randn(batch_size, 2048, generator=generator) * 3).to(
+        device="cuda", dtype=torch.bfloat16
+    )
+    sample_inputs = (
+        logits,
+        torch.full((batch_size,), 0.9, device="cuda", dtype=torch.float32),
+        torch.full((batch_size,), max_top_k, device="cuda", dtype=torch.long),
+        torch.ones((batch_size,), device="cuda", dtype=torch.float32),
+        torch.arange(900, 900 + batch_size, device="cuda", dtype=torch.long),
+        torch.arange(50, 50 + batch_size, device="cuda", dtype=torch.long),
+    )
+    expected = sample_from_logits_with_seed_top_k_top_p(
+        *sample_inputs, max_top_k=max_top_k, has_top_p=False
+    )
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 9))
+    monkeypatch.setattr(sampling_kernels_module, "seeded_top_k_chunk_kernel", None)
+    monkeypatch.setattr(
+        sampling_kernels_module, "seeded_top_k_merge_sample_kernel", None
+    )
+
+    assert torch.equal(
+        sample_from_logits_with_seed_top_k_top_p(
+            *sample_inputs, max_top_k=max_top_k, has_top_p=False
+        ),
+        expected,
+    )
+
+
 def test_fused_raw_logit_sampler_falls_back_for_unproven_shapes() -> None:
     logits = torch.zeros((1, 2048), dtype=torch.bfloat16)
     temperatures = torch.ones((1,), dtype=torch.float32)
@@ -682,3 +728,91 @@ def test_fused_raw_logit_sampler_falls_back_without_triton_gather(
         )
         is None
     )
+
+
+class CodecHead(torch.nn.Linear):
+    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return super().forward(hidden_states), None
+
+
+def test_talker_returns_fp32_logits_from_a_bf16_codec_head() -> None:
+    """A bf16 codec head hands the sampler fp32 logits, so FlashInfer's draw reads
+    probabilities that sum to 1."""
+    talker = object.__new__(Qwen3TTSTalker)
+    torch.nn.Module.__init__(talker)
+    talker.codec_head = CodecHead(16, 8, bias=False).to("cuda", torch.bfloat16)
+    talker.model = lambda input_ids, positions, forward_batch, input_embeds: (
+        input_embeds
+    )
+    forward_batch = SimpleNamespace(
+        mrope_positions=None,
+        forward_mode=SimpleNamespace(is_extend=lambda: False),
+    )
+    hidden_states = torch.randn(3, 16, device="cuda", dtype=torch.bfloat16)
+
+    logits = talker(
+        None, None, forward_batch, input_embeds=hidden_states
+    ).next_token_logits
+
+    assert logits.dtype == torch.float32
+    torch.testing.assert_close(
+        logits, talker.codec_head(hidden_states)[0].float(), rtol=0, atol=0
+    )
+
+
+def test_talker_precompile_leaves_the_first_prefill_samples_nothing_to_compile() -> (
+    None
+):
+    talker = object.__new__(Qwen3TTSTalker)
+    torch.nn.Module.__init__(talker)
+    talker.config = SimpleNamespace(vocab_size=8)
+    talker.codec_head = CodecHead(16, 8, bias=False).to("cuda", torch.bfloat16)
+    talker.model = lambda input_ids, positions, forward_batch, input_embeds: (
+        input_embeds
+    )
+    talker.semantic_sampling_seed_tensor = torch.zeros(
+        64, device="cuda", dtype=torch.long
+    )
+    runner = object.__new__(Qwen3TTSModelRunner)
+    runner.model = talker
+    seeded_request = SimpleNamespace(
+        data=SimpleNamespace(
+            req=SimpleNamespace(sampling_params=SimpleNamespace(sampling_seed=7))
+        )
+    )
+    torch.compiler.reset()
+
+    with get_context().override_server_args(sampling_backend="flashinfer"):
+        talker.precompile_kernels_after_loading()
+    compiled_graphs = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for rows in (1, 3):
+            forward_batch = SimpleNamespace(
+                mrope_positions=None,
+                forward_mode=SimpleNamespace(is_extend=lambda: True),
+                extend_seq_lens=torch.full((rows,), 2, device="cuda"),
+                sampling_info=SimpleNamespace(
+                    sampling_seed=None, need_min_p_sampling=False
+                ),
+            )
+            runner.install_sampling_seeds(forward_batch, [seeded_request] * rows)
+            hidden_states = torch.randn(
+                2 * rows, 16, device="cuda", dtype=torch.bfloat16
+            )
+            logits = talker(
+                None, None, forward_batch, input_embeds=hidden_states
+            ).next_token_logits
+            apply_scaling_penalties(
+                logits, torch.full(logits.shape, 1.05, device="cuda")
+            )
+            top_k_top_p_min_p_sampling_from_probs_torch(
+                torch.softmax(logits, dim=-1),
+                torch.full((rows,), 50, device="cuda"),
+                torch.ones(rows, device="cuda"),
+                torch.zeros(rows, device="cuda"),
+                False,
+                forward_batch.sampling_info.sampling_seed,
+                torch.full((rows,), 7, device="cuda"),
+            )
+    assert counters["stats"]["unique_graphs"] == compiled_graphs

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Protocol
 
 import aiohttp
 import numpy as np
@@ -18,6 +18,10 @@ from benchmarks.benchmarker.data import RequestResult
 logger = logging.getLogger(__name__)
 
 SendFn = Callable[[aiohttp.ClientSession, Any], Coroutine[Any, Any, RequestResult]]
+
+
+class AfterSendFn(Protocol):
+    async def __call__(self, result: RequestResult) -> None: ...
 
 
 def resolve_warmup(warmup: int | None, max_concurrency: int) -> int:
@@ -36,6 +40,10 @@ class RunConfig:
     warmup: int | None = None
     disable_tqdm: bool = False
     timeout_s: int = 300
+    # note (luojiaxuan): seeds the Poisson inter-arrival draws so every run
+    # offers the same arrival sequence; None draws a fresh sequence per run.
+    arrival_seed: int | None = None
+    trust_env: bool = False
 
     @property
     def effective_warmup(self) -> int:
@@ -58,7 +66,13 @@ class BenchmarkRunner:
         self.config = config
         self.wall_clock_s: float = 0.0
 
-    async def run(self, samples: list, send_fn: SendFn) -> list[RequestResult]:
+    async def run(
+        self,
+        samples: list,
+        send_fn: SendFn,
+        *,
+        after_send: AfterSendFn | None = None,
+    ) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
         # note (guozhihao): Closed-loop runs are bounded by max_concurrency.
         # Open-loop (max_concurrency=0) must not inherit aiohttp's default
@@ -67,7 +81,7 @@ class BenchmarkRunner:
             aiohttp.TCPConnector(limit=0) if not self.config.max_concurrency else None
         )
         async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector
+            timeout=timeout, connector=connector, trust_env=self.config.trust_env
         ) as session:
             if self.config.effective_warmup > 0:
                 await self._warmup(session, samples, send_fn)
@@ -78,8 +92,12 @@ class BenchmarkRunner:
                 self.config.max_concurrency,
             )
             t0 = time.perf_counter()
-            results = await self._dispatch(session, samples, send_fn)
+            results, follow_up_tasks = await self._dispatch(
+                session, samples, send_fn, after_send
+            )
             self.wall_clock_s = time.perf_counter() - t0
+            # note (Yucheng Hu): only the final collection drain is outside the timed window.
+            await asyncio.gather(*follow_up_tasks)
         return results
 
     async def _warmup(
@@ -122,32 +140,57 @@ class BenchmarkRunner:
         session: aiohttp.ClientSession,
         samples: list,
         send_fn: SendFn,
-    ) -> list[RequestResult]:
+        after_send: AfterSendFn | None,
+    ) -> tuple[list[RequestResult], list[asyncio.Task[None]]]:
+        follow_up_tasks: list[asyncio.Task[None]] = []
         semaphore = (
             asyncio.Semaphore(self.config.max_concurrency)
             if self.config.max_concurrency
             else None
         )
         pbar = tqdm(total=len(samples), disable=self.config.disable_tqdm)
+        loop = asyncio.get_running_loop()
+        open_loop = self.config.request_rate != float("inf")
+        # note (luojiaxuan): arrivals are planned as offsets from the dispatch
+        # start and each request waits for its own offset, so one late send
+        # does not push every later arrival back.
+        planned_offsets = (
+            np.cumsum(
+                np.random.default_rng(self.config.arrival_seed).exponential(
+                    1.0 / self.config.request_rate, len(samples)
+                )
+            )
+            if open_loop
+            else np.zeros(len(samples))
+        )
+        dispatch_start = loop.time()
 
-        async def _limited(sample: Any) -> RequestResult:
+        async def _limited(sample: Any, planned_at: float) -> RequestResult:
             if semaphore:
+                waited_for_slot = semaphore.locked()
                 async with semaphore:
+                    sent_at = loop.time()
                     result = await send_fn(session, sample)
+                result.waited_for_slot = waited_for_slot
             else:
+                sent_at = loop.time()
                 result = await send_fn(session, sample)
+            if open_loop:
+                result.dispatch_lateness_s = sent_at - planned_at
+            if after_send is not None:
+                follow_up_tasks.append(asyncio.create_task(after_send(result)))
             pbar.update(1)
             return result
 
         try:
             tasks: list[asyncio.Task] = []
-            for sample in samples:
-                if self.config.request_rate != float("inf"):
-                    interval = np.random.exponential(1.0 / self.config.request_rate)
-                    await asyncio.sleep(interval)
-                tasks.append(asyncio.create_task(_limited(sample)))
+            for sample, offset in zip(samples, planned_offsets):
+                planned_at = dispatch_start + float(offset)
+                if open_loop:
+                    await asyncio.sleep(max(0.0, planned_at - loop.time()))
+                tasks.append(asyncio.create_task(_limited(sample, planned_at)))
 
             results: list[RequestResult] = list(await asyncio.gather(*tasks))
         finally:
             pbar.close()
-        return results
+        return results, follow_up_tasks

@@ -3,15 +3,60 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
-from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniEvent
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+else:
+    pass
+
+from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
+from sglang_omni.models.llada2_uni.config import THINKER_STAGE
+from sglang_omni.models.llada2_uni.payload_types import (
+    LLaDA2UniEvent,
+    LLaDA2UniPipelineState,
+    ThinkerOutput,
+)
+
+
+def extract_image_vq_tokens(
+    state: LLaDA2UniPipelineState,
+) -> tuple[list[int], int, int, dict[str, object]] | None:
+    """Return decoder codebook IDs, semantic grid size, and generation options."""
+    if state.task_kind not in ("t2i", "edit"):
+        return None
+    else:
+        pass
+    thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
+    if not isinstance(thinker_out, dict):
+        return None
+    else:
+        pass
+    tokens = [
+        int(tid) - IMAGE_TOKEN_OFFSET
+        for tid in thinker_out.get("output_ids", [])
+        if isinstance(tid, int) and tid >= IMAGE_TOKEN_OFFSET
+    ]
+    if not tokens:
+        return None
+    else:
+        pass
+    image_grid = state.stream_state["image_info"][0]
+    grid_height, grid_width = image_grid["grid_h"], image_grid["grid_w"]
+    if grid_height * grid_width != len(tokens):
+        raise ValueError(
+            f"Image output grid {grid_height}x{grid_width} does not match {len(tokens)} VQ tokens"
+        )
+    else:
+        pass
+    params = state.request_metadata.get("image_generation", {})
+    return tokens, grid_height, grid_width, params if isinstance(params, dict) else {}
 
 
 def decode_events(
     *,
-    thinker_out: dict[str, Any],
-    tokenizer: Any,
+    thinker_out: ThinkerOutput,
+    tokenizer: "PreTrainedTokenizerBase",
 ) -> list[LLaDA2UniEvent]:
     """Convert thinker output tokens to a text_final event."""
     # TODO: add streaming support

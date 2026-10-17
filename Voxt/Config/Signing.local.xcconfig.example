@@ -1,0 +1,6 @@
+// Copy this file to Config/Signing.local.xcconfig on your machine and
+// override only the values you need for local signing.
+
+VOXT_CODE_SIGN_STYLE = Automatic
+VOXT_DEVELOPMENT_TEAM = YOUR_TEAM_ID
+VOXT_CODE_SIGN_IDENTITY = Apple Development

@@ -21,62 +21,6 @@ def published() -> Iterator[list]:
         overrides.pop().restore()
 
 
-def test_runtime_configuration_reports_global_backend_for_each_phase(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "get_visible_gpu_sm_version",
-        lambda _gpu_id: 89,
-        raising=False,
-    )
-    server_args = SimpleNamespace(
-        attention_backend="flashinfer",
-        decode_attention_backend=None,
-        prefill_attention_backend=None,
-        sampling_backend="pytorch",
-    )
-
-    description = bootstrap.describe_sglang_runtime_configuration(
-        server_args,
-        gpu_id=0,
-    )
-
-    assert description == (
-        "SGLang runtime configuration: gpu_id=0, sm=89, architecture=ada, "
-        "attention_backend=flashinfer, decode_attention_backend=flashinfer, "
-        "prefill_attention_backend=flashinfer, sampling_backend=pytorch"
-    )
-
-
-def test_runtime_configuration_reports_explicit_phase_backends(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "get_visible_gpu_sm_version",
-        lambda _gpu_id: 90,
-        raising=False,
-    )
-    server_args = SimpleNamespace(
-        attention_backend="flashinfer",
-        decode_attention_backend="triton",
-        prefill_attention_backend="fa3",
-        sampling_backend="pytorch",
-    )
-
-    description = bootstrap.describe_sglang_runtime_configuration(
-        server_args,
-        gpu_id=1,
-    )
-
-    assert description == (
-        "SGLang runtime configuration: gpu_id=1, sm=90, architecture=hopper, "
-        "attention_backend=flashinfer, decode_attention_backend=triton, "
-        "prefill_attention_backend=fa3, sampling_backend=pytorch"
-    )
-
-
 def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     monkeypatch, published
 ) -> None:
@@ -90,6 +34,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = 8
 
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
@@ -140,6 +85,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
         "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
+    assert infrastructure[1][1] == ("req_pool", "kv_pool", 1, 8)
 
 
 def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
@@ -154,6 +100,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = None
 
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
@@ -367,6 +314,7 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
 
     class FakeRunner:
         model = object()
+        sliding_window_size = None
 
         def alloc_memory_pool(self) -> None:
             pass

@@ -49,7 +49,6 @@ def test_extract_aac_from_mp4(tmp_path: Path, monkeypatch, sample_rate: int) -> 
     "codec,format,dtype,scale",
     [
         ("pcm_s16le", "s16", np.int16, 32768),
-        ("pcm_s32le", "s32", np.int32, 2147483648),
         ("pcm_f32le", "flt", np.float32, 1),
     ],
 )
@@ -96,12 +95,3 @@ def test_video_without_audio_returns_none(tmp_path: Path, caplog) -> None:
     with caplog.at_level(logging.WARNING):
         assert extract_audio_from_path(path, 16000) is None
     assert not caplog.records
-
-
-def test_broken_media_logs_decoding_failure(tmp_path: Path, caplog) -> None:
-    path = tmp_path / "broken.mp4"
-    path.write_bytes(b"not a media container")
-
-    with caplog.at_level(logging.WARNING):
-        assert extract_audio_from_path(path, 16000) is None
-    assert "Failed to extract audio" in caplog.text

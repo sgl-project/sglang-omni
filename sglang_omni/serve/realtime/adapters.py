@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterable
 from typing import Protocol
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -141,13 +142,17 @@ class CoordinatorAdapter(InteractionAdapter):
             else:
                 pass
         except Exception as exc:
-            logger.exception("Realtime session output reader failed")
+            if ContextExhaustedError.matches(exc):
+                failure_code = ContextExhaustedError.CODE
+            else:
+                logger.exception("Realtime session output reader failed")
+                failure_code = "internal"
             self.reader_error = exc
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
                 await self.output_sink(
-                    TurnFailure("server_error", "internal", str(exc))
+                    TurnFailure("server_error", failure_code, str(exc))
                 )
 
     async def process(self, unit: Unit) -> int:
@@ -165,12 +170,28 @@ class CoordinatorAdapter(InteractionAdapter):
             samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
             samples_to_ms(unit.real_samples, self.input_sample_rate_hz),
             unit.index,
-            unit.pcm,
+            (
+                unit.pcm
+                if not unit.images
+                else {"pcm": unit.pcm, "images": list(unit.images)}
+            ),
             format="pcm16",
             eos=unit.eos,
         )
         try:
-            await self.client.append_session(self.session_identity, timed_chunk)
+            ready_observation = unit.ready_observation
+            await self.client.append_session(
+                self.session_identity,
+                timed_chunk,
+                ready_timestamp_ns=(
+                    ready_observation.timestamp_ns
+                    if ready_observation is not None
+                    else None
+                ),
+                ready_run_id=(
+                    ready_observation.run_id if ready_observation is not None else None
+                ),
+            )
             return await self.unit_completion
         finally:
             self.active_unit = None

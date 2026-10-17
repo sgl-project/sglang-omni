@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from numbers import Integral
 from typing import cast
@@ -95,8 +95,8 @@ class MingAudioDecoder:
         device = first_parameter.device
         dtype = first_parameter.dtype
         context = (
-            torch.autocast(device_type="cuda", dtype=dtype)
-            if device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)
+            torch.autocast(device_type=device.type, dtype=dtype)
+            if device.type != "cpu" and dtype in (torch.float16, torch.bfloat16)
             else nullcontext()
         )
         with context:
@@ -282,17 +282,18 @@ class AudioVAEFixedStreamingTransition:
         device = first_parameter.device
         input_dtype = first_parameter.dtype
         if decoder.training or not (
-            device.type == "cuda"
+            device.type != "cpu"
             and input_dtype == torch.bfloat16
             or (device.type == "cpu" and input_dtype == torch.float32)
         ):
             raise ValueError(
-                f"AudioVAE fixed streaming requires an eval-mode CUDA BF16 decoder for serving or an eval-mode CPU FP32 decoder for internal verification, got device={device}, dtype={input_dtype}, training={decoder.training}"
+                f"AudioVAE fixed streaming requires an eval-mode accelerator BF16 decoder for serving or an eval-mode CPU FP32 decoder for internal verification, got device={device}, dtype={input_dtype}, training={decoder.training}"
             )
         else:
             pass
         self._latent_dim = latent_dim  # noqa: leading-underscore
         self._device = device  # noqa: leading-underscore
+        self.device_module = torch.get_device_module(device)
         self._input_dtype = input_dtype  # noqa: leading-underscore
         self.decoder = decoder
         self.upsampler = upsampler
@@ -309,8 +310,8 @@ class AudioVAEFixedStreamingTransition:
             self.max_raw_samples - self.pad
         )  # noqa: leading-underscore
         reference_context = (
-            torch.autocast(device_type="cuda", dtype=input_dtype)
-            if device.type == "cuda"
+            torch.autocast(device_type=device.type, dtype=input_dtype)
+            if device.type != "cpu"
             else nullcontext()
         )
         with torch.inference_mode(), reference_context:
@@ -408,8 +409,8 @@ class AudioVAEFixedStreamingTransition:
         terminal_mask: torch.Tensor,
     ) -> AudioVAEFixedStreamingOutput:
         execution_context = (
-            torch.autocast(device_type="cuda", dtype=self.input_dtype)
-            if self.device.type == "cuda"
+            torch.autocast(device_type=self.device.type, dtype=self.input_dtype)
+            if self.device.type != "cpu"
             else nullcontext()
         )
         with torch.inference_mode(), execution_context:
@@ -450,33 +451,29 @@ class AudioVAEFixedStreamingTransition:
             return
         else:
             pass
-        device_context = (
-            torch.cuda.device(self.device)
-            if self.device.type == "cuda"
-            else nullcontext()
-        )
-        with device_context:
+        with self.device_context():
             indices = torch.tensor(slots, device=self.device, dtype=torch.long)
             for _, tensor, row_dim in self.state.slot_tensors():
                 tensor.index_fill_(row_dim, indices, 0)
-            if self.device.type == "cuda":
-                torch.cuda.current_stream(self.device).synchronize()
-            else:
-                pass
+            self.synchronize_stream()
 
     def reset_all(self) -> None:
-        device_context = (
-            torch.cuda.device(self.device)
-            if self.device.type == "cuda"
-            else nullcontext()
-        )
-        with device_context:
+        with self.device_context():
             for _, tensor, _ in self.state.slot_tensors():
                 tensor.zero_()
-            if self.device.type == "cuda":
-                torch.cuda.current_stream(self.device).synchronize()
-            else:
-                pass
+            self.synchronize_stream()
+
+    def device_context(self) -> AbstractContextManager[None]:
+        if self.device.type != "cpu":
+            return self.device_module.device(self.device)
+        else:
+            return nullcontext()
+
+    def synchronize_stream(self) -> None:
+        if self.device.type != "cpu":
+            self.device_module.current_stream(self.device).synchronize()
+        else:
+            pass
 
     def validate_slot_ids(self, slot_ids: Sequence[int]) -> tuple[int, ...]:
         if not isinstance(slot_ids, Sequence):
@@ -780,6 +777,7 @@ class MingAudioStreamingRunner:
         self, transition: AudioVAEFixedStreamingTransition, *, cuda_graph_required: bool
     ) -> None:
         self.transition = transition
+        pin_memory = transition.device.type != "cpu"
         self.cuda_graph_required_at_startup = cuda_graph_required
         self.startup_prepared = not cuda_graph_required
         self.captured_graph: CapturedAudioVAEGraph | None = None
@@ -790,18 +788,18 @@ class MingAudioStreamingRunner:
             (capacity, max_step_latents, latent_dim),
             device="cpu",
             dtype=torch.float32,
-            pin_memory=True,
+            pin_memory=pin_memory,
         )
         self.host_latent_lengths = torch.empty(
-            capacity, device="cpu", dtype=torch.long, pin_memory=True
+            capacity, device="cpu", dtype=torch.long, pin_memory=pin_memory
         )
         self.host_exec_mask = torch.empty(
-            capacity, device="cpu", dtype=torch.bool, pin_memory=True
+            capacity, device="cpu", dtype=torch.bool, pin_memory=pin_memory
         )
         self.host_terminal_mask = torch.empty(
-            capacity, device="cpu", dtype=torch.bool, pin_memory=True
+            capacity, device="cpu", dtype=torch.bool, pin_memory=pin_memory
         )
-        with torch.cuda.device(transition.device):
+        with transition.device_context():
             self.latents = torch.empty(
                 (capacity, max_step_latents, latent_dim),
                 device=transition.device,
@@ -820,10 +818,10 @@ class MingAudioStreamingRunner:
             (capacity, transition.max_output_samples),
             device="cpu",
             dtype=torch.float32,
-            pin_memory=True,
+            pin_memory=pin_memory,
         )
         self.host_sample_lengths = torch.empty(
-            capacity, device="cpu", dtype=torch.long, pin_memory=True
+            capacity, device="cpu", dtype=torch.long, pin_memory=pin_memory
         )
         static_device_input_bytes = sum(
             (
@@ -893,7 +891,7 @@ class MingAudioStreamingRunner:
             self.host_terminal_mask[slot] = terminal
         graph_attempted = False
         try:
-            with torch.cuda.device(self.transition.device):
+            with self.transition.device_context():
                 self.latents.copy_(self.host_latents, non_blocking=True)
                 self.latent_lengths.copy_(self.host_latent_lengths, non_blocking=True)
                 self.exec_mask.copy_(self.host_exec_mask, non_blocking=True)
@@ -906,7 +904,7 @@ class MingAudioStreamingRunner:
                     output = captured.output
                 self.host_waveform.copy_(output.waveform, non_blocking=True)
                 self.host_sample_lengths.copy_(output.sample_lengths, non_blocking=True)
-                torch.cuda.current_stream(self.transition.device).synchronize()
+                self.transition.synchronize_stream()
             sample_counts: list[int] = []
             for slot in slot_ids:
                 sample_count = int(self.host_sample_lengths[slot])

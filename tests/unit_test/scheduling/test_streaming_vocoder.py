@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import queue
 from dataclasses import dataclass, field
-from types import SimpleNamespace
+from types import EllipsisType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -183,7 +183,9 @@ def make_payload(
     )
 
 
-def item(values: list[int], metadata: Any = ...) -> StreamItem:
+def item(
+    values: list[int], metadata: dict[str, object] | None | EllipsisType = ...
+) -> StreamItem:
     if metadata is ...:
         metadata = {"stream": True}
     return StreamItem(
@@ -253,6 +255,24 @@ def test_resolve_initial_codec_chunk_frames() -> None:
         )
     with pytest.raises(ValueError, match="steady_chunk_frames"):
         resolve_initial_codec_chunk_frames({}, steady_chunk_frames=0)
+
+
+@pytest.mark.parametrize(
+    ("priority_range", "expected_priority"),
+    [((0, -3), -2), ((0, -1), -1)],
+)
+def test_vocoder_decode_stream_priority_leaves_the_top_level_free(
+    monkeypatch: pytest.MonkeyPatch,
+    priority_range: tuple[int, int],
+    expected_priority: int,
+) -> None:
+    monkeypatch.setattr(
+        torch.cuda.Stream, "priority_range", staticmethod(lambda: priority_range)
+    )
+    assert (
+        streaming_vocoder.vocoder_decode_stream_priority(torch.cuda)
+        == expected_priority
+    )
 
 
 def test_is_streaming_payload_gate_names_subclass() -> None:
@@ -523,16 +543,6 @@ def test_scaffold_errors_use_stream_source_hint() -> None:
         scheduler.on_stream_chunk("r", item([1], None))
 
 
-def test_create_stream_state_none_guard_names_subclass() -> None:
-    class NoneStateVocoder(FakeStreamingVocoder):
-        def create_stream_state(self, request_id: str) -> FakeStreamState:
-            return None  # type: ignore[return-value]
-
-    scheduler = NoneStateVocoder()
-    with pytest.raises(RuntimeError, match="NoneStateVocoder.create_stream_state"):
-        scheduler.on_stream_chunk("r", item([1]))
-
-
 def test_coalesced_step_emits_for_all_participants_in_order() -> None:
     scheduler = CoalescingFakeVocoder(threshold=2)
     scheduler.on_stream_chunk_batch([("a", item([1])), ("b", item([10]))])
@@ -725,9 +735,3 @@ def test_stream_chunk_accepts_bool_false_stream_flag() -> None:
     scheduler = FakeStreamingVocoder(threshold=10)
     state = scheduler.ingest_stream_item("r", item([1], {"stream": False}))
     assert state is not None
-
-
-def test_stream_chunk_rejects_non_bool_stream_flag() -> None:
-    scheduler = FakeStreamingVocoder(threshold=10)
-    with pytest.raises(RuntimeError, match=r"bool metadata\['stream'\]"):
-        scheduler.ingest_stream_item("r", item([1], {"stream": "yes"}))

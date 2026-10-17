@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,10 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.utils import snake_beta
-from tests.unit_test.fixtures.qwen_fakes import make_qwen_payload
+from tests.unit_test.fixtures.qwen_fakes import (
+    deliver_code2wav_chunk,
+    make_qwen_payload,
+)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -27,8 +31,11 @@ def test_factory_installs_shared_snake_before_graph_capture(
     monkeypatch: pytest.MonkeyPatch, enabled: bool
 ) -> None:
     original = SnakeBeta(96).eval()
+    decoder = torch.nn.Sequential(original)
     model = SimpleNamespace(
-        decoder=torch.nn.Sequential(original),
+        decoder=decoder,
+        parameters=decoder.parameters,
+        buffers=decoder.buffers,
         config=SimpleNamespace(num_quantizers=16),
         total_upsample=1920,
     )
@@ -81,10 +88,13 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
     model = code2wav_scheduler.load_code2wav_model(
         checkpoint, device="cuda:0", dtype="bfloat16"
     )
+    model_footprint_bytes = sum(
+        tensor.nbytes for tensor in itertools.chain(model.parameters(), model.buffers())
+    )
     graph_keys = tuple(
         dict.fromkeys(
-            code2wav_scheduler.batched_graph_keys(10, 25, 16)
-            + code2wav_scheduler.batched_graph_keys(10, 25, 16, 2)
+            code2wav_scheduler.window_graph_keys(10, 25, 8)
+            + code2wav_scheduler.window_graph_keys(10, 25, 8, 2)
         )
     )
     shapes = sorted(
@@ -120,6 +130,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             num_quantizers=model.config.num_quantizers,
             total_gpu_memory_fraction=0.2,
             graph_keys=graph_keys,
+            model_footprint_bytes=model_footprint_bytes,
+            decode_stream=None,
         )
         assert eager_runner.stats()["enabled"], eager_runner.stats()
 
@@ -136,7 +148,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             scheduler.stream_payloads["parity"] = make_qwen_payload(request_id="parity")
             state = scheduler.get_or_create_stream_state("parity")
             for index, frame in enumerate(chunk_input[0].T):
-                scheduler.handle_stream_chunk(
+                deliver_code2wav_chunk(
+                    scheduler,
                     "parity",
                     StreamItem(index, frame, "talker", metadata={"stream": True}),
                 )
@@ -171,6 +184,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             num_quantizers=model.config.num_quantizers,
             total_gpu_memory_fraction=0.2,
             graph_keys=graph_keys,
+            model_footprint_bytes=model_footprint_bytes,
+            decode_stream=None,
         )
         assert fused_runner.stats()["enabled"], fused_runner.stats()
         for value, pcm in zip(codes, graph_expected):

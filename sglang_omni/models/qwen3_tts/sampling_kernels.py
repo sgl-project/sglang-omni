@@ -22,6 +22,12 @@ else:
     tl = None
     _TRITON_GATHER_SUPPORTED = False
 
+FUSED_SAMPLER_VOCAB_SIZE = 2048
+FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
+TOP_K_CHUNKS = 8
+TOP_K_CHUNK_WARPS = 2
+TOP_K_MERGE_KEYS_PER_WARP = 64
+
 
 def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
@@ -301,21 +307,9 @@ if has_triton_runtime():
         return scores, token_ids
 
     @triton.jit
-    def seeded_top_k_top_p_sample_kernel(
-        logits,
-        temperatures,
-        top_ks,
-        top_ps,
-        seeds,
-        positions,
-        out,
-        logits_stride_b: tl.constexpr,
-        max_top_k: tl.constexpr,
-        block_k: tl.constexpr,
-        has_top_p: tl.constexpr,
+    def pack_scaled_scores(
+        logits, temperatures, row, logits_stride_b: tl.constexpr, vocab_offsets
     ):
-        row = tl.program_id(0)
-        vocab_offsets = tl.arange(0, 2048)
         scores = tl.load(logits + row * logits_stride_b + vocab_offsets).to(tl.float32)
         temperature = tl.maximum(tl.load(temperatures + row).to(tl.float32), 1e-5)
         scores = scores / temperature
@@ -336,8 +330,10 @@ if has_triton_runtime():
         packed = (ordered_score_bits.to(tl.uint64) << 32) | (
             all_ones_vocab - vocab_offsets.to(tl.uint32)
         ).to(tl.uint64)
-        top_packed = tl.topk(packed, k=block_k)
+        return scores, ordered_score_bits, packed
 
+    @triton.jit
+    def unpack_top_keys(top_packed, block_k: tl.constexpr):
         ranks = tl.arange(0, block_k)
         one_rank = tl.full(ranks.shape, 1, tl.uint32)
         high_bit_rank = one_rank << 31
@@ -352,60 +348,45 @@ if has_triton_runtime():
         sorted_token_ids = all_ones_rank - (
             top_packed & all_ones_rank.to(tl.uint64)
         ).to(tl.uint32)
+        return sorted_scores, sorted_token_ids
 
-        if max_top_k <= 32:
-            # Note (Jun Liu): gatherTopK first writes every score strictly above
-            # the threshold
-            # in source-index order. It then appends threshold-equal scores in
-            # source-index order. Its following 32-entry bitonic sort is
-            # unstable, so reproducing only the final top-k membership is not
-            # sufficient for seeded sampling.
-            threshold_ordered_score_bits = tl.max(
-                tl.where(ranks == max_top_k - 1, ordered_top_score_bits, 0),
-                axis=0,
-            )
-            # Note (Jun Liu): CUDA's threshold gather compares the float rank
-            # representation.
-            # In particular, it selects positive zero ahead of negative zero.
-            # A numerical score comparison would collapse that distinction and
-            # could change the seeded codec ID.
-            greater_than_threshold = ordered_score_bits > threshold_ordered_score_bits
-            equal_to_threshold = ordered_score_bits == threshold_ordered_score_bits
-            gather_order_keys = (
-                tl.where(
-                    greater_than_threshold,
-                    0,
-                    tl.where(equal_to_threshold, 1, all_ones_vocab),
-                ).to(tl.uint64)
-                << 32
-            ) | vocab_offsets.to(tl.uint64)
-            # Note (Jun Liu): ``tl.topk`` only supports descending selection.
-            # Complementing
-            # the unsigned key turns its descending order into the ascending
-            # gather order used by PyTorch's top-k implementation.
-            all_ones_key = (all_ones_vocab.to(tl.uint64) << 32) | all_ones_vocab.to(
-                tl.uint64
-            )
-            gathered_complement = tl.topk(
-                all_ones_key - gather_order_keys,
-                k=32,
-            )
-            gather_source_ids = (
-                all_ones_rank
-                - (gathered_complement & all_ones_rank.to(tl.uint64)).to(tl.uint32)
-            ).to(tl.int32)
-            sorted_scores = tl.gather(
-                scores,
-                gather_source_ids,
-                axis=0,
-            )
-            sorted_token_ids = gather_source_ids.to(tl.uint32)
-            sorted_scores, sorted_token_ids = bitonic_sort_selected_32_desc(
-                sorted_scores, sorted_token_ids, max_top_k
-            )
-        else:
-            pass
+    @triton.jit
+    def bitonic_index_bit(log2_num_keys: tl.constexpr, index_bit: tl.constexpr):
+        """Bit index_bit of each key index, in the keys' 2 x ... x 2 view."""
+        return tl.reshape(
+            tl.arange(0, 2),
+            [1] * (log2_num_keys - index_bit - 1) + [2] + [1] * index_bit,
+        )
 
+    @triton.jit
+    def bitonic_merge_runs(
+        keys, log2_num_keys: tl.constexpr, log2_run_keys: tl.constexpr, is_descending
+    ):
+        """Sort each bitonic run of keys, descending where is_descending is 1."""
+        for step in tl.static_range(log2_run_keys):
+            partner_keys = tl.flip(keys, log2_num_keys - log2_run_keys + step)
+            is_right = bitonic_index_bit(log2_num_keys, log2_run_keys - 1 - step)
+            keys = tl.where(
+                (keys > partner_keys) != (is_descending ^ is_right).to(tl.int1),
+                partner_keys,
+                keys,
+            )
+        return keys
+
+    @triton.jit
+    def sample_sorted_top_k(
+        sorted_scores,
+        sorted_token_ids,
+        row,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        ranks = tl.arange(0, block_k)
         keep_top_k = ranks < tl.load(top_ks + row)
         masked_scores = tl.where(keep_top_k, sorted_scores, -float("inf"))
         max_score = tl.max(masked_scores, axis=0)
@@ -451,11 +432,190 @@ if has_triton_runtime():
         )
         tl.store(out + row, token)
 
+    @triton.jit
+    def seeded_top_k_top_p_sample_kernel(
+        logits,
+        temperatures,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        logits_stride_b: tl.constexpr,
+        max_top_k: tl.constexpr,
+        block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        vocab_offsets = tl.arange(0, 2048)
+        scores, ordered_score_bits, packed = pack_scaled_scores(
+            logits, temperatures, row, logits_stride_b, vocab_offsets
+        )
+        top_packed = tl.topk(packed, k=block_k)
+        sorted_scores, sorted_token_ids = unpack_top_keys(top_packed, block_k)
+
+        if max_top_k <= 32:
+            ranks = tl.arange(0, block_k)
+            all_ones_vocab = tl.full(vocab_offsets.shape, 0xFFFFFFFF, tl.uint32)
+            all_ones_rank = tl.full(ranks.shape, 0xFFFFFFFF, tl.uint32)
+            # Note (Jun Liu): gatherTopK first writes every score strictly above
+            # the threshold
+            # in source-index order. It then appends threshold-equal scores in
+            # source-index order. Its following 32-entry bitonic sort is
+            # unstable, so reproducing only the final top-k membership is not
+            # sufficient for seeded sampling.
+            threshold_ordered_score_bits = tl.max(
+                tl.where(ranks == max_top_k - 1, (top_packed >> 32).to(tl.uint32), 0),
+                axis=0,
+            )
+            # Note (Jun Liu): CUDA's threshold gather compares the float rank
+            # representation.
+            # In particular, it selects positive zero ahead of negative zero.
+            # A numerical score comparison would collapse that distinction and
+            # could change the seeded codec ID.
+            greater_than_threshold = ordered_score_bits > threshold_ordered_score_bits
+            equal_to_threshold = ordered_score_bits == threshold_ordered_score_bits
+            gather_order_keys = (
+                tl.where(
+                    greater_than_threshold,
+                    0,
+                    tl.where(equal_to_threshold, 1, all_ones_vocab),
+                ).to(tl.uint64)
+                << 32
+            ) | vocab_offsets.to(tl.uint64)
+            # Note (Jun Liu): ``tl.topk`` only supports descending selection.
+            # Complementing
+            # the unsigned key turns its descending order into the ascending
+            # gather order used by PyTorch's top-k implementation.
+            all_ones_key = (all_ones_vocab.to(tl.uint64) << 32) | all_ones_vocab.to(
+                tl.uint64
+            )
+            gathered_complement = tl.topk(
+                all_ones_key - gather_order_keys,
+                k=32,
+            )
+            gather_source_ids = (
+                all_ones_rank
+                - (gathered_complement & all_ones_rank.to(tl.uint64)).to(tl.uint32)
+            ).to(tl.int32)
+            sorted_scores = tl.gather(
+                scores,
+                gather_source_ids,
+                axis=0,
+            )
+            sorted_token_ids = gather_source_ids.to(tl.uint32)
+            sorted_scores, sorted_token_ids = bitonic_sort_selected_32_desc(
+                sorted_scores, sorted_token_ids, max_top_k
+            )
+        else:
+            pass
+
+        sample_sorted_top_k(
+            sorted_scores,
+            sorted_token_ids,
+            row,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            block_k,
+            has_top_p,
+        )
+
+    @triton.jit
+    def seeded_top_k_chunk_kernel(
+        logits,
+        temperatures,
+        chunk_keys,
+        logits_stride_b: tl.constexpr,
+        chunk_width: tl.constexpr,
+        block_k: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        chunk = tl.program_id(1)
+        vocab_offsets = chunk * chunk_width + tl.arange(0, chunk_width)
+        _, _, packed = pack_scaled_scores(
+            logits, temperatures, row, logits_stride_b, vocab_offsets
+        )
+        chunk_offsets = (row * tl.num_programs(1) + chunk) * block_k
+        run_offsets = tl.arange(0, block_k)
+        # note (ratish): even chunks store their run ascending and odd ones
+        # descending, the order the merge's bitonic rounds take.
+        tl.store(
+            chunk_keys
+            + chunk_offsets
+            + tl.where(chunk % 2 == 0, block_k - 1 - run_offsets, run_offsets),
+            tl.topk(packed, k=block_k),
+        )
+
+    @triton.jit
+    def seeded_top_k_merge_sample_kernel(
+        chunk_keys,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        num_candidates: tl.constexpr,
+        block_k: tl.constexpr,
+        log2_num_candidates: tl.constexpr,
+        log2_block_k: tl.constexpr,
+        has_top_p: tl.constexpr,
+    ):
+        # note (ratish): the keys are unique, so the top block_k of the chunks'
+        # top block_k sets is the row's top block_k in the same order.
+        row = tl.program_id(0)
+        # note (ratish): the keys are stored as int64; the merge must order them unsigned.
+        candidates = tl.load(
+            chunk_keys + row * num_candidates + tl.arange(0, num_candidates)
+        ).to(tl.uint64)
+        candidates = tl.reshape(candidates, [2] * log2_num_candidates)
+        # note (ratish): the rounds tl.topk runs after sorting its runs: keep the
+        # larger key of each pair of runs, then re-sort the kept run.
+        for log2_covered_keys in tl.static_range(
+            log2_block_k + 1, log2_num_candidates + 1
+        ):
+            candidates = tl.max(
+                candidates, axis=log2_num_candidates - log2_covered_keys
+            )
+            if log2_covered_keys < log2_num_candidates:
+                candidates = bitonic_merge_runs(
+                    candidates,
+                    log2_num_candidates - log2_covered_keys + log2_block_k,
+                    log2_block_k,
+                    bitonic_index_bit(
+                        log2_num_candidates - log2_covered_keys + log2_block_k,
+                        log2_block_k,
+                    ),
+                )
+            else:
+                candidates = bitonic_merge_runs(
+                    candidates, log2_block_k, log2_block_k, 1
+                )
+        sorted_scores, sorted_token_ids = unpack_top_keys(
+            tl.reshape(candidates, [block_k]), block_k
+        )
+        sample_sorted_top_k(
+            sorted_scores,
+            sorted_token_ids,
+            row,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            block_k,
+            has_top_p,
+        )
+
 else:
     seeded_gumbel_sample_sorted_kernel = None
     bitonic_compare_selected_32_desc = None
     bitonic_sort_selected_32_desc = None
     seeded_top_k_top_p_sample_kernel = None
+    seeded_top_k_chunk_kernel = None
+    seeded_top_k_merge_sample_kernel = None
 
 
 def next_power_of_2(value: int) -> int:
@@ -658,12 +818,9 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     return out
 
 
-_FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
-
-
 def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
-    if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
+    if max_top_k not in FUSED_RAW_LOGIT_TOP_KS:
         return None
     else:
         pass
@@ -701,7 +858,7 @@ def sample_from_logits_with_seed_top_k_top_p(
         or block_k is None
         or not logits.is_cuda
         or logits.ndim != 2
-        or logits.shape[1] != 2048
+        or logits.shape[1] != FUSED_SAMPLER_VOCAB_SIZE
         or logits.dtype is not torch.bfloat16
         or not logits.is_contiguous()
     ):
@@ -738,18 +895,56 @@ def sample_from_logits_with_seed_top_k_top_p(
         pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    seeded_top_k_top_p_sample_kernel[(batch_size,)](
-        logits,
-        temperatures,
-        top_ks,
-        top_ps,
-        seeds,
-        positions,
-        out,
-        logits.stride(0),
-        int(max_top_k),
-        int(block_k),
-        bool(has_top_p),
-        num_warps=8,
-    )
+    # note (ratish): the split launch is measured on sm_90 only; other devices keep
+    # the single kernel. Each chunk holds at least two runs, so it runs a halving round.
+    if (
+        max_top_k > 32
+        and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE
+        and torch.version.hip is None
+        and torch.cuda.get_device_capability(logits.device) == (9, 0)
+    ):
+        num_candidates = TOP_K_CHUNKS * block_k
+        chunk_keys = torch.empty(
+            (batch_size, num_candidates),
+            device=logits.device,
+            dtype=torch.int64,
+        )
+        seeded_top_k_chunk_kernel[(batch_size, TOP_K_CHUNKS)](
+            logits,
+            temperatures,
+            chunk_keys,
+            logits.stride(0),
+            FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
+            int(block_k),
+            num_warps=TOP_K_CHUNK_WARPS,
+        )
+        seeded_top_k_merge_sample_kernel[(batch_size,)](
+            chunk_keys,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            num_candidates,
+            block_k,
+            num_candidates.bit_length() - 1,
+            block_k.bit_length() - 1,
+            bool(has_top_p),
+            num_warps=block_k // TOP_K_MERGE_KEYS_PER_WARP,
+        )
+    else:
+        seeded_top_k_top_p_sample_kernel[(batch_size,)](
+            logits,
+            temperatures,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            out,
+            logits.stride(0),
+            int(max_top_k),
+            int(block_k),
+            bool(has_top_p),
+            num_warps=8,
+        )
     return out

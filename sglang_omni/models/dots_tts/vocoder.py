@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 
 from sglang_omni.models.dots_tts.codec import DotsAudioCodec
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState, load_dots_tts_state
+from sglang_omni.models.dots_tts.vocoder_cuda_graph import DotsVocoderGraphRunner
 from sglang_omni.models.dots_tts.vocoder_slot_pool import DotsVocoderSlotPool
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -22,7 +22,7 @@ _LENGTH_BUCKET_FRAMES = 32
 logger = logging.getLogger(__name__)
 
 
-class DotsTTSBatchVocoder(BatchVocoderBase):
+class DotsTTSBatchVocoder(BatchVocoderBase[DotsTTSState, torch.Tensor]):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
         self.logged_batch = False
@@ -128,17 +128,20 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
         wav: torch.Tensor,
         sample_rate: int,
     ) -> StagePayload:
-        payload.data = audio_waveform_payload(
-            wav,
-            sample_rate=sample_rate,
-            modality="audio",
-            source_hint="dots.tts",
+        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
+            audio_waveform_payload(
+                wav,
+                sample_rate=sample_rate,
+                modality="audio",
+                source_hint="dots.tts",
+            )
         )
         usage = build_usage(state)
         if usage is not None:
-            payload.data["usage"] = usage
+            data["usage"] = usage
         else:
             pass
+        payload.data = data
         return payload
 
     async def decode_payload(self, payload: StagePayload) -> StagePayload:
@@ -173,6 +176,7 @@ class DotsTTSStreamingVocoder(
         codec: DotsAudioCodec,
         *,
         optimize: bool,
+        enable_streaming_audio_vae_cuda_graph: bool = True,
         merge_steps: int = 4,
         max_batch_size: int = 4,
         max_batch_wait_ms: int = 2,
@@ -199,6 +203,9 @@ class DotsTTSStreamingVocoder(
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
         self.stream_slots = int(stream_slots)
+        self.enable_streaming_audio_vae_cuda_graph = bool(
+            enable_streaming_audio_vae_cuda_graph
+        )
         self.batch_vocoder = DotsTTSBatchVocoder(codec)
         self.slot_pool = slot_pool
         # note (guozhihao-224): coalesce width follows max_batch_size only;
@@ -316,10 +323,10 @@ class DotsTTSStreamingVocoder(
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: DotsStreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | dict[str, int | float]]:
         del request_id, state
         tts_state = load_dots_tts_state(payload)
-        result: dict[str, Any] = {
+        result: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": self.codec.sample_rate,
         }
@@ -427,21 +434,52 @@ class DotsTTSStreamingVocoder(
     def get_or_create_pool_locked(self) -> DotsVocoderSlotPool:
         # Caller must hold self.codec.lock (RLock).
         if self.slot_pool is None:
-            self.slot_pool = DotsVocoderSlotPool(
+            pool = DotsVocoderSlotPool(
                 self.codec.inference,
                 num_slots=self.stream_slots,
                 chunk_size=self.codec.patch_size * self.merge_steps,
+                latent_dim=self.codec.latent_dim,
             )
+            pool.graph_runner = (
+                self.capture_step_graphs(pool)
+                if self.enable_streaming_audio_vae_cuda_graph
+                and pool.device.type == "cuda"
+                else None
+            )
+            self.slot_pool = pool
             logger.info(
-                "dots.tts streaming vocoder slot pool ready: "
-                "slots=%d merge_steps=%d chunk_size=%d",
-                self.stream_slots,
-                self.merge_steps,
-                self.codec.patch_size * self.merge_steps,
+                f"dots.tts streaming vocoder slot pool ready: "
+                f"slots={self.stream_slots} merge_steps={self.merge_steps} "
+                f"chunk_size={self.codec.patch_size * self.merge_steps}"
             )
         else:
             pass
         return self.slot_pool
+
+    def capture_step_graphs(self, pool: DotsVocoderSlotPool) -> DotsVocoderGraphRunner:
+        runner = DotsVocoderGraphRunner(
+            forward=pool.forward,
+            new_inputs=pool.new_step_inputs,
+            device=pool.device,
+        )
+        runner.capture(self.cuda_graph_capture_keys())
+        return runner
+
+    def cuda_graph_capture_keys(self) -> list[tuple[int, int]]:
+        # note (lennox): only single-request final drains use intermediate lengths.
+        return [
+            (batch, self.codec.patch_size * patches)
+            for batch in range(
+                1, min(self.stream_chunk_batch_max, self.stream_slots) + 1
+            )
+            for patches in range(1, self.merge_steps + 1)
+            if batch == 1 or patches in (1, self.merge_steps)
+        ]
+
+    @property
+    def cuda_graph_count(self) -> int:
+        runner = None if self.slot_pool is None else self.slot_pool.graph_runner
+        return 0 if runner is None else len(runner.captured_keys)
 
     def ensure_slot(self, state: DotsStreamState) -> None:
         if state.slot is not None:

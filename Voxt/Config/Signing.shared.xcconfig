@@ -1,0 +1,12 @@
+// Shared signing defaults for local development.
+// Optional local overrides can redefine VOXT_* values without touching project settings.
+
+VOXT_CODE_SIGN_STYLE = Automatic
+VOXT_DEVELOPMENT_TEAM = RY2TQTYSKQ
+VOXT_CODE_SIGN_IDENTITY = Apple Development
+
+#include? "Signing.local.xcconfig"
+
+CODE_SIGN_STYLE = $(VOXT_CODE_SIGN_STYLE)
+DEVELOPMENT_TEAM = $(VOXT_DEVELOPMENT_TEAM)
+CODE_SIGN_IDENTITY = $(VOXT_CODE_SIGN_IDENTITY)
