@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import queue
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,9 +13,14 @@ import torch
 from transformers import WhisperFeatureExtractor
 
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.qwen3_asr import audio_workers
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_audio_token_lengths,
     qwen3_asr_num_audio_tokens,
+)
+from sglang_omni.models.qwen3_asr.audio_workers import (
+    AudioWorkerPool,
+    WorkerBrokenError,
 )
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
 from sglang_omni.models.qwen3_asr.languages import resolve_language
@@ -946,3 +953,40 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
     assert observed["audio_fingerprint"] == data.req.extra_key
     assert item.feature is None
     assert item.precomputed_embeddings.shape[0] == num_audio_tokens
+
+
+def test_audio_pool_falls_back_after_worker_exit(monkeypatch):
+    worker = SimpleNamespace(
+        run=lambda *arguments: None,
+        close=lambda: None,
+        process=SimpleNamespace(pid=17),
+    )
+    pool = object.__new__(AudioWorkerPool)
+    pool.lock = threading.Lock()
+    pool.closed = False
+    pool.workers = [worker]
+    pool.serving_worker_count = 1
+    pool.idle_workers = queue.SimpleQueue()
+    pool.idle_workers.put(worker)
+
+    def stopped_worker(*arguments):
+        raise WorkerBrokenError("worker exited")
+
+    worker.run = stopped_worker
+    expected = SimpleNamespace(waveform=np.zeros(16, dtype=np.float32))
+    calls = []
+
+    def prepare_in_process(payload, *, source_name, target_sample_rate):
+        calls.append((payload, source_name, target_sample_rate))
+        return expected
+
+    monkeypatch.setattr(audio_workers, "prepare_audio", prepare_in_process)
+    payload = SimpleNamespace()
+    for _ in range(2):
+        assert (
+            pool.prepare_audio(payload, source_name="test", target_sample_rate=16000)
+            is expected
+        )
+    assert len(calls) == 2
+    assert pool.serving_worker_count == 0
+    pool.close()

@@ -50,6 +50,7 @@ from .audio_lengths import (
     QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND,
     qwen3_asr_num_audio_tokens,
 )
+from .audio_workers import AudioPreparer
 from .languages import resolve_language
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,7 @@ def make_qwen3_asr_scheduler_adapters(
     audio_encoder_service: Qwen3ASRPreLMEncoderService | None = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
     greedy_only: bool = False,
+    audio_preparer: AudioPreparer = prepare_audio,
 ) -> tuple[
     Callable[
         [StagePayload], Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData]
@@ -270,7 +272,7 @@ def make_qwen3_asr_scheduler_adapters(
         bias_context = str(raw_context).strip() if raw_context else None
         bias_context = bias_context or None
         try:
-            prepared = prepare_audio(
+            prepared = audio_preparer(
                 payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
             )
         except AudioDecodeError as exc:

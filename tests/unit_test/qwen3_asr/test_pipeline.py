@@ -339,6 +339,18 @@ def patch_engine_dependencies(
         stream_output_builder=object(),
         stream_builder_calls=[],
     )
+    recorded.closed_resources = []
+    recorded.audio_pool_workers = 0
+    recorded.encoder_service.close = lambda: recorded.closed_resources.append("encoder")
+
+    def make_audio_pool(worker_count: int) -> SimpleNamespace:
+        recorded.audio_pool_workers = worker_count
+        return SimpleNamespace(
+            close=lambda: recorded.closed_resources.append("audio"),
+            prepare_audio=qwen3_asr_builder.prepare_audio,
+        )
+
+    monkeypatch.setattr(qwen3_asr_builder, "AudioWorkerPool", make_audio_pool)
     monkeypatch.setattr(
         device_utils,
         "resolve_device_spec",
@@ -492,7 +504,10 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True
-    assert scheduler.shutdown_callback is recorded.encoder_service.close
+    scheduler.shutdown_callback()
+    assert recorded.closed_resources == ["encoder"] + (
+        ["audio"] if recorded.audio_pool_workers else []
+    )
     assert scheduler.stream_output_builder is recorded.stream_output_builder
     assert recorded.stream_builder_calls == [
         {"tokenizer": recorded.tokenizer, "min_emit_interval_s": 0.125}

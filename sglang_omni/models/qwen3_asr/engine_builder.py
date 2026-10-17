@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -23,12 +24,14 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
     qwen3_asr_max_output_tokens,
 )
+from sglang_omni.models.qwen3_asr.audio_workers import AudioWorkerPool
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
 from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
 from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -141,6 +144,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.device: str | None = None
         self.model_path: str | None = None
         self.audio_encoder_service: Qwen3ASRPreLMEncoderService | None = None
+        self.audio_worker_pool: AudioWorkerPool | None = None
         self.torch_mps_model_runner: Qwen3ASRTorchMpsModelRunner | None = None
         self._should_wait_for_encode: Callable[[], bool] | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -390,6 +394,18 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             )
         else:
             pass
+        if (
+            current_platform.is_cuda()
+            and sys.platform == "linux"
+            and self.request_build_max_workers > 1
+            and int(server_args.tp_size) == 1
+        ):
+            # note (rsi): decoding and resampling an upload hold the GIL for
+            # milliseconds; one worker process per build thread keeps that work
+            # off the scheduler's interpreter. TP ranks build on one thread.
+            self.audio_worker_pool = AudioWorkerPool(self.request_build_max_workers)
+        else:
+            pass
 
     def should_wait_for_encode(self) -> bool:
         return (
@@ -414,6 +430,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
             greedy_only=self.uses_torch_mps(),
+            audio_preparer=(
+                prepare_audio
+                if self.audio_worker_pool is None
+                else self.audio_worker_pool.prepare_audio
+            ),
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
@@ -432,16 +453,31 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
-        if self.audio_encoder_service is None:
+        if self.audio_encoder_service is None and self.audio_worker_pool is None:
             return {}
         else:
             pass
-        return {"shutdown_callback": self.audio_encoder_service.close}
+        return {"shutdown_callback": self.close_model_resources}
+
+    def close_model_resources(self) -> None:
+        if self.audio_encoder_service is not None:
+            self.audio_encoder_service.close()
+        else:
+            pass
+        if self.audio_worker_pool is not None:
+            self.audio_worker_pool.close()
+        else:
+            pass
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
             self.audio_encoder_service = None
+        else:
+            pass
+        if self.audio_worker_pool is not None:
+            self.audio_worker_pool.close()
+            self.audio_worker_pool = None
         else:
             pass
 
