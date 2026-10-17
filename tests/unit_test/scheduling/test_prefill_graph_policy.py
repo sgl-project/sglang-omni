@@ -307,13 +307,14 @@ def test_prefill_cap_is_not_clamped_by_max_prefill_tokens() -> None:
         ({"cuda_graph_max_bs_prefill": 3000, "max_total_tokens": 1000}, 3000),
     ],
 )
+@pytest.mark.parametrize("backend", ["breakable", "full"])
 def test_explicit_prefill_caps_build_the_ladder_before_server_args(
-    server_args_overrides: dict[str, Any], expected_cap: int
+    server_args_overrides: dict[str, Any], expected_cap: int, backend: str
 ) -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         server_args_overrides={
-            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_backend_prefill": backend,
             **server_args_overrides,
         },
     )
