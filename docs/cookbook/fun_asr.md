@@ -9,7 +9,7 @@ Fun-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 40
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation_CUDA.md),
+Install `sglang-omni` by following [Installation](../get_started/installation.md),
 then download the model:
 
 ```bash

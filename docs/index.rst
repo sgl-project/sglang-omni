@@ -106,7 +106,7 @@ Supported Models
    :maxdepth: 1
    :caption: Get Started
 
-   get_started/installation_CUDA.md
+   get_started/installation.md
    get_started/installation_apple_silicon.md
    get_started/installation_npu.md
    get_started/installation_xpu.md
