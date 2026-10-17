@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from importlib.metadata import PackageNotFoundError, requires
+from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, model_info, snapshot_download
@@ -94,7 +94,7 @@ def setup_model_extra() -> None:
             and marker.evaluate({"extra": MODEL_EXTRA})
             and not marker.evaluate({"extra": ""})
         ):
-            extra_requirements.append(f"{requirement.name}{requirement.specifier}")
+            extra_requirements.append(requirement)
         else:
             pass
     if not extra_requirements:
@@ -105,6 +105,21 @@ def setup_model_extra() -> None:
         )
     else:
         pass
+    missing_requirements = []
+    for requirement in extra_requirements:
+        try:
+            installed = version(requirement.name)
+        except PackageNotFoundError:
+            missing_requirements.append(requirement)
+        else:
+            if installed not in requirement.specifier:
+                missing_requirements.append(requirement)
+            else:
+                pass
+    if not missing_requirements:
+        return
+    else:
+        pass
     subprocess.run(
         [
             "uv",
@@ -113,7 +128,10 @@ def setup_model_extra() -> None:
             "--quiet",
             "--python",
             sys.executable,
-            *extra_requirements,
+            *(
+                f"{requirement.name}{requirement.specifier}"
+                for requirement in missing_requirements
+            ),
         ],
         check=True,
     )
