@@ -46,6 +46,16 @@ def _load_event() -> dict:
         return json.load(event_file)
 
 
+def _require_pr_opt_in(token: str, repo: str, pull_number: int) -> None:
+    # Reruns must use current labels/draft state, not the frozen event payload.
+    pull = _github_json(token, repo, f"/pulls/{pull_number}")
+    if pull["draft"]:
+        raise RuntimeError("PR is draft. Blocking CI.")
+    labels = {label["name"] for label in pull["labels"]}
+    if "run-ci" not in labels:
+        raise RuntimeError("Missing required label 'run-ci'. Blocking CI.")
+
+
 def _wait_for_mergeability(
     token: str,
     repo: str,
@@ -141,6 +151,7 @@ def main() -> int:
     parser.add_argument("--check-name", default="lint")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--poll-seconds", type=int, default=15)
+    parser.add_argument("--require-run-ci", action="store_true")
     args = parser.parse_args()
 
     event_name = os.environ.get("GITHUB_EVENT_NAME")
@@ -158,6 +169,8 @@ def main() -> int:
     pull_number = int(pull_request["number"])
     head_sha = pull_request["head"]["sha"]
     base_branch = pull_request["base"]["ref"]
+    if args.require_run_ci:
+        _require_pr_opt_in(token, repo, pull_number)
     print(
         "Checking PR CI gate:",
         f"pr={pull_number}",
