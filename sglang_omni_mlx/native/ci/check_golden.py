@@ -21,6 +21,7 @@ from typing import Callable
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
+import auk_golden
 import sortformer_golden
 import vad_golden
 
@@ -230,6 +231,14 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
         else:
             pass
+        if golden.get("kind") == "auk":
+            failures = auk_golden.validate_outputs(golden, outputs["clips"])
+            if failures:
+                raise SystemExit("; ".join(failures))
+            else:
+                pass
+        else:
+            pass
         golden["devices"][outputs["device"]] = {
             "metrics": outputs["metrics"],
             "clips": outputs["clips"],
@@ -250,7 +259,18 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         )
         if row["duration"] > golden.get("clips_over_seconds", 0)
     }
-    if golden.get("kind") == "silero_vad":
+    if golden.get("kind") == "auk":
+        report(
+            *auk_golden.check(
+                golden,
+                arguments.runtime_bin,
+                arguments.data_root,
+                chip(),
+                arguments.outputs,
+                arguments.golden if arguments.write else None,
+            )
+        )
+    elif golden.get("kind") == "silero_vad":
         report(
             *vad_golden.check(
                 golden, arguments.runtime_bin, arguments.data_root, list(manifest)

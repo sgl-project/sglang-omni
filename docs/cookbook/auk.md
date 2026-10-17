@@ -29,6 +29,62 @@ python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 
 For Intel GPUs, follow the [AuK XPU recipe](../get_started/installation_xpu.md#auk-speech-generation-and-editing-single-xpu).
 
+## Apple Silicon
+
+AuK and AuK-Flash run on the standalone native MLX server. Build it, then
+prepare the local Tencent and Qwen2.5-Omni-3B checkpoints:
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh build/auk
+build/auk/.build/venv/bin/python sglang_omni_mlx/native/tools/prepare_auk.py \
+  --auk-directory /models/AuK-Flash \
+  --conditioner-directory /models/Qwen2.5-Omni-3B \
+  --output /models/AuK-Flash-native
+MLX_ENABLE_TF32=0 build/auk/bin/auk_server \
+  --model-path /models/AuK-Flash-native --port 8000
+```
+
+Use the AuK checkpoint instead for the base model. Preparation reads the
+official safetensors and records their hashes in the output manifest. Python
+is needed for preparation; the server itself is a C++ executable.
+
+The server supports `/v1/audio/speech` and `/generate`, with WAV or PCM output.
+Reference audio uses a `data:audio/wav;base64,` URI containing mono PCM16 or
+float32 WAV. It accepts one request at a time and returns 429 while busy.
+`--max-seconds` sets the duration cap, up to 30 seconds.
+
+The speech-generation example below works with either server. For cloning or
+editing on the native server, embed the WAV in `ref_audio` instead of using
+the HTTP URLs shown in the Torch examples. Native serving does not support
+structured `references`, remote audio fetching, streaming, or quantized weights.
+It keeps the model loaded until shutdown and is not integrated into the Voxt app.
+
+BF16 is the default matrix precision; `--dtype float32` selects FP32.
+Text residuals, hidden-state fusion, rotary positions, VAE computation and
+Euler integration stay in FP32. Use `MLX_ENABLE_TF32=0` for FP32 comparisons.
+Sampling follows each checkpoint's released recipe.
+
+For a local Torch MPS comparison, use the ordinary Omni server with each
+stage's `max_batch_size` set to 1 and DiT CUDA graphs, compilation, and fused
+Q/K normalization disabled. Run the two servers separately. The native
+benchmark client sends the same requests to either server:
+
+```bash
+python sglang_omni_mlx/native/ci/benchmark_auk.py \
+  --cases cases.json --url http://127.0.0.1:8000 \
+  --backend native --variant AuK-Flash --server-pid "$SERVER_PID" \
+  --output results/native-flash
+```
+
+`cases.json` is a list of objects with `id`, `language` (`en` or `zh`), `text`,
+`reference_file` (relative to the JSON file), `generation_seconds`, and `seed`.
+By default, each case is sent once at concurrency 1. Start a fresh server for
+each independent trial.
+Results include each WAV, HTTP latency, real-time factor, measured-window
+throughput, and macOS process-tree physical footprint. Startup and speech
+quality must be measured separately. The two backends use their own random
+generators, so equal seeds do not imply equal noise or waveforms.
+
 ## Speech Generation
 
 `/v1/audio/speech` takes the text in `input`. Without reference audio, `instructions` describes the voice and defaults to `A clear, natural voice.` An explicit target duration is required in this mode:

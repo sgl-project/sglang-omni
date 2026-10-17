@@ -76,8 +76,11 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/asr_service.cpp src/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_service STATIC src/service.cpp src/http.cpp)
+target_link_libraries(omni_service PUBLIC qwen3_asr civetweb-c-library)
+target_compile_options(omni_service PRIVATE -Wall -Wextra)
+add_library(asr_service STATIC src/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/server.cpp src/vad_service.cpp
@@ -204,3 +207,44 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+# AuK's reference front end uses the same SoX resampler revision as python-soxr.
+FetchContent_Declare(
+  soxr
+  URL https://codeload.github.com/chirlu/soxr/tar.gz/a66f3eeeeb62a32403ff143b756eed92b1ec6b62
+  URL_HASH SHA256=d72cf79f82b4bc56d853c8e166bef994f0bbf9a1ca90ae6f81a3847081f48b96
+  SOURCE_SUBDIR no_automatic_build)
+FetchContent_MakeAvailable(soxr)
+list(APPEND CMAKE_MODULE_PATH "${soxr_SOURCE_DIR}/cmake/Modules")
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_OPENMP OFF CACHE BOOL "" FORCE)
+set(WITH_LSR_BINDINGS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS ON)
+add_subdirectory("${soxr_SOURCE_DIR}" "${soxr_BINARY_DIR}" EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS OFF)
+set_target_properties(soxr PROPERTIES INSTALL_NAME_DIR "@rpath")
+
+add_library(audio_resample STATIC src/audio_resample.cpp)
+target_include_directories(audio_resample PUBLIC src PRIVATE "${soxr_SOURCE_DIR}/src")
+target_link_libraries(audio_resample PUBLIC soxr)
+target_compile_options(audio_resample PRIVATE -Wall -Wextra)
+
+add_library(auk_model STATIC src/auk_conditioner.cpp src/auk_conditioner_audio.cpp
+  src/auk_dit.cpp src/auk_dit_checkpoint.cpp src/auk_vae.cpp src/auk_model.cpp)
+target_link_libraries(auk_model PUBLIC qwen3_asr audio_resample)
+target_compile_options(auk_model PRIVATE -Wall -Wextra)
+add_executable(auk_server src/auk_server.cpp src/auk_tts_service.cpp)
+target_link_libraries(auk_server PRIVATE auk_model omni_service)
+add_executable(auk_probe tools/auk_probe.cpp)
+target_link_libraries(auk_probe PRIVATE auk_model)
+add_executable(auk_synthesize tools/auk_synthesize.cpp)
+target_link_libraries(auk_synthesize PRIVATE auk_model)
+set_target_properties(auk_server auk_probe auk_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS auk_server auk_probe auk_synthesize RUNTIME DESTINATION bin)
+install(TARGETS soxr LIBRARY DESTINATION bin)
+install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
+install(FILES licenses/auk.txt licenses/Apache-2.0.txt licenses/NOTICE
+  DESTINATION share/licenses/auk)
