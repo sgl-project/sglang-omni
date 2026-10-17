@@ -42,7 +42,7 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 This path currently supports macOS 14 or newer on `arm64` only (the pinned
 `torch==2.13.0`, `torchvision==0.28.0` and `torchcodec==0.15.0` wheels are built
 for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
-MLX/Torch-MPS paths and the
+Torch-MPS path and the
 [Fun-ASR Torch/MPS path](../cookbook/fun_asr.md#apple-silicon).
 Common failures are a missing Homebrew/uv on `PATH`, an unavailable Python 3.12
 toolchain, or forgetting the `DYLD_LIBRARY_PATH` export when starting an audio
@@ -78,5 +78,5 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 
 ## Next steps
 
-- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon-torch-mps).
+- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
 - [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).

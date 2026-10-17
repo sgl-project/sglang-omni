@@ -19,7 +19,9 @@ MODEL_PATH="$(
 )"
 ```
 
-### Apple Silicon (Torch MPS)
+<a id="apple-silicon-torch-mps"></a>
+
+### Apple Silicon
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
 PyTorch with the MPS backend. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
