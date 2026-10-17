@@ -135,17 +135,37 @@ class Attention(torch.nn.Module):
             next_state = AttentionState(history=torch.cat((k, v), dim=-1))
         else:
             next_state = None
+        from sglang_omni.platforms import current_platform
+
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(1)
+            if current_platform.is_npu():
+                # NPU flash-attention backend rejects bool masks; feed an
+                # additive float mask (0 keep / -1e9 drop) in the query dtype.
+                if attn_mask.dtype == torch.bool:
+                    attn_mask = torch.where(attn_mask, 0.0, -1e9)
+                attn_mask = attn_mask.to(dtype=q.dtype)
+            else:
+                pass
         else:
             pass
-        x = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
+        try:
+            x = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+            )
+        except RuntimeError:
+            if not current_platform.is_npu():
+                raise
+            scale = 1.0 / math.sqrt(q.shape[-1])
+            scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) * scale
+            if attn_mask is not None:
+                scores = scores + attn_mask.float()
+            attn = torch.softmax(scores, dim=-1)
+            x = torch.matmul(attn, v.float()).to(dtype=q.dtype)
         x = x.transpose(1, 2).reshape(b, t, -1)
         x = self.proj(x)
         x = self.proj_drop(x)

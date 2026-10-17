@@ -301,9 +301,9 @@ def find_checkpoint_dir() -> Path | None:
 
 def require_checkpoint_dir() -> Path:
     checkpoint = find_checkpoint_dir()
-    if checkpoint is None or resolve_concrete_device(None).type not in ("cuda", "xpu"):
+    if checkpoint is None or resolve_concrete_device(None).type not in ("cuda", "xpu", "npu"):
         pytest.skip(
-            "Set MINICPMO_CHECKPOINT and provide CUDA or XPU for vocoder validation"
+            "Set MINICPMO_CHECKPOINT and provide CUDA, XPU, or NPU for vocoder validation"
         )
     else:
         pass

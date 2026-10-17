@@ -285,6 +285,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         backend = current_platform.get_device_graph_backend(self.device)
         if backend is None:
             reason = f"{self.device.type} records no model-owned graph"
+        elif self.device.type == "npu":
+            reason = "NPU sampling uses boolean indexing that cannot be graph captured"
         elif current_sglang_sampling_backend() != "pytorch":
             reason = "the sampling graph needs the pytorch sampling backend"
         elif decode_graphs is None:
