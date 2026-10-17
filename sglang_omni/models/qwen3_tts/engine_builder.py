@@ -210,7 +210,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
                 "flashinfer" if current_platform.is_cuda() else "pytorch"
             ),
             "trust_remote_code": True,
-            # note (ratish): SGLang derives the ladder up to the chunked prefill size.
+            # note (luojiaxuan): under load prefills coalesce into one extend
+            # batch, so the ladder must reach well past a single prompt.
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
         if self.checkpoint_dir:
@@ -242,7 +243,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         else:
             pass
         prefill_fields: dict[str, list[int] | int] = {}
-        # note (luojiaxuan): a cached prompt prefills one token, below bucket 4.
+        # note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
+        # eager when its bucket exceeds twice the real token count, so a 1-token prefill
+        # lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
+        # H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
+        # only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
+        # single 1 bucket takes the fallback rate to zero, so the default is the shared
+        # ladder plus that bucket rather than a hand-picked list.
         if (
             prefill.bs[0] != 1
             and self.server_args_overrides.get("cuda_graph_bs_prefill") is None
@@ -251,7 +258,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             prefill_fields["bs"] = [1, *prefill.bs]
         else:
             pass
-        # note (ratish): only fa4 replays empty request slots for free.
+        # note (ratish): fa3 runs a split KV combine over every request slot, so only
+        # fa4 holds every running request; fa3 keeps SGLang's slot count.
         if (
             prefill.backend == CudaGraphBackend.FULL
             and prefill.full_prefill_max_req is None
@@ -368,7 +376,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
         else:
             pass
-        # note (ratish): fa4 skips fa3's per-slot combine but runs FP8 KV only on SM100.
+        # note (ratish): fa4 avoids fa3's per-slot split KV combine but runs FP8 KV only
+        # on SM100, so a quantized KV cache keeps the default backend.
         prefill_backend = nested_prefill_overrides(overrides).get(
             "backend", overrides.get("cuda_graph_backend_prefill")
         )
