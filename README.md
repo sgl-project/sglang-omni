@@ -67,7 +67,7 @@ Additional model guides, including experimental and research-oriented paths, are
 
 ## Quick Start
 
-- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation.md#macos-apple-silicon).
+- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation_apple_silicon.md).
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
 - [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
