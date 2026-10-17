@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,6 +23,15 @@ inline constexpr int kChunkTokenCount = 13;
 // checkpoint's processor; kVoxtSwift reproduces Voxt's Swift port (one more
 // mel frame, and a token count computed with float32 true division).
 enum class AudioLayout { kReference, kVoxtSwift };
+
+struct DecodedAudio {
+  std::vector<float> samples;
+  int sample_rate;
+};
+
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes);
+std::string EncodePcm16(const std::vector<float> &samples);
+std::string EncodeWavPcm16(const std::vector<float> &samples, int sample_rate);
 
 // 16 kHz mono PCM16 or float32 WAV to float32 samples; throws
 // std::invalid_argument for anything else.

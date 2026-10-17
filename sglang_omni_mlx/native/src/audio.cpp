@@ -112,7 +112,7 @@ std::vector<float> BuildPeriodicHannWindow() {
 
 } // namespace
 
-std::vector<float> DecodeWav(std::string_view wav_bytes) {
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
@@ -141,9 +141,12 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
       bits_per_sample = ReadU16(wav_bytes, body_offset + 14);
       have_format = true;
     } else if (chunk_id == "data") {
-      if (!have_format || channel_count != 1 || sample_rate != kSampleRate) {
-        throw std::invalid_argument("audio must be 16 kHz mono");
-      } else if (audio_format == kWavFormatPcm && bits_per_sample == 16) {
+      if (!have_format || channel_count != 1 || sample_rate == 0 ||
+          sample_rate > 192000 || body_size != chunk_size) {
+        throw std::invalid_argument(
+            "audio must be a complete mono WAV with a valid sample rate");
+      } else if (audio_format == kWavFormatPcm && bits_per_sample == 16 &&
+                 body_size % 2 == 0) {
         std::vector<float> samples(body_size / 2);
         for (size_t i = 0; i < samples.size(); ++i) {
           int16_t value = 0;
@@ -151,12 +154,18 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
                       sizeof(value));
           samples[i] = static_cast<float>(value) / kPcm16FullScale;
         }
-        return samples;
-      } else if (audio_format == kWavFormatFloat && bits_per_sample == 32) {
+        return {std::move(samples), static_cast<int>(sample_rate)};
+      } else if (audio_format == kWavFormatFloat && bits_per_sample == 32 &&
+                 body_size % 4 == 0) {
         std::vector<float> samples(body_size / 4);
         std::memcpy(samples.data(), wav_bytes.data() + body_offset,
                     samples.size() * 4);
-        return samples;
+        if (!std::all_of(samples.begin(), samples.end(),
+                         [](float sample) { return std::isfinite(sample); })) {
+          throw std::invalid_argument("audio samples must be finite");
+        } else {
+        }
+        return {std::move(samples), static_cast<int>(sample_rate)};
       } else {
         throw std::invalid_argument("audio must be PCM16 or float32 WAV");
       }
@@ -165,6 +174,52 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+std::vector<float> DecodeWav(std::string_view wav_bytes) {
+  DecodedAudio audio = DecodeAudioWav(wav_bytes);
+  if (audio.sample_rate != kSampleRate) {
+    throw std::invalid_argument("audio must be 16 kHz mono");
+  } else {
+    return std::move(audio.samples);
+  }
+}
+
+std::string EncodePcm16(const std::vector<float> &samples) {
+  std::string bytes(samples.size() * sizeof(int16_t), '\0');
+  for (size_t i = 0; i < samples.size(); ++i) {
+    if (!std::isfinite(samples[i])) {
+      throw std::invalid_argument("audio samples must be finite");
+    } else {
+    }
+    const int16_t value = static_cast<int16_t>(
+        std::clamp(samples[i] * kPcm16FullScale, -32768.0f, 32767.0f));
+    std::memcpy(bytes.data() + i * sizeof(value), &value, sizeof(value));
+  }
+  return bytes;
+}
+
+std::string EncodeWavPcm16(const std::vector<float> &samples, int sample_rate) {
+  std::string pcm = EncodePcm16(samples);
+  std::string header;
+  const auto append = [&](uint32_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) {
+      header.push_back(static_cast<char>((value >> (8 * i)) & 0xff));
+    }
+  };
+  header += "RIFF";
+  append(36 + pcm.size(), 4);
+  header += "WAVEfmt ";
+  append(16, 4);
+  append(1, 2);
+  append(1, 2);
+  append(sample_rate, 4);
+  append(sample_rate * sizeof(int16_t), 4);
+  append(sizeof(int16_t), 2);
+  append(16, 2);
+  header += "data";
+  append(pcm.size(), 4);
+  return header + pcm;
 }
 
 const std::vector<float> &MelFilterBank(int mel_bin_count) {
