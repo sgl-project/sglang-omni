@@ -51,11 +51,17 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     this.keepSamples = config.keepSamples || Math.round(sampleRate * 1.5);
     // Adaptive jitter target: each underrun raises it (up to maxJitterSamples),
     // a quiet stretch lowers it back. With maxJitterSamples == initialSamples
-    // (the default) it stays fixed, which suits models that answer in 1 s chunks.
+    // (the default) it stays fixed.
     this.target = this.initialSamples;
     this.maxJitterSamples = this.initialSamples;
     this.sinceUnderrun = 0;
-    // Backlog (s) beyond the target that starts a gentle / fast catch-up and a skip.
+    // note (0xtoward): a whole 1 s unit fills any sample target on arrival, so whole-unit models start a reply
+    // prebufferSamples after its first unit lands, and one unit of queued audio is not backlog.
+    this.prebufferSamples = 0;
+    this.unitSamples = 0;
+    this.waitStartFrame = null;
+    this.stalled = false;
+    // Backlog (s) beyond the target and one unit that starts a gentle / fast catch-up and a skip.
     this.catchUp = { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 };
     this.dropped = 0;
     this.rate = 1;
@@ -85,10 +91,11 @@ class PlaybackProcessor extends AudioWorkletProcessor {
       if (data.type === "push" && data.samples) {
         this.queue.push(data.samples);
         this.queuedSamples += data.samples.length;
+        if (!this.started && this.waitStartFrame === null) this.waitStartFrame = currentFrame;
         // A network stall lets audio pile up while the server keeps generating in
         // real time; without a cap the backlog never shrinks and playback drifts
         // behind the transcript. Skip ahead by dropping the oldest samples.
-        if (this.queuedSamples > this.maxSamples) this.trim(this.keepSamples);
+        if (this.queuedSamples > this.maxSamples + this.unitSamples) this.trim(this.keepSamples + this.unitSamples);
       } else if (data.type === "config") {
         // Sent once the server grants its unit size; tunes buffering per model.
         if (data.initialSamples) this.initialSamples = this.target = data.initialSamples;
@@ -96,15 +103,21 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         if (data.maxSamples) this.maxSamples = data.maxSamples;
         if (data.keepSamples) this.keepSamples = data.keepSamples;
         if (data.catchUp) this.catchUp = { ...this.catchUp, ...data.catchUp };
+        if (data.prebufferSamples) this.prebufferSamples = data.prebufferSamples;
+        if (data.unitSamples) this.unitSamples = data.unitSamples;
       } else if (data.type === "trim") {
         this.trim(data.keepSamples || 0);
       } else if (data.type === "open") {
         this.responseOpen = true;
+        // note (0xtoward): an underrun belongs to its own reply, so the next reply waits the prebuffer again.
+        this.stalled = false;
       } else if (data.type === "clear") {
         this.queue = [];
         this.headOffset = 0;
         this.queuedSamples = 0;
         this.started = false;
+        this.stalled = false;
+        this.waitStartFrame = null;
         this.fadeRemaining = this.fadeLength;
         this.stretch = null;
         this.rate = 1;
@@ -112,9 +125,12 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         this.outPos = 0;
       } else if (data.type === "flush") {
         this.responseOpen = false;
-        if (this.queuedSamples > 0) this.started = true;
+        if (this.queuedSamples > 0) this.start();
       } else if (data.type === "reset") {
         this.responseOpen = false;
+        // note (0xtoward): the next session sends its own whole-unit config when the server grants its unit size.
+        this.prebufferSamples = 0;
+        this.unitSamples = 0;
         this.target = this.initialSamples;
         this.sinceUnderrun = 0;
         this.underruns = 0;
@@ -122,6 +138,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         this.headOffset = 0;
         this.queuedSamples = 0;
         this.started = false;
+        this.stalled = false;
+        this.waitStartFrame = null;
         this.fadeRemaining = this.fadeLength;
         this.playedSamples = 0;
         this.stretch = null;
@@ -130,6 +148,18 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         this.outPos = 0;
       }
     };
+  }
+
+  start() {
+    this.started = true;
+    this.stalled = false;
+    this.waitStartFrame = null;
+  }
+
+  // note (0xtoward): after an underrun the late unit is a whole second of cushion, so it plays at once instead of waiting the prebuffer again.
+  readyToStart() {
+    if (this.prebufferSamples) return this.waitStartFrame !== null && (this.stalled || currentFrame - this.waitStartFrame >= this.prebufferSamples);
+    else return this.queuedSamples >= this.target;
   }
 
   trim(keepSamples) {
@@ -155,9 +185,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
   // Seconds-old speech is stale in a duplex talk, so a large backlog is skipped instead of stretched.
   catchUpRate() {
     const { slow, fast, skip, slowRate, fastRate } = this.catchUp;
-    const backlog = (this.queuedSamples - this.target) / sampleRate;
+    const backlog = (this.queuedSamples - this.target - this.unitSamples) / sampleRate;
     if (backlog > skip) {
-      this.trim(this.target + Math.round(sampleRate * fast));
+      this.trim(this.target + this.unitSamples + Math.round(sampleRate * fast));
       return fastRate;
     } else if (backlog > fast) return fastRate;
     else if (backlog > slow) return slowRate;
@@ -286,7 +316,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
   process(_inputs, outputs) {
     const output = outputs[0][0];
-    if (!this.started && this.queuedSamples >= this.target) this.started = true;
+    if (!this.started && this.readyToStart()) this.start();
     this.sinceUnderrun += output.length;
     if (this.target > this.initialSamples && this.sinceUnderrun > sampleRate * 10) {
       this.target = Math.max(this.initialSamples, this.target - Math.round(sampleRate * 0.05));
@@ -304,6 +334,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
           this.started = false;
           if (this.responseOpen) {
             this.underruns += 1;
+            this.stalled = true;
             this.target = Math.min(this.maxJitterSamples, this.target + Math.round(sampleRate * 0.1));
             this.sinceUnderrun = 0;
           }

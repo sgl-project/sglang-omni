@@ -316,10 +316,15 @@ const STREAMING_UNIT_MS = 500;
 const STREAMING_PLAYBACK = { jitterMs: 400, maxJitterMs: 900, maxMs: 3500, keepMs: 2200, catchUp: { slow: 0.5, fast: 1.0, skip: 2.0, slowRate: 1.06, fastRate: 1.12 } };
 
 function configurePlayback(unitMs) {
-  if (!playbackNode || !(unitMs > 0) || unitMs >= STREAMING_UNIT_MS) return;
+  if (!playbackNode || !(unitMs > 0)) return;
   const samples = (ms) => Math.round((playbackContext.sampleRate * ms) / 1000);
-  const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = STREAMING_PLAYBACK;
-  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp });
+  if (unitMs < STREAMING_UNIT_MS) {
+    const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = STREAMING_PLAYBACK;
+    playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp });
+  } else {
+    // note (0xtoward): a whole unit arrives at once; like the official demo's playback delay, hold a reply's first unit for JITTER_MS.
+    playbackNode.port.postMessage({ type: "config", prebufferSamples: samples(JITTER_MS), unitSamples: samples(unitMs) });
+  }
 }
 
 function pcm16ToFloat(bytes, sourceRate, targetRate) {
@@ -381,7 +386,8 @@ function sessionListeners() {
     unit: (unit) => {
       // The model stopped talking (a unit without audio): what is still queued was
       // generated before that decision, keep at most one unit of it.
-      if (unit && unit.decision === "listen" && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 1.0) });
+      // note (0xtoward): after response.done the queue is the end of the answer, so only an open response is trimmed.
+      if (unit && unit.decision === "listen" && session.responseOpen && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 1.0) });
     },
     drained: () => {},
     image: () => setButtons(),
