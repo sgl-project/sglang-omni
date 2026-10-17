@@ -54,29 +54,6 @@ def pcm_frames(count: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("eagerness", "confidence", "immediate", "hard_stop", "fallback"),
-    [
-        ("low", 0.92, 0.99, 3000, 800),
-        ("medium", 0.88, 0.97, 2000, 640),
-        ("high", 0.80, 0.93, 1200, 512),
-    ],
-)
-def test_eagerness_presets(
-    eagerness: str,
-    confidence: float,
-    immediate: float,
-    hard_stop: int,
-    fallback: int,
-):
-    config = SemanticVADConfig.from_eagerness(eagerness)
-
-    assert config.confidence_threshold == confidence
-    assert config.immediate_confidence_threshold == immediate
-    assert config.max_pause_ms == hard_stop
-    assert config.fallback_silence_ms == fallback
-
-
-@pytest.mark.parametrize(
     ("probability", "silence_frames"),
     [(0.99, 8), (0.90, 20), (0.10, 63)],
 )

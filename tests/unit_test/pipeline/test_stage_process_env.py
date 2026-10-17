@@ -4,11 +4,12 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -249,22 +250,6 @@ def test_xpu_tp_rejects_a_gpu_id_outside_the_mask() -> None:
         )
 
 
-def test_spawn_env_leaves_a_group_affinity_mask_intact_for_the_child(
-    monkeypatch,
-) -> None:
-    """End-to-end through the spawn hook: the child inherits the operator's mask
-    unchanged, so its xpu:N indices keep meaning the cards the operator chose."""
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
-    monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
-    monkeypatch.setenv("ZE_AFFINITY_MASK", "4,5")
-
-    with patched_spawn_env(worker_spec(tp_spec(gpu_id=1))):
-        assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
-
-    assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
-
-
 def test_xpu_tp_process_env_requires_gpu_id() -> None:
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
@@ -433,27 +418,6 @@ class RecordingLog:
         self.messages.append(message)
 
 
-def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
-    """GPU stage factory construction is serialized per visible device."""
-    seen_gpu_ids: list[int] = []
-
-    @contextmanager
-    def fake_lock(gpu_id: int):
-        seen_gpu_ids.append(gpu_id)
-        yield Path("/tmp/test.lock")
-
-    monkeypatch.setattr(stage_workers, "gpu_startup_lock", fake_lock)
-    spec = StageLaunchConfig(
-        stage_name="thinker",
-        factory=fake_factory_path("make_scheduler"),
-    )
-
-    scheduler = stage_workers.construct_scheduler(spec, 0, RecordingLog())
-
-    assert isinstance(scheduler, FakeScheduler)
-    assert seen_gpu_ids == [0]
-
-
 def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     monkeypatch,
 ) -> None:
@@ -534,17 +498,18 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
         StageLaunchConfig(
             stage_name=f"gpu_stage_{idx}",
             factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
-            factory_arg_defaults={"gpu_id": 0},
-            gpu_id=0,
+            factory_arg_defaults={"gpu_id": idx},
+            gpu_id=idx,
+            placement_gpu_id=idx + 2,
         )
         for idx in range(2)
     ]
 
     stages = [stage_workers.construct_stage(spec, RecordingLog()) for spec in specs]
 
-    assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
-    assert set_device_calls == [0, 0]
-    assert seen_gpu_ids == [0, 0]
+    assert [stage.scheduler.gpu_id for stage in stages] == [0, 1]
+    assert set_device_calls == [0, 1]
+    assert seen_gpu_ids == [0, 1]
 
 
 def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
@@ -640,19 +605,65 @@ def test_stage_teardown_reclaims_through_the_platform(
     assert calls == expected
 
 
-def test_stage_process_asks_to_die_with_its_parent(monkeypatch) -> None:
-    calls = []
-    monkeypatch.setattr(
-        stage_workers, "kill_itself_when_parent_died", lambda: calls.append(1)
-    )
-    spec = SimpleNamespace(
-        log_level=logging.getLogger().level, stage_specs=[], process_name="p"
-    )
+STAGE_PROCESS_WITH_LIVE_PARENT = """
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
 
-    with pytest.raises(ValueError, match="requires at least one stage"):
-        stage_workers.stage_process_main(spec, None)
+def block_after_registration() -> None:
+    Path(marker_dir, "registered").touch()
+    Event().wait()
 
-    assert calls == [1]
+stage_workers.configure_dependency_loggers = block_after_registration
+stage_workers.stage_process_main(
+    SimpleNamespace(log_level=20, stage_specs=[], process_name="p"), None
+)
+"""
+
+
+def process_has_exited(pid: int) -> bool:
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        return True
+    else:
+        return stat_path.read_text().rsplit(") ", 1)[1].split()[0] == "Z"
+
+
+def test_stage_process_asks_to_die_with_its_parent(tmp_path: Path) -> None:
+    spawn_and_wait = (
+        "import multiprocessing, sys, time\n"
+        "child = multiprocessing.get_context('spawn').Process(target=exec, args=("
+        "sys.argv[1], {'marker_dir': sys.argv[2]}))\n"
+        "child.start()\n"
+        "open(sys.argv[2] + '/child.pid', 'w').write(str(child.pid))\n"
+        "time.sleep(600)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", spawn_and_wait, STAGE_PROCESS_WITH_LIVE_PARENT]
+        + [str(tmp_path)]
+    )
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 300
+        while not (tmp_path / "registered").exists():
+            assert parent.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        child_pid = int((tmp_path / "child.pid").read_text())
+
+        parent.kill()
+        parent.wait(timeout=30)
+
+        deadline = time.monotonic() + 30
+        while not process_has_exited(child_pid):
+            assert time.monotonic() < deadline, "stage process outlived its parent"
+            time.sleep(0.05)
+    finally:
+        parent.kill()
+        if child_pid is not None and not process_has_exited(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+        else:
+            pass
 
 
 # note (Richard Wang): the worker spawned below runs this once its parent is

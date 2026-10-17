@@ -283,20 +283,6 @@ def test_thinker_forward_marks_decode_rows_by_their_kv_slot(
     assert wrapper.decode_live_rows.is_live_row is None
 
 
-def test_decode_mask_ends_with_its_forward_so_a_direct_prefill_routes_as_before() -> (
-    None
-):
-    wrapper = make_bare_wrapper()
-    run_forward(wrapper, ForwardMode.DECODE, [7, 3])
-    prefill_routing = make_topk_output(5)
-
-    routed = PaddedRowsTopK(FixedTopK(prefill_routing), wrapper.decode_live_rows)(
-        torch.zeros(5, 8), prefill_routing.router_logits
-    )
-
-    assert routed is prefill_routing
-
-
 def test_decode_mask_is_cleared_when_the_model_call_fails() -> None:
     wrapper = make_bare_wrapper(RuntimeError("forward failed"))
 

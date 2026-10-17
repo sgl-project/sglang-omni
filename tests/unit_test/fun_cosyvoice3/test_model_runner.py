@@ -7,15 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from flashinfer.sampling import get_sampling_module
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.utils import DynamicGradMode
 from torch._dynamo.utils import counters
 
 import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
-from sglang_omni.models.fun_cosyvoice3.model_runner import (
-    FunCosyVoice3MlxSchedulerModelRunner,
-    FunCosyVoice3ModelRunner,
-)
+from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
 )
@@ -85,69 +84,27 @@ def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
 
 def test_cosyvoice3_runner_samples_before_prefill_and_decode_collection() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
+    sampled = torch.tensor([13])
+
+    def forward_without_tokens(*args) -> SimpleNamespace:
+        return SimpleNamespace(next_token_ids=None, logits_output=object())
+
+    runner.custom_prefill_forward = forward_without_tokens
+    runner.tp_worker = SimpleNamespace(forward_batch_generation=forward_without_tokens)
+    runner.sample_next_token_ids = lambda *args: sampled
+    schedule_batch = SimpleNamespace(is_prefill_only=False)
+
+    prefill = runner.prepare_and_forward(
+        SimpleNamespace(), schedule_batch, [], is_prefill=True
+    )
+    decode = runner.prepare_and_forward(
+        SimpleNamespace(), schedule_batch, [], is_prefill=False
+    )
 
     assert runner.sample_before_post_prefill(None, None, []) is True
     assert runner.sample_before_post_decode(None, None, []) is True
-
-
-def test_cosyvoice3_mlx_runner_collects_exact_scheduler_rows() -> None:
-    runner = object.__new__(FunCosyVoice3MlxSchedulerModelRunner)
-    runner.resolve_skip_rids = set()
-    requests = [
-        SimpleNamespace(request_id="first", data=SimpleNamespace(output_codes=[])),
-        SimpleNamespace(request_id="second", data=SimpleNamespace(output_codes=[])),
-    ]
-    scheduler_output = SimpleNamespace(requests=requests)
-
-    runner.post_process_outputs(
-        SimpleNamespace(next_token_ids=torch.tensor([13, VOCAB_SIZE + 3])),
-        scheduler_output,
-        {},
-    )
-
-    assert [code.item() for code in requests[0].data.output_codes] == [13]
-    assert requests[1].data.output_codes == []
-
-    runner.resolve_skip_rids = {"first"}
-    runner.post_process_outputs(
-        SimpleNamespace(next_token_ids=torch.tensor([14, 15])),
-        scheduler_output,
-        {},
-    )
-    assert [code.item() for code in requests[0].data.output_codes] == [13]
-    assert [code.item() for code in requests[1].data.output_codes] == [15]
-
-    with pytest.raises(RuntimeError, match="row count"):
-        runner.post_process_outputs(
-            SimpleNamespace(next_token_ids=torch.tensor([13])),
-            scheduler_output,
-            {},
-        )
-
-
-def test_cosyvoice3_mlx_lookahead_accepts_owned_history_constraints() -> None:
-    runner = object.__new__(FunCosyVoice3MlxSchedulerModelRunner)
-    runner.last_mlx_pending = None
-    req = SimpleNamespace(
-        rid="req",
-        sampling_params=SimpleNamespace(
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
-            repetition_penalty=1.1,
-            min_new_tokens=4,
-            sampling_seed=7,
-        ),
-        custom_logit_processor=None,
-    )
-
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[req], has_grammar=False))
-    assert not runner.lookahead_eligible(SimpleNamespace(reqs=[req], has_grammar=True))
-
-    runner.last_mlx_pending = SimpleNamespace(
-        launch=SimpleNamespace(mode="decode"),
-        reqs=[SimpleNamespace(rid="another")],
-    )
-    assert not runner.lookahead_eligible(SimpleNamespace(reqs=[req], has_grammar=False))
+    assert prefill.next_token_ids is sampled
+    assert decode.next_token_ids is sampled
 
 
 def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
@@ -485,7 +442,8 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
     )
     torch.compiler.reset()
 
-    model.precompile_kernels_after_loading()
+    with get_context().override_server_args(sampling_backend="flashinfer"):
+        model.precompile_kernels_after_loading()
     compiled_graphs = counters["stats"]["unique_graphs"]
 
     with DynamicGradMode():
@@ -507,6 +465,27 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
                 logits, torch.full(logits.shape, 1.21, device="cuda")
             )
     assert counters["stats"]["unique_graphs"] == compiled_graphs
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("sampling_backend", ["pytorch", "flashinfer"])
+def test_cosyvoice3_load_hook_loads_flashinfer_sampling_only_for_its_backend(
+    sampling_backend: str,
+) -> None:
+    model = object.__new__(FunCosyVoice3SGLangModel)
+    torch.nn.Module.__init__(model)
+    model.llm_decoder = torch.nn.Linear(64, TOTAL_VOCAB_SIZE, bias=False).to(
+        "cuda", torch.bfloat16
+    )
+    get_sampling_module.cache_clear()
+
+    with get_context().override_server_args(sampling_backend=sampling_backend):
+        model.precompile_kernels_after_loading()
+
+    assert get_sampling_module.cache_info().currsize == int(
+        sampling_backend == "flashinfer"
+    )
 
 
 def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None:

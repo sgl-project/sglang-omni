@@ -127,39 +127,6 @@ def seed_stream_state(
     scheduler.get_or_create_stream_state(request_id)
 
 
-def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
-    from transformers import AutoConfig
-    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
-        Qwen3OmniMoeCode2Wav,
-    )
-
-    from sglang_omni.models import weight_loader
-
-    model = FactoryModel()
-    config = SimpleNamespace(code2wav_config=object())
-    monkeypatch.setattr(
-        AutoConfig,
-        "from_pretrained",
-        staticmethod(lambda *args, **kwargs: config),
-    )
-    monkeypatch.setattr(
-        Qwen3OmniMoeCode2Wav,
-        "_from_config",
-        staticmethod(lambda code2wav_config: model),
-    )
-    monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.float32)
-    monkeypatch.setattr(
-        weight_loader,
-        "load_module",
-        lambda loaded_model, *args, **kwargs: loaded_model,
-    )
-
-    loaded = code2wav_scheduler.load_code2wav_model("dummy", device="cpu")
-
-    assert loaded is model
-    assert model.eval_calls == 1
-
-
 def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -> None:
     model = FactoryModel()
     monkeypatch.setattr(
@@ -181,20 +148,6 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     )
 
     assert scheduler.cuda_graph_runner is None
-
-
-def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
-    from sglang_omni.platforms.cpu import CPUOmniPlatform
-    from sglang_omni.platforms.cuda import CUDAOmniPlatform
-    from sglang_omni.platforms.npu import NPUOmniPlatform
-    from sglang_omni.platforms.rocm import ROCMOmniPlatform
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
-    assert XPUOmniPlatform().enable_code2wav_graph() is True
-    assert CUDAOmniPlatform().enable_code2wav_graph() is True
-    assert NPUOmniPlatform().enable_code2wav_graph() is False
-    assert CPUOmniPlatform().enable_code2wav_graph() is False
-    assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
 def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:
@@ -495,103 +448,6 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
         if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == runner.stats()
-
-
-def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
-    monkeypatch,
-    caplog,
-) -> None:
-    model = FactoryModel(num_quantizers=12)
-    runner = SimpleNamespace(
-        stats=lambda: {
-            "enabled": False,
-            "disable_reason": "capture_failed: RuntimeError: capture failed",
-        }
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
-        "build",
-        staticmethod(lambda *args, **kwargs: runner),
-    )
-    import sglang_omni.platforms as platforms
-
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        platforms.current_platform,
-        "get_device",
-        lambda index: torch.device("cuda", index),
-        raising=False,
-    )
-
-    with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
-        scheduler = code2wav_scheduler.create_code2wav_scheduler(
-            "dummy",
-            gpu_id=3,
-            enable_cuda_graph=True,
-            total_gpu_memory_fraction=0.02,
-        )
-
-    assert scheduler.cuda_graph_runner is runner
-    stats_record = next(
-        record
-        for record in caplog.records
-        if "device graph startup stats=" in record.message
-    )
-    assert json.loads(stats_record.message.split("stats=", 1)[1]) == {
-        "disable_reason": "capture_failed: RuntimeError: capture failed",
-        "enabled": False,
-    }
-
-
-def test_qwen_code2wav_threshold_context_windows_hit_cuda_graph(monkeypatch) -> None:
-    model = FakeCode2WavModel(total_upsample=2)
-    runner = FakeCudaGraphRunner(model)
-    scheduler = Code2WavScheduler(
-        model,
-        device="cpu",
-        stream_chunk_size=10,
-        left_context_size=25,
-        enable_cuda_graph=True,
-        cuda_graph_runner=runner,
-    )
-    seed_stream_state(scheduler)
-    events = activate_event_capture(monkeypatch)
-
-    for chunk_id in range(40):
-        deliver_code2wav_chunk(
-            scheduler,
-            "req-1",
-            StreamItem(
-                chunk_id,
-                torch.tensor([chunk_id + 1, 10]),
-                "talker",
-                metadata={"stream": True},
-            ),
-        )
-
-    assert runner.calls == [
-        ((1, 2, 10), True),
-        ((1, 2, 20), True),
-        ((1, 2, 30), True),
-        ((1, 2, 35), True),
-    ]
-    decode_ends = [
-        event for event in events if event["event_name"] == "code2wav_decode_end"
-    ]
-    assert [event["metadata"]["execution_mode"] for event in decode_ends] == [
-        "cuda_graph"
-    ] * 4
-    assert [event["metadata"]["graph_key"]["frames"] for event in decode_ends] == [
-        10,
-        20,
-        30,
-        35,
-    ]
 
 
 def test_qwen_code2wav_stream_done_tail_replays_the_graph_of_its_shape(

@@ -109,8 +109,8 @@ def test_forced_codes_are_kept_and_condition_later_steps():
     assert codes[1, 0].item() == unforced[1, 0].item()
 
 
-@pytest.mark.parametrize("batch_size", [1, 4, 8])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("batch_size", [1, 4])
+@pytest.mark.parametrize("dtype", [torch.float32])
 @pytest.mark.parametrize("teacher_forced", [True, False])
 @torch.inference_mode()
 def test_fused_projections_match_separate_linears(

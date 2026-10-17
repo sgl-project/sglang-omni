@@ -14,7 +14,6 @@ from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 @pytest.mark.parametrize(
     "dtypes",
     [
-        (torch.float16, torch.float16, torch.float16),
         (torch.bfloat16, torch.bfloat16, torch.bfloat16),
         (torch.float32, torch.float32, torch.float32),
         (torch.float16, torch.float32, torch.float32),

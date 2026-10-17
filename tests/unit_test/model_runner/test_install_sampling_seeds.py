@@ -30,10 +30,10 @@ def req(seed, request_id="req"):
     )
 
 
-def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False):
+def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False, device="cpu"):
     return SimpleNamespace(
         sampling_info=SimpleNamespace(
-            device="cpu",
+            device=device,
             sampling_seed=sampling_seed,
             need_top_p_sampling=top_p,
             need_top_k_sampling=top_k,
@@ -71,23 +71,9 @@ def test_does_not_clobber_subclass_installed_seed():
 def test_preinstalled_seed_requires_sampling_mode_contract():
     runner = object.__new__(ModelRunner)
     preset = torch.tensor([1, 2])
-    fb = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=preset))
-    with pytest.raises(AttributeError):
+    fb = make_fb(sampling_seed=preset, min_p=True)
+    with pytest.raises(ValueError, match="min_p"):
         runner.install_sampling_seeds(fb, [req(42), req(42)])
-
-
-def test_unseeded_row_in_seeded_batch_uses_rank_shared_fallback():
-    runner = object.__new__(ModelRunner)
-    requests = [req(42, "seeded"), req(None, "unseeded")]
-    fb = make_fb()
-    runner.install_sampling_seeds(fb, requests)
-    fallback = int(fb.sampling_info.sampling_seed[1])
-    assert requests[1].data.req.sampling_params.sampling_seed is None
-
-    fb_next = make_fb()
-    runner.install_sampling_seeds(fb_next, requests)
-    assert int(fb_next.sampling_info.sampling_seed[1]) == fallback
-    assert requests[1].data.req.sampling_params.sampling_seed is None
 
 
 def test_rejects_seeded_min_p_before_upstream_sampler():
@@ -102,6 +88,20 @@ def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
     with get_context().override_server_args(sampling_backend="flashinfer"):
         runner.install_sampling_seeds(fb, [req(42)])
     assert int(fb.sampling_info.sampling_seed[0]) == 42
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_installs_cuda_seeds_without_a_host_wait() -> None:
+    runner = object.__new__(ModelRunner)
+    fb = make_fb(device="cuda")
+    torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
+    runner.install_sampling_seeds(fb, [req(42, "seeded"), req(None, "unseeded")])
+    assert not torch.cuda.current_stream().query()
+    assert fb.sampling_info.sampling_seed.tolist() == [
+        42,
+        derive_sampling_seed("sglang-omni-unseeded-row", "unseeded"),
+    ]
 
 
 def sampling_info_for(

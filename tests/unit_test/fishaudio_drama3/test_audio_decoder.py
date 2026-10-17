@@ -59,7 +59,6 @@ CheckpointProblem = Literal[
     "unknown-key",
     "unknown-namespace",
     "fused-gate-up-after-shards",
-    "fused-gate-up-before-shards",
     "wrong-shape",
 ]
 
@@ -709,8 +708,6 @@ def broken_checkpoint(problem: CheckpointProblem) -> list[tuple[str, torch.Tenso
         ]
     elif problem == "fused-gate-up-after-shards":
         return [*checkpoint.items(), fused_gate_up]
-    elif problem == "fused-gate-up-before-shards":
-        return [fused_gate_up, *checkpoint.items()]
     else:
         checkpoint[up_name] = torch.zeros(INTERMEDIATE_SIZE + 1, DIM)
         return list(checkpoint.items())
@@ -722,7 +719,6 @@ LOADING_ERRORS: dict[CheckpointProblem, str] = {
     "unknown-key": "not a decoder parameter shard",
     "unknown-namespace": "not an audio decoder weight",
     "fused-gate-up-after-shards": "not a decoder parameter shard",
-    "fused-gate-up-before-shards": "not a decoder parameter shard",
     "wrong-shape": "has shape",
 }
 

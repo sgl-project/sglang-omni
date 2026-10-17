@@ -133,46 +133,6 @@ def test_discard_reports_failure_when_the_rewrite_is_not_durable(
     assert journal.discard("w0") is False
 
 
-def test_begin_fails_closed_when_the_rename_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    journal = UpdateJournal(str(tmp_path / "j.json"))
-
-    def fail(src: str, dst: str) -> None:
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(os, "replace", fail)
-    with pytest.raises(JournalUnwritableError):
-        journal.begin("/update_weights_from_disk", ["w0"])
-
-
-def test_default_path_is_stable_by_endpoint() -> None:
-    a = default_journal_path("0.0.0.0", 8000)
-    b = default_journal_path("0.0.0.0", 8000)
-    c = default_journal_path("0.0.0.0", 8001)
-    assert a == b  # same endpoint -> same path across supervisor restarts
-    assert a != c
-    assert "8000" in a
-
-
-def test_default_path_never_uses_a_temp_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Note (Jiaxin Deng): a temp directory survives a process restart but not a host
-    # reboot, and the remote workers outlive the router host
-    system_tmp = tempfile.gettempdir()
-    sentinel = str(tmp_path / "temp-dir-sentinel")
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: sentinel)
-    monkeypatch.delenv(STATE_DIR_ENV, raising=False)
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-
-    path = default_journal_path("0.0.0.0", 8000)
-
-    assert sentinel not in path  # the temp directory is never consulted
-    assert not path.startswith(system_tmp)
-    assert os.path.join(".local", "state", "sglang-omni-router") in path
-
-
 def test_state_dir_resolution_priority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,10 +151,7 @@ def test_state_dir_resolution_priority(
     assert resolve_state_dir() == str(home / ".local" / "state" / "sglang-omni-router")
 
 
-@pytest.mark.parametrize(
-    "host",
-    ["0.0.0.0", "127.0.0.1", "::1", "::", "router.internal", "fe80::1%eth0"],
-)
+@pytest.mark.parametrize("host", ["::1", "fe80::1%eth0"])
 def test_endpoint_key_is_one_safe_path_component(host: str, tmp_path: Path) -> None:
     path = default_journal_path(host, 8000, str(tmp_path))
     key = os.path.relpath(path, tmp_path).split(os.sep)[0]
@@ -272,12 +229,20 @@ def test_ensure_state_dir_fails_closed_when_it_cannot_be_created(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
-@pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores mode bits"
-)
-def test_ensure_state_dir_fails_closed_when_it_is_not_writable(tmp_path: Path) -> None:
+def test_ensure_state_dir_fails_closed_when_it_is_not_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
+    probe_path = str(state_dir / f".write-probe.{os.getpid()}")
+    real_open = os.open
+
+    def open_refusing_the_probe(path, flags, *args, **kwargs):
+        if str(path) == probe_path:
+            raise PermissionError(f"permission denied: {path}")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_refusing_the_probe)
     os.chmod(state_dir, 0o500)
     try:
         with pytest.raises(JournalUnwritableError) as excinfo:

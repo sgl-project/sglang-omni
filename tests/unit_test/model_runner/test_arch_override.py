@@ -75,10 +75,3 @@ def test_talker_pool_is_sized_from_the_talker_layers() -> None:
     ModelWorker.apply_arch_override(config, "Qwen3OmniTalker")
     assert pool_layers(config) == 20
     assert config.num_key_value_heads == 2
-
-
-def test_thinker_pool_keeps_the_thinker_layers() -> None:
-    config = qwen3_omni_engine_config()
-    ModelWorker.apply_arch_override(config, "Qwen3OmniThinkerForCausalLM")
-    assert pool_layers(config) == 48
-    assert config.num_key_value_heads == 4

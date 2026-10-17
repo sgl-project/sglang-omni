@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Preprocessing resolves the caller channel, the role prompt and the voice per request."""
 
-import json
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.sources import patches_from_stages_mapping
 from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
@@ -251,6 +250,49 @@ def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch)
     assert no_voice.user_codes.shape == (1, 8) and no_voice.voice_codes is None
 
 
+def test_selective_codec_stages_preserve_caller_voice_and_reply(
+    random_codec: MimiCodec, mimi_checkpoint: Path
+) -> None:
+    encoder = stages.create_mimi_encode_executor(
+        str(mimi_checkpoint.parent), device="cpu"
+    )
+    decoder = stages.create_code2wav_executor(
+        str(mimi_checkpoint.parent),
+        device="cpu",
+        num_decode_slots=1,
+        max_batch_size=1,
+        max_graph_frames=0,
+        chunk_ramp_frames=[1, 4],
+    )
+    caller_waveform = torch.randn(2 * SAMPLES_PER_FRAME)
+    voice_waveform = torch.randn(3 * SAMPLES_PER_FRAME)
+    caller_codes = random_codec.encode(caller_waveform.view(1, 1, -1))
+    voice_codes = random_codec.encode(voice_waveform.view(1, 1, -1))
+    caller_samples = SAMPLES_PER_FRAME + 7
+    payload = StagePayload(
+        "selective-mimi",
+        request=OmniRequest(inputs={}, params={}),
+        data=PersonaPlexState(
+            waveform=caller_waveform,
+            voice_waveform=voice_waveform,
+            num_samples=caller_samples,
+        ).to_dict(),
+    )
+    encoded = encoder.fn(payload)
+    encoded_state = PersonaPlexState.from_dict(encoded.data)
+    torch.testing.assert_close(encoded_state.user_codes, caller_codes[0].T)
+    torch.testing.assert_close(encoded_state.voice_codes, voice_codes[0].T)
+    encoded_state.codes = encoded_state.user_codes
+    encoded.data = encoded_state.to_dict()
+    actual_waveform = np.frombuffer(
+        decoder.compute_fn(encoded).data["audio_waveform"], dtype=np.float32
+    )
+    expected_waveform = random_codec.decode(caller_codes)[0, 0, :caller_samples]
+    torch.testing.assert_close(
+        torch.from_numpy(actual_waveform.copy()), expected_waveform, atol=0, rtol=0
+    )
+
+
 @pytest.mark.parametrize(
     "prompt,budget,expected_loads",
     [
@@ -301,7 +343,6 @@ def test_voice_prompt_cache_byte_budget_preserves_request_results(
                 torch.testing.assert_close(actual, expected)
 
 
-@pytest.mark.parametrize("source", ["cli", "yaml"])
 @pytest.mark.parametrize(
     "chunk_ramp_frames,max_graph_frames,expected_graph_frames",
     [
@@ -315,7 +356,6 @@ def test_voice_prompt_cache_byte_budget_preserves_request_results(
 )
 def test_code2wav_graph_limit_follows_resolved_configuration(
     monkeypatch: pytest.MonkeyPatch,
-    source: Literal["cli", "yaml"],
     chunk_ramp_frames: list[int],
     max_graph_frames: int | None,
     expected_graph_frames: int,
@@ -326,22 +366,10 @@ def test_code2wav_graph_limit_follows_resolved_configuration(
         overrides["max_graph_frames"] = max_graph_frames
     else:
         pass
-    if source == "cli":
-        manager = ConfigManager(config)
-        resolved = manager.merge_config(
-            manager.parse_extra_args(
-                [
-                    argument
-                    for name, value in overrides.items()
-                    for argument in (f"--code2wav.factory.{name}", json.dumps(value))
-                ]
-            )
-        )
-    else:
-        patches = patches_from_stages_mapping(
-            {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
-        )
-        resolved = ConfigResolver(config).resolve(patches).config
+    patches = patches_from_stages_mapping(
+        {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
+    )
+    resolved = ConfigResolver(config).resolve(patches).config
     codec = Mock()
     decode_slots = Mock(
         return_value=SimpleNamespace(

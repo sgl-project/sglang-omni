@@ -439,9 +439,11 @@ async def run_launcher_with_fake_runner(
     monkeypatch: pytest.MonkeyPatch,
     replica_counts: tuple[int, ...] = (1,),
     host: str = "0.0.0.0",
+    created_runners: list[object] | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
+    runners = [] if created_runners is None else created_runners
 
     from sglang_omni.serve import launcher
 
@@ -451,10 +453,12 @@ async def run_launcher_with_fake_runner(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             del pipeline_config
             nonlocal runner_ref
+            runners.append(self)
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
             }
+            self.stage_http_routes = []
             self.started = False
             self.stopped = False
             # launcher._run_server reads .prep.placement_plan / .process_plan
@@ -997,15 +1001,20 @@ async def test_launcher_stops_runner_when_server_raises(
 ) -> None:
     config = make_config(tmp_path)
     server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    runners: list[object] = []
 
     with pytest.raises(RuntimeError, match="server failed"):
         await run_launcher_with_fake_runner(
             config=config,
             serve_mock=server_serve,
             monkeypatch=monkeypatch,
+            created_runners=runners,
         )
 
     server_serve.assert_awaited_once()
+    assert len(runners) == 1
+    assert runners[0].started
+    assert runners[0].stopped
 
 
 @pytest.mark.asyncio
@@ -1117,6 +1126,7 @@ def test_launcher_cleans_up_before_passing_on_sigterm(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {}
+            self.stage_http_routes = []
             self.prep = SimpleNamespace(
                 placement_plan=SimpleNamespace(gpus={}),
                 process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),

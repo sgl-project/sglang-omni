@@ -23,6 +23,7 @@ import torch
 from sglang.srt.managers.scheduler import Scheduler
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.types import (
@@ -129,7 +130,16 @@ def test_launch_event_comes_from_the_runners_device_module():
     accel = torch.device(current_platform.device_type)
     runner = StubRunner()
     runner.device = accel
-    runner.execution_bridge = FakeExecutionBridge(accel)
+    bridge = SGLangExecutionBridge(
+        device=accel,
+        worker=types.SimpleNamespace(model_runner=runner),
+        spec_algorithm=types.SimpleNamespace(is_none=lambda: True),
+        future_map=None,
+    )
+    fake_bridge = FakeExecutionBridge(accel)
+    bridge.forward_context = fake_bridge.forward_context
+    bridge.publish_next_tokens = fake_bridge.publish_next_tokens
+    runner.execution_bridge = bridge
 
     seen = []
     real_event = torch.get_device_module(accel).Event
@@ -668,16 +678,12 @@ def test_batch_is_decode():
     assert (
         OmniScheduler.batch_is_decode(types.SimpleNamespace(forward_mode=None)) is False
     )
-
-
-def test_async_pending_batch_uses_initialized_state():
-    s = OmniScheduler.__new__(OmniScheduler)
-    s.async_pending = None
-    assert s.async_pending_batch() is None
-    s.async_pending = PendingDecode(
-        batch="batchX", scheduler_output="sched_out", device_step="pending_step"
+    idle = types.SimpleNamespace(
+        forward_mode=types.SimpleNamespace(
+            is_decode=lambda: False, is_extend=lambda: False
+        )
     )
-    assert s.async_pending_batch() == "batchX"
+    assert OmniScheduler.batch_is_decode(idle) is True
 
 
 # ---------------------------------------------------------------------------

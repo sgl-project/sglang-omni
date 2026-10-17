@@ -363,7 +363,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`.
 
-#### Python
+**Python**
 
 ```python
 import requests
@@ -391,7 +391,7 @@ response still contains decodable audio, but the utterance may be incomplete.
 Models that do not report how generation ended send `X-Finish-Reason: unknown`.
 Batch responses expose the same value as each item's `finish_reason`.
 
-#### Leading silence in x-vector mode
+**Leading silence in x-vector mode**
 
 Without a reference transcript the talker starts cold, and on most requests it
 opens with several frames of room-tone silence before speaking, which the
@@ -492,7 +492,7 @@ explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
-#### Codec decoding defaults
+**Codec decoding defaults**
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
@@ -527,7 +527,7 @@ The follow-up workers also commit each in-flight cohort as soon as its decode
 has finished, checked at the top of the worker loop and before each launch,
 instead of at the next drain.
 
-#### First-audio chunk ramp
+**First-audio chunk ramp**
 
 For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with `stream_chunk_ramp` on the vocoder stage: entry

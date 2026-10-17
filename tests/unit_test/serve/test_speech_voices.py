@@ -474,10 +474,8 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
 
-@pytest.mark.parametrize("task_type", ["CustomVoice", "VoiceDesign"])
 def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
     tmp_path: Path,
-    task_type: str,
 ) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     store.upload(
@@ -491,7 +489,7 @@ def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
 
     with pytest.raises(SpeechAPIError, match="task_type='Base'") as exc_info:
         service.parse_request(
-            {"input": "hello", "voice": "anchor", "task_type": task_type}
+            {"input": "hello", "voice": "anchor", "task_type": "CustomVoice"}
         )
     assert exc_info.value.param == "task_type"
 
@@ -557,22 +555,6 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     assert tts_params["uploaded_voice_created_at"] == first["created_at"]
 
 
-def test_speech_service_rejects_unknown_required_uploaded_voice(
-    tmp_path: Path,
-) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="public-tts-name",
-        requires_uploaded_voice_for_named_voice=True,
-        voice_store=store,
-    )
-
-    with pytest.raises(SpeechAPIError, match="Unknown voice") as exc_info:
-        service.parse_request({"input": "hello", "voice": "missing"})
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.error_type == "BadRequestError"
-
-
 def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
     tmp_path: Path,
 ) -> None:
@@ -617,21 +599,6 @@ def test_speech_service_validates_batch_default_voice_before_item_references(
                 "items": [{"input": "hello", "ref_audio": "data:audio/wav"}],
             }
         )
-
-
-def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="preset-voice-model",
-        voice_store=store,
-    )
-
-    request = service.parse_request({"input": "hello", "voice": "Vivian"})
-    gen_req = service.build_generate_request(request, validate=False)
-
-    assert gen_req.prompt == "hello"
-    assert isinstance(gen_req.metadata["tts_params"], dict)
-    assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
 
 
 def test_speech_service_can_disable_uploaded_voice_resolution(

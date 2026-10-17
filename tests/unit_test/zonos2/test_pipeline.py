@@ -25,6 +25,7 @@ from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
 )
+from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
@@ -213,6 +214,7 @@ def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
 
 def test_zonos2_engine_builder_declares_model_arch_override() -> None:
     assert Zonos2EngineBuilder.model_arch_override == "Zonos2SGLangModel"
+    assert Zonos2EngineBuilder.model_arch_override == Zonos2SGLangModel.__name__
 
 
 def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:

@@ -43,7 +43,6 @@ from sglang_omni.scheduling.types import StreamOutputBuilder
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.qwen3_tts.prompt_frontend import Qwen3TTSPromptFrontend
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
@@ -79,6 +78,9 @@ def is_truthy(value: object) -> bool:
 # single 1 bucket takes the fallback rate to zero, so the default is the shared
 # ladder plus that bucket rather than a hand-picked list.
 QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
+QWEN3_TTS_BASE_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(
+    build_default_prefill_cuda_graph_bs(1024)
+)
 
 # note (luojiaxuan): on 1.7B and 0.6B Base the share of generated leading silence these probes cover
 # saturates at a -50 dBFS ceiling, and no speech frame falls in the set up to -40 dBFS.
@@ -220,21 +222,34 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
             "cuda_graph_bs_prefill": list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS),
         }
-        if (
-            self.checkpoint_dir
-            and normalize_qwen3_tts_model_type(
-                load_qwen3_tts_checkpoint_config(self.checkpoint_dir).get(
-                    "tts_model_type"
-                )
+        if self.checkpoint_dir:
+            checkpoint_config = load_qwen3_tts_checkpoint_config(self.checkpoint_dir)
+            configured_model_type = checkpoint_config.get("tts_model_type")
+            model_size = checkpoint_config.get("tts_model_size")
+            model_type = (
+                normalize_qwen3_tts_model_type(configured_model_type)
+                if isinstance(configured_model_type, str) and configured_model_type
+                else None
             )
-            == "custom_voice"
-        ):
-            # note (luojiaxuan): a CustomVoice prompt is a few dozen tokens, so
-            # the breakable graph's per-layer segments are launch-bound, and the
-            # full graph replays the same prefill in a fraction of the time.
-            # Base prefills also carry reference audio, so they keep the
-            # breakable graph until the full one is measured on them.
+        else:
+            model_type = None
+            model_size = None
+        if model_type in {"base", "custom_voice"}:
+            # note (Zhuofeng-Li): full prefill avoids host launches between layers.
             defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.FULL
+        else:
+            pass
+        if model_type == "base":
+            defaults["cuda_graph_bs_prefill"] = (
+                [
+                    1,
+                    *build_default_prefill_cuda_graph_bs(
+                        defaults["max_prefill_tokens"]
+                    ),
+                ]
+                if model_size == "0b6"
+                else list(QWEN3_TTS_BASE_PREFILL_CUDA_GRAPH_BS)
+            )
         else:
             pass
         return defaults
@@ -242,7 +257,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
     def before_memory_pool(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -359,7 +374,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> Qwen3TTSModelRunner:
         model_runner_mod = importlib.import_module(

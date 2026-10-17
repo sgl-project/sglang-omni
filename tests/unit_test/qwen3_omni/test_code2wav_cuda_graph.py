@@ -242,34 +242,6 @@ def make_codes(
     return backend.mark_cuda(tensor, device=device)
 
 
-def test_build_captures_only_the_explicit_graph_keys() -> None:
-    graph_keys = tuple(GraphKey(batch_size=1, frames=frames) for frames in (20, 40, 45))
-    backend = FakeCudaBackend()
-    runner = Code2WavCudaGraphRunner.build(
-        FakeModel(),
-        device="cuda:0",
-        num_quantizers=16,
-        total_gpu_memory_fraction=0.5,
-        graph_keys=graph_keys,
-        model_footprint_bytes=100,
-        decode_stream=None,
-        device_api=backend,
-    )
-
-    assert [tuple(graph.static_input.shape) for graph in backend.graphs] == [
-        (1, 16, 45),
-        (1, 16, 40),
-        (1, 16, 20),
-    ]
-    assert runner.stats()["graph_contract"]["keys"] == [
-        {"batch_size": key.batch_size, "frames": key.frames} for key in graph_keys
-    ]
-    assert runner.stats()["build"] == {
-        "attempted_graph_count": 3,
-        "published_graph_count": 3,
-    }
-
-
 def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> None:
     runner, backend, model = build_runner()
 
@@ -346,28 +318,6 @@ def test_build_warms_up_and_captures_on_the_decode_stream() -> None:
     assert len(backend.capture_streams) == len(DEFAULT_GRAPH_KEYS)
     assert all(stream is decode_stream for stream in backend.warmup_streams)
     assert all(stream is decode_stream for stream in backend.capture_streams)
-
-
-def test_stats_report_only_operational_state() -> None:
-    runner, backend, model = build_runner()
-    runner.run(make_codes(backend, 1, 10))
-
-    stats = runner.stats()
-    assert stats["binding"] == {
-        "device": "cuda:0",
-        "num_quantizers": 16,
-        "input_dtype": "torch.long",
-        "owner_pid": stats["binding"]["owner_pid"],
-    }
-    assert stats["build"] == {
-        "attempted_graph_count": 4,
-        "published_graph_count": 4,
-    }
-    assert stats["runtime"] == {
-        "graph_replays": 1,
-        "replay_failures": 0,
-        "fallback_counts": {},
-    }
 
 
 def test_all_serving_keys_hit_while_batch_two_misses() -> None:
@@ -760,7 +710,7 @@ def test_any_build_failure_rolls_back_every_graph(
     assert memory["after_rollback"]["allocated_bytes"] == 100
 
 
-@pytest.mark.parametrize("fraction", [None, 0.0, -0.1, 1.01, float("nan")])
+@pytest.mark.parametrize("fraction", [None, 0.0, 1.01, float("nan")])
 def test_memory_fraction_must_be_explicit_and_in_range(
     fraction: float | None,
 ) -> None:

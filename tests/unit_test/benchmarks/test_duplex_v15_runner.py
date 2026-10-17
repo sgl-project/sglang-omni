@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.5 discovery, audio normalization and the session runner."""
 
 from __future__ import annotations
 
@@ -22,59 +23,14 @@ from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
-from tests.unit_test.benchmarks.test_duplex_client import FIXTURE_PCM, DuplexPeer
-
-SERVER_REVISION = "e1b9c9c674b1187918593257906ee6e8cc6a13da"
-SERVER = {
-    "revision": SERVER_REVISION,
-    "revision_source": "operator_supplied",
-    "model": "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B",
-}
-FIXTURE_SAMPLES = np.frombuffer(FIXTURE_PCM, dtype="<i2")
-EXTRA_TEXT = {
-    "user_interruption": {"current_turn_text": "wait, actually"},
-    "user_backchannel": {"backchannel_text": "yeah"},
-    "talking_to_other": {"current_turn_text": "one second"},
-    "background_speech": {"background_text": "it is raining"},
-}
-
-
-def write_sample(
-    root: Path,
-    subset: str,
-    name: str,
-    *,
-    metadata: dict[str, JsonValue] | None = None,
-) -> Path:
-    sample_dir = root / subset / name
-    sample_dir.mkdir(parents=True)
-    for filename in ("input.wav", "clean_input.wav"):
-        soundfile.write(
-            str(sample_dir / filename), FIXTURE_SAMPLES, 16000, subtype="PCM_16"
-        )
-    metadata = {
-        "context_text": "hello",
-        **EXTRA_TEXT[subset],
-        "timestamps": [0.1, 0.3],
-        **(metadata or {}),
-    }
-    (sample_dir / "metadata.json").write_text(json.dumps(metadata))
-    for filename in ("input.json", "clean_input.json"):
-        (sample_dir / filename).write_text(
-            json.dumps(
-                {
-                    "text": "hello",
-                    "chunks": [{"text": "hello", "timestamp": [0.0, 0.1]}],
-                }
-            )
-        )
-    return sample_dir
-
-
-def write_dataset(root: Path, names: tuple[str, ...] = ("1",)) -> None:
-    for subset in SUBSETS:
-        for name in names:
-            write_sample(root, subset, name)
+from tests.unit_test.fixtures.duplex_fakes import (
+    FIXTURE_PCM,
+    FIXTURE_SAMPLES,
+    SERVER,
+    DuplexPeer,
+    write_dataset,
+    write_sample,
+)
 
 
 def test_discovery_covers_four_subsets_deterministically(tmp_path: Path) -> None:

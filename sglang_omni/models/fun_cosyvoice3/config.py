@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from pydantic import Field
-
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -92,32 +90,6 @@ def reject_conflicting_dit_accelerators(
         pass
 
 
-class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
-    """Engine-only knobs, including the optional native MLX checkpoint."""
-
-    mlx_model_path: str | None = Field(default=None)
-    mlx_model_revision: str | None = Field(default=None)
-
-
-class FunCosyVoice3EngineStageConfig(EngineStageConfig):
-    factory: FunCosyVoice3EngineFactoryArgs = Field(
-        default_factory=FunCosyVoice3EngineFactoryArgs
-    )
-
-
-class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
-    """Vocoder knobs, including the converted native MLX artifact."""
-
-    mlx_model_path: str | None = Field(default=None)
-    mlx_model_revision: str | None = Field(default=None)
-
-
-class FunCosyVoice3VocoderStageConfig(StageConfig):
-    factory: FunCosyVoice3VocoderFactoryArgs = Field(
-        default_factory=FunCosyVoice3VocoderFactoryArgs
-    )
-
-
 class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
@@ -128,8 +100,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": FunCosyVoice3EngineStageConfig,
-        "vocoder": FunCosyVoice3VocoderStageConfig,
+        "tts_engine": EngineStageConfig,
     }
 
     @classmethod
@@ -147,11 +118,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         # note(ratish): stages in one process are built in list order; the
         # vocoder comes before the engine so Flow, HiFT and their graphs are
         # resident when sglang sizes the KV pool from free memory.
-        FunCosyVoice3VocoderStageConfig(
+        StageConfig(
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FunCosyVoice3VocoderFactoryArgs(
+            factory=FactoryArgs(
                 dtype="bfloat16",
                 flow_batch_admission_frames=8000,
                 flow_merge_max_gap_frames=384,
@@ -177,11 +148,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
-        FunCosyVoice3EngineStageConfig(
+        EngineStageConfig(
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FunCosyVoice3EngineFactoryArgs(
+            factory=FactoryArgs(
                 dtype="bfloat16",
                 onnx_intra_op_threads=16,
                 token_hop_len=25,
@@ -240,23 +211,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 vocoder_factory.model_extra.get("enable_flow_estimator_trt")
             )
         }
-        if vocoder_factory.mlx_model_path is not None:
-            # Note (yexiaodong): A separate vocoder artifact must keep its own
-            # revision; both explicit fields therefore stay in typed config.
-            return kwargs
-        else:
-            pass
-        # Note (yexiaodong): The converted artifact contains the speech-token
-        # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
-        engine_factory = self.stage_named("tts_engine").factory
-        if engine_factory.mlx_model_path is not None:
-            kwargs["mlx_model_path"] = engine_factory.mlx_model_path
-        else:
-            pass
-        if engine_factory.mlx_model_revision is not None:
-            kwargs["mlx_model_revision"] = engine_factory.mlx_model_revision
-        else:
-            pass
         return kwargs
 
 

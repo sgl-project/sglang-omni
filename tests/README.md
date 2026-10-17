@@ -17,14 +17,10 @@ tests/
 │   └── test_fun_asr_realtime.py
 └── unit_test/
     ├── benchmarks/
+    │   ├── test_duplex_*.py
+    │   ├── test_fdb_*.py
     │   ├── test_dataset_regressions.py
     │   └── test_runtime_metrics.py
-    ├── ci/
-    │   ├── test_cpu_contention.py
-    │   ├── test_cpuset_pinning.py
-    │   ├── test_ci_model_pick.py
-    │   ├── test_tts_mps_runtime.py
-    │   └── test_tts_mps_workflow_contract.py
     ├── cli/
     │   └── test_sglang_backend.py
     ├── client/
@@ -38,6 +34,7 @@ tests/
     │   ├── test_integration.py
     │   └── test_weight_preprocess.py
     ├── fixtures/
+    │   ├── duplex_fakes.py
     │   ├── fish_fakes.py
     │   ├── mini_checkpoint.py
     │   ├── pipeline_fakes.py
@@ -98,7 +95,6 @@ tests/
     │   ├── test_fp8_backend_config.py
     │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
-    │   ├── test_model_fixture_overrides.py
     │   ├── test_mrope_positions.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -182,8 +178,6 @@ tests/
     ├── fun_cosyvoice3/
     │   ├── test_flow_batch.py
     │   ├── test_engine_builder.py
-    │   ├── test_mlx_model.py
-    │   ├── test_mlx_vocoder_backend.py
     │   ├── test_model_runner.py
     │   ├── test_pipeline.py
     │   ├── test_request_builders.py
@@ -540,6 +534,10 @@ that happened to contain an older version of the test.
     definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
     traces (first-partial refresh-point lookup, partial gaps, committed→final,
     protocol invariant violations, percentile summaries). No GPU or server.
+  - `test_duplex_*.py` and `test_fdb_*.py`: Full-Duplex-Bench recording,
+    protocol oracle, scoring and runbook. The fake peers, traces, datasets and
+    scoring trees they share live in `fixtures/duplex_fakes.py`; test files do
+    not import each other.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation, plus the 8 kHz telephony fixtures under
@@ -902,11 +900,6 @@ that happened to contain an older version of the test.
 - `unit_test/audar_tts/`: Audar-TTS protocol, pipeline configuration, public
   speech validation, reference-audio encoding and caching, llama.cpp generation,
   and 24 kHz vocoder output contracts.
-
-- `unit_test/ci/`: CPU unit tests for CI configuration and infrastructure,
-  including CPU allocation and contention accounting, TTS model rotation, and
-  same-GPU MPS launcher, evidence, cleanup, and workflow contracts. These tests
-  use synthetic state and do not launch an MPS workload.
 
 - `unit_test/cli/`: SGLang backend registration, option forwarding,
   configuration-only launch behavior, and backend-specific help ownership.

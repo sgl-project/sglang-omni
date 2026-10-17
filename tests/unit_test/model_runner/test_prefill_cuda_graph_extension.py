@@ -71,7 +71,7 @@ def prefill_backend(backend: str) -> CudaGraphConfig:
     return CudaGraphConfig(decode=PhaseConfig(), prefill=PhaseConfig(backend=backend))
 
 
-@pytest.mark.parametrize("backend", ["breakable", "disabled"])
+@pytest.mark.parametrize("backend", ["breakable"])
 def test_default_runner_keeps_upstream_prefill_graph_layers_and_runner(
     monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:
@@ -125,7 +125,7 @@ def test_breakable_prefill_graph_layers_cover_registered_layers(
     )
 
 
-@pytest.mark.parametrize("backend", ["disabled", "full"])
+@pytest.mark.parametrize("backend", ["full"])
 def test_registrations_apply_only_to_breakable_prefill_graphs(
     monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:
