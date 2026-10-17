@@ -18,7 +18,7 @@ import aiohttp
 
 from benchmarks.benchmarker.data import FinishReason, RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
-from benchmarks.metrics.socialomni import SOCIALOMNI_JUDGE_NAMES
+from benchmarks.metrics.socialomni import SOCIALOMNI_JUDGE_COUNT, validate_judge_names
 
 RETRYABLE_STATUS = frozenset({408, 429})
 # note (Teery): reasoning judges may use hidden tokens before emitting a score.
@@ -36,6 +36,8 @@ class JudgeSpec:
     base_url: str
     api_key_env: str | None
     max_concurrency: int
+    enable_thinking: bool | None = None
+    reasoning_effort: str | None = None
 
 
 def public_judge_record(judge: JudgeSpec) -> dict[str, Any]:
@@ -52,6 +54,8 @@ def public_judge_record(judge: JudgeSpec) -> dict[str, Any]:
         "base_url": urlunsplit((parts.scheme, host, "", "", "")),
         "api_key_env": judge.api_key_env,
         "max_concurrency": judge.max_concurrency,
+        "enable_thinking": judge.enable_thinking,
+        "reasoning_effort": judge.reasoning_effort,
     }
 
 
@@ -90,9 +94,17 @@ def chat_completions_url(base_url: str) -> str:
 def load_judge_config(path: str | Path) -> list[JudgeSpec]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     rows = payload.get("judges") if isinstance(payload, dict) else None
-    if not isinstance(rows, list) or len(rows) != 3:
+    if not isinstance(rows, list) or len(rows) != SOCIALOMNI_JUDGE_COUNT:
         raise ValueError("judge config must contain exactly three judges")
-    allowed = {"name", "model", "base_url", "api_key_env", "max_concurrency"}
+    allowed = {
+        "name",
+        "model",
+        "base_url",
+        "api_key_env",
+        "max_concurrency",
+        "enable_thinking",
+        "reasoning_effort",
+    }
     judges: list[JudgeSpec] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or set(row) - allowed:
@@ -114,6 +126,22 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
                 f"judges[{index}].api_key_env must be a non-empty string "
                 "without surrounding whitespace, or null"
             )
+        enable_thinking = row.get("enable_thinking")
+        if enable_thinking is not None and type(enable_thinking) is not bool:
+            raise ValueError(f"judges[{index}].enable_thinking must be boolean or null")
+        else:
+            pass
+        reasoning_effort = row.get("reasoning_effort")
+        if reasoning_effort is not None and (
+            not isinstance(reasoning_effort, str)
+            or not reasoning_effort.strip()
+            or reasoning_effort != reasoning_effort.strip()
+        ):
+            raise ValueError(
+                f"judges[{index}].reasoning_effort must be a non-empty string or null"
+            )
+        else:
+            pass
         judges.append(
             JudgeSpec(
                 name=row["name"].strip(),
@@ -121,10 +149,11 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
                 base_url=row["base_url"].strip(),
                 api_key_env=api_key_env,
                 max_concurrency=concurrency,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
             )
         )
-    if {judge.name for judge in judges} != set(SOCIALOMNI_JUDGE_NAMES):
-        raise ValueError(f"judge names must be exactly {SOCIALOMNI_JUDGE_NAMES}")
+    validate_judge_names([judge.name for judge in judges])
     return judges
 
 
@@ -415,13 +444,24 @@ def model_payload(
 
 
 def judge_payload(judge: JudgeSpec, prompt: str) -> dict[str, Any]:
-    return {
+    payload = {
         "model": judge.model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": JUDGE_MAX_TOKENS,
         "temperature": 0.0,
+        "top_p": 1.0,
         "stream": False,
     }
+
+    if judge.enable_thinking is not None:
+        payload["enable_thinking"] = judge.enable_thinking
+    else:
+        pass
+    if judge.reasoning_effort is not None:
+        payload["reasoning_effort"] = judge.reasoning_effort
+    else:
+        pass
+    return payload
 
 
 def make_level1_send_fn(model: str, base_url: str):
