@@ -1600,6 +1600,30 @@ def test_a_forward_that_overwrites_its_ras_windows_keeps_the_history_windows(
         assert decode.forward.reads[-1] == expected
 
 
+def test_lookahead_collects_each_pending_frame_from_its_own_host_snapshot() -> None:
+    decode = decode_runner(row_count=1)
+    requests = prompted_requests([3])
+    prefill_step(decode, requests, [1], [[SEMANTIC_BEGIN_ID, 0, 1, 2, 3]])
+    request_data = request_data_of(requests[0])
+    initial_history = list(request_data.frame_rows)
+    first_frame = [SEMANTIC_BEGIN_ID + 1, 1, 2, 3, 4]
+    decode.forward.next_frames = [first_frame]
+    first_pending_step = launched_step(decode.runner, requests)
+    second_frame = [SEMANTIC_BEGIN_ID + 2, 2, 4, 3, 1]
+    decode.forward.next_frames = [second_frame]
+    second_pending_step = launched_step(decode.runner, requests)
+
+    assert request_data.frame_rows == initial_history
+    first_output = decode.runner.execute_resolve(first_pending_step)
+    assert first_output is not None and first_output.next_token_ids is not None
+    assert first_output.next_token_ids.tolist() == [first_frame[0]]
+    assert request_data.frame_rows == initial_history + [first_frame]
+    second_output = decode.runner.execute_resolve(second_pending_step)
+    assert second_output is not None and second_output.next_token_ids is not None
+    assert second_output.next_token_ids.tolist() == [second_frame[0]]
+    assert request_data.frame_rows == initial_history + [first_frame, second_frame]
+
+
 def test_next_token_ids_from_post_decode_outlive_later_steps() -> None:
     decode = decode_runner(row_count=4)
     requests = decoding_scheduler_requests(decode, [3, 4, 2])
@@ -1615,7 +1639,12 @@ def test_next_token_ids_from_post_decode_outlive_later_steps() -> None:
     assert first_token_ids.tolist() == [90, 91, 92]
 
 
-def test_a_lookahead_resolve_skips_rows_finished_or_retracted_since_launch() -> None:
+@pytest.mark.parametrize(
+    "has_active_requests", [True, False], ids=["mixed", "all-inactive"]
+)
+def test_a_lookahead_resolve_skips_rows_finished_or_retracted_since_launch(
+    has_active_requests: bool,
+) -> None:
     decode = decode_runner(row_count=4)
     requests = decoding_scheduler_requests(decode, [3, 4, 2, 3])
     batch_request_data = [request_data_of(request) for request in requests]
@@ -1655,23 +1684,42 @@ def test_a_lookahead_resolve_skips_rows_finished_or_retracted_since_launch() -> 
     assert finished_request is not None and retracted_request is not None
     finished_request.finished_reason = FINISH_MATCHED_TOKEN(matched=EOS_TOKEN_ID)
     retracted_request.is_retracted = True
+    if has_active_requests:
+        pass
+    else:
+        first_request = batch_request_data[0].req
+        eos_request = batch_request_data[3].req
+        assert first_request is not None and eos_request is not None
+        first_request.finished_reason = FINISH_MATCHED_TOKEN(matched=EOS_TOKEN_ID)
+        eos_request.is_retracted = True
     output = decode.runner.execute_resolve(pending_step)
 
     assert output is not None and output.next_token_ids is not None
     assert output.next_token_ids.tolist() == [90, 91, 92, EOS_TOKEN_ID]
-    assert [request_data.frame_rows for request_data in batch_request_data] == [
-        histories[0] + [[90, 1, 1, 1, 1]],
-        histories[1],
-        histories[2],
-        histories[3] + [eos_frame],
-    ]
-    assert [request_data.generation_steps for request_data in batch_request_data] == [
-        generation_steps[0] + 1,
-        generation_steps[1],
-        generation_steps[2],
-        generation_steps[3] + 1,
-    ]
-    assert streamed_message_counts() == [1, 0, 0, 0]
+    if has_active_requests:
+        assert [request_data.frame_rows for request_data in batch_request_data] == [
+            histories[0] + [[90, 1, 1, 1, 1]],
+            histories[1],
+            histories[2],
+            histories[3] + [eos_frame],
+        ]
+        assert [
+            request_data.generation_steps for request_data in batch_request_data
+        ] == [
+            generation_steps[0] + 1,
+            generation_steps[1],
+            generation_steps[2],
+            generation_steps[3] + 1,
+        ]
+        assert streamed_message_counts() == [1, 0, 0, 0]
+    else:
+        assert [request_data.frame_rows for request_data in batch_request_data] == (
+            histories
+        )
+        assert [
+            request_data.generation_steps for request_data in batch_request_data
+        ] == generation_steps
+        assert streamed_message_counts() == [0, 0, 0, 0]
 
 
 def test_row_indices_upload_only_when_the_batch_order_or_slots_change() -> None:
