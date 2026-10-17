@@ -52,6 +52,74 @@ async def test_timeout_cancel_noop_waits_before_close(linear_pair):
     await coordinator.close_session(second)
 
 
+@pytest.mark.asyncio
+async def test_queued_append_timeout_closes_only_its_session(tmp_path: Path):
+    async with pipeline(tmp_path) as (coordinator, events, _):
+        blocked_sessions = [
+            await coordinator.open_session(
+                OmniRequest(None, {"source_delay": 1.0}),
+                stages=["source", "sink"],
+                session_id=f"blocked-{index}",
+                limits=SessionLimits(operation_timeout_s=0.15),
+            )
+            for index in range(5)
+        ]
+        blocked_outputs = {
+            identity.id: coordinator.session_outputs(identity)
+            for identity in blocked_sessions
+        }
+        observed_events = []
+
+        async def wait_for_source_workers() -> None:
+            while (
+                sum(
+                    event[0] == "append" and event[1] == "source"
+                    for event in observed_events
+                )
+                < 4
+            ):
+                observed_events.extend(event_log(events))
+                await asyncio.sleep(0.01)
+
+        await asyncio.gather(
+            *(
+                coordinator.append_session(identity, chunk(0))
+                for identity in blocked_sessions[:4]
+            )
+        )
+        await asyncio.wait_for(wait_for_source_workers(), 5)
+        fifth_identity = blocked_sessions[4]
+        await coordinator.append_session(fifth_identity, chunk(0))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(anext(blocked_outputs[fifth_identity.id]), 5)
+        await wait_until(lambda: fifth_identity.id not in coordinator.sessions)
+        observed_events.extend(event_log(events))
+        assert not any(
+            event[0] == "append"
+            and event[1] == "source"
+            and event[2] == fifth_identity.id
+            for event in observed_events
+        )
+        assert {
+            event[1]
+            for event in observed_events
+            if event[0] == "close" and event[2] == fifth_identity.id
+        } == {"source", "sink"}
+
+        healthy_identity = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="healthy"
+        )
+        healthy_output = coordinator.session_outputs(healthy_identity)
+        try:
+            await coordinator.append_session(healthy_identity, chunk(0, eos=True))
+            assert (await asyncio.wait_for(anext(healthy_output), 5)).input_seq == 0
+        finally:
+            await healthy_output.aclose()
+
+        for output in blocked_outputs.values():
+            await output.aclose()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_open_timeout_closes_the_opened_owner(linear_pair):
     coordinator, events, _ = linear_pair

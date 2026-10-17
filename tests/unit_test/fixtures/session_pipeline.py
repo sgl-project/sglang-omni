@@ -65,6 +65,7 @@ class HookState:
     session_id: str
     count: int
     open_delay_s: float
+    source_delay_s: float
     fail_open_stage: str | None
     emit_every: int
     cadence: int
@@ -111,6 +112,7 @@ def read_hook_state(
         session_id=session_identity.id,
         count=0,
         open_delay_s=number_param(params, "open_delay", 0),
+        source_delay_s=number_param(params, "source_delay", 0),
         fail_open_stage=text_param(params, "fail_open"),
         emit_every=integer_param(params, "emit_every", 1),
         cadence=integer_param(params, "cadence", 1),
@@ -147,6 +149,10 @@ class Hooks(SessionHooks):
         state.count += 1
         logical_name = self.name.partition(REPLICA_SEPARATOR)[0]
         if logical_name == "source":
+            if state.source_delay_s:
+                time.sleep(state.source_delay_s)
+            else:
+                pass
             payload.data = {"tensor": torch.tensor([state.count])}
         elif logical_name == "middle":
             assert payload.data["tensor"].item() == state.count
