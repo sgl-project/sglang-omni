@@ -16,6 +16,7 @@ from sglang.srt.managers.io_struct import (
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
 from sglang.srt.session.session_controller import SessionController
+from sglang.srt.utils.common import ceil_align
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
@@ -60,6 +61,8 @@ class RequestToTokenPool(Protocol):
 
 
 class TokenToKVPoolAllocator(Protocol):
+    page_size: int
+
     def available_size(self) -> int:
         pass
 
@@ -94,6 +97,13 @@ class BridgeScheduler(Protocol):
 
     def resolve_pending_async(self) -> None:
         pass
+
+
+def unowned_kv_slots(final_length: int, allocated_length: int, page_size: int) -> int:
+    """KV slots a request still takes: the whole pages its final length spans past the pages its allocated KV holds."""
+    return max(
+        0, ceil_align(final_length, page_size) - ceil_align(allocated_length, page_size)
+    )
 
 
 def is_close_request(payload: StagePayload) -> bool:
@@ -480,10 +490,15 @@ class ARSessionBridge:
                 "(one slot kept for a session that already holds KV)"
             )
         else:
-            required_kv_tokens = len(session_request.origin_input_ids) + int(
-                session_request.sampling_params.max_new_tokens or 0
+            allocator = self.bridge_scheduler.token_to_kv_pool_allocator
+            # note (0xtoward): The allocator hands out whole pages, so a page a unit already holds absorbs part of its growth.
+            required_kv_slots = unowned_kv_slots(
+                len(session_request.origin_input_ids)
+                + int(session_request.sampling_params.max_new_tokens or 0),
+                retained_kv_tokens,
+                allocator.page_size,
             )
-            reserved_kv_tokens = 0
+            reserved_kv_slots = 0
             for active_append_unit in self.units_by_request_id.values():
                 if (
                     active_append_unit is unit
@@ -492,23 +507,26 @@ class ARSessionBridge:
                     continue
                 else:
                     active_session_request = active_append_unit.session_request
-                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len
-                    reserved_kv_tokens += max(
-                        0,
+                    active_slot = cache.slots.get(
+                        active_append_unit.session_identity.id
+                    )
+                    # note (0xtoward): Until a unit takes its slot's KV, its retained history is still allocated in the slot.
+                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len + (
+                        active_slot.kv.kv_allocated_len
+                        if active_slot is not None
+                        and not active_session_request.kv.holds_kv
+                        else 0
+                    )
+                    reserved_kv_slots += unowned_kv_slots(
                         len(active_session_request.origin_input_ids)
                         + int(
                             active_session_request.sampling_params.max_new_tokens or 0
-                        )
-                        - allocated_kv_tokens,
+                        ),
+                        allocated_kv_tokens,
+                        allocator.page_size,
                     )
-            available_kv_tokens = (
-                self.bridge_scheduler.token_to_kv_pool_allocator.available_size()
-                + cache.evictable_size()
-            )
-            if (
-                required_kv_tokens - retained_kv_tokens + reserved_kv_tokens
-                > available_kv_tokens
-            ):
+            available_kv_slots = allocator.available_size() + cache.evictable_size()
+            if required_kv_slots + reserved_kv_slots > available_kv_slots:
                 capacity_message = "session KV capacity exhausted"
             else:
                 capacity_message = None
