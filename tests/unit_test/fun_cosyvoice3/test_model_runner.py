@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from flashinfer.sampling import get_sampling_module
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.utils import DynamicGradMode
@@ -464,6 +465,27 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
                 logits, torch.full(logits.shape, 1.21, device="cuda")
             )
     assert counters["stats"]["unique_graphs"] == compiled_graphs
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("sampling_backend", ["pytorch", "flashinfer"])
+def test_cosyvoice3_load_hook_loads_flashinfer_sampling_only_for_its_backend(
+    sampling_backend: str,
+) -> None:
+    model = object.__new__(FunCosyVoice3SGLangModel)
+    torch.nn.Module.__init__(model)
+    model.llm_decoder = torch.nn.Linear(64, TOTAL_VOCAB_SIZE, bias=False).to(
+        "cuda", torch.bfloat16
+    )
+    get_sampling_module.cache_clear()
+
+    with get_context().override_server_args(sampling_backend=sampling_backend):
+        model.precompile_kernels_after_loading()
+
+    assert get_sampling_module.cache_info().currsize == int(
+        sampling_backend == "flashinfer"
+    )
 
 
 def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None:
