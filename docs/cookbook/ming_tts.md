@@ -59,6 +59,35 @@ Cross-request non-streaming AudioVAE batching is not implemented yet. The only s
 
 `stream_slots` is the maximum number of streaming requests that the AudioVAE decoder can keep active at the same time. Each active stream uses one slot to preserve its decoding progress between audio chunks. If all slots are occupied, additional streams wait until a slot is released. The provided configuration uses `stream_slots: 8` to match its concurrency-8 workload. Increasing it supports more simultaneous streams but uses more GPU memory and fixed-graph work; reducing it lowers those costs but also lowers streaming concurrency. It does not change non-streaming batching.
 
+### Apple Silicon (MLX)
+
+The native C++ server supports text-only WAV/PCM responses and streaming PCM
+with the official BF16 checkpoint or the pre-quantized
+`mlx-community/Ming-omni-tts-16.8B-A3B-4bit` checkpoint:
+
+```bash
+bash sglang_omni_mlx/native/scripts/build_runtime.sh build/native/runtime build/native/work
+
+build/native/runtime/bin/ming_tts_server \
+  --model-path "${MING_MODEL_DIR:?Set MING_MODEL_DIR to the local checkpoint directory}" \
+  --model-name ming-omni-tts --host 127.0.0.1 --port 8000
+```
+
+For native supervisor integration, launch with `--supervised --model-kind ming_tts
+--model-directory "$MING_MODEL_DIR"`. The shared native server defaults to a free
+port and a generated model name; pass `--port` and `--model-name` to fix them.
+Supervised mode reports them in a JSON `ready` event on stdout. Send `{"command":"shutdown"}`
+on stdin to stop; closing stdin also stops the process. The native server does not
+support reference audio or voice cloning and rejects reference-audio request
+fields. Voice cloning remains available through the CUDA pipeline.
+
+For 4-bit inference, download the MLX community checkpoint and use its local
+directory as `--model-path`. Quantization is read from the checkpoint; there is
+no native online-quantization flag. The checkpoint also quantizes acoustic and
+AudioVAE linear layers. The server accepts one active request; additional
+concurrent requests return HTTP 429. Serving does not require Python or SGLang
+workers.
+
 ## Synthesizing Speech
 
 ### Text Only
@@ -215,6 +244,59 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --max-new-tokens 256 --max-concurrency 8 --asr-concurrency 1 \
   <scenario-flags>
 ```
+
+### Native Apple Silicon evaluation
+
+The native entry point manages servers and reuses the shared SeedTTS evaluator.
+Run it from the repository root using
+a Python environment with the repository's benchmark dependencies, not the minimal
+native build environment. Model arguments accept HuggingFace IDs or local
+directories. IDs are resolved through the HuggingFace cache, downloading missing
+files before starting each server.
+
+```bash
+MING_EVAL_DIR="$(mktemp -d /tmp/ming-native-seedtts.XXXXXX)"
+
+python -m sglang_omni_mlx.native.ci.evaluate_tts \
+  --runtime-bin build/native/work/cmake \
+  --model inclusionAI/Ming-omni-tts-16.8B-A3B \
+  --asr-model-path mlx-community/Qwen3-ASR-1.7B-8bit \
+  --asr-model-revision a8379a2e2f9e313c9292cdf1af4055ab56d50d55 \
+  --meta zhaochenyang20/seed-tts-eval-arrow --lang zh \
+  --max-samples 50 \
+  --output-dir "$MING_EVAL_DIR/nonstream/zh"
+```
+
+This command starts Ming, generates audio, stops Ming, starts Qwen3-ASR, scores the
+saved audio, and stops ASR. Native mode defaults to text-only, concurrency 1, one
+warmup request, a 256-token generation limit, and no speech-outcome queries. It
+does not run CUDA cleanup. Stop manually launched servers first, or choose a free
+`--port`. Logs are saved under `server_logs/` in the output directory.
+
+The model IDs above are the native defaults. Use `--model-revision` and
+`--asr-model-revision` to pin Hub checkpoints; these flags do not apply to local
+directories. `HF_HUB_OFFLINE=1` requires the requested checkpoints to be cached.
+Record the ASR checkpoint and revision when reporting scores: this MLX 8-bit
+evaluator is not the same precision as CUDA CI's Qwen3-ASR-1.7B evaluator.
+
+For pre-quantized Ming, pass
+`--model mlx-community/Ming-omni-tts-16.8B-A3B-4bit` and
+`--model-revision 97752f43c4d7a6b3f045f484c798bf6bb1f950df`, using a separate output
+directory from BF16 evaluation.
+
+Repeat for `--lang en`, saving to `nonstream/en`. For streaming, add `--stream` and
+save to `stream/zh` or `stream/en`. This is a 50-sample smoke evaluation; omit
+`--max-samples` for the full splits. `--generate-only` and `--transcribe-only` still
+support running either phase separately.
+
+The evaluator prepares 16 kHz mono copies for native ASR under `asr/`, preserving
+the original WAVs and `generated.json`. Scoring results are saved to
+`asr/wer_results.json` and `asr/asr_speed_results.json`.
+Report EN WER / ZH CER together with generation and ASR
+failure counts; failed samples must not be hidden by the error-rate average.
+These are measured quality results, not PCM golden comparisons or calibrated
+Apple-specific CI thresholds. Speaker similarity is not evaluated without
+reference-audio support.
 
 ## Benchmark Results
 

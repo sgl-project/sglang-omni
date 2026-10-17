@@ -8,12 +8,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nlohmann/json_fwd.hpp"
+
 namespace qwen3_asr {
 
 class Tokenizer {
 public:
   // Reads vocab.json, merges.txt and tokenizer_config.json from the checkpoint.
   explicit Tokenizer(const std::filesystem::path &model_directory);
+  static Tokenizer FromJson(const nlohmann::json &tokenizer);
   ~Tokenizer();
   Tokenizer(const Tokenizer &) = delete;
   Tokenizer &operator=(const Tokenizer &) = delete;
@@ -26,6 +29,9 @@ public:
   int AddedTokenId(const std::string &content) const;
 
 private:
+  struct Serialized {};
+  Tokenizer(const nlohmann::json &tokenizer, Serialized);
+
   struct AddedToken {
     std::string content;
     int id;
@@ -33,6 +39,7 @@ private:
   };
   struct Pcre2Regex;
 
+  void Initialize(const std::string &split_pattern);
   void EncodeOrdinary(const std::string &text, std::vector<int> &ids) const;
   void EncodeWord(const std::string &byte_level_word,
                   std::vector<int> &ids) const;

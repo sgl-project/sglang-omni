@@ -76,8 +76,12 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/asr_service.cpp src/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_service STATIC src/service.cpp src/http.cpp)
+target_link_libraries(omni_service PUBLIC qwen3_asr civetweb-c-library)
+target_compile_options(omni_service PRIVATE -Wall -Wextra)
+
+add_library(asr_service STATIC src/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/server.cpp src/vad_service.cpp
@@ -204,3 +208,18 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+add_library(ming_tts STATIC src/ming_tts_model.cpp src/ming_tts_acoustic.cpp
+  src/ming_tts_audio_transformer.cpp src/ming_tts_audio.cpp src/ming_tts_generator.cpp)
+target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_compile_options(ming_tts PRIVATE -Wall -Wextra)
+add_library(tts_service STATIC src/tts_service.cpp)
+target_link_libraries(tts_service PUBLIC ming_tts omni_service)
+target_compile_options(tts_service PRIVATE -Wall -Wextra)
+add_executable(ming_tts_server src/ming_tts_server.cpp)
+target_link_libraries(ming_tts_server PRIVATE tts_service)
+target_compile_options(ming_tts_server PRIVATE -Wall -Wextra)
+set_target_properties(ming_tts_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
