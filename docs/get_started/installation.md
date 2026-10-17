@@ -1,19 +1,14 @@
-# 🚀 Installation — CUDA
+# Installation — CUDA
 
 Current stable release: **v0.1.8** on [PyPI](https://pypi.org/project/sglang-omni/).
 
-Choose the path for your platform. Docker is recommended for NVIDIA CUDA —
-UCX, flash-attn, SGLang, and CUDA are prebuilt.
-
-> **macOS Apple Silicon?** See [Installation — Apple Silicon](./installation_apple_silicon.md), which uses `./install.sh` with a Homebrew + uv setup and SGLang's `all_mps` extra instead of the CUDA-only pins below.
-
-> **Intel GPU (XPU)?** For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
-
-> **Moore Threads GPU (MUSA):** For MUSA, see [Installation — MUSA](./installation_musa.md), which uses [`pyproject_musa.toml`](../../pyproject_musa.toml) on top of a SGLang MUSA environment.
-
-> **Intel CPU?** Also not this page. See [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index.
-
-> **Ascend NPU?** See [Installation — Ascend NPU](./installation_npu.md) for the supported software stack, prerequisites, and installation helper.
+This page covers NVIDIA CUDA. Docker is recommended — UCX, flash-attn, SGLang,
+and CUDA are prebuilt. For other platforms, use the dedicated pages:
+[Apple Silicon](./installation_apple_silicon.md),
+[Ascend NPU](./installation_npu.md),
+[Intel XPU](./installation_xpu.md),
+[Intel CPU](./installation_cpu.md), and
+[MUSA](./installation_musa.md).
 
 ## 🐳 Option A: Docker (recommended)
 

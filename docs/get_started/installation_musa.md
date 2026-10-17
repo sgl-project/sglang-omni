@@ -1,4 +1,4 @@
-# 🚀 Installation — MUSA
+# Installation — MUSA
 
 This document describes how to install SGLang-Omni on Moore Threads GPUs.
 

@@ -1,11 +1,9 @@
-# 🚀 Installation — Apple Silicon
+# Installation — Apple Silicon
 
 <a id="macos-apple-silicon"></a>
 
-Installs `sglang-omni` on **macOS with Apple Silicon (arm64)** with the
-dedicated `./install.sh` source installer. NVIDIA / CUDA users should follow the
-[Docker or manual installation](./installation.md) instead — this path's pinned
-`torch` / `torchvision` / `torchcodec` wheels are built for `macosx_14_0_arm64` only.
+Installs `sglang-omni` on macOS Apple Silicon (arm64) with the `./install.sh`
+source installer. CUDA users should follow the [CUDA installation](./installation.md) instead.
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
