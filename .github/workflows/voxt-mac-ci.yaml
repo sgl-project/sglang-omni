@@ -98,18 +98,39 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
-      # the runner's work directory; say so plainly instead of failing midway.
+      # Reserve space for missing AuK files; validated caches are reused.
       - name: Check free disk space
+        id: native-disk
         run: |
           mkdir -p "$VOXT_CI_ROOT"
+          required_gb=$(python3 - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+          data = Path(os.environ["VOXT_CI_ROOT"]) / "data"
+          pins = json.loads(Path("sglang_omni_mlx/native/ci/model_pins.json").read_text())
+          missing_source_bytes = 0
+          for repo in ("tencent/AuK", "tencent/AuK-Flash", "Qwen/Qwen2.5-Omni-3B"):
+              directory = data / "models" / repo.replace("/", "_")
+              for name, size in pins[repo]["file_sizes"].items():
+                  path = directory / name
+                  if not path.is_file() or path.stat().st_size != size:
+                      missing_source_bytes += size
+          required = 17 + math.ceil(missing_source_bytes / 1024**3)
+          for model in ("tencent_AuK", "tencent_AuK-Flash"):
+              if not (data / "native_models" / model / "manifest.json").is_file():
+                  required += 14
+          print(required)
+          PY
+          )
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
+          if [ "$free_gb" -lt "$required_gb" ]; then
+            echo "::error::Only ${free_gb} GB free; this run needs ${required_gb} GB including missing AuK checkpoints."
             exit 1
           else
-            :
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: astral-sh/setup-uv@v6
@@ -126,6 +147,10 @@ jobs:
       - name: Build the runtime
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+
+      - name: AuK checkpoint preparation tests
+        run: |
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/python" -m unittest sglang_omni_mlx.native.ci.test_prepare_auk
 
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
@@ -150,9 +175,24 @@ jobs:
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
       - name: Provision the other models' checkpoints
-        if: ${{ always() }}
+        if: ${{ always() && steps.native-disk.outputs.ready == 'true' }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data"
+
+      - name: Prepare AuK native checkpoints
+        if: ${{ always() && steps.native-disk.outputs.ready == 'true' }}
+        run: |
+          preparation_python="$VOXT_CI_ROOT/runtime-build/venv/bin/python"
+          pins=sglang_omni_mlx/native/ci/model_pins.json
+          conditioner_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Qwen/Qwen2.5-Omni-3B"]["revision"])' "$pins")
+          for model in AuK AuK-Flash; do
+            auk_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["tencent/" + sys.argv[2]]["revision"])' "$pins" "$model")
+            "$preparation_python" sglang_omni_mlx/native/tools/prepare_auk.py \
+              --auk-directory "$VOXT_CI_ROOT/data/models/tencent_$model" \
+              --conditioner-directory "$VOXT_CI_ROOT/data/models/Qwen_Qwen2.5-Omni-3B" \
+              --output "$VOXT_CI_ROOT/data/native_models/tencent_$model" \
+              --auk-revision "$auk_revision" --conditioner-revision "$conditioner_revision" --reuse
+          done
 
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ always() }}
@@ -180,6 +220,15 @@ jobs:
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
+
+      - name: AuK server API tests
+        if: ${{ always() }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          AUK_MODEL_DIRECTORY: ${{ env.VOXT_CI_ROOT }}/data/native_models/tencent_AuK-Flash
+          MLX_ENABLE_TF32: "0"
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_auk_api.py
 
   voxt-unit:
     name: Voxt Omni unit tests
