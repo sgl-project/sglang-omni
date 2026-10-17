@@ -4,6 +4,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -129,6 +130,9 @@ public:
 
 private:
   const mlx::core::array &Weight(const std::string &name) const;
+  // A matmul or convolution weight in the dtype of its input.
+  mlx::core::array MatrixWeight(const std::string &name,
+                                mlx::core::Dtype dtype) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
@@ -153,6 +157,11 @@ private:
   Config config_;
   FeatureExtractor features_;
   std::unordered_map<std::string, mlx::core::array> weights_;
+  // Encoder and speaker head over (1, frames, width) embeddings, compiled once
+  // per sequence length and dtype.
+  std::function<std::vector<mlx::core::array>(
+      const std::vector<mlx::core::array> &)>
+      compiled_predictions_;
 };
 
 // Per-speaker segments of frames with probability > threshold, as Swift
