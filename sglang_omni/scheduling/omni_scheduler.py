@@ -21,7 +21,7 @@ import types
 from array import array
 from collections import deque
 from collections.abc import Iterable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
@@ -274,6 +274,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
+    async_prefill: bool
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -303,6 +304,7 @@ class OmniScheduler(Generic[RequestDataT]):
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
+    async_prefill: bool = False
 
     def __init__(
         self,
@@ -333,6 +335,7 @@ class OmniScheduler(Generic[RequestDataT]):
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 1,
         async_decode_resolve_before_prefill: bool = False,
+        async_prefill: bool = False,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
@@ -432,6 +435,9 @@ class OmniScheduler(Generic[RequestDataT]):
         # runner allows through the lookahead.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
+        # Plain prefill batches join the lookahead: launch, then resolve after
+        # the next launch, so the host never blocks on a prefill's tokens.
+        self.async_prefill = async_prefill
         if self.enable_overlap and self.enable_async_decode:
             raise ValueError(
                 "enable_overlap and enable_async_decode are mutually "
@@ -1188,6 +1194,7 @@ class OmniScheduler(Generic[RequestDataT]):
     def process_input_requests(self, recv_reqs: list[StagePayload]) -> None:
         """Convert incoming payloads to SGLang Reqs and enqueue."""
         ordinary_payloads: list[StagePayload] = []
+        submitted_build = False
         for payload in recv_reqs:
             try:
                 should_schedule = self.route_session_input(payload)
@@ -1204,7 +1211,6 @@ class OmniScheduler(Generic[RequestDataT]):
         recv_reqs, rejected = self.stage_request_build_payloads(recv_reqs)
         for payload in rejected:
             self.reject_queue_full(payload)
-        submitted_build = False
         for payload in recv_reqs:
             req_id = payload.request_id
             with self.request_admission_lock:
@@ -1287,7 +1293,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
-        if submitted_build:
+        if submitted_build and not self.async_prefill:
             # note (luojiaxuan): the drain admits from the head of the pending
             # builds and stops at the first unfinished one, so only the head
             # decides whether waiting admits anything.
@@ -1483,20 +1489,18 @@ class OmniScheduler(Generic[RequestDataT]):
             return selected, rejected
 
     def drain_request_build_results(self) -> None:
-        while True:
-            with self.request_admission_lock:
-                if not self.pending_request_builds:
-                    return
-                else:
-                    pass
-                req_id, (payload, pending_stream_done, future) = next(
-                    iter(self.pending_request_builds.items())
-                )
-                if not future.done():
-                    return
-                else:
-                    pass
+        # note (rsi): builds are independent requests, so admit every finished
+        # one; a FIFO drain parked short clips behind a longer clip's mel build.
+        with self.request_admission_lock:
+            finished_builds = [
+                (req_id, pending)
+                for req_id, pending in self.pending_request_builds.items()
+                if pending[2].done()
+            ]
+            for req_id, _ in finished_builds:
                 self.pending_request_builds.pop(req_id, None)
+        for req_id, (payload, pending_stream_done, future) in finished_builds:
+            with self.request_admission_lock:
                 if req_id in self.aborted_request_ids:
                     continue
                 else:
@@ -2042,7 +2046,39 @@ class OmniScheduler(Generic[RequestDataT]):
         if self.prefill_coalesce_holds(waiting, now):
             return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
         else:
+            if getattr(self, "async_prefill", False):
+                self.admit_imminent_request_builds()
+            else:
+                pass
             return _Upstream.get_new_batch_prefill(self, running_batch)
+
+    def admit_imminent_request_builds(self) -> None:
+        """Give a releasing prefill the builds that finish within the wait bound.
+
+        Waiting here, once per released prefill, replaces a wait on every loop
+        iteration that submitted a build, which kept the scheduler asleep while
+        decode had GPU work queued.
+        """
+        if not self.waiting_queue:
+            return
+        else:
+            pass
+        with self.request_admission_lock:
+            build_futures = [
+                pending[2]
+                for pending in self.pending_request_builds.values()
+                if not pending[2].done()
+            ]
+        if build_futures:
+            wait_futures(
+                build_futures,
+                timeout=_REQUEST_BUILD_ADMISSION_WAIT_S,
+                return_when=FIRST_COMPLETED,
+            )
+        else:
+            pass
+        self.drain_request_build_results()
+        self.drain_request_admission_results()
 
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
@@ -3385,6 +3421,31 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         return not bool(mode.is_extend())
 
+    def is_async_prefill_batch(self, batch: ScheduleBatch) -> bool:
+        """Whether a prefill may launch without waiting for its sampled tokens.
+
+        Only whole-prompt extends qualify: a chunked or mixed batch carries
+        in-flight chunk counters the runner reads at forward time, and the
+        lagged result processing would expose them one iteration late.
+        """
+        if not self.async_prefill or self.session_bridge is not None:
+            return False
+        else:
+            pass
+        mode = batch.forward_mode
+        return (
+            mode is not None
+            and mode.is_extend()
+            and not mode.is_target_verify()
+            and not mode.is_draft_extend_v2()
+            and self.chunked_req is None
+            and batch.chunked_req is None
+            and not batch.decoding_reqs
+            and not batch.is_prefill_only
+            and not batch.return_logprob
+            and all(req.inflight_middle_chunks <= 0 for req in batch.reqs)
+        )
+
     def async_pending_batch(self) -> ScheduleBatch | None:
         """Return the launched decode batch awaiting result processing, or None."""
         pending_decode = self.async_pending
@@ -3446,6 +3507,8 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         if result is _FAILED_BATCH_RESULT:
             return
+        elif self.async_prefill and batch.forward_mode.is_extend():
+            self.emit_prefill_end_for_batch(batch)
         else:
             pass
         keep = [i for i, was_finished in enumerate(pre_finished) if not was_finished]
@@ -3675,8 +3738,13 @@ class OmniScheduler(Generic[RequestDataT]):
             runner = self.model_runner
             use_lookahead = (
                 batch is not None
-                and len(batch.reqs) >= self.async_decode_min_batch_size
-                and self.batch_is_decode(batch)
+                and (
+                    (
+                        len(batch.reqs) >= self.async_decode_min_batch_size
+                        and self.batch_is_decode(batch)
+                    )
+                    or self.is_async_prefill_batch(batch)
+                )
                 and (runner is None or runner.lookahead_eligible(batch))
             )
 

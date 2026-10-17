@@ -27,7 +27,9 @@ def make_forward_batch(*, carries_mrope: bool) -> SimpleNamespace:
 def eager_positions(
     monkeypatch: pytest.MonkeyPatch, forward_batch: SimpleNamespace
 ) -> torch.Tensor:
-    model = SimpleNamespace(language_model=object(), get_audio_feature=object())
+    model = SimpleNamespace(
+        language_model=object(), get_audio_feature=object(), reads_mrope_positions=False
+    )
     captured: dict[str, torch.Tensor] = {}
 
     def fake_routine(**kwargs):
