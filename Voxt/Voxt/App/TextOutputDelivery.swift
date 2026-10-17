@@ -8,6 +8,11 @@ nonisolated struct TextInjectionTarget: Sendable {
 }
 
 extension AppDelegate {
+    // Session-level posts follow keyboard focus like a physical key press. Posting at the
+    // annotated session tap routes to the frontmost application instead, which skips the
+    // key window of a non-activating panel (launchers such as Tinycast or Spotlight).
+    private static let syntheticKeyEventTap: CGEventTapLocation = .cgSessionEventTap
+
     var sessionTextInjectionTarget: TextInjectionTarget {
         TextInjectionTarget(
             processIdentifier: sessionTargetApplicationPID,
@@ -152,8 +157,8 @@ extension AppDelegate {
             keyUp.flags = flags
             HotkeyEventSupport.markAsVoxtInjected(keyDown)
             HotkeyEventSupport.markAsVoxtInjected(keyUp)
-            keyDown.post(tap: .cgAnnotatedSessionEventTap)
-            keyUp.post(tap: .cgAnnotatedSessionEventTap)
+            keyDown.post(tap: Self.syntheticKeyEventTap)
+            keyUp.post(tap: Self.syntheticKeyEventTap)
             VoxtLog.input(
                 "Auto Key event posted after text injection. hotkey=\(HotkeyPreference.displayString(for: hotkey, distinguishModifierSides: false))",
                 verbose: true
@@ -242,8 +247,8 @@ extension AppDelegate {
         )
         HotkeyEventSupport.markAsVoxtInjected(cmdDown)
         HotkeyEventSupport.markAsVoxtInjected(cmdUp)
-        cmdDown?.post(tap: .cgAnnotatedSessionEventTap)
-        cmdUp?.post(tap: .cgAnnotatedSessionEventTap)
+        cmdDown?.post(tap: Self.syntheticKeyEventTap)
+        cmdUp?.post(tap: Self.syntheticKeyEventTap)
         completion(true)
 
         guard let restoration else { return }
