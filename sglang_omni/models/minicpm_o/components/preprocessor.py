@@ -45,6 +45,7 @@ from sglang_omni.preprocessing.image import (
     ensure_image_list_async,
 )
 from sglang_omni.preprocessing.video import (
+    check_caller_video_budget,
     compute_video_cache_key,
     ensure_video_list_async,
 )
@@ -382,6 +383,11 @@ class MiniCPMOPreprocessor:
             else await ensure_image_list_async(raw_images)
         )
         if raw_videos:
+            check_caller_video_budget(
+                max_frames=video_options.video_max_frames,
+                min_pixels=video_options.video_min_pixels,
+                total_pixels=video_options.video_total_pixels,
+            )
             # note (AkazaAkane): top-level videos without audio retain the existing input policy.
             videos, _, _ = await ensure_video_list_async(
                 raw_videos,
