@@ -752,3 +752,36 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `audio` | dict | `null` | Speech response format configuration, e.g. `{"format": "wav"}` |
 | `stage_sampling` | dict | `null` | Per-stage sampling overrides, e.g. `{"thinker": {"temperature": 0.8}}` |
+
+## Experimental Prefill/Decode placement
+
+The `pd` variant separates Thinker Prefill and Decode into explicit stages. It accepts the same text, image, audio, and video inputs as the text pipeline and produces text, including streamed text. Model and GPU validation is pending; this configuration does not establish a throughput or latency improvement.
+
+```bash
+sgl-omni serve --config examples/configs/qwen3_omni_pd.yaml
+```
+
+The example places the image/audio encoders and `thinker` Prefill on GPU 0, and `thinker_decode` on GPU 1. The final `decode` stage detokenizes on CPU. Each Thinker process loads its own weights. Adjust the stage memory fractions for the available hardware; the example fractions are not a capacity guarantee. Wait for `/health` to become ready after the image/audio warmup completes.
+
+Use `modalities: ["text"]`. Speech output, retained streaming sessions, TP greater than 1, RadixCache, and speculative decoding are outside this variant. The initial configuration uses page size 1 and synchronous Decode. Context length follows the checkpoint; to set a smaller deployment limit, set `factory.max_seq_len` consistently on `preprocessing`, `thinker`, and `thinker_decode`.
+
+Prefill transfers KV plus a compact continuation. The Qwen adapter preserves prompt IDs, request parameters, stream state, and the value and dtype of the Prefill-computed mRoPE delta. Raw media and encoder tensors stay out of the continuation. Decode emits the transferred first sample and subsequent text tokens through the same stream source. Chunked Prefill hands off only after its final chunk.
+
+The regular `max_queued_requests` setting does not cap committed PD admissions. Size the workload for the available KV and request capacity; this variant does not add a global admission controller.
+
+### Validation before performance comparison
+
+Run the contract tests in the repository's supported SGLang environment:
+
+```bash
+python -m pytest -q \
+  tests/unit_test/pipeline/test_pd_utils.py \
+  tests/unit_test/pipeline/test_pd_lifecycle.py \
+  tests/unit_test/pipeline/test_pd_model_integration.py \
+  tests/unit_test/pipeline/test_pd_qwen_mrope_contract.py \
+  tests/unit_test/pipeline/test_pd_stream_ownership.py
+```
+
+Then compare the ordinary text pipeline and PD on real checkpoint inputs: text, image, audio, video, mixed media, and prompts spanning multiple Prefill chunks. Check complete and streamed responses, first-token ordering, `max_tokens=1`, stop conditions, cancellation before and after handoff, transfer failures, and exhausted Decode capacity. Confirm that requests terminate and both stages return KV and request rows to their idle baseline after work drains. HTTP disconnection alone does not prove reclamation.
+
+Only after those checks pass, compare equal-GPU deployments with matched model revisions, precision, input sets, arrival rates, and sampling settings. Include ordinary replicas as a baseline. Report errors and rejected requests alongside first-token latency, token gaps, completion time, and throughput within the latency targets.

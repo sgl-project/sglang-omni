@@ -12,7 +12,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 import torch.nn.functional as F
@@ -1207,8 +1207,26 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    pd_role: Literal["prefill", "decode"] | None = None,
+    pd_stage_name: str | None = None,
+    pd_partner_stage: str | None = None,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
+    if pd_role is not None:
+        if pd_role not in ("prefill", "decode") or not pd_stage_name:
+            raise ValueError(
+                "PD requires an explicit stage name and prefill/decode role"
+            )
+        elif pd_role == "prefill" and not pd_partner_stage:
+            raise ValueError("Prefill requires an explicit Decode partner stage")
+        elif tp_size != 1:
+            raise ValueError("PD thinker currently requires TP=1")
+        elif speech_enabled:
+            raise ValueError("PD thinker currently supports text output only")
+        else:
+            pass
+    else:
+        pass
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -1323,6 +1341,9 @@ def create_sglang_thinker_executor_from_config(
     scheduler = create_thinker_scheduler(
         server_args,
         gpu_id,
+        pd_role=pd_role,
+        pd_stage_name=pd_stage_name,
+        pd_partner_stage=pd_partner_stage,
         speech_enabled=speech_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
