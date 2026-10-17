@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import torch
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.encoder_service import (
@@ -186,6 +188,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         max_new_tokens: int,
         mem_fraction_static: float,
         enable_encoder_cuda_graph: bool = False,
+        cpu_intra_op_threads: int | None = None,
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
@@ -219,6 +222,11 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
+        self.cpu_intra_op_threads: int | None = cpu_intra_op_threads
+        if cpu_intra_op_threads is not None and cpu_intra_op_threads < 1:
+            raise ValueError("cpu_intra_op_threads must be positive")
+        else:
+            pass
         self.using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
         self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
@@ -319,6 +327,15 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self, model: WhisperForConditionalGeneration | None, server_args: object
     ) -> None:
         del server_args
+        if self.cpu_intra_op_threads is not None:
+            available_cpus = (
+                len(os.sched_getaffinity(0))
+                if hasattr(os, "sched_getaffinity")
+                else os.cpu_count() or 1
+            )
+            torch.set_num_threads(min(self.cpu_intra_op_threads, available_cpus))
+        else:
+            pass
         if not self.enable_pre_lm_encoder:
             return
         else:
