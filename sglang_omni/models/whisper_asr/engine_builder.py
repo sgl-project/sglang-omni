@@ -17,6 +17,9 @@ from sglang_omni.models.whisper_asr.request_builders import (
     MAX_PREV_CONTEXT_TOKENS,
     WhisperASRRequestData,
 )
+from sglang_omni.models.whisper_asr.text_streaming import (
+    ExactWhisperStreamOutputBuilder,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
@@ -184,6 +187,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         *,
         max_running_requests: int,
         max_new_tokens: int,
+        stream_emit_interval_s: float = 0.05,
         mem_fraction_static: float,
         enable_encoder_cuda_graph: bool = False,
         encoder_graph_batch_buckets: list[int] | None = None,
@@ -217,6 +221,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             pass
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
+        self.stream_emit_interval_s = stream_emit_interval_s
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
         self.using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
@@ -424,6 +429,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[WhisperASRRequestData]:
         return {
+            "stream_output_builder": ExactWhisperStreamOutputBuilder(
+                self.tokenizer, self.stream_emit_interval_s
+            ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,

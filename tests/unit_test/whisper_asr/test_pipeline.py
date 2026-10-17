@@ -17,6 +17,9 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.models.whisper_asr.text_streaming import (
+    ExactWhisperStreamOutputBuilder,
+)
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
@@ -242,7 +245,12 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
         mem_fraction_static=0.2,
     )
 
-    assert builder.extra_scheduler_kwargs() == {
+    scheduler_kwargs = builder.extra_scheduler_kwargs()
+    stream_builder = scheduler_kwargs.pop("stream_output_builder")
+    assert isinstance(stream_builder, ExactWhisperStreamOutputBuilder)
+    assert stream_builder.tokenizer is builder.tokenizer
+    assert stream_builder.interval_seconds == 0.05
+    assert scheduler_kwargs == {
         "enable_async_decode": True,
         "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
