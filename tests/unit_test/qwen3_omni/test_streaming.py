@@ -20,7 +20,9 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.prompt_hidden import PromptHiddenCapture
 from sglang_omni.models.qwen3_omni.request_builders import (
+    QwenThinkerRequestData,
     make_thinker_stream_output_builder,
     resolve_encoder_next_stages,
     resolve_terminal_stages,
@@ -177,6 +179,45 @@ def test_qwen_thinker_stream_builder_emits_nothing_without_an_answer_token(
     assert builder("req-1", req_data, SimpleNamespace(data=token_id)) == []
 
 
+def test_prompt_hidden_payload_waits_for_the_first_answer_and_is_sent_once():
+    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    capture = PromptHiddenCapture(positions=torch.tensor([1, 4]))
+    req_data = QwenThinkerRequestData(
+        req=SimpleNamespace(inflight_middle_chunks=1),
+        stage_payload=thinker_stage_payload(["text", "audio"], stream=True),
+        prompt_hidden_capture=capture,
+    )
+    capture.add_extend(
+        prefix_length=0,
+        hidden_states=torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]),
+    )
+    assert builder("req-1", req_data, SimpleNamespace(data=90)) == []
+    req_data.req.inflight_middle_chunks = 0
+    with pytest.raises(RuntimeError, match="Missing"):
+        builder("req-1", req_data, SimpleNamespace(data=11))
+    capture.add_extend(
+        prefix_length=3,
+        hidden_states=torch.tensor([[6.0, 7.0], [8.0, 9.0]]),
+    )
+
+    decode_message, talker_message = builder(
+        "req-1", req_data, SimpleNamespace(data=11)
+    )
+    assert decode_message.target == "decode"
+    assert decode_message.data.tolist() == [11]
+    assert decode_message.metadata == {"token_id": 11}
+    assert talker_message.target == "talker_ar"
+    assert talker_message.data.tolist() == [[2.0, 3.0], [8.0, 9.0]]
+    assert talker_message.metadata == {
+        "token_id": 11,
+        "prompt_hidden_positions": [1, 4],
+    }
+    later_messages = builder("req-1", req_data, SimpleNamespace(data=12))
+    for message in later_messages:
+        assert message.data.tolist() == [12]
+        assert message.metadata == {"token_id": 12}
+
+
 class TokenMetadataOnlyChunk:
     def __init__(self, message: OutgoingMessage):
         self.metadata = message.metadata
@@ -195,17 +236,31 @@ def text_projected(*token_ids: int) -> torch.Tensor:
     return token_embedding_rows(torch.tensor(token_ids)) * 2.0
 
 
-def test_qwen_talker_conditions_on_streamed_token_ids():
+def test_qwen_talker_conditions_on_prompt_states_and_streamed_token_ids():
     builder = make_thinker_stream_output_builder(speech_enabled=True)
-    req_data = SimpleNamespace(
+    capture = PromptHiddenCapture(positions=torch.tensor([2]))
+    capture.add_extend(
+        prefix_length=0,
+        hidden_states=torch.tensor([[0.0, 0.0], [0.0, 0.0], [9.0, 10.0]]),
+    )
+    req_data = QwenThinkerRequestData(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(["audio"], stream=False),
+        prompt_hidden_capture=capture,
     )
 
-    def talker_chunk(token_id: int) -> TokenMetadataOnlyChunk:
+    def talker_chunk(token_id: int):
         (message,) = builder("req-1", req_data, SimpleNamespace(data=token_id))
         assert message.target == "talker_ar"
-        return TokenMetadataOnlyChunk(message)
+        if "prompt_hidden_positions" in message.metadata:
+            return StreamItem(
+                chunk_id=0,
+                data=message.data,
+                from_stage="thinker",
+                metadata=message.metadata,
+            )
+        else:
+            return TokenMetadataOnlyChunk(message)
 
     prefill_builder = object.__new__(TalkerPrefillBuilder)
     prefill_builder.model = SimpleNamespace(
@@ -257,7 +312,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
 
     expected_user_rows = torch.cat(
-        [text_projected(10, 20), torch.tensor([[100.0, 100.0]]), text_projected(31)]
+        [text_projected(10, 20), torch.tensor([[109.0, 110.0]]), text_projected(31)]
     )
     expected_assistant_rows = torch.cat(
         [

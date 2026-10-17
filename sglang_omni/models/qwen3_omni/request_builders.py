@@ -21,6 +21,7 @@ from sglang_omni.models.qwen3_omni.payload_types import (
     StreamState,
     ThinkerOutput,
 )
+from sglang_omni.models.qwen3_omni.prompt_hidden import PromptHiddenCapture
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -56,6 +57,11 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
+
+
+@dataclass(kw_only=True)
+class QwenThinkerRequestData(SGLangARRequestData):
+    prompt_hidden_capture: PromptHiddenCapture | None = None
 
 
 class OptionalTalkerSamplingConfig(TypedDict, total=False):
@@ -341,8 +347,6 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
-# note (ratish): the talker projects zeros at multimodal prompt rows, so of the encoder
-# outputs it reads only what its MRoPE positions need.
 TALKER_ENCODER_OUT_KEYS = ("image_grid_thw", "video_grid_thw", "audio_feature_lengths")
 
 
@@ -692,7 +696,8 @@ def build_sglang_thinker_request(
     vocab_size: int,
     request_id: str | None = None,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
-) -> "SGLangARRequestData":
+    capture_prompt_hidden_states: bool = False,
+) -> QwenThinkerRequestData:
     """Build SGLangARRequestData from pipeline state.
 
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
@@ -785,6 +790,42 @@ def build_sglang_thinker_request(
     )
     req.tokenizer = tokenizer
 
+    prompt_hidden_capture = None
+    if capture_prompt_hidden_states and thinker_config is not None:
+        multimodal_positions = torch.isin(
+            original_input_ids,
+            original_input_ids.new_tensor(
+                [
+                    thinker_config.image_token_id,
+                    thinker_config.video_token_id,
+                    thinker_config.audio_token_id,
+                ]
+            ),
+        ).nonzero(as_tuple=True)[0]
+        if multimodal_positions.numel():
+            unsafe_token_ids = [
+                token_id
+                for modality, token_id in (
+                    ("image", thinker_config.image_token_id),
+                    ("video", thinker_config.video_token_id),
+                    ("audio", thinker_config.audio_token_id),
+                )
+                if modality not in pad_values
+            ]
+            unsafe_positions = torch.isin(
+                original_input_ids, original_input_ids.new_tensor(unsafe_token_ids)
+            ).nonzero(as_tuple=True)[0]
+            prompt_hidden_capture = PromptHiddenCapture(
+                positions=multimodal_positions,
+                cacheable_prefix_length=(
+                    int(unsafe_positions[0]) if unsafe_positions.numel() else None
+                ),
+            )
+        else:
+            pass
+    else:
+        pass
+
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
         mrope_result = compute_mrope_positions(
@@ -822,7 +863,7 @@ def build_sglang_thinker_request(
         pass
 
     # Build SGLangARRequestData — output_ids points to req.output_ids
-    data = SGLangARRequestData(
+    data = QwenThinkerRequestData(
         input_ids=input_ids.to(dtype=torch.long),
         attention_mask=(
             attention_mask if isinstance(attention_mask, torch.Tensor) else None
@@ -833,6 +874,7 @@ def build_sglang_thinker_request(
         temperature=temperature,
         output_ids=req.output_ids,
         req=req,
+        prompt_hidden_capture=prompt_hidden_capture,
     )
     data.return_logprob = bool(params.get("return_logprob"))
     return data
@@ -1082,16 +1124,32 @@ def make_thinker_stream_output_builder(
         # note (ratish): a cross-process stream chunk must be a tensor, and one
         # this small is pickled inline with the control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
-        return [
-            OutgoingMessage(
+        messages = []
+        for target in stream_targets:
+            message = OutgoingMessage(
                 request_id=request_id,
                 type="stream",
                 data=token_tensor,
                 target=target,
                 metadata={"token_id": token_id},
             )
-            for target in stream_targets
-        ]
+            if (
+                target == TALKER_STAGE
+                and isinstance(req_data, QwenThinkerRequestData)
+                and req_data.prompt_hidden_capture is not None
+            ):
+                prompt_states = req_data.prompt_hidden_capture.take_complete()
+                if prompt_states is not None:
+                    message.data = prompt_states.hidden_states
+                    message.metadata["prompt_hidden_positions"] = (
+                        prompt_states.positions.tolist()
+                    )
+                else:
+                    pass
+            else:
+                pass
+            messages.append(message)
+        return messages
 
     return _build_stream_output
 
@@ -1102,6 +1160,7 @@ def make_thinker_scheduler_adapters(
     vocab_size: int,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     stage_name: str = "thinker",
+    speech_enabled: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1118,6 +1177,9 @@ def make_thinker_scheduler_adapters(
             vocab_size=vocab_size,
             request_id=payload.request_id,
             thinker_config=thinker_config,
+            capture_prompt_hidden_states=(
+                speech_enabled and should_generate_audio_output(payload)
+            ),
         )
         req_data.stage_payload = payload
         return req_data

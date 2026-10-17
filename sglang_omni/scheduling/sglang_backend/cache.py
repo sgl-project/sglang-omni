@@ -24,6 +24,8 @@ def create_tree_cache(
     token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
     page_size: int,
     sliding_window_size: int | None,
+    *,
+    radix_cache_type: type[RadixCache] | None = None,
 ) -> BasePrefixCache:
     """Select the allocator's cache and wrap it for streaming sessions."""
     if not get_memory().disable_radix_cache and isinstance(
@@ -59,6 +61,8 @@ def create_tree_cache(
             cache: BasePrefixCache = PureSWAChunkCache(params)
         else:
             cache = ChunkCache(params)
+    elif radix_cache_type is not None:
+        cache = radix_cache_type(params)
     elif params.eviction_policy.lower() == "lru":
         cache = EvictHeapRadixCache(params)
     else:

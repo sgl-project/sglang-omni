@@ -11,12 +11,17 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
+from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
 from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.qwen3_omni.prompt_hidden import PromptHiddenCapture
+from sglang_omni.models.qwen3_omni.request_builders import QwenThinkerRequestData
 from sglang_omni.models.qwen3_omni.thinker_model_runner import (
     Qwen3OmniThinkerModelRunner,
 )
+from sglang_omni.scheduling.types import SchedulerRequest
 
 VOCAB = 64
 HIDDEN = 4
@@ -93,10 +98,345 @@ def make_batch(
     )
     schedule_batch = SimpleNamespace(
         reqs=list(requests),
+        prefix_lens=list(prefix_lens),
+        extend_lens=[len(chunk) for chunk in chunks],
         forward_mode=SimpleNamespace(is_extend=lambda: True),
         is_prefill_only=True,
     )
     return forward_batch, schedule_batch
+
+
+@pytest.mark.parametrize(
+    (
+        "prefix_length",
+        "extend_length",
+        "replayed",
+        "other_contributes",
+        "expected_mode",
+    ),
+    [
+        (0, 3, False, False, CaptureHiddenMode.NULL),
+        (3, 1, False, False, CaptureHiddenMode.FULL),
+        (3, 1, True, False, CaptureHiddenMode.NULL),
+        (3, 0, False, False, CaptureHiddenMode.NULL),
+        (4, 3, False, False, CaptureHiddenMode.NULL),
+        (0, 3, False, True, CaptureHiddenMode.FULL),
+    ],
+    ids=[
+        "leading-text",
+        "missing-row",
+        "received-replay",
+        "empty",
+        "text-gap",
+        "mixed",
+    ],
+)
+def test_prompt_capture_mode_only_includes_missing_rows_in_current_chunk(
+    prefix_length: int,
+    extend_length: int,
+    replayed: bool,
+    other_contributes: bool,
+    expected_mode: CaptureHiddenMode,
+) -> None:
+    runner = make_runner()
+    capture = PromptHiddenCapture(positions=torch.tensor([3, 7]))
+    if replayed:
+        capture.add_extend(prefix_length=3, hidden_states=torch.ones(1, HIDDEN))
+    else:
+        pass
+    requests = [
+        SchedulerRequest(
+            request_id="chunked",
+            data=QwenThinkerRequestData(prompt_hidden_capture=capture),
+        ),
+        SchedulerRequest(
+            request_id="other",
+            data=QwenThinkerRequestData(
+                prompt_hidden_capture=PromptHiddenCapture(positions=torch.tensor([9]))
+            ),
+        ),
+    ]
+    schedule = SimpleNamespace(
+        prefix_lens=[prefix_length, 9],
+        extend_lens=[extend_length, int(other_contributes)],
+    )
+
+    assert (
+        runner.requested_capture_hidden_mode_prefill(schedule, requests)
+        == expected_mode
+    )
+
+
+@pytest.mark.parametrize("extend_lengths", [[1, 1], [2, 0]])
+def test_prompt_capture_preserves_flat_batch_spans_and_single_hidden_rows(
+    extend_lengths,
+):
+    runner = make_runner()
+    position = 3 + extend_lengths[0] - 1
+    capture = PromptHiddenCapture(positions=torch.tensor([position]))
+    requests = [
+        SchedulerRequest(
+            request_id="speech",
+            data=QwenThinkerRequestData(prompt_hidden_capture=capture),
+        ),
+        SchedulerRequest(request_id="text", data=QwenThinkerRequestData()),
+    ]
+    schedule = SimpleNamespace(prefix_lens=[3, 0], extend_lens=extend_lengths)
+    batch = SimpleNamespace(
+        capture_hidden_mode=runner.requested_capture_hidden_mode_prefill(
+            schedule, requests
+        ),
+        extend_prefix_lens_cpu=[3, 0],
+        extend_seq_lens_cpu=extend_lengths,
+    )
+    assert batch.capture_hidden_mode == CaptureHiddenMode.FULL
+    source_states = torch.tensor([[10.0, 11.0], [20.0, 21.0]])
+    runner.post_prefill(
+        SimpleNamespace(logits_output=SimpleNamespace(hidden_states=source_states)),
+        batch,
+        None,
+        requests,
+    )
+    source_states.fill_(-1)
+    prompt_states = capture.take_complete()
+    assert prompt_states.hidden_states.shape == (1, 2)
+    assert prompt_states.hidden_states.tolist() == (
+        [[10.0, 11.0]] if extend_lengths[0] == 1 else [[20.0, 21.0]]
+    )
+    assert requests[1].data.prompt_hidden_capture is None
+    assert (
+        runner.requested_capture_hidden_mode_prefill(schedule, requests)
+        == CaptureHiddenMode.NULL
+    )
+    assert (
+        runner.requested_capture_hidden_mode_decode(None, requests)
+        == CaptureHiddenMode.NULL
+    )
+
+
+@pytest.mark.parametrize(
+    ("hidden_states", "extend_lengths", "prefix_lengths", "error_message"),
+    [
+        (None, [1], [0], "2D prefill hidden states"),
+        (torch.zeros(HIDDEN), [1], [0], "2D prefill hidden states"),
+        (torch.zeros(2, HIDDEN), [1, 1], [0, 0], "batch lengths"),
+        (torch.zeros(2, HIDDEN), [1], [0], "hidden rows"),
+    ],
+    ids=["missing-states", "wrong-rank", "request-count", "row-count"],
+)
+def test_prompt_capture_rejects_misaligned_prefill_before_storing_states(
+    hidden_states: torch.Tensor | None,
+    extend_lengths: list[int],
+    prefix_lengths: list[int],
+    error_message: str,
+) -> None:
+    runner = make_runner()
+    capture = PromptHiddenCapture(positions=torch.tensor([0]))
+    request = SchedulerRequest(
+        request_id="speech",
+        data=QwenThinkerRequestData(prompt_hidden_capture=capture),
+    )
+    batch = SimpleNamespace(
+        capture_hidden_mode=CaptureHiddenMode.FULL,
+        extend_seq_lens_cpu=extend_lengths,
+        extend_prefix_lens_cpu=prefix_lengths,
+    )
+
+    with pytest.raises(RuntimeError, match=error_message):
+        runner.post_prefill(
+            SimpleNamespace(logits_output=SimpleNamespace(hidden_states=hidden_states)),
+            batch,
+            None,
+            [request],
+        )
+
+    assert capture.hidden_states is None
+    assert capture.needs_capture
+
+
+@pytest.mark.parametrize("enable_sidecar", [False, True])
+@pytest.mark.parametrize("capture_prompt", [False, True])
+def test_replayed_qwen_prompt_uses_its_original_multimodal_embeddings(
+    enable_sidecar: bool, capture_prompt: bool
+) -> None:
+    runner = make_runner()
+    runner.enable_prefill_sidecar = enable_sidecar
+    prompt = [AUDIO_ID, 7, AUDIO_ID, 8]
+    audio_embeddings = torch.tensor([[3.0] * HIDDEN, [9.0] * HIDDEN])
+    model_inputs = {"audio_embeds": audio_embeddings}
+    request = make_request(prompt, model_inputs, positions=make_positions(audio=(0, 2)))
+    scheduler_request = SchedulerRequest(
+        request_id="speech",
+        data=QwenThinkerRequestData(
+            req=request,
+            model_inputs=model_inputs,
+            prompt_hidden_capture=(
+                PromptHiddenCapture(positions=torch.tensor([0, 2]))
+                if capture_prompt
+                else None
+            ),
+        ),
+    )
+
+    for prefix, length, middle_chunks in [
+        (0, 2, 1),
+        (2, 2, 0),
+        (2, 2, 0),
+        (0, 4, 0),
+    ]:
+        request.inflight_middle_chunks = middle_chunks
+        batch, schedule = make_batch(
+            [request],
+            chunks=[prompt[prefix : prefix + length]],
+            prefix_lens=[prefix],
+        )
+        runner.before_prefill(batch, schedule, [scheduler_request])
+        runner.custom_prefill_forward(batch, schedule, [scheduler_request])
+        sidecar = get_omni_prefill_inputs(batch)
+        embeddings = sidecar.input_embeds if sidecar is not None else batch.input_embeds
+        expected = runner.embed_tokens(batch.input_ids).detach()
+        for position, audio_embedding in zip((0, 2), audio_embeddings):
+            if prefix <= position < prefix + length:
+                expected[position - prefix] = audio_embedding
+            else:
+                pass
+        torch.testing.assert_close(embeddings, expected)
+        if middle_chunks == 0:
+            assert request.omni_model_inputs is None
+        else:
+            pass
+    assert scheduler_request.data.model_inputs["audio_embeds"] is audio_embeddings
+
+
+@pytest.mark.parametrize("capture_prompt", [False, True])
+@pytest.mark.parametrize("combined_deepstack", [False, True])
+def test_replayed_visual_prompt_preserves_embeddings_and_deepstack_order(
+    capture_prompt: bool, combined_deepstack: bool
+) -> None:
+    runner = make_runner()
+    attention_backend = SimpleNamespace(init_forward_metadata=lambda batch: None)
+    runner.tp_worker.model_runner = SimpleNamespace(attn_backend=attention_backend)
+    prompt = [VIDEO_ID, 7, IMAGE_ID, 8, IMAGE_ID, VIDEO_ID]
+    visual_positions = [0, 2, 4, 5]
+    image_embeddings = torch.tensor([[3.0] * HIDDEN, [5.0] * HIDDEN])
+    video_embeddings = torch.tensor([[2.0] * HIDDEN, [7.0] * HIDDEN])
+    deepstack_layers = [
+        torch.tensor(
+            [[20.0] * HIDDEN, [30.0] * HIDDEN, [50.0] * HIDDEN, [70.0] * HIDDEN]
+        ),
+        torch.tensor(
+            [[21.0] * HIDDEN, [31.0] * HIDDEN, [51.0] * HIDDEN, [71.0] * HIDDEN]
+        ),
+    ]
+    model_inputs = {"image_embeds": image_embeddings, "video_embeds": video_embeddings}
+    if combined_deepstack:
+        model_inputs["deepstack_visual_embeds"] = deepstack_layers
+    else:
+        model_inputs["image_deepstack_visual_embeds"] = [
+            layer[[1, 2]] for layer in deepstack_layers
+        ]
+        model_inputs["video_deepstack_visual_embeds"] = [
+            layer[[0, 3]] for layer in deepstack_layers
+        ]
+    request = make_request(prompt, model_inputs)
+    scheduler_request = SchedulerRequest(
+        request_id="visual",
+        data=QwenThinkerRequestData(
+            req=request,
+            model_inputs=model_inputs,
+            prompt_hidden_capture=(
+                PromptHiddenCapture(positions=torch.tensor(visual_positions))
+                if capture_prompt
+                else None
+            ),
+        ),
+    )
+    expected_embeddings = runner.embed_tokens(torch.tensor(prompt)).detach()
+    expected_embeddings[[2, 4]] = image_embeddings
+    expected_embeddings[[0, 5]] = video_embeddings
+    expected_deepstack = torch.zeros(len(prompt), 2 * HIDDEN)
+    expected_deepstack[visual_positions] = torch.cat(deepstack_layers, dim=-1)
+
+    for prefix, length, middle_chunks in [
+        (0, 3, 1),
+        (3, 3, 0),
+        (3, 3, 0),
+        (0, 6, 0),
+    ]:
+        request.inflight_middle_chunks = middle_chunks
+        batch, schedule = make_batch(
+            [request],
+            chunks=[prompt[prefix : prefix + length]],
+            prefix_lens=[prefix],
+        )
+
+        def outer_model(**kwargs):
+            torch.testing.assert_close(
+                kwargs["input_embeds"], expected_embeddings[prefix : prefix + length]
+            )
+            torch.testing.assert_close(
+                kwargs["input_deepstack_embeds"],
+                expected_deepstack[prefix : prefix + length],
+            )
+            return SimpleNamespace(hidden_states=None)
+
+        runner.outer_model = outer_model
+        runner.before_prefill(batch, schedule, [scheduler_request])
+        result = runner.custom_prefill_forward(batch, schedule, [scheduler_request])
+        assert result is not None
+        assert result.can_run_cuda_graph is False
+        if middle_chunks == 0:
+            assert request.omni_model_inputs is None
+        else:
+            pass
+
+    assert scheduler_request.data.model_inputs is model_inputs
+
+
+def test_qwen_deepstack_prefill_reaches_the_scoped_model_wrapper():
+    runner = make_runner()
+    attention_backend = SimpleNamespace(init_forward_metadata=lambda batch: None)
+    runner.tp_worker.model_runner = SimpleNamespace(attn_backend=attention_backend)
+    selected_states = torch.tensor([[4.0, 5.0], [6.0, 7.0]])
+    batch = SimpleNamespace(
+        input_ids=torch.tensor([IMAGE_ID, 7]),
+        positions=torch.tensor([0, 1]),
+        mrope_positions=None,
+        capture_hidden_mode=CaptureHiddenMode.FULL,
+        extend_prefix_lens_cpu=[0],
+        extend_seq_lens_cpu=[2],
+    )
+
+    def outer_model(**kwargs):
+        assert kwargs["input_ids"] is batch.input_ids
+        assert kwargs["forward_batch"] is batch
+        assert kwargs["input_deepstack_embeds"].tolist() == [
+            [2.0] * HIDDEN,
+            [0.0] * HIDDEN,
+        ]
+        return SimpleNamespace(hidden_states=selected_states)
+
+    runner.outer_model = outer_model
+    result = runner.forward_with_omni_embeds(
+        batch,
+        torch.zeros(2, HIDDEN),
+        [torch.full((1, HIDDEN), 2.0)],
+        torch.tensor([True, False]),
+    )
+    capture = PromptHiddenCapture(positions=torch.tensor([0]))
+    runner.post_prefill(
+        result,
+        batch,
+        None,
+        [
+            SchedulerRequest(
+                request_id="image",
+                data=QwenThinkerRequestData(prompt_hidden_capture=capture),
+            )
+        ],
+    )
+    assert capture.take_complete().hidden_states.tolist() == [[4.0, 5.0]]
+    assert result.can_run_cuda_graph is False
 
 
 def test_custom_prefill_forward_records_eager_fallback(

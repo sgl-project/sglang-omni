@@ -11,6 +11,7 @@ from typing_extensions import Unpack
 
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.mem_cache.radix_cache import RadixCache
 
     from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.vendor.sglang.core import ServerArgs
@@ -39,6 +40,7 @@ class InfrastructureOptions(TypedDict, total=False):
     weight_prefix: str | None
     total_gpu_memory_fraction: float | None
     enable_prefill_input_embeds: bool
+    radix_cache_type: type[RadixCache] | None
     before_memory_pool: Callable[["ModelWorker | MlxTpModelWorker"], None] | None
     mlx_model_path: str | None
     mlx_model_revision: str | None
@@ -109,6 +111,7 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
+    radix_cache_type: type[RadixCache] | None = None,
     before_memory_pool: (
         Callable[["ModelWorker | MlxTpModelWorker"], None] | None
     ) = None,
@@ -206,6 +209,7 @@ def create_sglang_infrastructure(
         token_to_kv_pool_allocator,
         get_schedule().page_size,
         model_runner.sliding_window_size,
+        radix_cache_type=radix_cache_type,
     )
 
     return (

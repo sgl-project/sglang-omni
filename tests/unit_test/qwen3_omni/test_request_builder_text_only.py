@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     build_thinker_request,
     compute_mrope_positions,
+    make_thinker_scheduler_adapters,
 )
 from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
@@ -68,6 +69,97 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
     assert (
         getattr(sglang_request.req, "_omni_mm_positions", None) is None
     )  # noqa: leading-underscore  # production name
+
+
+@pytest.mark.parametrize(
+    ("speech_enabled", "output_modalities", "prompt_ids", "expected_positions"),
+    [
+        (True, ["audio"], [4, 55, 77, 66, 5], [1, 2, 3]),
+        (True, None, [4, 77, 5], [1]),
+        (True, ["text"], [4, 77, 5], []),
+        (False, ["audio"], [4, 77, 5], []),
+        (True, ["audio"], [4, 5], []),
+    ],
+)
+def test_prompt_capture_admission_is_scoped_to_multimodal_speech(
+    monkeypatch, speech_enabled, output_modalities, prompt_ids, expected_positions
+):
+    patch_sampling_validation(monkeypatch)
+    request_builder, _ = make_thinker_scheduler_adapters(
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        thinker_config=SimpleNamespace(
+            image_token_id=55, video_token_id=66, audio_token_id=77
+        ),
+        speech_enabled=speech_enabled,
+    )
+    payload = make_qwen_payload(
+        make_qwen_state(prompt={"input_ids": torch.tensor(prompt_ids)})
+    )
+    payload.request.metadata = (
+        {} if output_modalities is None else {"output_modalities": output_modalities}
+    )
+    first = request_builder(payload)
+    second = request_builder(payload)
+    if expected_positions:
+        assert first.prompt_hidden_capture.positions.tolist() == expected_positions
+        assert second.prompt_hidden_capture.positions.tolist() == expected_positions
+        assert (
+            first.prompt_hidden_capture.cacheable_prefix_length == expected_positions[0]
+        )
+        assert (
+            second.prompt_hidden_capture.cacheable_prefix_length
+            == expected_positions[0]
+        )
+    else:
+        assert first.prompt_hidden_capture is None
+        assert second.prompt_hidden_capture is None
+    assert first.req.extra_key is None
+    assert second.req.extra_key is None
+
+
+@pytest.mark.parametrize(
+    ("media_cache_keys", "expected_prefix_length"),
+    [
+        ({"image": "image-a", "audio": "audio-a"}, None),
+        ({"image": "image-a"}, 3),
+        ({"audio": "audio-a"}, 1),
+        ({}, 1),
+    ],
+)
+def test_prompt_cache_reuses_only_stably_keyed_media(
+    monkeypatch, media_cache_keys, expected_prefix_length
+):
+    patch_sampling_validation(monkeypatch)
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.request_builders.compute_mrope_positions",
+        lambda *arguments: None,
+    )
+    state = make_qwen_state(
+        prompt={"input_ids": torch.tensor([4, 55, 5, 77, 6])},
+        thinker_inputs={"model_inputs": {}, "media_cache_keys": media_cache_keys},
+    )
+    requests = [
+        build_sglang_thinker_request(
+            state,
+            params={},
+            tokenizer=FakeQwenTokenizer(),
+            vocab_size=256,
+            thinker_config=SimpleNamespace(
+                image_token_id=55, video_token_id=66, audio_token_id=77
+            ),
+            capture_prompt_hidden_states=True,
+        )
+        for _ in range(2)
+    ]
+    assert requests[0].req.origin_input_ids == requests[1].req.origin_input_ids
+    for request in requests:
+        assert request.req.extra_key is None
+        assert (
+            request.prompt_hidden_capture.cacheable_prefix_length
+            == expected_prefix_length
+        )
+        assert request.prompt_hidden_capture.positions.tolist() == [1, 3]
 
 
 def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch):

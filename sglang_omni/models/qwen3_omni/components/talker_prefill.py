@@ -197,13 +197,41 @@ class TalkerPrefillBuilder:
         assistant_embed = self.load_prompt_token_embeddings(assistant_token_ids)
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
-        thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        # note (ratish): the talker projects zeros in place of the thinker's hidden at
-        # multimodal prompt rows, the only prompt rows the hidden is read at.
-        thinker_hidden = torch.cat(
-            [torch.zeros_like(prompt_embed), assistant_embed], dim=0
-        )
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
+        thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
+        prompt_hidden = torch.zeros_like(prompt_embed)
+        required_positions = multimodal_mask[: prompt_ids.numel()].nonzero(
+            as_tuple=True
+        )[0]
+        if required_positions.numel():
+            prompt_chunk = thinker_chunks[0]
+            captured_positions = (prompt_chunk.metadata or {}).get(
+                "prompt_hidden_positions"
+            )
+            if (
+                not isinstance(captured_positions, list)
+                or any(type(position) is not int for position in captured_positions)
+                or captured_positions != required_positions.cpu().tolist()
+            ):
+                raise ValueError(
+                    "Missing or misaligned multimodal prompt hidden positions"
+                )
+            else:
+                pass
+            captured_states = prompt_chunk.data
+            if (
+                not isinstance(captured_states, torch.Tensor)
+                or captured_states.shape
+                != (required_positions.numel(), prompt_embed.shape[1])
+                or not torch.is_floating_point(captured_states)
+            ):
+                raise ValueError("Invalid multimodal prompt hidden state dimensions")
+            else:
+                pass
+            prompt_hidden[required_positions] = captured_states.to(prompt_hidden)
+        else:
+            pass
+        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
         speaker_id = resolve_speaker_id(payload.request.params, self.speaker_map)

@@ -11,14 +11,16 @@ from typing import TypeGuard
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
 
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
     get_omni_prefill_inputs,
 )
+from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.qwen3_omni.request_builders import QwenThinkerRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
 
 _PREFILL_AUDIO_INPUT_KEYS = frozenset(
@@ -41,13 +43,70 @@ class PrefillDisposition:
 
 
 class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
-    """Adopt the shared prefill sidecar for text/audio-to-text prefills.
+    """Prepare Qwen multimodal prefills and retain selected prompt states."""
 
-    This class only qualifies Qwen request payloads. SGLang continues to own
-    graph admission, bucket selection, padding, replay metadata, and eager
-    fallback. Unsupported requests deliberately delegate to the inherited
-    eager multimodal path.
-    """
+    enable_prefill_sidecar: bool = True
+
+    def requested_capture_hidden_mode_prefill(
+        self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
+        if any(
+            isinstance(request.data, QwenThinkerRequestData)
+            and request.data.prompt_hidden_capture is not None
+            and bool(
+                request.data.prompt_hidden_capture.missing_in_extend(
+                    prefix_length=prefix_length, extend_length=extend_length
+                ).any()
+            )
+            for request, prefix_length, extend_length in zip(
+                requests, schedule_batch.prefix_lens, schedule_batch.extend_lens
+            )
+        ):
+            return CaptureHiddenMode.FULL
+        else:
+            return CaptureHiddenMode.NULL
+
+    def post_prefill(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        if forward_batch.capture_hidden_mode != CaptureHiddenMode.FULL:
+            return
+        else:
+            pass
+        hidden_states = result.logits_output.hidden_states
+        if hidden_states is None or hidden_states.ndim != 2:
+            raise RuntimeError("Prompt capture requires 2D prefill hidden states")
+        else:
+            pass
+        extend_lengths = forward_batch.extend_seq_lens_cpu
+        prefix_lengths = forward_batch.extend_prefix_lens_cpu
+        if not len(extend_lengths) == len(prefix_lengths) == len(requests):
+            raise RuntimeError("Prompt capture batch lengths do not match requests")
+        elif hidden_states.shape[0] != sum(extend_lengths):
+            raise RuntimeError("Prompt capture hidden rows do not match extend lengths")
+        else:
+            pass
+        batch_start = 0
+        for request, prefix_length, extend_length in zip(
+            requests, prefix_lengths, extend_lengths
+        ):
+            batch_end = batch_start + extend_length
+            request_data = request.data
+            if (
+                isinstance(request_data, QwenThinkerRequestData)
+                and request_data.prompt_hidden_capture is not None
+            ):
+                request_data.prompt_hidden_capture.add_extend(
+                    prefix_length=prefix_length,
+                    hidden_states=hidden_states[batch_start:batch_end],
+                )
+            else:
+                pass
+            batch_start = batch_end
 
     @staticmethod
     def origin_num_tokens(value: object) -> int | None:
@@ -288,6 +347,10 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> PrefillDisposition:
+        if not self.enable_prefill_sidecar:
+            return PrefillDisposition(_UNSUPPORTED)
+        else:
+            pass
         if len(requests) != getattr(forward_batch, "batch_size", None):
             return PrefillDisposition(_UNSUPPORTED)
         else:
@@ -353,6 +416,37 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> None:
+        for request_index, request in enumerate(requests):
+            if (
+                not isinstance(request, SchedulerRequest)
+                or not isinstance(request.data, QwenThinkerRequestData)
+                or not request.data.model_inputs
+            ):
+                continue
+            else:
+                pass
+            request_data = request.data
+            scheduled_request = schedule_batch.reqs[request_index]
+            scheduled_request.omni_model_inputs = request_data.model_inputs
+            prefix_length = forward_batch.extend_prefix_lens_cpu[request_index]
+            positions = self.req_mm_token_positions(
+                scheduled_request, request_data.model_inputs.get("pad_values", {})
+            )
+            consumed = {
+                modality: int((modality_positions < prefix_length).sum())
+                for modality, modality_positions in positions.items()
+                if f"{modality}_embeds" in request_data.model_inputs
+            }
+            if "deepstack_visual_embeds" in request_data.model_inputs:
+                consumed["_visual"] = int(
+                    (positions["image"] < prefix_length).sum()
+                    + (positions["video"] < prefix_length).sum()
+                )
+            else:
+                pass
+            # Note (wenyao): the shared prefill injector reads this exact attribute.
+            scheduled_request._omni_consumed = consumed  # noqa: leading-underscore
+
         disposition = self.classify_prefill(forward_batch, schedule_batch, requests)
         if disposition.kind != _SIDECAR:
             return
@@ -416,6 +510,39 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         else:
             pass
         return result
+
+    def forward_with_omni_embeds(
+        self,
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor,
+        deepstack_visual_embeds: list[torch.Tensor] | None = None,
+        visual_pos_masks: torch.Tensor | None = None,
+    ) -> GenerationBatchResult:
+        attention_backend = self.tp_worker.model_runner.attn_backend
+        attention_backend.init_forward_metadata(forward_batch)
+        deepstack_input = None
+        if deepstack_visual_embeds is not None and visual_pos_masks is not None:
+            visual_embeddings = torch.cat(
+                [embeddings.to(input_embeds) for embeddings in deepstack_visual_embeds],
+                dim=-1,
+            )
+            deepstack_input = input_embeds.new_zeros(
+                (input_embeds.shape[0], visual_embeddings.shape[1])
+            )
+            deepstack_input[visual_pos_masks] = visual_embeddings
+        else:
+            pass
+        with attn_forward_context(attention_backend):
+            logits_output = self.outer_model(
+                input_ids=forward_batch.input_ids,
+                positions=forward_batch.positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                input_deepstack_embeds=deepstack_input,
+            )
+        return GenerationBatchResult(
+            logits_output=logits_output, can_run_cuda_graph=False
+        )
 
 
 __all__ = ["Qwen3OmniThinkerModelRunner"]
