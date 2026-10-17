@@ -1640,6 +1640,43 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
     assert seen_calls == ["eager"]
 
 
+def test_s2pro_semantic_ids_match_per_code_token_lookup() -> None:
+    tokenizer = FakeFishTokenizer()
+    adapter = S2ProTokenizerAdapter(tokenizer)
+    codes = torch.tensor([[0, 7, 4095, 31], [1, 2, 3, 4]], dtype=torch.long)
+    reference = Reference(audio_bytes=b"", text="ref", vq_codes=codes)
+
+    prompt = adapter.build_prompt("hi", references=[reference], num_codebooks=2)
+
+    expected = tokenizer.convert_tokens_to_ids(
+        [f"<|semantic:{int(code)}|>" for code in codes[0]]
+    )
+    vq_ids = prompt["input_ids"][prompt["vq_mask_tokens"]].tolist()
+    assert vq_ids == expected
+
+
+def test_s2pro_prompt_rejects_semantic_code_out_of_range() -> None:
+    adapter = S2ProTokenizerAdapter(FakeFishTokenizer())
+    reference = Reference(
+        audio_bytes=b"",
+        text="ref",
+        vq_codes=torch.tensor([[4096, 1], [3, 4]], dtype=torch.long),
+    )
+
+    with pytest.raises(ValueError, match="out of range"):
+        adapter.build_prompt("hi", references=[reference], num_codebooks=2)
+
+
+def test_s2pro_adapter_rejects_non_contiguous_semantic_ids() -> None:
+    tokenizer = FakeFishTokenizer()
+    tokenizer.convert_tokens_to_ids = lambda tokens: [
+        200 + index + (index >= 7) for index, _ in enumerate(tokens)
+    ]
+
+    with pytest.raises(ValueError, match="contiguous"):
+        S2ProTokenizerAdapter(tokenizer)
+
+
 class WaveformBitsCodec:
     sample_rate: int = 44100
 
