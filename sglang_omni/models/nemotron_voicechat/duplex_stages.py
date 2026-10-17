@@ -196,8 +196,9 @@ def create_codec(
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
+    # note (Xinhao Tan): CodecHooks captures its own graph around the eager decoder.
     codec_executor = create_code2wav_executor(
-        model_path, dtype=dtype, device=device, gpu_id=gpu_id
+        model_path, dtype=dtype, device=device, gpu_id=gpu_id, enable_cuda_graph=False
     )
     hooks = CodecHooks(codec_executor.decoder, codec_executor.device)
     # Capture before serving to keep its startup cost off live audio processing.
