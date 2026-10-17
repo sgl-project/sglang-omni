@@ -45,6 +45,9 @@ const std::vector<float> &PeriodicHannWindow();
 // Whisper-style log-mel in float32 on MLX, [mel_bins, frames]. The reference
 // layout drops the final centered STFT frame; the Swift layout keeps it.
 mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout);
+mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout,
+                        const mlx::core::array &window,
+                        const mlx::core::array &filters);
 
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;
