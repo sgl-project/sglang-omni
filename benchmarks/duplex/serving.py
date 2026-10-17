@@ -100,7 +100,11 @@ def score_session(
     for record in (record for record in records if record.direction == "receive"):
         event = WireEvent.model_validate(record.event)
         if event.type == "sglang.unit.done" and is_native:
-            unit_lags_s.append(record.time_s - ready_s(unit_media_time(event)))
+            media_time = unit_media_time(event)
+            if media_time.duration_ms > 0:
+                unit_lags_s.append(record.time_s - ready_s(media_time))
+            else:
+                pass
         elif event.type == "response.created":
             assert event.response is not None
             reply_created_s[event.response.id] = record.time_s
