@@ -93,6 +93,49 @@ def test_top_p_drops_the_token_that_crosses_p(
     assert set(sampled.tolist()) == kept_tokens
 
 
+@pytest.mark.parametrize("top_p", [0.9, 0.95])
+@pytest.mark.parametrize("is_repeat", [False, True])
+@pytest.mark.parametrize(
+    ("probabilities", "can_sample_eos"),
+    [
+        ([0.8917, 0.1065, 0.0018], True),
+        ([0.97, 0.0282, 0.0018], False),
+    ],
+)
+def test_semantic_nucleus_keeps_crossing_eos_without_exempting_it_from_top_p(
+    top_p: float, is_repeat: bool, probabilities: list[float], can_sample_eos: bool
+) -> None:
+    torch.manual_seed(101)
+    repeated_token_id = SEMANTIC_BEGIN_ID + 5
+    logits = torch.full((DRAW_COUNT, TEXT_VOCAB_SIZE), float("-inf"))
+    logits[:, repeated_token_id] = math.log(probabilities[0])
+    logits[:, EOS_TOKEN_ID] = math.log(probabilities[1])
+    logits[:, repeated_token_id + 1] = math.log(probabilities[2])
+    window = torch.full((DRAW_COUNT, 16), EMPTY_WINDOW_TOKEN)
+    if is_repeat:
+        window[:, 0] = repeated_token_id
+    else:
+        pass
+
+    main_tokens, codebook_zero = sample_semantic_with_ras(
+        logits,
+        candidate_token_ids(),
+        window,
+        *request_parameters(DRAW_COUNT, 1.0, 30, top_p),
+        SEMANTIC_BEGIN_ID,
+        CODEBOOK_SIZE,
+        None,
+    )
+
+    expected_tokens = (
+        {repeated_token_id, EOS_TOKEN_ID} if can_sample_eos else {repeated_token_id}
+    )
+    assert set(main_tokens.tolist()) == expected_tokens
+    assert torch.equal(
+        codebook_zero, (main_tokens - SEMANTIC_BEGIN_ID).clamp(0, CODEBOOK_SIZE - 1)
+    )
+
+
 def test_top_k_and_temperature_limit_the_candidates() -> None:
     torch.manual_seed(0)
     logits = repeated([2.0, 1.9, 1.8, 1.7, 1.6], DRAW_COUNT)
@@ -145,7 +188,13 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
     torch.manual_seed(3)
     first_draw = candidates[
         sample_top_k_top_p(
-            candidate_logits, temperature, top_k, top_p, None, FIRST_DRAW_STREAM
+            candidate_logits,
+            temperature,
+            top_k,
+            top_p,
+            None,
+            FIRST_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     second_draw = candidates[
@@ -154,6 +203,7 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
             *request_parameters(rows, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P),
             None,
             RAS_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     window = torch.full((rows, 16), EMPTY_WINDOW_TOKEN)
@@ -203,7 +253,13 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
     torch.manual_seed(3)
     first_draw = candidates[
         sample_top_k_top_p(
-            candidate_logits, temperature, top_k, top_p, None, FIRST_DRAW_STREAM
+            candidate_logits,
+            temperature,
+            top_k,
+            top_p,
+            None,
+            FIRST_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     second_draw = candidates[
@@ -212,6 +268,7 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
             *request_parameters(rows, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P),
             None,
             RAS_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     window = torch.full((rows, 16), EMPTY_WINDOW_TOKEN)
@@ -393,11 +450,11 @@ def rule_probabilities(
     kept = torch.zeros_like(probabilities, dtype=torch.bool)
     cumulative_probability = 0.0
     for rank, column in enumerate(order.tolist()):
-        cumulative_probability += float(probabilities[column])
         if rank > 0 and (rank >= top_k or cumulative_probability > top_p):
             break
         else:
             kept[column] = True
+            cumulative_probability += float(probabilities[column])
     kept_probabilities = probabilities * kept
     return kept_probabilities / kept_probabilities.sum()
 
