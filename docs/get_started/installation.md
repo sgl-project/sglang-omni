@@ -10,7 +10,7 @@ and CUDA are prebuilt. For other platforms, use the dedicated pages:
 [Intel CPU](./installation_cpu.md), and
 [MUSA](./installation_musa.md).
 
-## 🐳 Option A: Docker (recommended)
+##  Option A: Docker (recommended)
 
 **1. Pull the image**
 
