@@ -459,7 +459,7 @@ class Qwen3TTSCodePredictor(nn.Module):
 class Qwen3TTSPromptConstants:
     """Prompt rows that depend on the checkpoint alone, each embedded once the way a
     request embeds it, as (1, rows, hidden); feedback_pad_embed is the one (hidden,)
-    row decode reads after the text ends, in the feedback buffer's dtype."""
+    row decode reads after the text ends, in the codec embedding's dtype."""
 
     tts_bos_embed: torch.Tensor
     tts_eos_embed: torch.Tensor
@@ -473,7 +473,7 @@ class Qwen3TTSPromptConstants:
 class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    Expects model (embedding tables and the feedback buffer), text_projection,
+    Expects model (embedding tables), text_projection,
     code_predictor.model.codec_embedding, speaker_encoder, speaker_encoder_graph_runner,
     speech_tokenizer, config, root_config and speaker_encoder_sample_rate on the instance.
     """
