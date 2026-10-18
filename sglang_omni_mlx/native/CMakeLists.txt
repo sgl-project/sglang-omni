@@ -244,7 +244,8 @@ add_library(auk_model STATIC src/auk/auk_conditioner.cpp src/auk/auk_conditioner
   src/auk/auk_dit.cpp src/auk/auk_dit_checkpoint.cpp src/auk/auk_vae.cpp src/auk/auk_model.cpp)
 target_link_libraries(auk_model PUBLIC common audio_resample)
 target_compile_options(auk_model PRIVATE -Wall -Wextra)
-add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_tts_service.cpp)
+add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_tts_service.cpp
+  src/auk/auk_request.cpp)
 target_link_libraries(auk_server PRIVATE auk_model omni_service)
 add_executable(auk_probe tools/auk_probe.cpp)
 target_link_libraries(auk_probe PRIVATE auk_model)
