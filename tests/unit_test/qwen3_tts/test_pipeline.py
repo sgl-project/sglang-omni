@@ -7978,22 +7978,23 @@ def test_qwen3_tts_decode_forward_reads_the_decode_feedback_table(
     assert torch.equal(output, model.decode_feedback_embedding.weight[:1])
 
 
-def test_qwen3_tts_extend_without_input_embeds_embeds_codec_ids(
+def test_qwen3_tts_extend_forward_reads_its_input_embeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
     model = layerless_qwen3_tts_text_model(decode_rows=1)
-    input_ids = torch.tensor([3, 1, 4, 1, 5])
+    input_embeds = torch.arange(20, dtype=torch.float32).reshape(5, 4)
 
     output = model.forward(
-        input_ids=input_ids,
+        input_ids=torch.tensor([3, 1, 4, 1, 5]),
         positions=torch.arange(5),
         forward_batch=SimpleNamespace(
             forward_mode=SimpleNamespace(is_decode=lambda: False),
         ),
+        input_embeds=input_embeds,
     )
 
-    assert torch.equal(output, model.codec_embedding(input_ids))
+    assert torch.equal(output, input_embeds)
 
 
 def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(

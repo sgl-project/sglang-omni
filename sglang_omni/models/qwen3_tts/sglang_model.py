@@ -384,11 +384,8 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if input_embeds is None:
-            if forward_batch.forward_mode.is_decode():
-                hidden_states = self.decode_feedback_embedding(input_ids)
-            else:
-                hidden_states = self.codec_embedding(input_ids)
+        if forward_batch.forward_mode.is_decode():
+            hidden_states = self.decode_feedback_embedding(input_ids)
         else:
             hidden_states = input_embeds
 
