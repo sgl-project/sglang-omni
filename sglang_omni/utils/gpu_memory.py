@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from ctypes import _Pointer as Pointer
 from dataclasses import dataclass
@@ -61,6 +61,29 @@ def parse_cuda_visible_devices(value: str | None = None) -> list[int | str]:
         except ValueError:
             devices.append(item)
     return devices
+
+
+def narrow_visible_devices(
+    visible: str | None, gpu_ids: Sequence[int], variable: str
+) -> str:
+    """The ``variable`` value that exposes only ``gpu_ids``, in their order.
+
+    The ids index the devices that ``visible`` lists, or the physical
+    devices when it is unset.
+    """
+    if not visible:
+        return ",".join(str(gpu_id) for gpu_id in gpu_ids)
+    else:
+        pass
+    devices = [item.strip() for item in visible.split(",")]
+    if max(gpu_ids) >= len(devices):
+        raise ValueError(
+            f"GPUs {list(gpu_ids)} need {max(gpu_ids) + 1} visible devices, "
+            f"but {variable} only exposes {devices}"
+        )
+    else:
+        pass
+    return ",".join(devices[gpu_id] for gpu_id in gpu_ids)
 
 
 def resolve_visible_device_id(

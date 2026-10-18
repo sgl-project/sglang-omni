@@ -83,6 +83,7 @@ class StageLaunchConfig:
         default_factory=dict
     )
     require_factory_gpu_id: bool = False
+    allow_child_processes: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # note (Richard Wang): the env_defaults keys the pipeline or stage config
     # wrote, as opposed to values a model derived at launch.
@@ -151,6 +152,17 @@ class StageLaunchConfig:
         return self.role in {"single", "leader"}
 
     @property
+    def owned_gpu_ids(self) -> list[int]:
+        """The placed GPUs, including those a native engine reserves."""
+        runtime_gpu_ids = self.factory_kwargs.get("runtime_gpu_ids")
+        if runtime_gpu_ids is not None:
+            return list(runtime_gpu_ids)
+        elif self.gpu_id is not None:
+            return [int(self.gpu_id)]
+        else:
+            return []
+
+    @property
     def is_leader(self) -> bool:
         return self.role == "leader"
 
@@ -178,8 +190,19 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
     exclusively. Its CUDA env remap and NCCL settings depend on being the sole
     tenant, so mixing a TP stage with any other stage in the same process group
-    is a placement bug.
+    is a placement bug. A stage that owns native child processes also owns its
+    process, which the platform may narrow to that stage's GPUs.
     """
+    native = [s for s in spec.stage_specs if s.allow_child_processes]
+    if native and len(spec.stage_specs) > 1:
+        raise ValueError(
+            "A stage that owns native child processes must own its OS process"
+        )
+    elif native:
+        env = current_platform.get_stage_process_env(native[0])
+        return {**env, NATIVE_GPUS_NARROWED_ENV: "true"} if env else {}
+    else:
+        pass
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -382,7 +405,7 @@ class StageGroup:
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
                 name=proc_name,
-                daemon=True,
+                daemon=not any(s.allow_child_processes for s in spec.stage_specs),
             )
             try:
                 extra_env = (
@@ -530,6 +553,11 @@ class StageGroup:
             self.startup_error_channels.clear()
 
 
+# Set by the parent when it narrows a stage that owns native child processes
+# to its GPUs, so the child maps placement to local device ids.
+NATIVE_GPUS_NARROWED_ENV = "SGLANG_OMNI_NATIVE_GPUS_NARROWED"
+
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -571,7 +599,7 @@ def stage_process_main(
     except (KeyboardInterrupt, SystemExit) as exc:
         destroy_torch_distributed_process_group(log)
         reclaim_process_gpu_memory(
-            stage_gpu_ids(spec.stage_specs),
+            stage_gpu_ids(host_owned_stage_specs(spec)),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
@@ -594,7 +622,7 @@ def stage_process_main(
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
         destroy_torch_distributed_process_group(log)
         reclaim_process_gpu_memory(
-            stage_gpu_ids(spec.stage_specs),
+            stage_gpu_ids(host_owned_stage_specs(spec)),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
@@ -705,6 +733,15 @@ def cleanup_constructed_stages(
             stage.scheduler = None
 
 
+def host_owned_stage_specs(spec: StageWorkerProcessSpec) -> list[StageLaunchConfig]:
+    """Stages whose device work runs in this host process.
+
+    A stage whose native engine owns subprocesses keeps its device state in
+    those children, so the host has nothing to pin or reclaim for it.
+    """
+    return [s for s in spec.stage_specs if not s.allow_child_processes]
+
+
 def stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     return sorted(
         {
@@ -786,7 +823,11 @@ def construct_stage(
     local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
     gpu_id = spec.gpu_id
-    if gpu_id is not None:
+    # A stage whose native engine owns subprocesses never computes in this
+    # host process. Pinning the device here would only create an unused
+    # CUDA context that costs device memory and shutdown time. The engine
+    # receives its devices through the factory arguments instead.
+    if gpu_id is not None and not spec.allow_child_processes:
         current_platform.set_device(int(gpu_id))
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
     else:
@@ -988,6 +1029,7 @@ def construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
+        allow_child_processes=spec.allow_child_processes,
         http_socket_path=spec.http_socket_path,
     )
 
@@ -1100,7 +1142,20 @@ def prepare_accelerator_environment(
     returns, and normalizes gpu_id only when the platform narrowed the process to a
     single visible device.
     """
-    if (
+    if spec.allow_child_processes:
+        # The parent narrows this process before it starts, so local ids
+        # follow the declared GPU order.
+        if os.environ.get(NATIVE_GPUS_NARROWED_ENV) == "true":
+            normalize_spec_gpu_id_to_local_device(spec)
+            log.info(
+                "Stage %s sees only its GPUs, CUDA_VISIBLE_DEVICES=%s",
+                spec.stage_name,
+                os.environ.get("CUDA_VISIBLE_DEVICES"),
+            )
+        else:
+            pass
+        return
+    elif (
         current_platform.is_cuda_alike()
         and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
     ):
@@ -1167,6 +1222,11 @@ def normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
             kwargs["gpu_id"] = 0
         else:
             pass
+    runtime_gpu_ids = spec.factory_kwargs.get("runtime_gpu_ids")
+    if runtime_gpu_ids is not None:
+        spec.factory_kwargs["runtime_gpu_ids"] = list(range(len(runtime_gpu_ids)))
+    else:
+        pass
 
 
 def process_name(spec: StageWorkerProcessSpec) -> str:

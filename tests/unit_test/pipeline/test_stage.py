@@ -1758,3 +1758,33 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
         assert torch.equal(tensor, original)
 
     asyncio.run(run())
+
+
+def test_result_resources_survive_partial_fanout():
+    released, sent = [], []
+
+    class OwningScheduler(FakeScheduler):
+        def claim_result(self, result, *, terminal):
+            return True
+
+        def release_result(self, result, *, delivered):
+            released.append(delivered)
+
+    async def run():
+        stage_obj = make_stage(
+            get_next=lambda request_id, result: ["first", "second"],
+            scheduler=OwningScheduler(),
+        )
+
+        async def send(request_id, target, result, **kwargs):
+            if target == "second":
+                raise RuntimeError("second target failed")
+            sent.append(target)
+
+        stage_obj.send_to_stage = send
+        with pytest.raises(RuntimeError, match="second target failed"):
+            await stage_obj.route_result("request", {"output": "value"})
+        assert sent == ["first"]
+        assert released == [True]
+
+    asyncio.run(run())

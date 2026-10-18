@@ -78,17 +78,28 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
     async workers plus ``asyncio.to_thread``. GPU stages should usually prefer
     true tensor batching through ``SimpleScheduler(batch_compute_fn=...)``.
 
+    A stage that wraps an asynchronous engine passes ``dispatch_fn`` instead of
+    running ``compute_fn`` on a worker thread. The dispatcher returns a
+    ``concurrent.futures.Future`` for the request (for example from
+    ``asyncio.run_coroutine_threadsafe``), so no thread is held per request and
+    ``max_concurrency=None`` lets the engine own admission through its own
+    running and queue limits.
+
     Request ids cannot be reused while an earlier lifecycle remains in the pipeline.
     """
 
     def __init__(
         self,
-        compute_fn: Callable[
-            [ComputeInput], ComputeResult | Coroutine[None, None, ComputeResult]
-        ],
+        compute_fn: (
+            Callable[
+                [ComputeInput], ComputeResult | Coroutine[None, None, ComputeResult]
+            ]
+            | None
+        ),
         *,
-        max_concurrency: int = 8,
+        max_concurrency: int | None = 8,
         abort_callback: Callable[[str], None] | None = None,
+        dispatch_fn: Callable[[ComputeInput], Future[ComputeResult]] | None = None,
     ):
         self.lock = threading.Lock()
         self.capacity_freed = threading.Condition(self.lock)
@@ -96,8 +107,28 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = True
         self.fn = compute_fn
-        self.max_concurrency = max(int(max_concurrency), 1)
-        self.executor = ThreadPoolExecutor(max_workers=self.max_concurrency)
+        self.dispatch_fn = dispatch_fn
+        if dispatch_fn is None:
+            if compute_fn is None:
+                raise ValueError(
+                    "ThreadedSimpleScheduler requires compute_fn or dispatch_fn"
+                )
+            else:
+                pass
+            if max_concurrency is None:
+                raise ValueError("Threaded compute requires a positive max_concurrency")
+            else:
+                pass
+        else:
+            pass
+        self.max_concurrency = (
+            None if max_concurrency is None else max(int(max_concurrency), 1)
+        )
+        self.executor = (
+            None
+            if dispatch_fn is not None
+            else ThreadPoolExecutor(max_workers=self.max_concurrency)
+        )
         self.pending: dict[str, Future] = {}
         self.queued_aborts: set[str] = set()
         self.speculative_aborts: dict[str, None] = {}
@@ -129,7 +160,10 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                             continue
                         else:
                             pass
-                        future = self.executor.submit(self.run_one, msg.data)
+                        if self.dispatch_fn is not None:
+                            future = self.dispatch_fn(msg.data)
+                        else:
+                            future = self.executor.submit(self.run_one, msg.data)
                         self.pending[request_id] = future
                     finally:
                         self.inbox.release_claim(request_id)
@@ -137,7 +171,10 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     lambda fut, request_id=request_id: self.finish(request_id, fut)
                 )
         finally:
-            self.executor.shutdown(wait=False, cancel_futures=True)
+            if self.executor is not None:
+                self.executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                pass
 
     def stop(self) -> None:
         with self.capacity_freed:
@@ -219,6 +256,10 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         return request_id in self.queued_aborts or request_id in self.speculative_aborts
 
     def wait_for_capacity(self) -> None:
+        if self.max_concurrency is None:
+            return
+        else:
+            pass
         with self.capacity_freed:
             self.capacity_freed.wait_for(
                 lambda: not self.running or len(self.pending) < self.max_concurrency
@@ -231,6 +272,13 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         else:
             pass
         return result
+
+    def log_failure(self, request_id: str, exc: BaseException) -> None:
+        """Log a failed request from inside the handler of ``exc``."""
+        del exc
+        logger.exception(
+            "ThreadedSimpleScheduler: compute_fn failed for %s", request_id
+        )
 
     def finish(self, request_id: str, future: Future) -> None:
         with self.lock:
@@ -256,9 +304,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         try:
             result = future.result()
         except BaseException as exc:
-            logger.exception(
-                "ThreadedSimpleScheduler: compute_fn failed for %s", request_id
-            )
+            self.log_failure(request_id, exc)
             self.outbox.put(
                 OutgoingMessage(request_id=request_id, type="error", data=exc)
             )

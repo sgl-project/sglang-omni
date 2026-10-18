@@ -32,7 +32,23 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
+        if spec.allow_child_processes and spec.owned_gpu_ids:
+            # Native children inherit this, and host threads that touch an
+            # unpinned device stay on the stage's own GPUs. As for TP ranks,
+            # HIP_VISIBLE_DEVICES wins when set and both carry the result.
+            from sglang_omni.utils.gpu_memory import narrow_visible_devices
+
+            source_env = env if env is not None else os.environ
+            hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
+            variable = "HIP_VISIBLE_DEVICES" if hip_visible else "CUDA_VISIBLE_DEVICES"
+            owned = narrow_visible_devices(
+                source_env.get(variable), spec.owned_gpu_ids, variable
+            )
+            if hip_visible:
+                return {"CUDA_VISIBLE_DEVICES": owned, "HIP_VISIBLE_DEVICES": owned}
+            else:
+                return {"CUDA_VISIBLE_DEVICES": owned}
+        elif spec.tp_size <= 1:
             return {}
         else:
             pass
