@@ -100,5 +100,33 @@
       "config.json": "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5",
       "model.safetensors": "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a"
     }
+  },
+  "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit": {
+    "revision": "f98fc91b9cb5adc7dab56102c690458276c14c6a",
+    "files": {
+      "config.json": "f4eb9188409df1394eeec817d5f2f8e5b9dddb81c9b8653e6757733993120c7e",
+      "tekken.json": "587989c9f56676b35e7d16d6fc61461301e402d908392a8ce16f0349f61b56d7",
+      "model.safetensors": "a62a28f02ce54f9157877df44ce2da92bed97159ab19c2878445d3ec4d357786",
+      "voice_embedding/ar_male.safetensors": "f4c480657b730c169614c66dcb26684bc234ee2829cb2a9e490c300f60b1782a",
+      "voice_embedding/casual_female.safetensors": "9a2027d9265fd7ef4a55294b10ae8b2095dcad7547d50762a5012a3955ca0860",
+      "voice_embedding/casual_male.safetensors": "2056ade898f6f1b04c1af764f54d705038ac046f0b4967457a36989b69730fa8",
+      "voice_embedding/cheerful_female.safetensors": "35441e3030ba0076356ef1ad54fbfd5adfbde9e34bbf8a1a6535d6efabe63af1",
+      "voice_embedding/de_female.safetensors": "a89197fe5e77a2dd3cfc4ac0ed1cb5248e4e1ac26fdb13500e9782e43a90a69e",
+      "voice_embedding/de_male.safetensors": "cabfeeb98db0b713a80f234e11d90c3105fe83e64de75876509c3cda43946656",
+      "voice_embedding/es_female.safetensors": "52bca0b4e770afaccc3f2899d7396009422a0b3fdb5a6a96c523bcdc2f35c165",
+      "voice_embedding/es_male.safetensors": "b63fd5dff4dbc5070d470a364b8691f63fd6c10412a2692101bf6a90549c36e1",
+      "voice_embedding/fr_female.safetensors": "e8be0f673696dc1bf668fa6cc9999ab09ab43b29a6d6e85c5ac3f9f8ed43c449",
+      "voice_embedding/fr_male.safetensors": "d34fde0b57acaea4c3f78e841c93dd290f104a167dd0bea9e0673d9cdfedadd5",
+      "voice_embedding/hi_female.safetensors": "01e987092046cf5dc1041f00d10b0763f9ab4080c3bf124d97a01ccb04428e26",
+      "voice_embedding/hi_male.safetensors": "342d40fcda1e2a6ded081f0d2d8eefadcc7b8102a20da6e7e803ef4b4a21785c",
+      "voice_embedding/it_female.safetensors": "378b9bab596a68780ca07f4bf2032a9c70847825772aed9ee148ba8173b477d3",
+      "voice_embedding/it_male.safetensors": "05e313648254a57e4ca7e503b416590a4c832a106f7201efd4dea02ecce79035",
+      "voice_embedding/neutral_female.safetensors": "e229d5646ab8c2cad1b4e24cd63b88192f34da61de8f0595291799232460752f",
+      "voice_embedding/neutral_male.safetensors": "b114132e7301b2d2308ff7b0c1843574bab9ffeac5fc2dd48ca27db70a24ea0c",
+      "voice_embedding/nl_female.safetensors": "0124a62762a89b9a4ef0ff0c016db045ccfe30ed9fa3d886db0e78e444673ea3",
+      "voice_embedding/nl_male.safetensors": "6f931e4c34cf496cce4ed7ce5d8af286140c4969860f9410b12237ff28de2d33",
+      "voice_embedding/pt_female.safetensors": "ce23b97302fe6ca58507b1ae2c2fe1d0a472268b1faf597901cbf75e326a08f9",
+      "voice_embedding/pt_male.safetensors": "4ccd63a39d35f483c89485112d35a8a2121cbb0e6d5d124e403e40d03e0c0e82"
+    }
   }
 }

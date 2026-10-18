@@ -21,7 +21,7 @@ MLX code is not abstracted together with the CUDA path in `sglang_omni`.
 - No shared backend interface, base class or registry across the two paths.
   Share code freely inside the MLX path, not across paths.
 - The paths meet only at the OpenAI-style HTTP API (`/v1/audio/transcriptions`,
-  `/v1/realtime`, `/health`).
+  `/v1/audio/speech`, `/v1/realtime`, `/health`).
 
 Why:
 
@@ -74,9 +74,11 @@ agree on it with a maintainer first.
 
 **Tests**
 
-- Server tests in `ci/test_model_servers.py`: JSON, SSE and realtime success
-  paths; every invalid input returns 400; session-state errors, cancel on
-  disconnect, and wrong model kind.
+- Server tests in `ci/test_model_servers.py`, or in the model's own
+  `ci/test_<model>_api.py` added to the Mac CI job once that file would pass
+  ~400 lines: JSON, SSE and realtime success paths; every invalid input
+  returns 400; session-state errors, cancel on disconnect, and wrong model
+  kind.
 - Assert structure, not one chip's exact text; exact text lives in the golden.
 - New Voxt Omni tests go into the `voxt-unit` job in `voxt-mac-ci.yaml`.
 

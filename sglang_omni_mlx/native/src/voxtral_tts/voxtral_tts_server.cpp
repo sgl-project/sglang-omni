@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: Apache-2.0
+// Native Voxtral TTS server: POST /v1/audio/speech with the CUDA server's
+// request fields, answering a WAV or PCM file, or 16-bit PCM streamed as it
+// is decoded, and Voxt's supervisor protocol.
+//
+//   voxtral_tts_server --model-path DIR [--model-name NAME] [--host H] [--port
+//   P] voxtral_tts_server --supervised --model-kind voxtral_tts
+//   --model-directory DIR
+//
+// Request fields: input, voice (or speaker; "default" is cheerful_female),
+// response_format (wav or pcm), stream (pcm only), max_new_tokens (audio
+// frames, 12.5 a second) and speed (1 only).
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <condition_variable>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <typeinfo>
+#include <vector>
+
+#include "qwen3_asr/asr_service.h"
+#include "civetweb.h"
+#include "common/http.h"
+#include "voxtral_tts/voxtral_tts_model.h"
+
+namespace {
+
+using omni_server::Json;
+using qwen3_asr::TranscriptionResult;
+
+constexpr const char *kDefaultVoice = "cheerful_female";
+constexpr size_t kMaxInputCharacters = 4096;
+constexpr int kMaxAudioFrames = 4096;
+constexpr int kRequestIdHexDigits = 32;
+// Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
+// (validate_voxtral_speech_params), each counted as given by the same rule:
+// sampling fields when not null, text fields when not null or "", and the
+// rest when not empty.
+constexpr std::array<const char *, 5> kUnsupportedSamplingFields = {
+    "repetition_penalty", "seed", "temperature", "top_k", "top_p"};
+constexpr std::array<const char *, 5> kUnsupportedTextFields = {
+    "instructions", "language", "ref_audio", "ref_text", "task_type"};
+constexpr std::array<const char *, 2> kUnsupportedCollectionFields = {
+    "references", "stage_params"};
+
+struct SpeechRequest {
+  std::vector<int> prompt_ids;
+  std::string voice;
+  std::string response_format;
+  bool stream = false;
+  int max_frames = kMaxAudioFrames;
+};
+
+// Audio one synthesis hands from the worker thread to its request's thread.
+struct AudioChannel {
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::deque<std::vector<float>> chunks;
+  bool done = false;
+  std::exception_ptr error;
+  TranscriptionResult result;
+};
+
+// body's field, or fallback when it is missing or null.
+Json FieldOr(const Json &body, const char *name, Json fallback) {
+  const auto found = body.find(name);
+  if (found == body.end() || found->is_null()) {
+    return fallback;
+  } else {
+    return *found;
+  }
+}
+
+// Throws naming every unsupported field body gives, in sorted order.
+void RejectUnsupportedFields(const Json &body) {
+  std::vector<std::string> given;
+  for (const char *field : kUnsupportedSamplingFields) {
+    if (!FieldOr(body, field, Json()).is_null()) {
+      given.push_back(field);
+    } else {
+    }
+  }
+  for (const char *field : kUnsupportedTextFields) {
+    const Json value = FieldOr(body, field, Json());
+    if (!value.is_null() && value != "") {
+      given.push_back(field);
+    } else {
+    }
+  }
+  for (const char *field : kUnsupportedCollectionFields) {
+    const Json value = FieldOr(body, field, Json());
+    if (!value.is_null() && !value.empty() && value != "" && value != false &&
+        value != 0) {
+      given.push_back(field);
+    } else {
+    }
+  }
+  if (given.empty()) {
+    return;
+  } else {
+  }
+  std::sort(given.begin(), given.end());
+  std::string fields;
+  for (const std::string &field : given) {
+    fields += (fields.empty() ? "" : ", ") + field;
+  }
+  throw std::invalid_argument(
+      "Voxtral TTS does not support these /v1/audio/speech fields: " + fields +
+      ". Supported model-specific fields are voice and max_new_tokens.");
+}
+
+SpeechRequest ParseRequest(const Json &body,
+                           const voxtral_tts::SpeechTokenizer &tokenizer) {
+  if (!body.is_object()) {
+    throw std::invalid_argument("speech request body must be a JSON object");
+  } else {
+  }
+  RejectUnsupportedFields(body);
+  const Json input = FieldOr(body, "input", Json());
+  if (!input.is_string() || input.get<std::string>().find_first_not_of(
+                                " \t\n\r\f\v") == std::string::npos) {
+    throw std::invalid_argument("input must be a non-empty string");
+  } else {
+  }
+  const std::string text = input.get<std::string>();
+  const auto character_count =
+      std::count_if(text.begin(), text.end(), [](char byte) {
+        return (static_cast<unsigned char>(byte) & 0xc0) != 0x80;
+      });
+  if (static_cast<size_t>(character_count) > kMaxInputCharacters) {
+    throw std::invalid_argument("input must be at most " +
+                                std::to_string(kMaxInputCharacters) +
+                                " characters");
+  } else {
+  }
+
+  SpeechRequest request;
+  const Json voice =
+      FieldOr(body, "voice", FieldOr(body, "speaker", Json("default")));
+  if (!voice.is_string()) {
+    throw std::invalid_argument("voice must be a string");
+  } else {
+  }
+  request.voice = voice.get<std::string>();
+  if (request.voice.empty() || request.voice == "default") {
+    request.voice = kDefaultVoice;
+  } else if (tokenizer.voice_frame_counts().count(request.voice) == 0) {
+    std::string supported;
+    for (const auto &[name, frame_count] : tokenizer.voice_frame_counts()) {
+      supported += (supported.empty() ? "" : ", ") + name;
+    }
+    throw std::invalid_argument("Unknown voice '" + request.voice +
+                                "'. Supported voices: " + supported);
+  } else {
+  }
+
+  const Json response_format = FieldOr(body, "response_format", Json("wav"));
+  if (!response_format.is_string()) {
+    throw std::invalid_argument("response_format must be a string");
+  } else {
+  }
+  for (const char character : response_format.get<std::string>()) {
+    if (!std::isspace(static_cast<unsigned char>(character))) {
+      request.response_format.push_back(static_cast<char>(
+          std::tolower(static_cast<unsigned char>(character))));
+    } else {
+    }
+  }
+  if (request.response_format != "pcm" && request.response_format != "wav") {
+    throw std::invalid_argument("response_format must be one of: pcm, wav");
+  } else {
+  }
+
+  const Json stream = FieldOr(body, "stream", Json(false));
+  if (!stream.is_boolean()) {
+    throw std::invalid_argument("stream must be a boolean");
+  } else {
+  }
+  request.stream = stream.get<bool>();
+  if (FieldOr(body, "stream_format", Json("audio")) != "audio") {
+    throw std::invalid_argument("stream_format must be audio");
+  } else {
+  }
+  if (request.stream && request.response_format != "pcm") {
+    throw std::invalid_argument("stream=true requires response_format='pcm'");
+  } else {
+  }
+
+  const Json speed = FieldOr(body, "speed", Json(1.0));
+  if (!speed.is_number() || speed.get<double>() != 1.0) {
+    throw std::invalid_argument("speed must be 1.0 on this model");
+  } else {
+  }
+  const Json max_new_tokens =
+      FieldOr(body, "max_new_tokens", Json(kMaxAudioFrames));
+  if (!max_new_tokens.is_number_integer()) {
+    throw std::invalid_argument("max_new_tokens must be an integer");
+  } else if (max_new_tokens.get<int64_t>() <= 0) {
+    throw std::invalid_argument("max_new_tokens must be greater than 0");
+  } else if (max_new_tokens.get<int64_t>() > kMaxAudioFrames) {
+    throw std::invalid_argument("max_new_tokens must be at most " +
+                                std::to_string(kMaxAudioFrames));
+  } else {
+  }
+  request.max_frames = max_new_tokens.get<int>();
+  request.prompt_ids = tokenizer.EncodeSpeechRequest(text, request.voice);
+  return request;
+}
+
+std::string NewRequestId() {
+  static thread_local std::mt19937_64 generator{std::random_device{}()};
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string id = "speech-";
+  for (int index = 0; index < kRequestIdHexDigits; ++index) {
+    id.push_back(kHex[generator() % 16]);
+  }
+  return id;
+}
+
+void LogFailure(std::exception_ptr error) {
+  try {
+    std::rethrow_exception(error);
+  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const std::exception &failure) {
+    // Note (Minyi Tang): only the exception type is logged, never the text.
+    std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";
+  }
+}
+
+class VoxtralTtsService : public asr_service::ServedModel {
+public:
+  explicit VoxtralTtsService(const std::filesystem::path &model_directory)
+      : model_(model_directory) {}
+
+  asr_service::Transcription
+  Prepare(std::vector<float>, const asr_service::FormFields &) const override {
+    throw std::logic_error("voxtral_tts serves no transcriptions");
+  }
+  bool Transcribes() const override { return false; }
+  void AddHandlers(mg_context *context,
+                   qwen3_asr::TranscriptionWorker &worker) override {
+    worker_ = &worker;
+    mg_set_request_handler(context, "/v1/audio/speech$", HandleSpeech, this);
+  }
+
+private:
+  static int HandleSpeech(mg_connection *connection, void *data) {
+    return static_cast<VoxtralTtsService *>(data)->Speak(connection);
+  }
+
+  int Speak(mg_connection *connection) const {
+    if (!omni_server::IsPost(connection)) {
+      return omni_server::WriteJson(connection, 405,
+                                    {{"detail", "Method Not Allowed"}});
+    } else {
+    }
+    const Json body =
+        Json::parse(omni_server::ReadBody(connection), nullptr, false);
+    if (body.is_discarded()) {
+      return omni_server::BadRequest(connection,
+                                     "speech request body must be valid JSON");
+    } else {
+    }
+    SpeechRequest request;
+    try {
+      request = ParseRequest(body, model_.tokenizer());
+    } catch (const std::invalid_argument &error) {
+      return omni_server::BadRequest(connection, error.what());
+    }
+
+    const std::string request_id = NewRequestId();
+    const int sample_rate = model_.codec().sample_rate();
+    auto channel = std::make_shared<AudioChannel>();
+    const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
+    worker_->Submit(
+        [this, request, channel](const std::atomic<bool> &cancelled) {
+          return Synthesize(request, *channel, cancelled);
+        },
+        cancel,
+        [channel](std::optional<TranscriptionResult> result,
+                  std::exception_ptr error) {
+          std::lock_guard<std::mutex> lock(channel->mutex);
+          channel->done = true;
+          channel->error = error;
+          if (result.has_value()) {
+            channel->result = std::move(*result);
+          } else {
+          }
+          channel->ready.notify_all();
+        });
+    if (request.stream) {
+      mg_printf(connection,
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
+                "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
+                "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
+                "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                request_id.c_str(), request_id.c_str(), sample_rate);
+    } else {
+    }
+
+    std::vector<float> samples;
+    std::unique_lock<std::mutex> lock(channel->mutex);
+    while (true) {
+      channel->ready.wait(
+          lock, [&] { return !channel->chunks.empty() || channel->done; });
+      if (channel->chunks.empty()) {
+        break;
+      } else {
+      }
+      std::vector<float> chunk = std::move(channel->chunks.front());
+      channel->chunks.pop_front();
+      lock.unlock();
+      if (request.stream) {
+        const std::string pcm = voxtral_tts::Pcm16Bytes(chunk);
+        // Note (Minyi Tang): a write fails once the peer is gone, which
+        // cancels the generation that feeds it.
+        if (mg_write(connection, pcm.data(), pcm.size()) <= 0) {
+          cancel->store(true);
+        } else {
+        }
+      } else {
+        samples.insert(samples.end(), chunk.begin(), chunk.end());
+      }
+      lock.lock();
+    }
+    if (channel->error) {
+      LogFailure(channel->error);
+    } else {
+    }
+    if (request.stream) {
+      return 200;
+    } else if (channel->error) {
+      return omni_server::WriteJson(connection, 500,
+                                    {{"detail", "Speech generation failed."}});
+    } else {
+    }
+
+    const std::string pcm = voxtral_tts::Pcm16Bytes(samples);
+    const std::string audio = request.response_format == "wav"
+                                  ? voxtral_tts::WavBytes(pcm, sample_rate)
+                                  : pcm;
+    const size_t prompt_tokens = request.prompt_ids.size();
+    const int completion_tokens = channel->result.generated_token_count;
+    mg_printf(
+        connection,
+        "HTTP/1.1 200 OK\r\nContent-Type: audio/%s\r\nContent-Length: %zu\r\n"
+        "Content-Disposition: attachment; filename=\"speech.%s\"\r\n"
+        "X-Request-Id: %s\r\nX-Finish-Reason: %s\r\n"
+        "X-Prompt-Tokens: %zu\r\nX-Completion-Tokens: %d\r\n"
+        "X-SGLang-Omni-Input-Tokens: %zu\r\n"
+        "X-SGLang-Omni-Output-Tokens: %d\r\n"
+        "X-SGLang-Omni-Total-Tokens: %zu\r\nConnection: close\r\n\r\n",
+        request.response_format.c_str(), audio.size(),
+        request.response_format.c_str(), request_id.c_str(),
+        qwen3_asr::FinishReasonName(channel->result.finish_reason),
+        prompt_tokens, completion_tokens, prompt_tokens, completion_tokens,
+        prompt_tokens + completion_tokens);
+    mg_write(connection, audio.data(), audio.size());
+    return 200;
+  }
+
+  TranscriptionResult Synthesize(const SpeechRequest &request,
+                                 AudioChannel &channel,
+                                 const std::atomic<bool> &cancel) const {
+    voxtral_tts::CodecStream stream(model_.codec());
+    const auto send = [&channel](std::vector<float> samples) {
+      if (!samples.empty()) {
+        std::lock_guard<std::mutex> lock(channel.mutex);
+        channel.chunks.push_back(std::move(samples));
+        channel.ready.notify_all();
+      } else {
+      }
+    };
+    TranscriptionResult result;
+    result.finish_reason =
+        model_.Generate(request.prompt_ids, request.voice, request.max_frames,
+                        cancel, [&](const mlx::core::array &codes) {
+                          ++result.generated_token_count;
+                          send(stream.Push(codes));
+                        });
+    send(stream.Finish());
+    return result;
+  }
+
+  voxtral_tts::VoxtralTtsModel model_;
+  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
+};
+
+} // namespace
+
+int main(int argc, char **argv) {
+  asr_service::ServedKind kind;
+  kind.model_kind = "voxtral_tts";
+  kind.load = [](const std::filesystem::path &model_directory) {
+    return std::make_unique<VoxtralTtsService>(model_directory);
+  };
+  return asr_service::Serve(argc, argv, kind);
+}

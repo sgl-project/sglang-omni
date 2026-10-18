@@ -38,7 +38,8 @@ Voxt/backend/run_omni_dev.sh run
 `whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`,
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
-`sensevoice_server`, `sensevoice_transcribe`, and the pinned MLX library
+`sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
+`voxtral_tts_synthesize`, and the pinned MLX library
 and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it

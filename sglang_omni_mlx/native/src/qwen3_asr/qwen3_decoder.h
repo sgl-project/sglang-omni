@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The Qwen3 text decoder Qwen3-ASR and MOSS-Transcribe-Diarize share; only the
-// weight-name prefix differs.
+// weight-name prefix differs. Voxtral TTS's Mistral decoder is the same
+// without the query/key norms and with traditional rotary embeddings.
 #pragma once
 
 #include <optional>
@@ -21,6 +22,9 @@ struct Qwen3DecoderConfig {
   int head_dim = 0;
   float rms_norm_eps = 0.0f;
   float rope_theta = 0.0f;
+  bool has_query_key_norm = true;
+  // Rotates adjacent rather than half-split pairs of each head.
+  bool traditional_rope = false;
 
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
