@@ -14,51 +14,60 @@ namespace mx = mlx::core;
 
 namespace {
 
-nlohmann::json ReadConfig(const std::filesystem::path &directory,
+constexpr int SAMPLE_RATE = 24000;
+constexpr int SAMPLES_PER_FRAME = 480;
+constexpr int LATENT_CHANNELS = 64;
+
+} // namespace
+
+Model::SamplingRecipe
+Model::ReadSamplingRecipe(const std::filesystem::path &directory,
                           mx::Dtype dtype, float max_seconds) {
   const auto config = qwen3_asr::ReadJson(directory / "config.json");
   if (config.value("model_type", std::string()) != "auk" ||
       (config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
-      config.at("sample_rate") != 24000 ||
-      config.at("downsample_rate") != 480 || config.at("latent_dim") != 64 ||
+      config.at("sample_rate") != SAMPLE_RATE ||
+      config.at("downsample_rate") != SAMPLES_PER_FRAME ||
+      config.at("latent_dim") != LATENT_CHANNELS ||
       (dtype != mx::float32 && dtype != mx::bfloat16) ||
       !std::isfinite(max_seconds) || max_seconds <= 0 || max_seconds > 30) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
   } else {
   }
-  const int steps = config.at("nfe").get<int>();
-  const float guidance = config.at("cfg_strength").get<float>();
-  const auto grid = config.at("time_grid").get<std::vector<float>>();
-  if (steps <= 0 || !std::isfinite(guidance) || guidance < 0 ||
-      (!config.at("sway_sampling_coef").is_null() &&
-       !std::isfinite(config.at("sway_sampling_coef").get<float>())) ||
+  SamplingRecipe recipe{
+      config.at("nfe").get<int>(), config.at("cfg_strength").get<float>(),
+      config.at("sway_sampling_coef").is_null()
+          ? std::nullopt
+          : std::optional<float>(config.at("sway_sampling_coef").get<float>()),
+      config.at("time_grid").get<std::vector<float>>()};
+  const auto &grid = recipe.time_grid;
+  if (recipe.steps <= 0 || !std::isfinite(recipe.guidance_strength) ||
+      recipe.guidance_strength < 0 ||
+      (recipe.sway_coefficient && !std::isfinite(*recipe.sway_coefficient)) ||
       (!grid.empty() &&
-       (grid.size() != static_cast<size_t>(steps + 1) || grid.front() != 0 ||
-        grid.back() != 1 ||
+       (grid.size() != static_cast<size_t>(recipe.steps + 1) ||
+        grid.front() != 0 || grid.back() != 1 ||
         std::any_of(grid.begin(), grid.end(),
                     [](float time) { return !std::isfinite(time); }) ||
         std::adjacent_find(grid.begin(), grid.end(),
                            std::greater_equal<float>()) != grid.end()))) {
     throw std::invalid_argument("invalid AuK sampling recipe");
   } else {
-    return config;
+    return recipe;
   }
 }
 
-} // namespace
-
 Model::Model(const std::filesystem::path &directory, mx::Dtype dtype,
              float maximum_seconds)
-    : config(ReadConfig(directory, dtype, maximum_seconds)),
-      sample_rate(config.at("sample_rate").get<int>()),
+    : sampling_recipe(ReadSamplingRecipe(directory, dtype, maximum_seconds)),
       max_seconds(maximum_seconds),
       conditioner(directory / "conditioner", dtype),
       diffusion(directory / "dit", dtype), vae(directory / "vae") {
   diffusion.ValidateInputDimensions(conditioner.TextLayerCount(),
                                     conditioner.TextHiddenChannels(),
                                     vae.LatentDimension());
-  if (vae.HopSize() != config.at("downsample_rate").get<int>() ||
-      vae.LatentDimension() != config.at("latent_dim").get<int>()) {
+  if (vae.HopSize() != SAMPLES_PER_FRAME ||
+      vae.LatentDimension() != LATENT_CHANNELS) {
     throw std::invalid_argument(
         "AuK artifact components have inconsistent dimensions");
   } else {
@@ -98,7 +107,7 @@ Model::Synthesize(const SynthesisRequest &request,
   int reference_length = 0;
   if (!request.reference_audio.empty()) {
     const auto reference_audio = qwen3_asr::ResampleAudio(
-        request.reference_audio, request.reference_sample_rate, sample_rate);
+        request.reference_audio, request.reference_sample_rate, SAMPLE_RATE);
     conditioner_audio = qwen3_asr::ResampleAudio(
         request.reference_audio, request.reference_sample_rate, 16000);
     reference_length = static_cast<int>(reference_audio.size()) / vae.HopSize();
@@ -122,17 +131,14 @@ Model::Synthesize(const SynthesisRequest &request,
       request.match_reference_duration
           ? std::max(1, reference_length)
           : std::max(1, static_cast<int>(std::ceil(
-                            request.seconds * sample_rate / vae.HopSize())));
+                            request.seconds * SAMPLE_RATE / vae.HopSize())));
   const auto noise = mx::random::normal({output_frames, vae.LatentDimension()},
                                         mx::float32, generation_key);
-  const auto sway =
-      config.at("sway_sampling_coef").is_null()
-          ? std::nullopt
-          : std::optional<float>(config.at("sway_sampling_coef").get<float>());
-  const auto latents = diffusion.Sample(
-      conditioning, reference_latents, reference_length, noise,
-      config.at("nfe").get<int>(), config.at("cfg_strength").get<float>(), sway,
-      config.at("time_grid").get<std::vector<float>>(), check_cancelled);
+  const auto latents =
+      diffusion.Sample(conditioning, reference_latents, reference_length, noise,
+                       sampling_recipe.steps, sampling_recipe.guidance_strength,
+                       sampling_recipe.sway_coefficient,
+                       sampling_recipe.time_grid, check_cancelled);
   if (!mx::all(mx::isfinite(latents)).item<bool>()) {
     throw std::runtime_error("AuK produced non-finite latents");
   } else {
@@ -145,7 +151,7 @@ Model::Synthesize(const SynthesisRequest &request,
   } else {
     check_cancelled();
     return {{waveform.data<float>(), waveform.data<float>() + waveform.size()},
-            sample_rate};
+            SAMPLE_RATE};
   }
 }
 

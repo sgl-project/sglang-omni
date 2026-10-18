@@ -35,8 +35,17 @@ public:
                              const std::function<void()> &check_cancelled);
 
 private:
-  nlohmann::json config;
-  int sample_rate;
+  struct SamplingRecipe {
+    int steps;
+    float guidance_strength;
+    std::optional<float> sway_coefficient;
+    std::vector<float> time_grid;
+  };
+  static SamplingRecipe
+  ReadSamplingRecipe(const std::filesystem::path &directory,
+                     mlx::core::Dtype dtype, float max_seconds);
+
+  SamplingRecipe sampling_recipe;
   float max_seconds;
   Conditioner conditioner;
   DiT diffusion;
