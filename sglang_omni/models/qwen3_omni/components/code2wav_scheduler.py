@@ -327,11 +327,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     ) -> tuple[torch.Tensor, ExecutionMetadata]:
         """Decode each row's new codes from its slot's state and store the advanced state."""
         with torch.no_grad():
-            if self.device.type != "cpu":
-                torch.get_device_module(self.device).set_device(self.device)
+            if self.cuda_graph_runner is not None:
+                result = self.cuda_graph_runner.run_slots(
+                    codes, slots, first_decode=first_decode
+                )
             else:
-                pass
-            if self.cuda_graph_runner is None:
                 result = Code2WavRunResult(
                     output=self.incremental_codec.decode_slots(
                         codes,
@@ -342,10 +342,6 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     execution_mode="eager",
                     key=None,
                     fallback_reason=None,
-                )
-            else:
-                result = self.cuda_graph_runner.run_slots(
-                    codes, slots, first_decode=first_decode
                 )
         return (result.output, execution_metadata(result))
 
