@@ -58,4 +58,6 @@ class Cosmos3ReasonerPipelineConfig(Cosmos3PipelineConfig):
 Variants = {
     "text": Cosmos3ReasonerPipelineConfig,
     "generation": Cosmos3PipelineConfig,
+    # Imported only when selected, so other models load none of its modules.
+    "umm": "sglang_omni.models.cosmos3.umm_config:Cosmos3UMMPipelineConfig",
 }

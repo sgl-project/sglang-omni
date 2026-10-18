@@ -708,6 +708,7 @@ async def run_server(
             tts_batch_max_items=tts_batch_max_items,
             architectures=[pipeline_config.architecture],
             audio_chunking=pipeline_config.resolved_audio_chunking,
+            interleaved_output=type(pipeline_config).interleaved_output,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)

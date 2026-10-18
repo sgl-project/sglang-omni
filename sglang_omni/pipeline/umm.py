@@ -745,6 +745,7 @@ class UMMPipelineConfig(PipelineConfig):
 
     umm_controller_stage: ClassVar[str] = "orchestrator"
     umm_output_stage: ClassVar[str] = "output"
+    interleaved_output: ClassVar[bool] = True
 
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:

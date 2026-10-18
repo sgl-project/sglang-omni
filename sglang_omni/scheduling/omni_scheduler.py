@@ -2069,6 +2069,20 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
+    def stash_chunked_request(self, req: Req) -> None:
+        # note (ratish): a prompt-only-radix request with output keeps its tail out of the tree, so
+        # SGLang's stash would not advance a retracted re-prefill.
+        if req.skip_radix_cache_insert and getattr(
+            req, "_omni_prompt_only_radix", False
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            req.prefix_indices = self.req_to_token_pool.req_to_token[
+                req.kv.req_pool_idx, : req.extend_range.end
+            ].to(dtype=torch.int64, copy=True)
+            return
+        else:
+            pass
+        _Upstream.stash_chunked_request(self, req)
+
     def stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
         self.forward_ct += 1

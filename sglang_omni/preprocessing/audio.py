@@ -25,8 +25,18 @@ from .resource_connector import await_media_cleanup
 LIBSNDFILE_UNKNOWN_FRAMES = 2**63 - 1
 
 
-def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
-    """Decode audio bytes with PyAV to mono float at full scale."""
+class AudioTooLongError(ValueError):
+    """Audio longer than the caller's maximum duration."""
+
+
+def decode_audio_bytes_av(
+    data: bytes, max_seconds: float | None = None
+) -> tuple[npt.NDArray[np.float32], int]:
+    """Decode audio bytes with PyAV to mono float at full scale.
+
+    With *max_seconds*, decoding stops with AudioTooLongError as soon as the
+    decoded audio is longer, so a long upload costs no more than the limit.
+    """
     container = av.open(io.BytesIO(data))
     try:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)
@@ -36,6 +46,8 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
             pass
 
         sample_rate = audio_stream.rate
+        max_samples = None if max_seconds is None else max_seconds * sample_rate
+        decoded_samples = 0
         frames = []
         for frame in container.decode(audio_stream):
             samples = frame.to_ndarray()
@@ -54,6 +66,11 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
             else:
                 samples = samples.reshape(-1, channels).mean(axis=1)
             frames.append(samples)
+            decoded_samples += samples.shape[0]
+            if max_samples is not None and decoded_samples > max_samples:
+                raise AudioTooLongError(f"audio is longer than {max_seconds:.1f}s")
+            else:
+                pass
     finally:
         container.close()
 
@@ -65,22 +82,35 @@ def decode_audio_bytes_av(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
     return np.concatenate(frames), int(sample_rate)
 
 
-def decode_audio_bytes(data: bytes) -> tuple[npt.NDArray[np.float32], int]:
+def decode_audio_bytes(
+    data: bytes, max_seconds: float | None = None
+) -> tuple[npt.NDArray[np.float32], int]:
     """Decode audio bytes to mono float as the reference loader does: libsndfile, then
-    PyAV for the containers libsndfile does not read (MP4, WebM, AAC)."""
+    PyAV for the containers libsndfile does not read (MP4, WebM, AAC).
+
+    With *max_seconds*, audio longer than that raises AudioTooLongError, before any
+    decode when the header states the length.
+    """
     try:
         sound_file = soundfile.SoundFile(io.BytesIO(data))
     except soundfile.LibsndfileError:
-        return decode_audio_bytes_av(data)
+        return decode_audio_bytes_av(data, max_seconds)
     with sound_file:
         if 0 < sound_file.frames < LIBSNDFILE_UNKNOWN_FRAMES:
+            if (
+                max_seconds is not None
+                and sound_file.frames > max_seconds * sound_file.samplerate
+            ):
+                raise AudioTooLongError(f"audio is longer than {max_seconds:.1f}s")
+            else:
+                pass
             audio = sound_file.read(dtype="float32", always_2d=True)
             return audio.mean(axis=1), int(sound_file.samplerate)
         else:
             pass
     # note (ratish): libsndfile reads the frames a header states; a writer that could not
     # seek back leaves them at 0 or unknown, and FFmpeg reads to the end of the data.
-    return decode_audio_bytes_av(data)
+    return decode_audio_bytes_av(data, max_seconds)
 
 
 def parse_wav_bytes(

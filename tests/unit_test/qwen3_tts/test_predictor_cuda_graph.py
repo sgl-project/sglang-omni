@@ -21,7 +21,10 @@ import torch
 from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.quantization.unquant import (
+    Bf16GemmBackend,
+    UnquantizedLinearMethod,
+)
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,
@@ -75,7 +78,7 @@ class TupleLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
-        self.quant_method = sglang_model_module.UnquantizedLinearMethod()
+        self.quant_method = UnquantizedLinearMethod()
         self.tp_size = 1
 
     @property
@@ -166,6 +169,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         MAX_BS, device=device, dtype=torch.long
     )
     talker.sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     talker.sub_seed_offsets = torch.arange(
         1, NUM_CODE_GROUPS, device=device, dtype=torch.long
     )

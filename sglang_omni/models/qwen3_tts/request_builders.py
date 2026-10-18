@@ -164,6 +164,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     subtalker_top_k: int = 50
     subtalker_sampling_seed: int = field(default_factory=new_qwen3_tts_sampling_seed)
     engine_start_s: float = 0.0
+    decode_prep_epoch: int | None = None
 
 
 @dataclass
@@ -1332,14 +1333,7 @@ def get_qwen3_tts_adhoc_reference_service(
 
 
 def normalized_model_type(model: PromptModel) -> str:
-    model_type = getattr(model, "tts_model_type", None)
-    if model_type is None:
-        model_type = getattr(
-            getattr(model, "root_config", None), "tts_model_type", None
-        )
-    else:
-        pass
-    normalized = str(model_type or "base").replace("-", "_").strip().lower()
+    normalized = str(model.tts_model_type or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"
     else:

@@ -673,6 +673,9 @@ class PipelineConfig(BaseModel):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
+    # True when results are ordered interleaved (UMM) segments, which
+    # /generate can stream.
+    interleaved_output: ClassVar[bool] = False
     is_realtime_only: ClassVar[bool] = False
     # Import path of the function that builds, from this config, the chat,
     # speech or transcription request the server sends itself before it reports

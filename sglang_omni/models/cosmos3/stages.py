@@ -3,19 +3,26 @@
 
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
+import heapq
+import itertools
 import logging
+import math
 import multiprocessing
 import multiprocessing.connection
 import os
 import queue
 import shutil
+import stat
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 from uuid import uuid4
 
 from sglang_omni.native_generation import cancellation
@@ -25,6 +32,7 @@ from sglang_omni.native_generation.media import (
 )
 from sglang_omni.preprocessing.resource_connector import (
     MediaPolicyError,
+    MultiModalResourceConnector,
     get_global_resource_connector,
 )
 from sglang_omni.proto import StagePayload
@@ -84,6 +92,60 @@ COMMON_REQUEST_FIELDS = frozenset(
 # Native image and video routes clamp n to this many outputs per prompt.
 # Native SGLang keeps the bound inline, so it is restated here.
 NATIVE_MAX_OUTPUTS_PER_PROMPT = 10
+
+# Largest saved output a stage with inline_media returns as bytes.
+INLINE_MEDIA_LIMIT_BYTES = 8 * 1024 * 1024
+# Request metadata key of the order a stage with inline_media serves its
+# queued requests in: a number or a list of numbers, smallest first, such as
+# a deadline and an admission index. Requests without one, and equal ones,
+# keep arrival order.
+DEADLINE_METADATA_KEY = "generation_deadline"
+INLINE_MEDIA_TYPES = {
+    ".png": ("image", "image/png"),
+    ".jpg": ("image", "image/jpeg"),
+    ".jpeg": ("image", "image/jpeg"),
+    ".webp": ("image", "image/webp"),
+    ".mp4": ("video", "video/mp4"),
+}
+
+
+def data_url(mime: str, content: bytes) -> str:
+    """Base64 data URL (RFC 2397) carrying content of this media type."""
+    header = urlunparse(("data", "", mime, "base64,", "", ""))
+    return header + base64.b64encode(content).decode("ascii")
+
+
+def inline_media(path: str, directory: Path) -> dict[str, object]:
+    """Read one bounded saved output while its request directory is owned."""
+    target = Path(path)
+    if not target.resolve(strict=True).is_relative_to(directory.resolve(strict=True)):
+        raise ValueError("Native inline output is outside its owned request directory")
+    elif target.suffix.lower() not in INLINE_MEDIA_TYPES:
+        raise ValueError("Unsupported native inline media type")
+    else:
+        pass
+    descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        size = os.fstat(stream.fileno())
+        if not stat.S_ISREG(size.st_mode) or not 0 < size.st_size <= (
+            INLINE_MEDIA_LIMIT_BYTES
+        ):
+            raise ValueError("Native inline media exceeds its regular file byte limit")
+        else:
+            pass
+        content = stream.read(INLINE_MEDIA_LIMIT_BYTES + 1)
+    if not 0 < len(content) <= INLINE_MEDIA_LIMIT_BYTES:
+        raise ValueError("Native inline media exceeds its byte limit")
+    else:
+        pass
+    kind, mime = INLINE_MEDIA_TYPES[target.suffix.lower()]
+    return {
+        "kind": kind,
+        "mime_type": mime,
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "url": data_url(mime, content),
+    }
 
 
 def model_request_fields(server_args: object) -> frozenset[str]:
@@ -210,6 +272,34 @@ def build_sampling_params(
     return params
 
 
+def media_policy_configured(connector: MultiModalResourceConnector) -> bool:
+    return connector.allowed_local_media_path is not None or bool(
+        connector.allowed_media_domains
+    )
+
+
+def check_media_source(
+    connector: MultiModalResourceConnector, name: str, source: object
+) -> str:
+    """Apply the server media policy to one client path or URL without reading it.
+
+    Returns what a loader may read: a data URL as is, a local path or file URL
+    resolved inside the allowed directory, or an allowed http(s) URL as is,
+    which its loader fetches under the same policy.
+    """
+    if not isinstance(source, str):
+        raise ValueError(f"{REQUEST_ERROR} {name} must be a path or URL")
+    elif source.startswith("data:"):
+        return source
+    elif source.startswith(("http://", "https://")):
+        connector.assert_url_allowed(source)
+        return source
+    elif source.startswith("file://"):
+        return str(connector.local_media_path(unquote(urlparse(source).path)))
+    else:
+        return str(connector.local_media_path(source))
+
+
 def police_media_inputs(
     params: dict[str, object], request_fields: frozenset[str], directory: Path
 ) -> list[Path]:
@@ -221,21 +311,14 @@ def police_media_inputs(
     every redirect, into the request directory. Returns the fetched files.
     """
     connector = get_global_resource_connector()
-    if (
-        connector.allowed_local_media_path is None
-        and not connector.allowed_media_domains
-    ):
+    if not media_policy_configured(connector):
         return []
     else:
         pass
     fetched: list[Path] = []
 
     def police(name: str, source: object) -> str:
-        if not isinstance(source, str):
-            raise ValueError(f"{REQUEST_ERROR} {name} must be a path or URL")
-        elif source.startswith("data:"):
-            return source
-        elif source.startswith(("http://", "https://")):
+        if isinstance(source, str) and source.startswith(("http://", "https://")):
             data, _ = connector.load_http_bytes(
                 source, timeout=connector.connection.timeout, max_bytes=None
             )
@@ -245,10 +328,8 @@ def police_media_inputs(
             target.write_bytes(data)
             fetched.append(target)
             return str(target)
-        elif source.startswith("file://"):
-            return str(connector.local_media_path(unquote(urlparse(source).path)))
         else:
-            return str(connector.local_media_path(source))
+            return check_media_source(connector, name, source)
 
     for name in sorted(params):
         if name not in request_fields or not name.endswith("_path"):
@@ -276,7 +357,11 @@ class NativeGenerationScheduler(SimpleScheduler):
     the request fails, is aborted before routing hands the completion to the
     transport, or that hand off fails. After the transport accepted the
     completion, the coordinator owns the media and removes them if it drops
-    the completion.
+    the completion. With inline_media the stage instead returns each output
+    as bytes read from the workspace, for a receiver that is another stage,
+    so no saved media leave the workspace. It then also serves queued
+    requests by the deadline in their metadata and reports the time each
+    request occupied it as service_s.
     """
 
     def __init__(
@@ -286,6 +371,7 @@ class NativeGenerationScheduler(SimpleScheduler):
         request_fields: frozenset[str] = COMMON_REQUEST_FIELDS,
         *,
         cancellation_mode: str | None = None,
+        inline_media: bool = False,
     ):
         """``cancellation_mode`` is "plugin" when the Omni plugin runs in the
         native worker, else None."""
@@ -293,6 +379,9 @@ class NativeGenerationScheduler(SimpleScheduler):
         self.output_dir = output_dir
         self.request_fields = request_fields
         self.cancellation_mode = cancellation_mode
+        self.inline_media = inline_media
+        self.queued: list[tuple[tuple[float, ...], int, IncomingMessage]] = []
+        self.arrivals = itertools.count()
         self.native_requests: dict[str, GenerationRequest] = {}
         self.workers = list(generator.local_scheduler_process or [])
         self.worker_failure: RuntimeError | None = None
@@ -374,9 +463,39 @@ class NativeGenerationScheduler(SimpleScheduler):
     def next_message(self) -> IncomingMessage | None:
         if self.worker_failure is not None:
             raise self.worker_failure
+        elif not self.inline_media:
+            return super().next_message()
+        elif not self.queued:
+            # Wait for work as SimpleScheduler does.
+            message = super().next_message()
+            if message is None:
+                return None
+            else:
+                self.enqueue_by_deadline(message)
         else:
             pass
-        return super().next_message()
+        while True:
+            try:
+                self.enqueue_by_deadline(self.inbox.get_nowait())
+            except queue.Empty:
+                break
+        return heapq.heappop(self.queued)[2]
+
+    def enqueue_by_deadline(self, message: IncomingMessage) -> None:
+        payload = message.data
+        value = (
+            payload.request.metadata.get(DEADLINE_METADATA_KEY)
+            if isinstance(payload, StagePayload)
+            else None
+        )
+        key = tuple(value) if isinstance(value, (list, tuple)) else (value,)
+        if not key or not all(
+            type(part) in (int, float) and not math.isnan(part) for part in key
+        ):
+            key = (math.inf,)
+        else:
+            pass
+        heapq.heappush(self.queued, (key, next(self.arrivals), message))
 
     def run_native(
         self,
@@ -589,6 +708,9 @@ class NativeGenerationScheduler(SimpleScheduler):
     def claim_result(self, result: object, *, terminal: bool) -> bool:
         if not isinstance(result, StagePayload):
             return False
+        elif self.inline_media:
+            # Inline results own nothing on disk.
+            return True
         elif not terminal:
             raise ValueError(
                 "Saved native media requires terminal delivery. "
@@ -645,6 +767,7 @@ class NativeGenerationScheduler(SimpleScheduler):
                 self.remove_outputs(request)
 
     def generate(self, payload: StagePayload) -> StagePayload:
+        started = time.monotonic() if self.inline_media else 0.0
         params = build_sampling_params(payload, self.output_dir, self.request_fields)
         with self.abort_lock:
             if payload.request_id in self.aborted:
@@ -685,13 +808,16 @@ class NativeGenerationScheduler(SimpleScheduler):
                 raise RuntimeError("Native generation returned no saved media")
             else:
                 pass
-            for result in results:
-                # Native names each output after the request's unique
-                # output_file_name, so the name is free in output_dir.
-                source = Path(result.output_file_path)
-                target = Path(self.output_dir) / source.name
-                os.replace(source, target)
-                request.outputs.append(target)
+            paths = [Path(result.output_file_path) for result in results]
+            if not self.inline_media:
+                for index, source in enumerate(paths):
+                    # Native names each output after the request's unique
+                    # output_file_name, so the name is free in output_dir.
+                    paths[index] = Path(self.output_dir) / source.name
+                    os.replace(source, paths[index])
+                    request.outputs.append(paths[index])
+            else:
+                pass
             payload.data = {
                 "media": [
                     {
@@ -702,17 +828,25 @@ class NativeGenerationScheduler(SimpleScheduler):
                         "peak_memory_mb": result.peak_memory_mb,
                         "metrics": result.metrics,
                     }
-                    for result, path in zip(results, request.outputs, strict=True)
+                    for result, path in zip(results, paths, strict=True)
                 ],
                 "finish_reason": "stop",
             }
+            if self.inline_media:
+                for item in payload.data["media"]:
+                    item.update(inline_media(item.pop("path"), request.directory))
+                payload.data["service_s"] = time.monotonic() - started
+            else:
+                pass
             succeeded = True
             return payload
         finally:
             with self.abort_lock:
                 request.running = False
                 request.result = payload if succeeded else None
-                cleanup = not succeeded or request.cancelled.is_set()
+                cleanup = (
+                    self.inline_media or not succeeded or request.cancelled.is_set()
+                )
                 if cleanup and self.native_requests.get(payload.request_id) is request:
                     self.native_requests.pop(payload.request_id)
                 else:
@@ -789,6 +923,7 @@ def create_generation_scheduler(
     output_dir: str = "outputs",
     runtime_gpu_ids: list[int] | None = None,
     server_args_overrides: dict[str, object] | None = None,
+    inline_media: bool = False,
 ) -> NativeGenerationScheduler:
     """Start native generation for this stage.
 
@@ -869,6 +1004,7 @@ def create_generation_scheduler(
             output_dir,
             COMMON_REQUEST_FIELDS | model_request_fields(generator.server_args),
             cancellation_mode=mode,
+            inline_media=inline_media,
         )
         # With explicit warmup resolutions DiffGenerator already warmed up.
         if should_run_explicit_client_warmup(generator.server_args):

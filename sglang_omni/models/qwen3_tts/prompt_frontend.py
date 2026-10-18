@@ -101,11 +101,9 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.root_config = root_config
         self.config = config
         self.vocab_size = config.vocab_size
-        self.tts_model_type = getattr(root_config, "tts_model_type", "base")
-        self.speaker_encoder_sample_rate = getattr(
-            getattr(root_config, "speaker_encoder_config", None),
-            "sample_rate",
-            24000,
+        self.tts_model_type = root_config.tts_model_type
+        self.speaker_encoder_sample_rate = (
+            root_config.speaker_encoder_config.sample_rate
         )
         self.text_projection = PromptProjection(
             config.text_hidden_size, config.text_hidden_size, config.hidden_size
