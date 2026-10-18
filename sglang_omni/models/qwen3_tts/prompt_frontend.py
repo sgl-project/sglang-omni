@@ -109,7 +109,7 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         self.model = PromptEmbeddings(config)
         self.code_predictor = PromptPredictorEmbeddings(config)
-        self.codec_table_params = Qwen3TTSCodecTables.make_params_mapping(
+        self.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(
             config.num_code_groups - 1
         )
         if self.tts_model_type == "base":
@@ -130,8 +130,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.requires_grad_(False)
 
     def checkpoint_weight_names(self) -> set[str]:
-        names = {_TALKER_PREFIX + name for name in self.codec_table_params}
-        stacked_names = {name for name, _ in self.codec_table_params.values()}
+        names = {_TALKER_PREFIX + name for name in self.codec_table_params_mapping}
+        stacked_names = {name for name, _ in self.codec_table_params_mapping.values()}
         for name, _ in self.named_parameters():
             if name.startswith(_SPEAKER_ENCODER_PREFIX):
                 names.add(name)
@@ -151,9 +151,9 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
                 target = name
             else:
                 continue
-            codec_table_param = self.codec_table_params.get(target)
-            if codec_table_param is not None:
-                param_name, codebook_index = codec_table_param
+            codec_table_slot = self.codec_table_params_mapping.get(target)
+            if codec_table_slot is not None:
+                param_name, codebook_index = codec_table_slot
                 load_codec_table(params[param_name], tensor, codebook_index)
             elif target in params:
                 param = params[target]

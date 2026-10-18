@@ -1033,7 +1033,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             config,
             prefix=add_prefix("code_predictor", prefix),
         )
-        self.codec_table_params = Qwen3TTSCodecTables.make_params_mapping(
+        self.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(
             config.num_code_groups - 1
         )
 
@@ -2304,9 +2304,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             else:
                 continue
 
-            codec_table_param = self.codec_table_params.get(target)
-            if codec_table_param is not None:
-                param_name, codebook_index = codec_table_param
+            codec_table_slot = self.codec_table_params_mapping.get(target)
+            if codec_table_slot is not None:
+                param_name, codebook_index = codec_table_slot
                 param = params_dict[param_name]
                 param.weight_loader(param, loaded_weight, codebook_index)
                 continue

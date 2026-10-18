@@ -2341,7 +2341,7 @@ def test_qwen3_tts_talker_loads_each_codec_table_into_its_codebook() -> None:
     talker.code_predictor = torch.nn.Module()
     talker.code_predictor.model = torch.nn.Module()
     talker.code_predictor.model.codec_embedding = Qwen3TTSCodecTables(3, 5, 4)
-    talker.codec_table_params = Qwen3TTSCodecTables.make_params_mapping(3)
+    talker.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(3)
     talker.cached_params_dict = dict(talker.named_parameters())
     talker.predictor_projected_embeddings = None
     tables = [torch.randn(5, 4) for _ in range(3)]
