@@ -839,7 +839,6 @@ class Code2WavCudaGraphRunner:
             )
         else:
             pass
-        self.validate_codes(codes)
         key = GraphKey(
             batch_size=int(codes.shape[0]),
             frames=int(codes.shape[2]),
