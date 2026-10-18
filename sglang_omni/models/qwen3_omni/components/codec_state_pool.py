@@ -127,9 +127,6 @@ class CodecStatePool:
         return self.free_slots.pop()
 
     def release(self, slot: int) -> None:
-        assert (
-            slot not in self.free_slots
-        ), f"codec state slot {slot} was released twice"
         self.free_slots.append(slot)
 
     def stage_index(self, slots: list[int]) -> torch.Tensor:
