@@ -322,7 +322,10 @@ def serve(
         bool,
         typer.Option(
             "--text-only",
-            help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+            help=(
+                "Use the model's text output variant on 1 GPU, such as the "
+                "Qwen3-Omni thinker without talker or the Cosmos3 Reasoner."
+            ),
         ),
     ] = False,
     variant: Annotated[
