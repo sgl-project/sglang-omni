@@ -21,6 +21,8 @@ from typing import Literal
 import numpy as np
 import pytest
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
@@ -28,11 +30,22 @@ from sglang.srt.arg_groups.model_override_base import (
     attention_backends_of,
     resolved_view,
 )
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_context, override_platform
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.qwen3_omni.components.thinker_model import (
+    Qwen3OmniMoeThinkerTextAttention,
+)
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -101,6 +114,7 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
+from sglang_omni.vendor.sglang.layers import RMSNorm
 from tests.unit_test.fakes import FakeExecutionBridge
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
@@ -917,6 +931,80 @@ def test_qwen3_tts_default_config_builds_without_rope_parameters() -> None:
     from qwen_tts.core.models import Qwen3TTSConfig
 
     assert Qwen3TTSConfig().text_config.rope_parameters is None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("backend", [None, KernelBackend.TORCH], ids=["cuda", "torch"])
+def test_qwen3_tts_talker_text_rope_stores_kv_only_on_the_cuda_kernel(
+    backend: KernelBackend | None,
+) -> None:
+    device = torch.device("cuda")
+    num_heads, num_kv_heads, head_dim = 16, 8, 128
+    torch.manual_seed(0)
+    attention = SimpleNamespace(
+        use_fused_qk_norm_rope=False,
+        q_size=num_heads * head_dim,
+        kv_size=num_kv_heads * head_dim,
+        head_dim=head_dim,
+        q_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        k_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        alt_stream=None,
+        rotary_emb=RotaryEmbedding(
+            head_dim, head_dim, 64, 1_000_000, True, torch.bfloat16
+        ).to(device),
+        compatible_with_fused_kv_buffer=True,
+        attn=SimpleNamespace(layer_id=0, k_scale=None, v_scale=None),
+    )
+    cache_slots = torch.tensor([3, 7], device=device)
+    batch = SimpleNamespace(out_cache_loc=cache_slots, dcp_kv_mask=None)
+    positions = torch.tensor([17, 43], device=device)
+    qkv = torch.randn(
+        2,
+        (num_heads + 2 * num_kv_heads) * head_dim,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    previous_backend = get_fused_op_backend()
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(prefill=PhaseConfig(backend=Backend.DISABLED))
+    ):
+        pool = MHATokenToKVPool(
+            size=32,
+            page_size=1,
+            dtype=torch.bfloat16,
+            head_num=num_kv_heads,
+            head_dim=head_dim,
+            layer_num=1,
+            device="cuda",
+            enable_memory_saver=False,
+        )
+        k_before = pool.get_key_buffer(0).clone()
+        v_before = pool.get_value_buffer(0).clone()
+        set_fused_op_backend(backend)
+        try:
+            with forward_context(
+                ForwardContext(SimpleNamespace(token_to_kv_pool=pool))
+            ):
+                _, k, v = Qwen3OmniMoeThinkerTextAttention.apply_qk_norm_rope(
+                    attention, qkv, positions, batch
+                )
+        finally:
+            set_fused_op_backend(previous_backend)
+
+    if backend is None:
+        assert attention.used_fused_set_kv_buffer_last_call is True
+        assert torch.equal(
+            pool.get_key_buffer(0)[cache_slots], k.reshape(2, num_kv_heads, head_dim)
+        )
+        assert torch.equal(
+            pool.get_value_buffer(0)[cache_slots],
+            v.reshape(2, num_kv_heads, head_dim),
+        )
+    else:
+        assert attention.used_fused_set_kv_buffer_last_call is False
+        assert torch.equal(pool.get_key_buffer(0), k_before)
+        assert torch.equal(pool.get_value_buffer(0), v_before)
 
 
 def test_qwen3_tts_factory_forwards_coalescing_params_to_builder(
