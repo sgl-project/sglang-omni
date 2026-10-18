@@ -309,12 +309,45 @@ section below is the rule.
 - This repository already configures linting, formatting, and other checks in
   [.pre-commit-config.yaml](/.pre-commit-config.yaml). Run
   `pre-commit run --all-files` before completing a change.
+
+## TESTS
+
+- Every test case answers "which future diff turns this red?" If the only
+  answer is an edit to the test itself, delete the case.
+- A case exists for one of three reasons: a bug that happened (it fails on
+  the pre-fix code, and its docstring states the bug in black-box terms), a
+  derived property (boundary math, an invariant, ordering, round-trip, graph
+  output equal to eager), or bookkeeping that is easy to forget (registry
+  completeness, a field's lifecycle, a branch that must not fire, a value
+  copied from an outside spec).
+- These do not belong: a default or constant read back with no consumer, an
+  expected value that restates the code's formula, library or Python
+  behavior, a case that exercises only its own fake, and a check whose
+  failure cannot be traced to one diff, such as a speed claim or a stress
+  loop. A race case forces the interleaving deterministically (an event, a
+  barrier, `sleep(0)` scheduling), never with a timed wait.
+- Mock an external or slow boundary only when the assertion still checks a
+  result, a state change, an output or an error. Counting calls to a real
+  operation, wrapped rather than replaced, is fine when skipping that work
+  is the contract.
+- One strong case beats several weak ones. Fold repetitive cases into one
+  parametrized case, and keep a row only if it guards a failure no other row
+  guards. A case is redundant only when another case makes the same
+  assertions on the same input; running the same lines is not enough.
+  Before deleting a case, name the regression it would let through.
+- Do not weaken a case to make it pass or run faster: no dropped assertion,
+  no stubbed code under test. A changed contract gets a rewritten case, and a
+  tolerance widens only after the inputs are seeded, from a measured
+  distribution.
+- Fakes and fixtures that several test files share live in
+  `tests/unit_test/fixtures/`; a test file never imports another test file.
 - Test the public contract (inputs → outputs), not internal layout.
   Do not snapshot helper tuples, page tables, prefix sums, or other
   encodings that can change without changing behavior. A representation
   refactor that preserves the caller's result should not break tests.
 - Do not add a new test file for one case that belongs next to the
   existing suite. Put GPU or optional-backend cases on the same module
-  with a marker; skip when that backend is absent.
+  with a marker; skip when that backend is absent. A case that needs CUDA
+  carries `pytest.mark.accelerator`, or no CI lane runs it.
 - Test actual failure contracts and supported fallback paths;
   do not add tests solely to preserve speculative recovery scaffolding.

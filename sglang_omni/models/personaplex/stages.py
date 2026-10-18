@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -13,8 +14,8 @@ from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
     trim_to_caller,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
+from sglang_omni.models.personaplex.components.mimi_loader import (
     load_mimi_codec,
     resolve_mimi_weights,
 )
@@ -139,17 +140,21 @@ def create_preprocessing_executor(
 
 
 def load_codec(
-    model_path: str, *, device: str | None, gpu_id: int | None
+    model_path: str,
+    *,
+    device: str | None,
+    gpu_id: int | None,
+    mode: Literal["encode", "decode"],
 ) -> tuple[MimiCodec, torch.device]:
     device = resolve_concrete_device(device, gpu_id)
     weights = resolve_mimi_weights(resolve_model_path(model_path), MIMI_WEIGHTS_GLOB)
-    return load_mimi_codec(weights, device=device), device
+    return load_mimi_codec(weights, device=device, mode=mode), device
 
 
 def create_mimi_encode_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
 
     def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
         codes = codec.encode(
@@ -230,7 +235,7 @@ def create_code2wav_executor(
     """Whole-reply decode, plus streaming decode on num_decode_slots resident
     states, up to max_batch_size streams per step, with device graphs for
     chunks of up to max_graph_frames frames."""
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:

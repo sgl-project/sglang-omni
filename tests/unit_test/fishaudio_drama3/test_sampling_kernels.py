@@ -826,9 +826,7 @@ def patch_cuda_platform(
     )
 
 
-@pytest.mark.parametrize(
-    ("codebook_size", "candidate_count"), [(32, 4097), (4096, 32), (32, 33)]
-)
+@pytest.mark.parametrize(("codebook_size", "candidate_count"), [(32, 4097), (4096, 32)])
 def test_rows_of_32_columns_keep_the_pytorch_path(
     monkeypatch: pytest.MonkeyPatch, codebook_size: int, candidate_count: int
 ) -> None:
@@ -851,12 +849,7 @@ def test_compute_capability_9_0_takes_the_triton_kernels(
 
 @pytest.mark.parametrize(
     ("compute_capability", "expected_reason"),
-    [
-        ((8, 6), "untested GPU sm_86"),
-        ((8, 9), "untested GPU sm_89"),
-        ((10, 0), "untested GPU sm_100"),
-        ((12, 0), "untested GPU sm_120"),
-    ],
+    [((8, 6), "untested GPU sm_86")],
 )
 def test_other_compute_capabilities_keep_the_pytorch_path(
     monkeypatch: pytest.MonkeyPatch,

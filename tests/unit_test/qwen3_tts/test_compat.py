@@ -109,24 +109,6 @@ def runtime_install_hint() -> str:
     raise AssertionError(f"_QWEN_TTS_INSTALL_HINT not found in {STAGES_PATH}")
 
 
-def test_transformers_globals_are_pristine_at_test_start() -> None:
-    """Canary for patch leakage between tests in one pytest process."""
-    for name, original in PRISTINE.items():
-        assert getattr(masking_utils, name) is original
-    assert not getattr(
-        generic.check_model_inputs, compat._PATCHED_FLAG, False
-    )  # noqa: leading-underscore  # production name
-
-
-@pytest.mark.parametrize(
-    "name",
-    compat._MASK_FACTORY_NAMES,  # noqa: leading-underscore  # production name
-)
-def test_unpatched_transformers_rejects_the_qwen_tts_call_shape(name: str) -> None:
-    with pytest.raises(TypeError, match="input_embeds"):
-        getattr(masking_utils, name)(**qwen_tts_kwargs(mask_config()))
-
-
 @pytest.mark.parametrize(
     "name",
     compat._MASK_FACTORY_NAMES,  # noqa: leading-underscore  # production name

@@ -51,4 +51,4 @@ class S2ProState(DeclarativeStateBase):
     finish_reason: str | None = None
 
     # -- From vocoder ------------------------------------------------------
-    audio_samples: torch.Tensor | list[float] | None = wire(None, codec="tensor_list")
+    audio_samples: torch.Tensor | list[float] | None = wire(None, codec="typed_tensor")

@@ -32,10 +32,8 @@ SSE transcription are supported; quantized checkpoints are not.
 
 ### Torch/MPS
 
-Native MLX support is added separately; until then, set `SGLANG_USE_MLX=0`:
-
 ```bash
-SGLANG_USE_MLX=0 sgl-omni serve \
+sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
 

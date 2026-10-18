@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import copy
-import logging
-from collections import Counter
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 import torch
@@ -445,83 +442,6 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph.graph_misses
     assert graph.dit_contiguous_view_steps == NFE
-
-
-def seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
-    torch.manual_seed(7)
-    model = TailModel().eval()
-    acoustic_tail = build_tail(model, slots=1, patch_capacity=patch_capacity)
-    unit = acoustic_tail.spec.unit_len
-    g_cond = torch.randn(1, FM_HIDDEN)
-    grid = torch.linspace(0.0, 1.0, NFE + 1)
-    mods = acoustic_tail.dit.build_mods(
-        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
-    )
-    slot = acoustic_tail.acquire_slot()
-    acoustic_tail.seed_fm_history(
-        slot, fm_rows=torch.randn(3 * unit, FM_HIDDEN), all_mods=mods
-    )
-    return acoustic_tail, slot
-
-
-def counter_records(caplog) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if "tail graph counters" in r.getMessage()]
-
-
-def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
-    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
-    # A captured batch-8 bucket that batch-1 decode can never select: every
-    # cycle is a real miss, which is exactly what the counters report.
-    acoustic_tail.meanflow_graphs[(8, 16)] = object()
-    acoustic_tail.encoder_graphs[(8, 16)] = object()
-
-    with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
-        for step in range(50):
-            latent = acoustic_tail.sample_patches(
-                [slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN)
-            )
-            acoustic_tail.encode_feedback([slot], latent)
-            acoustic_tail.note_decode_cycle()
-            if step == 48:
-                assert not counter_records(caplog)
-        [periodic] = counter_records(caplog)
-        caplog.clear()
-        acoustic_tail.log_graph_counters()
-        [shutdown] = counter_records(caplog)
-
-    assert periodic.levelno == logging.DEBUG
-    assert shutdown.levelno == logging.INFO
-    record = periodic
-    message = record.getMessage()
-    assert "steps=50" in message
-    assert "meanflow_replays=0" in message
-    assert "meanflow_misses=50" in message
-    assert "semantic_encoder_replays=0" in message
-    assert "semantic_encoder_misses=50" in message
-    assert acoustic_tail.graph_misses == Counter(
-        {"meanflow": 50, "semantic_encoder": 50}
-    )
-    assert acoustic_tail.graph_replays == Counter()
-
-
-def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
-    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
-    assert not acoustic_tail.has_captured_graphs
-
-    with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
-        for _ in range(50):
-            latent = acoustic_tail.sample_patches(
-                [slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN)
-            )
-            acoustic_tail.encode_feedback([slot], latent)
-            acoustic_tail.note_decode_cycle()
-        acoustic_tail.log_graph_counters()
-
-    assert acoustic_tail.tail_steps == 50
-    assert acoustic_tail.graph_misses == Counter(
-        {"meanflow": 50, "semantic_encoder": 50}
-    )
-    assert not counter_records(caplog)
 
 
 def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(

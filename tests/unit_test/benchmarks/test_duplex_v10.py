@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.0 dataset discovery, Parakeet transcription and recording."""
 
 from __future__ import annotations
 
@@ -20,49 +21,16 @@ from benchmarks.duplex.v10_dataset import (
     inventory,
 )
 from benchmarks.eval.benchmark_duplex_v10 import main
-from tests.unit_test.benchmarks.test_duplex_v15_cli import peer_server
-from tests.unit_test.benchmarks.test_duplex_v15_runner import (
-    FIXTURE_SAMPLES,
+from tests.unit_test.fixtures.duplex_fakes import (
     SERVER_REVISION,
+    peer_server,
+    write_v10_dataset,
+    write_v10_sample,
 )
-
-ANNOTATIONS = {
-    "synthetic_pause_handling": ("pause.json", [{"timestamp": [0.1, 0.2]}]),
-    "candor_pause_handling": (
-        "pause.json",
-        [{"timestamp": [0.1, 0.2]}, {"timestamp": [0.3, 0.4]}],
-    ),
-    "candor_turn_taking": ("turn_taking.json", [{"timestamp": [0.3, 0.3]}]),
-    "synthetic_user_interruption": (
-        "interrupt.json",
-        [{"timestamp": [0.1, 0.3], "context": "tell me", "interrupt": "stop"}],
-    ),
-}
-
-
-def write_sample(
-    root: Path, subset: str, name: str = "1", annotation: str | None = None
-) -> Path:
-    sample_dir = root / subset / name
-    sample_dir.mkdir(parents=True)
-    soundfile.write(
-        str(sample_dir / "input.wav"), FIXTURE_SAMPLES, 16000, subtype="PCM_16"
-    )
-    if subset in ANNOTATIONS:
-        filename, entries = ANNOTATIONS[subset]
-        (sample_dir / filename).write_text(
-            annotation if annotation is not None else json.dumps(entries)
-        )
-    return sample_dir
-
-
-def write_dataset(root: Path) -> None:
-    for subset in SUBSETS:
-        write_sample(root, subset)
 
 
 def test_discovery_groups_subsets_by_task(tmp_path: Path) -> None:
-    write_dataset(tmp_path)
+    write_v10_dataset(tmp_path)
     (tmp_path / "notes.md").write_text("")
 
     samples = discover_samples(tmp_path)
@@ -120,7 +88,7 @@ def test_discovery_groups_subsets_by_task(tmp_path: Path) -> None:
 def test_malformed_annotations_stay_with_their_sample(
     tmp_path: Path, subset: str, annotation: str, error: str
 ) -> None:
-    write_sample(tmp_path, subset, annotation=annotation)
+    write_v10_sample(tmp_path, subset, annotation=annotation)
 
     [sample] = discover_samples(tmp_path)
 
@@ -128,7 +96,7 @@ def test_malformed_annotations_stay_with_their_sample(
 
 
 def test_missing_files_and_selection_errors(tmp_path: Path) -> None:
-    write_dataset(tmp_path)
+    write_v10_dataset(tmp_path)
     (tmp_path / "candor_turn_taking" / "1" / "turn_taking.json").unlink()
     (tmp_path / "icc_backchannel" / "1" / "input.wav").unlink()
 
@@ -192,7 +160,7 @@ def test_parakeet_recognizer_feeds_a_16k_wav_and_returns_whisper_shape() -> None
 
 def test_record_every_task(tmp_path: Path) -> None:
     dataset, run = tmp_path / "data", tmp_path / "run"
-    write_dataset(dataset)
+    write_v10_dataset(dataset)
     (dataset / "candor_turn_taking" / "1" / "turn_taking.json").write_text("{")
     with peer_server() as url:
         code, summary = run_cli(

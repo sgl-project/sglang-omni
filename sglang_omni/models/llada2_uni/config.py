@@ -85,6 +85,18 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
 class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     """LLaDA text, image generation and editing with a shared thinker."""
 
+    supports_image_api: ClassVar[bool] = True
+
+    def image_decode_mode(self) -> Literal["normal", "decoder-turbo"]:
+        stage = self.stage_named(IMAGE_DECODE_STAGE)
+        assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+        return stage.factory.decode_mode
+
+    def image_decode_steps(self) -> int:
+        stage = self.stage_named(IMAGE_DECODE_STAGE)
+        assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+        return stage.factory.num_steps
+
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         **LLaDA2UniPipelineConfig.stage_config_types,
         IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
@@ -133,7 +145,7 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
-EntryClass = LLaDA2UniPipelineConfig
+EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,

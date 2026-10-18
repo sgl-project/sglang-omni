@@ -99,6 +99,7 @@ Supported Models
    get_started/installation_xpu.md
    get_started/installation_cpu.md
    get_started/installation_musa.md
+   get_started/troubleshooting.md
 
 
 .. toctree::
@@ -137,6 +138,7 @@ Supported Models
    :caption: General Usage
 
    basic_usage/qwen3_omni.md
+   basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/process_topology.md
@@ -144,6 +146,7 @@ Supported Models
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
+   basic_usage/native_media_routes.md
 
 
 .. toctree::

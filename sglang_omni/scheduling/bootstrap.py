@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Protocol, TypedDict
 from typing_extensions import Unpack
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.vendor.sglang.core import ServerArgs
@@ -39,9 +38,7 @@ class InfrastructureOptions(TypedDict, total=False):
     weight_prefix: str | None
     total_gpu_memory_fraction: float | None
     enable_prefill_input_embeds: bool
-    before_memory_pool: Callable[["ModelWorker | MlxTpModelWorker"], None] | None
-    mlx_model_path: str | None
-    mlx_model_revision: str | None
+    before_memory_pool: Callable[["ModelWorker"], None] | None
 
 
 def describe_sglang_runtime_configuration(
@@ -67,17 +64,9 @@ def describe_sglang_runtime_configuration(
 
 
 def init_sglang_cuda_graphs(
-    model_worker: "ModelWorker | MlxTpModelWorker",
+    model_worker: "ModelWorker",
 ) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
-    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-    if use_mlx():
-        # Note (yexiaodong): The MLX stub has no Torch graph lifecycle because
-        # native MLX lazy evaluation owns graph execution.
-        return
-    else:
-        pass
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
         # phase runner from init_cuda_graphs().
@@ -109,11 +98,7 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
-    before_memory_pool: (
-        Callable[["ModelWorker | MlxTpModelWorker"], None] | None
-    ) = None,
-    mlx_model_path: str | None = None,
-    mlx_model_revision: str | None = None,
+    before_memory_pool: Callable[["ModelWorker"], None] | None = None,
 ):
     """Create SGLang worker, memory pools, and tree cache.
 
@@ -151,36 +136,13 @@ def create_sglang_infrastructure(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         kv_cache_bytes=kv_cache_bytes,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
-        mlx_model_path=mlx_model_path,
-        mlx_model_revision=mlx_model_revision,
     )
-    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-    if use_mlx():
-        # Note (Jiaxin Deng): the MLX worker sizes no SGLang KV pool, so a
-        # declared byte budget could only be ignored; refuse instead.
-        if kv_cache_bytes is not None:
-            raise ValueError(
-                "engine.kv_cache_bytes is not supported on the MLX path; "
-                "remove it or run this stage on CUDA"
-            )
-        else:
-            pass
-        from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
-
-        model_worker = create_mlx_model_worker(
-            config=worker_config,
-            server_args=server_args,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-        )
-    else:
-        model_worker = ModelWorker(
-            config=worker_config,
-            server_args=server_args,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-        )
+    model_worker = ModelWorker(
+        config=worker_config,
+        server_args=server_args,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
+    )
 
     if before_memory_pool is not None:
         # note(ratish): sglang sizes the pool from free memory at this point, so

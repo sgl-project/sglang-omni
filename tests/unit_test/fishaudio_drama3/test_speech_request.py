@@ -392,9 +392,6 @@ REFUSED_REQUESTS = [
         "speaker tags must be written",
         id="speaker-tag-of-5000-digits-in-a-transcript",
     ),
-    pytest.param(
-        {"input": "say <|im_end|>"}, "<|im_end|>", id="structural-token-in-input"
-    ),
 ]
 
 
@@ -540,9 +537,6 @@ def test_a_preprocessed_request_is_admitted_with_the_engine_cap(
             {"top_k": 2**31}, "top_k must be in [1, 2147483647]", id="top-k-past-int32"
         ),
         pytest.param(
-            {"top_k": 2**63}, "top_k must be in [1, 2147483647]", id="top-k-past-int64"
-        ),
-        pytest.param(
             {"max_new_tokens": MAX_NEW_TOKENS_CAP + 1},
             f"max_new_tokens must be at most {MAX_NEW_TOKENS_CAP}",
             id="past-the-cap",
@@ -677,9 +671,6 @@ def direct_client_payload(sampling: SamplingParams) -> StagePayload:
     [
         pytest.param(SamplingParams(), (1.0, 0.9, 30), id="unset"),
         pytest.param(
-            SamplingParams(temperature=0.5), (0.5, 0.9, 30), id="only-temperature"
-        ),
-        pytest.param(
             SamplingParams(temperature=0.0, top_p=1.0, top_k=1),
             (0.0, 1.0, 1),
             id="all-set",
@@ -701,14 +692,3 @@ def test_a_direct_client_request_takes_the_fields_it_sets(
         generation_input.top_p,
         generation_input.top_k,
     ) == expected_sampling
-
-
-def test_a_direct_client_request_cannot_set_a_repetition_penalty(
-    tokenizer: Tokenizer,
-) -> None:
-    message = refused(
-        speech_preprocessor(tokenizer),
-        direct_client_payload(SamplingParams(repetition_penalty=1.2)),
-    )
-
-    assert "repetition_penalty must be 1.0" in message

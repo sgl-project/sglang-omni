@@ -25,7 +25,6 @@ from sglang_omni.scheduling.types import DeferredAdmission
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
     from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
@@ -47,7 +46,7 @@ _AUDIO_WEIGHT_PREFIXES = ("model.audio_decoder.", "model.audio_extra_embedding."
 
 
 class MiniMaxMusic3SchedulerArguments(TypedDict):
-    model_worker: ModelWorker | MlxTpModelWorker
+    model_worker: ModelWorker
     tree_cache: BasePrefixCache
     req_to_token_pool: ReqToTokenPool
     token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator
@@ -140,7 +139,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -198,7 +197,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MiniMaxMusic3ModelRunner:
         from .model_runner import MiniMaxMusic3ModelRunner

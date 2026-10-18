@@ -98,8 +98,8 @@ When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
 
-**The boot sequence.** `ModelWorker` and the MLX worker run upstream's worker
-boot themselves: publish the resolved config together with the process
+**The boot sequence.** `ModelWorker` runs upstream's worker
+boot itself: publish the resolved config together with the process
 placement, run the parallel runtime phase, run the layer runtime phase, then
 build the runner. The order and the arguments of each step are upstream's, and
 a step that upstream adds in front of the runner is not an import change. One

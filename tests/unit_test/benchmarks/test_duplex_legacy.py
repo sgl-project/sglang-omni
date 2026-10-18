@@ -34,13 +34,15 @@ from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.eval.benchmark_duplex_reference import main as reference_main
 from benchmarks.eval.benchmark_duplex_v10 import main as v10_main
 from benchmarks.eval.benchmark_duplex_v15 import main as v15_main
-from tests.unit_test.benchmarks.test_duplex_client import FIXTURE_PACKETS, FIXTURE_PCM
-from tests.unit_test.benchmarks.test_duplex_oracle import find_event, trace_fixture
-from tests.unit_test.benchmarks.test_duplex_v10 import write_dataset as write_v10
-from tests.unit_test.benchmarks.test_duplex_v15_runner import (
+from tests.unit_test.fixtures.duplex_fakes import (
+    FIXTURE_PACKETS,
+    FIXTURE_PCM,
     SERVER,
     SERVER_REVISION,
+    find_event,
+    trace_fixture,
     write_dataset,
+    write_v10_dataset,
 )
 
 LEGACY = "qwen3-omni-half-duplex"
@@ -1298,7 +1300,7 @@ def test_run_samples_validates_the_protocol_before_creating_the_run(
 
 def test_v10_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     dataset, run = tmp_path / "data", tmp_path / "run"
-    write_v10(dataset)
+    write_v10_dataset(dataset)
     with legacy_peer_server("healthy") as url:
         code, summary = run_cli(
             v10_main,
@@ -1319,7 +1321,7 @@ def test_v10_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
 
 def record_v10_interruption(tmp_path: Path) -> tuple[Path, Path]:
     dataset, run = tmp_path / "data", tmp_path / "run"
-    write_v10(dataset)
+    write_v10_dataset(dataset)
     with legacy_peer_server("healthy") as url:
         code, summary = run_cli(
             v10_main,

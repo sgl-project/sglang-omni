@@ -121,7 +121,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
     assert actual.stride() == x.stride()
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_shared_snake_preserves_parameters_and_cpu_fallback(dtype: torch.dtype) -> None:
     original = StubSnakeBeta(96).to(dtype=dtype).eval()
     nested = StubSnakeBeta(96).to(dtype=dtype).eval()

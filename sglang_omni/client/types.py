@@ -189,8 +189,10 @@ class GenerateChunk:
     modality: str = "text"
     language: str | None = None
     audio_data: object = None
+    media: list[dict[str, object]] | None = None
     sample_rate: int | None = None
     diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG from the terminal result
 
     @property
     def reported_finish_reason(self) -> str:
@@ -217,7 +219,9 @@ class GenerateChunk:
             "modality": self.modality,
             "language": self.language,
             "audio_data": self.audio_data,
+            "media": self.media,
             "sample_rate": self.sample_rate,
+            "image": self.image,
         }
 
 
@@ -258,6 +262,10 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    # Saved media of a generation stage. Delivered files belong to the
+    # caller. The server removes them only when it drops the completion
+    # before any caller receives it.
+    media: list[dict[str, object]] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[list[float | int]] | None = None
@@ -265,6 +273,7 @@ class CompletionResult:
     weight_version: str | None = None
     language: str | None = None
     diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG
 
 
 @dataclass

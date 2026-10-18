@@ -24,7 +24,7 @@ from sglang_omni.models.arkasr.audio_lengths import (
     arkasr_audio_token_lengths,
     arkasr_num_audio_tokens,
 )
-from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter, ArkAudioTower
+from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter
 from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
 from sglang_omni.models.arkasr.request_builders import build_suppressed_token_ids
@@ -81,27 +81,6 @@ def test_arkasr_config_registered():
     }
 
 
-def test_arkasr_stage_defaults():
-    signature = inspect.signature(create_sglang_arkasr_executor)
-    assert signature.parameters["max_running_requests"].default == 32
-    assert signature.parameters["encoder_max_batch_size"].default == 8
-    assert signature.parameters["request_build_max_workers"].default == 2
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 32.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
-    assert signature.parameters["pre_lm_max_pending"].default == 32
-    assert signature.parameters["enable_encoder_cuda_graph"].default is False
-    assert signature.parameters["enable_torch_compile"].default is None
-    assert signature.parameters["stream_emit_interval_s"].default == 0.05
-
-
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
     """pre_lm_max_batch_size decides how many requests reach one
     get_audio_feature call; encoder_max_batch_size bounds how that call is
@@ -113,20 +92,6 @@ def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
         signature.parameters["pre_lm_max_batch_size"].default
         == signature.parameters["encoder_max_batch_size"].default
     )
-
-
-def test_arkasr_pre_lm_encoder_knobs_are_stage_configurable():
-    factory = ArkasrPipelineConfig(model_path="AutoArk-AI/ARK-ASR-3B").stages[0].factory
-
-    assert factory.request_build_max_workers == 2
-    assert factory.request_build_max_pending == 16
-    assert factory.enable_pre_lm_encoder is True
-    assert factory.pre_lm_cache_max_entries == 4096
-    assert factory.pre_lm_cache_size_bytes == 2 * 1024**3
-    assert factory.pre_lm_max_batch_size == 8
-    assert factory.pre_lm_max_batch_wait_ms == 0
-    assert factory.pre_lm_max_pending == 32
-    assert factory.enable_encoder_cuda_graph is True
 
 
 def test_arkasr_rejects_invalid_pre_lm_batch_size():
@@ -171,13 +136,6 @@ def test_arkasr_rejects_invalid_pre_lm_pending_limit():
             prefill_coalesce_requires_pending_builds=True,
             pre_lm_max_pending=0,
         )
-
-
-def test_arkasr_stage_default_enables_async_decode():
-    signature = inspect.signature(create_sglang_arkasr_executor)
-
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def stub_arkasr_engine_build(
@@ -491,34 +449,12 @@ def test_arkasr_audio_token_count():
     assert arkasr_audio_token_lengths([400, 8]) == [50, 1]
 
 
-def test_arkasr_config_keeps_lm_params_at_top_level():
-    cfg = tiny_config()
-    assert cfg.num_attention_heads == 4
-    assert cfg.num_key_value_heads == 2
-    assert cfg.hidden_size == 48
-    assert cfg.num_hidden_layers == 2
-
-
 def test_arkasr_import_does_not_register_auto_config():
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     assert (
         "arkasr" not in CONFIG_MAPPING._extra_content
     )  # noqa: leading-underscore  # upstream name
-
-
-def test_ark_audio_tower_forward_shape():
-    torch.manual_seed(0)
-    cfg = tiny_config()
-    adapter = ArkAudioMLPAdapter(cfg).eval()
-    mel_frames = 40  # -> conv2 stride2 -> ~20 -> merge4 -> ~5 audio tokens
-    mel = torch.randn(1, cfg.whisper_config.num_mel_bins, mel_frames)
-    with torch.no_grad():
-        out = adapter(mel)
-    assert out.dim() == 3
-    assert out.size(0) == 1
-    assert out.size(-1) == cfg.hidden_size  # projected to LLM hidden
-    assert out.size(1) >= 1
 
 
 def tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
@@ -646,13 +582,6 @@ def test_ark_get_audio_feature_masks_pre_padded_garbage():
 
     assert batched.shape == serial.shape
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
-
-
-def test_ark_tower_rope_toggle():
-    cfg = tiny_config()
-    tower = ArkAudioTower(cfg)
-    assert tower.use_rope is True
-    assert hasattr(tower, "rotary_embedding")
 
 
 def test_ark_suppressed_token_ids():

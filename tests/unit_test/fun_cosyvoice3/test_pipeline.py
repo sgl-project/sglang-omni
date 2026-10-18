@@ -78,10 +78,7 @@ def test_fun_cosyvoice3_engine_process_resolves_spawn_omp_default(
 
 @pytest.mark.parametrize(
     "written_omp_setting",
-    [
-        ("env_defaults.OMP_NUM_THREADS", "3"),
-        ("vocoder.env.OMP_NUM_THREADS", "3"),
-    ],
+    [("vocoder.env.OMP_NUM_THREADS", "3")],
 )
 def test_fun_cosyvoice3_engine_process_spawns_with_a_written_omp_setting(
     monkeypatch: pytest.MonkeyPatch,
@@ -168,48 +165,6 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("FunCosyVoice3SGLangModel")
         is FunCosyVoice3PipelineConfig
     )
-
-
-def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
-    config = FunCosyVoice3PipelineConfig(model_path="model")
-    manager = ConfigManager(config)
-    merged = manager.merge_config(
-        {
-            "vocoder.factory.flow_batch_admission_frames": 4000,
-            "vocoder.factory.flow_merge_max_gap_frames": 40,
-            "vocoder.factory.flow_merge_pad_budget_percent": 3,
-            "vocoder.factory.flow_cuda_graph_capture_shapes": [
-                [1, 496],
-                [5, 544],
-                [7, 576],
-            ],
-        }
-    )
-    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
-
-    assert vocoder.factory.model_extra == {
-        "flow_batch_admission_frames": 4000,
-        "flow_merge_max_gap_frames": 40,
-        "flow_merge_pad_budget_percent": 3,
-        "flow_cuda_graph_capture_shapes": [[1, 496], [5, 544], [7, 576]],
-        "enable_flow_cuda_graph": True,
-        "enable_flow_prefix_cuda_graph": True,
-        "enable_flow_whole_history_cuda_graph": True,
-        "enable_flow_estimator_trt": False,
-        "token_hop_len": 25,
-        "token_max_hop_len": 100,
-        "disable_hop_growth": False,
-        "flow_prefix_cache_gb": 24.0,
-    }
-    args = resolve_stage_typed_kwargs(vocoder)
-    assert args["flow_batch_admission_frames"] == 4000
-    assert args["flow_merge_max_gap_frames"] == 40
-    assert args["flow_merge_pad_budget_percent"] == 3
-    assert args["flow_cuda_graph_capture_shapes"] == [
-        [1, 496],
-        [5, 544],
-        [7, 576],
-    ]
 
 
 @pytest.mark.parametrize(

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from numbers import Integral
-from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -23,19 +22,13 @@ from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
 
-if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-
-else:
-    pass
-
 logger = logging.getLogger(__name__)
 
 
 class ThinkerModelRunner(ModelRunner):
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
         super().__init__(tp_worker, output_processor)

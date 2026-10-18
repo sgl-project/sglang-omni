@@ -11,7 +11,15 @@ import time
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable, Literal, Optional, Tuple, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    Iterable,
+    Literal,
+    Optional,
+    Tuple,
+    TypeAlias,
+    TypedDict,
+)
 
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend
@@ -190,6 +198,16 @@ def sample_seeded_categorical(
     else:
         pass
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
+
+
+class PredictorGraphStats(TypedDict):
+    enabled: bool | None
+    startup_graph_count: int
+    lazy_graph_count: int
+    replays: int
+    eager_runs: int
+    capacity_fallbacks: int
+    capture_failures: int
 
 
 class PredictorDecodeGraph:
@@ -1135,6 +1153,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_graph_capacity_warned = False
         self.predictor_graph_capture_count = 0
         self.predictor_graph_startup_count = 0
+        self.predictor_graph_replay_count = 0
+        self.predictor_eager_count = 0
         self.predictor_graph_pool = None
         self.predictor_capture_stream: torch.Stream | None = None
         bind_default_weight_loaders(self)
@@ -1326,15 +1346,28 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             semantic_positions,
         )
         if graph_result is not None:
+            self.predictor_graph_replay_count += 1
             return graph_result
         else:
-            pass
+            self.predictor_eager_count += 1
         result_codes, summed_embeddings = self.code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
             semantic_positions=semantic_positions,
         )
         return result_codes, summed_embeddings
+
+    def predictor_graph_stats(self) -> PredictorGraphStats:
+        return {
+            "enabled": self.predictor_graph_enabled,
+            "startup_graph_count": self.predictor_graph_startup_count,
+            "lazy_graph_count": len(self.predictor_graphs)
+            - self.predictor_graph_startup_count,
+            "replays": self.predictor_graph_replay_count,
+            "eager_runs": self.predictor_eager_count,
+            "capacity_fallbacks": self.predictor_graph_capacity_fallback_count,
+            "capture_failures": self.predictor_graph_failure_count,
+        }
 
     @staticmethod
     def normalize_predictor_graph_batch_sizes(

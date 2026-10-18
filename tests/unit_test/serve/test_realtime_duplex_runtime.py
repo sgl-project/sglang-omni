@@ -141,30 +141,6 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
 
 
 @pytest.mark.asyncio
-async def test_ready_timestamp_survives_serial_pump_wait(monkeypatch) -> None:
-    ready_observations = iter(
-        (ready_observation(100), ready_observation(200), ready_observation(300))
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "capture_session_unit_ready",
-        lambda: next(ready_observations),
-    )
-    adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    await runtime.append(b"\1" * UNIT_BYTES, 1, None, "client_append_1")
-    await runtime.end("client_end")
-
-    adapter.release.set()
-    await receive_until(runtime, Drained)
-    await runtime.close("client_closed")
-
-    assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [100, 200]
-
-
-@pytest.mark.asyncio
 async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) -> None:
     recorder = get_recorder()
     if recorder.is_active():

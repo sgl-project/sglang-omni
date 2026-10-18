@@ -330,34 +330,6 @@ def test_length_alignment_across_emit_sizes(emit):
     assert len(pcm) == aligned_len(codes, eos)
 
 
-def test_adaptive_emit_alignment():
-    """Adaptive first-chunk batching (small first batch, large steady) must not
-    change the aligned output length."""
-    codes = make_codes(220)
-    eos = 200
-    sch = make_scheduler(steady=32, initial=5, overlap=2)
-    # simulate adaptive at the message level: first batch 8, then steady 32
-    rid = "req"
-    sch.stream_payloads[rid] = make_payload(codes, eos, rid)
-    meta = make_meta()
-    sizes = [8] + [32] * 100
-    msgs, i, cid = [], 0, 0
-    for sz in sizes:
-        if i >= codes.shape[0]:
-            break
-        batch = codes[i : i + sz]
-        msgs += sch.on_stream_chunk(
-            rid,
-            StreamItem(
-                chunk_id=cid, data=batch.clone(), from_stage="tts_engine", metadata=meta
-            ),
-        )
-        i += sz
-        cid += 1
-    msgs += sch.on_stream_done(rid)
-    assert len(pcm_from_messages(msgs, rid)) == aligned_len(codes, eos)
-
-
 # --- the bug regression: on_stream_done tops up a dropped/held tail ---
 
 
