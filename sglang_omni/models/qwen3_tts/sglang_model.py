@@ -91,7 +91,6 @@ PredictorGraphKey: TypeAlias = tuple[
 ]
 
 QTTS_PREDICTOR_GRAPH_ENV = "SGLANG_OMNI_QTTS_PREDICTOR_GRAPH"
-CODEC_TABLES_NAME = "code_predictor.model.codec_embedding"
 _PREDICTOR_GRAPH_MAX_LAZY_KEYS = 32
 _PREDICTOR_GRAPH_MAX_FAILURES = 8
 _PREDICTOR_GRAPH_WARMUP_PASSES = 2
@@ -461,12 +460,14 @@ class Qwen3TTSCodecTables(nn.Module):
         )
 
     @staticmethod
-    def make_params_mapping(
-        prefix: str, num_codebooks: int
-    ) -> dict[str, tuple[str, int]]:
+    def make_params_mapping(num_codebooks: int) -> dict[str, tuple[str, int]]:
         """Each codebook's checkpoint table name -> the stacked weight's name and the codebook."""
+        module_name = "code_predictor.model.codec_embedding"
         return {
-            f"{prefix}.{codebook_index}.weight": (f"{prefix}.weight", codebook_index)
+            f"{module_name}.{codebook_index}.weight": (
+                f"{module_name}.weight",
+                codebook_index,
+            )
             for codebook_index in range(num_codebooks)
         }
 
@@ -1033,7 +1034,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             prefix=add_prefix("code_predictor", prefix),
         )
         self.codec_table_params = Qwen3TTSCodecTables.make_params_mapping(
-            CODEC_TABLES_NAME, config.num_code_groups - 1
+            config.num_code_groups - 1
         )
 
         if self.tts_model_type == "base":

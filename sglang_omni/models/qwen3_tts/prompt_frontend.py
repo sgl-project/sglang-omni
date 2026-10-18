@@ -20,7 +20,6 @@ from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import (
-    CODEC_TABLES_NAME,
     Qwen3TTSCodecTables,
     Qwen3TTSPromptBuilderMixin,
     load_codec_table,
@@ -111,7 +110,7 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.model = PromptEmbeddings(config)
         self.code_predictor = PromptPredictorEmbeddings(config)
         self.codec_table_params = Qwen3TTSCodecTables.make_params_mapping(
-            CODEC_TABLES_NAME, config.num_code_groups - 1
+            config.num_code_groups - 1
         )
         if self.tts_model_type == "base":
             apply_qwen_tts_transformers_compatibility_patches()
