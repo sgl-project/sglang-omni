@@ -170,47 +170,35 @@ A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default
 
 ### Prefill CUDA graphs
 
-Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to a
-prefill CUDA graph with a token ladder up to 512: the full backend on
-CustomVoice, the breakable backend elsewhere.
+Qwen3-TTS replays prefills as CUDA graphs. Base and CustomVoice use the full
+backend, VoiceDesign the breakable backend.
 
 | Knob | Meaning | Default |
 |---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`full`, `breakable` or `disabled`) | `full` on CustomVoice, `breakable` elsewhere |
-| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
-| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`full`, `breakable` or `disabled`) | `full` on Base and CustomVoice, `breakable` on VoiceDesign |
+| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token counts to capture | a ladder from `1` up to the chunked prefill size |
+| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | the chunked prefill size |
 
-`full` captures the prefill transformer body, attention included, as one
-graph per token bucket; the codec head and sampling still run outside it.
-`breakable` captures per-layer segments and runs attention eagerly between
-them. Each backend is accepted only on models that declare it, so a stage that
-has not adopted `full` still rejects it. `full` also needs a prefill attention
-backend that captures an ordinary prefill batch, `fa3` or `flashinfer` in
-SGLang 0.5.21: with any other backend the CustomVoice default stays
-`breakable`, and an explicit `full` fails at startup. SGLang logs the full
-prefill backend as experimental and its own compatibility rules never
-auto-disable it, so the generation batch policy's checks are what guard it
-here.
+`full` captures the whole prefill transformer, attention included, as one
+graph per token count. `breakable` captures the layers in segments and runs
+attention between them. `full` needs the `fa3`, `fa4` or `flashinfer` attention
+backend. With another attention backend, Base and CustomVoice use `breakable`,
+and an explicit `full` fails at startup.
 
-The default is the shared ladder with one bucket added. A replay falls
-back to eager when its bucket exceeds twice the real token count, and the
-shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
-misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
-are exactly one token, and they are the only shapes that fall back: 2 and
-3 already replay inside bucket 4. Adding the single `1` bucket takes the
-fallback rate to zero.
+On Hopper GPUs the full graph runs its prefill attention on `fa4` and holds every
+running request, unless you set `--tts_engine.engine.attention_backend`,
+`--tts_engine.engine.prefill_attention_backend` or an FP8
+`--tts_engine.engine.kv_cache_dtype`. Decode keeps its own attention backend.
 
-CustomVoice prompts are a few dozen tokens, where the breakable graph's
-per-layer segments are launch-bound, so CustomVoice captures the prefill
-transformer body as one graph. The full backend is selected by the
-checkpoint's `tts_model_type`; Base prefills also carry reference audio and
-keep the breakable backend until the full one is measured on them.
+The ladder reaches the chunked prefill size, which the server picks from the
+GPU's memory (8192 tokens on an 80 GB GPU), so prefills batched together under
+load still replay. It starts at `1` because a prompt that is already cached
+prefills a single token.
 
-Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`, or
-fall back to `breakable`. The default costs extra graph capture during
-startup. Raising `cuda_graph_max_bs_prefill` on its own regrows the default
-ladder to the new cap; declaring `cuda_graph_bs_prefill` yourself keeps your
-list as is.
+Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
+default adds a few seconds of graph capture at startup. Setting
+`cuda_graph_max_bs_prefill` rebuilds the ladder up to the new cap, and declaring
+`cuda_graph_bs_prefill` yourself keeps your list as is.
 
 To change the ceiling, set `max_running_requests` and `max_queued_requests`
 together:

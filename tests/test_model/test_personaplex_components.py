@@ -37,8 +37,8 @@ from sglang_omni.models.personaplex.components.depformer import (
     DepformerLayer,
     rms_norm_f32,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
+from sglang_omni.models.personaplex.components.mimi_loader import (
     load_mimi_codec,
     resolve_mimi_weights,
 )

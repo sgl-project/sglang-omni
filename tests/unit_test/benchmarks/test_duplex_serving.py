@@ -3,6 +3,8 @@
 import base64
 import json
 import math
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,6 +187,35 @@ def test_unit_without_receipt_is_missed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("input_s", "unit_done_s", "unit_lags_s", "units_missed"),
+    [
+        (2.0, [101.16, 102.12, 102.2], [0.2, 0.2], 0),
+        (2.0, [102.0, 102.12, 102.2], [1.04, 0.2], 1),
+        (2.0, [101.16, 102.12, 104.0], [0.2, 0.2], 0),
+        (2.5, [101.16, 102.12, 102.7], [0.2, 0.2, 0.2], 0),
+    ],
+    ids=["empty-eos", "late-unit", "late-empty-eos", "partial-unit"],
+)
+def test_unit_lag_excludes_empty_eos_but_counts_partial_unit(
+    tmp_path: Path,
+    input_s: float,
+    unit_done_s: list[float],
+    unit_lags_s: list[float],
+    units_missed: int,
+) -> None:
+    session = score_session(
+        record_session(tmp_path / "session", unit_done_s, input_s=input_s),
+        PROFILE,
+        PLAYBACK_RESERVE_S,
+    )
+
+    assert session["units_missed"] == units_missed
+    assert session["units_expected"] == len(unit_lags_s)
+    assert session["units_done"] == len(unit_lags_s)
+    assert session["unit_lag_s"] == pytest.approx(unit_lags_s)
+
+
+@pytest.mark.parametrize(
     ("playback_reserve_s", "underrun_s"), [(0.0, 0.2), (0.08, 0.12), (0.3, 0.0)]
 )
 def test_reply_latency_underrun_and_real_time_factor(
@@ -314,8 +345,9 @@ def test_turn_based_level_is_judged_by_reply_real_time_factor(tmp_path: Path) ->
     assert level["unmet_targets"] == ["reply real-time factor p90 below 1"]
 
 
+@pytest.mark.parametrize("dataset", ["v1.0", "v1.5"])
 def test_sweep_records_every_level_then_reports(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dataset: str
 ) -> None:
     recorder_calls: list[list[str]] = []
 
@@ -327,10 +359,12 @@ def test_sweep_records_every_level_then_reports(
         )
         return 1
 
-    monkeypatch.setitem(benchmark_duplex_serving.RECORDERS, "v1.5", fake_recorder)
+    monkeypatch.setattr(
+        f"{benchmark_duplex_serving.RECORDERS[dataset]}.main", fake_recorder
+    )
     sweep_dir = tmp_path / "sweep"
     code = benchmark_duplex_serving.main(
-        ["sweep", "--dataset", "v1.5", "--concurrency", "2,1"]
+        ["sweep", "--dataset", dataset, "--concurrency", "2,1"]
         + [
             "--output",
             str(sweep_dir),
@@ -361,3 +395,35 @@ def test_sweep_refuses_recorder_options_it_sets(tmp_path: Path) -> None:
             + ["--output", str(tmp_path / "sweep"), "--", "--concurrency=4"]
         )
     assert not (tmp_path / "sweep").exists()
+
+
+def test_v15_sweep_does_not_load_v10_scoring_dependencies(tmp_path: Path) -> None:
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from benchmarks.eval.benchmark_duplex_serving import main
+
+try:
+    main([
+        "sweep", "--dataset", "v1.5", "--concurrency", "1",
+        "--output", sys.argv[1], "--", "--help",
+    ])
+except SystemExit as exception:
+    assert exception.code == 0
+else:
+    raise AssertionError("The selected recorder did not handle --help")
+
+assert "benchmarks.eval.benchmark_duplex_v15" in sys.modules
+for module in ("benchmarks.eval.benchmark_duplex_v10", "silero_vad", "torch"):
+    assert module not in sys.modules, f"Unused scoring dependency loaded: {module}"
+""",
+            str(tmp_path / "sweep"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert process.returncode == 0, process.stderr

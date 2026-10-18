@@ -59,6 +59,9 @@ _BAD_REQUEST_MARKERS = (
     "Unsupported PersonaPlex audio input",
     "Drama 3 request:",
     "; packaged voices:",
+    "Native generation request ",
+    "Native chat request rejected: ",
+    "Invalid UMM request: ",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(
