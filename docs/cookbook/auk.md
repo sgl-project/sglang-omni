@@ -52,6 +52,8 @@ The server supports `/v1/audio/speech` and `/generate`, with WAV or PCM output.
 Reference audio uses a `data:audio/wav;base64,` URI containing mono PCM16 or
 float32 WAV. It accepts one request at a time and returns 429 while busy.
 `--max-seconds` sets the duration cap, up to 30 seconds.
+`--cache-limit-gb` caps MLX's reusable buffer cache in GiB (default: 1);
+set it to 0 to disable caching. It does not cap total model memory.
 
 The speech-generation example below works with either server. For cloning or
 editing on the native server, embed the WAV in `ref_audio` instead of using
