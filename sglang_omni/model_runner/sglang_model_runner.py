@@ -75,14 +75,18 @@ class FlashInferSeededSampler(Sampler):
         positions: torch.Tensor,
         simple_sampling_case: bool,
     ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
-        if simple_sampling_case or sampling_info.sampling_seed is None:
+        if simple_sampling_case or (
+            sampling_info.sampling_seed is None
+            and not sampling_info.need_min_p_sampling
+        ):
             return super()._sample_from_probs(  # noqa: leading-underscore
                 probs, sampling_info, positions, simple_sampling_case
             )
         else:
             pass
         # note (ratish): FlashInfer seeds a batch from its first row's seed and each
-        # row's index, so a request seed takes the PyTorch backend's draw and mask.
+        # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
+        # row of the batch, so either batch takes the PyTorch backend's draw and mask.
         capture_rows = sampling_info.sampling_mask_batch_indices
         sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
             probs,
