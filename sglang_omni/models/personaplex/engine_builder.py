@@ -133,7 +133,6 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             current_platform.is_cuda()
             and config.device == "cuda"
             and config.page_size == 1
-            and config.disable_radix_cache
         ):
             pass
         else:
@@ -145,10 +144,19 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             logger.info(
                 f"PersonaPlex uses the full KV pool on device={config.device}, "
                 f"platform={current_platform.device_type} "
-                f"with page_size={config.page_size}, "
-                f"disable_radix_cache={config.disable_radix_cache}; "
-                "window KV requires CUDA, page_size=1 and disabled radix caching"
+                f"with page_size={config.page_size}; "
+                "window KV requires CUDA and page_size=1"
             )
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        # note (Jinjie Guo): A radix hit would reuse another voice's prompt KV.
+        if not resolved_view(server_args).disable_radix_cache:
+            raise ValueError(
+                "PersonaPlex needs disable_radix_cache=True: its prompt ids do not "
+                "identify the voice"
+            )
+        else:
+            pass
 
     def setup_model(
         self,
