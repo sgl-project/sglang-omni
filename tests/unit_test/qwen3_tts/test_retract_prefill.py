@@ -57,10 +57,7 @@ def make_sched_req(
 def test_write_feedback_buffers_records_decode_input_history() -> None:
     embedding = torch.nn.Embedding(4, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    runner.model = SimpleNamespace(
-        decode_feedback_embedding=embedding,
-        get_input_embeddings=lambda: embedding,
-    )
+    runner.model = SimpleNamespace(decode_feedback_embedding=embedding)
     sched_req = SimpleNamespace(
         data=SimpleNamespace(
             pending_feedback_queue=deque([torch.tensor([1.0, 2.0])]),
@@ -85,51 +82,56 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     assert list(sched_req.data.pending_text_queue) == []
 
 
-def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> None:
-    embedding = torch.nn.Embedding(4, 2)
-    with torch.no_grad():
-        embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
-    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    runner.model = SimpleNamespace(
-        decode_feedback_embedding=embedding,
-        get_input_embeddings=lambda: embedding,
+def feedback_data(
+    feedback: list[torch.Tensor], text: list[torch.Tensor], pad: torch.Tensor
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        pending_feedback_queue=deque(feedback),
+        pending_text_queue=deque(text),
+        decode_input_embeds=[],
+        thinker_chunks_done=True,
+        tts_pad_embed=pad,
     )
 
-    def data(feedback, text, pad):
-        return SimpleNamespace(
-            pending_feedback_queue=deque(feedback),
-            pending_text_queue=deque(text),
-            decode_input_embeds=[],
-            thinker_chunks_done=True,
-            tts_pad_embed=pad,
-        )
 
+def test_write_feedback_buffers_batches_text_and_pad_rows() -> None:
+    embedding = torch.nn.Embedding(4, 2)
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(decode_feedback_embedding=embedding)
     staged = SimpleNamespace(
-        data=data(
+        data=feedback_data(
             [torch.tensor([1.0, 2.0])], [torch.tensor([20.0, 30.0])], torch.zeros(2)
         )
     )
     padded = SimpleNamespace(
-        data=data([torch.tensor([3.0, 4.0])], [], torch.tensor([0.5, 0.5]))
+        data=feedback_data([torch.tensor([3.0, 4.0])], [], torch.tensor([0.5, 0.5]))
     )
-    first_step = SimpleNamespace(
-        data=data([], [torch.tensor([40.0, 50.0])], torch.zeros(2))
-    )
-    forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9, 3], dtype=torch.long))
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9], dtype=torch.long))
 
-    runner.write_feedback_buffers(forward_batch, [staged, padded, first_step])
+    runner.write_feedback_buffers(forward_batch, [staged, padded])
 
-    expected = torch.tensor([[21.0, 32.0], [3.5, 4.5], [6.0, 7.0]])
-    assert torch.equal(embedding.weight[:3].detach(), expected)
-    for row_idx, sched_req in enumerate((staged, padded, first_step)):
+    expected = torch.tensor([[21.0, 32.0], [3.5, 4.5]])
+    assert torch.equal(embedding.weight[:2].detach(), expected)
+    for row_idx, sched_req in enumerate((staged, padded)):
         assert len(sched_req.data.decode_input_embeds) == 1
         assert torch.equal(sched_req.data.decode_input_embeds[0], expected[row_idx])
-    assert forward_batch.input_ids.tolist() == [0, 1, 2]
+    assert forward_batch.input_ids.tolist() == [0, 1]
     assert list(staged.data.pending_feedback_queue) == []
     assert list(staged.data.pending_text_queue) == []
     assert list(padded.data.pending_feedback_queue) == []
-    assert list(first_step.data.pending_feedback_queue) == []
-    assert len(first_step.data.pending_text_queue) == 1
+
+
+def test_write_feedback_buffers_rejects_a_row_without_queued_feedback() -> None:
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(decode_feedback_embedding=torch.nn.Embedding(4, 2))
+    sched_req = SimpleNamespace(
+        request_id="req",
+        data=feedback_data([], [torch.tensor([40.0, 50.0])], torch.zeros(2)),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([3], dtype=torch.long))
+
+    with pytest.raises(RuntimeError, match="no queued feedback"):
+        runner.write_feedback_buffers(forward_batch, [sched_req])
 
 
 def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:

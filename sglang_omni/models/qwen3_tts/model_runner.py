@@ -386,15 +386,14 @@ class Qwen3TTSModelRunner(ModelRunner):
         dtype = weight.dtype
         feedback_rows: list[torch.Tensor] = []
         text_rows: list[torch.Tensor] = []
-        batched_row_ids: list[int] = []
-        rows: list[torch.Tensor | None] = [None] * batch_size
-        for row_idx, sched_req in enumerate(requests):
+        for sched_req in requests:
             data: Qwen3TTSSGLangRequestData = sched_req.data
             inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
             if inputs is None:
-                token_id = input_ids[row_idx : row_idx + 1].to(device=device)
-                rows[row_idx] = self.model.get_input_embeddings()(token_id).reshape(-1)
-                continue
+                raise RuntimeError(
+                    f"Qwen3-TTS decode for {sched_req.request_id} has no queued "
+                    "feedback embedding"
+                )
             else:
                 pass
             feedback, text = inputs
@@ -404,24 +403,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             text_rows.append(
                 QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
             )
-            batched_row_ids.append(row_idx)
             QwenTalkerModelRunner.pop_next_decode_inputs(data)
 
         with torch.no_grad():
             target = weight[:batch_size]
-            if len(batched_row_ids) == batch_size:
-                torch.stack(feedback_rows, dim=0, out=target)
-                target.add_(torch.stack(text_rows, dim=0))
-            else:
-                if feedback_rows:
-                    combined = torch.stack(feedback_rows, dim=0) + torch.stack(
-                        text_rows, dim=0
-                    )
-                    for slot, row_idx in enumerate(batched_row_ids):
-                        rows[row_idx] = combined[slot]
-                else:
-                    pass
-                torch.stack(rows, dim=0, out=target)
+            torch.stack(feedback_rows, dim=0, out=target)
+            target.add_(torch.stack(text_rows, dim=0))
             # note(ratish): the history outlives the buffer, a retracted request
             # replays it in its re-prefill.
             history = target.detach().clone()
