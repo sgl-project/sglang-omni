@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 
@@ -30,7 +30,10 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.runner.base_runner import BaseRunner
 
     from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+    from sglang_omni.models.qwen3_tts.sglang_model import (
+        PredictorGraphStats,
+        Qwen3TTSTalker,
+    )
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
@@ -72,6 +75,10 @@ def ensure_mrope_positions(
         pass
 
 
+class Qwen3TTSModelInfo(TypedDict):
+    predictor_cuda_graph: PredictorGraphStats
+
+
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
 
@@ -99,6 +106,9 @@ class Qwen3TTSModelRunner(ModelRunner):
             if supports_device_streams(self.device)
             else None
         )
+
+    def model_info(self) -> Qwen3TTSModelInfo:
+        return {"predictor_cuda_graph": self.model.predictor_graph_stats()}
 
     def before_prefill(
         self,

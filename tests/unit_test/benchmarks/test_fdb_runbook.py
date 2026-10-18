@@ -223,7 +223,7 @@ def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
     def chain(all_stages: bool) -> list[str]:
         calls.clear()
         runbook_cli.generate_stages(
-            settings, args.repeat, *selections, args.num_shards, all_stages
+            settings, args.repeat, *selections, args.num_shards, ("0",), all_stages
         )
         return [name for name, _, _ in calls]
 
@@ -232,7 +232,7 @@ def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
     assert chain(False) == ["generate"]
     assert chain(args.all_stages) == ["generate", "asr", "judge", "aggregate"]
     assert calls == [
-        ("generate", (settings, 2, *selections, 3), {}),
+        ("generate", (settings, 2, *selections, 3, ("0",)), {}),
         ("asr", (settings, 2), {"retry_failed": False}),
         ("judge", (settings, 2), {"retry_failed": False}),
         ("aggregate", (settings,), {}),
@@ -369,7 +369,12 @@ def test_generate_records_v10_after_v15_on_the_same_server(
     v10_dir = repeat_dir / "v10"
 
     generate_module.generate(
-        settings, 1, SampleSelection(per_subset=1), SampleSelection(per_subset=1), 2
+        settings,
+        1,
+        SampleSelection(per_subset=1),
+        SampleSelection(per_subset=1),
+        2,
+        (settings.gpu,),
     )
 
     assert len(servers) == 1
@@ -377,10 +382,58 @@ def test_generate_records_v10_after_v15_on_the_same_server(
     assert (v10_dir / "sample-ids.txt").read_text() == ids_text(v10_ids)
     assert (v10_dir / "logs").is_dir()
     assert recordings == [
-        (generate_module.v15_record_command(settings), repeat_dir, v15_ids, 2, 2),
-        (generate_module.v10_record_command(settings), v10_dir, v10_ids, 1, 2),
+        ([generate_module.v15_record_command(settings)], repeat_dir, v15_ids, 2, 2),
+        ([generate_module.v10_record_command(settings)], v10_dir, v10_ids, 1, 2),
     ]
     assert exports == [(settings, v10_dir, [v10_dir / "recording" / "shard-0"])]
+
+
+def test_generate_spreads_shards_over_one_model_server_per_gpu(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage_datasets(settings)
+    servers, recordings, _ = stub_generate_phases(monkeypatch)
+    generate_module.generate(
+        settings,
+        1,
+        SampleSelection(per_subset=1),
+        SampleSelection(per_subset=0),
+        2,
+        ("0", "1"),
+    )
+    replicas = [settings.on_gpu("0"), settings.on_gpu("1")]
+    log_dir = settings.repeat_dir(1) / "logs"
+    assert servers == [
+        (replica, log_dir / f"model-server-gpu{replica.gpu}.log")
+        for replica in replicas
+    ]
+    commands = recordings[0][0]
+    assert commands == [
+        generate_module.v15_record_command(replica) for replica in replicas
+    ]
+    assert len({command[command.index("--url") + 1] for command in commands}) == 2
+
+
+def test_record_shards_sends_shard_i_to_server_i_mod_their_count(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    (root / "logs").mkdir(parents=True)
+    # note (luojiaxuan): each fake recorder writes which server command started it.
+    script = (
+        "import pathlib, sys; "
+        "out = pathlib.Path(sys.argv[sys.argv.index('--output') + 1]); "
+        "out.mkdir(parents=True); (out / 'server').write_text(sys.argv[1])"
+    )
+    commands = [[sys.executable, "-c", script, name] for name in ("a", "b")]
+    shard_dirs = generate_module.record_shards(
+        commands,
+        root,
+        ["user_interruption/1", "user_interruption/2", "user_interruption/3"],
+        1,
+        3,
+    )
+    assert [(shard / "server").read_text() for shard in shard_dirs] == ["a", "b", "a"]
 
 
 def test_generate_without_v10_writes_no_v10_directory_and_fails_before_the_server(
@@ -390,7 +443,9 @@ def test_generate_without_v10_writes_no_v10_directory_and_fails_before_the_serve
     settings.dataset_v10_revision_file.unlink()
     servers, recordings, exports = stub_generate_phases(monkeypatch)
     v15_only = SampleSelection(per_subset=1)
-    generate_module.generate(settings, 1, v15_only, SampleSelection(per_subset=0), 1)
+    generate_module.generate(
+        settings, 1, v15_only, SampleSelection(per_subset=0), 1, (settings.gpu,)
+    )
     repeat_dir = settings.repeat_dir(1)
     assert (repeat_dir / "sample-ids.txt").read_text() == ids_text(
         [f"{subset}/1" for subset in V15_SUBSETS]
@@ -402,7 +457,9 @@ def test_generate_without_v10_writes_no_v10_directory_and_fails_before_the_serve
     # any session is recorded.
     other = load_settings("other")
     with pytest.raises(SystemExit, match=f"v1.0.revision.*setup.*{COUNT_HINT}"):
-        generate_module.generate(other, 1, v15_only, SampleSelection(per_subset=1), 1)
+        generate_module.generate(
+            other, 1, v15_only, SampleSelection(per_subset=1), 1, (other.gpu,)
+        )
     assert len(servers) == 1
     assert not (other.repeat_dir(1) / "recording").exists()
 
@@ -415,13 +472,18 @@ def test_generate_with_v15_left_out_records_only_v10(
     v10_ids = [f"{subset}/1" for subset in V10_SUBSETS]
     repeat_dir = settings.repeat_dir(1)
     generate_module.generate(
-        settings, 1, SampleSelection(per_subset=0), SampleSelection(per_subset=1), 1
+        settings,
+        1,
+        SampleSelection(per_subset=0),
+        SampleSelection(per_subset=1),
+        1,
+        (settings.gpu,),
     )
     assert (repeat_dir / "sample-ids.txt").read_text() == ""
     assert not (repeat_dir / "recording").exists()
     assert recordings == [
         (
-            generate_module.v10_record_command(settings),
+            [generate_module.v10_record_command(settings)],
             repeat_dir / "v10",
             v10_ids,
             1,
@@ -432,7 +494,12 @@ def test_generate_with_v15_left_out_records_only_v10(
     # note (luojiaxuan): the v1.0 recording alone marks the repeat as generated.
     with pytest.raises(SystemExit, match="already holds a recording"):
         generate_module.generate(
-            settings, 1, SampleSelection(per_subset=0), SampleSelection(per_subset=1), 1
+            settings,
+            1,
+            SampleSelection(per_subset=0),
+            SampleSelection(per_subset=1),
+            1,
+            (settings.gpu,),
         )
     with pytest.raises(SystemExit, match="both datasets are left out"):
         generate_module.generate(
@@ -441,6 +508,7 @@ def test_generate_with_v15_left_out_records_only_v10(
             SampleSelection(per_subset=0),
             SampleSelection(per_subset=0),
             1,
+            ("0",),
         )
 
 
@@ -459,7 +527,7 @@ def test_generate_discards_the_v10_marker_of_an_attempt_that_never_recorded(
     v15_only = SampleSelection(per_subset=1)
     with pytest.raises(SystemExit, match="already serves"):
         generate_module.generate(
-            settings, 1, v15_only, SampleSelection(per_subset=1), 1
+            settings, 1, v15_only, SampleSelection(per_subset=1), 1, (settings.gpu,)
         )
     repeat_dir = settings.repeat_dir(1)
     assert (repeat_dir / "v10" / "sample-ids.txt").is_file()
@@ -470,7 +538,9 @@ def test_generate_discards_the_v10_marker_of_an_attempt_that_never_recorded(
         "model_server",
         lambda *arguments: servers.append(arguments) or no_server(*arguments),
     )
-    generate_module.generate(settings, 1, v15_only, SampleSelection(per_subset=0), 1)
+    generate_module.generate(
+        settings, 1, v15_only, SampleSelection(per_subset=0), 1, (settings.gpu,)
+    )
     assert (repeat_dir / "recording").is_dir()
     assert not (repeat_dir / "v10").exists()
     assert require_v10_export(settings, 1) is None
@@ -506,10 +576,15 @@ def test_generate_stops_with_the_server_log_when_the_model_server_exited(
     with pytest.raises(
         SystemExit,
         match=f"model server exited with code 3 during the recordings; "
-        f"last lines of .*model-server.log:\n{SERVER_LAST_WORDS}",
+        f"last lines of .*model-server-gpu0.log:\n{SERVER_LAST_WORDS}",
     ):
         generate_module.generate(
-            settings, 1, SampleSelection(per_subset=1), SampleSelection(per_subset=1), 1
+            settings,
+            1,
+            SampleSelection(per_subset=1),
+            SampleSelection(per_subset=1),
+            1,
+            (settings.gpu,),
         )
     assert len(recordings) == 2 and exports == []
 
@@ -681,6 +756,49 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
     asr_module.asr(v15_only, 1, False)
     assert [command[3] for command, _ in calls] == ["asr", "timing"]
     assert not any(V10_CLI in command for command, _ in calls)
+
+
+def test_two_visible_gpus_record_on_both_and_transcribe_on_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # note (luojiaxuan): .github/scripts/ci_env.sh exports CUDA_VISIBLE_DEVICES=0,1.
+    for name in ("GPU", "SERVER_PORT", "JUDGE_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FDB_WORK", str(tmp_path / "fdb"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    settings = load_settings("both")
+    assert settings.gpu == "0"
+    stage_datasets(settings)
+    servers, _, _ = stub_generate_phases(monkeypatch)
+    v15_only = SampleSelection(per_subset=1)
+    generate_module.generate(
+        settings, 1, v15_only, SampleSelection(per_subset=0), 2, ("0", "1")
+    )
+    assert [replica.gpu for replica, _ in servers] == ["0", "1"]
+    with pytest.raises(
+        SystemExit, match="--gpus 1,2 reaches outside CUDA_VISIBLE_DEVICES=0,1"
+    ):
+        generate_module.generate(
+            load_settings("outside"),
+            1,
+            v15_only,
+            SampleSelection(per_subset=0),
+            2,
+            ("1", "2"),
+        )
+    assert not load_settings("outside").repeat_dir(1).exists()
+
+    visible = []
+    monkeypatch.setattr(
+        asr_module,
+        "run_command",
+        lambda command, visible_gpus=None: visible.append(visible_gpus) or True,
+    )
+    scored = load_settings("scored")
+    stage_scored_repeat(scored, V10_IDS)
+    asr_module.asr(scored, 1, False)
+    # note (luojiaxuan): v1.5 ASR, v1.5 timing, v1.0 ASR, v1.0 unified scoring.
+    assert visible == ["0", "", "0", ""]
 
 
 def stub_judge_phases(

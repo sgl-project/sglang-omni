@@ -278,6 +278,7 @@ actor MeetingVoiceActivityDetector {
 }
 
 actor ASRSileroStreamingVoiceActivityDetector {
+    private let omniRuntime: OmniSharedModelRuntime
     private let sampleRate = 16_000
     private let chunkSize = 512
     private var model: SileroVAD?
@@ -290,6 +291,21 @@ actor ASRSileroStreamingVoiceActivityDetector {
     private var omniStreams: [String: OmniVoiceActivityStream] = [:]
     private var omniEndpoint: OmniServerEndpoint?
     private var unloadGeneration = 0
+
+    init(omniRuntime: OmniSharedModelRuntime = OmniSileroVADRuntime.shared) {
+        self.omniRuntime = omniRuntime
+    }
+
+    deinit {
+        // Note (Chenyang Zhao): discarded recording owners must return their sockets and runtime lease.
+        let streams = Array(omniStreams.values)
+        let runtime = omniRuntime
+        let hasLease = omniEndpoint != nil
+        Task {
+            for stream in streams { await stream.close() }
+            if hasLease { await runtime.release() }
+        }
+    }
 
     func reset() {
         states.removeAll()
@@ -309,7 +325,7 @@ actor ASRSileroStreamingVoiceActivityDetector {
         model = nil
         if omniEndpoint != nil {
             omniEndpoint = nil
-            await OmniSileroVADRuntime.shared.release()
+            await omniRuntime.release()
         }
     }
 
@@ -412,7 +428,7 @@ actor ASRSileroStreamingVoiceActivityDetector {
         for stream in streams {
             await stream.close()
         }
-        await OmniSileroVADRuntime.shared.release()
+        await omniRuntime.release()
     }
 
     private func omniEndpointIfAvailable() async throws -> OmniServerEndpoint {
@@ -421,15 +437,15 @@ actor ASRSileroStreamingVoiceActivityDetector {
         }
         let generation = unloadGeneration
         let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
-        let endpoint = try await OmniSileroVADRuntime.shared.acquire(modelDirectory: directory)
+        let endpoint = try await omniRuntime.acquire(modelDirectory: directory)
         if unloadGeneration != generation {
             // Note (Jiaxin Deng): unload() ran while this call waited, so it could not return this lease.
-            await OmniSileroVADRuntime.shared.release()
+            await omniRuntime.release()
             throw CancellationError()
         }
         if let omniEndpoint {
             // Note (Jiaxin Deng): another call acquired one while this one waited.
-            await OmniSileroVADRuntime.shared.release()
+            await omniRuntime.release()
             return omniEndpoint
         }
         omniEndpoint = endpoint

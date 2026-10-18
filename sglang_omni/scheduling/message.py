@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import Literal, Protocol
 
+# A consumer that stops puts a wakeup into its own queue to release a blocked get.
 IncomingMessageType = Literal[
-    "new_request", "stream_chunk", "stream_done", "abort", "admin"
+    "new_request", "stream_chunk", "stream_done", "abort", "admin", "wakeup"
 ]
 
 
@@ -22,7 +23,7 @@ class IncomingMessage:
 @dataclass
 class OutgoingMessage:
     request_id: str
-    type: Literal["result", "stream", "error", "kv_transfer", "admitted"]
+    type: Literal["result", "stream", "error", "kv_transfer", "admitted", "wakeup"]
     data: object = None
     target: str | None = None
     metadata: dict[str, object] | None = None

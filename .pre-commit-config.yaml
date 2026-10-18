@@ -95,3 +95,12 @@ repos:
         types: [python]
         files: ^sglang_omni/
         exclude: ^sglang_omni/vendor/
+      # Check only. Each doc must have exactly one H1 and may not go deeper
+      # than H3 (#### is rejected). Headings inside fenced code blocks are
+      # ignored.
+      - id: doc-heading-structure
+        name: document heading structure (one H1, max H3)
+        entry: python3 scripts/check_doc_headings.py
+        language: system
+        types: [markdown]
+        files: ^docs/

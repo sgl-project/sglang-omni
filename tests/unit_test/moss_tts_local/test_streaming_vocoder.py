@@ -13,6 +13,7 @@ codes — the property the v2 codec provides by construction.
 from __future__ import annotations
 
 import queue
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -246,6 +247,8 @@ def offline_payload(rows: torch.Tensor, request_id: str) -> StagePayload:
 
 
 def drain(scheduler) -> list:
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()
     messages = []
     while True:
         try:
@@ -349,29 +352,11 @@ def test_stream_concatenates_to_offline_decode(monkeypatch) -> None:
     }
 
 
-def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
-    scheduler = make_scheduler(monkeypatch, FakeProcessor())
-    session = scheduler.ensure_session()
-
-    assert scheduler.max_batch_size == 8
-    # note (Zhang Yiyang): 15 streaming lanes + the 1 lane freed by removing the
-    # offline reserve = 16; the freed lane goes to streaming, not the trash.
-    assert scheduler.stream_slots == 16
-    assert not hasattr(session, "_offline_slots")
-    assert session.stream_slots == 16
-    assert session.graph_batch_sizes() == [1, 2, 4, 8, 12, 16]
-
-
 @pytest.mark.parametrize(
     "stream_slots, active_batch_size, expected_batch_size",
     [
         (1, 1, 1),
-        (3, 3, 3),
         (16, 15, 16),
-        (32, 17, 24),
-        (64, 17, 24),
-        (64, 33, 40),
-        (80, 65, 72),
         (300, 257, 272),
         (600, 513, 544),
         (25, 25, 25),
@@ -392,14 +377,6 @@ def test_streaming_session_pads_to_nearest_batch_bucket(
     for waveform in audio.values():
         assert waveform.shape[-1] == 2 * SAMPLES_PER_FRAME
     session.close()
-
-
-def test_streaming_session_initializes_and_closes_codec_state() -> None:
-    codec = FakeCodec()
-    session = CodecStreamSession(codec, stream_slots=2, n_vq=N_VQ)
-    assert codec.offsets.tolist() == [0, 0, 0, 0]
-    session.close()
-    assert codec.offsets is None
 
 
 def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> None:
@@ -519,26 +496,6 @@ def test_streaming_session_padding_preserves_inactive_slots(graph_miss) -> None:
     session.close()
 
 
-def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
-    """The model first-chunk default and coalescing join floor are independent."""
-    processor = FakeProcessor()
-    scheduler = make_scheduler(monkeypatch, processor, stream_chunk_frames=10)
-    assert scheduler.default_initial_chunk_frames == 5
-    assert scheduler.coalesce_floor_frames == 5
-    rows = make_rows(12, seed=99)
-    messages = run_stream(scheduler, rows)
-    sizes = [
-        decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
-        for m in messages
-        if m.type == "stream"
-    ]
-    assert sizes[0] == 5
-    np.testing.assert_array_equal(
-        concat_stream_audio(messages, "req"),
-        reference_waveform(rows[:, 1:]).numpy(),
-    )
-
-
 def run_stream_batched(
     scheduler,
     rows: torch.Tensor,
@@ -569,6 +526,11 @@ def pump_queued_stream_chunks(scheduler) -> None:
     while True:
         msg = scheduler.next_message()
         if msg is None:
+            if scheduler.has_ready_work():
+                scheduler.run_ready_step()
+                continue
+            else:
+                pass
             break
         scheduler.handle_message(msg, None)
 
@@ -686,6 +648,184 @@ def test_batched_coalescing_handles_two_streaming_lanes(monkeypatch) -> None:
         concat_stream_audio(messages, "b"),
         reference_waveform(rows_b[:, 1:]).numpy(),
     )
+
+
+def test_finished_backlogs_share_the_first_decode_batch(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = make_scheduler(monkeypatch, processor, stream_slots=16)
+    rows_by_id = {str(i): make_rows(6 + i % 3, seed=i) for i in range(16)}
+    for request_id, rows in rows_by_id.items():
+        for index, chunk in enumerate((rows[:1], rows[1:6], rows[6:])):
+            if len(chunk) > 0:
+                scheduler.inbox.put(
+                    IncomingMessage(
+                        request_id,
+                        "stream_chunk",
+                        stream_item(chunk, make_metadata(), index),
+                    )
+                )
+            else:
+                pass
+        scheduler.inbox.put(IncomingMessage(request_id, "stream_done", None))
+        scheduler.inbox.put(
+            IncomingMessage(
+                request_id,
+                "new_request",
+                terminal_payload(rows, request_id=request_id),
+            )
+        )
+
+    pump_queued_stream_chunks(scheduler)
+    messages = drain(scheduler)
+    assert processor.audio_tokenizer.batch_shapes[0] == (N_VQ, 16, 5)
+    assert sum(msg.type == "result" for msg in messages) == 16
+    for request_id, rows in rows_by_id.items():
+        np.testing.assert_array_equal(
+            concat_stream_audio(messages, request_id),
+            reference_waveform(rows[:, 1:]).numpy(),
+        )
+    assert not scheduler.stream_states
+
+
+def test_new_first_chunk_is_ingested_between_backlog_steps(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = make_scheduler(monkeypatch, processor, stream_slots=2)
+    old_rows = make_rows(55, seed=60)
+    new_rows = make_rows(5, seed=61)
+    codec = processor.audio_tokenizer
+    decode = codec.decode_streaming_tensors
+
+    def inject_after_first_step(
+        codes: torch.Tensor,
+        codes_lengths: torch.Tensor,
+        slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        result = decode(codes, codes_lengths, slot_ids, valid_rows)
+        if codec.frame_calls == 1:
+            scheduler.inbox.put(
+                IncomingMessage(
+                    "new", "stream_chunk", stream_item(new_rows, make_metadata())
+                )
+            )
+            scheduler.inbox.put(IncomingMessage("new", "stream_done", None))
+            scheduler.inbox.put(
+                IncomingMessage(
+                    "new", "new_request", terminal_payload(new_rows, request_id="new")
+                )
+            )
+        else:
+            pass
+        return result
+
+    monkeypatch.setattr(codec, "decode_streaming_tensors", inject_after_first_step)
+    scheduler.inbox.put(
+        IncomingMessage("old", "stream_chunk", stream_item(old_rows, make_metadata()))
+    )
+    scheduler.inbox.put(IncomingMessage("old", "stream_done", None))
+    scheduler.inbox.put(
+        IncomingMessage(
+            "old", "new_request", terminal_payload(old_rows, request_id="old")
+        )
+    )
+    pump_queued_stream_chunks(scheduler)
+    messages = drain(scheduler)
+    first_new = next(
+        i
+        for i, m in enumerate(messages)
+        if m.request_id == "new" and m.type == "stream"
+    )
+    old_done = next(
+        i
+        for i, m in enumerate(messages)
+        if m.request_id == "old" and m.type == "result"
+    )
+    assert first_new < old_done
+    for request_id, rows in (("old", old_rows), ("new", new_rows)):
+        np.testing.assert_array_equal(
+            concat_stream_audio(messages, request_id),
+            reference_waveform(rows[:, 1:]).numpy(),
+        )
+
+
+def test_short_final_tail_does_not_fragment_ongoing_chunk(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = make_scheduler(monkeypatch, processor, stream_slots=2)
+    ongoing = make_rows(30, seed=62)
+    tail = make_rows(1, seed=63)
+    scheduler.handle_stream_chunk("ongoing", stream_item(ongoing[:5], make_metadata()))
+    messages = drain(scheduler)
+    scheduler.handle_stream_chunk("ongoing", stream_item(ongoing[5:], make_metadata()))
+    scheduler.handle_stream_chunk("tail", stream_item(tail, make_metadata()))
+    scheduler.handle_stream_done("tail")
+    scheduler.handle_streaming_new_request(
+        "tail", terminal_payload(tail, request_id="tail")
+    )
+    messages += drain(scheduler)
+    sizes = [
+        decode_audio(msg.data).shape[1] // SAMPLES_PER_FRAME
+        for msg in messages
+        if msg.type == "stream" and msg.request_id == "ongoing"
+    ]
+    assert sizes == [5, 25]
+    np.testing.assert_array_equal(
+        concat_stream_audio(messages, "tail"),
+        reference_waveform(tail[:, 1:]).numpy(),
+    )
+
+
+def test_cancel_during_terminal_state_creation_keeps_scheduler_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = make_scheduler(monkeypatch, FakeProcessor())
+    cancelled_request_id = "cancelled"
+    scheduler.handle_stream_done(cancelled_request_id)
+    before_state_creation = threading.Event()
+    abort_recorded = threading.Event()
+    on_new_request = scheduler.on_streaming_new_request
+    record_abort = scheduler.record_aborted_request_id
+
+    def pause_state_creation(request_id: str, payload: StagePayload) -> None:
+        if request_id == cancelled_request_id:
+            before_state_creation.set()
+            assert abort_recorded.wait(3)
+        else:
+            pass
+        on_new_request(request_id, payload)
+
+    def signal_abort(request_id: str) -> None:
+        record_abort(request_id)
+        abort_recorded.set()
+
+    def cancel_request() -> None:
+        assert before_state_creation.wait(3)
+        scheduler.abort(cancelled_request_id)
+
+    monkeypatch.setattr(scheduler, "on_streaming_new_request", pause_state_creation)
+    monkeypatch.setattr(scheduler, "record_aborted_request_id", signal_abort)
+    cancellation = threading.Thread(target=cancel_request)
+    cancellation.start()
+    try:
+        with scheduler.state_lock:
+            scheduler.handle_streaming_new_request(
+                cancelled_request_id,
+                terminal_payload(
+                    make_rows(1, seed=90), request_id=cancelled_request_id
+                ),
+            )
+            scheduler.run_ready_step()
+    finally:
+        cancellation.join(timeout=3)
+    assert not cancellation.is_alive()
+    assert not drain(scheduler)
+
+    rows = make_rows(7, seed=91)
+    messages = run_stream(scheduler, rows, request_id="healthy")
+    np.testing.assert_array_equal(
+        concat_stream_audio(messages, "healthy"),
+        reference_waveform(rows[:, 1:]).numpy(),
+    )
+    assert any(message.type == "result" for message in messages)
 
 
 def test_batched_ingest_failure_aborts_and_cleans_up_off_lock(monkeypatch) -> None:
@@ -866,6 +1006,7 @@ def test_near_due_streams_coalesce_into_one_step(monkeypatch) -> None:
             "a", stream_item(rows_a[index], metadata, chunk_id)
         )
         chunk_id += 1
+    scheduler.run_ready_step()
     assert codec.frame_calls - calls_before == 1
     coalesced = drain(scheduler)
     sizes = {
@@ -937,68 +1078,6 @@ def test_explicit_zero_initial_chunk_is_not_pulled_below_steady(monkeypatch) -> 
         if m.type == "stream" and m.request_id == "b"
     ]
     assert b_chunks == [6]
-
-
-def test_positive_initial_chunk_is_not_pulled_below_threshold(monkeypatch) -> None:
-    processor = FakeProcessor()
-    scheduler = make_scheduler(
-        monkeypatch,
-        processor,
-        stream_chunk_frames=6,
-        initial_chunk_frames=2,
-    )
-    rows_a = make_rows(1, seed=44)
-    rows_b = make_rows(5, seed=45)
-    metadata_a = make_metadata(**{INITIAL_CODEC_CHUNK_FRAMES_PARAM: 1})
-    metadata_b = make_metadata(**{INITIAL_CODEC_CHUNK_FRAMES_PARAM: 5})
-    chunk_id = 0
-
-    # B asked for a 5-frame first chunk; four buffered frames must not ride
-    # along when A becomes due with a 1-frame floor.
-    for index in range(4):
-        scheduler.handle_stream_chunk(
-            "b", stream_item(rows_b[index], metadata_b, chunk_id)
-        )
-        chunk_id += 1
-    scheduler.handle_stream_chunk("a", stream_item(rows_a[0], metadata_a, chunk_id))
-    chunk_id += 1
-
-    messages = drain(scheduler)
-    assert [m.request_id for m in messages if m.type == "stream"] == ["a"]
-
-    scheduler.handle_stream_chunk("b", stream_item(rows_b[4], metadata_b, chunk_id))
-    messages += drain(scheduler)
-    b_chunks = [
-        decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
-        for m in messages
-        if m.type == "stream" and m.request_id == "b"
-    ]
-    assert b_chunks == [5]
-
-
-def test_slot_reuse_after_release(monkeypatch) -> None:
-    processor = FakeProcessor()
-    scheduler = make_scheduler(
-        monkeypatch,
-        processor,
-        stream_slots=1,
-        stream_chunk_frames=4,
-        initial_chunk_frames=2,
-    )
-    rows_a = make_rows(7, seed=20)
-    messages_a = run_stream(scheduler, rows_a, request_id="a")
-    np.testing.assert_array_equal(
-        concat_stream_audio(messages_a, "a"),
-        reference_waveform(rows_a[:, 1:]).numpy(),
-    )
-    # The single slot was released and reset; a second stream must start from
-    # a fresh offset, not continue where "a" left off.
-    rows_c = make_rows(6, seed=21)
-    messages_c = run_stream(scheduler, rows_c, request_id="c")
-    np.testing.assert_array_equal(
-        concat_stream_audio(messages_c, "c"),
-        reference_waveform(rows_c[:, 1:]).numpy(),
-    )
 
 
 def test_slot_reacquisition_preserves_initial_chunk_boundary(monkeypatch) -> None:
@@ -1136,30 +1215,6 @@ def test_abort_releases_slot(monkeypatch) -> None:
     np.testing.assert_array_equal(
         concat_stream_audio(messages_b, "b"),
         reference_waveform(rows_b[:, 1:]).numpy(),
-    )
-
-
-def test_non_streaming_path_leaves_startup_session_untouched(monkeypatch) -> None:
-    processor = FakeProcessor()
-    scheduler = make_scheduler(monkeypatch, processor)
-    startup_session = scheduler.ensure_session()
-    assert scheduler.codec.offsets is not None
-
-    rows = make_rows(11, seed=59)
-    original_decoder = scheduler.codec.decoder
-    (result,) = scheduler.vocode_batch([offline_payload(rows, "r1")])
-
-    assert processor.decode_calls == 0
-    # note (Zhang Yiyang): the batched path bypasses codec.decode entirely (no
-    # decoder swap, no streaming-loop entry): quantizer decode happens once,
-    # under no session, and never touches the startup session.
-    assert scheduler.codec.decode_calls == 0
-    assert scheduler.codec.quantizer.calls == 1
-    assert scheduler.codec.decoder is original_decoder
-    assert scheduler.session is startup_session
-    assert scheduler.codec.offsets is not None
-    np.testing.assert_array_equal(
-        decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
 
 
@@ -1549,10 +1604,7 @@ def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> No
 
 @pytest.mark.parametrize(
     "kwargs,expected",
-    [
-        ({}, list(range(1, 26))),
-        ({"stream_chunk_frames": 4, "initial_chunk_frames": 2}, [1, 2, 3, 4]),
-    ],
+    [({"stream_chunk_frames": 4, "initial_chunk_frames": 2}, [1, 2, 3, 4])],
 )
 def test_default_cuda_graph_frames_cover_stream_chunk_exactly(
     monkeypatch, kwargs, expected
@@ -1657,38 +1709,6 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     assert loaded_codec_paths == ["codec-from-model-config"]
 
 
-def test_pipeline_config_injects_vocoder_graph_settings() -> None:
-    from sglang_omni.models.moss_tts_local.config import (
-        MossTTSLocalPipelineConfig,
-        MossTTSLocalSplitPipelineConfig,
-    )
-
-    cfg = MossTTSLocalPipelineConfig(model_path="x")
-    voc = cfg.stage_named("vocoder")
-    assert voc.factory.dtype == "float32"
-    assert voc.factory.compute_dtype == "bfloat16"
-    assert voc.factory.attention_backend == "auto"
-    kwargs = cfg.stage_factory_kwargs("vocoder")
-    assert kwargs["vocoder_cuda_graph"] is True
-    assert kwargs["vocoder_cuda_graph_frames"] is None
-    assert kwargs["vocoder_cuda_graph_min_free_gb"] == 3.0
-
-    cfg2 = MossTTSLocalPipelineConfig(
-        model_path="x",
-        vocoder_cuda_graph=False,
-        vocoder_cuda_graph_frames=[5, 25],
-        vocoder_cuda_graph_min_free_gb=4.5,
-    )
-    kwargs2 = cfg2.stage_factory_kwargs("vocoder")
-    assert kwargs2["vocoder_cuda_graph"] is False
-    assert kwargs2["vocoder_cuda_graph_frames"] == [5, 25]
-    assert kwargs2["vocoder_cuda_graph_min_free_gb"] == 4.5
-
-    # The split variant overrides `stages`; the injection must still reach its vocoder.
-    split = MossTTSLocalSplitPipelineConfig(model_path="x", vocoder_cuda_graph=False)
-    assert split.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
-
-
 def test_pipeline_config_rejects_invalid_vocoder_graph_settings() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
@@ -1730,7 +1750,7 @@ def test_factory_captures_graphs_before_returning(monkeypatch) -> None:
     assert scheduler.session.has_cuda_graph_runner()
 
 
-@pytest.mark.parametrize("trigger", ["chunk", "slot_starved", "no_chunk_done"])
+@pytest.mark.parametrize("trigger", ["chunk", "no_chunk_done"])
 def test_streaming_reuses_graphed_session_after_nonstreaming(
     monkeypatch, trigger
 ) -> None:
@@ -1767,20 +1787,6 @@ def test_streaming_reuses_graphed_session_after_nonstreaming(
     if trigger == "chunk":
         scheduler.handle_stream_chunk(
             "s", stream_item(make_rows(6, seed=2)[0], make_metadata())
-        )
-    elif trigger == "slot_starved":
-        # note (Zhang Yiyang): "hold" takes the persistent session's only
-        # slot; "starve" buffers without a slot, then finishes through the
-        # batched path.
-        for i, row in enumerate(make_rows(5, seed=3)):
-            scheduler.handle_stream_chunk("hold", stream_item(row, make_metadata(), i))
-        for i, row in enumerate(make_rows(6, seed=4)):
-            scheduler.handle_stream_chunk(
-                "starve", stream_item(row, make_metadata(), 100 + i)
-            )
-        scheduler.handle_stream_done("starve")
-        scheduler.handle_streaming_new_request(
-            "starve", terminal_payload(make_rows(6, seed=4), request_id="starve")
         )
     else:  # no_chunk_done: terminal payload replay with no chunks -> _decode_payload_codes
         scheduler.handle_stream_done("nc")

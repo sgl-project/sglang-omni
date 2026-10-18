@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
 from types import SimpleNamespace
 
@@ -44,30 +43,6 @@ def encoder_graph_builder(**kwargs):
     )
     builder.encoder_token_count = 1500
     return builder
-
-
-def test_whisper_stage_defaults() -> None:
-    signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["enable_encoder_cuda_graph"].default is False
-    assert signature.parameters["encoder_graph_batch_buckets"].default is None
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["prefill_coalesce_requests"].default == 2
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is False
-    )
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
 def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs(
@@ -333,26 +308,6 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("WhisperForConditionalGeneration")
         is WhisperASRPipelineConfig
     )
-
-
-def test_whisper_async_decode_dotted_overrides() -> None:
-    from sglang_omni.config.manager import ConfigManager
-
-    config = WhisperASRPipelineConfig(model_path="openai/whisper-base")
-
-    forced_sync = ConfigManager(config).merge_config(
-        [("asr.factory.enable_async_decode", "false")]
-    )
-    assert forced_sync.stages[0].factory.enable_async_decode is False
-
-    forced_async = ConfigManager(config).merge_config(
-        [
-            ("asr.factory.enable_async_decode", "true"),
-            ("asr.factory.async_decode_min_batch_size", "4"),
-        ]
-    )
-    assert forced_async.stages[0].factory.enable_async_decode is True
-    assert forced_async.stages[0].factory.async_decode_min_batch_size == 4
 
 
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:

@@ -189,6 +189,14 @@ def streamed(
 
 WINDOWS_TO_214 = [(0, 10), (10, 20), (20, 32), (32, 64), (64, 128), (128, 192)]
 WINDOWS_TO_300 = WINDOWS_TO_214 + [(192, 256)]
+FINAL_PAYLOAD_ONLY_CASE = pytest.param(
+    300,
+    [1] * 5,
+    WINDOWS_TO_300 + [(256, 300)],
+    [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
+    + [(224, 300)],
+    id="295-frames-only-in-the-final-payload",
+)
 STREAMING_CASES = [
     pytest.param(
         214,
@@ -212,14 +220,7 @@ STREAMING_CASES = [
         + [(224, 300)],
         id="a-295-frame-last-chunk",
     ),
-    pytest.param(
-        300,
-        [1] * 5,
-        WINDOWS_TO_300 + [(256, 300)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
-        + [(224, 300)],
-        id="295-frames-only-in-the-final-payload",
-    ),
+    FINAL_PAYLOAD_ONLY_CASE,
     pytest.param(
         128,
         [1] * 128,
@@ -232,11 +233,24 @@ STREAMING_CASES = [
 
 
 @pytest.mark.parametrize(
-    "is_done_first", [False, True], ids=["payload-first", "done-first"]
-)
-@pytest.mark.parametrize(
-    ("total_frame_count", "chunk_frame_counts", "chunk_ranges", "decoded_ranges"),
-    STREAMING_CASES,
+    (
+        "total_frame_count",
+        "chunk_frame_counts",
+        "chunk_ranges",
+        "decoded_ranges",
+        "is_done_first",
+    ),
+    [
+        pytest.param(*case.values, False, id=f"payload-first-{case.id}")
+        for case in STREAMING_CASES
+    ]
+    + [
+        pytest.param(
+            *FINAL_PAYLOAD_ONLY_CASE.values,
+            True,
+            id=f"done-first-{FINAL_PAYLOAD_ONLY_CASE.id}",
+        )
+    ],
 )
 def test_streaming_emits_the_fixed_windows_however_frames_arrive(
     total_frame_count: int,
@@ -571,7 +585,6 @@ def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
     "stream_followup_stride_ramp",
     [
         pytest.param((0,), id="zero"),
-        pytest.param((-1,), id="negative"),
         pytest.param((2, 0), id="zero-after-positive"),
     ],
 )
@@ -734,7 +747,6 @@ def test_window_batched_frames_vocode_to_the_bytes_of_one_frame_per_message(
 @pytest.mark.parametrize(
     ("frame_counts", "max_padded_frames_per_decode"),
     [
-        pytest.param([5, 7], None, id="unlimited"),
         pytest.param([3, 5, 2], 15, id="fits-one-batch"),
         pytest.param([4, 10, 7, 10, 2], 20, id="requires-splitting"),
         pytest.param([5, 7, 3], 12, id="uneven-batches"),
@@ -742,7 +754,7 @@ def test_window_batched_frames_vocode_to_the_bytes_of_one_frame_per_message(
     ],
 )
 def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
-    frame_counts: list[int], max_padded_frames_per_decode: int | None
+    frame_counts: list[int], max_padded_frames_per_decode: int
 ) -> None:
     codec = FrameNumberCodec()
     vocoder = vocoder_with(
@@ -770,11 +782,8 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
             SAMPLES_PER_FRAME,
         )
         np.testing.assert_array_equal(result.data["audio_data"], expected_samples)
-    if max_padded_frames_per_decode is not None:
-        assert all(
-            codes.shape[0] == 1
-            or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
-            for codes in codec.decoded_codes
-        )
-    else:
-        assert len(codec.decoded_codes) == 1
+    assert all(
+        codes.shape[0] == 1
+        or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
+        for codes in codec.decoded_codes
+    )

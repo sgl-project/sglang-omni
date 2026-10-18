@@ -18,7 +18,7 @@ from benchmarks.duplex import reference_behavior, reference_core, reference_cust
 from benchmarks.duplex.reference_source import load_official_behavior, verify_reference
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.eval import benchmark_duplex_reference as cli_module
-from tests.unit_test.benchmarks.test_duplex_reference import (
+from tests.unit_test.fixtures.duplex_fakes import (
     REF,
     StubBehavior,
     build_trees,

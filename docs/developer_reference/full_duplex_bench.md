@@ -156,7 +156,7 @@ Sessions run in real time, so `generate` dominates the wall time. Approximate ti
 | 60 v1.0 samples (12 per subset) | ~20 min | ~1 min | ~1 min |
 | 727 v1.0 samples | ~3.6 h | ~10 min | ~5 min |
 
-A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first.
+A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first; `--gpus 0,1 --num-shards 2` halves it without sharing a GPU.
 
 ## Results
 
@@ -212,7 +212,7 @@ Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--
 |---|---|---|
 | `FDB_WORK` | `$HOME/fdb` | Root for downloads, environments and results |
 | `JUDGE` | `qwen` | `qwen` or `gpt` |
-| `CUDA_VISIBLE_DEVICES` | unset | The one GPU index this job uses. See [Running jobs in parallel](#running-jobs-in-parallel) |
+| `CUDA_VISIBLE_DEVICES` | unset | The GPU indices this job may use. The first is the job GPU: it runs the one model server of `generate`, `asr` and `judge`; `generate --gpus` may list any of the others. See [Running jobs in parallel](#running-jobs-in-parallel) |
 | `GPU` | `0` | The GPU index when `CUDA_VISIBLE_DEVICES` is unset |
 | `SERVER_PORT`, `JUDGE_PORT` | `8097 + 10×GPU`, `30000 + 10×GPU` | Local ports. The judge also uses the next port for NCCL. Avoid 29500-29899, which the model server uses for NCCL |
 | `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test |
@@ -274,10 +274,70 @@ A level meets the targets when no session failed, no session was denied admissio
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 
+### MiniCPM-o 4.5 on one H100
+
+One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.
+
+For this campaign, a recording passed only with **fewer than 1%** late or missing units, all 128 sessions successful, no admission failures, no input pacing violations, and the requested overlap of complete input streams. A unit missed when `sglang.unit.done` arrived more than 1,000 ms after the client had its input ready. This strict campaign gate differs from the general serving target above, which permits exactly 1% misses. `session.created` alone does not establish model admission.
+
+| Concurrent sessions | Recorded result | Qualification |
+| ---: | --- | --- |
+| 1, 2 | One screening run each, with no unit misses | Both passed; neither was repeated. |
+| 4 | Five passing runs, 640 successful sessions, 0 of 8,720 unit misses | Highest tested level confirmed by five runs. The median of the five per-run unit-lag p95 values was 421.4 ms, with a range of 406.5 to 433.1 ms. |
+| 8 | Two valid runs: 3 of 1,744 misses (0.172%) and 25 of 1,744 (1.433%) | The first passed; the second failed the unit gate. |
+| 16 | Two valid runs: 103 of 1,744 misses (5.906%) and 90 of 1,744 (5.161%) | Both failed the unit gate. |
+| 32, 48, 64 | CUDA out-of-memory failures with failed sessions and invalid aggregate input pacing | Observed failures. Their latency and unit-miss aggregates are not qualified paced-load results. |
+
+The C4 runs reached four overlapping complete input streams with no session, admission, or pacing failures. At the separate 80 ms playback reserve, simulated playback still underruns in 438 of 731 C4 replies. Each C4 run recorded audio in 126 or 127 of its 128 sessions. Protocol success does not establish response quality. Concurrencies 5 through 7 were not measured, so the result does not identify an exact maximum concurrency of four. The cohort also does not qualify long calls, video input, semantic quality, or an H100 versus H200 comparison.
+
+The 128 inputs totaled 1,676.565 seconds; the longest was 15.763 seconds. The run used Python 3.12.3, torch 2.13.0+cu130, sglang 0.5.21, transformers 5.12.1, websockets 17.1, and soundfile 0.13.1, with 64 assigned CPU threads. The screen order was C8, C16, C32, C48, C64, C4, C2, then C1. After a valid C8 repeat failed the unit gate, repeats 3 through 5 at C8 and C16 were cancelled and four more C4 runs were recorded. The lower-concurrency cells therefore include the same server's earlier high-load history.
+
+To reproduce the configuration, use server and serving-tool commit [`3ae4c2464eb0b44e0850a9f17da46461a688bc32`](https://github.com/sgl-project/sglang-omni/commit/3ae4c2464eb0b44e0850a9f17da46461a688bc32), the [client changes with the measured file bytes](https://github.com/edwingao28/sglang-omni/commit/0b2ca15afa211cd5c2212a8803a20b7c5db6d880), and model snapshot `503e754207c94da6bb26850b4469f367c9ea3582`. The client changes move per-variant report writes off the event loop and import only the selected recorder. The separate empty-EOS scoring fix in [PR #2868](https://github.com/sgl-project/sglang-omni/pull/2868) was not applied to these measurements; the selected inputs had no integer-second durations. Keep the 80 ms input pacing tolerance unchanged.
+
+The `--dataset-revision` value below is the retained historical label, not a content pin for the upstream Drive archives. The campaign verified all 448 selected file hashes against its retained inputs. Those hashes remain with the private recording artifacts; a fresh dataset download alone does not establish identical inputs.
+
+After [setup](#setup), point `MODEL_PATH` at that exact model snapshot and use the v1.5 dataset described above. Start the server in one terminal:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+export MODEL_PATH="$FDB_WORK/models/MiniCPM-o-4_5"
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" --variant session --max_sessions 64 \
+  --thinker.engine.kv_cache_bytes 17179869184 \
+  --perception.gpu_memory_fraction null \
+  --perception.total_reserve_bytes 17179869184 \
+  --talker.engine.max_total_tokens 65536 \
+  --talker.gpu_memory_fraction 0.08 \
+  --enable-realtime --host 127.0.0.1 --port 8099
+```
+
+Run each concurrency and repeat in a new client process and output directory. For example, set `CONCURRENCY=4` and vary `REPEAT` from 1 through 5:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+CONCURRENCY=4
+REPEAT=1
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency "$CONCURRENCY" \
+  --output "$FDB_WORK/serving/h100-short/c${CONCURRENCY}-r${REPEAT}" -- \
+  --url ws://127.0.0.1:8099/v1/realtime \
+  --profile minicpmo-native-pr2377 \
+  --dataset-root "$FDB_WORK/dataset/v1.5" \
+  --dataset-revision 3e799c45a045256f47d5f1c9cda90157e2d2ec9e \
+  --server-revision 3ae4c2464eb0b44e0850a9f17da46461a688bc32 \
+  --model openbmb/MiniCPM-o-4_5 \
+  --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
+  --timeout 90 --max-per-subset 16
+```
+
+The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, and two C16 runs. C32, C48, and C64 were attempted once each; their failed recordings remain part of the observation. The complete raw traces remain in the original experiment storage, and the selected local audit copy cannot rescore every session. Neither raw tree is hosted with this runbook.
+
 ## Notes
 
 - **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
-- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses a larger value up front.
+- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses more than 2 shards per server up front.
+- **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
 - **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
 - **Failed sessions are never dropped.** They stay in the denominators as ineligible, and an empty set of intervals shows as `n/a`, not as zero.
 
@@ -285,8 +345,8 @@ These are client-side times on the client's host: they include the network to th
 
 | Symptom | Fix |
 |---|---|
-| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server.log` or `judge-server.log` |
-| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of `repeat-N/logs/model-server.log`. Fix the cause, delete the repeat and generate it again |
+| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server-gpu<N>.log` or `judge-server.log` |
+| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of that GPU's `repeat-N/logs/model-server-gpu<N>.log`. Fix the cause, delete the repeat and generate it again |
 | `ERROR: the judge server exited with code N before ...` or `during ...` | The judge server died; the message names the phase and ends with the last lines of `repeat-N/logs/judge-server.log`. Fix the cause and rerun `judge` with `--retry-failed`. If the phase is the v1.5 semantic judge, delete `repeat-N/semantic-qwen` first, because the batches it could not grade are saved as unresolved and a rerun reuses them |
 | `ERROR: something already serves ...` | Another server holds the port, often left from an interrupted run or a second job on the same GPU. Stop it, or give this job another `CUDA_VISIBLE_DEVICES` |
 | `ERROR: .../repeat-N already holds a recording` | That repeat was generated before; use the next `--repeat`, or delete the directory to redo it |
@@ -296,10 +356,14 @@ These are client-side times on the client's host: they include the network to th
 | `ERROR: .../dataset/v1.0 lacks the v1.0 subset(s) ...` | The workspace was set up without v1.0; rerun `setup`, which adds it |
 | `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
 | A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
-| `ERROR: --num-shards N exceeds the model server's max_sessions` | Lower `--num-shards`; `generate` refuses values above the server capacity before recording |
+| `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
+| `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
+| `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
-| `ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index`, or `--device cuda needs exactly one visible GPU` | Export a single index, a different one in each terminal |
-| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the same index |
+| `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
+| `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
+| `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
+| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the first index |
 | `WARNING: a v1.5 phase reported failures` | Rerun the command the warning prints; it adds `--retry-failed` |
 | `WARNING: the v1.0 ASR failed` | `repeat-N/v10/reference/logs/asr.log` has the official script's output and the terminal has the traceback. A rerun of `asr` transcribes every v1.0 sample again |
 | `WARNING: v1.0 unified scoring failed` | ASR completed, but the saved export, transcript or annotation did not score. Fix the stated cause and run the CPU-only backfill command printed in the warning; it does not repeat ASR or v1.5 work. Rerun `aggregate` to refresh `RESULTS.md` |
@@ -310,7 +374,7 @@ These are client-side times on the client's host: they include the network to th
 | `Control check failed: this judge configuration is not accepted.` | The judge missed a control case, listed in the output; nothing graded alongside the controls is kept. Check that the judge server runs the pinned Qwen3.8-27B revision; do not grade with a configuration that fails the controls |
 | `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` |
 | `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
-| `No module named 'onnx'` (or `einops`) in `model-server.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
+| `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
 | `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
 
 ## Scoring CLI reference

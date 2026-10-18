@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -320,8 +320,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 2,
+    max_batch_size: int | None = None,
+    max_batch_wait_ms: int | None = None,
     stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_initial_followup_stride: int | None = None,
@@ -367,9 +367,30 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
+    checkpoint_config = load_qwen3_tts_checkpoint_config(model_path)
+    model_type = normalize_qwen3_tts_model_type(checkpoint_config.get("tts_model_type"))
+    configured_model_size = checkpoint_config.get("tts_model_size")
+    tts_model_size: Literal["0b6", "1b7"] | None = None
+    if model_type == "base" and configured_model_size in {"0b6", "1b7"}:
+        tts_model_size = configured_model_size
+    else:
+        pass
+    uses_small_base_cuda_policy = (
+        tts_model_size == "0b6" and torch.device(device).type == "cuda"
+    )
+    if max_batch_size is None:
+        max_batch_size = 2 if uses_small_base_cuda_policy else 8
+    else:
+        pass
+    if max_batch_wait_ms is None:
+        max_batch_wait_ms = 0 if uses_small_base_cuda_policy else 2
+    else:
+        pass
+
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
+        tts_model_size=tts_model_size,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,
@@ -405,10 +426,7 @@ def create_vocoder_executor(
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
         # note (ratish): only a Base checkpoint clones a reference voice, so only its
         # first chunks carry reference codes.
-        has_reference_prefixed_first_chunks=normalize_qwen3_tts_model_type(
-            load_qwen3_tts_checkpoint_config(model_path).get("tts_model_type")
-        )
-        == "base",
+        has_reference_prefixed_first_chunks=model_type == "base",
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work

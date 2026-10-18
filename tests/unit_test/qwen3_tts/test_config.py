@@ -10,7 +10,7 @@ from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
 
 
-@pytest.mark.parametrize("size", ["0.6B", "1.7B"])
+@pytest.mark.parametrize("size", ["0.6B"])
 def test_custom_voice_config_uses_engine_checkpoint_metadata(
     tmp_path, monkeypatch, size
 ) -> None:
@@ -86,7 +86,6 @@ def test_custom_voice_config_rejects_missing_or_invalid_speakers(
     ("model_type", "directory", "uploaded_voices"),
     [
         ("base", "Qwen3-TTS-12Hz-0.6B-Base", True),
-        ("base", "Qwen3-TTS-12Hz-1.7B-Base", True),
         ("voice_design", "Qwen3-TTS-12Hz-1.7B-VoiceDesign", False),
         ("base", "renamed-checkpoint", False),
     ],

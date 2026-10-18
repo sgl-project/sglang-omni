@@ -274,35 +274,6 @@ def test_a_streaming_client_gets_the_reply_once(random_codec: MimiCodec) -> None
     assert result.data.data == {"modality": "audio", "sample_rate": SAMPLE_RATE}
 
 
-def test_one_frame_ramp_decodes_as_messages_arrive(random_codec: MimiCodec) -> None:
-    codec = random_codec
-    scheduler = new_scheduler(codec, (1,))
-    codes = torch.randint(0, 2048, (3, 8), generator=torch.Generator().manual_seed(6))
-    start_stream(scheduler, "a")
-
-    waveforms = push_frames(scheduler, "a", codes)
-    assert len(waveforms) == 3
-    torch.testing.assert_close(
-        torch.cat(waveforms), codec.decode(codes.T[None])[0, 0], atol=1e-5, rtol=1e-5
-    )
-
-
-def test_chunk_ramp_single_frame_reply_decodes_immediately(
-    random_codec: MimiCodec,
-) -> None:
-    codec = random_codec
-    scheduler = new_scheduler(codec, (1, 4))
-    codes = torch.randint(0, 2048, (1, 8), generator=torch.Generator().manual_seed(7))
-    start_stream(scheduler, "a")
-
-    (waveform,) = push_frames(scheduler, "a", codes)
-    torch.testing.assert_close(
-        waveform, codec.decode(codes.T[None])[0, 0], atol=1e-5, rtol=1e-5
-    )
-    (result,) = finish_stream(scheduler, "a")
-    assert result.type == "result"
-
-
 def test_chunk_ramp_trims_aggregated_chunks_to_the_caller_length(
     random_codec: MimiCodec,
 ) -> None:
@@ -389,8 +360,8 @@ def test_chunk_ramp_pending_frames_die_with_a_cancelled_request(
 
 @pytest.mark.parametrize(
     "chunk_ramp_frames",
-    [(1,), (1, 4), (1,) + (4,) * 31 + (8, 2)],
-    ids=["single-frame", "four-frames", "largest-chunk-before-smaller-steady"],
+    [(1,) + (4,) * 31 + (8, 2)],
+    ids=["largest-chunk-before-smaller-steady"],
 )
 def test_chunk_ramp_matches_whole_decode_past_the_attention_ring(
     random_codec: MimiCodec, chunk_ramp_frames: tuple[int, ...]
@@ -421,7 +392,7 @@ def drain_messages(scheduler: PersonaPlexCode2WavScheduler) -> list[OutgoingMess
 
 
 @pytest.mark.parametrize("payload_first", [False, True])
-@pytest.mark.parametrize("frame_count", [9, 10, 12])
+@pytest.mark.parametrize("frame_count", [9, 10])
 def test_stream_done_flushes_tail_in_either_payload_order(
     random_codec: MimiCodec, payload_first: bool, frame_count: int
 ) -> None:

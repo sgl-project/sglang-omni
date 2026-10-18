@@ -159,7 +159,6 @@ class GenerationStageDefaults(TypedDict, total=False):
     enable_torch_compile: bool | None
     enable_mixed_chunk: bool
     trust_remote_code: bool
-    mlx_enable_sampling: bool
     max_prefill_tokens: int
     chunked_prefill_size: int
     max_total_tokens: int

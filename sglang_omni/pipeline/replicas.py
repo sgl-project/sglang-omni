@@ -148,6 +148,17 @@ def expand_replica_stages(
             )
 
     stage_by_name = {stage.name: stage for stage in stages_cfg}
+    for stage_name, instances in replicas.items():
+        if stage_by_name[stage_name].http_routes:
+            # The relay sends every request under a prefix to one socket, and
+            # a route's state (such as a job a later request polls) lives in
+            # the instance that served it.
+            raise ValueError(
+                f"Stage {stage_name!r} serves http_routes, so it must run as one "
+                f"instance, but its process has {len(instances)} replicas"
+            )
+        else:
+            pass
     for process in plan.processes:
         if not process.is_replicated:
             # Note (kaige): replica_devices covers index 0 too, so a single

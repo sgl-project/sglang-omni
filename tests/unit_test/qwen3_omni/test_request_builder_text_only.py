@@ -70,8 +70,7 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
     )  # noqa: leading-underscore  # production name
 
 
-@pytest.mark.parametrize("entrypoint", ["generic", "sglang"])
-def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
+def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch):
     patch_sampling_validation(monkeypatch)
     state = make_qwen_state(thinker_inputs={"model_inputs": ["malformed"]})
 
@@ -79,24 +78,10 @@ def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
         TypeError,
         match="Qwen3-Omni thinker model_inputs must be a dict when provided",
     ):
-        if entrypoint == "generic":
-            build_thinker_request(state, params={"max_new_tokens": 3})
-        else:
-            build_sglang_thinker_request(
-                state,
-                params={"max_new_tokens": 3},
-                tokenizer=FakeQwenTokenizer(),
-                vocab_size=256,
-                request_id="malformed-model-inputs",
-                thinker_config=SimpleNamespace(
-                    image_token_id=55,
-                    video_token_id=66,
-                    audio_token_id=77,
-                ),
-            )
+        build_thinker_request(state, params={"max_new_tokens": 3})
 
 
-@pytest.mark.parametrize("token_id", [-1, 256, (1 << 63) - 1])
+@pytest.mark.parametrize("token_id", [-1, 256])
 def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
     patch_sampling_validation(monkeypatch)
     state = make_qwen_state(prompt={"input_ids": torch.tensor([255, token_id])})

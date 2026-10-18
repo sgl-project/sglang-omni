@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypedDict
 
@@ -316,6 +316,36 @@ class ProcessConfig(BaseModel):
             pass
 
 
+def normalize_route_prefixes(stage: str, prefixes: Iterable[str]) -> tuple[str, ...]:
+    """Validate the path prefixes a stage declares and return them in order.
+
+    A prefix starts with a slash, names at least one path segment, and covers
+    itself and everything below it.
+    """
+    out: list[str] = []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not prefix.startswith("/"):
+            raise ValueError(
+                f"stages.{stage}.http_routes entries must be paths starting "
+                f"with '/', got {prefix!r}"
+            )
+        else:
+            pass
+        stripped = prefix.rstrip("/")
+        if not stripped or "?" in stripped or "#" in stripped:
+            raise ValueError(
+                f"stages.{stage}.http_routes entry {prefix!r} must name a path "
+                "below '/'"
+            )
+        elif stripped in out:
+            raise ValueError(
+                f"stages.{stage}.http_routes lists {stripped!r} more than once"
+            )
+        else:
+            out.append(stripped)
+    return tuple(out)
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -379,8 +409,18 @@ class StageConfig(BaseModel):
     disable_direct_cuda_ipc_payload: bool = False
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None
+    http_routes: list[str] = Field(
+        default_factory=list,
+        description="Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, whose scheduler provides the app through http_app(), so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage must run as one instance.",
+    )
 
     def model_post_init(self, __context: object = None) -> None:
+        if self.http_routes:
+            self.http_routes = list(
+                normalize_route_prefixes(self.name, self.http_routes)
+            )
+        else:
+            pass
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
@@ -593,6 +633,7 @@ class PipelineConfig(BaseModel):
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
+    supports_image_api: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
@@ -771,6 +812,12 @@ class PipelineConfig(BaseModel):
         """
         return frozenset()
 
+    def image_decode_mode(self) -> Literal["normal", "decoder-turbo"]:
+        return "normal"
+
+    def image_decode_steps(self) -> int:
+        return 50
+
     def stage_named(self, stage_name: str) -> StageConfig:
         """The stage with this name; raises ``KeyError`` when absent."""
         for stage in self.stages:
@@ -892,6 +939,23 @@ class PipelineConfig(BaseModel):
             raise ValueError("Stage names must be unique")
         else:
             pass
+        # The server relays a path to the first stage whose prefix covers it.
+        claimed: list[tuple[str, str]] = []
+        for s in self.stages:
+            for prefix in s.http_routes:
+                for owner, other in claimed:
+                    if owner != s.name and (
+                        f"{prefix}/".startswith(f"{other}/")
+                        or f"{other}/".startswith(f"{prefix}/")
+                    ):
+                        raise ValueError(
+                            f"Stages {owner!r} and {s.name!r} both declare "
+                            f"http_routes over {min(prefix, other, key=len)!r}. "
+                            "Give each path prefix one stage."
+                        )
+                    else:
+                        pass
+                claimed.append((s.name, prefix))
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")

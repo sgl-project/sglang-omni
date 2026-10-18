@@ -135,8 +135,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-shards",
         type=int,
         default=1,
-        help="Parallel sessions against the one server; refused above the model "
-        "server's max_sessions (default: %(default)s)",
+        help="Parallel sessions, spread over the model servers; refused above "
+        "their max_sessions (default: %(default)s)",
+    )
+    generate_parser.add_argument(
+        "--gpus",
+        type=parse_gpus,
+        metavar="0,1,...",
+        help="One model server on each of these GPUs, shard i on the i-th mod "
+        "their count (default: the job GPU)",
     )
     generate_parser.add_argument(
         "--all-stages",
@@ -207,18 +214,30 @@ def sample_selection(
     return v15_selection, v10_selection
 
 
+def parse_gpus(text: str) -> tuple[str, ...]:
+    """Distinct GPU indices separated by commas, such as 0,1."""
+    gpus = tuple(part.strip() for part in text.split(","))
+    if not all(gpu.isdigit() for gpu in gpus) or len(set(gpus)) != len(gpus):
+        raise argparse.ArgumentTypeError(
+            f"expected distinct GPU indices such as 0,1, got {text!r}"
+        )
+    else:
+        return gpus
+
+
 def generate_stages(
     settings: Settings,
     repeat: int,
     selection: SampleSelection,
     v10_selection: SampleSelection,
     num_shards: int,
+    gpus: tuple[str, ...],
     all_stages: bool,
 ) -> None:
     """Step 1, and with all_stages steps 2 and 3 and aggregate after it. A failing
     step stops the chain with its own message, which names the command that
     continues it."""
-    generate(settings, repeat, selection, v10_selection, num_shards)
+    generate(settings, repeat, selection, v10_selection, num_shards, gpus)
     if all_stages:
         asr(settings, repeat, retry_failed=False)
         judge(settings, repeat, retry_failed=False)
@@ -256,6 +275,7 @@ def main() -> None:
             args.repeat,
             *sample_selection(parser, args),
             args.num_shards,
+            (settings.gpu,) if args.gpus is None else args.gpus,
             args.all_stages,
         )
     elif args.command == "asr":

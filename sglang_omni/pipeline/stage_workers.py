@@ -107,6 +107,10 @@ class StageLaunchConfig:
     # Communication pool/options. Transport selection belongs to CommRouter.
     comm_config: dict[str, int | str | None] = field(default_factory=dict)
 
+    # Unix socket of the stage's HTTP routes, set on the instance that serves
+    # them (the single stage or the TP leader) when the stage declares any.
+    http_socket_path: str | None = None
+
     # Endpoints
     recv_endpoint: str = ""
     coordinator_endpoint: str = ""
@@ -984,6 +988,7 @@ def construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
+        http_socket_path=spec.http_socket_path,
     )
 
     if spec.is_stream_receiver:

@@ -8,7 +8,6 @@ import inspect
 import logging
 import queue as _queue_mod
 import threading
-import time
 from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Generic, TypeVar
@@ -92,6 +91,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         abort_callback: Callable[[str], None] | None = None,
     ):
         self.lock = threading.Lock()
+        self.capacity_freed = threading.Condition(self.lock)
         self.inbox: CountingInbox = CountingInbox()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = True
@@ -117,10 +117,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     break
                 else:
                     pass
-                try:
-                    msg = self.inbox.get(timeout=0.1)
-                except _queue_mod.Empty:
-                    continue
+                msg = self.inbox.get()
                 if msg.type != "new_request":
                     continue
                 else:
@@ -143,7 +140,10 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
             self.executor.shutdown(wait=False, cancel_futures=True)
 
     def stop(self) -> None:
-        self.running = False
+        with self.capacity_freed:
+            self.running = False
+            self.capacity_freed.notify_all()
+        self.inbox.put(IncomingMessage(request_id="", type="wakeup"))
 
     def enqueue(self, msg: IncomingMessage) -> None:
         """Promote speculative aborts atomically with enqueue (scheduler lock first)."""
@@ -166,6 +166,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
             future = self.pending.pop(request_id, None)
             if future is not None:
                 self.aborted_futures.add(future)
+                self.capacity_freed.notify()
             elif self.inbox.is_reachable(request_id):
                 self.queued_aborts.add(request_id)
             else:
@@ -218,13 +219,10 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         return request_id in self.queued_aborts or request_id in self.speculative_aborts
 
     def wait_for_capacity(self) -> None:
-        while self.running:
-            with self.lock:
-                if len(self.pending) < self.max_concurrency:
-                    return
-                else:
-                    pass
-            time.sleep(0.001)
+        with self.capacity_freed:
+            self.capacity_freed.wait_for(
+                lambda: not self.running or len(self.pending) < self.max_concurrency
+            )
 
     def run_one(self, payload: ComputeInput) -> ComputeResult:
         result = self.fn(payload)
@@ -238,6 +236,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         with self.lock:
             if self.pending.get(request_id) is future:
                 self.pending.pop(request_id, None)
+                self.capacity_freed.notify()
             else:
                 pass
             aborted = future in self.aborted_futures

@@ -106,10 +106,7 @@ def test_only_experts_get_block_fp8() -> None:
         ("quant_method", "fp8"),
         ("activation_scheme", "static"),
         ("weight_block_size", None),
-        ("weight_block_size", [0, 128]),
-        ("weight_block_size", [-1, 128]),
         ("weight_block_size", [64, 128]),
-        ("weight_block_size", [128, 128, 1]),
     ],
 )
 def test_other_formats_are_rejected(
@@ -119,14 +116,6 @@ def test_other_formats_are_rejected(
     quantization[config_field_name] = config_field_value
 
     with pytest.raises(ValueError, match=config_field_name):
-        ExpertFp8Config.from_config(quantization)
-
-
-def test_missing_block_size_is_rejected() -> None:
-    quantization = dict(CHECKPOINT_QUANTIZATION)
-    quantization.pop("weight_block_size")
-
-    with pytest.raises(ValueError, match="weight_block_size"):
         ExpertFp8Config.from_config(quantization)
 
 

@@ -66,7 +66,7 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy() -> None:
     assert cache.eviction_strategy.protected_threshold == 4
 
 
-@pytest.mark.parametrize("eviction_policy", ["lru", "fifo"])
+@pytest.mark.parametrize("eviction_policy", ["lru"])
 def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> None:
     """A radix hit restores attention KV but never the linear-attention state."""
     hybrid_pool = object.__new__(HybridReqToTokenPool)

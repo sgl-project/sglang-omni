@@ -876,7 +876,7 @@ actor RecordingVoiceActivityFrameDecider {
     private let useCase: ASRVoiceActivityUseCase
     private let energyBackend: ASREnergyVoiceActivityBackend
     private let sileroThreshold: Float
-    private let sileroDetector = ASRSileroStreamingVoiceActivityDetector()
+    private let sileroDetector: ASRSileroStreamingVoiceActivityDetector
     private let omniDetector: OmniStreamVoiceActivityBackend
     private var sileroFallbackWarningLogged = false
     private var omniDegradedWarningLogged = false
@@ -884,10 +884,12 @@ actor RecordingVoiceActivityFrameDecider {
     init(
         mode: LocalVADMode,
         useCase: ASRVoiceActivityUseCase,
-        energyThreshold: Float
+        energyThreshold: Float,
+        sileroDetector: ASRSileroStreamingVoiceActivityDetector = ASRSileroStreamingVoiceActivityDetector()
     ) {
         self.mode = mode
         self.useCase = useCase
+        self.sileroDetector = sileroDetector
         self.energyBackend = ASREnergyVoiceActivityBackend(threshold: energyThreshold)
         self.sileroThreshold = ASRVoiceActivityConfiguration.profile(for: useCase).onsetProbabilityThreshold
         self.omniDetector = OmniStreamVoiceActivityBackend(useCase: useCase)
@@ -927,6 +929,8 @@ actor RecordingVoiceActivityFrameDecider {
     }
 
     private func sileroDecision(for frame: ASRVoiceActivityAudioFrame) async -> RecordingVoiceActivityDecisionResult? {
+        // Note (Chenyang Zhao): retrying every frame would stall the recording behind one broken stream.
+        guard !sileroFallbackWarningLogged, !Task.isCancelled else { return nil }
         do {
             if let probability = try await sileroDetector.probability(
                 samples: frame.samples,
@@ -943,6 +947,8 @@ actor RecordingVoiceActivityFrameDecider {
                     source: .silero
                 )
             }
+        } catch is CancellationError {
+            return nil
         } catch {
             if shouldLogSileroFallback(error) {
                 VoxtLog.asrWarning("Recording Silero VAD failed; falling back to energy VAD. error=\(error.localizedDescription)")
