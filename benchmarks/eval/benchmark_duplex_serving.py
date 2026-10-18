@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import argparse
 import logging
+from importlib import import_module
 from pathlib import Path
 
 from pydantic import JsonValue
 
 from benchmarks.duplex.serving import serving_report
 from benchmarks.duplex.v15_audio import write_json
-from benchmarks.eval import benchmark_duplex_v10, benchmark_duplex_v15
 
 logger = logging.getLogger(__name__)
-RECORDERS = {"v1.0": benchmark_duplex_v10.main, "v1.5": benchmark_duplex_v15.main}
+RECORDERS = {
+    "v1.0": "benchmarks.eval.benchmark_duplex_v10",
+    "v1.5": "benchmarks.eval.benchmark_duplex_v15",
+}
 # Options the sweep sets on every recorder run itself.
 SWEEP_OPTIONS = ("--concurrency", "--output")
 
@@ -91,6 +94,7 @@ def report(args: argparse.Namespace) -> int:
 
 
 def sweep(args: argparse.Namespace) -> int:
+    recorder = import_module(RECORDERS[args.dataset]).main
     args.output.mkdir(parents=True, exist_ok=False)
     run_dirs = []
     for concurrency in args.concurrency:
@@ -100,7 +104,7 @@ def sweep(args: argparse.Namespace) -> int:
         )
         # note (jeffro): the recorder exits nonzero when a session fails, which under
         # load is a result to report, not a reason to stop the sweep.
-        RECORDERS[args.dataset](
+        recorder(
             [
                 "record",
                 *args.recorder_args,

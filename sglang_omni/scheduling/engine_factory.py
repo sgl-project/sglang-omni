@@ -84,6 +84,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
+    should_run_top_priority_stream: bool
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -104,6 +105,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
 
     model_name: str
     context_length: int
+    # The operator's overrides, to tell a set value from one the policy derived.
+    server_args_overrides: Mapping[str, object]
     model_arch_override: str | None = None
     supports_context_length_override: ClassVar[bool] = False
     # Set True only by builders whose model has adopted the breakable prefill
@@ -156,6 +159,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             server_args_overrides["disable_cuda_graph"] = True
         else:
             pass
+        self.server_args_overrides = server_args_overrides or {}
 
         requested_context_length = (
             server_args_overrides.get("context_length")

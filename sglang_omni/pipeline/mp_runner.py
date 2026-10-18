@@ -54,6 +54,10 @@ from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_t
 
 logger = logging.getLogger(__name__)
 
+# note (Richard Wang): startup checks ready groups as often as wait_ready polls
+# its own ranks.
+STARTUP_SUPERVISION_POLL_S = 1.0
+
 
 class StageByteBudgets(TypedDict):
     kv_cache_bytes: int | None
@@ -61,27 +65,14 @@ class StageByteBudgets(TypedDict):
     enforce_total_reserve: bool
 
 
-def resolve_coordinator_max_in_flight(
+def engine_stage_capacity(
     config: PipelineConfig,
-    *,
+    stage: StageConfig,
     logical_process_plan: LogicalProcessPlan,
 ) -> int | None:
-    """Return total generation running+queued capacity across replicas."""
-    config_cls = type(config)
-    stage = next(
-        (
-            item
-            for item in config.stages
-            if config_cls.stage_config_cls(item.name).engine_stage
-        ),
-        None,
-    )
-    if stage is None:
-        return None
-    else:
-        pass
+    """Return one engine stage's running+queued capacity summed across replicas."""
     values = {
-        **config_cls.generation_admission_defaults(),
+        **type(config).generation_admission_defaults(),
         **(stage.engine.overrides() if stage.engine is not None else {}),
     }
     try:
@@ -97,9 +88,47 @@ def resolve_coordinator_max_in_flight(
     return (running + queued) * num_replicas
 
 
+def resolve_coordinator_max_in_flight(
+    config: PipelineConfig,
+    *,
+    logical_process_plan: LogicalProcessPlan,
+) -> int | None:
+    """Return the in-flight cap: the generation stage capacity, or an entry
+    stage limit no larger than any engine stage capacity, across replicas."""
+    config_cls = type(config)
+    engine_stages = [
+        stage
+        for stage in config.stages
+        if config_cls.stage_config_cls(stage.name).engine_stage
+    ]
+    entry_limit = config.entry_stage_admission_limit()
+    if entry_limit is None:
+        return (
+            engine_stage_capacity(config, engine_stages[0], logical_process_plan)
+            if engine_stages
+            else None
+        )
+    else:
+        pass
+    # note (Richard Wang): an entry stage that admits requests may send each of
+    # them to any engine stage, so no engine stage may hold fewer.
+    entry_process = logical_process_plan.process_of(config.resolved_entry_stage)
+    capacities = [
+        engine_stage_capacity(config, stage, logical_process_plan)
+        for stage in engine_stages
+    ]
+    return min(
+        [
+            entry_limit * entry_process.num_replicas,
+            *(capacity for capacity in capacities if capacity is not None),
+        ]
+    )
+
+
 class StageLaunchKwargs(TypedDict):
     stage_name: str
     factory: str
+    allow_child_processes: bool
     next_stages: str | list[str] | None
     route_fn: str | None
     is_terminal: bool
@@ -194,11 +223,16 @@ def build_stage_groups(
         # injects signature-dependent args after importing the factory it
         # must construct anyway.
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        if stage_cfg.runtime_gpu_ids is not None:
+            base_factory_kwargs["runtime_gpu_ids"] = list(gpu_ids)
+        else:
+            pass
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs: StageLaunchKwargs = dict(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory_path,
+            allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
@@ -801,10 +835,11 @@ class MultiProcessPipelineRunner:
             else:
                 pass
 
-            # Note (Jiaxin Deng): timeout is the budget for one startup wave,
-            # not for the whole call: weight sharing makes startup genuinely
-            # sequential, and splitting one budget would let a slow leader load
-            # starve the follower attach that follows it into a false timeout.
+            # Note (Jiaxin Deng): weight sharing makes startup genuinely
+            # sequential, so waves start one after another. timeout bounds the
+            # gap between startup progress signals of each process still
+            # starting, so a slow leader load never shortens the follower attach.
+            ready_groups: list[StageGroup] = []
             for wave in self.spawn_waves():
                 if not wave:
                     continue
@@ -819,7 +854,7 @@ class MultiProcessPipelineRunner:
                             process_env_overrides=env_by_process,
                         )
 
-                await asyncio.gather(*(g.wait_ready(timeout) for g in wave))
+                await self.wait_wave_ready(wave, ready_groups, timeout)
 
                 for group in wave:
                     if group.any_dead():
@@ -891,6 +926,40 @@ class MultiProcessPipelineRunner:
             pass
         followers = self.weight_share.follower_process_names
         return any(spec.process_name in followers for spec in group.process_specs)
+
+    async def wait_wave_ready(
+        self, wave: list[StageGroup], ready_groups: list[StageGroup], timeout: float
+    ) -> None:
+        """Wait for every group of wave while watching each group already ready.
+
+        A ready group stays checked until the runtime monitor takes over, so it
+        cannot die unnoticed while another group keeps starting.
+        """
+        waits = {
+            asyncio.ensure_future(group.wait_ready(timeout)): group for group in wave
+        }
+        try:
+            while waits:
+                done, _ = await asyncio.wait(
+                    waits,
+                    timeout=STARTUP_SUPERVISION_POLL_S,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    ready_groups.append(waits.pop(task))
+                    task.result()
+                for group in ready_groups:
+                    if group.any_dead():
+                        raise RuntimeError(
+                            f"Stage process(es) died during startup: "
+                            f"{group.dead_summary()}"
+                        )
+                    else:
+                        pass
+        finally:
+            for task in waits:
+                task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
 
     def spawn_waves(self) -> list[list[StageGroup]]:
         """Partition groups so every weight-share follower starts last.

@@ -1720,9 +1720,10 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
         self.hift_hold_frames = (
             hift.f0_predictor.condnet[0].causal_padding + hift.conv_pre_look_right + 1
         )
-        # note(ratish): the AR shares this process and the default stream; on its
-        # own stream the vocoder's kernels and host copies do not queue behind the
-        # AR's. It waits once for what the default stream holds at this point.
+        # note(ratish): the AR shares this process and card on its own top priority
+        # stream; on a stream of its own the vocoder's kernels and host copies do not
+        # queue behind the AR's. It waits once for what the default stream holds at
+        # this point.
         device = next(self.flow.parameters()).device
         if device.type == "cuda":
             stream = torch.cuda.Stream(device=device)

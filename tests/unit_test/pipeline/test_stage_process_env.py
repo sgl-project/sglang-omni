@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import asyncio
 import logging
 import multiprocessing
 import os
+import queue
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -108,6 +112,96 @@ def test_spawn_env_cpu_plan_preserves_configured_omp(
 
     assert "OMP_NUM_THREADS" not in os.environ
     assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+class StartupClock:
+    """A fake monotonic clock that a rank script advances one step per poll."""
+
+    def __init__(self, steps: Callable[[float], None]) -> None:
+        self.now = 0.0
+        self.steps = steps
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float | None) -> bool:
+        self.now += seconds or 0.0
+        self.steps(self.now)
+        return False
+
+
+class ScriptedReady:
+    def __init__(self, clock: StartupClock) -> None:
+        self.clock = clock
+        self.ready = False
+
+    def is_set(self) -> bool:
+        return self.ready
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.clock.advance(timeout)
+
+
+@pytest.mark.parametrize(
+    ("case", "error", "message"),
+    [
+        ("slow_start", None, None),
+        ("stalled_sibling", TimeoutError, "rank1 made no startup progress"),
+        ("dead_after_ready", RuntimeError, "rank1 died during startup"),
+    ],
+)
+def test_wait_ready_watches_every_rank_on_its_own_progress_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    error: type[Exception] | None,
+    message: str | None,
+) -> None:
+    alive = [True, True]
+    counters = [SimpleNamespace(value=0), SimpleNamespace(value=0)]
+
+    def steps(now: float) -> None:
+        # Rank 0 makes progress every second and is ready at 30s, three
+        # timeouts in. Rank 1 depends on the case.
+        if now < 30:
+            counters[0].value += 1
+        else:
+            ready[0].ready = True
+        if case == "slow_start":
+            counters[1].value += 1
+            ready[1].ready = now >= 25
+        elif case == "dead_after_ready":
+            ready[1].ready = True
+            alive[1] = now < 3
+        else:
+            pass
+
+    clock = StartupClock(steps)
+    ready = [ScriptedReady(clock), ScriptedReady(clock)]
+    monkeypatch.setattr(
+        stage_workers, "time", SimpleNamespace(monotonic=clock.monotonic)
+    )
+    group = stage_workers.StageGroup(
+        "ranks",
+        [
+            StageWorkerProcessSpec(process_name="rank0", stage_specs=[]),
+            StageWorkerProcessSpec(process_name="rank1", stage_specs=[]),
+        ],
+    )
+    group._processes = [  # noqa: leading-underscore  # production name
+        SimpleNamespace(is_alive=lambda i=i: alive[i], exitcode=None) for i in range(2)
+    ]
+    group.ready_events = ready
+    group.startup_error_channels = [queue.Queue(), queue.Queue()]
+    group.startup_progress = counters
+
+    if error is None:
+        asyncio.run(group.wait_ready(10))
+        assert clock.now >= 30
+    else:
+        with pytest.raises(error, match=message):
+            asyncio.run(group.wait_ready(10))
+        assert clock.now < 30
+        assert not ready[0].ready
 
 
 @pytest.mark.skipif(
@@ -408,6 +502,40 @@ def test_rocm_spawn_env_maps_rank_through_hip_visible_devices(monkeypatch) -> No
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
+@pytest.mark.parametrize("platform", [cuda_platform, ROCMOmniPlatform()])
+def test_native_child_owner_sees_only_its_gpus(monkeypatch, platform) -> None:
+    """A stage that owns native children starts narrowed to the GPUs its
+    engine owns and hands that engine local ids in their declared order."""
+    variable = (
+        "HIP_VISIBLE_DEVICES"
+        if isinstance(platform, ROCMOmniPlatform)
+        else "CUDA_VISIBLE_DEVICES"
+    )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setenv(variable, "4,5,6,7")
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
+    spec = StageLaunchConfig(
+        stage_name="generation",
+        gpu_id=1,
+        allow_child_processes=True,
+        factory_kwargs={"runtime_gpu_ids": [1, 3]},
+        factory_arg_defaults={"gpu_id": 1},
+        comm_config={"gpu_id": 1},
+    )
+
+    with patched_spawn_env(worker_spec(spec)):
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "5,7"
+        assert os.environ[variable] == "5,7"
+        # The child starts with this environment.
+        stage_workers.prepare_accelerator_environment(spec, RecordingLog())
+
+    assert (spec.gpu_id, spec.placement_gpu_id) == (0, 1)
+    assert spec.factory_kwargs["runtime_gpu_ids"] == [0, 1]
+    assert spec.factory_arg_defaults["gpu_id"] == spec.comm_config["gpu_id"] == 0
+    assert os.environ[variable] == "4,5,6,7"
+
+
 class RecordingLog:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -510,6 +638,46 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     assert [stage.scheduler.gpu_id for stage in stages] == [0, 1]
     assert set_device_calls == [0, 1]
     assert seen_gpu_ids == [0, 1]
+
+
+def test_construct_stage_skips_device_pinning_for_child_process_engines(
+    monkeypatch,
+) -> None:
+    """A host that only owns a native engine's subprocesses pins no device."""
+
+    class _FakeStage:
+        def __init__(self, **kwargs):
+            self.scheduler = kwargs["scheduler"]
+            self.allow_child_processes = kwargs["allow_child_processes"]
+
+    set_device_calls: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        yield Path("/tmp/test.lock")
+
+    monkeypatch.setattr(
+        torch.get_device_module(platforms.current_platform.device_type),
+        "set_device",
+        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+    )
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_workers, "Stage", _FakeStage)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+
+    spec = StageLaunchConfig(
+        stage_name="native_stage",
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 1},
+        gpu_id=1,
+        allow_child_processes=True,
+    )
+
+    stage = stage_workers.construct_stage(spec, RecordingLog())
+
+    assert stage.scheduler.gpu_id == 1
+    assert stage.allow_child_processes is True
+    assert set_device_calls == []
 
 
 def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
@@ -734,7 +902,7 @@ def run_process(spec, ready_event, log):
 teardown = Teardown()
 stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
 stage_workers.run_process = run_process
-stage = SimpleNamespace(gpu_id=None)
+stage = SimpleNamespace(gpu_id=None, allow_child_processes=False)
 spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
 stage_workers.stage_process_main(spec, None)
 """

@@ -64,6 +64,7 @@ from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
+    ResultOwningScheduler,
     StageScheduler,
 )
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
@@ -132,16 +133,24 @@ class Stage:
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
+        allow_child_processes: bool = False,
         http_socket_path: str | None = None,
     ) -> None:
         self.name = name
         self.role = role
         self.get_next = get_next
         self.gpu_id = gpu_id
+        # The host of a native engine that owns subprocesses never computes on
+        # the device itself, so its threads do not pin a CUDA device either.
+        self.allow_child_processes = allow_child_processes
         self.endpoints = endpoints
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
+        # Resolved once, so stages whose scheduler owns nothing route as before.
+        self.result_owner = (
+            scheduler if isinstance(scheduler, ResultOwningScheduler) else None
+        )
         self.project_payload = project_payload or {}
         self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -260,7 +269,7 @@ class Stage:
                         # Active-stage binding so ``emit(stage=None)`` from
                         # scheduler-thread descendants resolves to this stage.
                         _set_active_stage(self.name)
-                        if self.gpu_id is not None:
+                        if self.gpu_id is not None and not self.allow_child_processes:
                             from sglang_omni.platforms import current_platform
 
                             current_platform.set_device(
@@ -1420,6 +1429,8 @@ class Stage:
                             return
                         else:
                             pass
+                    elif out.type == "result" and self.result_owner is not None:
+                        self.result_owner.release_result(out.data, delivered=False)
                     elif out.type == "wakeup":
                         # Checked after the routed types, so routing pays
                         # nothing, and after the stream run above was routed.
@@ -1486,6 +1497,10 @@ class Stage:
             if out.type == "wakeup":
                 return
             elif out.type == "result":
+                if self.result_owner is not None:
+                    self.result_owner.release_result(out.data, delivered=False)
+                else:
+                    pass
                 self.clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
@@ -1587,12 +1602,47 @@ class Stage:
         else:
             pass
 
+    async def route_owned_result(self, request_id: str, result: object) -> None:
+        """Route a scheduler owned result and release it once routing settles.
+
+        The release runs after routing fails or is cancelled too, and tells the
+        scheduler whether a transport accepted the result.
+        """
+        owner = self.result_owner
+        delivered = False
+
+        def on_submitted() -> None:
+            nonlocal delivered
+            delivered = True
+
+        try:
+            await self.route_result(request_id, result, on_submitted)
+        except BaseException:
+            try:
+                owner.release_result(result, delivered=delivered)
+            except Exception:
+                logger.exception(
+                    "Stage %s failed to release result for %s", self.name, request_id
+                )
+            raise
+        owner.release_result(result, delivered=delivered)
+
     async def route_result(
         self,
         request_id: str,
         result: object,
+        on_submitted: Callable[[], None] | None = None,
     ) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
+        """Route a completed result to next stage(s) or complete at coordinator.
+
+        ``on_submitted`` reports transport acceptance to a result owning
+        scheduler, which route_owned_result supplies.
+        """
+        if on_submitted is None and self.result_owner is not None:
+            await self.route_owned_result(request_id, result)
+            return
+        else:
+            pass
         if not self.owns_external_io:
             self.clear_request_state(request_id)
             return
@@ -1604,14 +1654,19 @@ class Stage:
             else None
         )
         if session_operation is not None and session_operation.operation != "append":
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data,
             )
+            if on_submitted is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+                on_submitted()
             self.clear_request_state(request_id)
             return
         else:
@@ -1644,6 +1699,19 @@ class Stage:
                 pass
         else:
             pass
+        if on_submitted is not None:
+            # Claim before any stream completion, so a refused result sends none.
+            next_stages = (
+                self.get_next(request_id, result)
+                if session_operation is None
+                else actual
+            )
+            if not self.result_owner.claim_result(result, terminal=next_stages is None):
+                return
+            else:
+                pass
+        else:
+            pass
         # Send stream done to the active stream targets for this request.
         stream_targets = self.stream_targets
         if self.get_stream_done_targets is not None:
@@ -1666,9 +1734,14 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = (
-            self.get_next(request_id, result) if session_operation is None else actual
-        )
+        if on_submitted is None:
+            next_stages = (
+                self.get_next(request_id, result)
+                if session_operation is None
+                else actual
+            )
+        else:
+            pass
         routes_to_self = False
         if next_stages is None:
             # Terminal: notify coordinator
@@ -1678,14 +1751,19 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data if isinstance(result, StagePayload) else result,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data if isinstance(result, StagePayload) else result,
             )
+            if on_submitted is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+                on_submitted()
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
@@ -1717,6 +1795,10 @@ class Stage:
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
+                if on_submitted is not None:
+                    on_submitted()
+                else:
+                    pass
 
         if not routes_to_self:
             self.clear_request_state(request_id)

@@ -214,6 +214,42 @@ def test_route_session_input_records_authoritative_ar_bypass(
     assert scheduler.outbox.empty()
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("should_run_top_priority_stream", [False, True])
+def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
+    should_run_top_priority_stream: bool,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_async_decode = False
+    scheduler.enable_overlap = False
+    scheduler.should_run_top_priority_stream = should_run_top_priority_stream
+    scheduler.device_module = torch.get_device_module("cuda")
+    scheduler.prefill_start_done = set()
+    scheduler.request_build_executor = None
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.pending_request_admissions = {}
+    scheduler.shutdown_lock = threading.Lock()
+    scheduler.shutdown_callback = None
+    outer_stream = torch.cuda.current_stream()
+    loop_streams: list[torch.cuda.Stream] = []
+
+    def run_loop() -> None:
+        loop_streams.append(torch.cuda.current_stream())
+        raise RuntimeError("scheduler loop failed")
+
+    scheduler.event_loop_normal = run_loop
+    with pytest.raises(RuntimeError, match="scheduler loop failed"):
+        scheduler.start()
+
+    if should_run_top_priority_stream:
+        assert loop_streams[0] != outer_stream
+        assert loop_streams[0].priority == torch.cuda.Stream.priority_range()[1]
+    else:
+        assert loop_streams == [outer_stream]
+    assert torch.cuda.current_stream() == outer_stream
+
+
 def make_abortable_req(request_id: str, **attributes):
     values = {
         "rid": request_id,
@@ -3419,6 +3455,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_async_decode = False
     scheduler.enable_overlap = False
+    scheduler.should_run_top_priority_stream = False
     scheduler.prefill_start_done = {"req-1", "req-2"}
     scheduler.prefill_end_done = set()
     scheduler.request_build_executor = None

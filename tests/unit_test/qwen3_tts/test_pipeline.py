@@ -21,7 +21,15 @@ from typing import Literal
 import numpy as np
 import pytest
 import torch
-from sglang.srt.runtime_context import get_context
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.runtime_context import get_context, override_platform
+from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -73,9 +81,18 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
+from sglang_omni.scheduling.engine_factory import GenerationDefaults
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
+    build_generation_batch_overrides,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
@@ -85,6 +102,7 @@ from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
 
 def placeholder_prompt_constants(
@@ -629,17 +647,15 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
 
 def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     from sglang_omni.models.qwen3_tts import CAPABILITIES
-    from sglang_omni.models.qwen3_tts.engine_builder import (
-        QWEN3_TTS_PREFILL_CUDA_GRAPH_BS,
-        Qwen3TtsEngineBuilder,
-    )
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
     from sglang_omni.scheduling.generation_batch_policy import (
         CudaGraphBackend,
-        build_default_prefill_cuda_graph_bs,
+        build_generation_batch_overrides,
     )
 
     builder = Qwen3TtsEngineBuilder()
     defaults = builder.generation_defaults(dtype="bfloat16")
+    overrides = build_generation_batch_overrides(**defaults)
 
     assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
     assert (
@@ -651,17 +667,194 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
         type(builder).supports_full_prefill_cuda_graph
         is CAPABILITIES.supports_full_prefill_cuda_graph
     )
-    assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
-    assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
-    # A 1-token prefill is the only shape the shared ladder sends back to eager,
-    # so the 1 bucket is what this default adds; 2 and 3 replay inside bucket 4.
-    ladder = defaults["cuda_graph_bs_prefill"]
-    assert ladder[0] == 1
-    assert ladder[1:] == build_default_prefill_cuda_graph_bs(512)
-    assert all(
-        next(b for b in ladder if b >= tokens) <= 2 * tokens for tokens in (1, 2, 3, 4)
+    assert overrides["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
+    assert "cuda_graph_bs_prefill" not in overrides
+    assert "cuda_graph_max_bs_prefill" not in overrides
+    assert overrides["disable_cuda_graph"] is False
+
+
+def resolved_qwen3_tts_server_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object]
+) -> ServerArgs:
+    monkeypatch.delenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", raising=False)
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+    checkpoint = Path(write_mini_llama_checkpoint(tmp_path))
+    config_path = checkpoint / "config.json"
+    config = json.loads(config_path.read_text())
+    config["tts_model_type"] = "base"
+    config_path.write_text(json.dumps(config))
+    builder = Qwen3TtsEngineBuilder()
+    builder.checkpoint_dir = str(checkpoint)
+    builder.server_args_overrides = {"attention_backend": "fa3", **overrides}
+    stage_overrides = build_generation_batch_overrides(
+        server_args_overrides=builder.server_args_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
     )
-    assert defaults["disable_cuda_graph"] is False
+    builder.adjust_overrides(stage_overrides)
+    server_args = build_sglang_server_args(
+        str(checkpoint), context_length=8192, device="cuda", **stage_overrides
+    )
+    builder.customize_server_args(server_args)
+    return server_args
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_prefill_ladder_starts_at_one_and_reaches_the_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path, monkeypatch, {"cuda_graph_backend_prefill": backend}
+    )
+    resolved = resolved_view(server_args)
+    prefill = resolved.cuda_graph_config.prefill
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert prefill.max_bs == resolved.chunked_prefill_size
+    assert prefill.bs == [
+        1,
+        *generate_prefill_cuda_graph_batch_sizes(resolved.chunked_prefill_size),
+    ]
+    assert prefill.full_prefill_max_req is None
+
+
+@pytest.mark.parametrize(
+    ("hopper", "slot_override", "expected_slots"),
+    [(True, None, "running"), (False, None, None), (True, 8, 8)],
+)
+def test_qwen3_tts_full_prefill_on_hopper_runs_fa4_with_a_slot_per_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hopper: bool,
+    slot_override: int | None,
+    expected_slots: int | str | None,
+) -> None:
+    overrides: dict[str, object] = {
+        "attention_backend": None,
+        "decode_attention_backend": "fa3",
+    }
+    if slot_override is not None:
+        overrides["cuda_graph_config"] = {
+            "prefill": {"full_prefill_max_req": slot_override}
+        }
+    else:
+        pass
+    with override_platform(is_sm90=hopper, is_hopper_with_cuda_12_3=hopper):
+        server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+    resolved = resolved_view(server_args)
+
+    assert resolved.cuda_graph_config.prefill.backend == "full"
+    assert (attention_backends_of(resolved)[0] == "fa4") is hopper
+    assert resolved.cuda_graph_config.prefill.full_prefill_max_req == (
+        resolved.max_running_requests if expected_slots == "running" else expected_slots
+    )
+
+
+def test_qwen3_tts_fp8_kv_cache_keeps_the_default_prefill_attention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An FP8 KV cache on Hopper keeps the default prefill attention backend."""
+    with override_platform(is_sm90=True, is_hopper_with_cuda_12_3=True):
+        server_args = resolved_qwen3_tts_server_args(
+            tmp_path,
+            monkeypatch,
+            {
+                "attention_backend": None,
+                "decode_attention_backend": "fa3",
+                "kv_cache_dtype": "fp8_e4m3",
+            },
+        )
+    resolved = resolved_view(server_args)
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert attention_backends_of(resolved)[0] != "fa4"
+    assert resolved.cuda_graph_config.prefill.full_prefill_max_req is None
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_operator_prefill_cap_ladder_starts_at_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path,
+        monkeypatch,
+        {"cuda_graph_backend_prefill": backend, "cuda_graph_max_bs_prefill": 3000},
+    )
+
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [
+        1,
+        *build_default_prefill_cuda_graph_bs(3000),
+    ]
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+@pytest.mark.parametrize("declaration", ["flat", "nested"])
+def test_qwen3_tts_keeps_a_declared_prefill_ladder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, declaration: str
+) -> None:
+    """A ladder the operator declares is served without an added 1 bucket."""
+    overrides: dict[str, object] = (
+        {
+            "cuda_graph_backend_prefill": backend,
+            "cuda_graph_bs_prefill": [4, 8],
+            "cuda_graph_max_bs_prefill": 8,
+        }
+        if declaration == "flat"
+        else {
+            "cuda_graph_config": {
+                "prefill": {"backend": backend, "bs": [4, 8], "max_bs": 8}
+            }
+        }
+    )
+    server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [4, 8]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cuda_graph_backend_prefill": "disabled"},
+        {"cuda_graph_bs_prefill": []},
+    ],
+)
+def test_qwen3_tts_disabled_or_empty_prefill_ladder_stays_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object]
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert 1 not in (resolved_view(server_args).cuda_graph_config.prefill.bs or [])
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_one_token_prefill_cap_stays_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """A one-token prefill cap resolves to a single 1 bucket and passes validation."""
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path,
+        monkeypatch,
+        {"cuda_graph_backend_prefill": backend, "cuda_graph_max_bs_prefill": 1},
+    )
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [1]
 
 
 def qwen3_tts_checkpoint(tmp_path: Path, model_type: str | None) -> str:
@@ -680,47 +873,20 @@ def test_qwen3_tts_full_prefill_is_scoped_to_base_and_custom_voice(
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
-    def backend(model_type: str | None) -> str:
+    def defaults(model_type: str | None) -> GenerationDefaults:
         builder = Qwen3TtsEngineBuilder()
         builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, model_type)
-        return builder.generation_defaults(dtype="bfloat16")[
-            "cuda_graph_backend_prefill"
-        ]
+        return builder.generation_defaults(dtype="bfloat16")
 
-    assert backend("custom_voice") is CudaGraphBackend.FULL
-    assert backend("base") is CudaGraphBackend.FULL
-    for model_type in ("voice_design", None):
-        assert backend(model_type) is CudaGraphBackend.BREAKABLE, model_type
-
-
-def test_qwen3_tts_base_prefill_covers_reference_prompts(tmp_path: Path) -> None:
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-
-    builder = Qwen3TtsEngineBuilder()
-    builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, "base")
-    defaults = builder.generation_defaults(dtype="bfloat16")
-    assert max(defaults["cuda_graph_bs_prefill"]) == 1024
-    assert defaults["max_running_requests"] == 64
-    assert defaults["max_prefill_tokens"] == 8192
-    builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, "custom_voice")
-    assert (
-        max(builder.generation_defaults(dtype="bfloat16")["cuda_graph_bs_prefill"])
-        == 512
-    )
-
-
-def test_qwen3_tts_small_base_prefill_covers_maximum_token_budget(
-    tmp_path: Path,
-) -> None:
-    builder = Qwen3TtsEngineBuilder()
-    checkpoint = Path(qwen3_tts_checkpoint(tmp_path, "base"))
-    config_path = checkpoint / "config.json"
-    config = json.loads(config_path.read_text())
-    config["tts_model_size"] = "0b6"
-    config_path.write_text(json.dumps(config))
-    builder.checkpoint_dir = str(checkpoint)
-    defaults = builder.generation_defaults(dtype="bfloat16")
-    assert max(defaults["cuda_graph_bs_prefill"]) == defaults["max_prefill_tokens"]
+    for model_type, backend in (
+        ("custom_voice", CudaGraphBackend.FULL),
+        ("base", CudaGraphBackend.FULL),
+        ("voice_design", CudaGraphBackend.BREAKABLE),
+        (None, CudaGraphBackend.BREAKABLE),
+    ):
+        resolved = defaults(model_type)
+        assert resolved["cuda_graph_backend_prefill"] is backend, model_type
+        assert "cuda_graph_bs_prefill" not in resolved, model_type
 
 
 def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:

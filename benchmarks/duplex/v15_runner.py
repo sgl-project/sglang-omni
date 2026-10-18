@@ -405,7 +405,9 @@ async def run_samples(
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.
                 protocol_report = await asyncio.to_thread(replay_run, variant_dir)
-                write_json(variant_dir / "report.json", protocol_report)
+                await asyncio.to_thread(
+                    write_json, variant_dir / "report.json", protocol_report
+                )
                 (case_report,) = protocol_report["cases"]
                 playout_report = await asyncio.to_thread(
                     reconstruct_output, variant_dir, profile=profile

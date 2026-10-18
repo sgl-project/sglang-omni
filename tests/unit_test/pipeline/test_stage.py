@@ -418,6 +418,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
+        scheduler.should_run_top_priority_stream = False
         scheduler.prefill_start_done = {"req-active"}
         scheduler.prefill_end_done = set()
         scheduler.request_build_executor = None
@@ -467,6 +468,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
+        scheduler.should_run_top_priority_stream = False
         scheduler.prefill_start_done = set()
         scheduler.prefill_end_done = set()
         scheduler.request_build_executor = None
@@ -1754,5 +1756,35 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
         assert torch.equal(received.to(original.device), original)
         # the sender-side tensor must also be left alone
         assert torch.equal(tensor, original)
+
+    asyncio.run(run())
+
+
+def test_result_resources_survive_partial_fanout():
+    released, sent = [], []
+
+    class OwningScheduler(FakeScheduler):
+        def claim_result(self, result, *, terminal):
+            return True
+
+        def release_result(self, result, *, delivered):
+            released.append(delivered)
+
+    async def run():
+        stage_obj = make_stage(
+            get_next=lambda request_id, result: ["first", "second"],
+            scheduler=OwningScheduler(),
+        )
+
+        async def send(request_id, target, result, **kwargs):
+            if target == "second":
+                raise RuntimeError("second target failed")
+            sent.append(target)
+
+        stage_obj.send_to_stage = send
+        with pytest.raises(RuntimeError, match="second target failed"):
+            await stage_obj.route_result("request", {"output": "value"})
+        assert sent == ["first"]
+        assert released == [True]
 
     asyncio.run(run())
