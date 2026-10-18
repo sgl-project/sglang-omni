@@ -809,7 +809,13 @@ class Code2WavCudaGraphRunner:
         launches on the caller's current stream, which the serving thread holds
         at decode_stream.
         """
-        self.check_owner_process()
+        current_pid = os.getpid()
+        if current_pid != self.owner_pid:
+            raise RuntimeError(
+                f"Code2Wav device graph runner/model belongs to PID {self.owner_pid}, but was used in PID {current_pid}; it must be rebuilt in a spawned process before inference"
+            )
+        else:
+            pass
         if not self.enabled:
             return self.eager(codes, key=None, reason="disabled")
         else:
@@ -832,7 +838,6 @@ class Code2WavCudaGraphRunner:
     ) -> Code2WavRunResult:
         """Decode new frames from the slots' codec state by an exact graph, or eagerly with a
         stable reason; the output is borrowed as run's is."""
-        self.check_owner_process()
         if not self.enabled:
             return self.eager_slots(
                 codes, slots, first_decode=first_decode, key=None, reason="disabled"
@@ -852,15 +857,6 @@ class Code2WavCudaGraphRunner:
         else:
             pass
         return self.replay(captured, key, codes, slots=slots)
-
-    def check_owner_process(self) -> None:
-        current_pid = os.getpid()
-        if current_pid != self.owner_pid:
-            raise RuntimeError(
-                f"Code2Wav device graph runner/model belongs to PID {self.owner_pid}, but was used in PID {current_pid}; it must be rebuilt in a spawned process before inference"
-            )
-        else:
-            pass
 
     def replay(
         self,
