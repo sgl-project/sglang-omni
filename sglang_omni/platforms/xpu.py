@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
-from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
@@ -112,6 +111,8 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         effective_quantization = super().apply_model_worker_backend_policy(
             server_args, model_config, model_arch_override
         )
+
+        from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
         moe_runner_backend = cfg.moe_runner_backend

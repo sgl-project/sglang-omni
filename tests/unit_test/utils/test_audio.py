@@ -12,6 +12,8 @@ from types import ModuleType
 import numpy as np
 import pybase64
 import pytest
+import torch
+import torchaudio
 
 from sglang_omni.utils import audio
 from sglang_omni.utils.audio import AudioDecodeError, load_audio
@@ -87,13 +89,13 @@ def test_load_audio_soundfile_fallback_error_matches_bad_request_pattern(
 
 
 def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
-    decoder_oom = audio.torch.OutOfMemoryError("decoder out of memory")
+    decoder_oom = torch.OutOfMemoryError("decoder out of memory")
 
     def raise_wrapped_oom(source):
         del source
         try:
             raise decoder_oom
-        except audio.torch.OutOfMemoryError as exc:
+        except torch.OutOfMemoryError as exc:
             raise RuntimeError("decoder failed") from exc
 
     monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
@@ -103,7 +105,7 @@ def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
         lambda source: pytest.fail("OOM must not be classified as invalid media"),
         raising=False,
     )
-    monkeypatch.setattr(audio.torchaudio, "load", raise_wrapped_oom)
+    monkeypatch.setattr(torchaudio, "load", raise_wrapped_oom)
 
     with pytest.raises(RuntimeError) as exc_info:
         load_audio(b"encoded-audio")
@@ -120,7 +122,7 @@ def test_load_audio_classifies_corrupt_local_path(monkeypatch, tmp_path) -> None
         raise RuntimeError("invalid audio data")
 
     monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
-    monkeypatch.setattr(audio.torchaudio, "load", raise_decode_error)
+    monkeypatch.setattr(torchaudio, "load", raise_decode_error)
 
     with pytest.raises(AudioDecodeError, match="Could not decode Test"):
         load_audio(str(corrupt_path), source_name="Test")
@@ -283,7 +285,7 @@ def test_load_audio_fast_path_skips_torchaudio(monkeypatch) -> None:
     def fail_load(*args, **kwargs):
         raise AssertionError("torchaudio.load should not be called on the fast path")
 
-    monkeypatch.setattr(audio.torchaudio, "load", fail_load)
+    monkeypatch.setattr(torchaudio, "load", fail_load)
 
     samples = load_audio(sine_wav_bytes())
 
@@ -294,7 +296,7 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     def fail_load(*args, **kwargs):
         raise AssertionError("torchaudio.load should not be called on the fast path")
 
-    monkeypatch.setattr(audio.torchaudio, "load", fail_load)
+    monkeypatch.setattr(torchaudio, "load", fail_load)
 
     samples = load_audio(sine_wav_bytes(sample_rate=48000))
 

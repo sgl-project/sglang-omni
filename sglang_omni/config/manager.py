@@ -1,8 +1,6 @@
 import os
 from collections.abc import Iterable, Mapping
 
-from transformers import AutoConfig
-
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import PipelineConfig
@@ -10,6 +8,7 @@ from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_con
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY, resolve_variant
 from sglang_omni.utils import (
     architecture_from_hf_config,
+    listed_architecture_from_raw_config,
     try_resolve_arch_from_auk_layout,
     try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
@@ -30,14 +29,20 @@ def resolve_config_cls_for_model_path(model_path: str):
         revision = pinned or None
     else:
         pass
-    hf_kwargs = {"revision": revision} if revision else {}
-    hf_config = None
-    try:
-        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
-    except (OSError, ValueError, KeyError):
-        hf_config = None
+    # A config.json that lists its architectures needs no AutoConfig, which
+    # would import transformers and torch into the server process.
+    arch = listed_architecture_from_raw_config(repo_id, revision=revision)
+    if arch is None:
+        from transformers import AutoConfig
 
-    arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
+        hf_kwargs = {"revision": revision} if revision else {}
+        try:
+            hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
+        except (OSError, ValueError, KeyError):
+            hf_config = None
+        arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
+    else:
+        pass
     if arch is None:
         arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
     else:

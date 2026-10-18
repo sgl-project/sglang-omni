@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-import torch
 from pydantic import Field
 
+from sglang_omni import platforms
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -15,7 +15,6 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
-from sglang_omni.platforms import current_platform
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
@@ -23,7 +22,11 @@ _PKG = "sglang_omni.models.minimax_music3"
 
 
 def visible_gpu_count() -> int:
-    return torch.get_device_module(current_platform.device_type).device_count()
+    import torch
+
+    return torch.get_device_module(
+        platforms.current_platform.device_type
+    ).device_count()
 
 
 class DitDavFactoryArgs(FactoryArgs):

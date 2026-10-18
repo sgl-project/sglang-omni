@@ -18,11 +18,9 @@ from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
 from multiprocessing.sharedctypes import Synchronized
 from multiprocessing.synchronize import Event
-from typing import Literal, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence
 
-from sglang.srt.utils import kill_itself_when_parent_died
-from torch._dynamo.callback import CallbackArgs, callback_handler
-
+from sglang_omni import platforms
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -30,14 +28,13 @@ from sglang_omni.config.runtime import (
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
-from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import (
     TPFollowerControlPlane,
     TPLeaderFanout,
     TPWorkQueueMessage,
 )
-from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.platforms import get_platform_spec
 from sglang_omni.proto import AbortMessage, AdminResultMessage
 from sglang_omni.scheduling.message import StageScheduler
 from sglang_omni.utils.gpu_compat import (
@@ -46,11 +43,38 @@ from sglang_omni.utils.gpu_compat import (
 )
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
-from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import exit_without_teardown
 
+if TYPE_CHECKING:
+    from torch._dynamo.callback import CallbackArgs
+
+    from sglang_omni.pipeline.stage.runtime import Stage
+else:
+    pass
+
 logger = logging.getLogger(__name__)
+
+
+def kill_itself_when_parent_died() -> None:
+    """Arm SGLang's parent death signal, importing SGLang only in the child."""
+    from sglang.srt.utils import kill_itself_when_parent_died as arm_parent_death
+
+    arm_parent_death()
+
+
+def platform_pin_env() -> dict[str, str]:
+    """Pin this process's platform for a child, if it has resolved one.
+
+    A child that gets no pin resolves the platform itself under the
+    environment it inherits, which is how this process would have resolved it.
+    """
+    platform = platforms.resolved_platform()
+    if platform is None:
+        return {}
+    else:
+        pass
+    return {"SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(platform)}
 
 
 @dataclass
@@ -192,8 +216,8 @@ class StageWorkerProcessSpec:
     )
 
 
-def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
-    """Return the spawn-time env overrides for *spec*.
+def platform_env_stage(spec: StageWorkerProcessSpec) -> StageLaunchConfig | None:
+    """The stage whose platform policy sets *spec*'s spawn env, or None.
 
     Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
     exclusively. Its CUDA env remap and NCCL settings depend on being the sole
@@ -207,13 +231,12 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
             "A stage that owns native child processes must own its OS process"
         )
     elif native:
-        env = current_platform.get_stage_process_env(native[0])
-        return {**env, NATIVE_GPUS_NARROWED_ENV: "true"} if env else {}
+        return native[0]
     else:
         pass
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
-        return {}
+        return None
     else:
         pass
     if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
@@ -224,7 +247,61 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
         )
     else:
         pass
-    return current_platform.get_stage_process_env(tp_stages[0])
+    return tp_stages[0]
+
+
+def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
+    """Return the spawn-time env overrides for *spec*."""
+    stage = platform_env_stage(spec)
+    if stage is None:
+        return {}
+    else:
+        pass
+    env = platforms.current_platform.get_stage_process_env(stage)
+    if stage.allow_child_processes:
+        return {**env, NATIVE_GPUS_NARROWED_ENV: "true"} if env else {}
+    else:
+        pass
+    return env
+
+
+@dataclass(frozen=True)
+class AcceleratorFacts:
+    """What the launcher needs from the platform before it spawns stages."""
+
+    device_count: int | None
+    worker_envs: dict[str, dict[str, str]]
+
+
+def resolve_accelerator_facts(
+    specs: Sequence[StageWorkerProcessSpec], timeout: float
+) -> AcceleratorFacts:
+    """The visible device count and the spawn envs that need platform policy.
+
+    They are computed here when this process has resolved the platform.
+    Otherwise, when a TP rank needs its env before it starts, a short-lived
+    probe resolves the platform and answers, so this process stays free of
+    torch and SGLang, and the probe's platform is pinned in this process's
+    environment for every stage it spawns. Without TP ranks no probe runs,
+    and each stage process checks its own GPU ids (check_stage_gpu_ids).
+    """
+    from sglang_omni.pipeline.runtime_config import visible_device_count
+
+    needed = [spec for spec in specs if platform_env_stage(spec) is not None]
+    if platforms.resolved_platform() is not None:
+        return AcceleratorFacts(
+            visible_device_count(),
+            {spec.process_name: get_worker_process_env(spec) for spec in needed},
+        )
+    elif not needed:
+        return AcceleratorFacts(None, {})
+    else:
+        pass
+    from sglang_omni.pipeline import spawn_env_probe
+
+    reply = spawn_env_probe.probe(needed, timeout=timeout)
+    os.environ["SGLANG_OMNI_PLATFORM_SPEC"] = reply.platform_spec
+    return AcceleratorFacts(reply.device_count, reply.worker_envs)
 
 
 @contextmanager
@@ -253,6 +330,7 @@ def spawn_affinity(spec: StageWorkerProcessSpec) -> Generator[None, None, None]:
 def patched_spawn_env(
     spec: StageWorkerProcessSpec,
     extra_env: Mapping[str, str] | None = None,
+    worker_env: Mapping[str, str] | None = None,
 ) -> Generator[None, None, None]:
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
@@ -285,7 +363,9 @@ def patched_spawn_env(
     else:
         pass
 
-    worker_process_env = get_worker_process_env(spec)
+    worker_process_env = (
+        dict(worker_env) if worker_env is not None else get_worker_process_env(spec)
+    )
     compat_env_defaults = get_gpu_compat_env_defaults(
         {
             **os.environ,
@@ -297,7 +377,7 @@ def patched_spawn_env(
         **env_default_updates,
         **compat_env_defaults,
         **worker_process_env,
-        "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
+        **platform_pin_env(),
         **(extra_env or {}),
     }
     if (
@@ -404,8 +484,13 @@ class StageGroup:
         self,
         ctx: multiprocessing.context.SpawnContext,
         process_env_overrides: Mapping[str, Mapping[str, str]] | None = None,
+        worker_envs: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
-        """Spawn the OS process(es) owned by this group."""
+        """Spawn the OS process(es) owned by this group.
+
+        ``worker_envs`` holds platform spawn envs resolved ahead of the spawn,
+        by process name. A process without one computes its own here.
+        """
         for spec in self.process_specs:
             event = ctx.Event()
             startup_error_channel = ctx.Queue()
@@ -427,7 +512,15 @@ class StageGroup:
                     if process_env_overrides is not None
                     else None
                 )
-                with patched_spawn_env(spec, extra_env=extra_env), spawn_affinity(spec):
+                worker_env = (
+                    worker_envs.get(spec.process_name)
+                    if worker_envs is not None
+                    else None
+                )
+                with (
+                    patched_spawn_env(spec, extra_env=extra_env, worker_env=worker_env),
+                    spawn_affinity(spec),
+                ):
                     self._process_start_attempts.add(
                         spec.process_name
                     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -606,6 +699,47 @@ class StageGroup:
 NATIVE_GPUS_NARROWED_ENV = "SGLANG_OMNI_NATIVE_GPUS_NARROWED"
 
 
+def check_stage_gpu_ids(spec: StageWorkerProcessSpec) -> None:
+    """Check the GPU ids when the launcher, having no platform, could not.
+
+    A launcher that resolved the platform, itself or through its probe, pins
+    it for its stages and has checked their ids already. A launcher that
+    narrowed the process to one device, as native MPS does, resolved its id
+    to that device, which the process maps to local device 0. A process
+    without GPU stages has nothing to check and leaves the device runtime
+    alone.
+    """
+    gpu_ids = [
+        (stage.stage_name, stage.gpu_id)
+        for stage in spec.stage_specs
+        if stage.gpu_id is not None
+    ]
+    if (
+        "SGLANG_OMNI_PLATFORM_SPEC" in os.environ
+        or os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
+        or not gpu_ids
+    ):
+        return
+    else:
+        pass
+    from sglang_omni.pipeline.runtime_config import visible_device_count
+
+    platforms.get_current_platform()
+    device_count = visible_device_count()
+    if device_count is None:
+        return
+    else:
+        pass
+    for stage_name, gpu_id in gpu_ids:
+        if gpu_id >= device_count:
+            raise ValueError(
+                f"Stage {stage_name!r}: GPU id {gpu_id} out of range; "
+                f"only {device_count} visible device(s)"
+            )
+        else:
+            pass
+
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -639,9 +773,12 @@ def stage_process_main(
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
+        check_stage_gpu_ids(spec)
         for stage_spec in spec.stage_specs:
             prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
+        from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
+
         prepare_weight_share_process_compat()
         run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit) as exc:
@@ -717,6 +854,8 @@ def run_process(
     """
     local_dispatcher = LocalStageDispatcher()
     stages: list[Stage] = []
+
+    from torch._dynamo.callback import callback_handler
 
     # note (Richard Wang): each finished torch.compile frame counts as startup
     # progress, since a cold compile and autotune can run for many minutes.
@@ -853,18 +992,19 @@ def reclaim_process_gpu_memory(
     try:
         import torch
 
-        if current_platform.is_cpu():
+        platform = platforms.current_platform
+        if platform.is_cpu():
             return
         else:
             pass
         log.warning(f"Reclaiming GPU memory after {reason} on gpu_ids={gpu_id_list}")
         for gpu_id in gpu_id_list:
             try:
-                current_platform.set_device(current_platform.get_device(int(gpu_id)))
+                platform.set_device(platform.get_device(int(gpu_id)))
                 with suppress(Exception):
-                    current_platform.synchronize()
-                current_platform.empty_cache()
-                if current_platform.is_cuda_alike():
+                    platform.synchronize()
+                platform.empty_cache()
+                if platform.is_cuda_alike():
                     with suppress(Exception):
                         torch.cuda.ipc_collect()
                 else:
@@ -891,13 +1031,15 @@ def construct_stage(
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
+    from sglang_omni.pipeline.stage.runtime import Stage
+
     gpu_id = spec.gpu_id
     # A stage whose native engine owns subprocesses never computes in this
     # host process. Pinning the device here would only create an unused
     # CUDA context that costs device memory and shutdown time. The engine
     # receives its devices through the factory arguments instead.
     if gpu_id is not None and not spec.allow_child_processes:
-        current_platform.set_device(int(gpu_id))
+        platforms.current_platform.set_device(int(gpu_id))
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
     else:
         pass
@@ -1225,7 +1367,7 @@ def prepare_accelerator_environment(
             pass
         return
     elif (
-        current_platform.is_cuda_alike()
+        platforms.current_platform.is_cuda_alike()
         and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
     ):
         if spec.gpu_id is None:
@@ -1246,7 +1388,7 @@ def prepare_accelerator_environment(
     else:
         pass
 
-    env_updates = current_platform.get_stage_process_env(spec)
+    env_updates = platforms.current_platform.get_stage_process_env(spec)
     if not env_updates:
         return
     else:

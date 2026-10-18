@@ -7,6 +7,8 @@ import base64
 import json
 import logging
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -4326,3 +4328,59 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
     response = client.post("/v1/audio/speech", json=body)
     assert response.status_code == 200
     assert response.content
+
+
+def test_server_process_imports_no_accelerator_stack() -> None:
+    """The HTTP server process loads no torch, transformers or SGLang.
+
+    Its stages load them in their own processes. The CLI imports every model's
+    config through the registry, so this also holds each model package to a
+    light import, and resolving a --model-path whose config.json lists its
+    architecture must not need transformers either. A failure names the
+    sglang_omni line that pulled one in.
+    """
+    script = """
+import sys
+import traceback
+
+first_importers = {}
+
+
+class FirstImporter:
+    def find_spec(self, name, path=None, target=None):
+        if name in ("torch", "transformers", "sglang") and name not in first_importers:
+            frames = [
+                f"{frame.filename}:{frame.lineno}"
+                for frame in traceback.extract_stack()
+                if "sglang_omni" in frame.filename
+            ]
+            first_importers[name] = frames[-1] if frames else "unknown"
+        else:
+            pass
+        return None
+
+
+sys.meta_path.insert(0, FirstImporter())
+import json
+import tempfile
+
+import sglang_omni.cli
+import sglang_omni.serve.launcher
+from sglang_omni.config.manager import resolve_config_cls_for_model_path
+
+with tempfile.TemporaryDirectory() as model_dir:
+    with open(f"{model_dir}/config.json", "w") as f:
+        json.dump({"architectures": ["Qwen3OmniMoeForConditionalGeneration"]}, f)
+    config_cls = resolve_config_cls_for_model_path(model_dir)
+
+assert config_cls.architecture == "Qwen3OmniMoeForConditionalGeneration"
+assert not first_importers, first_importers
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout

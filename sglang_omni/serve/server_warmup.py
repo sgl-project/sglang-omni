@@ -7,7 +7,6 @@ import io
 from dataclasses import dataclass
 
 import numpy as np
-import soundfile
 
 from sglang_omni.config import PipelineConfig
 
@@ -27,6 +26,8 @@ class TranscriptionWarmupRequest:
 
 def warmup_tone_wav_bytes() -> bytes:
     """One second of a 16 kHz tone as a PCM 16 WAV file."""
+    import soundfile
+
     sample_times_s = np.arange(WARMUP_AUDIO_SAMPLE_RATE) / WARMUP_AUDIO_SAMPLE_RATE
     tone = WARMUP_TONE_AMPLITUDE * np.sin(2 * np.pi * WARMUP_TONE_HZ * sample_times_s)
     wav_buffer = io.BytesIO()

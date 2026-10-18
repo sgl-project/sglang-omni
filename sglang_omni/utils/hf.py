@@ -7,17 +7,15 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import torch.nn as nn
 from huggingface_hub import hf_hub_download
-from transformers import AutoConfig, PretrainedConfig
 
-try:
-    from transformers.initialization import no_init_weights
-except ImportError:
-    from transformers.modeling_utils import no_init_weights
-
-from transformers.utils.hub import cached_file
+if TYPE_CHECKING:
+    import torch.nn as nn
+    from transformers import PretrainedConfig
+else:
+    pass
 
 _CONFIG_MODEL_TYPE_TO_ARCH = {
     "fish_qwen3_omni": "FishQwen3OmniForCausalLM",
@@ -152,6 +150,23 @@ def try_resolve_arch_from_nemo_config(
     else:
         pass
     return None
+
+
+def listed_architecture_from_raw_config(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """The first entry of the ``architectures`` list in raw ``config.json``.
+
+    For a config that lists its architectures this is the one
+    :func:`architecture_from_hf_config` reads from ``AutoConfig``, whose config
+    classes only fill in a missing list, so it needs no transformers import.
+    """
+    raw = load_raw_config(model_path, revision)
+    archs = raw.get("architectures") if raw is not None else None
+    if isinstance(archs, list):
+        return next((a for a in archs if a), None)
+    else:
+        return None
 
 
 def try_resolve_arch_from_raw_config(
@@ -317,6 +332,9 @@ def load_hf_config(
     local_files_only: bool = True,
 ) -> PretrainedConfig:
     """Load the HF config, preferring the local cache."""
+    from transformers import AutoConfig
+    from transformers.utils.hub import cached_file
+
     try:
         config_path = cached_file(
             model_path, "config.json", local_files_only=local_files_only
@@ -337,6 +355,10 @@ def instantiate_module(
     module_cls: type[nn.Module], config: PretrainedConfig
 ) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
+    try:
+        from transformers.initialization import no_init_weights
+    except ImportError:
+        from transformers.modeling_utils import no_init_weights
     with no_init_weights():
         if hasattr(module_cls, "_from_config"):
             return module_cls._from_config(

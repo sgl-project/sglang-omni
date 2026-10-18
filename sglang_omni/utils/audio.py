@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared audio utilities."""
+"""Shared audio utilities.
+
+torch and torchaudio load on first decode, so a server whose pipeline never
+handles audio does not import them.
+"""
 
 from __future__ import annotations
 
@@ -9,19 +13,19 @@ import io
 import logging
 import math
 import os
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from urllib.parse import unquote, urlparse
 
 import httpx
 import numpy as np
 import pybase64
-import torch
-import torchaudio
 import xxhash
 from numpy.typing import NDArray
-from sglang.utils import LazyImport
 
-current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 logger = logging.getLogger(__name__)
@@ -83,6 +87,7 @@ def decode_with_soundfile(
     not a general replacement for TorchCodec.
     """
     import soundfile as sf
+    import torch
 
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
     try:
@@ -94,6 +99,8 @@ def decode_with_soundfile(
 
 
 def has_operational_decoder_cause(exc: BaseException) -> bool:
+    import torch
+
     current = exc.__cause__ or exc.__context__
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -149,6 +156,8 @@ def is_invalid_audio_source(source: bytes | str) -> bool:
 def load_with_torchaudio(
     source: bytes | str, *, source_name: str
 ) -> tuple[torch.Tensor, int]:
+    import torch
+
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
     if not check_torchcodec_ready():
         return decode_with_soundfile(decoder_source, source_name=source_name)
@@ -224,7 +233,11 @@ def try_fast_wav_decode(
     else:
         pass
 
-    if current_platform.supports_torchaudio_resample():
+    from sglang_omni import platforms
+
+    if platforms.current_platform.supports_torchaudio_resample():
+        import torch
+
         resampled = cached_resample(
             torch.from_numpy(audio),
             sample_rate,
@@ -247,6 +260,8 @@ def resample_kernel(
 ) -> tuple[torch.Tensor, int]:
     # Note (Jiaxin Deng): torchaudio rebuilds this per call even though it
     # depends only on the rate pair, the options and the tensor type.
+    import torchaudio
+
     return torchaudio.functional.functional._get_sinc_resample_kernel(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         orig_freq,
         new_freq,
@@ -263,6 +278,8 @@ def cached_resample(
     new_freq: int,
     resample_kwargs: ResampleOptions | None,
 ) -> torch.Tensor:
+    import torchaudio
+
     kwargs = dict(resample_kwargs or {})
     orig_freq, new_freq = int(orig_freq), int(new_freq)
     try:
@@ -365,6 +382,8 @@ def load_audio(
             f"Unsupported {source_name} audio input: {type(source).__name__}"
         )
 
+    import torch
+
     if audio.ndim == 1:
         audio = audio.unsqueeze(0)
     else:
@@ -382,7 +401,11 @@ def load_audio(
     else:
         pass
     if sample_rate != target_sample_rate:
-        if current_platform.supports_torchaudio_resample():
+        from sglang_omni import platforms
+
+        if platforms.current_platform.supports_torchaudio_resample():
+            import torchaudio
+
             audio = torchaudio.functional.resample(
                 audio,
                 int(sample_rate),

@@ -31,9 +31,9 @@ from sglang.srt.arg_groups.model_override_base import (
 from sglang.srt.runtime_context import get_context, override_platform
 from sglang.srt.server_args import ServerArgs
 
+from sglang_omni import platforms
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
-from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vocoder
@@ -2584,7 +2584,7 @@ def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
     its own capability hook."""
     config = Qwen3TTSPipelineConfig(model_path="model")
     monkeypatch.setattr(
-        qwen3_tts_config.current_platform,
+        platforms.current_platform,
         "enable_tts_vocoder_fast_path",
         lambda: False,
         raising=False,
@@ -2599,7 +2599,7 @@ def test_qwen3_tts_config_leaves_a_measured_platform_alone(
 ) -> None:
     config = Qwen3TTSPipelineConfig(model_path="model")
     monkeypatch.setattr(
-        qwen3_tts_config.current_platform,
+        platforms.current_platform,
         "enable_tts_vocoder_fast_path",
         lambda: True,
         raising=False,
@@ -9260,7 +9260,7 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process(
     # This covers the frontend split, so pin the vocoder's platform default and
     # leave the engine stage defaults empty whatever host runs the test.
     monkeypatch.setattr(
-        qwen3_tts_config.current_platform,
+        platforms.current_platform,
         "enable_tts_vocoder_fast_path",
         lambda: True,
         raising=False,

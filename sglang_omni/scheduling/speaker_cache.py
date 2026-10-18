@@ -9,8 +9,6 @@ from threading import RLock
 
 import numpy as np
 
-from sglang_omni.scheduling.stage_cache import StageOutputCache
-
 DEFAULT_SPEAKER_CACHE_BYTES = 512 * 1024 * 1024
 _KEY_SEPARATOR = "\x1f"
 
@@ -34,6 +32,8 @@ class SpeakerArtifactCache:
         else:
             pass
         self.max_bytes = int(max_bytes)
+        from sglang_omni.scheduling.stage_cache import StageOutputCache
+
         self.cache = StageOutputCache(
             max_bytes=self.max_bytes,
             size_fn=estimate_cache_bytes,

@@ -3,8 +3,14 @@
 
 from __future__ import annotations
 
-import torch
+from typing import TYPE_CHECKING
+
 from numpy.typing import ArrayLike
+
+if TYPE_CHECKING:
+    import torch
+else:
+    pass
 
 
 def qwen3_asr_audio_token_lengths(
@@ -15,6 +21,8 @@ def qwen3_asr_audio_token_lengths(
     This mirrors the upstream audio encoder shape math: 100-frame windows emit
     13 tokens each, and the remainder passes through three stride-2 downsamples.
     """
+    import torch
+
     if not isinstance(input_lengths, torch.Tensor):
         input_lengths = torch.tensor(input_lengths)
     else:

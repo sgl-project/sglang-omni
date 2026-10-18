@@ -27,7 +27,7 @@ from sglang_omni.config.runtime import (
 from sglang_omni.config.schema import PipelineConfig, replica_instance_name
 from sglang_omni.config.topology import LogicalProcess, LogicalProcessPlan
 from sglang_omni.mps.decision import process_gpu_ids
-from sglang_omni.utils.ipc_weights import (
+from sglang_omni.utils.weight_share_env import (
     ENV_WEIGHT_SHARE,
     ENV_WEIGHT_SHARE_COMPAT,
     ENV_WEIGHT_SHARE_RUN_ID,

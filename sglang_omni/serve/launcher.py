@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import ipaddress
 import json
 import logging
 import os
@@ -42,7 +43,6 @@ import httpx
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from pydantic import BaseModel
-from sglang.srt.utils.network import NetworkAddress
 
 from sglang_omni.client import Client
 from sglang_omni.client.types import GenerateChunk
@@ -54,6 +54,7 @@ from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
+from sglang_omni.serve.audio_stack import preload_audio_stack
 from sglang_omni.serve.openai_api import ServerStatus, create_app
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -78,6 +79,17 @@ from sglang_omni.utils.gpu_memory import (
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
+
+
+def loopback_url(host: str, port: int) -> str:
+    """The http URL of host and port, an IPv6 address in brackets."""
+    host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        ipaddress.IPv6Address(host)
+    except ValueError:
+        return f"http://{host}:{port}"
+    return f"http://[{host}]:{port}"
+
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 SERVER_START_POLL_S = 0.1
@@ -620,6 +632,10 @@ async def run_server(
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
     export_server_port(port)
+    if type(pipeline_config).serves_audio:
+        preload_audio_stack(realtime=enable_realtime)
+    else:
+        pass
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -745,7 +761,7 @@ async def run_server(
             loopback_host = "::1"
         else:
             loopback_host = host
-        base_url = NetworkAddress(loopback_host, port).to_url()
+        base_url = loopback_url(loopback_host, port)
         warmup_task = asyncio.create_task(
             warm_up_server(
                 server,

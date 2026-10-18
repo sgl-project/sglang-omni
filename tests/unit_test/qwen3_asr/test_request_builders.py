@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import torchaudio
 from transformers import WhisperFeatureExtractor
 
 import sglang_omni.preprocessing.transcription as transcription
@@ -582,7 +583,7 @@ def test_qwen3_asr_request_builder_rejects_corrupt_local_audio_path(
         raise RuntimeError("invalid audio data")
 
     monkeypatch.setattr(audio_utils, "check_torchcodec_ready", lambda: True)
-    monkeypatch.setattr(audio_utils.torchaudio, "load", raise_decode_error)
+    monkeypatch.setattr(torchaudio, "load", raise_decode_error)
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=FakeTokenizer(),
         max_new_tokens=32,

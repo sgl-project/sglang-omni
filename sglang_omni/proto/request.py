@@ -7,6 +7,10 @@ from enum import Enum
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 
+# Request parameter naming the codec frames a streaming vocoder buffers before
+# its first audio chunk. The HTTP server validates it and the vocoder reads it.
+INITIAL_CODEC_CHUNK_FRAMES_PARAM = "initial_codec_chunk_frames"
+
 
 class RequestState(Enum):
     """State of a request in the pipeline."""
