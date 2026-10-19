@@ -47,8 +47,6 @@ A macOS voice input and translation app with context-aware text enhancement acro
 - [Download from the official website](https://voxt.actnow.dev/api/app/download)
 - [Voxt v1.16.1 release](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.1)
 
-The GitHub release is Voxt 1.16 for Apple Silicon on macOS 15 or later, with local models on the SGLang-Omni native runtime. The official website and Homebrew still install Voxt 1.15.
-
 - Install via Homebrew:
 
 ```bash

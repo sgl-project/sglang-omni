@@ -48,8 +48,6 @@ MacOS 语音输入与翻译工具，支持不同应用和网址文本增强。�
 - [官网下载](https://voxt.actnow.dev/api/app/download)
 - [安装包](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.1)
 
-GitHub 安装包是 Voxt 1.16，支持 macOS 15 及以上的 Apple Silicon Mac，本地模型运行在 SGLang-Omni native runtime 上。官网和 Homebrew 安装的仍是 Voxt 1.15。
-
 - 使用 Homebrew:
 
 ```bash
