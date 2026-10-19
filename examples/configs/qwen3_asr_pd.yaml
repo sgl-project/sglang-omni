@@ -1,0 +1,14 @@
+config_cls: Qwen3ASRPDPipelineConfig
+model_path: Qwen/Qwen3-ASR-1.7B
+name: qwen3-asr-pd
+stages:
+  asr:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 8
+      cuda_graph_max_bs: 8
+  asr_decode:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 16
+      cuda_graph_max_bs: 16

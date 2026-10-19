@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
 from transformers import (
@@ -27,6 +31,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.qwen3_asr.pd import Qwen3ASRPDAdapter
 from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
@@ -38,6 +43,11 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_decode_cuda_graph_bs,
+)
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -51,7 +61,6 @@ if TYPE_CHECKING:
     from sglang_omni.models.qwen3_asr.torch_mps_runner import (
         Qwen3ASRTorchMpsModelRunner,
     )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 else:
     pass
 
@@ -90,6 +99,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         pre_lm_max_batch_wait_ms: int = 0,
         enable_encoder_cuda_graph: bool = True,
         max_audio_clip_s: float | None = None,
+        pd_role: Literal["prefill", "decode"] | None = None,
+        pd_stage_name: str | None = None,
+        pd_partner_stage: str | None = None,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -104,6 +116,19 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         if pre_lm_max_batch_wait_ms < 0:
             raise ValueError(
                 f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
+            )
+        else:
+            pass
+        self.pd_role = pd_role
+        self.pd_stage_name = pd_stage_name
+        self.pd_partner_stage = pd_partner_stage
+        if pd_role is not None and (
+            pd_role not in ("prefill", "decode")
+            or not pd_stage_name
+            or (pd_role == "prefill" and not pd_partner_stage)
+        ):
+            raise ValueError(
+                "ASR PD requires an explicit role, stage and Prefill partner"
             )
         else:
             pass
@@ -278,6 +303,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
+        if self.pd_role is not None and (self.uses_torch_mps() or cfg.tp_size != 1):
+            raise ValueError("Qwen3-ASR PD requires CUDA and TP=1")
+        else:
+            pass
         if self.uses_torch_mps() and cfg.max_running_requests != 1:
             raise ValueError(
                 "Qwen3-ASR Torch MPS currently requires max_running_requests=1"
@@ -349,7 +378,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             pass
         del generation_cuda_graph_enabled
         self.log_memory_checkpoint("post_cuda_graph_capture")
-        if self.enable_encoder_cuda_graph:
+        if self.enable_encoder_cuda_graph and self.pd_role != "decode":
             from sglang_omni.models.qwen3_asr.audio_lengths import (
                 qwen3_asr_num_audio_tokens,
             )
@@ -369,7 +398,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         else:
             pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
-        if self.enable_pre_lm_encoder:
+        if self.enable_pre_lm_encoder and self.pd_role != "decode":
             # note (luojiaxuan): constructed after SGLang's generation CUDA
             # graphs so the encoder's dedicated stream never interleaves with
             # graph capture.
@@ -415,6 +444,72 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             should_wait_for_encode=self.should_wait_for_encode,
             greedy_only=self.uses_torch_mps(),
         )
+
+    def make_scheduler(
+        self,
+        *,
+        model_worker: ModelWorker,
+        tree_cache: BasePrefixCache,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+        server_args: ServerArgs,
+        model_config: ModelConfig,
+        model_runner: ModelRunner[Qwen3ASRRequestData],
+        request_builder: (
+            Callable[
+                [StagePayload],
+                Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData],
+            ]
+            | None
+        ),
+        result_adapter: Callable[[Qwen3ASRRequestData], StagePayload] | None,
+    ) -> OmniScheduler[Qwen3ASRRequestData]:
+        if self.pd_role is None:
+            return super().make_scheduler(
+                model_worker=model_worker,
+                tree_cache=tree_cache,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+                server_args=server_args,
+                model_config=model_config,
+                model_runner=model_runner,
+                request_builder=request_builder,
+                result_adapter=result_adapter,
+            )
+        else:
+            pass
+        adapter = Qwen3ASRPDAdapter(tokenizer=self.tokenizer)
+        scheduler_kwargs = dict(
+            tp_worker=model_worker,
+            tree_cache=tree_cache,
+            req_to_token_pool=req_to_token_pool,
+            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            server_args=server_args,
+            model_config=model_config,
+            model_runner=model_runner,
+            request_builder=request_builder,
+            result_adapter=result_adapter,
+            abort_callback=self.make_abort_callback(),
+            request_finished_callback=self.make_request_finished_callback(),
+        )
+        scheduler_kwargs.update(self.extra_scheduler_callbacks())
+        scheduler_kwargs.update(self.extra_scheduler_kwargs())
+        if self.pd_role == "prefill":
+            scheduler_kwargs["stream_output_builder"] = None
+            return OmniPrefillScheduler(
+                stage_name=self.pd_stage_name,
+                partner_stage=self.pd_partner_stage,
+                state_builder=adapter.build_state,
+                **scheduler_kwargs,
+            )
+        else:
+            return OmniDecodeScheduler(
+                stage_name=self.pd_stage_name,
+                state_restorer=adapter.restore_state,
+                resume_schema=adapter.schema,
+                emit_transferred_token=True,
+                **scheduler_kwargs,
+            )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
         if self.torch_mps_model_runner is None:

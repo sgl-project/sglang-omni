@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 
 def create_sglang_qwen3_asr_executor(
@@ -37,10 +38,16 @@ def create_sglang_qwen3_asr_executor(
     enable_encoder_cuda_graph: bool = True,
     max_audio_clip_s: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    pd_role: Literal["prefill", "decode"] | None = None,
+    pd_stage_name: str | None = None,
+    pd_partner_stage: str | None = None,
 ):
     from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 
     return Qwen3ASREngineBuilder(
+        pd_role=pd_role,
+        pd_stage_name=pd_stage_name,
+        pd_partner_stage=pd_partner_stage,
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         enable_async_decode=enable_async_decode,

@@ -140,4 +140,49 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         )
 
 
+def pd_stages() -> list[StageConfig]:
+    prefill = (
+        Qwen3ASRPipelineConfig.model_fields["stages"].default[0].model_copy(deep=True)
+    )
+    prefill.terminal = False
+    prefill.next = "asr_decode"
+    prefill.factory = prefill.factory.model_copy(
+        update={
+            "pd_role": "prefill",
+            "pd_stage_name": "asr",
+            "pd_partner_stage": "asr_decode",
+        }
+    )
+    prefill.engine = prefill.engine.model_copy(
+        update={"disable_radix_cache": True, "page_size": 1}
+    )
+    decode = prefill.model_copy(deep=True)
+    decode.name = "asr_decode"
+    decode.process = "asr_decode"
+    decode.gpu = 1
+    decode.next = None
+    decode.terminal = True
+    decode.factory = decode.factory.model_copy(
+        update={
+            "pd_role": "decode",
+            "pd_stage_name": "asr_decode",
+            "pd_partner_stage": None,
+            "enable_pre_lm_encoder": False,
+            "enable_encoder_cuda_graph": False,
+        }
+    )
+    return [prefill, decode]
+
+
+class Qwen3ASRPDPipelineConfig(Qwen3ASRPipelineConfig):
+    """Explicit PD for chunk-local transcription with the existing ASR pipeline."""
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "asr": Qwen3ASRStageConfig,
+        "asr_decode": Qwen3ASRStageConfig,
+    }
+    stages: list[StageConfig] = Field(default_factory=pd_stages)
+
+
 EntryClass = Qwen3ASRPipelineConfig
+Variants = {"pd": Qwen3ASRPDPipelineConfig}

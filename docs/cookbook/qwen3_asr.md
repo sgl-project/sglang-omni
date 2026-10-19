@@ -488,3 +488,13 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
   are limited to `max_native_clip_s` (1,200s) on CUDA; Torch MPS caps both
   native and whole-upload requests at 60 seconds.
 - Audio is resampled to 16 kHz before transcription.
+
+## Experimental PD transcription
+
+Use `sgl-omni serve --config examples/configs/qwen3_asr_pd.yaml` to select explicit `asr` Prefill and `asr_decode` Decode stages. This variant reuses the native audio chunking, language parsing, streaming rollback strategy, request builder, pre-LM encoder and text output callbacks. Prefill owns audio encoding; Decode does not start an encoder service or capture encoder graphs. Both processes still load the model weights.
+
+The handoff carries audio duration, language, the retained text prefix and the engine start timestamp on the same host in addition to the generic token/KV continuation. It reconstructs `Qwen3ASRRequestData` and the model's text-equivalent mRoPE state without sending waveform/features/encoder outputs. Decode owns first-token streaming, including the existing suppression of the auto-language header. This supports independent chunk requests with text-prefix rollback; native retained-KV sessions remain unsupported.
+
+The candidate requires CUDA, TP=1, page size 1 and disabled radix cache. No end-to-end GPU correctness or performance result is established. Before a benchmark, compare native and PD transcription for explicit/automatic language, Unicode and whitespace, short and chunked long audio, rollback prefixes, streaming and non-streaming, one-token termination, cancellation and recovery. Check request/KV pool reclamation and first-token/final-output ordering. Run `tests/unit_test/qwen3_asr/test_pd.py` together with the native ASR and generic PD lifecycle/stream-failure suites in the pinned runtime.
+
+For performance, keep the same audio chunking and compare equal GPU counts with identical input audio and output budgets. Measure encoder, LM Prefill and Decode separately. Short chunks can leave too little Prefill work to offset transfer and duplicated weights; PD benefit must be measured under concurrent transcription rather than inferred from audio duration.
