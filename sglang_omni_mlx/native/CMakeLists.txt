@@ -64,7 +64,7 @@ target_compile_options(qwen3_asr PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(silero_vad STATIC src/silero_vad.cpp)
 target_include_directories(silero_vad PUBLIC src)
-target_link_libraries(silero_vad PUBLIC qwen3_asr)
+target_link_libraries(silero_vad PUBLIC qwen3_asr "-framework Accelerate")
 target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(sortformer STATIC

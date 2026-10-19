@@ -225,13 +225,8 @@ std::map<std::string, int> VADService::RequestStates() const {
 
 std::vector<float> VADService::FeedSamples(const std::vector<float> &samples,
                                            StreamState &state) {
-  std::vector<float> probabilities;
   std::lock_guard<std::mutex> lock(inference_mutex_);
-  for (size_t offset = 0; offset + kChunkSamples <= samples.size();
-       offset += kChunkSamples) {
-    probabilities.push_back(vad_.Feed(samples.data() + offset, state));
-  }
-  return probabilities;
+  return vad_.FeedChunks(samples.data(), samples.size() / kChunkSamples, state);
 }
 
 std::vector<Timestamp>

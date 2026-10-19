@@ -80,7 +80,31 @@ mx::array RelativePositionalEncoding(int length, int width, mx::Dtype dtype) {
 
 SortformerModel::SortformerModel(const std::filesystem::path &model_directory)
     : config_(LoadConfig(model_directory)), features_(config_.processor),
-      weights_(LoadCheckpoint(model_directory, config_)) {}
+      weights_(LoadCheckpoint(model_directory, config_)) {
+  // Note (Jiaxin Deng): after the first feed the encoder runs in float32 on a
+  // float16 checkpoint, so its matrices are widened once here instead of on
+  // every feed; widening is exact, so the outputs are unchanged.
+  std::vector<mx::array> widened;
+  for (auto &[name, weight] : weights_) {
+    const bool is_matrix = weight.ndim() >= 2 && name.ends_with(".weight") &&
+                           (name.starts_with("fc_encoder.layers.") ||
+                            name.starts_with("tf_encoder.layers.") ||
+                            name.starts_with("sortformer_modules."));
+    if (is_matrix && weight.dtype() != mx::float32) {
+      weight = mx::astype(weight, mx::float32);
+      widened.push_back(weight);
+    } else {
+    }
+  }
+  mx::eval(widened);
+  // Note (Jiaxin Deng): a steady stream repeats one sequence length (cache +
+  // FIFO + feed), so the traced graph is reused and its elementwise ops fused.
+  compiled_predictions_ =
+      mx::compile([this](const std::vector<mx::array> &inputs) {
+        return std::vector<mx::array>{SpeakerProbabilities(Linear(
+            FastConformer(inputs[0]), "sortformer_modules.encoder_proj"))};
+      });
+}
 
 const mx::array &SortformerModel::Weight(const std::string &name) const {
   const auto found = weights_.find(name);
@@ -89,6 +113,12 @@ const mx::array &SortformerModel::Weight(const std::string &name) const {
   } else {
   }
   return found->second;
+}
+
+mx::array SortformerModel::MatrixWeight(const std::string &name,
+                                        mx::Dtype dtype) const {
+  const mx::array &weight = Weight(name);
+  return weight.dtype() == dtype ? weight : mx::astype(weight, dtype);
 }
 
 float SortformerModel::frame_duration() const {
@@ -102,10 +132,12 @@ mx::array SortformerModel::Linear(const mx::array &x,
   // Note (Jiaxin Deng): addmm with bias, matmul without, as MLXNN Linear.
   const auto bias = weights_.find(prefix + ".bias");
   if (bias != weights_.end()) {
-    return mx::addmm(bias->second, x,
-                     mx::transpose(Weight(prefix + ".weight")));
+    return mx::addmm(
+        bias->second, x,
+        mx::transpose(MatrixWeight(prefix + ".weight", x.dtype())));
   } else {
-    return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
+    return mx::matmul(
+        x, mx::transpose(MatrixWeight(prefix + ".weight", x.dtype())));
   }
 }
 
@@ -170,10 +202,19 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
       mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
       mx::matmul(q_with_bias_v, mx::transpose(p, {0, 1, 3, 2}));
-  matrix_bd = qwen3_asr::RelativeShift(matrix_bd);
-  matrix_bd = mx::slice(matrix_bd, {0, 0, 0, 0},
-                        {matrix_bd.shape(0), matrix_bd.shape(1),
-                         matrix_bd.shape(2), matrix_ac.shape(3)});
+  // Note (Jiaxin Deng): the relative shift and the slice to the key length as
+  // one strided view: row i reads positions from length - 1 - i, no copies.
+  const int query_length = matrix_bd.shape(2);
+  const int position_length = matrix_bd.shape(3);
+  matrix_bd =
+      mx::as_strided(mx::contiguous(matrix_bd),
+                     {matrix_bd.shape(0), matrix_bd.shape(1), query_length,
+                      matrix_ac.shape(3)},
+                     {static_cast<int64_t>(matrix_bd.shape(1)) * query_length *
+                          position_length,
+                      static_cast<int64_t>(query_length) * position_length,
+                      position_length - 1, 1},
+                     query_length - 1);
   mx::array scores = mx::add(matrix_ac, matrix_bd);
   scores = mx::divide(scores,
                       Scalar(std::sqrt(static_cast<float>(head_dim)), scores));
@@ -189,9 +230,11 @@ SortformerModel::ConformerConvolution(const mx::array &x,
                                       const std::string &prefix) const {
   const auto conv = [&](const mx::array &input, const std::string &name,
                         int padding, int groups) {
-    return mx::add(mx::conv1d(input, Weight(prefix + "." + name + ".weight"), 1,
-                              padding, 1, groups),
-                   Weight(prefix + "." + name + ".bias"));
+    return mx::add(
+        mx::conv1d(input,
+                   MatrixWeight(prefix + "." + name + ".weight", input.dtype()),
+                   1, padding, 1, groups),
+        Weight(prefix + "." + name + ".bias"));
   };
   mx::array h = conv(x, "pointwise_conv1", 0, 1);
   const std::vector<mx::array> halves = mx::split(h, 2, -1);
@@ -336,7 +379,7 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
 
   // Note (Jiaxin Deng): pre-encoded in the checkpoint dtype, as in Swift.
   const mx::Dtype model_dtype =
-      Weight("sortformer_modules.encoder_proj.weight").dtype();
+      Weight("fc_encoder.subsampling.linear.weight").dtype();
   mx::array chunk_embeddings = PreEncode(mx::astype(features, model_dtype));
   const int chunk_length = SubsampledLength(features.shape(2), 3);
   const int width = chunk_embeddings.shape(2);
@@ -366,9 +409,7 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   // Note (Jiaxin Deng): float32 once the state holds frames, as in Swift.
   const mx::array all_embeddings = mx::concatenate(parts, 1);
 
-  const mx::array encoded =
-      Linear(FastConformer(all_embeddings), "sortformer_modules.encoder_proj");
-  const mx::array all_predictions = SpeakerProbabilities(encoded);
+  const mx::array all_predictions = compiled_predictions_({all_embeddings})[0];
   const int speakers = all_predictions.shape(2);
   const int chunk_start = cache_length + fifo_length + left_length;
   const mx::array chunk_predictions =
@@ -379,9 +420,6 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   const mx::array fifo_predictions =
       mx::slice(all_predictions, {0, cache_length, 0},
                 {1, cache_length + fifo_length, speakers});
-  mx::eval({chunk_predictions, chunk_embeddings, cache_predictions,
-            fifo_predictions});
-
   if (cache_length > 0) {
     state.spkcache_preds = cache_predictions;
   } else {
@@ -391,13 +429,14 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   state.fifo = mx::concatenate({state.fifo, chunk_embeddings}, 1);
   state.fifo_preds =
       mx::concatenate({previous_fifo_predictions, chunk_predictions}, 1);
-  mx::eval({state.fifo, state.fifo_preds});
   state.frames_processed += chunk_length;
-
-  FeedResult result;
   const mx::array host_predictions =
       mx::reshape(mx::astype(chunk_predictions, mx::float32), {-1});
-  mx::eval(host_predictions);
+  // Note (Jiaxin Deng): one GPU sync per feed for the outputs and the state.
+  mx::eval(
+      {host_predictions, state.fifo, state.fifo_preds, state.spkcache_preds});
+
+  FeedResult result;
   const float *data = host_predictions.data<float>();
   result.probabilities.assign(data, data + host_predictions.size());
   result.frame_count = chunk_length;
