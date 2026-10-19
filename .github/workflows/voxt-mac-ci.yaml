@@ -98,7 +98,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Reserve space for missing AuK files; validated caches are reused.
+      # Keep room for a replacement while the previous artifact remains usable.
       - name: Check free disk space
         id: native-disk
         run: |
@@ -118,9 +118,9 @@ jobs:
                   if not path.is_file() or path.stat().st_size != size:
                       missing_source_bytes += size
           required = 17 + math.ceil(missing_source_bytes / 1024**3)
-          for model in ("tencent_AuK", "tencent_AuK-Flash"):
-              if not (data / "native_models" / model / "manifest.json").is_file():
-                  required += 14
+          prepared = [data / "native_models" / model for model in ("tencent_AuK", "tencent_AuK-Flash")]
+          required += 14 * sum(not directory.exists() for directory in prepared)
+          required += 14 * any(directory.exists() for directory in prepared)
           print(required)
           PY
           )
@@ -228,7 +228,13 @@ jobs:
           AUK_MODEL_DIRECTORY: ${{ env.VOXT_CI_ROOT }}/data/native_models/tencent_AuK-Flash
           MLX_ENABLE_TF32: "0"
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_auk_api.py
+          status=0
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_auk_api.py || status=1
+          AUK_MODEL_DIRECTORY="$VOXT_CI_ROOT/data/native_models/tencent_AuK" \
+            "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q \
+            sglang_omni_mlx/native/ci/test_auk_api.py::test_health_models_and_speech_formats \
+            sglang_omni_mlx/native/ci/test_auk_api.py::test_reference_cloning_duration_and_raw_instruction || status=1
+          exit "$status"
 
   voxt-unit:
     name: Voxt Omni unit tests
