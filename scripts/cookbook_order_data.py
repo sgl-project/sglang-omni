@@ -37,21 +37,25 @@ ROADMAP_ORDER = [
 # descending order. Refresh with:
 #   python3 scripts/check_cookbook_order.py --refresh-downloads
 DOWNLOADS_DESC = {
-    "cookbook/qwen3_asr.md": 1_151_241,
-    "cookbook/fun_asr.md": 158_926,
-    "cookbook/higgs_tts.md": 120_276,
-    "cookbook/moss_tts_local.md": 117_715,
-    "cookbook/nemotron_diarization.md": 98_684,
-    "cookbook/fishaudio_drama3.md": 9_620,
-    "cookbook/minimax_music3.md": 6_207,
-    "cookbook/ming_omni.md": 5_430,
-    "cookbook/nemotron_voicechat.md": 4_864,
-    "cookbook/auk.md": 2_486,
-    "cookbook/arkasr.md": 2_411,
-    "cookbook/zonos2.md": 2_359,
+    # Hugging Face download counts (descending), queried 2026-10-19.
+    "cookbook/qwen3_asr.md": 1_186_346,
+    "cookbook/fun_asr.md": 158_663,
+    "cookbook/higgs_tts.md": 120_143,
+    "cookbook/moss_tts_local.md": 117_224,
+    "cookbook/nemotron_diarization.md": 102_844,
+    "cookbook/fishaudio_drama3.md": 11_795,
+    "cookbook/minimax_music3.md": 6_234,
+    "cookbook/ming_omni.md": 5_523,
+    "cookbook/nemotron_voicechat.md": 4_942,
+    "cookbook/auk.md": 2_415,
+    "cookbook/zonos2.md": 2_364,
+    "cookbook/arkasr.md": 2_347,
     "cookbook/voxtral_tts.md": 1_589,
-    "cookbook/dots_tts.md": 755,
-    "cookbook/ming_tts.md": 319,
+    "cookbook/dots_tts.md": 767,
+    "cookbook/ming_tts.md": 312,
+    "cookbook/ming3_asr.md": 35,
+    "cookbook/ming3_audio.md": 22,
+    "cookbook/ming3_tts.md": 20,
 }
 
 # Cookbook page -> Hugging Face repo id, used by --refresh-downloads. For a
@@ -72,6 +76,9 @@ HF_REPO = {
     "cookbook/voxtral_tts.md": "mistralai/Voxtral-4B-TTS-2603",
     "cookbook/dots_tts.md": "dots-studio/dots.tts-mf",
     "cookbook/ming_tts.md": "inclusionAI/Ming-omni-tts-16.8B-A3B",
+    "cookbook/ming3_audio.md": "inclusionAI/Ming-3.0-audio-flash",
+    "cookbook/ming3_tts.md": "inclusionAI/Ming-3.0-tts-tiny",
+    "cookbook/ming3_asr.md": "inclusionAI/Ming-3.0-asr-tiny",
 }
 
 # When DOWNLOADS_DESC was last refreshed (kept in sync by --refresh-downloads).
