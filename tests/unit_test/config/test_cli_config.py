@@ -27,7 +27,7 @@ from sglang_omni.cli import app
 from sglang_omni.cli.config import config_app
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import PipelineConfig, StageConfig, stage_process_name
 from sglang_omni.config.sources import dump_user_config
 
 
@@ -317,6 +317,99 @@ class TestExplain:
         assert "model_path = 'from/the/file'" in result.stdout
         assert "yaml file" in result.stdout
         assert "[winner]" in result.stdout
+
+
+class TestReplicaGpuOverrideParity:
+    """serve and config resolve/explain refuse the same stage GPU that
+    replica_devices would silently override, whichever source wrote it."""
+
+    @pytest.fixture
+    def process(self, base_config, stage) -> str:
+        return stage_process_name(base_config.stage_named(stage))
+
+    def write_config(self, tmp_path, base_config, *, stages=None, processes=None):
+        data = {"config_cls": base_config.config_cls, "model_path": "dummy"}
+        if processes is not None:
+            data["processes"] = processes
+        else:
+            pass
+        if stages is not None:
+            data["stages"] = stages
+        else:
+            pass
+        path = tmp_path / "replica.yaml"
+        path.write_text(yaml.safe_dump(data, sort_keys=False))
+        return path
+
+    def test_serve_refuses_a_file_that_writes_both(
+        self, tmp_path, base_config, stage, process
+    ):
+        path = self.write_config(
+            tmp_path,
+            base_config,
+            stages={stage: {"gpu": 3}},
+            processes={process: {"replica_devices": [1]}},
+        )
+
+        with pytest.raises(ValueError, match="replica_devices"):
+            ConfigManager.from_file(str(path))
+
+    def test_serve_refuses_a_file_gpu_with_command_line_replicas(
+        self, tmp_path, base_config, stage, process
+    ):
+        """serve folds the file in before the command line; the file's GPU
+        must not be forgotten by the second step."""
+        path = self.write_config(tmp_path, base_config, stages={stage: {"gpu": 3}})
+        manager = ConfigManager.from_file(str(path))
+
+        with pytest.raises(ValueError, match="replica_devices"):
+            manager.merge_config([(f"processes.{process}.replica_devices", "[1]")])
+
+    def test_resolve_refuses_a_command_line_gpu(
+        self, runner, tmp_path, base_config, stage, process
+    ):
+        path = self.write_config(
+            tmp_path, base_config, processes={process: {"replica_devices": [1]}}
+        )
+
+        result = runner.invoke(
+            config_app, ["resolve", "--config", str(path), f"--{stage}.gpu", "3"]
+        )
+
+        assert result.exit_code != 0
+        output = output_of(result)
+        assert "replica_devices" in output
+        assert "Traceback" not in output
+
+    def test_explain_refuses_a_file_gpu(
+        self, runner, tmp_path, base_config, stage, process
+    ):
+        path = self.write_config(
+            tmp_path,
+            base_config,
+            stages={stage: {"gpu": 3}},
+            processes={process: {"replica_devices": [1]}},
+        )
+
+        result = runner.invoke(
+            config_app, ["explain", f"stages.{stage}.gpu", "--config", str(path)]
+        )
+
+        assert result.exit_code != 0
+        output = output_of(result)
+        assert "replica_devices" in output
+        assert "Traceback" not in output
+
+    def test_replica_devices_alone_still_resolve(
+        self, runner, tmp_path, base_config, process
+    ):
+        path = self.write_config(
+            tmp_path, base_config, processes={process: {"replica_devices": [1]}}
+        )
+
+        result = runner.invoke(config_app, ["resolve", "--config", str(path)])
+
+        assert result.exit_code == 0, output_of(result)
 
 
 class TestTensorParallelDerivation:

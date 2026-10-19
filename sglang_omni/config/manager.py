@@ -80,8 +80,16 @@ class ConfigManager:
     dynamically configure their runtime settings.
     """
 
-    def __init__(self, config: PipelineConfig | None = None):
+    def __init__(
+        self,
+        config: PipelineConfig | None = None,
+        *,
+        written_paths: frozenset[str] = frozenset(),
+    ):
         self.config = config
+        # Paths user sources already folded into config (the config file's
+        # stages: entries); later resolutions still need to know who wrote them.
+        self.written_paths = written_paths
 
     def parse_extra_args(self, args: list[str]) -> list[tuple[str, str]]:
         """Parse the CLI arguments into ordered ``(key, value)`` pairs.
@@ -139,9 +147,8 @@ class ConfigManager:
             patches = patches.merge(extra_patches)
         else:
             pass
-        resolved = ConfigResolver(self.config).resolve(patches)
-        validate_dotted_gpu_override_conflicts(
-            resolved.config, {patch.key for patch in patches.ordered()}
+        resolved = ConfigResolver(self.config).resolve(
+            patches, earlier_written_paths=self.written_paths
         )
         return resolved.config
 
@@ -185,38 +192,8 @@ class ConfigManager:
         else:
             pass
         resolved = ConfigResolver(config).resolve(patches)
-        return ConfigManager(resolved.config)
-
-
-def validate_dotted_gpu_override_conflicts(
-    config: PipelineConfig,
-    override_keys: set[str],
-) -> None:
-    """Reject stage GPU overrides shadowed by process replica placement."""
-    stage_by_name = {stage.name: stage for stage in config.stages}
-    for key in sorted(override_keys):
-        parts = key.split(".")
-        if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
-            continue
-        else:
-            pass
-
-        stage = stage_by_name.get(parts[1])
-        if stage is None:
-            continue
-        else:
-            pass
-        process_name = stage.process or stage.name
-        process_config = config.processes.get(process_name)
-        if process_config is None or process_config.replica_devices is None:
-            continue
-        else:
-            pass
-
-        raise ValueError(
-            f"{key} cannot override GPU placement for stage {stage.name!r} "
-            f"because process {process_name!r} declares replica_devices; update "
-            f"processes.{process_name}.replica_devices instead"
+        return ConfigManager(
+            resolved.config, written_paths=patches.user_written_paths()
         )
 
 

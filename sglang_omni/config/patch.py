@@ -227,6 +227,12 @@ class ConfigPatchSet:
             out[patch.key] = patch
         return out
 
+    def user_written_paths(self) -> frozenset[str]:
+        """Paths a user-facing source (file or command line) wrote."""
+        return frozenset(
+            patch.key for patch in self.patches if patch.layer > Layer.MODEL_DEFAULT
+        )
+
     # ------------------------------------------------------------------
     # checks
     # ------------------------------------------------------------------

@@ -11,7 +11,8 @@ What it deliberately does *not* do:
   themselves into patches before they get here;
 * it does not compute placement, process topology or SGLang server args —
   those are downstream consumers of the resolved value, and must not write
-  back into it.
+  back into it. It does refuse a user-written value that placement would
+  silently discard, so every entry point rejects the same inputs.
 """
 
 from __future__ import annotations
@@ -24,9 +25,15 @@ from typing import TypeGuard
 from sglang_omni.config.patch import ConfigPatch, ConfigPatchSet
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.provenance import ProvenanceMap
-from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.config.schema import PipelineConfig, stage_process_name
 
-__all__ = ["ConfigResolver", "ResolvedConfig", "ConfigDifference", "diff_configs"]
+__all__ = [
+    "ConfigResolver",
+    "ResolvedConfig",
+    "ConfigDifference",
+    "diff_configs",
+    "validate_replica_gpu_overrides",
+]
 
 
 @dataclass(frozen=True)
@@ -51,7 +58,19 @@ class ConfigResolver:
     def config_cls(self) -> type[PipelineConfig]:
         return type(self.base)
 
-    def resolve(self, patchset: ConfigPatchSet) -> ResolvedConfig:
+    def resolve(
+        self,
+        patchset: ConfigPatchSet,
+        *,
+        earlier_written_paths: frozenset[str] = frozenset(),
+    ) -> ResolvedConfig:
+        """Apply *patchset* to the baseline and validate the result.
+
+        ``earlier_written_paths`` names paths user sources wrote in an earlier
+        resolution whose result is this resolver's baseline (``serve`` folds
+        the config file in before the command line), so checks that depend on
+        who wrote a path still see them.
+        """
         patchset.require_no_conflicts()
 
         data = self.base.model_dump()
@@ -79,6 +98,9 @@ class ConfigResolver:
             pass
 
         config = self.config_cls(**data)
+        validate_replica_gpu_overrides(
+            config, patchset.user_written_paths() | earlier_written_paths
+        )
 
         # What the built config actually holds at each touched path. Not the
         # same thing as the winning patch's value: model validation may
@@ -89,6 +111,43 @@ class ConfigResolver:
             provenance.record_resolved(patch.key, safe_read(patch.path, resolved_data))
 
         return ResolvedConfig(config=config, provenance=provenance, patches=patchset)
+
+
+def validate_replica_gpu_overrides(
+    config: PipelineConfig,
+    written_paths: frozenset[str],
+) -> None:
+    """Reject user-written stage GPUs that process replica placement overrides.
+
+    ``replica_devices`` decides the GPU of every GPU stage in its process, even
+    with one replica, so a ``stages.<stage>.gpu`` a user wrote for such a stage
+    would be dropped at launch without a word.
+    """
+    stage_by_name = {stage.name: stage for stage in config.stages}
+    for path in sorted(written_paths):
+        parts = path.split(".")
+        if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
+            continue
+        else:
+            pass
+
+        stage = stage_by_name.get(parts[1])
+        if stage is None:
+            continue
+        else:
+            pass
+        process_name = stage_process_name(stage)
+        process_config = config.processes.get(process_name)
+        if process_config is None or process_config.replica_devices is None:
+            continue
+        else:
+            pass
+
+        raise ValueError(
+            f"{path} cannot override GPU placement for stage {stage.name!r} "
+            f"because process {process_name!r} declares replica_devices; update "
+            f"processes.{process_name}.replica_devices instead"
+        )
 
 
 # ----------------------------------------------------------------------
