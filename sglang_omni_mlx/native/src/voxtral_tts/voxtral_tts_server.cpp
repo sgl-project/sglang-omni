@@ -3,19 +3,26 @@
 // request fields, answering a WAV or PCM file, or 16-bit PCM streamed as it
 // is decoded, and Voxt's supervisor protocol.
 //
-//   voxtral_tts_server --model-path DIR [--model-name NAME] [--host H] [--port
-//   P] voxtral_tts_server --supervised --model-kind voxtral_tts
-//   --model-directory DIR
+//   voxtral_tts_server --model-path DIR [--model-name NAME] [--host H]
+//       [--port P] [--max-queued-requests N] [--request-timeout-s S]
+//   voxtral_tts_server --supervised --model-kind voxtral_tts
+//       --model-directory DIR [--max-queued-requests N]
+//       [--request-timeout-s S]
 //
-// Request fields: input, voice (or speaker; "default" is cheerful_female),
-// response_format (wav or pcm), stream (pcm only), max_new_tokens (audio
-// frames, 12.5 a second) and speed (1 only).
+// Request fields: input, model (the served name, when given), voice (or
+// speaker; "default" is cheerful_female), response_format (wav or pcm),
+// stream (pcm only), max_new_tokens (audio frames, 12.5 a second) and speed
+// (1 only). One request runs at a time and N more (2 by default) may wait; the
+// rest get 503. A request not done S seconds (600 by default) after it
+// arrives is cancelled, with 504 or an early end to its stream.
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -39,6 +46,7 @@ constexpr const char *kDefaultVoice = "cheerful_female";
 constexpr size_t kMaxInputCharacters = 4096;
 constexpr int kMaxAudioFrames = 4096;
 constexpr int kRequestIdHexDigits = 32;
+constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
 // Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
 // (validate_voxtral_speech_params), each counted as given by the same rule:
 // sampling fields when not null, text fields when not null or "", and the
@@ -52,6 +60,7 @@ constexpr std::array<const char *, 2> kUnsupportedCollectionFields = {
 
 struct SpeechRequest {
   std::vector<int> prompt_ids;
+  std::optional<std::string> model;
   std::string voice;
   std::string response_format;
   bool stream = false;
@@ -142,6 +151,13 @@ SpeechRequest ParseRequest(const Json &body,
   }
 
   SpeechRequest request;
+  const Json model = FieldOr(body, "model", Json());
+  if (model.is_string()) {
+    request.model = model.get<std::string>();
+  } else if (!model.is_null()) {
+    throw std::invalid_argument("model must be a string");
+  } else {
+  }
   const Json voice =
       FieldOr(body, "voice", FieldOr(body, "speaker", Json("default")));
   if (!voice.is_string()) {
@@ -236,14 +252,35 @@ void LogFailure(std::exception_ptr error) {
 
 class VoxtralTtsService : public asr_service::ServedModel {
 public:
-  explicit VoxtralTtsService(const std::filesystem::path &model_directory)
-      : model_(model_directory) {}
+  VoxtralTtsService(const std::filesystem::path &model_directory,
+                    int max_queued_requests, double request_timeout_seconds)
+      : model_(model_directory), max_queued_requests_(max_queued_requests),
+        request_timeout_(
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(request_timeout_seconds))) {}
 
   asr_service::Transcription
   Prepare(std::vector<float>, const asr_service::FormFields &) const override {
     throw std::logic_error("voxtral_tts serves no transcriptions");
   }
   bool Transcribes() const override { return false; }
+  // Note (Minyi Tang): /health counts the slots admission holds, which the
+  // worker frees only after it marks a request done; once /health shows the
+  // server idle, it admits a full queue.
+  std::map<std::string, int>
+  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+    std::lock_guard<std::mutex> lock(admission_mutex_);
+    std::map<std::string, int> states;
+    if (admitted_requests_ > 0) {
+      states["running"] = 1;
+    } else {
+    }
+    if (admitted_requests_ > 1) {
+      states["queued"] = admitted_requests_ - 1;
+    } else {
+    }
+    return states;
+  }
   void AddHandlers(mg_context *context,
                    qwen3_asr::TranscriptionWorker &worker) override {
     worker_ = &worker;
@@ -255,7 +292,7 @@ private:
     return static_cast<VoxtralTtsService *>(data)->Speak(connection);
   }
 
-  int Speak(mg_connection *connection) const {
+  int Speak(mg_connection *connection) {
     if (!omni_server::IsPost(connection)) {
       return omni_server::WriteJson(connection, 405,
                                     {{"detail", "Method Not Allowed"}});
@@ -274,7 +311,24 @@ private:
     } catch (const std::invalid_argument &error) {
       return omni_server::BadRequest(connection, error.what());
     }
+    if (request.model.has_value() && *request.model != model_name()) {
+      return omni_server::WriteJson(
+          connection, 404, {{"detail", "Unknown model: " + *request.model}});
+    } else {
+    }
+    bool admitted = false;
+    {
+      std::lock_guard<std::mutex> lock(admission_mutex_);
+      admitted = admitted_requests_ <= max_queued_requests_;
+      admitted_requests_ += admitted ? 1 : 0;
+    }
+    if (!admitted) {
+      return omni_server::WriteJson(connection, 503,
+                                    {{"detail", "The request queue is full."}});
+    } else {
+    }
 
+    const auto deadline = std::chrono::steady_clock::now() + request_timeout_;
     const std::string request_id = NewRequestId();
     const int sample_rate = model_.codec().sample_rate();
     auto channel = std::make_shared<AudioChannel>();
@@ -284,8 +338,14 @@ private:
           return Synthesize(request, *channel, cancelled);
         },
         cancel,
-        [channel](std::optional<TranscriptionResult> result,
-                  std::exception_ptr error) {
+        [this, channel](std::optional<TranscriptionResult> result,
+                        std::exception_ptr error) {
+          // Note (Minyi Tang): the slot frees before the response can end, so
+          // a client's next request is never refused for its previous one.
+          {
+            std::lock_guard<std::mutex> lock(admission_mutex_);
+            --admitted_requests_;
+          }
           std::lock_guard<std::mutex> lock(channel->mutex);
           channel->done = true;
           channel->error = error;
@@ -306,11 +366,15 @@ private:
     }
 
     std::vector<float> samples;
+    bool timed_out = false;
     std::unique_lock<std::mutex> lock(channel->mutex);
     while (true) {
-      channel->ready.wait(
-          lock, [&] { return !channel->chunks.empty() || channel->done; });
-      if (channel->chunks.empty()) {
+      if (!channel->ready.wait_until(lock, deadline, [&] {
+            return !channel->chunks.empty() || channel->done;
+          })) {
+        timed_out = true;
+        break;
+      } else if (channel->chunks.empty()) {
         break;
       } else {
       }
@@ -330,12 +394,21 @@ private:
       }
       lock.lock();
     }
-    if (channel->error) {
+    lock.unlock();
+    if (timed_out) {
+      // Note (Minyi Tang): a request still queued is dropped once the worker
+      // reaches it.
+      cancel->store(true);
+      std::cerr << "speech generation timed out\n";
+    } else if (channel->error) {
       LogFailure(channel->error);
     } else {
     }
     if (request.stream) {
       return 200;
+    } else if (timed_out) {
+      return omni_server::WriteJson(
+          connection, 504, {{"detail", "Speech generation timed out."}});
     } else if (channel->error) {
       return omni_server::WriteJson(connection, 500,
                                     {{"detail", "Speech generation failed."}});
@@ -390,16 +463,45 @@ private:
   }
 
   voxtral_tts::VoxtralTtsModel model_;
+  const int max_queued_requests_;
+  const std::chrono::steady_clock::duration request_timeout_;
+  mutable std::mutex admission_mutex_;
+  // Requests the worker holds: running, queued, or finishing.
+  int admitted_requests_ = 0;
   qwen3_asr::TranscriptionWorker *worker_ = nullptr;
 };
 
 } // namespace
 
 int main(int argc, char **argv) {
+  int max_queued_requests = 2;
+  double request_timeout_seconds = 600;
   asr_service::ServedKind kind;
   kind.model_kind = "voxtral_tts";
-  kind.load = [](const std::filesystem::path &model_directory) {
-    return std::make_unique<VoxtralTtsService>(model_directory);
+  kind.flags = {
+      {"--max-queued-requests",
+       [&](const std::string &value) {
+         max_queued_requests = std::stoi(value);
+       }},
+      {"--request-timeout-s",
+       [&](const std::string &value) {
+         request_timeout_seconds = std::stod(value);
+       }},
+  };
+  kind.check_flags = [&]() {
+    if (max_queued_requests < 0) {
+      throw std::invalid_argument("--max-queued-requests must not be negative");
+    } else if (!(request_timeout_seconds > 0 &&
+                 request_timeout_seconds <= kMaxRequestTimeoutSeconds)) {
+      throw std::invalid_argument(
+          "--request-timeout-s must be above 0 and at most " +
+          std::to_string(kMaxRequestTimeoutSeconds));
+    } else {
+    }
+  };
+  kind.load = [&](const std::filesystem::path &model_directory) {
+    return std::make_unique<VoxtralTtsService>(
+        model_directory, max_queued_requests, request_timeout_seconds);
   };
   return asr_service::Serve(argc, argv, kind);
 }

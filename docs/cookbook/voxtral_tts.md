@@ -168,7 +168,8 @@ sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
 hf download mlx-community/Voxtral-4B-TTS-2603-mlx-4bit \
   --revision f98fc91b9cb5adc7dab56102c690458276c14c6a --local-dir voxtral-4b-tts-mlx-4bit
 
-~/omni-runtime/bin/voxtral_tts_server --model-path voxtral-4b-tts-mlx-4bit --port 8000
+~/omni-runtime/bin/voxtral_tts_server --model-path voxtral-4b-tts-mlx-4bit \
+  --model-name mistralai/Voxtral-4B-TTS-2603 --port 8000
 ```
 
 The requests above work unchanged. The native server differs from the CUDA server in that:
@@ -176,7 +177,12 @@ The requests above work unchanged. The native server differs from the CUDA serve
 - `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`.
 - `max_new_tokens` is at most `4096` audio frames (12.5 per second, about 5.5 minutes).
 - An unknown `voice` returns 400 with the list of the checkpoint's 20 preset voices.
-- Errors are `{"detail": "..."}`, and requests run one at a time (`/health` shows the queue).
+- A `model` other than the `--model-name` it serves returns 404.
+- Errors are `{"detail": "..."}`.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get
+  503, and `/health` shows the queue.
+- A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in
+  the queue included, is cancelled: it returns 504, or its stream ends early.
 - Output varies between requests: the acoustic head samples flow-matching noise.
 
 Measured on an M4 MacBook Air (16 GB), warm: 3.3 s load, 0.55–0.85 s to the first streamed

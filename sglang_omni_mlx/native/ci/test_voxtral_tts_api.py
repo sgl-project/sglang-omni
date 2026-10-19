@@ -32,9 +32,15 @@ ASR_SAMPLE_RATE = 16000
 FRAME_BYTES = 1920 * 2
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
 LONG_SENTENCE = " ".join([SENTENCE] * 8)
+# Minutes of speech: no Mac generates it within REQUEST_TIMEOUT_SECONDS.
+PASSAGE = " ".join([SENTENCE] * 50)
 # Note (Minyi Tang): generation samples noise, so the audio differs on every
 # request; the transcript may miss one word without the speech being wrong.
 MAX_WORD_ERRORS = 1
+MAX_QUEUED_REQUESTS = 1
+REQUEST_TIMEOUT_SECONDS = 20
+# A cancelled generation stops within two 25-frame chunks.
+CANCEL_SECONDS = 8.0
 
 
 @pytest.fixture(scope="module")
@@ -43,6 +49,12 @@ def voxtral_server() -> Iterator[Server]:
         "voxtral_tts_server",
         "voxtral_tts",
         Path(DATA_ROOT) / "models" / VOXTRAL_REPO.replace("/", "_"),
+        (
+            "--max-queued-requests",
+            str(MAX_QUEUED_REQUESTS),
+            "--request-timeout-s",
+            str(REQUEST_TIMEOUT_SECONDS),
+        ),
     )
     yield running
     running.stop()
@@ -60,6 +72,34 @@ def speak(server: Server, body: dict) -> tuple[int, dict[str, str], bytes]:
     connection.request("POST", "/v1/audio/speech", body=json.dumps(body))
     response = connection.getresponse()
     return response.status, dict(response.getheaders()), response.read()
+
+
+def open_speech_stream(server: Server, text: str) -> socket.socket:
+    """Sends a streamed speech request; returns once its headers arrive."""
+    body = json.dumps({"input": text, "response_format": "pcm", "stream": True})
+    client = socket.create_connection(("127.0.0.1", server.port))
+    client.sendall(
+        b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n{body}".encode()
+    )
+    received = b""
+    while b"\r\n\r\n" not in received:
+        received += client.recv(65536)
+    return client
+
+
+def request_states(server: Server) -> dict[str, int]:
+    return json.loads(server.request("GET", "/health")[1])["request_states"]
+
+
+def wait_until_idle(server: Server, timeout_seconds: float = CANCEL_SECONDS) -> None:
+    started_at = time.monotonic()
+    while request_states(server):
+        assert (
+            time.monotonic() - started_at < timeout_seconds
+        ), "generation kept running after it was cancelled"
+        time.sleep(0.05)
 
 
 def transcript_words(asr_server: Server, pcm: bytes) -> list[str]:
@@ -100,7 +140,12 @@ def test_voxtral_wav_speaks_its_input(
     voxtral_server: Server, asr_server: Server
 ) -> None:
     status, headers, audio = speak(
-        voxtral_server, {"input": SENTENCE, "voice": "neutral_female"}
+        voxtral_server,
+        {
+            "input": SENTENCE,
+            "voice": "neutral_female",
+            "model": voxtral_server.ready["model_name"],
+        },
     )
     assert status == 200
     assert headers["Content-Type"] == "audio/wav"
@@ -169,30 +214,55 @@ def test_voxtral_stops_at_max_new_tokens(voxtral_server: Server) -> None:
 
 
 def test_voxtral_disconnect_stops_its_generation(voxtral_server: Server) -> None:
-    body = json.dumps(
-        {"input": LONG_SENTENCE, "response_format": "pcm", "stream": True}
-    ).encode()
-    with socket.create_connection(("127.0.0.1", voxtral_server.port)) as client:
-        client.sendall(
-            b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
-            b"Content-Type: application/json\r\n"
-            + f"Content-Length: {len(body)}\r\n\r\n".encode()
-            + body
-        )
-        received = b""
-        while not received.partition(b"\r\n\r\n")[2]:
-            received += client.recv(65536)
-        assert json.loads(voxtral_server.request("GET", "/health")[1])[
-            "request_states"
-        ] == {"running": 1}
-    closed_at = time.monotonic()
+    with open_speech_stream(voxtral_server, LONG_SENTENCE) as client:
+        assert client.recv(65536)
+        assert request_states(voxtral_server) == {"running": 1}
     # Note (Minyi Tang): the second write of audio after the close fails, and
     # a write comes every 25 frames, so generation stops within two chunks.
-    while json.loads(voxtral_server.request("GET", "/health")[1])["request_states"]:
-        assert (
-            time.monotonic() - closed_at < 8.0
-        ), "generation kept running after its client left"
-        time.sleep(0.05)
+    wait_until_idle(voxtral_server)
+
+
+def test_voxtral_refuses_requests_beyond_its_queue(voxtral_server: Server) -> None:
+    with (
+        open_speech_stream(voxtral_server, LONG_SENTENCE) as running,
+        open_speech_stream(voxtral_server, LONG_SENTENCE),
+    ):
+        assert running.recv(65536)
+        assert request_states(voxtral_server) == {
+            "running": 1,
+            "queued": MAX_QUEUED_REQUESTS,
+        }
+        status, _, body = speak(voxtral_server, {"input": "hi"})
+        assert (status, json.loads(body)) == (
+            503,
+            {"detail": "The request queue is full."},
+        )
+    # The queued request starts once the running one stops, then stops too.
+    wait_until_idle(voxtral_server, 2 * CANCEL_SECONDS)
+
+
+def test_voxtral_times_out_a_request_past_its_deadline(
+    voxtral_server: Server,
+) -> None:
+    started_at = time.monotonic()
+    status, _, body = speak(
+        voxtral_server, {"input": PASSAGE, "response_format": "pcm"}
+    )
+    assert (status, json.loads(body)) == (
+        504,
+        {"detail": "Speech generation timed out."},
+    )
+    assert time.monotonic() - started_at >= REQUEST_TIMEOUT_SECONDS
+    wait_until_idle(voxtral_server)
+
+
+def test_voxtral_rejects_another_model(voxtral_server: Server) -> None:
+    status, response = voxtral_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps({"input": "hi", "model": "tts-1"}).encode(),
+    )
+    assert (status, json.loads(response)) == (404, {"detail": "Unknown model: tts-1"})
 
 
 @pytest.mark.parametrize(
@@ -201,6 +271,7 @@ def test_voxtral_disconnect_stops_its_generation(voxtral_server: Server) -> None
         ([1], "speech request body must be a JSON object"),
         ({"input": "  "}, "input must be a non-empty string"),
         ({"input": "x" * 4097}, "input must be at most 4096 characters"),
+        ({"input": "hi", "model": 5}, "model must be a string"),
         ({"input": "hi", "voice": "nobody"}, "Unknown voice 'nobody'. "),
         ({"input": "hi", "response_format": "mp3"}, "response_format must be one of"),
         ({"input": "hi", "stream": True}, "stream=true requires response_format='pcm'"),

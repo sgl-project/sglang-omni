@@ -562,6 +562,7 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
                            HandleTranscriptions, &state);
   } else {
   }
+  model->set_model_name(arguments.model_name);
   model->AddHandlers(context, *worker);
   const double startup_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
