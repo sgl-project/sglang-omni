@@ -193,10 +193,10 @@ class FusedCode2WavTransformer(torch.nn.Module):
         batch_size, length, hidden_size = inputs_embeds.shape
         head_dim = self.transformer.layers[0].self_attn.head_dim
         sliding_window = self.transformer.config.sliding_window
-        frame_offsets = torch.arange(length, device=inputs_embeds.device)
         if first_decode and length <= sliding_window:
             window_mask = None
         elif first_decode:
+            frame_offsets = torch.arange(length, device=inputs_embeds.device)
             distances = frame_offsets[:, None] - frame_offsets[None, :]
             window_mask = (distances >= 0) & (distances < sliding_window)
         elif is_paged_attention:
@@ -205,6 +205,7 @@ class FusedCode2WavTransformer(torch.nn.Module):
             window_lengths = addresses.window_lengths.to(torch.int32)
         else:
             # note (ratish): window rows run in position order, a row's new frames last.
+            frame_offsets = torch.arange(length, device=inputs_embeds.device)
             query_offsets = (addresses.window_lengths - length)[:, None] + frame_offsets
             distances = query_offsets[:, :, None] - torch.arange(
                 pool.ring_frames, device=inputs_embeds.device
