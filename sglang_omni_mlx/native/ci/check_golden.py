@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypedDict
 
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
@@ -26,6 +27,7 @@ import vad_golden
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
+METRIC_NAMES = ("wer_en", "cer_zh", "mer_mixed")
 QUALITY_GROUPS = {
     "wer_en": lambda clip: clip["lang"] == "en"
     and clip["stratum"] not in ("silence", "noise"),
@@ -35,6 +37,20 @@ QUALITY_GROUPS = {
 # MOSS-Transcribe-Diarize tags: timestamps, speaker labels and acoustic events,
 # which Voxt's plain-text rendering drops before the text is shown.
 MOSS_TAG = re.compile(r"\[\d+(?:[.,]\d+)?\]|\[S\d+\]|\[[a-z][a-z0-9 _-]{0,31}\]")
+
+
+class ImportedClip(TypedDict):
+    text: str
+    language: str
+    generated_token_count: int
+    finish_reason: str
+
+
+class ImportedOutputs(TypedDict):
+    model: str
+    device: str
+    metrics: dict[str, float]
+    clips: dict[str, ImportedClip]
 
 
 def tokens(text: str, lang: str) -> list[str]:
@@ -137,6 +153,88 @@ def write_golden(path: Path, golden: dict) -> None:
     path.write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n")
 
 
+def validate_imported_outputs(
+    raw_outputs: object, expected_model: str
+) -> ImportedOutputs:
+    """Validate and normalize the untrusted output artifact from a Mac runner."""
+    if not isinstance(raw_outputs, dict):
+        raise ValueError("imported outputs must be a JSON object")
+
+    model = raw_outputs.get("model")
+    if not isinstance(model, str) or model != expected_model:
+        raise ValueError(f"imported outputs model must be {expected_model}")
+    device = raw_outputs.get("device")
+    if not isinstance(device, str) or not device.strip():
+        raise ValueError("imported outputs device must be a non-empty string")
+
+    raw_metrics = raw_outputs.get("metrics")
+    if not isinstance(raw_metrics, dict) or set(raw_metrics) != set(METRIC_NAMES):
+        raise ValueError(f"imported outputs metrics must be {METRIC_NAMES}")
+    metrics: dict[str, float] = {}
+    for metric_name in METRIC_NAMES:
+        metric_value = raw_metrics[metric_name]
+        if isinstance(metric_value, bool) or not isinstance(metric_value, (int, float)):
+            raise ValueError(f"imported outputs metric {metric_name} must be finite")
+        try:
+            normalized_metric_value = float(metric_value)
+        except OverflowError as error:
+            raise ValueError(
+                f"imported outputs metric {metric_name} must be finite"
+            ) from error
+        if not math.isfinite(normalized_metric_value):
+            raise ValueError(f"imported outputs metric {metric_name} must be finite")
+        metrics[metric_name] = normalized_metric_value
+
+    raw_clips = raw_outputs.get("clips")
+    if not isinstance(raw_clips, dict) or not raw_clips:
+        raise ValueError("imported outputs clips must be a non-empty object")
+    clips: dict[str, ImportedClip] = {}
+    for clip_id, raw_clip in raw_clips.items():
+        if not isinstance(clip_id, str) or not clip_id:
+            raise ValueError("imported outputs clip IDs must be non-empty strings")
+        if not isinstance(raw_clip, dict):
+            raise ValueError(f"imported outputs clip {clip_id} must be an object")
+        if set(raw_clip) != set(COMPARED_FIELDS):
+            raise ValueError(
+                f"imported outputs clip {clip_id} fields must be {COMPARED_FIELDS}"
+            )
+        text = raw_clip.get("text")
+        language = raw_clip.get("language")
+        generated_token_count = raw_clip.get("generated_token_count")
+        finish_reason = raw_clip.get("finish_reason")
+        if not isinstance(text, str):
+            raise ValueError(f"imported outputs clip {clip_id} text must be a string")
+        if not isinstance(language, str) or not language.strip():
+            raise ValueError(
+                f"imported outputs clip {clip_id} language must be a non-empty string"
+            )
+        if (
+            isinstance(generated_token_count, bool)
+            or not isinstance(generated_token_count, int)
+            or generated_token_count < 0
+        ):
+            raise ValueError(
+                f"imported outputs clip {clip_id} generated_token_count must be a non-negative integer"
+            )
+        if not isinstance(finish_reason, str) or not finish_reason.strip():
+            raise ValueError(
+                f"imported outputs clip {clip_id} finish_reason must be a non-empty string"
+            )
+        clips[clip_id] = {
+            "text": text,
+            "language": language,
+            "generated_token_count": generated_token_count,
+            "finish_reason": finish_reason,
+        }
+
+    return {
+        "model": model,
+        "device": device,
+        "metrics": metrics,
+        "clips": clips,
+    }
+
+
 def report(lines: list[str], failures: list[str]) -> None:
     text = "\n".join(lines + [f"\n- {failure}" for failure in failures[:10]]) + "\n"
     print(text)
@@ -225,11 +323,12 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
 
     golden = json.loads(arguments.golden.read_text())
     if arguments.import_path:
-        outputs = json.loads(arguments.import_path.read_text())
-        if outputs["model"] != golden["model"]:
-            raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
-        else:
-            pass
+        try:
+            outputs = validate_imported_outputs(
+                json.loads(arguments.import_path.read_text()), golden["model"]
+            )
+        except ValueError as error:
+            raise SystemExit(f"invalid imported outputs: {error}") from error
         golden["devices"][outputs["device"]] = {
             "metrics": outputs["metrics"],
             "clips": outputs["clips"],

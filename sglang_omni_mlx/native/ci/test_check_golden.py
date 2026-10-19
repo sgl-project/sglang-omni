@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import check_golden
+import pytest
 
 CLIP = {
     "text": "hello",
@@ -72,3 +73,73 @@ def test_a_pending_baseline_reports_no_delta() -> None:
     lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
     assert failures == []
     assert "| wer_en | pending | 3.00% | n/a |" in lines
+
+
+def test_imported_outputs_are_normalized() -> None:
+    imported_outputs = check_golden.validate_imported_outputs(
+        {
+            "model": "m",
+            "device": "Apple M5",
+            "metrics": METRICS,
+            "clips": {"c0": CLIP},
+        },
+        "m",
+    )
+    assert imported_outputs == {
+        "model": "m",
+        "device": "Apple M5",
+        "metrics": METRICS,
+        "clips": {"c0": CLIP},
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("device", "", "device must be a non-empty string"),
+        ("metrics", {"wer_en": 0.1}, "metrics must be"),
+        ("clips", {}, "clips must be a non-empty object"),
+    ],
+)
+def test_imported_outputs_reject_invalid_top_level_fields(
+    field: str,
+    value: str | dict[str, float] | dict[str, dict[str, str | int]],
+    message: str,
+) -> None:
+    imported_outputs = {
+        "model": "m",
+        "device": "Apple M5",
+        "metrics": METRICS,
+        "clips": {"c0": CLIP},
+    }
+    imported_outputs[field] = value
+    with pytest.raises(ValueError, match=message):
+        check_golden.validate_imported_outputs(imported_outputs, "m")
+
+
+def test_imported_outputs_reject_invalid_clip_fields() -> None:
+    invalid_clip = {**CLIP, "generated_token_count": -1}
+    with pytest.raises(ValueError, match="generated_token_count"):
+        check_golden.validate_imported_outputs(
+            {
+                "model": "m",
+                "device": "Apple M5",
+                "metrics": METRICS,
+                "clips": {"c0": invalid_clip},
+            },
+            "m",
+        )
+
+
+def test_imported_outputs_reject_unknown_clip_fields() -> None:
+    invalid_clip = {**CLIP, "unexpected": "value"}
+    with pytest.raises(ValueError, match="fields must be"):
+        check_golden.validate_imported_outputs(
+            {
+                "model": "m",
+                "device": "Apple M5",
+                "metrics": METRICS,
+                "clips": {"c0": invalid_clip},
+            },
+            "m",
+        )
