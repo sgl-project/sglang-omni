@@ -46,7 +46,9 @@ MacOS 语音输入与翻译工具，支持不同应用和网址文本增强。�
 
 - [官网](https://voxt.actnow.dev)
 - [官网下载](https://voxt.actnow.dev/api/app/download)
-- [安装包](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.0)
+- [安装包](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.1)
+
+GitHub 安装包是 Voxt 1.16，支持 macOS 15 及以上的 Apple Silicon Mac，本地模型运行在 SGLang-Omni native runtime 上。官网和 Homebrew 安装的仍是 Voxt 1.15。
 
 - 使用 Homebrew:
 
@@ -66,8 +68,8 @@ Apache 2.0. See [LICENSE](../LICENSE).
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
 [github-issues-link]: https://github.com/sgl-project/sglang-omni/issues/new/choose
-[github-release-link]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.0
-[macos-version-link]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.0
+[github-release-link]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.1
+[macos-version-link]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.1
 [license-link]: ../LICENSE
 [github-release-shield]: https://img.shields.io/github/v/release/sgl-project/sglang-omni?filter=voxt-v*&label=release&labelColor=000000&color=3fb950&style=flat-square&logo=github&logoColor=white
 [macos-version-shield]: https://img.shields.io/badge/macOS-15.0%2B-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
