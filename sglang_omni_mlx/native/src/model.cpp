@@ -106,7 +106,12 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
     padded_chunks.push_back(
         mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
   }
-  mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
+  // Note (Jiaxin Deng): the encoder runs in the weights' dtype, as the
+  // checkpoint's reference does; a float32 mel would promote every layer.
+  const mx::Dtype dtype =
+      checkpoint_.Weight("audio_tower.conv2d1.weight").dtype();
+  mx::array x =
+      mx::astype(mx::expand_dims(mx::stack(padded_chunks), -1), dtype);
   x = Gelu(Conv2d(x, "audio_tower.conv2d1"));
   x = Gelu(Conv2d(x, "audio_tower.conv2d2"));
   x = Gelu(Conv2d(x, "audio_tower.conv2d3"));
@@ -118,8 +123,9 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
       mx::reshape(mx::transpose(x, {0, 2, 3, 1}),
                   {chunk_count, conv_frames, channels * frequency_bins}),
       "audio_tower.conv_out");
-  x = mx::add(
-      x, mx::expand_dims(SinusoidalPositions(conv_frames, audio_.d_model), 0));
+  const mx::array positions =
+      mx::astype(SinusoidalPositions(conv_frames, audio_.d_model), dtype);
+  x = mx::add(x, mx::expand_dims(positions, 0));
 
   std::vector<int> credited_lengths;
   for (const int length : chunk_lengths) {

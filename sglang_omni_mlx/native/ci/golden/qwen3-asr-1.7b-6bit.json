@@ -20,9 +20,9 @@
  "devices": {
   "Apple M5": {
    "metrics": {
-    "wer_en": 0.02147,
-    "cer_zh": 0.04971,
-    "mer_mixed": 0.12511
+    "wer_en": 0.0213,
+    "cer_zh": 0.05293,
+    "mer_mixed": 0.11825
    },
    "clips": {
     "0000_en_short": {
@@ -224,7 +224,7 @@
      "finish_reason": "stop"
     },
     "0033_en_short": {
-     "text": "And thee won't go. Why should I?",
+     "text": "And thee won't go? Why should I?",
      "language": "English",
      "generated_token_count": 10,
      "finish_reason": "stop"
@@ -554,7 +554,7 @@
      "finish_reason": "stop"
     },
     "0088_en_mid": {
-     "text": "Sylvia was the adoration of France, and her talent was the real support of all the comedies which the greatest authors wrote for her, especially of the plays of Marivaux. For without her, his comedies would never have gone to posterity.",
+     "text": "Sylvia was the adoration of France, and her talent was the real support of all the comedies which the greatest authors wrote for her, especially of the plays of Marivaux, for without her, his comedies would never have gone to posterity.",
      "language": "English",
      "generated_token_count": 54,
      "finish_reason": "stop"
@@ -680,7 +680,7 @@
      "finish_reason": "stop"
     },
     "0109_en_mid": {
-     "text": "Well, you know, Rady, women like wicked fellows. It is contrast, I suppose, but they do, and I'm sure, from what Brackton has said to me, I know him intimately, that Dorcas likes him, and I can't conceive why they are not married.",
+     "text": "Well, you know, Rady, women like wicked fellows. It is contrast, I suppose, but they do, and I'm sure, from what Bracton has said to me, I know him intimately, that Dorcas likes him, and I can't conceive why they are not married.",
      "language": "English",
      "generated_token_count": 61,
      "finish_reason": "stop"
@@ -692,7 +692,7 @@
      "finish_reason": "stop"
     },
     "0111_en_mid": {
-     "text": "Oh, to shoot my soul's full meaning into future years, that they should lend it utterance and salute love that endures from life that disappears.",
+     "text": "O, to shoot my soul's full meaning into future years, that they should lend it utterance and salute love that endures from life that disappears.",
      "language": "English",
      "generated_token_count": 31,
      "finish_reason": "stop"
@@ -746,9 +746,9 @@
      "finish_reason": "stop"
     },
     "0120_en_mid": {
-     "text": "The painter who says my grinder, the notary who says my skip the gutter, the hairdresser who says my mealy back, the cobbler who says my cub, talks slang.",
+     "text": "The painter who says \"my grinder,\" the notary who says \"my skip the gutter,\" the hairdresser who says \"my mealy back,\" the cobbler who says \"my cub,\" talks slang.",
      "language": "English",
-     "generated_token_count": 40,
+     "generated_token_count": 44,
      "finish_reason": "stop"
     },
     "0121_en_mid": {
@@ -1382,7 +1382,7 @@
      "finish_reason": "stop"
     },
     "0226_zh_mid": {
-     "text": "Panomoy 是一种在夏天尤为流行的简单晚餐，面包搭配橄榄油、番茄，手上任何佐料都可以加入，比如奶酪、金枪鱼等。",
+     "text": "Panomoy 是一种在夏天尤为流行的简单晚餐：面包搭配橄榄油、番茄，手上任何佐料都可以加入，比如奶酪、金枪鱼等。",
      "language": "English",
      "generated_token_count": 35,
      "finish_reason": "stop"
@@ -1574,9 +1574,9 @@
      "finish_reason": "stop"
     },
     "0258_zh_short": {
-     "text": "因为我是以前，我从以前开始就比较喜欢看美剧，然后听一些。",
+     "text": "Because I was before, I started from before, I was more like watching American dramas, and then listening to some.",
      "language": "English",
-     "generated_token_count": 19,
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0259_zh_short": {
@@ -1588,7 +1588,7 @@
     "0260_zh_short": {
      "text": "你们专业的人是不是平时学的都是一些什么呃？",
      "language": "English",
-     "generated_token_count": 12,
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0261_zh_short": {
@@ -1598,9 +1598,9 @@
      "finish_reason": "stop"
     },
     "0262_zh_short": {
-     "text": "但是对我来说，我当初选不选择在。",
+     "text": "但是，对我来说，我当初选不选择在。",
      "language": "English",
-     "generated_token_count": 10,
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0263_zh_short": {
@@ -1616,13 +1616,13 @@
      "finish_reason": "stop"
     },
     "0265_zh_short": {
-     "text": "所以就回，还是选择回大陆找。不过这学期适应多了。",
+     "text": "所以，就回还是选择回大陆找。不过，这学期适应多了。",
      "language": "English",
-     "generated_token_count": 16,
+     "generated_token_count": 17,
      "finish_reason": "stop"
     },
     "0266_zh_short": {
-     "text": "我是被我是被足球砸到。我没有踢过足球。",
+     "text": "我是被我是被足球砸到，我没有踢过足球。",
      "language": "English",
      "generated_token_count": 13,
      "finish_reason": "stop"
@@ -1706,9 +1706,9 @@
      "finish_reason": "stop"
     },
     "0280_mixed": {
-     "text": "那你现在会不会去 gym 打那个壁球？",
+     "text": "那你现在会不会去Dream打那个壁球？",
      "language": "English",
-     "generated_token_count": 11,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0281_mixed": {
@@ -1790,9 +1790,9 @@
      "finish_reason": "stop"
     },
     "0294_mixed": {
-     "text": "个人的 personalities，还有那个。",
+     "text": "个人的personalities，还有那个。",
      "language": "English",
-     "generated_token_count": 7,
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0295_mixed": {
@@ -1850,7 +1850,7 @@
      "finish_reason": "stop"
     },
     "0304_mixed": {
-     "text": "They之所以不用阿里配的原因，就是因为啊，他们觉得阿里配很轻易的就能。",
+     "text": "他们之所以不用阿里配的原因，就是因为啊，他们觉得阿里配很轻易的就能。",
      "language": "English",
      "generated_token_count": 19,
      "finish_reason": "stop"
@@ -1892,7 +1892,7 @@
      "finish_reason": "stop"
     },
     "0311_mixed": {
-     "text": "认真的看那个呃协议条款，就是你要，他其实是要先拿到你的consent，然后才就是说你同不同意我们去collect你的这些data。",
+     "text": "认真的看那个呃协议条款，就是你要，他其实是要先拿到你的 consent，然后才就是说你同不同意我们去 collect 你的这些 data。",
      "language": "English",
      "generated_token_count": 34,
      "finish_reason": "stop"
@@ -1994,7 +1994,7 @@
      "finish_reason": "stop"
     },
     "0328_mixed": {
-     "text": "正装，然后去拍 portrait，拍个人的，还有几。",
+     "text": "正装，然后去拍portrait，拍个人的，还有几。",
      "language": "English",
      "generated_token_count": 15,
      "finish_reason": "stop"
@@ -2012,9 +2012,9 @@
      "finish_reason": "stop"
     },
     "0331_mixed": {
-     "text": "对，反正我们就只能做一些这种比较independent的东西。",
+     "text": "对，反正我们就只能做一些这种比较Instagram的东西。",
      "language": "English",
-     "generated_token_count": 12,
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0332_mixed": {
@@ -2030,7 +2030,7 @@
      "finish_reason": "stop"
     },
     "0334_mixed": {
-     "text": "Because GPA is not a hard condition.",
+     "text": "Because GPA不是一个硬性条件嘛。",
      "language": "English",
      "generated_token_count": 8,
      "finish_reason": "stop"
@@ -2066,9 +2066,9 @@
      "finish_reason": "stop"
     },
     "0340_mixed": {
-     "text": "第二个呢，它的测试也很很复杂，就是说你在测试的时候，你只能 simulate 这个 scenario。",
+     "text": "第二个呢，它的测试也很很复杂，就是说，你在测试的时候，你只能 simulate 这个 scenario。",
      "language": "English",
-     "generated_token_count": 23,
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0341_mixed": {
@@ -2180,9 +2180,9 @@
      "finish_reason": "stop"
     },
     "0359_en_long": {
-     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture, and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates, images and expectations of their usual corollates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, every one would agree that it has a broad measure of truth, though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
+     "text": "The analysis of knowledge will occupy us until the end of the thirteenth lecture, and is the most difficult part of our whole enterprise. What is called perception differs from sensation by the fact that the sensational ingredients bring up habitual associates, images and expectations of their usual correlates, all of which are subjectively indistinguishable from the sensation. Whether or not this principle is liable to exceptions, every one would agree that it has a broad measure of truth, though the word exactly might seem an overstatement, and it might seem more correct to say that ideas approximately represent impressions. And what sort of evidence is logically possible? There is no logical impossibility in the hypothesis that the world sprang into being five minutes ago, exactly as it then was, with a population that remembered a wholly unreal past.",
      "language": "English",
-     "generated_token_count": 162,
+     "generated_token_count": 160,
      "finish_reason": "stop"
     },
     "0360_zh_long": {
@@ -2246,7 +2246,7 @@
      "finish_reason": "stop"
     },
     "0370_zh_long": {
-     "text": "这被称为化学物质的 pH 值。你可以用红甘蓝汁制作指示剂。二十世纪的研究表明，基因变异有有两种库：显性和隐性。人们自古以来就知道金银铜等基本化学元素，因为这些元素都能以自然形态在自然界中发现，并且比较容易使用原始工具进行开采。文明一词来自拉丁语 civilius，意为公民的，与拉丁语 civis，意为公民及 civitas，意为城市和城邦都有关。这也以某种方式定位了社会的规模。它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理，有了深根签证，你就不必分别向每个深根成员国申请签证，从而节省了时间、金钱和手续。",
+     "text": "这被称为化学物质的 pH 值。你可以用红甘蓝汁制作指示剂。二十世纪的研究表明，基因变异有有两种库：显性和隐性。人们自古以来就知道金银铜等基本化学元素，因为这些元素都能以自然形态在自然界中发现，并且比较容易使用原始工具进行开采。文明一词来自拉丁语 civilius，意为公民的，与拉丁语 civis，意为公民及 civitas，意为城市和城邦都有关。这也以某种方式定位了社会的规模。他让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理，有了深根签证，你就不必分别向每个深根成员国申请签证，从而节省了时间、金钱和手续。",
      "language": "English",
      "generated_token_count": 162,
      "finish_reason": "stop"

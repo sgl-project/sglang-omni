@@ -388,21 +388,20 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   const mx::array embeddings = mx::expand_dims(mx::concatenate(pieces, 0), 0);
   mx::eval(embeddings);
 
-  // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
-  // prefill, so its forward pass also gives the first logits.
+  // Note (Jiaxin Deng): the last prefill chunk also gives the first logits,
+  // so the prompt costs no extra one-token pass.
   std::vector<KVCache> caches = model_.decoder().NewCaches();
   int processed = 0;
-  while (prompt_length - processed > 1) {
+  while (prompt_length - processed > kPrefillStepTokens) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
     } else {
     }
-    const int step =
-        std::min(kPrefillStepTokens, prompt_length - processed - 1);
     mx::eval(model_.decoder().Forward(
-        mx::slice(embeddings, {0, processed, 0}, {1, processed + step, hidden}),
+        mx::slice(embeddings, {0, processed, 0},
+                  {1, processed + kPrefillStepTokens, hidden}),
         caches));
-    processed += step;
+    processed += kPrefillStepTokens;
   }
   mx::array next_token =
       mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
