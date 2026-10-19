@@ -104,3 +104,11 @@ repos:
         language: system
         types: [markdown]
         files: ^docs/
+      # Check only. The Cookbook sidebar must follow PR #2876: the #1081
+      # Focus -> Supporting models first, then the remaining entries sorted by
+      # Hugging Face downloads. Wrong order fails CI.
+      - id: cookbook-order
+        name: cookbook sidebar order (roadmap #1081 + HF downloads)
+        entry: python3 scripts/check_cookbook_order.py
+        language: system
+        files: ^docs/index\.rst$
