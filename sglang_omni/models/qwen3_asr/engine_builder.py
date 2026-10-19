@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
+from sglang.srt.environ import envs
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
@@ -18,7 +19,11 @@ from transformers import (
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
+from sglang_omni.models.qwen3_asr import (
+    metadata_glue,
+    mrope_fast_path,
+    request_builders,
+)
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
     qwen3_asr_max_output_tokens,
@@ -58,10 +63,14 @@ else:
 logger = logging.getLogger(__name__)
 
 
+QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
+
+
 class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
+    supports_full_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -138,6 +147,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.feature_extractor: WhisperFeatureExtractor | None = None
         self.context_length = 0
+        self.server_args_overrides = {}
         self.device: str | None = None
         self.model_path: str | None = None
         self.audio_encoder_service: Qwen3ASRPreLMEncoderService | None = None
@@ -169,6 +179,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         return self.device is not None and torch.device(self.device).type == "mps"
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+
         if self.uses_torch_mps():
             # Note (yexiaodong): MPS has no CUDA graph or Triton lifecycle, and
             # the audio embedding sidecar makes split prefill unsafe initially.
@@ -204,6 +215,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        if current_platform.is_cuda():
+            # note (Zhuofeng Li): full capture removes per-layer attention dispatch.
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.FULL
+            defaults["cuda_graph_config"] = {
+                "prefill": {"full_prefill_max_req": QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS}
+            }
+        else:
+            pass
         # ROCm 7.2's AITER batch-prefill specialization is inaccurate for the
         # Qwen3-ASR attention shape on gfx950. Keep decode on the selected
         # backend, but use Triton for prefill until the affected stack is fixed.
@@ -254,6 +273,22 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         server_args: ServerArgs,
     ) -> None:
         del device, gpu_id, server_args
+        if current_platform.is_cuda():
+            # note (Zhuofeng Li): host-fed FlashInfer plans cannot be replayed as metadata graphs.
+            runner = model_worker.model_runner
+            if (
+                runner.prefill_attention_backend_str
+                == runner.decode_attention_backend_str
+                == "fa3"
+            ):
+                if envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get():
+                    metadata_glue.apply_thread_local_glue_capture()
+                else:
+                    pass
+            else:
+                envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.set(False)
+        else:
+            pass
         if self.uses_torch_mps():
             from sglang_omni.models.qwen3_asr.torch_mps_runner import (
                 install_torch_mps_language_model,
@@ -326,6 +361,31 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             # Note (yexiaodong): Typed pipeline engine defaults are merged after
             # the backend profile and otherwise re-enable Torch compilation.
             overrides["enable_torch_compile"] = False
+        else:
+            pass
+
+        if current_platform.is_cuda():
+            graph_config = overrides.get("cuda_graph_config", {})
+            prefill_config = graph_config.get("prefill", {})
+            overrides["cuda_graph_config"] = {
+                **graph_config,
+                "prefill": {
+                    "full_prefill_max_req": QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS,
+                    **prefill_config,
+                },
+            }
+        else:
+            pass
+
+        if current_platform.is_cuda() and not overrides.get(
+            "disable_cuda_graph", False
+        ):
+            max_decode_rows = int(overrides["cuda_graph_max_bs"])
+            if "cuda_graph_bs" not in self.server_args_overrides:
+                # note (Zhuofeng Li): exact-size replay avoids resetting padded slots.
+                overrides["cuda_graph_bs"] = list(range(1, max_decode_rows + 1))
+            else:
+                pass
         else:
             pass
 
