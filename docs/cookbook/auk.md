@@ -15,6 +15,12 @@ The released checkpoints use:
 | [`tencent/AuK`](https://huggingface.co/tencent/AuK) | Euler, NFE=32, CFG=2.0, sway=-1.0 |
 | [`tencent/AuK-Flash`](https://huggingface.co/tencent/AuK-Flash) | Released four-step time grid, CFG=0. Factory `nfe` / `cfg_strength` / `sway_sampling_coef` are ignored |
 
+Both checkpoints use Qwen2.5-Omni-3B weights under the
+[Qwen Research License](https://huggingface.co/Qwen/Qwen2.5-Omni-3B/blob/f75b40e3da2003cdd6e1829b1f420ca70797c34e/LICENSE):
+research and evaluation only; commercial use requires a separate license.
+The source-code licenses do not grant commercial rights to those weights.
+Built with Qwen.
+
 ## Prerequisites
 
 Follow [Installation](../get_started/installation.md), then run from the repository root:
@@ -45,15 +51,22 @@ MLX_ENABLE_TF32=0 build/auk/bin/auk_server \
 ```
 
 Use the AuK checkpoint instead for the base model. Preparation reads the
-official safetensors and records their hashes in the output manifest. Python
-is needed for preparation; the server itself is a C++ executable.
+official safetensors and records their hashes in the output manifest. It uses
+the MLX version pinned in the native build's `scripts/build-tools.lock`.
+`--reuse` keeps valid artifacts and rebuilds stale ones before replacing them.
+For this local cache, matching file sizes and modification times reuse recorded
+hashes; changed files are rehashed. The artifact includes the weight licenses
+and repackaging notice. Python is needed for preparation; the server itself
+is a C++ executable.
 
 The server supports `/v1/audio/speech` and `/generate`, with WAV or PCM output.
 Reference audio uses a `data:audio/wav;base64,` URI containing mono PCM16 or
 float32 WAV. It accepts one request at a time and returns 429 while busy.
 `--max-seconds` sets the duration cap, up to 30 seconds.
 `--cache-limit-gb` caps MLX's reusable buffer cache in GiB (default: 1);
-set it to 0 to disable caching. It does not cap total model memory.
+set it to 0 to disable caching. It applies during loading and synthesis and
+does not cap total model memory. The worker clears it after each completed
+or cancelled request.
 
 The speech-generation example below works with either server. For cloning or
 editing on the native server, embed the WAV in `ref_audio` instead of using

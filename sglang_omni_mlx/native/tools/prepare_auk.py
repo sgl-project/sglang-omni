@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import shutil
 import tempfile
 from importlib.metadata import version
@@ -20,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 
 WEIGHT_PREFIXES = ("ema_model.", "module.", "model.", "net.")
 CONDITIONER_PREFIXES = ("thinker.model.", "thinker.audio_tower.")
+ARTIFACT_FORMAT_VERSION = 3
 FLASH_TIME_GRID = [
     0.0,
     0.07612049579620361,
@@ -32,6 +34,7 @@ FLASH_TIME_GRID = [
 class FileDigest(TypedDict):
     path: str
     size: int
+    mtime_ns: int
     sha256: str
 
 
@@ -47,16 +50,82 @@ class ArtifactManifest(TypedDict):
     outputs: list[FileDigest]
 
 
-def file_digest(path: Path, directory: Path) -> FileDigest:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
+class StaleArtifact(ValueError):
+    """A prepared artifact no longer matches its inputs or recorded outputs."""
+
+
+def pinned_mlx_version() -> str:
+    lock = Path(__file__).resolve().parents[1] / "scripts/build-tools.lock"
+    pins = [
+        line.removeprefix("mlx==")
+        for line in lock.read_text().splitlines()
+        if line.startswith("mlx==")
+    ]
+    if len(pins) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pins[0]):
+        raise ValueError(f"Expected one exact MLX pin in {lock}")
+    else:
+        return pins[0]
+
+
+def file_digest(path: Path, directory: Path, previous: object = None) -> FileDigest:
+    relative_path = path.relative_to(directory).as_posix()
+    status = path.stat()
+    if (
+        isinstance(previous, dict)
+        and previous.get("path") == relative_path
+        and previous.get("size") == status.st_size
+        and previous.get("mtime_ns") == status.st_mtime_ns
+        and isinstance(previous.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", previous["sha256"])
+    ):
+        checksum = previous["sha256"]
+    else:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(block)
+        checksum = digest.hexdigest()
     return {
-        "path": path.relative_to(directory).as_posix(),
-        "size": path.stat().st_size,
-        "sha256": digest.hexdigest(),
+        "path": relative_path,
+        "size": status.st_size,
+        "mtime_ns": status.st_mtime_ns,
+        "sha256": checksum,
     }
+
+
+def file_digests(
+    paths: list[Path], directory: Path, previous: object = None
+) -> list[FileDigest]:
+    recorded = (
+        {
+            digest["path"]: digest
+            for digest in previous
+            if isinstance(digest, dict) and isinstance(digest.get("path"), str)
+        }
+        if isinstance(previous, list)
+        else {}
+    )
+    return [
+        file_digest(
+            path, directory, recorded.get(path.relative_to(directory).as_posix())
+        )
+        for path in paths
+    ]
+
+
+def same_files(recorded: object, current: list[FileDigest]) -> bool:
+    return (
+        isinstance(recorded, list)
+        and len(recorded) == len(current)
+        and all(
+            isinstance(before, dict)
+            and all(
+                before.get(field) == after[field]
+                for field in ("path", "size", "sha256")
+            )
+            for before, after in zip(recorded, current, strict=True)
+        )
+    )
 
 
 def write_json(path: Path, value: DictConfig | ArtifactManifest) -> None:
@@ -244,7 +313,14 @@ def prepare_conditioner(
         pass
     for path in metadata:
         shutil.copyfile(path, directory / path.name)
-    mx.save_safetensors(str(directory / "model.safetensors"), weights)
+    mx.save_safetensors(
+        str(directory / "model.safetensors"),
+        weights,
+        metadata={
+            "modification": "Qwen2.5-Omni-3B Thinker text/audio tensors extracted and repackaged for native serving.",
+            "license": "Qwen Research License; see ../licenses/qwen-research.txt and ../licenses/NOTICE.",
+        },
+    )
     mx.save_safetensors(str(directory / "frontend.safetensors"), frontend_constants())
 
 
@@ -289,48 +365,82 @@ def frontend_constants() -> dict[str, mx.array]:
     }
 
 
-def verify_reuse(output: Path, sources: dict[str, SourceManifest]) -> None:
-    manifest_path = output / "manifest.json"
-    manifest: object = json.loads(manifest_path.read_text(encoding="utf-8"))
+def read_manifest(output: Path, revisions: dict[str, str | None]) -> dict[str, object]:
+    try:
+        manifest: object = json.loads(
+            (output / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
     if (
         not isinstance(manifest, dict)
-        or manifest.get("format_version") != 2
+        or manifest.get("format_version") != ARTIFACT_FORMAT_VERSION
         or manifest.get("mlx_version") != version("mlx")
+        or not isinstance(manifest.get("outputs"), list)
     ):
-        raise ValueError(f"Incompatible artifact manifest in {output}")
+        return {}
     else:
         recorded_sources = manifest.get("sources")
     if (
         not isinstance(recorded_sources, dict)
-        or recorded_sources.keys() != sources.keys()
+        or recorded_sources.keys() != revisions.keys()
     ):
-        raise ValueError(f"Artifact source roles differ in {output}")
+        return {}
+    else:
+        pass
+    for role, revision in revisions.items():
+        recorded = recorded_sources[role]
+        if (
+            not isinstance(recorded, dict)
+            or not isinstance(recorded.get("files"), list)
+            or (
+                recorded.get("revision") is not None
+                and not isinstance(recorded["revision"], str)
+            )
+            or (revision is not None and recorded.get("revision") != revision)
+        ):
+            return {}
+        else:
+            pass
+    return manifest
+
+
+def verify_reuse(
+    output: Path,
+    sources: dict[str, SourceManifest],
+    manifest: dict[str, object],
+) -> ArtifactManifest:
+    recorded_sources = manifest.get("sources")
+    if not isinstance(recorded_sources, dict):
+        raise StaleArtifact(f"Incompatible artifact manifest in {output}")
     else:
         pass
     for role, source in sources.items():
         recorded = recorded_sources[role]
-        if not isinstance(recorded, dict) or recorded.get("files") != source["files"]:
-            raise ValueError(
-                f"Artifact {role} source files changed; refusing reuse of {output}"
-            )
-        elif (
-            source["revision"] is not None
-            and recorded.get("revision") != source["revision"]
+        if not isinstance(recorded, dict) or not same_files(
+            recorded.get("files"), source["files"]
         ):
-            raise ValueError(
-                f"Artifact {role} revision changed; refusing reuse of {output}"
-            )
+            raise StaleArtifact(f"Artifact {role} source files changed in {output}")
         else:
             pass
-    actual_outputs = [
-        file_digest(path, output)
-        for path in sorted(output.rglob("*"))
-        if path.is_file() and path != manifest_path
-    ]
-    if manifest.get("outputs") != actual_outputs:
-        raise ValueError(f"Artifact output files changed; refusing reuse of {output}")
+    actual_outputs = file_digests(
+        [
+            path
+            for path in sorted(output.rglob("*"))
+            if path.is_file() and path != output / "manifest.json"
+        ],
+        output,
+        manifest["outputs"],
+    )
+    if not same_files(manifest["outputs"], actual_outputs):
+        raise StaleArtifact(f"Artifact output files changed in {output}")
     else:
-        pass
+        return {
+            "format_version": ARTIFACT_FORMAT_VERSION,
+            "mlx_version": version("mlx"),
+            "sources": sources,
+            "outputs": actual_outputs,
+        }
 
 
 def prepare(
@@ -342,12 +452,20 @@ def prepare(
     *,
     reuse: bool = False,
 ) -> None:
+    required_mlx_version = pinned_mlx_version()
     if (output.exists() or output.is_symlink()) and not reuse:
         raise FileExistsError(f"Refusing to overwrite existing output {output}")
-    elif version("mlx") != "0.32.3":
-        raise RuntimeError("AuK artifact preparation requires mlx==0.32.3")
+    elif output.is_symlink() or (output.exists() and not output.is_dir()):
+        raise ValueError(
+            f"Expected an artifact directory, not a file or symlink: {output}"
+        )
+    elif version("mlx") != required_mlx_version:
+        raise RuntimeError(
+            f"AuK artifact preparation requires mlx=={required_mlx_version}; found {version('mlx')}"
+        )
     else:
         pass
+    original_output = output.stat() if output.exists() else None
     config_path = find_file(auk_directory, ("config.yaml", "config.yml", "config.json"))
     config = read_config(config_path)
     model = config.get("model", config)
@@ -403,25 +521,61 @@ def prepare(
         conditioner_files.append(conditioner_index)
     else:
         pass
-    sources: dict[str, SourceManifest] = {
-        "auk": {
-            "revision": auk_revision,
-            "files": [
-                file_digest(path, auk_directory)
-                for path in [config_path, weight_source, vae_source]
-            ],
-        },
-        "conditioner": {
-            "revision": conditioner_revision,
-            "files": [
-                file_digest(path, conditioner_directory)
-                for path in sorted(conditioner_files)
-            ],
-        },
+    licenses = Path(__file__).resolve().parents[1] / "licenses"
+    source_paths = {
+        "auk": (auk_directory, [config_path, weight_source, vae_source]),
+        "conditioner": (conditioner_directory, sorted(conditioner_files)),
+        "licenses": (
+            licenses,
+            sorted(path for path in licenses.iterdir() if path.is_file()),
+        ),
     }
-    if output.exists() or output.is_symlink():
-        verify_reuse(output, sources)
-        return
+    revisions = {
+        "auk": auk_revision,
+        "conditioner": conditioner_revision,
+        "licenses": None,
+    }
+    recorded_manifest = read_manifest(output, revisions) if reuse else {}
+    recorded_sources = recorded_manifest.get("sources", {})
+    sources: dict[str, SourceManifest] = {}
+    for role, (source_directory, paths) in source_paths.items():
+        recorded = (
+            recorded_sources.get(role) if isinstance(recorded_sources, dict) else None
+        )
+        recorded_revision = (
+            recorded.get("revision") if isinstance(recorded, dict) else None
+        )
+        sources[role] = {
+            "revision": (
+                revisions[role]
+                if revisions[role] is not None
+                else recorded_revision if isinstance(recorded_revision, str) else None
+            ),
+            "files": file_digests(
+                paths,
+                source_directory,
+                recorded.get("files") if isinstance(recorded, dict) else None,
+            ),
+        }
+    if recorded_manifest:
+        try:
+            manifest = verify_reuse(output, sources, recorded_manifest)
+        except StaleArtifact:
+            pass
+        else:
+            if manifest != recorded_manifest:
+                with tempfile.NamedTemporaryFile(
+                    dir=output.parent, prefix=f".{output.name}.manifest-", delete=False
+                ) as temporary_manifest:
+                    manifest_path = Path(temporary_manifest.name)
+                try:
+                    write_json(manifest_path, manifest)
+                    manifest_path.replace(output / "manifest.json")
+                finally:
+                    manifest_path.unlink(missing_ok=True)
+            else:
+                pass
+            return
     else:
         pass
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -439,18 +593,35 @@ def prepare(
         prepare_conditioner(
             conditioner_weights, conditioner_metadata, directory / "conditioner"
         )
+        shutil.copytree(licenses, directory / "licenses")
         manifest: ArtifactManifest = {
-            "format_version": 2,
+            "format_version": ARTIFACT_FORMAT_VERSION,
             "mlx_version": version("mlx"),
             "sources": sources,
-            "outputs": [
-                file_digest(path, directory)
-                for path in sorted(directory.rglob("*"))
-                if path.is_file()
-            ],
+            "outputs": file_digests(
+                [path for path in sorted(directory.rglob("*")) if path.is_file()],
+                directory,
+            ),
         }
         write_json(directory / "manifest.json", manifest)
-        if output.exists() or output.is_symlink():
+        if (
+            output.exists()
+            and original_output is not None
+            and output.lstat().st_ino == original_output.st_ino
+        ):
+            previous = Path(
+                tempfile.mkdtemp(prefix=f".{output.name}.previous-", dir=output.parent)
+            )
+            previous.rmdir()
+            output.rename(previous)
+            try:
+                directory.rename(output)
+            except OSError:
+                previous.rename(output)
+                raise
+            else:
+                shutil.rmtree(previous)
+        elif output.exists() or output.is_symlink():
             raise FileExistsError(f"Output was created during preparation: {output}")
         else:
             directory.rename(output)
@@ -464,7 +635,7 @@ def main() -> None:
     parser.add_argument(
         "--reuse",
         action="store_true",
-        help="Reuse an existing artifact only after source and output hash verification",
+        help="Reuse unchanged local artifacts; rebuild stale ones before replacing them",
     )
     parser.add_argument(
         "--auk-revision", help="Source revision, if known; recorded verbatim"

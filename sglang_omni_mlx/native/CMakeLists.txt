@@ -7,9 +7,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock" mlx_pins
+  REGEX "^mlx==")
+list(LENGTH mlx_pins mlx_pin_count)
+if(NOT mlx_pin_count EQUAL 1 OR NOT mlx_pins MATCHES "^mlx==([0-9]+\\.[0-9]+\\.[0-9]+)$")
+  message(FATAL_ERROR "build-tools.lock must contain exactly one mlx==X.Y.Z pin")
+endif()
+set(SGLANG_OMNI_MLX_VERSION "${CMAKE_MATCH_1}")
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
   message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
 endif()
@@ -257,5 +263,6 @@ set_target_properties(auk_server auk_probe auk_synthesize PROPERTIES
 install(TARGETS auk_server auk_probe auk_synthesize RUNTIME DESTINATION bin)
 install(TARGETS soxr LIBRARY DESTINATION bin)
 install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
-install(FILES licenses/auk.txt licenses/Apache-2.0.txt licenses/NOTICE
+install(FILES licenses/auk.txt licenses/Apache-2.0.txt licenses/qwen-research.txt
+  licenses/NOTICE
   DESTINATION share/licenses/auk)
