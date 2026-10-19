@@ -831,6 +831,16 @@ class PipelineConfig(BaseModel):
     def terminal_stages(self) -> list[str]:
         return [s.name for s in self.stages if s.terminal]
 
+    @property
+    def terminal_stage_routes(self) -> tuple[str, ...]:
+        """HTTP routes on which a terminal stage serves its own results."""
+        return tuple(
+            prefix
+            for stage in self.stages
+            if stage.terminal
+            for prefix in stage.http_routes
+        )
+
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         """Pipeline edges whose stages must stay in the same process.

@@ -22,6 +22,7 @@ curl http://127.0.0.1:8000/v1/images/generations \
 - The routes run in the generation stage's process, which already holds native SGLang, and start with that stage. The Omni server relays them to the stage over a local socket and imports no native module itself, so the first request to them pays no start and the server process keeps no native memory.
 - If the routes cannot start, for example because the prompt enhancer config cannot be read, the generation stage fails to start and the server reports the cause.
 - If the native scheduler stops, requests in flight and new requests on these routes get 503 at once. If the generation stage stops, these routes answer 503, and the server stops when the generation stage fails.
+- When the generation stage is the pipeline's last stage, as in `Cosmos3PipelineConfig`, `/generate` answers 400 with these routes before any generation, since its response carries no media. In Python, `Client.completion` returns the saved files in `CompletionResult.media`.
 
 ## Server warmup
 

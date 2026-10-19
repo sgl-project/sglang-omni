@@ -16,6 +16,7 @@ from sglang_omni.client.types import (
     GenerateRequest,
     UsageInfo,
 )
+from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_rollout_generate_request
 from sglang_omni.serve.protocol import RolloutGenerateRequest as RolloutRequest
@@ -285,6 +286,24 @@ def test_generate_rejects_streaming_rollout_until_supported() -> None:
 
     assert resp.status_code == 400
     assert "stream=true" in resp.text
+    assert client.requests == []
+
+
+def test_generate_refuses_media_pipelines_before_generation() -> None:
+    """A pipeline whose results are saved media ran its generation on /generate,
+    then failed on the logprob default or answered without the media."""
+    client = RolloutClient(
+        CompletionResult(request_id="r1", text="", media=[{"path": "video.mp4"}])
+    )
+    config = Cosmos3PipelineConfig(model_path="checkpoint")
+    tc = TestClient(
+        create_app(client, terminal_stage_routes=config.terminal_stage_routes)
+    )
+
+    resp = tc.post("/generate", json={"prompt": "a robot", "return_logprob": False})
+
+    assert resp.status_code == 400
+    assert "/v1/videos" in resp.json()["detail"]
     assert client.requests == []
 
 

@@ -241,6 +241,7 @@ def create_app(
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
     interleaved_output: bool = False,
+    terminal_stage_routes: tuple[str, ...] = (),
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -288,6 +289,9 @@ def create_app(
         interleaved_output: Whether results are ordered interleaved (UMM)
             segments, which ``/generate`` streams. Other pipelines refuse
             ``stream=true`` on ``/generate``.
+        terminal_stage_routes: Routes a terminal stage serves with its results,
+            such as native media routes. /generate cannot carry those results,
+            so it refuses requests and names the routes.
 
     Returns:
         Configured FastAPI application.
@@ -314,6 +318,7 @@ def create_app(
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
     app.state.interleaved_output = interleaved_output
+    app.state.terminal_stage_routes = terminal_stage_routes
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
@@ -1462,6 +1467,7 @@ ROLLOUT_ARTIFACT_FIELDS = (
 
 def register_generate(app: FastAPI) -> None:
     interleaved = app.state.interleaved_output
+    terminal_stage_routes = app.state.terminal_stage_routes
 
     @app.post("/generate")
     async def generate(req: RolloutGenerateRequest) -> Response:
@@ -1470,7 +1476,16 @@ def register_generate(app: FastAPI) -> None:
         provided = [
             value is not None for value in (req.input_ids, req.prompt, req.messages)
         ]
-        if sum(provided) != 1:
+        if terminal_stage_routes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This pipeline serves its results on its own routes under "
+                    f"{', '.join(terminal_stage_routes)}, and /generate cannot "
+                    "return them. Send the request to those routes"
+                ),
+            )
+        elif sum(provided) != 1:
             raise HTTPException(
                 status_code=400,
                 detail="exactly one of input_ids, prompt, or messages is required",
