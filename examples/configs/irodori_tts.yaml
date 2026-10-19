@@ -1,0 +1,2 @@
+config_cls: IrodoriTTSPipelineConfig
+model_path: Aratako/Irodori-TTS-v4.1-Small
