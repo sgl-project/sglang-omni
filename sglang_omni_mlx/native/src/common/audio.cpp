@@ -111,9 +111,7 @@ std::vector<float> BuildPeriodicHannWindow() {
   return window;
 }
 
-} // namespace
-
-DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
+DecodedAudio DecodeWavSamples(std::string_view wav_bytes, bool strict) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
@@ -143,11 +141,13 @@ DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
       have_format = true;
     } else if (chunk_id == "data") {
       if (!have_format || channel_count != 1 || sample_rate == 0 ||
-          sample_rate > 192000 || body_size != chunk_size) {
+          sample_rate > 192000 || (strict && body_size != chunk_size)) {
         throw std::invalid_argument(
             "audio must be a complete mono WAV with a valid sample rate");
+      } else if (!strict && sample_rate != kSampleRate) {
+        throw std::invalid_argument("audio must be 16 kHz mono");
       } else if (audio_format == kWavFormatPcm && bits_per_sample == 16 &&
-                 body_size % 2 == 0) {
+                 (!strict || body_size % 2 == 0)) {
         std::vector<float> samples(body_size / 2);
         for (size_t i = 0; i < samples.size(); ++i) {
           int16_t value = 0;
@@ -157,11 +157,12 @@ DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
         }
         return {std::move(samples), static_cast<int>(sample_rate)};
       } else if (audio_format == kWavFormatFloat && bits_per_sample == 32 &&
-                 body_size % 4 == 0) {
+                 (!strict || body_size % 4 == 0)) {
         std::vector<float> samples(body_size / 4);
         std::memcpy(samples.data(), wav_bytes.data() + body_offset,
                     samples.size() * 4);
-        if (!std::all_of(samples.begin(), samples.end(),
+        if (strict &&
+            !std::all_of(samples.begin(), samples.end(),
                          [](float sample) { return std::isfinite(sample); })) {
           throw std::invalid_argument("audio samples must be finite");
         } else {
@@ -177,13 +178,14 @@ DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
   throw std::invalid_argument("WAV file has no data chunk");
 }
 
+} // namespace
+
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
+  return DecodeWavSamples(wav_bytes, true);
+}
+
 std::vector<float> DecodeWav(std::string_view wav_bytes) {
-  DecodedAudio audio = DecodeAudioWav(wav_bytes);
-  if (audio.sample_rate != kSampleRate) {
-    throw std::invalid_argument("audio must be 16 kHz mono");
-  } else {
-    return std::move(audio.samples);
-  }
+  return DecodeWavSamples(wav_bytes, false).samples;
 }
 
 std::string EncodePcm16(const std::vector<float> &samples) {

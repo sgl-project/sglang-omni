@@ -29,6 +29,7 @@ struct DecodedAudio {
   int sample_rate;
 };
 
+// Complete mono PCM16 or finite float32 WAV at its declared sample rate.
 DecodedAudio DecodeAudioWav(std::string_view wav_bytes);
 std::string EncodePcm16(const std::vector<float> &samples);
 std::string EncodeWavPcm16(const std::vector<float> &samples, int sample_rate);
@@ -36,7 +37,8 @@ std::string EncodeWavPcm16(const std::vector<float> &samples, int sample_rate);
 std::string EncodeWavPcm16(std::string_view pcm_bytes, int sample_rate,
                            int channels);
 
-// 16 kHz mono PCM16 or float32 WAV to float32 samples; throws
+// 16 kHz mono WAV, accepting streaming length placeholders and complete
+// samples in a partial final frame. Throws
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes);
 

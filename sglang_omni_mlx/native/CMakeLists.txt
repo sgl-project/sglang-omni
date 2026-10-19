@@ -52,6 +52,9 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+set_property(TARGET civetweb-c-library PROPERTY SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/civetweb_connection.c")
+target_include_directories(civetweb-c-library PRIVATE src "${civetweb_SOURCE_DIR}/src")
 
 add_library(common STATIC
   src/common/audio.cpp
@@ -96,6 +99,9 @@ target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
+add_library(tts_service STATIC src/common/tts_service.cpp)
+target_link_libraries(tts_service PUBLIC omni_service)
+target_compile_options(tts_service PRIVATE -Wall -Wextra)
 add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
@@ -252,7 +258,7 @@ target_link_libraries(auk_model PUBLIC common audio_resample)
 target_compile_options(auk_model PRIVATE -Wall -Wextra)
 add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_tts_service.cpp
   src/auk/auk_request.cpp)
-target_link_libraries(auk_server PRIVATE auk_model omni_service)
+target_link_libraries(auk_server PRIVATE auk_model tts_service)
 add_executable(auk_probe tools/auk_probe.cpp)
 target_link_libraries(auk_probe PRIVATE auk_model)
 add_executable(auk_synthesize tools/auk_synthesize.cpp)

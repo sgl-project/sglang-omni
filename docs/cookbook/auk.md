@@ -61,7 +61,10 @@ is a C++ executable.
 
 The server supports `/v1/audio/speech` and `/generate`, with WAV or PCM output.
 Reference audio uses a `data:audio/wav;base64,` URI containing mono PCM16 or
-float32 WAV. It accepts one request at a time and returns 429 while busy.
+float32 WAV. It accepts one request at a time, returns 429 while busy and
+503 while stopping. Client disconnects cancel synthesis at the next computation
+boundary. Keep both directions of the connection open until the response
+finishes; a TCP half-close is treated as cancellation.
 `--max-seconds` sets the duration cap, up to 30 seconds.
 `--cache-limit-gb` caps MLX's reusable buffer cache in GiB (default: 1);
 set it to 0 to disable caching. It applies during loading and synthesis and

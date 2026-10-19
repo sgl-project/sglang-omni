@@ -18,10 +18,7 @@ void WriteResponse(mg_connection *connection, int status,
 
 int WriteJson(mg_connection *connection, int status, const Json &body) {
   WriteResponse(connection, status,
-                status == 200   ? "OK"
-                : status == 400 ? "Bad Request"
-                : status == 405 ? "Method Not Allowed"
-                                : "Internal Server Error",
+                mg_get_response_code_text(connection, status),
                 "application/json", body.dump());
   return status;
 }
