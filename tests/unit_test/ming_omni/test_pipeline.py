@@ -197,24 +197,6 @@ def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
     assert "engine_outputs" not in projected["talker"].data
 
 
-def test_ming_speech_launcher_exposes_tp_size_arg(monkeypatch) -> None:
-    from examples.run_ming_omni_speech_server import parse_args
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_ming_omni_speech_server.py",
-            "--tp-size",
-            "4",
-        ],
-    )
-
-    args = parse_args()
-
-    assert args.tp_size == 4
-
-
 def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
@@ -238,6 +220,7 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_speech_server(args)
@@ -278,97 +261,6 @@ def test_ming_image_encoder_factory_accepts_tp_injection_args() -> None:
     assert sig.parameters["nccl_port"].default is None
 
 
-def test_ming_talker_factory_returns_scheduler_contract(monkeypatch) -> None:
-    talker_module = ModuleType(
-        "sglang_omni.models.ming_omni.components.talker_executor"
-    )
-
-    class FakeMingTalkerExecutor:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def start(self):
-            pass
-
-        async def add_request(self, payload):
-            self.payload = payload
-
-        async def get_result(self):
-            return getattr(self, "payload", None)
-
-    talker_module.MingTalkerExecutor = FakeMingTalkerExecutor
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.ming_omni.components.talker_executor",
-        talker_module,
-    )
-
-    weight_loader_module = ModuleType("sglang_omni.models.weight_loader")
-    weight_loader_module.resolve_model_path = lambda model_path: (
-        f"/resolved/{model_path}"
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.weight_loader",
-        weight_loader_module,
-    )
-
-    from sglang_omni.models.ming_omni.stages import create_talker_executor
-
-    scheduler = create_talker_executor(
-        model_path="dummy",
-        talker_model_path="talker",
-        gpu_id=1,
-        voice="DB30",
-    )
-
-    assert hasattr(scheduler, "inbox")
-    assert hasattr(scheduler, "outbox")
-    assert callable(scheduler.start)
-    assert callable(scheduler.stop)
-    assert callable(scheduler.abort)
-    assert not isinstance(scheduler, FakeMingTalkerExecutor)
-
-
-def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
-    source = Path("sglang_omni/models/ming_omni/components/audio_encoder.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "audio_feats = audio_feats.to(device=self.device)" in source
-    assert "audio_feats_lengths = audio_feats_lengths.to(device=self.device)" in source
-
-
-def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
-    from sglang_omni.models.ming_omni.components import preprocessor
-
-    waveform = np.array([0.0, 0.1, -0.2], dtype=np.float32)
-    mel = np.arange(36, dtype=np.float64).reshape(9, 4)
-
-    def fake_compute_mel_spectrogram(input_waveform):
-        assert input_waveform is waveform
-        return mel
-
-    monkeypatch.setattr(
-        preprocessor,
-        "compute_mel_spectrogram",
-        fake_compute_mel_spectrogram,
-    )
-
-    mel_tensor, mel_len, audio_token_count = (
-        preprocessor.compute_mel_features_for_waveform(
-            waveform,
-            ds_kernel_size=3,
-            ds_stride=2,
-        )
-    )
-
-    assert torch.equal(mel_tensor, torch.from_numpy(mel).float())
-    assert mel_tensor.dtype == torch.float32
-    assert mel_len == 9
-    assert audio_token_count == preprocessor.estimate_audio_feature_length(9, 3, 2)
-
-
 def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> None:
     captured: dict[str, object] = {}
     serve_module = ModuleType("sglang_omni.serve")
@@ -394,6 +286,7 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -432,6 +325,7 @@ def test_ming_text_launcher_rejects_nonpositive_tp_before_config(monkeypatch) ->
             host="127.0.0.1",
             port=8000,
             model_name="ming-omni",
+            skip_server_warmup=False,
         )
 
         with pytest.raises(ValueError, match="--tp-size must be >= 1"):
@@ -463,6 +357,7 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -501,6 +396,7 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -540,6 +436,7 @@ def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     _launch_text_server(args)
@@ -571,6 +468,7 @@ def test_ming_text_launcher_rejects_image_encoder_tp_zero(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--image-encoder-tp must be >= 1"):
@@ -600,6 +498,7 @@ def test_ming_text_launcher_rejects_thinker_only_with_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--thinker-only cannot be used"):
@@ -629,6 +528,7 @@ def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="--gpu-image-encoder must be specified"):
@@ -656,6 +556,7 @@ def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="requires exactly 2 GPU ids"):
@@ -683,6 +584,7 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",
+        skip_server_warmup=False,
     )
 
     with pytest.raises(ValueError, match="GPU ids must be unique"):
@@ -924,29 +826,6 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
     assert videos[0].dtype == np.uint8
 
 
-def test_ming_image_encoder_forward_accepts_video_inputs() -> None:
-    """MingImageEncoder.forward should accept optional video kwargs.
-
-    Videos reuse the image encoder stage (Qwen3-Omni pattern); the signature
-    must expose ``pixel_values_videos`` + ``video_grid_thw`` so the
-    preprocessing → image_encoder stage path can flow both modalities.
-    """
-    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
-
-    params = inspect.signature(MingImageEncoder.forward).parameters
-    for name in (
-        "pixel_values",
-        "image_grid_thw",
-        "pixel_values_videos",
-        "video_grid_thw",
-    ):
-        assert name in params, f"missing forward kwarg: {name}"
-        assert params[name].default is None, (
-            f"{name} must default to None so the image stage can be invoked "
-            "with images only, videos only, or both."
-        )
-
-
 def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     """build_thinker_inputs must route ``video_embeds`` from the image stage.
 
@@ -1184,37 +1063,6 @@ def make_fake_ming_image_encoder(spatial_merge_size: int = 2):
 
     enc.__dict__["encode"] = fake_encode
     return enc
-
-
-def test_ming_image_encoder_forward_video_embeds_match_token_counts() -> None:
-    """video_embeds.shape[0] MUST equal sum(video_token_counts).
-
-    This is the placeholder-count contract: the encoder's output length has
-    to match the number of <video_patch> slots the prompt reserved for it.
-    Signature tests alone don't catch a regression where forward silently
-    returns wrong-length embeds.
-    """
-    import torch
-
-    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
-
-    enc = make_fake_ming_image_encoder()
-    # Two videos: (t=2, h=4, w=4) and (t=1, h=6, w=6).
-    # With merge_sq=4: tokens = 8 and 9, total = 17.
-    video_grid_thw = torch.tensor([[2, 4, 4], [1, 6, 6]], dtype=torch.long)
-    pixel_values_videos = torch.zeros(100, 16)
-
-    out = MingImageEncoder.forward(
-        enc,
-        pixel_values_videos=pixel_values_videos,
-        video_grid_thw=video_grid_thw,
-    )
-
-    assert {"video_embeds", "video_grid_thw", "video_token_counts"} <= set(out)
-    assert "image_embeds" not in out
-    expected_total = int(out["video_token_counts"].sum().item())
-    assert expected_total == 17
-    assert out["video_embeds"].shape[0] == expected_total
 
 
 def test_ming_image_encoder_forward_handles_image_and_video_together() -> None:

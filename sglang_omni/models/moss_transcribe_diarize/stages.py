@@ -80,7 +80,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    max_running_requests: int = 16,
+    max_running_requests: int = 64,
     max_new_tokens: int | None = None,
     context_length: int | None = None,
     mem_fraction_static: float | None = 0.80,

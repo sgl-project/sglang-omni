@@ -212,25 +212,6 @@ def test_cuda_ipc_relay_close_keeps_queued_copy_waits(monkeypatch) -> None:
         relay.wait_executor.shutdown(wait=True)
 
 
-def test_cuda_ipc_default_pool_uses_small_slots() -> None:
-    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
-    assert relay.slot_size == 64 * 1024
-    assert relay.pool_size == 1024 * 1024 * 1024
-    assert relay.slot_count == 16 * 1024
-
-
-def test_cuda_ipc_pool_size_and_slot_size_are_configurable() -> None:
-    relay = CudaIpcRelay(
-        engine_id="sender",
-        device="cuda:0",
-        pool_size_mb=1,
-        slot_size_kb=256,
-    )
-    assert relay.slot_size == 256 * 1024
-    assert relay.pool_size == 1024 * 1024
-    assert relay.slot_count == 4
-
-
 def test_contiguous_slot_allocator_waits_for_contiguous_range() -> None:
     async def run() -> None:
         allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)

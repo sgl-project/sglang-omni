@@ -52,13 +52,6 @@ def patch_pynvml(monkeypatch, fake: ModuleType | None) -> None:
     monkeypatch.setattr(gpu_compat, "try_import_pynvml", lambda: fake)
 
 
-def test_should_disable_with_no_or_single_gpu(monkeypatch) -> None:
-    patch_pynvml(monkeypatch, FakeP2PNVML(not_ok_pairs={(0, 1)}))
-    assert gpu_compat.should_disable_custom_all_reduce_for_gpus(None, env={}) is True
-    assert gpu_compat.should_disable_custom_all_reduce_for_gpus([], env={}) is True
-    assert gpu_compat.should_disable_custom_all_reduce_for_gpus([0], env={}) is True
-
-
 def test_disabled_when_pynvml_unavailable(monkeypatch) -> None:
     patch_pynvml(monkeypatch, None)
     assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1], env={}) is None

@@ -105,7 +105,13 @@ def main() -> None:
         "--output", type=Path, required=True, help="New immutable run directory"
     )
     add_server_identity_args(parser)
-    parser.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE)
+    parser.add_argument(
+        "--profile",
+        choices=[
+            name for name, contract in PROFILES.items() if contract.protocol == "native"
+        ],
+        default=DEFAULT_PROFILE,
+    )
     parser.add_argument(
         "--timeout", type=float, default=90.0, help="Whole-session deadline in seconds"
     )

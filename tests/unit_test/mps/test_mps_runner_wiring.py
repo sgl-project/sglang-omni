@@ -298,6 +298,10 @@ class ProcessStartFailureContext:
     def Queue(self):
         return SpawnQueue()
 
+    def Value(self, typecode, value):
+        del typecode
+        return value
+
     def Process(self, **kwargs):
         del kwargs
         return ProcessStartFailure()

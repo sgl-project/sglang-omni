@@ -37,8 +37,6 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
-    mlx_model_path: str | None = None
-    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)
@@ -283,7 +281,7 @@ class ModelWorker:
             self.model_runner.effective_max_total_num_tokens
         )
         max_req_len = min(
-            self.server_args.context_length - 1,
+            self.model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         max_req_input_len = max_req_len - 1

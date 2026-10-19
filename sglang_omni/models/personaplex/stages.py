@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -13,13 +14,17 @@ from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
     trim_to_caller,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
+from sglang_omni.models.personaplex.components.mimi_loader import (
     load_mimi_codec,
     resolve_mimi_weights,
 )
-from sglang_omni.models.personaplex.config import PREPROCESSING_STAGE
+from sglang_omni.models.personaplex.config import (
+    DEFAULT_LM_MAX_RUNNING_REQUESTS,
+    PREPROCESSING_STAGE,
+)
 from sglang_omni.models.personaplex.engine_builder import PersonaPlexEngineBuilder
+from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -135,17 +140,21 @@ def create_preprocessing_executor(
 
 
 def load_codec(
-    model_path: str, *, device: str | None, gpu_id: int | None
+    model_path: str,
+    *,
+    device: str | None,
+    gpu_id: int | None,
+    mode: Literal["encode", "decode"],
 ) -> tuple[MimiCodec, torch.device]:
     device = resolve_concrete_device(device, gpu_id)
     weights = resolve_mimi_weights(resolve_model_path(model_path), MIMI_WEIGHTS_GLOB)
-    return load_mimi_codec(weights, device=device), device
+    return load_mimi_codec(weights, device=device, mode=mode), device
 
 
 def create_mimi_encode_executor(
     model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
 
     def encode_waveform(waveform: torch.Tensor) -> torch.Tensor:
         codes = codec.encode(
@@ -186,7 +195,8 @@ def create_lm_executor(
     # overrides, so an engine context_length must reach the builder too.
     context_length = server_args_overrides.get("context_length", context_length)
     builder = PersonaPlexEngineBuilder(
-        max_running_requests=1, context_length=context_length
+        max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        context_length=context_length,
     )
     return builder.build(
         model_path,
@@ -212,9 +222,20 @@ def create_decode_executor(
 
 
 def create_code2wav_executor(
-    model_path: str, *, device: str | None = None, gpu_id: int | None = None, **_
+    model_path: str,
+    *,
+    num_decode_slots: int,
+    max_batch_size: int,
+    max_graph_frames: int,
+    chunk_ramp_frames: list[int],
+    device: str | None = None,
+    gpu_id: int | None = None,
+    **_,
 ) -> PersonaPlexCode2WavScheduler:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id)
+    """Whole-reply decode, plus streaming decode on num_decode_slots resident
+    states, up to max_batch_size streams per step, with device graphs for
+    chunks of up to max_graph_frames frames."""
+    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:
@@ -235,7 +256,16 @@ def create_code2wav_executor(
         )
         return payload
 
-    return PersonaPlexCode2WavScheduler(codec, compute_fn=decode)
+    decode_slots = MimiDecodeSlots(
+        codec,
+        num_slots=num_decode_slots,
+        max_batch_size=max_batch_size,
+        max_graph_frames=max_graph_frames,
+        max_chunk_frames=max(chunk_ramp_frames),
+    )
+    return PersonaPlexCode2WavScheduler(
+        decode_slots, compute_fn=decode, chunk_ramp_frames=chunk_ramp_frames
+    )
 
 
 __all__ = [

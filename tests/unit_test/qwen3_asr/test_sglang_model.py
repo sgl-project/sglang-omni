@@ -95,27 +95,6 @@ def test_forward_keeps_long_positions_for_native_rope(
     assert seen_positions.dtype == torch.long
 
 
-def test_asr_text_rope_drops_only_multimodal_parameters() -> None:
-    original = {
-        "rope_type": "default",
-        "rope_theta": 1_000_000,
-        "interleaved": True,
-        "mrope_interleaved": True,
-        "mrope_section": [24, 20, 20],
-    }
-    config = SimpleNamespace(
-        rope_parameters=original,
-        rope_scaling=original,
-    )
-
-    sglang_model.normalize_asr_text_rope(config)
-
-    expected = {"rope_type": "default", "rope_theta": 1_000_000}
-    assert config.rope_parameters == expected
-    assert config.rope_scaling == expected
-    assert original["mrope_section"] == [24, 20, 20]
-
-
 def test_fused_asr_qk_norm_rope_is_bound_per_attention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

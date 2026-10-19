@@ -12,17 +12,30 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import torch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.mem_cache.allocator.swa import (
+    PureSWATokenToKVPoolAllocator,
+    SWATokenToKVPoolAllocator,
+)
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.runtime_context import get_context
+from sglang.srt.session.streaming_session import StreamingSession
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling import pd_utils
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import (
     OmniDecodeScheduler,
     OmniPrefillScheduler,
+    validate_pd_runtime,
 )
 from sglang_omni.scheduling.pd_utils import (
     DecodeAdmission,
     DecodeKVReceiver,
+    ReservedKV,
     SGLangKVLease,
     req_from_continuation,
     serialize_kv_allocator,
@@ -517,6 +530,29 @@ def test_discarded_stage_transfer_releases_source_lease():
 
     transfer.lease.release.assert_called_once_with()
 
+    async def wait_for_release(inactive: KVPageTransfer) -> None:
+        while not inactive.lease.release.called:
+            await asyncio.sleep(0.01)
+
+    async def run() -> None:
+        stage = make_stage()
+        stage.running = True
+        inactive = make_transfer("inactive")
+        stage.scheduler.outbox.put(
+            OutgoingMessage(inactive.request_id, "kv_transfer", inactive)
+        )
+        drain = asyncio.create_task(stage.drain_outbox())
+        try:
+            await asyncio.wait_for(wait_for_release(inactive), 5)
+            inactive.lease.release.assert_called_once_with()
+            assert not stage.receive_tasks
+        finally:
+            stage.running = False
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+    asyncio.run(run())
+
 
 def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
     async def run():
@@ -705,3 +741,93 @@ def test_replicated_decode_target_uses_bound_instance_and_pool():
         transfer.lease.release.assert_called_once()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
+@pytest.mark.parametrize("session_enabled", [False, True])
+def test_pd_allows_session_flag_without_adapter(
+    scheduler_type: type[OmniPrefillScheduler] | type[OmniDecodeScheduler],
+    session_enabled: bool,
+) -> None:
+    scheduler = object.__new__(scheduler_type)
+    scheduler.session_adapter = None
+    scheduler.req_to_token_pool = ReqPool()
+    scheduler.token_to_kv_pool_allocator = KVAllocator()
+    scheduler.server_args = SimpleNamespace(
+        enable_streaming_session=session_enabled, disable_radix_cache=True
+    )
+    scheduler.tp_size = 1
+    scheduler.page_size = 1
+    scheduler.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+    validate_pd_runtime(scheduler)
+
+
+@pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
+def test_pd_rejects_retained_session_adapter(
+    scheduler_type: type[OmniPrefillScheduler] | type[OmniDecodeScheduler],
+) -> None:
+    scheduler = object.__new__(scheduler_type)
+    scheduler.session_adapter = Mock()
+    with pytest.raises(NotImplementedError, match="retained-state ownership"):
+        validate_pd_runtime(scheduler)
+
+
+@pytest.mark.parametrize("session_wrapper", [False, True])
+def test_pd_rebuilt_request_releases_real_kv_once(session_wrapper: bool) -> None:
+    with get_context().override_server_args(
+        speculative_algorithm=None, strip_thinking_cache=False
+    ):
+        allocator = TokenToKVPoolAllocator(8, torch.float32, "cpu", None, False)
+        request_pool = ReqToTokenPool(2, 32, "cpu", enable_memory_saver=False)
+        cache = ChunkCache(CacheInitParams(True, request_pool, allocator, 1))
+        if session_wrapper:
+            cache = StreamingSession(cache)
+        else:
+            pass
+        scheduler = decode_scheduler()
+        scheduler.tree_cache = cache
+        initial_free = allocator.available_size()
+        slots = allocator.alloc(3)
+        request = req_from_continuation(
+            make_continuation(),
+            ReservedKV(slots=slots, page_indices=tuple(slots.tolist()), seq_len=3),
+            req_to_token_pool=request_pool,
+            state_restorer=lambda request, payload, resume: None,
+        )
+        assert allocator.available_size() == initial_free - 3
+        assert request_pool.available_size() == 1
+        scheduler.defer_pd_kv_release(request)
+        assert scheduler.pd_holds_kv()
+        scheduler.drain_due_releases()
+        assert not scheduler.pd_holds_kv()
+        assert allocator.available_size() == initial_free
+        assert request_pool.available_size() == 2
+        assert not request.kv.holds_kv
+        scheduler.release_request_kv_cache(request)
+        assert allocator.available_size() == initial_free
+        assert request_pool.available_size() == 2
+
+
+@pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
+@pytest.mark.parametrize("pool_kind", ["linear", "pure_swa", "hybrid_swa"])
+def test_pd_rejects_state_not_carried_by_page_transfer(
+    scheduler_type: type[OmniPrefillScheduler] | type[OmniDecodeScheduler],
+    pool_kind: str,
+) -> None:
+    scheduler = object.__new__(scheduler_type)
+    scheduler.session_adapter = None
+    scheduler.req_to_token_pool = ReqPool()
+    scheduler.token_to_kv_pool_allocator = KVAllocator()
+    if pool_kind == "linear":
+        scheduler.req_to_token_pool = object.__new__(HybridReqToTokenPool)
+        message = "linear-attention state"
+    else:
+        allocator_type = (
+            PureSWATokenToKVPoolAllocator
+            if pool_kind == "pure_swa"
+            else SWATokenToKVPoolAllocator
+        )
+        scheduler.token_to_kv_pool_allocator = object.__new__(allocator_type)
+        message = "sliding-window KV ownership"
+    with pytest.raises(NotImplementedError, match=message):
+        validate_pd_runtime(scheduler)

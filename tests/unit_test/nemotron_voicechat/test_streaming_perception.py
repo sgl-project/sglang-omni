@@ -13,18 +13,21 @@ from sglang_omni.models.nemotron_voicechat.conformer import (
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
-
-@pytest.fixture(
-    params=[
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA graph requires a GPU"
-            ),
-        ),
-    ]
+REQUIRES_CUDA = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA graph requires a GPU"
 )
+STREAM_CASES = [
+    pytest.param("cpu", StreamingPerception, id="cpu-StreamingPerception"),
+    pytest.param(
+        "cuda", StreamingPerception, marks=REQUIRES_CUDA, id="cuda-StreamingPerception"
+    ),
+    pytest.param(
+        "cuda", GraphPerception, marks=REQUIRES_CUDA, id="cuda-GraphPerception"
+    ),
+]
+
+
+@pytest.fixture(params=["cpu", pytest.param("cuda", marks=REQUIRES_CUDA)])
 def execution_device(request: pytest.FixtureRequest) -> torch.device:
     return torch.device(request.param)
 
@@ -70,7 +73,9 @@ def perception_model(
     return model
 
 
-@pytest.mark.parametrize("stream_class", [StreamingPerception, GraphPerception])
+@pytest.mark.parametrize(
+    ("execution_device", "stream_class"), STREAM_CASES, indirect=["execution_device"]
+)
 @torch.inference_mode()
 def test_stream_owns_history_when_caller_reuses_input(
     perception_model: AudioPerception, stream_class: type[StreamingPerception]
@@ -90,7 +95,9 @@ def test_stream_owns_history_when_caller_reuses_input(
         )
 
 
-@pytest.mark.parametrize("stream_class", [StreamingPerception, GraphPerception])
+@pytest.mark.parametrize(
+    ("execution_device", "stream_class"), STREAM_CASES, indirect=["execution_device"]
+)
 @torch.inference_mode()
 def test_stream_matches_fresh_encoding_across_requests(
     perception_model: AudioPerception, stream_class: type[StreamingPerception]

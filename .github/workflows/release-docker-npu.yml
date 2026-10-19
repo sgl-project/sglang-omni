@@ -77,7 +77,7 @@ jobs:
 
   build_and_publish_arm64:
     needs: preprocess
-    runs-on: ${{ needs.preprocess.outputs.publish == 'true' && 'linux-aarch64-a2-1' || 'ubuntu-22.04-arm' }}
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -85,7 +85,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space
-        if: runner.environment == 'github-hosted'
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           tool-cache: true

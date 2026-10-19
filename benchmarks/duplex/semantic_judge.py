@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -444,6 +444,7 @@ def grade_batch(
     schema: JsonValue,
     batch_dir: Path,
     packets: list[Packet],
+    controls: Future[bool],
 ) -> dict[str, dict[str, AxisOutcome]]:
     assessments_path = batch_dir / "assessments.json"
     if assessments_path.is_file():
@@ -458,19 +459,25 @@ def grade_batch(
     else:
         pass
     body = request_body(config, prompt, schema, packets)
-    write_json(batch_dir / "request.json", body)
     submission = submit(client, body, config.max_attempts)
-    write_json(batch_dir / "response.json", submission)
     outcomes = validate_response(submission, packets)
-    write_json(
-        assessments_path,
-        {
-            sample_id: {
-                axis: outcome.model_dump(mode="json") for axis, outcome in axes.items()
-            }
-            for sample_id, axes in outcomes.items()
-        },
-    )
+    # note (luojiaxuan): a batch is saved, and so reused by a later run in the
+    # same --out, only once the controls accept this configuration.
+    if controls.result():
+        write_json(batch_dir / "request.json", body)
+        write_json(batch_dir / "response.json", submission)
+        write_json(
+            assessments_path,
+            {
+                sample_id: {
+                    axis: outcome.model_dump(mode="json")
+                    for axis, outcome in axes.items()
+                }
+                for sample_id, axes in outcomes.items()
+            },
+        )
+    else:
+        pass
     return outcomes
 
 
@@ -615,51 +622,66 @@ def main(argv: list[str] | None = None) -> int:
         config.model_dump(mode="json"),
         "judge configuration",
     )
-    if not run_controls(client, config, prompt, schema, args.out):
-        print(
-            "Control check failed: this judge configuration is not accepted.",
-            file=sys.stderr,
-        )
-        return 1
-    elif args.controls_only:
-        return 0
+    if args.controls_only:
+        batches = []
     else:
-        pass
-
-    population, packets, input_receipt = build_inputs(
-        args.reference_audio, args.scores / "engines" / args.engine, args.dataset_root
-    )
-    freeze(
-        args.out / "population.json",
-        [row.model_dump() for row in population],
-        "population",
-    )
-    freeze(args.out / "inputs.json", packets, "judge inputs")
-    inputs_sha256 = file_sha256(args.out / "inputs.json")
-    freeze(
-        args.out / "input-receipt.json",
-        {**input_receipt, "inputs_sha256": inputs_sha256},
-        "input receipt",
-    )
-
-    batches = [
-        packets[start : start + config.batch_pairs]
-        for start in range(0, len(packets), config.batch_pairs)
-    ]
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        results = list(
-            executor.map(
-                lambda numbered: grade_batch(
-                    client,
-                    config,
-                    prompt,
-                    schema,
-                    args.out / "batches" / f"b{numbered[0]:03d}",
-                    numbered[1],
-                ),
-                enumerate(batches, start=1),
-            )
+        population, packets, input_receipt = build_inputs(
+            args.reference_audio,
+            args.scores / "engines" / args.engine,
+            args.dataset_root,
         )
+        freeze(
+            args.out / "population.json",
+            [row.model_dump() for row in population],
+            "population",
+        )
+        freeze(args.out / "inputs.json", packets, "judge inputs")
+        inputs_sha256 = file_sha256(args.out / "inputs.json")
+        freeze(
+            args.out / "input-receipt.json",
+            {**input_receipt, "inputs_sha256": inputs_sha256},
+            "input receipt",
+        )
+        batches = [
+            packets[start : start + config.batch_pairs]
+            for start in range(0, len(packets), config.batch_pairs)
+        ]
+
+    # note (luojiaxuan): the control request runs beside the batches, outside
+    # their --concurrency pool. Leaving the pool early, on failed controls, an
+    # exception or Ctrl-C, cancels the queued batches.
+    with ThreadPoolExecutor(max_workers=1) as control_executor:
+        controls = control_executor.submit(
+            run_controls, client, config, prompt, schema, args.out
+        )
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            try:
+                graded = [
+                    executor.submit(
+                        grade_batch,
+                        client,
+                        config,
+                        prompt,
+                        schema,
+                        args.out / "batches" / f"b{index:03d}",
+                        batch,
+                        controls,
+                    )
+                    for index, batch in enumerate(batches, start=1)
+                ]
+                if not controls.result():
+                    print(
+                        "Control check failed: this judge configuration is not accepted.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                elif args.controls_only:
+                    return 0
+                else:
+                    pass
+                results = [future.result() for future in graded]
+            finally:
+                executor.shutdown(cancel_futures=True)
     outcomes = {
         sample_id: axes for result in results for sample_id, axes in result.items()
     }

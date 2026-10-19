@@ -88,6 +88,17 @@ def test_float32_seeded_sampling_is_repeatable() -> None:
     torch.testing.assert_close(first, second, rtol=0, atol=0)
     assert first.dtype == torch.long
     assert first.shape == (2,)
+    expected = []
+    for row, (seed, position) in enumerate(zip(seeds.tolist(), positions.tolist())):
+        hashes = torch.tensor(
+            [reference_hash(seed, position, column) for column in range(3)],
+            dtype=torch.int64,
+        )
+        uniform = hashes.to(dtype=torch.float32) / float(UINT32_MASK)
+        uniform.clamp_(min=torch.finfo(torch.float32).tiny, max=1.0 - 2.0**-24)
+        gumbel = -torch.log(-torch.log(uniform))
+        expected.append(int(torch.argmax(logprobs[row] + gumbel)))
+    assert first.tolist() == expected
 
 
 def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
@@ -106,6 +117,13 @@ def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
     )
 
     assert observed_dtypes == [torch.float32, torch.float32]
+    sampling_kernels.seeded_gumbel_argmax_float32(
+        torch.tensor([[0.0, -1.0]], dtype=torch.bfloat16),
+        torch.tensor([5], dtype=torch.int64),
+        torch.tensor([7], dtype=torch.int64),
+    )
+
+    assert observed_dtypes == [torch.float32] * 4
 
 
 def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:

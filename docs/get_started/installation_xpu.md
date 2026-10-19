@@ -12,13 +12,13 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
 that model's CosyVoice dependencies — see
 [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
 [ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
-families (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
+families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
@@ -198,7 +198,7 @@ pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
-#### Base
+**Base**
 
 ```bash
 sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000
@@ -210,7 +210,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "response_format":"wav"}' -o out.wav
 ```
 
-#### CustomVoice
+**CustomVoice**
 
 `CustomVoice` checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:
 
@@ -226,7 +226,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "instructions":"Speak clearly and calmly.","response_format":"wav"}' -o out.wav
 ```
 
-#### VoiceDesign
+**VoiceDesign**
 
 The `VoiceDesign` checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:
 
@@ -243,7 +243,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
        "instructions":"A warm, natural young adult voice.","response_format":"wav"}' -o out.wav
 ```
 
-#### Codec decoding on XPU
+**Codec decoding on XPU**
 
 The stateful incremental codec decoder runs, but the pipeline starts it with
 `async_decode: false`, and the vocoder captures its decode graphs during the
@@ -440,6 +440,23 @@ ZE_AFFINITY_MASK=0 python examples/run_personaplex.py \
   --lm.engine.mem_fraction_static 0.70
 ```
 
+### Nemotron VoiceChat (speech-to-speech, two XPUs)
+
+Follow the [Nemotron VoiceChat prerequisites](../cookbook/nemotron_voicechat.md#prerequisites)
+to download the model. Its weights take about 22.6 GB, so on 24 GB Intel Arc Pro B60 cards the
+thinker runs on its own card while perception, the talker and the codec share the other. It
+needs two free XPUs:
+
+```bash
+python examples/run_nemotron_voicechat.py \
+  --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
+  --audio /path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav \
+  --out reply.wav \
+  --thinker.process thinker --thinker.gpu 1 \
+  --thinker.engine.mem_fraction_static 0.90 \
+  --talker.engine.mem_fraction_static 0.50
+```
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
@@ -477,6 +494,42 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output rock_1.wav
 ```
 
+### Ming-Omni (omni chat and speech, one or two XPUs)
+
+Ming-flash-omni-2.0's thinker holds 194 GiB of bf16 weights, so on 24 GB cards it runs TP=1 with
+`cpu_offload_gb 190`. Offload re-uploads weights inside a captured region and outside the KV budget,
+so disable the decode graph and keep `--mem-fraction-static` at 0.30. Staging the offloaded weights
+can take longer than the default 600 s startup timeout.
+```bash
+export SGLANG_OMNI_STARTUP_TIMEOUT=1800
+# omni chat (text, image, audio and video in, text out) on one card
+ZE_AFFINITY_MASK=0 sgl-omni serve --model-path inclusionAI/Ming-flash-omni-2.0 \
+  --model-name ming-omni --text-only \
+  --thinker.tp_size 1 --thinker.gpu 0 --audio_encoder.gpu 0 --image_encoder.gpu 0 \
+  --mem-fraction-static 0.30 --thinker.engine.cpu_offload_gb 190 \
+  --thinker.engine.cuda_graph_backend_decode disabled --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ming-omni","messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
+```
+Speech needs a voice preset, and the published checkpoint ships no `talker/data`. Register a short
+reference recording and its transcript in the downloaded checkpoint, then select it with
+`--talker.factory.voice`; the talker takes a second card:
+```bash
+MING=/path/to/Ming-flash-omni-2.0
+mkdir -p "$MING/talker/data" && cp /path/to/reference.wav "$MING/talker/data/en_ref.wav"
+cat > "$MING/talker/data/voice_name.json" <<'EOF'
+{"EN_REF": {"prompt_text": "Transcript of reference.wav.", "prompt_wav_path": "data/en_ref.wav"}}
+EOF
+ZE_AFFINITY_MASK=0,1 sgl-omni serve --model-path "$MING" \
+  --model-name ming-omni --talker.factory.voice EN_REF \
+  --thinker.tp_size 1 --thinker.gpu 0 --audio_encoder.gpu 0 --image_encoder.gpu 0 --talker.gpu 1 \
+  --mem-fraction-static 0.30 --thinker.engine.cpu_offload_gb 190 \
+  --thinker.engine.cuda_graph_backend_decode disabled --host 0.0.0.0 --port 8000
+```
+Each decode step streams the offloaded weights to the card (about 7 s per token on an Arc Pro B60),
+so concurrent requests raise throughput almost linearly.
+
 ### Ming-Omni-TTS (16.8B-A3B MoE, two XPUs)
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
@@ -506,7 +559,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni-TTS, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3 and Ming-Omni-TTS need two cards;
+> ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
+> Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

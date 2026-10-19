@@ -7,9 +7,19 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import create_sampler
+from sglang.srt.runtime_context import get_context, get_parallel
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_model_runner import (
+    register_flashinfer_seeded_sampler,
+)
 from sglang_omni.sampling.seed import derive_sampling_seed
+
+VOCAB_SIZE = 3072
+TOP_K = 50
 
 
 def req(seed, request_id="req"):
@@ -20,10 +30,10 @@ def req(seed, request_id="req"):
     )
 
 
-def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False):
+def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False, device="cpu"):
     return SimpleNamespace(
         sampling_info=SimpleNamespace(
-            device="cpu",
+            device=device,
             sampling_seed=sampling_seed,
             need_top_p_sampling=top_p,
             need_top_k_sampling=top_k,
@@ -61,23 +71,9 @@ def test_does_not_clobber_subclass_installed_seed():
 def test_preinstalled_seed_requires_sampling_mode_contract():
     runner = object.__new__(ModelRunner)
     preset = torch.tensor([1, 2])
-    fb = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=preset))
-    with pytest.raises(AttributeError):
+    fb = make_fb(sampling_seed=preset, min_p=True)
+    with pytest.raises(ValueError, match="min_p"):
         runner.install_sampling_seeds(fb, [req(42), req(42)])
-
-
-def test_unseeded_row_in_seeded_batch_uses_rank_shared_fallback():
-    runner = object.__new__(ModelRunner)
-    requests = [req(42, "seeded"), req(None, "unseeded")]
-    fb = make_fb()
-    runner.install_sampling_seeds(fb, requests)
-    fallback = int(fb.sampling_info.sampling_seed[1])
-    assert requests[1].data.req.sampling_params.sampling_seed is None
-
-    fb_next = make_fb()
-    runner.install_sampling_seeds(fb_next, requests)
-    assert int(fb_next.sampling_info.sampling_seed[1]) == fallback
-    assert requests[1].data.req.sampling_params.sampling_seed is None
 
 
 def test_rejects_seeded_min_p_before_upstream_sampler():
@@ -86,22 +82,201 @@ def test_rejects_seeded_min_p_before_upstream_sampler():
         runner.install_sampling_seeds(make_fb(min_p=True), [req(42)])
 
 
-def test_rejects_seeded_flashinfer_top_p_before_upstream_sampler(monkeypatch):
-    monkeypatch.setattr(
-        "sglang_omni.model_runner.base.current_sglang_sampling_backend",
-        lambda: "flashinfer",
-    )
+def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
     runner = object.__new__(ModelRunner)
-    with pytest.raises(ValueError, match="flashinfer"):
-        runner.install_sampling_seeds(make_fb(top_p=True), [req(42)])
-
-
-def test_allows_seeded_pytorch_top_p(monkeypatch):
-    monkeypatch.setattr(
-        "sglang_omni.model_runner.base.current_sglang_sampling_backend",
-        lambda: "pytorch",
-    )
-    runner = object.__new__(ModelRunner)
-    fb = make_fb(top_p=True)
-    runner.install_sampling_seeds(fb, [req(42)])
+    fb = make_fb(top_p=True, top_k=True)
+    with get_context().override_server_args(sampling_backend="flashinfer"):
+        runner.install_sampling_seeds(fb, [req(42)])
     assert int(fb.sampling_info.sampling_seed[0]) == 42
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_installs_cuda_seeds_without_a_host_wait() -> None:
+    runner = object.__new__(ModelRunner)
+    fb = make_fb(device="cuda")
+    torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
+    runner.install_sampling_seeds(fb, [req(42, "seeded"), req(None, "unseeded")])
+    assert not torch.cuda.current_stream().query()
+    assert fb.sampling_info.sampling_seed.tolist() == [
+        42,
+        derive_sampling_seed("sglang-omni-unseeded-row", "unseeded"),
+    ]
+
+
+def sampling_info_for(
+    rows: int,
+    sampling_seeds: list[int] | None,
+    *,
+    top_k: int = TOP_K,
+    top_p: float = 1.0,
+    min_ps: list[float] | None = None,
+    sampling_mask_rows: list[int] | None = None,
+) -> SamplingBatchInfo:
+    min_ps = min_ps or [0.0] * rows
+    return SamplingBatchInfo(
+        temperatures=torch.full((rows, 1), 0.9, device="cuda"),
+        top_ps=torch.full((rows,), top_p, device="cuda"),
+        top_ks=torch.full((rows,), top_k, dtype=torch.int32, device="cuda"),
+        min_ps=torch.tensor(min_ps, device="cuda"),
+        is_all_greedy=False,
+        is_any_greedy=False,
+        need_top_p_sampling=top_p < 1.0,
+        need_top_k_sampling=True,
+        need_min_p_sampling=any(min_ps),
+        vocab_size=VOCAB_SIZE,
+        sampling_seed=(
+            None
+            if sampling_seeds is None
+            else torch.tensor(sampling_seeds, dtype=torch.long, device="cuda")
+        ),
+        sampling_mask_batch_indices=(
+            None
+            if sampling_mask_rows is None
+            else torch.tensor(sampling_mask_rows, dtype=torch.long, device="cuda")
+        ),
+        device="cuda",
+    )
+
+
+def draw(
+    sampling_backend: str,
+    logits: torch.Tensor,
+    sampling_info: SamplingBatchInfo,
+    positions: torch.Tensor,
+) -> tuple[list[int], LogitsProcessorOutput]:
+    rows = logits.shape[0]
+    logits_output = LogitsProcessorOutput(next_token_logits=logits.clone())
+    with (
+        get_context().override_server_args(sampling_backend=sampling_backend),
+        get_parallel().override(tp_group=SimpleNamespace(device_group=None)),
+    ):
+        token_ids = create_sampler()(
+            logits_output,
+            sampling_info,
+            False,
+            [0] * rows,
+            [[] for _ in range(rows)],
+            positions,
+        )
+    return token_ids.view(-1).tolist(), logits_output
+
+
+def served_logits(rows: int) -> torch.Tensor:
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    return (torch.randn(rows, VOCAB_SIZE, generator=generator) * 4).to(
+        "cuda", torch.bfloat16
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_seeded_rows_draw_the_pytorch_backend_tokens_in_any_order() -> None:
+    register_flashinfer_seeded_sampler()
+    logits = served_logits(4)
+    seeds = [11, 22, 33, 44]
+    positions = torch.tensor([3, 17, 5, 40], device="cuda")
+    reversed_rows = torch.tensor([3, 2, 1, 0], device="cuda")
+
+    pytorch_tokens, _ = draw("pytorch", logits, sampling_info_for(4, seeds), positions)
+    flashinfer_tokens, _ = draw(
+        "flashinfer", logits, sampling_info_for(4, seeds), positions
+    )
+    reversed_tokens, _ = draw(
+        "flashinfer",
+        logits[reversed_rows],
+        sampling_info_for(4, seeds[::-1]),
+        positions[reversed_rows],
+    )
+
+    assert flashinfer_tokens == pytorch_tokens
+    assert reversed_tokens == pytorch_tokens[::-1]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_unseeded_rows_draw_with_flashinfer_keeping_top_k_ties() -> None:
+    register_flashinfer_seeded_sampler()
+    rows = 64
+    tied_tokens = {7, 300, 2048}
+    logits = torch.full((rows, VOCAB_SIZE), -20.0, device="cuda")
+    logits[:, sorted(tied_tokens)] = 10.0
+    positions = torch.arange(rows, device="cuda")
+
+    unseeded_tokens, _ = draw(
+        "flashinfer", logits, sampling_info_for(rows, None, top_k=1), positions
+    )
+    seeded_tokens, _ = draw(
+        "flashinfer",
+        logits,
+        sampling_info_for(rows, list(range(1, rows + 1)), top_k=1),
+        positions,
+    )
+
+    assert set(unseeded_tokens) == tied_tokens
+    assert len(set(seeded_tokens)) == 1
+    assert set(seeded_tokens) <= tied_tokens
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_seeded_rows_return_the_pytorch_backend_sampling_mask() -> None:
+    """A seeded FlashInfer batch that asks for the sampling mask gets the PyTorch
+    backend's mask."""
+    register_flashinfer_seeded_sampler()
+    logits = served_logits(3)
+    seeds = [11, 22, 33]
+    positions = torch.tensor([3, 17, 5], device="cuda")
+
+    pytorch_tokens, pytorch_output = draw(
+        "pytorch",
+        logits,
+        sampling_info_for(3, seeds, sampling_mask_rows=[0, 2]),
+        positions,
+    )
+    flashinfer_tokens, flashinfer_output = draw(
+        "flashinfer",
+        logits,
+        sampling_info_for(3, seeds, sampling_mask_rows=[0, 2]),
+        positions,
+    )
+    pytorch_mask = pytorch_output.sampling_mask_output
+    flashinfer_mask = flashinfer_output.sampling_mask_output
+
+    assert flashinfer_tokens == pytorch_tokens
+    assert torch.equal(flashinfer_mask.token_ids, pytorch_mask.token_ids)
+    assert torch.equal(flashinfer_mask.lengths, pytorch_mask.lengths)
+    assert torch.equal(
+        flashinfer_mask.selected_logprobs, pytorch_mask.selected_logprobs
+    )
+    assert torch.equal(flashinfer_mask.statuses, pytorch_mask.statuses)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_min_p_batches_keep_the_pytorch_backend_support_on_every_row() -> None:
+    register_flashinfer_seeded_sampler()
+    logits = torch.full((2, VOCAB_SIZE), float("-inf"), device="cuda")
+    logits[:, :4] = torch.tensor([0.4, 0.3, 0.2, 0.1], device="cuda").log()
+    positions = torch.tensor([3, 17], device="cuda")
+
+    masks = {
+        sampling_backend: draw(
+            sampling_backend,
+            logits,
+            sampling_info_for(
+                2,
+                None,
+                top_k=2,
+                top_p=0.5,
+                min_ps=[0.01, 0.0],
+                sampling_mask_rows=[0, 1],
+            ),
+            positions,
+        )[1].sampling_mask_output
+        for sampling_backend in ("pytorch", "flashinfer")
+    }
+
+    assert masks["flashinfer"].lengths.tolist() == [2, 2]
+    assert torch.equal(masks["flashinfer"].token_ids, masks["pytorch"].token_ids)
+    assert torch.equal(masks["flashinfer"].lengths, masks["pytorch"].lengths)

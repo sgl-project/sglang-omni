@@ -70,6 +70,9 @@ Supported Models
    * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
      - ASR
      - Multi-speaker transcription + diarization + timestamps
+   * - `nvidia/Nemotron-3-Diarization <https://huggingface.co/nvidia/Nemotron-3-Diarization>`_
+     - Diarization
+     - Up to eight overlapping speakers for uploads and live audio (see `cookbook <cookbook/nemotron_diarization.html>`_)
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
      - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
@@ -96,6 +99,7 @@ Supported Models
    get_started/installation_xpu.md
    get_started/installation_cpu.md
    get_started/installation_musa.md
+   get_started/troubleshooting.md
 
 
 .. toctree::
@@ -103,8 +107,10 @@ Supported Models
    :caption: Cookbook
 
    cookbook/higgs_tts.md
+   cookbook/nemotron_diarization.md
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
+   cookbook/fishaudio_drama3.md
    cookbook/qwen3_tts.md
    cookbook/ming_tts.md
    cookbook/moss_tts.md
@@ -126,12 +132,14 @@ Supported Models
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
+   cookbook/cosmos3_nano.md
 
 .. toctree::
    :maxdepth: 1
    :caption: General Usage
 
    basic_usage/qwen3_omni.md
+   basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/process_topology.md
@@ -139,14 +147,7 @@ Supported Models
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Benchmarks
-
-   benchmarks/relay.md
-   benchmarks/qwen3_tts_leading_silence.md
+   basic_usage/native_media_routes.md
 
 
 .. toctree::
@@ -163,5 +164,11 @@ Supported Models
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/full_duplex_bench.md
+   developer_reference/full_duplex_metrics.md
+   developer_reference/tts_bench.md
+   developer_reference/asr_bench.md
+   developer_reference/omni_offline_bench.md
    developer_reference/rl_admin_control.md
+   developer_reference/mlx.md
+   developer_reference/ci_labels.md
    developer_reference/bump_version.md

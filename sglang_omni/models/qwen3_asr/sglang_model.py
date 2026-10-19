@@ -22,9 +22,9 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Attention, Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
-from transformers import PretrainedConfig
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.utils.hf import use_text_rope
 
 from .configuration_qwen3_asr import Qwen3ASRConfig
 from .encoder_cuda_graph import (
@@ -36,29 +36,6 @@ from .encoder_cuda_graph import (
 
 logger = logging.getLogger(__name__)
 fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
-
-_MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
-
-
-def normalize_asr_text_rope(text_config: PretrainedConfig) -> None:
-    # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
-    # rows are identical, so ordinary text RoPE is numerically equivalent and
-    # avoids the multimodal permutation/copy path on every decoder layer.
-    for attr in ("rope_parameters", "rope_scaling"):
-        parameters = getattr(text_config, attr, None)
-        if not isinstance(parameters, dict) or "mrope_section" not in parameters:
-            continue
-        else:
-            pass
-        setattr(
-            text_config,
-            attr,
-            {
-                key: value
-                for key, value in parameters.items()
-                if key not in _MROPE_ONLY_KEYS
-            },
-        )
 
 
 def fused_asr_forward_prepare_native(
@@ -160,7 +137,10 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         else:
             pass
 
-        normalize_asr_text_rope(thinker_config.text_config)
+        # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
+        # rows are identical, so ordinary text RoPE is numerically equivalent and
+        # avoids the multimodal permutation/copy path on every decoder layer.
+        use_text_rope(thinker_config.text_config)
 
         self.audio_tower = Qwen3OmniMoeAudioEncoder(thinker_config.audio_config)
         self.language_model = Qwen3ForCausalLM(

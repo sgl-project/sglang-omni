@@ -2,7 +2,7 @@
 """Native relay of unit images and audio from perception into the thinker session."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
@@ -13,18 +13,10 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
 )
-from sglang_omni.models.minicpm_o.duplex_sampler import (
-    build_forbidden_token_index,
-    duplex_sample,
-)
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
-from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
-    MiniCPMOThinkerModelRunner,
-)
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
-from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
@@ -58,7 +50,13 @@ def perception() -> MiniCPMOPerceptionState:
     state.prepare_audio = Mock(return_value=np.zeros(4, dtype=np.float32))
     state.mel_chunk = Mock(return_value=Mock(batch_key=Mock(return_value=())))
     state.finish_audio = Mock()
-    state.encode_image = Mock(return_value=torch.full((64, 4), 6.0))
+    image = torch.full((64, 4), 6.0)
+    state.prepare_image = Mock()
+    state.encode_images = Mock(
+        side_effect=lambda prepared_image_features: (
+            (image,) if prepared_image_features else ()
+        )
+    )
     return state
 
 
@@ -101,57 +99,6 @@ def unit_payload(data: PerceptionStepPlan | None = None) -> StagePayload:
 
 
 @pytest.mark.parametrize(
-    ("use_runner", "max_new_tokens", "generation_step", "closes"),
-    [
-        (True, 20, 0, False),
-        (False, 20, 0, False),
-        (False, 5, 4, True),
-        (False, 6, 4, False),
-    ],
-)
-def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
-    use_runner: bool, max_new_tokens: int, generation_step: int, closes: bool
-) -> None:
-    """Both init paths keep the checkpoint mask; the token budget closes the chunk."""
-    tokenizer = Mock(unk_token_id=0, bad_token_ids=[7, 8, 94])
-    tokenizer.convert_tokens_to_ids.side_effect = dict(
-        zip(REQUIRED_SPECIAL_TOKENS, range(100, 116))
-    ).__getitem__
-    if use_runner:
-        runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
-        runner.special_tokens = None
-        runner.eos_token_ids = []
-        special = runner.resolve_special_tokens(
-            SimpleNamespace(req=Mock(tokenizer=tokenizer))
-        )
-    else:
-        special = ThinkerAdapter(tokenizer, 128).special
-    logits = torch.full((128,), -torch.inf)
-    logits[7] = 100.0
-    logits[special.tts_pad] = 99.0
-    logits[42] = 0.0
-    state = MiniCPMOThinkerSessionState(
-        sampling=MiniCPMODuplexSampling(
-            greedy=True,
-            top_k=1,
-            repetition_penalty=1.0,
-            max_new_tokens_per_unit=max_new_tokens,
-        )
-    )
-    token_id = duplex_sample(
-        logits,
-        state,
-        special_tokens=special,
-        forbidden_token_index=build_forbidden_token_index(
-            special, 128, torch.device("cpu")
-        ),
-        generation_step=generation_step,
-        is_listen_forced=False,
-    )
-    assert token_id == (special.chunk_eos if closes else 42)
-
-
-@pytest.mark.parametrize(
     ("has_image", "first_unit"), [(False, False), (True, False), (True, True)]
 )
 def test_append_and_thinker_splice(
@@ -172,9 +119,13 @@ def test_append_and_thinker_splice(
         np.arange(16000, dtype=np.float32) / 32768,
     )
     if has_image:
-        perception.encode_image.assert_called_once_with(b"frame")
+        perception.prepare_image.assert_called_once_with(b"frame")
+        perception.encode_images.assert_called_once_with(
+            (perception.prepare_image.return_value,)
+        )
     else:
-        perception.encode_image.assert_not_called()
+        perception.prepare_image.assert_not_called()
+        perception.encode_images.assert_called_once_with(())
     adapter = ThinkerAdapter(perception.tokenizer, 100)
     adapter.open(IDENTITY, payload.request)
     adapter.states[IDENTITY].is_prefix_pending = first_unit
@@ -199,6 +150,103 @@ def test_append_and_thinker_splice(
         assert torch.equal(rows[prefix_length + 66], torch.full((4,), -1.0))
     else:
         pass
+
+
+def test_batched_sessions_keep_vision_and_audio_associated(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    second_identity = SessionIdentity("second")
+    second_state = MiniCPMOPerceptionState(
+        tokenizer=perception.tokenizer,
+        processor=perception.processor,
+        audio_encoder=perception.audio_encoder,
+        image_encoder=perception.image_encoder,
+        max_slice_nums=1,
+        mel_filter_bank=perception.mel_filter_bank,
+    )
+    second_state.prepare_audio = Mock(return_value=np.ones(4, dtype=np.float32))
+    second_state.mel_chunk = Mock(return_value=Mock(batch_key=Mock(return_value=())))
+    second_state.finish_audio = Mock()
+    second_prepared_images = [Mock(), Mock()]
+    second_state.prepare_image = Mock(side_effect=second_prepared_images)
+    second_image_embeds = (
+        torch.full((64, 4), 3.0),
+        torch.full((64, 4), 4.0),
+    )
+    second_state.encode_images = Mock(return_value=second_image_embeds)
+    hooks.states[second_identity] = second_state
+
+    first_prepared_images = [Mock(), Mock()]
+    first_image_embeds = (
+        torch.full((64, 4), 1.0),
+        torch.full((64, 4), 2.0),
+    )
+    perception.prepare_image.side_effect = first_prepared_images
+    perception.encode_images.side_effect = None
+    perception.encode_images.return_value = first_image_embeds
+    perception.audio_encoder.forward_streaming_batch.side_effect = lambda chunks: [
+        (torch.full((10, 4), 9.0 + index), None) for index, _ in enumerate(chunks)
+    ]
+
+    first_payload = unit_payload()
+    second_payload = unit_payload()
+    appends = [
+        SessionAppend(
+            chunk=TimedChunk(
+                "audio",
+                0,
+                1000,
+                0,
+                {"pcm": b"\0\0", "images": [b"first-0", b"first-1"]},
+            ),
+            payload=first_payload,
+            context=SimpleNamespace(session_identity=IDENTITY),
+        ),
+        SessionAppend(
+            chunk=TimedChunk(
+                "audio",
+                0,
+                1000,
+                0,
+                {"pcm": b"\0\0", "images": [b"second-0", b"second-1"]},
+            ),
+            payload=second_payload,
+            context=SimpleNamespace(session_identity=second_identity),
+        ),
+    ]
+
+    assert hooks.append_batch(appends) == [first_payload, second_payload]
+    assert perception.prepare_image.call_args_list == [
+        call(b"first-0"),
+        call(b"first-1"),
+    ]
+    assert second_state.prepare_image.call_args_list == [
+        call(b"second-0"),
+        call(b"second-1"),
+    ]
+    perception.encode_images.assert_called_once_with(tuple(first_prepared_images))
+    second_state.encode_images.assert_called_once_with(tuple(second_prepared_images))
+    perception.audio_encoder.forward_streaming_batch.assert_called_once()
+    assert len(perception.audio_encoder.forward_streaming_batch.call_args.args[0]) == 2
+    perception.finish_audio.assert_called_once_with(None)
+    second_state.finish_audio.assert_called_once_with(None)
+
+    assert first_payload.data is not None
+    assert second_payload.data is not None
+    assert torch.equal(first_payload.data["input_embeds"][:64], first_image_embeds[0])
+    assert torch.equal(
+        first_payload.data["input_embeds"][64:128], first_image_embeds[1]
+    )
+    assert torch.equal(second_payload.data["input_embeds"][:64], second_image_embeds[0])
+    assert torch.equal(
+        second_payload.data["input_embeds"][64:128], second_image_embeds[1]
+    )
+    assert torch.equal(
+        first_payload.data["input_embeds"][-10:], torch.full((10, 4), 9.0)
+    )
+    assert torch.equal(
+        second_payload.data["input_embeds"][-10:], torch.full((10, 4), 10.0)
+    )
 
 
 @pytest.mark.parametrize("finish", ["complete", "abort"])
@@ -254,7 +302,22 @@ def test_empty_eos_does_not_encode(
     append_unit(hooks, TimedChunk("audio", 0, 0, 1, None, eos=True), payload)
     assert payload.data is None
     perception.prepare_audio.assert_not_called()
-    perception.encode_image.assert_not_called()
+    perception.prepare_image.assert_not_called()
+    perception.encode_images.assert_not_called()
+
+
+def test_image_encoder_failure_propagates(
+    perception: MiniCPMOPerceptionState, hooks: PerceptionHooks
+) -> None:
+    perception.encode_images.side_effect = ValueError("image encoder failed")
+    payload = unit_payload()
+    with pytest.raises(ValueError, match="image encoder failed"):
+        append_unit(
+            hooks,
+            TimedChunk("audio", 0, 1000, 0, {"pcm": b"\0\0", "images": [b"frame"]}),
+            payload,
+        )
+    perception.prepare_image.assert_called_once_with(b"frame")
 
 
 @pytest.mark.parametrize(
@@ -269,7 +332,10 @@ def test_undecodable_frame_is_dropped_and_siblings_kept(
 ) -> None:
     first = torch.full((64, 4), 3.0)
     last = torch.full((64, 4), 7.0)
-    perception.encode_image.side_effect = [first, error, last]
+    first_prepared = Mock()
+    last_prepared = Mock()
+    perception.prepare_image.side_effect = [first_prepared, error, last_prepared]
+    perception.encode_images.side_effect = lambda _: (first, last)
     payload = unit_payload()
     append_unit(
         hooks,
@@ -278,6 +344,7 @@ def test_undecodable_frame_is_dropped_and_siblings_kept(
         ),
         payload,
     )
+    perception.encode_images.assert_called_once_with((first_prepared, last_prepared))
     spans = payload.data["embedding_spans"]
     assert [span["modality"] for span in spans] == ["image", "image", "audio"]
     assert torch.equal(payload.data["input_embeds"][:128], torch.cat([first, last]))

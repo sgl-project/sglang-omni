@@ -6,6 +6,20 @@ This guide uses [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Inst
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+## Server Readiness
+
+Before it reports ready, the server sends itself a chat request with a small
+image, one second of audio and a short instruction (text and audio output in
+speech mode, text output in text-only mode, at most 8 new tokens from each
+stage that generates tokens), once per replica of its most
+replicated process, one after another, so that every replica serves one.
+`/health` returns 503 with status `starting` until these requests have passed
+through every stage, so the one-time kernel builds of that request path happen
+before the first user request. Inputs of other shapes, such as video or a large
+concurrent batch, can still build a kernel variant on first use. A failed
+warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600)
+bounds each request, and `--skip-server-warmup` reports ready without them.
+
 ## Text-Only Mode
 
 Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal input (text, image, audio) and produces text output only.

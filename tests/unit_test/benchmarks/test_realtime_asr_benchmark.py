@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 import websockets
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from benchmarks.realtime_asr.client import (
     SAMPLE_RATE,
@@ -104,6 +104,8 @@ class FakeTranscriptionServer:
                         {
                             "type": "transcription.segment",
                             "segment_id": 0,
+                            "audio_start_ms": 0,
+                            "audio_end_ms": audio_bytes * 1000 // (SAMPLE_RATE * 2),
                             "text": f"partial {audio_bytes}",
                             "is_final": False,
                         }
@@ -117,6 +119,8 @@ class FakeTranscriptionServer:
                         {
                             "type": "transcription.segment",
                             "segment_id": 0,
+                            "audio_start_ms": 0,
+                            "audio_end_ms": audio_bytes * 1000 // (SAMPLE_RATE * 2),
                             "text": "hello world",
                             "is_final": True,
                         }
@@ -228,7 +232,7 @@ def test_trailing_silence_extends_sent_audio_but_not_duration(fake_server):
 def test_timeout_is_reported_not_raised():
     async def hang(websocket):
         await websocket.send(json.dumps({"type": "session.created", "session": {}}))
-        await asyncio.sleep(5)
+        await websocket.wait_closed()
 
     async def run():
         async with websockets.serve(hang, "127.0.0.1", 0) as ws_server:
@@ -277,10 +281,20 @@ def make_trace(
     return trace
 
 
-def seg(segment_id: int, text: str, *, final: bool, index: int) -> dict:
+def seg(
+    segment_id: int,
+    text: str,
+    *,
+    final: bool,
+    index: int,
+    start_ms: int = 0,
+    end_ms: int | None = None,
+) -> dict:
     return {
         "type": "transcription.segment",
         "segment_id": segment_id,
+        "audio_start_ms": start_ms,
+        "audio_end_ms": start_ms + 1000 if end_ms is None else end_ms,
         "text": text,
         "is_final": final,
         "event_index": index,
@@ -301,8 +315,8 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 1,
                 },
             ),
-            (1.5, seg(0, "hel", final=False, index=2)),
-            (2.6, seg(0, "hello wor", final=False, index=3)),
+            (1.5, seg(0, "hel", final=False, index=2, start_ms=400)),
+            (2.6, seg(0, "hello wor", final=False, index=3, start_ms=400)),
             (
                 3.1,
                 {
@@ -311,7 +325,7 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 4,
                 },
             ),
-            (3.4, seg(0, "hello world", final=True, index=5)),
+            (3.4, seg(0, "hello world", final=True, index=5, start_ms=400)),
             (
                 3.5,
                 {
@@ -367,32 +381,72 @@ def test_refresh_point_lookup_is_exact_on_packet_boundaries():
     assert latency_metrics(trace)["first_partial_latency_s"] == [pytest.approx(0.1)]
 
 
-def test_first_partial_skipped_when_segment_start_unknown():
-    # Second segment without a speech_started event: no start, no latency.
+def test_segment_opened_by_hard_cut_is_measured_from_the_cut():
+    # Segment 1 opens at the 1000 ms cut with no speech_started; its refresh
+    # point is 2000 ms, reached by packet 10 sent at t0 + 1.8 s.
     trace = make_trace(
         [
-            (1.0, seg(1, "x", final=False, index=1)),
+            (
+                0.1,
+                {
+                    "type": "input_audio_buffer.speech_started",
+                    "audio_start_ms": 0,
+                    "segment_id": 0,
+                    "event_index": 1,
+                },
+            ),
+            (1.0, seg(0, "a", final=False, index=2)),
+            (
+                1.1,
+                {
+                    "type": "input_audio_buffer.committed",
+                    "segment_id": 0,
+                    "event_index": 3,
+                },
+            ),
+            (1.2, seg(0, "ab", final=True, index=4)),
+            (2.0, seg(1, "c", final=False, index=5, start_ms=1000)),
             (
                 3.1,
                 {
                     "type": "input_audio_buffer.committed",
                     "segment_id": 1,
-                    "event_index": 2,
+                    "event_index": 6,
                 },
             ),
-            (3.2, seg(1, "x", final=True, index=3)),
-            (3.3, {"type": "transcription.completed", "text": "x", "event_index": 4}),
+            (3.2, seg(1, "cd", final=True, index=7, start_ms=1000)),
+            (
+                3.3,
+                {"type": "transcription.completed", "text": "ab cd", "event_index": 8},
+            ),
+        ]
+    )
+    assert latency_metrics(trace)["first_partial_latency_s"] == [
+        pytest.approx(0.2),
+        pytest.approx(0.2),
+    ]
+    assert check_invariants(trace) == []
+
+
+def test_first_partial_skipped_when_segment_start_missing():
+    event = seg(0, "x", final=False, index=1)
+    del event["audio_start_ms"]
+    trace = make_trace(
+        [
+            (1.0, event),
+            (3.3, {"type": "transcription.completed", "text": "x", "event_index": 2}),
         ],
         turn_detection=None,
     )
     assert latency_metrics(trace)["first_partial_latency_s"] == []
+    assert "missing or non-integer" in "\n".join(check_invariants(trace))
 
 
 def test_invariants_flag_each_protocol_violation():
     trace = make_trace(
         [
             (1.0, seg(0, "a", final=True, index=1)),
-            (1.1, seg(0, "b", final=False, index=3)),  # update after final
+            (1.1, seg(0, "b", final=False, index=3, start_ms=5)),  # update after final
             (
                 1.2,
                 {"type": "error", "error": {"code": "boom"}, "event_index": 2},
@@ -406,7 +460,20 @@ def test_invariants_flag_each_protocol_violation():
     assert "event_index not strictly increasing" in joined
     assert "do not match final segments" in joined
     assert "updated after its final event" in joined
+    assert "audio_start_ms changed" in joined
     assert "no transcription.completed" in joined
+
+
+def test_invariants_flag_segment_ending_before_it_starts():
+    trace = make_trace(
+        [
+            (1.0, seg(0, "a", final=False, index=1, start_ms=400, end_ms=400)),
+            (3.3, {"type": "transcription.completed", "text": "a", "event_index": 2}),
+        ]
+    )
+    assert "audio_end_ms 400 not after audio_start_ms 400" in "\n".join(
+        check_invariants(trace)
+    )
 
 
 def test_percentile_and_summarize():
@@ -423,6 +490,150 @@ def test_percentile_and_summarize():
         "n": 20,
     }
     assert summarize([]) is None
+
+
+@pytest.fixture
+def valid_events() -> list[dict[str, JsonValue]]:
+    return [
+        {"type": "session.created", "session": {}, "event_index": 1},
+        {
+            "type": "input_audio_buffer.committed",
+            "segment_id": 0,
+            "event_index": 2,
+        },
+        {
+            "type": "transcription.segment",
+            "segment_id": 0,
+            "audio_start_ms": 0,
+            "audio_end_ms": 1000,
+            "text": "hello",
+            "is_final": True,
+            "event_index": 3,
+        },
+        {"type": "transcription.completed", "text": "hello", "event_index": 4},
+    ]
+
+
+def trace_from_events(events: list[dict[str, JsonValue]]) -> SessionTrace:
+    return SessionTrace(
+        url="ws://example.test/v1/realtime?intent=transcription",
+        received=[
+            ReceivedEvent(recv_s=position / 10, event=event)
+            for position, event in enumerate(events)
+        ],
+    )
+
+
+def test_valid_committed_final_completed_order(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    assert check_invariants(trace_from_events(valid_events)) == []
+
+
+@pytest.mark.parametrize("positions", [(0,), (1,), (2,), (3,), (0, 1, 2, 3)])
+def test_missing_event_indexes_fail(
+    valid_events: list[dict[str, JsonValue]], positions: tuple[int, ...]
+) -> None:
+    for position in positions:
+        valid_events[position].pop("event_index")
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "event_index missing or non-integer" in violation for violation in violations
+    )
+
+
+@pytest.mark.parametrize("event_index", [None, "1", 1.0, True, False])
+def test_non_integer_event_index_fails(
+    valid_events: list[dict[str, JsonValue]], event_index: str | float | bool | None
+) -> None:
+    valid_events[0]["event_index"] = event_index
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "event_index missing or non-integer" in violation for violation in violations
+    )
+
+
+def test_duplicate_completed_fails_with_increasing_indexes(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append(
+        {"type": "transcription.completed", "text": "hello", "event_index": 5}
+    )
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "duplicate transcription.completed" in violation for violation in violations
+    )
+
+
+def test_partial_after_completed_fails_for_a_different_segment(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append(
+        {
+            "type": "transcription.segment",
+            "segment_id": 1,
+            "audio_start_ms": 1000,
+            "audio_end_ms": 2000,
+            "text": "late",
+            "is_final": False,
+            "event_index": 5,
+        }
+    )
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("after transcription.completed" in violation for violation in violations)
+
+
+def test_completed_before_final_fails_despite_matching_segment_ids(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    final_event = valid_events[2]
+    completed_event = valid_events[3]
+    final_event["event_index"] = 4
+    completed_event["event_index"] = 3
+    valid_events[2:] = [completed_event, final_event]
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("after transcription.completed" in violation for violation in violations)
+
+
+def test_final_before_committed_fails_despite_matching_segment_ids(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    committed_event = valid_events[1]
+    final_event = valid_events[2]
+    committed_event["event_index"] = 3
+    final_event["event_index"] = 2
+    valid_events[1:3] = [final_event, committed_event]
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("before its committed event" in violation for violation in violations)
+
+
+def test_session_control_event_after_completed_is_not_transcription_output(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append({"type": "session.updated", "session": {}, "event_index": 5})
+
+    assert check_invariants(trace_from_events(valid_events)) == []
+
+
+def test_empty_transcription_can_complete_without_segments() -> None:
+    events = [
+        {"type": "session.created", "session": {}, "event_index": 1},
+        {"type": "transcription.completed", "text": "", "event_index": 2},
+    ]
+
+    assert check_invariants(trace_from_events(events)) == []
 
 
 # --- paired WER delta ------------------------------------------------------

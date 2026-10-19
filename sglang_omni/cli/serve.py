@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 import yaml
@@ -23,6 +23,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.process import exit_without_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,14 @@ logger = logging.getLogger(__name__)
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 
 
-def launch_server(*args: object, **kwargs: object) -> object:
+def launch_server(*args: object, **kwargs: object) -> NoReturn:
     from sglang_omni.serve.launcher import launch_server as _launch_server
 
-    return _launch_server(*args, **kwargs)
+    _launch_server(*args, **kwargs)
+    # note (Richard Wang): the launcher has stopped the pipeline and joined
+    # every stage by now. Tearing down the modules and objects the CLI
+    # imported took about a second more, and the server's stop waited for it.
+    exit_without_teardown(0)
 
 
 def validate_colocate_cli_request(
@@ -54,6 +59,21 @@ def validate_colocate_cli_request(
         raise typer.BadParameter("--colocate requires --config")
     else:
         pass
+
+
+def resolve_variant(
+    *, config: str | None, text_only: bool, variant: str | None
+) -> str | None:
+    if config and variant is not None:
+        raise typer.BadParameter("--variant cannot be combined with --config")
+    elif text_only and variant not in (None, "text"):
+        raise typer.BadParameter(
+            f"--text-only cannot be combined with --variant {variant}"
+        )
+    elif text_only:
+        return "text"
+    else:
+        return variant
 
 
 def validate_colocate_config(pipeline_config: PipelineConfig) -> None:
@@ -302,9 +322,22 @@ def serve(
         bool,
         typer.Option(
             "--text-only",
-            help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+            help=(
+                "Use the model's text output variant on 1 GPU, such as the "
+                "Qwen3-Omni thinker without talker or the Cosmos3 Reasoner."
+            ),
         ),
     ] = False,
+    variant: Annotated[
+        str | None,
+        typer.Option(
+            "--variant",
+            help=(
+                "Pipeline variant of the model, for example `session` for "
+                "MiniCPM-o full duplex. --text-only is --variant text."
+            ),
+        ),
+    ] = None,
     colocate: Annotated[
         bool,
         typer.Option(
@@ -375,6 +408,14 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
+    skip_server_warmup: Annotated[
+        bool,
+        typer.Option(
+            "--skip-server-warmup",
+            "--skip_server_warmup",
+            help="Report ready without sending the pipeline's warmup requests first.",
+        ),
+    ] = False,
 ) -> None:
     """Serve the pipeline.
 
@@ -397,6 +438,9 @@ def serve(
     )
 
     # --- Resolve config ---
+    selected_variant = resolve_variant(
+        config=config, text_only=text_only, variant=variant
+    )
     if config:
         try:
             config_manager = ConfigManager.from_file(config)
@@ -405,18 +449,31 @@ def serve(
             # two entries disagreeing about one path: all of these carry a
             # message written to be read, not a traceback.
             raise typer.BadParameter(str(exc)) from exc
-    elif text_only:
+    elif selected_variant is not None:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
         else:
             pass
-        config_manager = ConfigManager.from_model_path(model_path, variant="text")
+        try:
+            config_manager = ConfigManager.from_model_path(
+                model_path, variant=selected_variant
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     else:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
         else:
             pass
         config_manager = ConfigManager.from_model_path(model_path)
+    pipeline_config_cls = type(config_manager.config)
+    if pipeline_config_cls.is_realtime_only and not enable_realtime:
+        raise typer.BadParameter(
+            f"{pipeline_config_cls.__name__} serves only /v1/realtime. "
+            "Add --enable-realtime."
+        )
+    else:
+        pass
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values
@@ -477,4 +534,5 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        skip_server_warmup=skip_server_warmup,
     )

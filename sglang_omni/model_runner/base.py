@@ -8,11 +8,13 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias
 
 import torch
+from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
@@ -33,7 +35,6 @@ from sglang_omni.scheduling.types import (
 )
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -154,7 +155,7 @@ class ModelRunner(Generic[RequestDataInput]):
 
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
         self.tp_worker = tp_worker
@@ -902,6 +903,10 @@ class ModelRunner(Generic[RequestDataInput]):
     ) -> None:
         """Called after output tokens are materialized into RequestOutput."""
 
+    def model_info(self) -> Mapping[str, object]:
+        """Model-specific entries the model_info admin action adds to the worker's."""
+        return {}
+
     def on_request_finished(self, request_id: str, req_data: RequestDataInput) -> None:
         """Drain per-request state on any non-abort finish.
 
@@ -1043,7 +1048,7 @@ class ModelRunner(Generic[RequestDataInput]):
     ) -> None:
         """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
         ``multinomial_with_seed``. No-op when no request set a seed, or when a
-        subclass already installed its own (e.g. Qwen3-TTS).
+        subclass already installed its own.
 
         Runs once per decode step. User-provided seeds are resolved once and
         cached back onto ``sampling_params.sampling_seed``. In a mixed
@@ -1075,8 +1080,10 @@ class ModelRunner(Generic[RequestDataInput]):
                 pass
             row_seeds.append(seed)
         sampling_info.sampling_seed = torch.tensor(
-            row_seeds, dtype=torch.long, device=sampling_info.device
-        )
+            row_seeds,
+            dtype=torch.long,
+            pin_memory=is_pin_memory_available(sampling_info.device),
+        ).to(sampling_info.device, non_blocking=True)
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:
@@ -1084,20 +1091,6 @@ class ModelRunner(Generic[RequestDataInput]):
             raise ValueError(
                 "SGLang seeded sampling does not support min_p yet; set min_p=0 "
                 "or omit request seed"
-            )
-        else:
-            pass
-        need_top_p_sampling = sampling_info.need_top_p_sampling
-        need_top_k_sampling = sampling_info.need_top_k_sampling
-        if not (need_top_p_sampling or need_top_k_sampling):
-            return
-        else:
-            pass
-        if current_sglang_sampling_backend() == "flashinfer":
-            raise ValueError(
-                "SGLang flashinfer sampling backend does not support request seed "
-                "with top_p/top_k filtering; configure sampling_backend='pytorch' "
-                "or avoid top_p/top_k with seed"
             )
         else:
             pass

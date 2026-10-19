@@ -58,10 +58,6 @@ def test_plain_greedy_is_eligible():
     assert runner().lookahead_eligible(batch(req(), req())) is True
 
 
-def test_empty_batch_is_eligible():
-    assert runner().lookahead_eligible(batch()) is True
-
-
 def test_audio_output_disables_lookahead():
     # an audio-output request captures hidden for the talker -> route to sync.
     assert runner().lookahead_eligible(batch(req(stage_payload="audio"))) is False

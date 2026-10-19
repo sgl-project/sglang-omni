@@ -30,10 +30,6 @@ class RequestInfo:
     error: str | None = None
 
 
-EXPLICIT_GENERATION_PARAMS_KEY = "explicit_generation_params"
-EXPLICIT_STAGE_SAMPLING_PARAMS_KEY = "explicit_stage_sampling_params"
-
-
 @dataclass
 class OmniRequest:
     """User-facing request with inputs and parameters."""

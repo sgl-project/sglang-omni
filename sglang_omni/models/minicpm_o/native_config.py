@@ -114,6 +114,7 @@ class MiniCPMODuplexSpeech(BaseModel):
 
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
     enable_dit_torch_compile: bool = False
+    enable_hift_torch_compile: bool = False
     n_timesteps: int = Field(default=10, ge=1)
 
 
@@ -141,6 +142,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     realtime_deployment_factory: ClassVar[str] = (
         "sglang_omni.models.minicpm_o.session_adapters.build_realtime_deployment"
     )
+    is_realtime_only: ClassVar[bool] = True
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, JsonValue]:
         request_slots = (
@@ -158,6 +160,9 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 kwargs["dtype"] = self.speech.dtype
                 kwargs["enable_dit_torch_compile"] = (
                     self.speech.enable_dit_torch_compile
+                )
+                kwargs["enable_hift_torch_compile"] = (
+                    self.speech.enable_hift_torch_compile
                 )
                 kwargs["n_timesteps"] = self.speech.n_timesteps
             else:

@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Protocol
 import torch
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
     from sglang.srt.managers.overlap_utils import FutureMap
     from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -73,7 +72,7 @@ class SGLangExecutionBridge:
         self,
         *,
         device: torch.device,
-        worker: "ModelWorker | MlxTpModelWorker",
+        worker: "ModelWorker",
         spec_algorithm: SpeculativeAlgorithm,
         future_map: "FutureMap",
     ) -> None:

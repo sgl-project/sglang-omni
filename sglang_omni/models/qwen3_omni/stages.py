@@ -1197,7 +1197,7 @@ def create_sglang_thinker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 8192,
+    max_seq_len: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
@@ -1240,7 +1240,7 @@ def create_sglang_thinker_executor_from_config(
         enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
-        sampling_backend="pytorch",
+        sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size
@@ -1367,7 +1367,7 @@ def create_talker_ar_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 4096,
+    max_seq_len: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,

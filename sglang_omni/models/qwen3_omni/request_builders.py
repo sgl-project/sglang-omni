@@ -981,6 +981,8 @@ def build_sglang_talker_request(
     else:
         req.omni_model_inputs = None
 
+    # note (ratish): sglang's request limits cut the frame cap to the context the
+    # replayed prompt leaves, so a long spoken prompt gets shorter audio, not an error.
     data = SGLangARRequestData(
         input_ids=input_ids_tensor,
         max_new_tokens=max_new_tokens,
@@ -988,6 +990,7 @@ def build_sglang_talker_request(
         output_ids=req.output_ids,
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
+        enforce_request_limits=True,
     )
     data.suppress_tokens = list(
         req._codec_suppress_tokens or []

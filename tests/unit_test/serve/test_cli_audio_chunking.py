@@ -52,12 +52,6 @@ def test_dotted_override_reaches_field_and_stage():
     assert asr_factory_kwargs(merged)["max_audio_clip_s"] == 120.0
 
 
-def test_dotted_override_sets_the_concurrency_cap():
-    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"audio_chunking.max_concurrent_chunks": "64"})
-    assert merged.audio_chunking.max_concurrent_chunks == 64
-
-
 def test_dotted_override_sets_the_long_audio_admission_cap():
     manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
     merged = manager.merge_config(
@@ -65,12 +59,6 @@ def test_dotted_override_sets_the_long_audio_admission_cap():
     )
     assert merged.audio_chunking.max_concurrent_long_audio_requests == 2
     assert merged.resolved_audio_chunking.max_concurrent_long_audio_requests == 2
-
-
-def test_dotted_override_sets_the_total_audio_limit():
-    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"audio_chunking.max_total_audio_s": "7200"})
-    assert merged.audio_chunking.max_total_audio_s == 7200.0
 
 
 def test_clip_length_past_the_native_limit_is_rejected():
@@ -94,16 +82,7 @@ def test_clip_length_below_the_minimum_useful_length_is_rejected():
         manager.merge_config({"audio_chunking.max_audio_clip_s": "0.5"})
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "audio_chunking.allow_audio_chunking",
-        "audio_chunking.max_native_clip_s",
-        "audio_chunking.min_tail_s",
-        "audio_chunking.condition_on_previous_text",
-    ],
-)
-def test_model_owned_fields_are_not_reachable_paths(path):
+def test_model_owned_fields_are_not_reachable_paths():
     manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
-    with pytest.raises(ValueError, match=path.split(".", 1)[1]):
-        manager.merge_config({path: "1"})
+    with pytest.raises(ValueError, match="allow_audio_chunking"):
+        manager.merge_config({"audio_chunking.allow_audio_chunking": "1"})

@@ -93,6 +93,77 @@ Custom callsites can call `sglang_omni.profiler.event_recorder.emit(...)` to
 add domain-specific events. Events from inactive recorders are no-ops, so
 instrumentation sites do not need to guard against the disabled case.
 
+## Full Duplex session Unit metrics
+
+Enable the existing request event recorder with `POST /start_request_profile`
+and stop it with `POST /stop_request_profile`. The JSONL files then include a
+small session vocabulary that can be converted with
+`sglang_omni.profiler.duplex_metrics.build_duplex_session_metrics`.
+
+Each session-specific event carries its `request_id`; the report uses session
+metadata to name the Unit as `(session_id, session_open_index, input_seq)`.
+Unit lifecycle and start events carry the input modality and media clock.
+Output events carry the output sequence, modality, media clock, duration, and
+kind. Payload bytes are never stored.
+
+The event boundaries have these meanings:
+
+- `session_unit_ready` is declared by the ingress owner when a logical Unit
+  has all required input needed to run without waiting for more required
+  input. It is modality-independent and is not inferred by the profiler from
+  PCM, frames, or any other payload boundary.
+- `session_unit_admitted` is emitted after the coordinator accepts an append;
+  a rejected `QueueFullError` has no event.
+- `stage_dispatch` is the existing stage ingress observation used as the queue
+  boundary for a non-AR session Unit.
+- `scheduler_queue_enter` and `scheduler_prefill_start` are the existing AR
+  scheduler boundaries. For an AR Unit, they replace `stage_dispatch` and
+  `session_stage_started` for queue and start timing.
+- `session_stage_started` marks execution after per-session ordering for a
+  `SessionScheduler` stage.
+- `session_stage_bypassed` is the authoritative AR decision that an input
+  Unit completed without generation. Its `reason` metadata identifies the
+  bypass path, such as `generation_bypassed` or `finish_input`.
+- `stage_complete` is the existing stage result observation used as the finish
+  boundary for a session Unit.
+- `session_output_emitted` marks a model content chunk entering the
+  coordinator output buffer. `input_done` is a lifecycle completion and is
+  recorded as `session_unit_finished`, not as model output.
+
+The report joins generic stage events by `request_id`. For AR stages, `queue_ms`
+is `scheduler_queue_enter -> scheduler_prefill_start`; for
+`SessionScheduler` stages, it is `stage_dispatch -> session_stage_started`.
+`service_ms` is the observed execution-start to `stage_complete` interval, not
+pure GPU compute time. A stage is `observed` when its selected boundaries are
+complete, `bypassed` when `session_stage_bypassed` is present, and `incomplete`
+when a boundary is missing. Bypassed stages retain their timestamp and reason;
+queue and service durations remain `null`. `handoff_from_previous_ms` ends at
+the current stage's generic `stage_dispatch` boundary. The recorder carries
+the input media clock for later benchmarking, but this slice does not claim
+semantic input-to-output latency, playback underrun, or deadline misses.
+
+Readiness is observed only while the request event recorder is active. The
+internal observation carries that profiler run ID, and admission emits the
+ready event only when the same run is still active; a run rotation leaves the
+admitted-based values valid while ready-based values remain unavailable.
+
+The report names the ready-based values explicitly:
+`ready_to_admitted_ms`, `ready_to_first_output_ms`, and
+`ready_to_finished_ms`. They measure ingress wait, ready-to-first-output, and
+ready-to-finish directly from their event timestamps. The admitted-based
+decomposition remains available as `admitted_to_first_output_ms` and
+`admitted_to_finished_ms`; those intervals start when
+`CoordinatorSessions.append_session` accepts the Unit. They exclude any
+earlier `SessionRuntime.pending_pcm` buffering before submission and do not
+claim producer-ready, client/network, semantic-response, playback, or
+deadline latency. For a complete Unit, `ready_to_first_output_ms` is the
+ready-to-admission wait plus the post-admission time to first output; each
+value is derived per Unit before aggregation.
+
+The `SessionScheduler` scalar hook emits one start event per Unit immediately
+before append. `BatchedSessionHooks.append_batch` emits one event per row with
+one shared directly observed batch-start timestamp.
+
 ### Active-stage attribution
 
 `emit(...)` accepts an explicit `stage=...` parameter; when the caller can't

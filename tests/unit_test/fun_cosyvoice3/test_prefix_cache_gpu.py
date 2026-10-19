@@ -118,6 +118,7 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
     caches = [(PrefixCacheRow(), PrefixCacheRow()) for _ in range(rows)]
     previous = 0
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
         for total in totals:
             packed = pack_rows([total] * rows, device)
             twin_rows = pack_rows([total] * 2 * rows, device)
@@ -215,6 +216,9 @@ def test_compiled_prefix_hops_follow_each_row_across_batches() -> None:
         )
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
+        with torch.autocast("cuda", enabled=False):
+            reference_estimator.build_modulations(time_span.float(), torch.float32)
         for hop in hops:
             names = [name for name, _ in hop]
             totals = [total for _, total in hop]
@@ -323,6 +327,10 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         for _ in range(2)
     ]
     graph_pool, eager_pool = pools
+    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
     if compile_prefix:
         assert estimator.compile(dtype)
         for pool in pools:
@@ -363,7 +371,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
     torch.manual_seed(3)
     whole_history_inputs = dict(
         noise=torch.randn(1, 500, CHANNELS, device=device),
-        time_span=torch.linspace(0, 1, 11, device=device),
+        time_span=time_span,
         mu=torch.randn(1, 500, CHANNELS, device=device),
         speaker_embeddings=torch.randn(2, CHANNELS, device=device, dtype=dtype),
         mel_conditioning=torch.randn(1, 500, CHANNELS, device=device),
@@ -384,8 +392,6 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
     caches = {
         name: [(PrefixCacheRow(), PrefixCacheRow()) for _ in pools] for name in streams
     }
-    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
-    time_span = 1 - torch.cos(unit * 0.5 * torch.pi)
     steps = [
         [("a", 150)],
         [("b", 100), ("a", 250)],
@@ -421,7 +427,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
                     assert grow_rows(pool, list(pair), [total, total])
                 inputs = dict(
                     noise=take("noise"),
-                    time_span=time_span.float(),
+                    time_span=time_span,
                     mu=take("mu"),
                     speaker_embeddings=torch.stack(
                         [streams[name]["speaker_embeddings"] for name in names]
@@ -492,6 +498,8 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
     dtype = torch.bfloat16
     unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
     time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
 
     def step_inputs(lengths: tuple[int, ...]) -> dict[str, torch.Tensor]:
         generator = torch.Generator(device=device).manual_seed(sum(lengths))

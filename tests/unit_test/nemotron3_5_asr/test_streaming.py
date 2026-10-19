@@ -10,9 +10,12 @@ import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
-from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
+from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
+    EncoderPoolLayout,
+    NemotronEncoderStatePool,
+)
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
@@ -43,11 +46,19 @@ LOOKAHEAD_3 = Nemotron3_5ASRStreamingChunkSpec(
 )
 
 
-def make_decode_state() -> Nemotron3_5ASRDecodeState:
+TEST_POOL_LAYOUT = EncoderPoolLayout(
+    attention_shape=(1, 1, 4, 2),
+    convolution_shapes={"conv.0": (2, 2)},
+    dtype=torch.float32,
+    device=torch.device("cpu"),
+)
+
+
+def make_decode_state(pool: NemotronEncoderStatePool) -> Nemotron3_5ASRDecodeState:
     return Nemotron3_5ASRDecodeState(
         tokens=[99],
         durations=[0],
-        attention_cache=DynamicCache(),
+        encoder_slot=pool.acquire(),
         decoder_cache=Nemotron3_5AsrRNNTDecoderCache(Nemotron3_5AsrConfig()),
     )
 
@@ -76,6 +87,8 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
     def __init__(self) -> None:
         self.batches: list[list[Nemotron3_5ASRDecodeState]] = []
         self.is_closed = False
+        self.encoder_pool_layout = TEST_POOL_LAYOUT
+        self.encoder_state_pool = None
 
     @property
     def streaming_state_budget_bytes(self) -> int:
@@ -90,7 +103,8 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
         return asdict(LOOKAHEAD_3)
 
     def new_streaming_decode_state(self) -> Nemotron3_5ASRDecodeState:
-        return make_decode_state()
+        assert self.encoder_state_pool is not None
+        return make_decode_state(self.encoder_state_pool)
 
     def prepare_streaming_chunk(
         self, waveform: NDArray[np.float32], *, language: str, is_first: bool
@@ -116,6 +130,8 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
             state.durations.append(1)
             state.decoder_steps += 1
             state.encoder_frames += 2
+            state.encoder_slot.seen_frames += 2
+            state.encoder_slot.pool.seen_frames[state.encoder_slot.slot_id] += 2
             text = "word" + " more" * (state.decoder_steps - 1)
             raw_texts.append(f"<en-US> {text}")
             clean_texts.append(text)
@@ -127,6 +143,10 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
         )
 
     def close(self) -> None:
+        if self.encoder_state_pool is not None:
+            self.encoder_state_pool.close()
+        else:
+            pass
         self.is_closed = True
 
 
@@ -136,7 +156,7 @@ def test_pcm16_fragmentation_and_final_padding_geometry() -> None:
         payload=make_payload("r"),
         language="en-US",
         spec=LOOKAHEAD_3,
-        decode=make_decode_state(),
+        decode=make_decode_state(NemotronEncoderStatePool(TEST_POOL_LAYOUT, 1)),
     )
     waveform = np.arange(5000, dtype=np.int16)
     raw_bytes = waveform.astype("<i2", copy=False).view(np.uint8)
@@ -171,7 +191,7 @@ def test_lookahead_zero_preserves_negative_stft_start() -> None:
         payload=make_payload("r"),
         language="en-US",
         spec=spec,
-        decode=make_decode_state(),
+        decode=make_decode_state(NemotronEncoderStatePool(TEST_POOL_LAYOUT, 1)),
     )
     state.append_bytes(np.arange(300, dtype="<i2").tobytes())
     state.pop_ready_window()

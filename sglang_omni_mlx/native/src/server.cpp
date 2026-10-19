@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Native MLX server for Voxt, one model per process on asr_service:
-// qwen3_asr (the API of sglang_omni_mlx.qwen3_asr.server, with the realtime
-// API on /v1/realtime), silero_vad (vad_service.h's API, no transcriptions) or
+// qwen3_asr (OpenAI-style transcriptions, with the realtime API on
+// /v1/realtime), silero_vad (vad_service.h's API, no transcriptions) or
 // sortformer (sortformer_service.h's API, no transcriptions).
 #include <limits>
 #include <memory>
