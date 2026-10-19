@@ -65,6 +65,7 @@ class RecordingHooks(SequentialHooks, BatchedSessionHooks):
         super().__init__()
         self.fail_batch = fail_batch
         self.growing_session = growing_session
+        self.appended_sequences_by_session: dict[SessionIdentity, list[int]] = {}
 
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         self.calls.append([append.payload.request_id for append in appends])
@@ -74,6 +75,9 @@ class RecordingHooks(SequentialHooks, BatchedSessionHooks):
             pass
         for append in appends:
             session_identity = append.context.session_identity
+            self.appended_sequences_by_session.setdefault(session_identity, []).append(
+                append.chunk.seq
+            )
             if session_identity.id == self.growing_session:
                 self.units_by_session[session_identity] += 1
             else:
@@ -127,6 +131,8 @@ def run_backlog(
                 finals[output.request_id] = output
             else:
                 pass
+        assert not scheduler.arrivals_by_request_id
+        assert not scheduler.cursors_by_session
     finally:
         scheduler.stop()
         worker.join(timeout=OUTBOX_TIMEOUT_S)
@@ -313,18 +319,83 @@ def test_failed_batch_ends_only_its_sessions():
     assert hooks.calls == [["a0", "b0"]]
 
 
-def test_aborted_unit_leaves_the_batch_without_blocking_its_session():
+def test_aborted_batch_row_fences_session_without_affecting_healthy_rows():
     hooks = RecordingHooks()
     scheduler = SessionScheduler(hooks)
     outputs = run_backlog(
         scheduler,
-        opens("a", "b")
+        opens("a", "b", "c")
         + [
             message("a0", "append", "a", 0),
             message("b0", "append", "b", 0),
+            message("c0", "append", "c", 0),
             message("b1", "append", "b", 1),
+            message("a1", "append", "a", 1),
+            message("c1", "append", "c", 1),
         ],
         aborted=("b0",),
     )
-    assert set(outputs) == {"open-a", "open-b", "a0", "b1"}
-    assert hooks.calls == [["a0", "b1"]]
+    assert outputs["a0"].type == outputs["a1"].type == "result"
+    assert outputs["c0"].type == outputs["c1"].type == "result"
+    assert outputs["b1"].type == "error"
+    assert hooks.calls == [["a0", "c0"], ["a1", "c1"]]
+    assert hooks.appended_sequences_by_session[SessionIdentity("a")] == [0, 1]
+    assert hooks.appended_sequences_by_session[SessionIdentity("c")] == [0, 1]
+    assert SessionIdentity("b") not in hooks.appended_sequences_by_session
+
+
+def test_aborted_open_retires_batch_cursor_before_later_rows():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    outputs = run_backlog(
+        scheduler,
+        opens("aborted", "healthy")
+        + [
+            message("aborted0", "append", "aborted", 0),
+            message("healthy0", "append", "healthy", 0),
+        ],
+        aborted=("open-aborted",),
+    )
+    assert outputs["open-healthy"].type == "result"
+    assert outputs["aborted0"].type == "error"
+    assert outputs["healthy0"].type == "result"
+    assert hooks.calls == [["healthy0"]]
+    assert not hooks.opened
+    assert not scheduler.open_sessions
+    assert not scheduler.cursors_by_session and not scheduler.arrivals_by_request_id
+
+
+def test_batch_setup_failure_fences_only_the_faulty_session():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    original_start_append = scheduler.start_append
+
+    def fail_batch_setup(
+        payload: StagePayload, session_operation: SessionOperation
+    ) -> SessionAppend:
+        if payload.request_id == "b0":
+            raise RuntimeError("batch setup failed")
+        else:
+            return original_start_append(payload, session_operation)
+
+    scheduler.start_append = fail_batch_setup
+    outputs = run_backlog(
+        scheduler,
+        opens("a", "b", "c")
+        + [
+            message("a0", "append", "a", 0),
+            message("b0", "append", "b", 0),
+            message("c0", "append", "c", 0),
+            message("b1", "append", "b", 1),
+            message("a1", "append", "a", 1),
+            message("c1", "append", "c", 1),
+        ],
+    )
+    assert isinstance(outputs["b0"].data, RuntimeError)
+    assert outputs["b1"].type == "error"
+    assert outputs["a0"].type == outputs["a1"].type == "result"
+    assert outputs["c0"].type == outputs["c1"].type == "result"
+    assert hooks.calls == [["a0", "c0"], ["a1", "c1"]]
+    assert hooks.appended_sequences_by_session[SessionIdentity("a")] == [0, 1]
+    assert hooks.appended_sequences_by_session[SessionIdentity("c")] == [0, 1]
+    assert SessionIdentity("b") not in hooks.appended_sequences_by_session
