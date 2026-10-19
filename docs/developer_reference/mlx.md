@@ -7,9 +7,9 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`, shared code in `src/layers`, `src/swift_port`, `src/asr_service`. |
-| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
-| `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`, shared code in `src/layers`, `src/swift_port`, and the model services. |
+| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests, and model evaluation tools. |
+| `sglang_omni_mlx/<model>/` | Optional Python MLX reference implementations used for parity; shipped servers belong under `sglang_omni_mlx/native/`. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
 
 ## Rule 1: MLX is a separate path
@@ -21,7 +21,7 @@ MLX code is not abstracted together with the CUDA path in `sglang_omni`.
 - No shared backend interface, base class or registry across the two paths.
   Share code freely inside the MLX path, not across paths.
 - The paths meet only at the OpenAI-style HTTP API (`/v1/audio/transcriptions`,
-  `/v1/realtime`, `/health`).
+  `/v1/audio/speech`, `/v1/realtime`, `/health`).
 
 Why:
 
@@ -44,8 +44,11 @@ agree on it with a maintainer first.
 
 **Placement and reuse**
 
-- A native model adds `<model>_model`, `<model>_transcriber`, a server on the
-  shared `asr_service`, a CLI in `tools/`, and CMake targets.
+- A native ASR model adds `<model>_model`, `<model>_transcriber`, a server on
+  the shared ASR service, a CLI in `tools/`, and CMake targets.
+- A native TTS model adds `<model>_model`, a model-specific TTS service, a
+  parity or evaluation CLI in `tools/`, and CMake targets. TTS services share
+  the HTTP and supervisor lifecycle code but do not extend the ASR service.
 - Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
   port. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
@@ -60,6 +63,10 @@ agree on it with a maintainer first.
 - Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
   reference vs native, plus the count of identical clips. Explain where
   differing clips diverge.
+- For TTS, compare fixed-seed generated tokens with the named reference, then
+  report transcription error through a pinned ASR model and speaker similarity
+  on a declared evaluation set. Sampling differences do not replace a parity
+  check; record the seed, checkpoint revisions, and MLX version.
 
 **Golden and pins**
 
@@ -73,6 +80,8 @@ agree on it with a maintainer first.
 - Server tests in `ci/test_model_servers.py`: JSON, SSE and realtime success
   paths; every invalid input returns 400; session-state errors, cancel on
   disconnect, and wrong model kind.
+- TTS server tests cover WAV and PCM responses, streaming, invalid request
+  fields, busy and shutdown states, and cancellation after a client disconnect.
 - Assert structure, not one chip's exact text; exact text lives in the golden.
 - New Voxt Omni tests go into the `voxt-unit` job in `voxt-mac-ci.yaml`.
 
