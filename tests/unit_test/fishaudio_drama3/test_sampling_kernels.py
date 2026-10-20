@@ -81,6 +81,7 @@ if HAS_TRITON:
         SELECTED: tl.constexpr,
         TAIL_WIDTH: tl.constexpr,
         MINIMUM_TEMPERATURE: tl.constexpr,
+        KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr,
     ):
         row = tl.program_id(0)
         columns = tl.arange(0, BLOCK_WIDTH)
@@ -114,7 +115,13 @@ if HAS_TRITON:
         )
         selected_indices, selected_weights, is_kept, holds_kept_set = (
             selected_candidates(
-                top_keys, row_maximum, weight_sum, top_k, top_p, INDEX_BITS
+                top_keys,
+                row_maximum,
+                weight_sum,
+                top_k,
+                top_p,
+                INDEX_BITS,
+                KEEP_TOP_P_CROSSING_TOKEN,
             )
         )
         uses_selected = holds_kept_set & (force_search == 0)
@@ -146,6 +153,7 @@ if HAS_TRITON:
                 top_p,
                 KEY_BITS,
                 SEARCH_ROUNDS,
+                KEEP_TOP_P_CROSSING_TOKEN,
             )
             top_key = tl.max(top_keys, axis=0)
             is_kept_column = (main_keys >= threshold_key) | (main_keys == top_key)
@@ -238,6 +246,8 @@ def reference_draws(
     top_k: torch.Tensor,
     top_p: torch.Tensor,
     noise: torch.Tensor,
+    *,
+    keep_top_p_crossing_token: bool = False,
 ) -> ReferenceDraws:
     scores = logits.float() / temperature.float().clamp(
         min=MINIMUM_TEMPERATURE
@@ -250,9 +260,12 @@ def reference_draws(
     )
     ranks = torch.arange(scores.shape[-1], device=scores.device).unsqueeze(0)
     is_within_top_k = ranks < top_k.unsqueeze(-1)
-    is_dropped = (cumulative_probabilities > top_p.float().unsqueeze(-1)) | (
-        ~is_within_top_k
-    )
+    is_dropped = cumulative_probabilities > top_p.float().unsqueeze(-1)
+    if keep_top_p_crossing_token:
+        is_dropped[:, 1:] = is_dropped[:, :-1].clone()
+    else:
+        pass
+    is_dropped |= ~is_within_top_k
     is_dropped[:, 0] = False
     probabilities = torch.softmax(
         sorted_scores.masked_fill(is_dropped, float("-inf")), dim=-1
@@ -398,6 +411,7 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
         top_k,
         top_p,
         kernel_noise(codebook_sampler, FIRST_DRAW_STREAM, rows, candidate_count),
+        keep_top_p_crossing_token=True,
     )
     ras_reference = reference_draws(
         candidate_logits,
@@ -405,6 +419,7 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
         kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidate_count),
+        keep_top_p_crossing_token=True,
     )
     first_tokens = candidates[first_reference.tokens]
     ras_tokens = candidates[ras_reference.tokens]
@@ -486,6 +501,7 @@ def test_semantic_kernel_keeps_repeated_eos_and_replaces_repeated_semantic(
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
         kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidates.shape[0]),
+        keep_top_p_crossing_token=True,
     )
     ras_tokens = candidates[ras_reference.tokens]
 
@@ -520,6 +536,7 @@ def kept_probabilities(
     stream_id: int,
     force_search: bool,
     search_rounds_short_by: int,
+    keep_top_p_crossing_token: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     rows, width = logits.shape
     index_bits = (width - 1).bit_length()
@@ -544,9 +561,38 @@ def kept_probabilities(
         SELECTED=SELECTED_CANDIDATES,
         TAIL_WIDTH=TAIL_BLOCK_WIDTH,
         MINIMUM_TEMPERATURE=MINIMUM_TEMPERATURE,
+        KEEP_TOP_P_CROSSING_TOKEN=keep_top_p_crossing_token,
         num_warps=8,
     )
     return probabilities, sampled_codes
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("force_search", [False, True])
+@pytest.mark.parametrize("top_p_value", [0.9, 0.95])
+def test_semantic_nucleus_keeps_crossing_eos_on_both_branches(
+    force_search: bool,
+    top_p_value: float,
+) -> None:
+    require_validated_gpu()
+    logits = torch.full((2, 1024), float("-inf"), device="cuda")
+    logits[:, :3] = torch.tensor(
+        [[0.8917, 0.1065, 0.0018], [0.97, 0.0282, 0.0018]], device="cuda"
+    ).log()
+    probabilities, _ = kept_probabilities(
+        logits,
+        torch.ones(2, device="cuda"),
+        torch.full((2,), 30, device="cuda", dtype=torch.int64),
+        torch.full((2,), top_p_value, device="cuda"),
+        sampler(2),
+        FIRST_DRAW_STREAM,
+        force_search,
+        0,
+        keep_top_p_crossing_token=True,
+    )
+    assert probabilities[0, 1] > 0
+    assert probabilities[1, 1] == 0
+    assert bool((probabilities[:, 2:] == 0).all())
 
 
 @pytest.mark.accelerator
