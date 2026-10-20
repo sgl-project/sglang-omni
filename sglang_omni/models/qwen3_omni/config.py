@@ -9,6 +9,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import (
+    EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -522,9 +523,65 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     )
 
 
+def pd_text_stages() -> list[StageConfig]:
+    return [
+        preprocessing_stage(process="preprocessing"),
+        image_encoder_stage(gpu=0, process="image_encoder"),
+        audio_encoder_stage(gpu=0, process="audio_encoder"),
+        aggregate_stage(process="mm_aggregate", gpu=0),
+        EngineStageConfig(
+            name="thinker",
+            process="thinker",
+            gpu=0,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                enable_async_decode=False,
+                encoder_mem_reserve=0.0,
+                pd_role="prefill",
+                pd_stage_name="thinker",
+                pd_partner_stage="thinker_decode",
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            next="thinker_decode",
+        ),
+        EngineStageConfig(
+            name="thinker_decode",
+            process="thinker_decode",
+            gpu=1,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                enable_async_decode=False,
+                encoder_mem_reserve=0.0,
+                pd_role="decode",
+                pd_stage_name="thinker_decode",
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            next="decode",
+            stream_to=["decode"],
+            project_payload={
+                "decode": f"{_PKG}.request_builders.project_thinker_to_decode"
+            },
+        ),
+        decode_stage(process="decode"),
+    ]
+
+
+class Qwen3OmniPDPipelineConfig(Qwen3OmniBasePipelineConfig):
+    """Explicit single-node PD stages for thinker text output."""
+
+    model_path: str
+    entry_stage: str = "preprocessing"
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "thinker": EngineStageConfig,
+        "thinker_decode": EngineStageConfig,
+    }
+    stages: list[StageConfig] = Field(default_factory=pd_text_stages)
+
+
 EntryClass = Qwen3OmniSpeechPipelineConfig
 
 Variants = {
+    "pd": Qwen3OmniPDPipelineConfig,
     "text": Qwen3OmniPipelineConfig,
     "speech": Qwen3OmniSpeechPipelineConfig,
     "speech-colocated": Qwen3OmniSpeechColocatedPipelineConfig,

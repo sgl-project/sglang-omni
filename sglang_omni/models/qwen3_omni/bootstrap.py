@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from functools import partial
+from typing import TYPE_CHECKING, Literal
+
+from sglang_omni.models.qwen3_omni.pd import QwenThinkerPDAdapter
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -29,6 +36,9 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    pd_role: Literal["prefill", "decode"] | None = None,
+    pd_stage_name: str | None = None,
+    pd_partner_stage: str | None = None,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -100,7 +110,38 @@ def create_thinker_scheduler(
         speech_enabled=speech_enabled
     )
 
-    return OmniScheduler(
+    scheduler_factory = partial(OmniScheduler)
+    if pd_role is not None:
+        if not pd_stage_name or pd_role not in ("prefill", "decode"):
+            raise ValueError(
+                "PD requires an explicit stage name and prefill/decode role"
+            )
+        else:
+            pass
+        adapter = QwenThinkerPDAdapter(tokenizer=tokenizer)
+        if pd_role == "prefill":
+            if not pd_partner_stage:
+                raise ValueError("Prefill requires an explicit Decode partner stage")
+            else:
+                pass
+            scheduler_factory = partial(
+                OmniPrefillScheduler,
+                stage_name=pd_stage_name,
+                partner_stage=pd_partner_stage,
+                state_builder=adapter.build_state,
+            )
+        else:
+            scheduler_factory = partial(
+                OmniDecodeScheduler,
+                stage_name=pd_stage_name,
+                state_restorer=adapter.restore_state,
+                resume_schema=adapter.schema,
+                emit_transferred_token=True,
+            )
+    else:
+        pass
+
+    return scheduler_factory(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -110,7 +151,7 @@ def create_thinker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
-        stream_output_builder=stream_output_builder,
+        stream_output_builder=(None if pd_role == "prefill" else stream_output_builder),
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,

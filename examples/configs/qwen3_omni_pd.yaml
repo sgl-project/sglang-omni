@@ -1,0 +1,18 @@
+config_cls: Qwen3OmniPDPipelineConfig
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+name: qwen3-omni-pd
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.04
+  audio_encoder:
+    gpu_memory_fraction: 0.04
+  thinker:
+    gpu_memory_fraction: 0.70
+    engine:
+      max_running_requests: 8
+      cuda_graph_max_bs: 8
+  thinker_decode:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
