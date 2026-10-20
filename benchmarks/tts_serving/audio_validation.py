@@ -165,17 +165,17 @@ def _validate_wav(body: bytes, *, require_min_audio: bool) -> AudioValidation:
             False,
             f"WAV validator expects 16-bit PCM, observed {bits_per_sample} bits",
         )
-    if require_min_audio and len(data) < MIN_PCM_AUDIO_BYTES:
+    duration = len(data) / float(sample_rate * channels * (bits_per_sample // 8))
+    if require_min_audio and duration < MIN_GENERATED_AUDIO_DURATION_S:
         return AudioValidation(
             False,
             "WAV data chunk is shorter than the minimum generated-audio duration "
-            f"(bytes={len(data)}, minimum={MIN_PCM_AUDIO_BYTES})",
+            f"(duration={duration:.6f}s, minimum={MIN_GENERATED_AUDIO_DURATION_S}s)",
         )
     if len(data) % PCM_SAMPLE_WIDTH:
         return AudioValidation(False, "WAV data chunk is not 16-bit aligned")
     if not _has_nonzero_int16_sample(data):
         return AudioValidation(False, "WAV data chunk contains only zero samples")
-    duration = len(data) / float(sample_rate * channels * (bits_per_sample // 8))
     return AudioValidation(True, duration_s=duration)
 
 
