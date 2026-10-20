@@ -57,14 +57,11 @@ class EncodeAudioOptions(TypedDict, total=False):
 
 
 def stop_string_start(text: str, stop: list[str]) -> int | None:
-    """Where the matched stop string starts: the first, in request order, in text."""
-    for stop_string in stop:
-        index = text.find(stop_string)
-        if index != -1:
-            return index
-        else:
-            pass
-    return None
+    """Return the earliest stop string's character offset in the generated text."""
+    stop_character_offsets = (text.find(stop_string) for stop_string in stop)
+    return min(
+        (offset for offset in stop_character_offsets if offset != -1), default=None
+    )
 
 
 @dataclass(kw_only=True)

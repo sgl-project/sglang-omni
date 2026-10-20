@@ -1256,15 +1256,26 @@ class TextDeltaCoordinator:
             )
 
 
-def test_chat_answer_excludes_the_matched_stop_string() -> None:
-    coordinator = TextDeltaCoordinator(["1, 2", ", 3"])
+@pytest.mark.parametrize(
+    ("deltas", "stop", "expected"),
+    [
+        (["1, 2", ", 3"], [", 3"], "1, 2"),
+        (["hello STOP ignored END"], ["END", "STOP"], "hello "),
+        (["hello STOP ignored END"], ["STOP", "END"], "hello "),
+    ],
+)
+def test_chat_answer_excludes_the_matched_stop_string(
+    deltas: list[str], stop: list[str], expected: str
+) -> None:
+    """Buffered answers must end at the earliest stop, regardless of list order."""
+    coordinator = TextDeltaCoordinator(deltas)
     app = create_app(Client(coordinator), model_name="qwen3-omni")
-    body = {"messages": [{"role": "user", "content": "count"}], "stop": [", 3"]}
+    body = {"messages": [{"role": "user", "content": "count"}], "stop": stop}
 
     response = TestClient(app).post("/v1/chat/completions", json=body)
 
     assert response.status_code == 200
-    assert response.json()["choices"][0]["message"]["content"] == "1, 2"
+    assert response.json()["choices"][0]["message"]["content"] == expected
 
 
 @pytest.mark.parametrize(
@@ -1275,6 +1286,18 @@ def test_chat_answer_excludes_the_matched_stop_string() -> None:
         pytest.param(["a", "\n"], ["\n\n"], "a\n", id="never-completed"),
         pytest.param(["a", "\n", None, "\nb"], ["\n\n"], "a", id="audio-ends-mid-stop"),
         pytest.param(["a", "\n", None], ["\n\n"], "a\n", id="text-never-ends"),
+        pytest.param(
+            ["hello STOP ignored END"],
+            ["END", "STOP"],
+            "hello ",
+            id="earliest-stop-in-one-delta",
+        ),
+        pytest.param(
+            ["hello ST", "OP ignored END"],
+            ["END", "STOP"],
+            "hello ",
+            id="earliest-stop-across-deltas",
+        ),
     ],
 )
 def test_chat_stream_never_sends_a_stop_string(
