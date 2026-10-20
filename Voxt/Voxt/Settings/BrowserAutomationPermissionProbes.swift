@@ -44,12 +44,7 @@ extension PermissionsSettingsView {
         let displayName: String
     }
 
-    struct ScriptProbeResult: Sendable {
-        let success: Bool
-        let permissionDenied: Bool
-        let appNotRunning: Bool
-        let lastErrorCode: Int?
-    }
+    typealias ScriptProbeResult = BrowserAutomationAccess.ProbeResult
 
     struct BrowserTargetPreflight: Sendable {
         let appPath: String?
@@ -57,15 +52,10 @@ extension PermissionsSettingsView {
         let isRunning: Bool
     }
 
-
     struct BrowserAutomationRequestResult: Sendable {
         let integrityError: String?
-        let enabled: Bool
-        let permissionGranted: Bool
-        let scriptProbe: ScriptProbeResult?
-        let failureMessage: String?
+        let status: OSStatus
     }
-
 
     struct BrowserAutomationTestResult: Sendable {
         let integrityError: String?
@@ -76,107 +66,19 @@ extension PermissionsSettingsView {
         _ target: BrowserAutomationTarget,
         knownAuthorizedBrowserBundleIDs: Set<String>
     ) -> PermissionState {
-        if target.isCustom {
-            // Custom browsers are less consistent than Safari / Chrome: some do
-            // not answer the low-level permission API reliably, especially when
-            // the app is not running. For them we combine three signals:
-            // installation, running state, and remembered authorization.
-            let isRememberedAuthorized = knownAuthorizedBrowserBundleIDs.contains(target.bundleID)
-            guard isApplicationInstalled(bundleID: target.bundleID) else {
-                return .disabled
-            }
-            guard isApplicationRunning(bundleID: target.bundleID) else {
-                return isRememberedAuthorized ? .enabled : .disabled
-            }
-
-            let permissionProbe = runAutomationPermissionProbe(bundleID: target.bundleID)
-            if permissionProbe.success {
-                return .enabled
-            }
-            if permissionProbe.permissionDenied {
-                return .disabled
-            }
-            return isRememberedAuthorized ? .enabled : .disabled
-        }
-
-        let status = automationPermissionStatus(for: target.bundleID, askUserIfNeeded: false)
-        if status == noErr {
+        guard isApplicationInstalled(bundleID: target.bundleID) else { return .disabled }
+        let status = BrowserAutomationAccess.shared.permissionStatus(bundleID: target.bundleID)
+        switch status {
+        case OSStatus(noErr):
             return .enabled
-        }
-        if status == errAEEventNotPermitted || status == errAEPrivilegeError {
+        case OSStatus(errAEEventNotPermitted), OSStatus(errAEPrivilegeError), OSStatus(errAEEventWouldRequireUserConsent):
             return .disabled
+        case OSStatus(procNotFound):
+            return knownAuthorizedBrowserBundleIDs.contains(target.bundleID) ? .enabled : .disabled
+        default:
+            return .onDemand
         }
-        if knownAuthorizedBrowserBundleIDs.contains(target.bundleID) {
-            return .enabled
-        }
-        return .disabled
     }
-
-    nonisolated static func runAutomationPermissionProbe(bundleID: String) -> ScriptProbeResult {
-        runAppleScriptCandidates([
-            "tell application id \"\(bundleID)\" to get name"
-        ])
-    }
-
-    nonisolated private static func automationPermissionStatus(for bundleID: String, askUserIfNeeded: Bool) -> OSStatus {
-        let descriptor = NSAppleEventDescriptor(bundleIdentifier: bundleID)
-        guard let aeDesc = descriptor.aeDesc else {
-            return OSStatus(errAEEventNotPermitted)
-        }
-
-        return AEDeterminePermissionToAutomateTarget(
-            aeDesc,
-            AEEventClass(typeWildCard),
-            AEEventID(typeWildCard),
-            askUserIfNeeded
-        )
-    }
-
-
-    nonisolated static func runAppleScriptCandidates(_ scripts: [String]) -> ScriptProbeResult {
-        var sawPermissionDenied = false
-        var sawAppNotRunning = false
-        var lastErrorCode: Int?
-
-        for source in scripts {
-            if Task.isCancelled {
-                return ScriptProbeResult(
-                    success: false,
-                    permissionDenied: sawPermissionDenied,
-                    appNotRunning: sawAppNotRunning,
-                    lastErrorCode: lastErrorCode
-                )
-            }
-            var error: NSDictionary?
-            let wrapped = """
-            with timeout of 1 seconds
-            \(source)
-            end timeout
-            """
-            let script = NSAppleScript(source: wrapped)
-            let result = script?.executeAndReturnError(&error)
-            if let output = result?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
-                return ScriptProbeResult(success: true, permissionDenied: false, appNotRunning: false, lastErrorCode: nil)
-            }
-
-            let code = error?[NSAppleScript.errorNumber] as? Int
-            lastErrorCode = code
-            if code == -1743 || code == -10004 {
-                sawPermissionDenied = true
-            }
-            if code == -600 {
-                sawAppNotRunning = true
-            }
-        }
-
-        return ScriptProbeResult(
-            success: false,
-            permissionDenied: sawPermissionDenied,
-            appNotRunning: sawAppNotRunning,
-            lastErrorCode: lastErrorCode
-        )
-    }
-
 
     nonisolated static func isApplicationRunning(bundleID: String) -> Bool {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
