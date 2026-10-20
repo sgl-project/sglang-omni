@@ -385,6 +385,25 @@ Relevant model CI ownership:
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
   spawn/router workers, waits for VRAM below threshold).
+  In containers where NVML reports host-namespace PIDs, stop owned process groups
+  first, then run `.github/scripts/delete_gpu_process.sh --wait-only` with
+  `CUDA_VISIBLE_DEVICES` set to the selected physical GPU indices. Wait-only
+  never sends signals, even when `--kill-orphans` is also supplied. It does not
+  remove startup locks, establish process ownership, reserve GPUs, or guarantee
+  exclusivity. Without `--wait-only`, the existing process-termination mode
+  remains enabled.
+  Wait-only requires successful GPU discovery and valid single-value memory
+  queries. Missing `nvidia-smi`, failed queries, and invalid readings such as
+  empty output or `N/A` exit with status 2. Busy memory at the wait deadline
+  exits with status 1. Success means every selected GPU's sampled `memory.used`
+  is strictly below `OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB`, which defaults to
+  1024 MiB. It does not prove that every allocation was reclaimed.
+  `OMNI_CI_GPU_CLEAN_WAIT_SECONDS` defaults to 120 and
+  `OMNI_CI_GPU_CLEAN_POLL_SECONDS` defaults to 5. The deadline bounds polling
+  when driver queries return; it does not interrupt a hung `nvidia-smi`.
+  CPU subprocess tests replace only the `nvidia-smi` executable and check the
+  shell result plus a live owned child's survival. Real NVML readings,
+  namespace mapping, and physical memory release remain device-validation gates.
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
   init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark
   module — avoids re-initializing the process-global TP group when the combined

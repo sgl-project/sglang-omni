@@ -35,7 +35,7 @@ selected_gpu_ids() {
     if [ "${target_gpu_ids}" = "all" ] \
         || [ "${OMNI_CI_ALLOW_UNSCOPED_GPU_CLEAN:-}" = "1" ] \
         || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-        nvidia-smi --query-gpu=index --format=csv,noheader,nounits
+        nvidia-smi --query-gpu=index --format=csv,noheader,nounits || return 1
         return 0
     fi
     echo "::error::delete_gpu_process.sh refuses unscoped cleanup. Set CUDA_VISIBLE_DEVICES to the physical GPU ids owned by this job (e.g. 0,1), or OMNI_CI_ALLOW_UNSCOPED_GPU_CLEAN=1 for single-tenant CI." >&2
@@ -126,48 +126,61 @@ _kill_orphan_gpu_processes() {
 }
 
 kill_orphans=0
+wait_only=0
 for arg in "$@"; do
     [ "${arg}" = "--kill-orphans" ] && kill_orphans=1
+    [ "${arg}" = "--wait-only" ] && wait_only=1
 done
 
 if ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "nvidia-smi not found; skipping GPU cleanup."
-    exit 0
+    if [ "${wait_only}" = "1" ]; then
+        echo "::error::nvidia-smi is required to verify GPU memory release." >&2
+        exit 2
+    else
+        echo "nvidia-smi not found; skipping GPU cleanup."
+        exit 0
+    fi
 fi
 
 # Resolve and validate scope up front (also used by the wait loop).
-if ! mapfile -t _SELECTED_GPUS < <(selected_gpu_ids); then
+if ! selected_gpu_output=$(selected_gpu_ids); then
+    echo "::error::Unable to select GPUs for cleanup." >&2
     exit 2
 fi
-if [ "${#_SELECTED_GPUS[@]}" -eq 0 ]; then
+if [ -z "${selected_gpu_output}" ]; then
     echo "::error::no GPUs selected for cleanup"
     exit 2
 fi
+mapfile -t _SELECTED_GPUS <<< "${selected_gpu_output}"
 echo "=== GPU cleanup scope (physical): ${_SELECTED_GPUS[*]} (input CVD='${_raw_cvd}') ==="
 
-if [ "${kill_orphans}" = "1" ]; then
+if [ "${kill_orphans}" = "1" ] && [ "${wait_only}" != "1" ]; then
     _kill_orphan_gpu_processes || exit 2
     sleep 2
 fi
 
 echo "=== Checking GPU Utilization ==="
 
-for gpu_index in "${_SELECTED_GPUS[@]}"; do
-    gpu_index=$(printf '%s' "$gpu_index" | ${_TR} -d ' ')
-    [ -n "${gpu_index}" ] || continue
-    pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader --id="${gpu_index}" 2>/dev/null || true)
-    if [ -z "$pids" ]; then
-        echo "  No processes found on GPU $gpu_index."
-    else
-        echo "  Killing processes on GPU $gpu_index: $pids"
-        for pid in $pids; do
-            pid=$(printf '%s' "$pid" | ${_TR} -d ' ')
-            [ -n "${pid}" ] || continue
-            echo "  Killing PID $pid..."
-            kill -9 "$pid" || true
-        done
-    fi
-done
+if [ "${wait_only}" != "1" ]; then
+    for gpu_index in "${_SELECTED_GPUS[@]}"; do
+        gpu_index=$(printf '%s' "$gpu_index" | ${_TR} -d ' ')
+        [ -n "${gpu_index}" ] || continue
+        pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader --id="${gpu_index}" 2>/dev/null || true)
+        if [ -z "$pids" ]; then
+            echo "  No processes found on GPU $gpu_index."
+        else
+            echo "  Killing processes on GPU $gpu_index: $pids"
+            for pid in $pids; do
+                pid=$(printf '%s' "$pid" | ${_TR} -d ' ')
+                [ -n "${pid}" ] || continue
+                echo "  Killing PID $pid..."
+                kill -9 "$pid" || true
+            done
+        fi
+    done
+else
+    echo "  Wait-only mode: no processes will be terminated."
+fi
 
 if ! [[ "${memory_threshold_mb}" =~ ^[0-9]+$ ]] || [ "${memory_threshold_mb}" -lt 1 ]; then
     echo "::error::OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB must be a positive integer; got '${memory_threshold_mb}'"
@@ -186,9 +199,13 @@ while true; do
     for gpu_index in "${_SELECTED_GPUS[@]}"; do
         gpu_index=$(printf '%s' "$gpu_index" | ${_TR} -d ' ')
         [ -n "${gpu_index}" ] || continue
-        used_mb=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | head -n 1 | ${_TR} -d ' ')
-        if [ -z "${used_mb}" ]; then
-            continue
+        if ! used_mb=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | ${_TR} -d ' '); then
+            echo "::error::Unable to query memory for GPU ${gpu_index}." >&2
+            exit 2
+        fi
+        if ! [[ "${used_mb}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid GPU ${gpu_index} memory reading: '${used_mb}'." >&2
+            exit 2
         fi
         if [ "${used_mb}" -gt "${max_used_mb}" ]; then
             max_used_mb="${used_mb}"
