@@ -12,7 +12,7 @@ from starlette.websockets import WebSocketState
 from typing_extensions import Unpack
 
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
-from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
+from sglang_omni.serve.realtime.audio_buffer import BufferOverflow, RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     ClientEvent,
     ConversationItemTruncate,
@@ -29,6 +29,8 @@ from sglang_omni.serve.realtime.events import (
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
 from sglang_omni.serve.realtime.vad import (
+    VAD_FRAME_SAMPLES,
+    VAD_SAMPLE_RATE,
     Emit,
     StreamingVAD,
     VADConfig,
@@ -441,11 +443,83 @@ class RealtimeSession:
         return merged
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        decoded_len = self.audio_buffer.append_b64(event.audio)
+        try:
+            decoded_len = self.audio_buffer.append_b64(event.audio)
+        except BufferOverflow as exc:
+            if self.utterance_start_byte is None:
+                overflow: BufferOverflow | None = exc
+            else:
+                # note (Richard Wang): a turn as long as the buffer is committed
+                # at the buffer's end and continues as a new turn, as the
+                # transcription session cuts its long segments.
+                await self.cut_long_turn()
+                try:
+                    decoded_len = self.audio_buffer.append_b64(event.audio)
+                    overflow = None
+                except BufferOverflow as retry_exc:
+                    overflow = retry_exc
+            if overflow is not None:
+                await self.send_error(
+                    "invalid_request_error", "audio_buffer_overflow", str(overflow)
+                )
+                return
+            else:
+                pass
         new_bytes = self.audio_buffer.tail(decoded_len)
         emits = await asyncio.to_thread(self.vad.process, new_bytes)
         for emit in emits:
             await self.handle_vad_emit(emit)
+        self.trim_idle_prefix()
+
+    async def cut_long_turn(self) -> None:
+        """Commit the open turn through the buffer's end and continue it.
+
+        The detector still hears speech, so the rest of the turn becomes a new
+        item that its eventual stop commits as usual.
+        """
+        start_byte = self.utterance_start_byte or 0
+        end_byte = self.audio_buffer.num_bytes
+        if end_byte > start_byte:
+            await self.commit_span(start_byte, end_byte)
+        else:
+            self.consume_committed_prefix(end_byte)
+        self.utterance_start_byte = 0
+        self.utterance_item_id = new_id("item")
+        await self.send(
+            make_event(
+                "input_audio_buffer.speech_started",
+                audio_start_ms=offsets_to_ms(self.buffer_origin_samples),
+                item_id=self.utterance_item_id,
+            )
+        )
+
+    def trim_idle_prefix(self) -> None:
+        """Bound the buffer while no speech turn is open.
+
+        Audio between turns is never committed, so keeping only the turn
+        detector's prefix padding, plus a frame of slack for audio it has not
+        consumed yet, stops a long stretch without a turn, such as listening to
+        a long reply with the mic open, from growing into BufferOverflow.
+        """
+        padding_ms = getattr(
+            getattr(self.vad, "config", None), "prefix_padding_ms", None
+        )
+        if (
+            padding_ms is None
+            or self.utterance_start_byte is not None
+            or not self.speech_idle.is_set()
+        ):
+            return
+        else:
+            pass
+        keep_samples = padding_ms * VAD_SAMPLE_RATE // 1000 + 2 * VAD_FRAME_SAMPLES
+        drop_bytes = self.audio_buffer.num_bytes - 2 * keep_samples
+        drop_bytes -= drop_bytes % 2
+        if drop_bytes > 0:
+            self.audio_buffer.drop_prefix(drop_bytes)
+            self.buffer_origin_samples += drop_bytes // 2
+        else:
+            pass
 
     def absolute_sample(self, sample_offset: int) -> int:
         return self.vad_origin_samples + sample_offset
@@ -524,6 +598,9 @@ class RealtimeSession:
             return
         else:
             pass
+        await self.commit_span(start_byte, end_byte)
+
+    async def commit_span(self, start_byte: int, end_byte: int) -> None:
         payload = self.audio_buffer.to_sliced_wav_data_uri(
             start_byte=start_byte, end_byte=end_byte
         )
