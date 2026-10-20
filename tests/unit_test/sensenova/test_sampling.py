@@ -70,6 +70,34 @@ class TestSenseNovaSampling(unittest.TestCase):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 SenseNovaU1ImageEditSampling.from_params(params)
 
+    def test_stage_overrides_apply_to_both_sampling_paths(self) -> None:
+        """Stage options were honored by execution but ignored by other consumers."""
+        parameters = {
+            "num_inference_steps": 50,
+            "stage_params": {
+                "generate": {"num_inference_steps": 4, "width": 512},
+                "output": {"width": 1024},
+            },
+        }
+        for sampling_type in (SenseNovaU1Sampling, SenseNovaU1ImageEditSampling):
+            with self.subTest(sampling_type=sampling_type):
+                options = sampling_type.from_params(parameters)
+                self.assertEqual(options.num_inference_steps, 4)
+                self.assertEqual(options.width, 512)
+        self.assertEqual(parameters["num_inference_steps"], 50)
+
+    def test_invalid_stage_overrides_are_rejected(self) -> None:
+        """Malformed generate overrides must not silently execute default options."""
+        for parameters in (
+            {"stage_params": "invalid"},
+            {"stage_params": {"generate": "invalid"}},
+            {"stage_params": {"generate": {"num_inference_steps": -1}}},
+        ):
+            for sampling_type in (SenseNovaU1Sampling, SenseNovaU1ImageEditSampling):
+                with self.subTest(parameters=parameters, sampling_type=sampling_type):
+                    with self.assertRaises(ValueError):
+                        sampling_type.from_params(parameters)
+
 
 if __name__ == "__main__":
     unittest.main()

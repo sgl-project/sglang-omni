@@ -23,6 +23,7 @@ class SenseNovaU1Sampling:
 
     @classmethod
     def from_params(cls, params: dict[str, JsonValue]) -> SenseNovaU1Sampling:
+        params = generation_params(params)
         n = params.get("n", 1)
         if type(n) is not int or not 1 <= n <= 10:
             raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
@@ -55,6 +56,7 @@ class SenseNovaU1ImageEditSampling:
 
     @classmethod
     def from_params(cls, params: dict[str, JsonValue]) -> SenseNovaU1ImageEditSampling:
+        params = generation_params(params)
         input_max_pixels = params.get("input_max_pixels")
         if input_max_pixels is not None and (
             type(input_max_pixels) is not int or input_max_pixels < 512 * 512
@@ -92,6 +94,21 @@ class SenseNovaU1ImageEditSampling:
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
         )
+
+
+def generation_params(params: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Apply generate-stage overrides consistently before validation or execution."""
+    stage_params = params.get("stage_params")
+    if stage_params is None:
+        return params
+    elif not isinstance(stage_params, dict):
+        raise ValueError("stage_params must be a mapping")
+    else:
+        overrides = stage_params.get("generate", {})
+    if not isinstance(overrides, dict):
+        raise ValueError("stage_params.generate must be a mapping")
+    else:
+        return {**params, **overrides}
 
 
 def validated_values(

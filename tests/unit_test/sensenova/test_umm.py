@@ -327,3 +327,62 @@ def test_decoder_pixel_limit_is_a_request_error(
         controller.transition(StagePayload("request", request, None))
     assert not controller.contexts
     assert controller.outbox.empty()
+
+
+@pytest.mark.parametrize(
+    "overrides, error_message",
+    [
+        ({"num_inference_steps": 101}, "max_steps"),
+        ({"width": 8192, "height": 8192}, "max_output_pixels"),
+    ],
+)
+def test_stage_overrides_cannot_bypass_admission(
+    controller: UMMController,
+    overrides: dict[str, JsonValue],
+    error_message: str,
+) -> None:
+    """Stage overrides bypassed the limits applied to top-level options."""
+    request = OmniRequest("prompt", {"stage_params": {"generate": overrides}})
+    with pytest.raises(UMMRequestError, match=error_message):
+        controller.transition(StagePayload("request", request, None))
+    assert not controller.adapter.executions
+    assert controller.outbox.empty()
+
+
+def test_stage_multi_output_count_matches_admitted_outputs(
+    controller: UMMController, encoded_images: list[str]
+) -> None:
+    """An overridden output count was rejected after successful generation."""
+    request = OmniRequest("prompt", {"stage_params": {"generate": {"n": 2}}})
+    phase = controller.transition(StagePayload("request", request, None))
+    assert phase is not None
+    phase.data = {"modality": "image", "images_b64": encoded_images[:2]}
+    result = controller.transition(phase)
+    assert result is not None
+    assert len(result.data["segments"]) == 2
+    assert not controller.adapter.executions
+
+
+@pytest.mark.parametrize("limit", ["pixels", "retained_bytes"])
+def test_edit_resolved_dimensions_are_bounded_before_dispatch(
+    controller: UMMController,
+    encoded_image: str,
+    limit: Literal["pixels", "retained_bytes"],
+) -> None:
+    """Aspect-ratio rounding exceeded the reserved pixel or byte budget."""
+    if limit == "pixels":
+        controller.adapter.limits = controller.adapter.limits.model_copy(
+            update={"max_output_pixels": 96 * 64}
+        )
+        error_message = "max_output_pixels"
+    else:
+        controller.limits = replace(controller.limits, max_retained_bytes=126000)
+        error_message = "max_retained_bytes"
+    request = OmniRequest(
+        {"task": "image_edit", "prompt": "edit", "image_b64": encoded_image},
+        {"width": 96, "height": 64, "do_resize": False},
+    )
+    with pytest.raises(UMMRequestError, match=error_message):
+        controller.transition(StagePayload("request", request, None))
+    assert not controller.adapter.executions
+    assert controller.outbox.empty()

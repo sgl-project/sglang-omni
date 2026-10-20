@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
-from sglang_omni.models.sensenova_u1.image_processing import reference_image_size
+from sglang_omni.models.sensenova_u1.image_processing import (
+    reference_image_size,
+    resolve_edit_output_size,
+)
 from sglang_omni.models.sensenova_u1.sampling import (
     SenseNovaU1ImageEditSampling,
     SenseNovaU1Sampling,
@@ -20,7 +23,7 @@ ADMISSION_METADATA_KEY = "sensenova_admission_limits"
 PNG_BYTES_PER_PIXEL_BOUND = 4
 PNG_CONTAINER_BYTES_BOUND = 65536
 IMAGE_SEGMENT_METADATA_BYTES_BOUND = 1024
-# Starts the I2I error for references that exceed GPU memory, which the Images API reports as a client error.
+# Starts the I2I error for references that exceed accelerator memory, which the Images API reports as a client error.
 REFERENCE_MEMORY_ERROR_PREFIX = "SenseNova-U1 I2I with "
 
 
@@ -55,6 +58,7 @@ def validate_admission(
     elif isinstance(inputs, str) and inputs.strip():
         options = SenseNovaU1Sampling.from_params(parameters)
         expected_images = options.n
+        output_width, output_height = options.width, options.height
     elif (
         isinstance(inputs, dict)
         and inputs.get("task") == "image_edit"
@@ -63,6 +67,7 @@ def validate_admission(
     ):
         options = SenseNovaU1ImageEditSampling.from_params(parameters)
         expected_images = 1
+        output_width, output_height = options.width, options.height
         references = inputs.get("image_b64")
         if isinstance(references, str):
             references = [references]
@@ -79,7 +84,7 @@ def validate_admission(
             pass
         reference_pixels = 0
         resized_reference_pixels = 0
-        for reference in references:
+        for reference_index, reference in enumerate(references):
             if not isinstance(reference, str) or not reference:
                 raise ValueError("SenseNova references must be non-empty base64 images")
             else:
@@ -99,6 +104,12 @@ def validate_admission(
                         image.width, image.height, len(references), options
                     )
                     resized_reference_pixels += width * height
+                if reference_index == 0:
+                    output_width, output_height = resolve_edit_output_size(
+                        (width, height), options
+                    )
+                else:
+                    pass
                 if resized_reference_pixels > limits.max_reference_pixels:
                     raise ValueError(
                         "SenseNova resized references exceed max_reference_pixels"
@@ -111,14 +122,14 @@ def validate_admission(
         )
     if expected_images > limits.max_images:
         raise ValueError("SenseNova output count exceeds max_images")
-    elif options.width * options.height * expected_images > limits.max_output_pixels:
+    elif output_width * output_height * expected_images > limits.max_output_pixels:
         raise ValueError("SenseNova output exceeds max_output_pixels")
     elif options.num_inference_steps > limits.max_steps:
         raise ValueError("SenseNova steps exceed max_steps")
     else:
         pass
     png_bytes = (
-        options.width * options.height * PNG_BYTES_PER_PIXEL_BOUND
+        output_width * output_height * PNG_BYTES_PER_PIXEL_BOUND
         + PNG_CONTAINER_BYTES_BOUND
     )
     return AdmittedGeneration(

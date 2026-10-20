@@ -78,7 +78,7 @@ def generate_images(
             pass
         options = text_to_image_options(payload)
         if options.n > 1:
-            results[index] = generate_text_to_image(payload, model, tokenizer)
+            results[index] = generate_image(payload, model, tokenizer)
             continue
         else:
             pass
@@ -118,28 +118,13 @@ def generate_images(
     return completed_results
 
 
-def generation_params(payload: StagePayload) -> dict[str, object]:
-    """Layer the generate stage's /generate overrides onto request params."""
-    params = dict(payload.request.params)
-    stage_params = params.pop("stage_params", None)
-    if isinstance(stage_params, dict):
-        generate_params = stage_params.get("generate")
-        if isinstance(generate_params, dict):
-            params.update(generate_params)
-        else:
-            pass
-    else:
-        pass
-    return params
-
-
 def text_to_image_options(payload: StagePayload) -> SenseNovaU1Sampling:
     prompt = payload.request.inputs
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("SenseNova-U1 requires a non-empty text prompt")
     else:
         pass
-    return SenseNovaU1Sampling.from_params(generation_params(payload))
+    return SenseNovaU1Sampling.from_params(payload.request.params)
 
 
 def generate_text_to_image(
@@ -286,9 +271,9 @@ def generate_image_edit(
         raise ValueError("SenseNova-U1 requires a non-empty image edit prompt")
     else:
         pass
-    options = SenseNovaU1ImageEditSampling.from_params(generation_params(payload))
+    options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
     references = prepare_reference_images(inputs.get("image_b64"), options)
-    width, height = resolve_edit_output_size(references, options)
+    width, height = resolve_edit_output_size(references[0].size, options)
     validate_output_dimensions(payload.request, width, height)
     prepare_cache_dit(
         model,
@@ -319,10 +304,14 @@ def generate_image_edit(
                 think_mode=False,
             )
     except torch.OutOfMemoryError as error:
-        torch.cuda.empty_cache()
+        device = model.device
+        if device.type not in ("cuda", "npu"):
+            raise
+        else:
+            torch.get_device_module(device).empty_cache()
         raise ValueError(
-            f"{REFERENCE_MEMORY_ERROR_PREFIX}{len(references)} reference images exceeds GPU memory; "
-            "reduce references or lower generate.factory.dit_layerwise_resident_layers"
+            f"{REFERENCE_MEMORY_ERROR_PREFIX}{len(references)} reference images exceeds {device.type.upper()} memory; "
+            "reduce references or lower input_max_pixels"
         ) from error
     else:
         pass

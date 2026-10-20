@@ -53,12 +53,12 @@ from sglang_omni.models.sensenova_u1.tensor_parallel import (
     validate_tp_device,
     validate_tp_settings,
 )
-from sglang_omni.models.weight_loader import resolve_dtype
-from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.models.sensenova_u1.tensor_parallel_scheduler import (
     TensorParallelScheduler,
 )
+from sglang_omni.models.weight_loader import resolve_dtype
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.device import resolve_concrete_device
 
 __all__ = [
@@ -81,7 +81,9 @@ def image_generation_request_cost(payload: StagePayload) -> int:
     inputs = payload.request.inputs
     if isinstance(inputs, dict) and inputs.get("task") == "image_edit":
         options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
-        branches = 1 + int(options.guidance_scale > 1) + int(options.img_cfg_scale > 1)
+        branches = image_guidance_branch_count(
+            options.guidance_scale, options.img_cfg_scale
+        )
     else:
         options = text_to_image_options(payload)
         branches = 1 + int(options.guidance_scale > 1)
@@ -135,7 +137,7 @@ def validate_generation_request(payload: StagePayload, model: NEOChatModel) -> N
             pass
         options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
         references = prepare_reference_images(inputs.get("image_b64"), options)
-        width, height = resolve_edit_output_size(references, options)
+        width, height = resolve_edit_output_size(references[0].size, options)
         validate_output_dimensions(payload.request, width, height)
         branch_count = image_guidance_branch_count(
             options.guidance_scale, options.img_cfg_scale

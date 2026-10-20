@@ -125,7 +125,7 @@ def prepare_reference_images(
 
 
 def resolve_edit_output_size(
-    references: list[Image.Image], options: SenseNovaU1ImageEditSampling
+    reference_size: tuple[int, int], options: SenseNovaU1ImageEditSampling
 ) -> tuple[int, int]:
     if options.size_explicit:
         return options.width, options.height
@@ -133,8 +133,8 @@ def resolve_edit_output_size(
         pass
     target_pixels = options.width * options.height
     height, width = smart_resize(
-        height=references[0].height,
-        width=references[0].width,
+        height=reference_size[1],
+        width=reference_size[0],
         factor=IMAGE_RESIZE_FACTOR,
         min_pixels=target_pixels,
         max_pixels=target_pixels,
