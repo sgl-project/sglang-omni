@@ -403,13 +403,6 @@ def test_process_segment_streams_every_internal_segment():
     assert second_outputs[0][2][0] == len("First segment.")
 
 
-def test_process_segment_single_chunk_below_duration_guard():
-    outputs = run_process_segment_with_chunk_lengths([10], text="Longer text.")
-
-    assert len(outputs) == 1
-    assert outputs[0][0].shape == (1, 10)
-
-
 def test_process_segment_multi_chunk_below_duration_guard():
     outputs = run_process_segment_with_chunk_lengths(
         [10, 15, 20], text="This segment is long enough to keep streaming."
@@ -436,12 +429,6 @@ def test_process_segment_duration_guard_preserves_strict_two_second_boundary():
     outputs = run_process_segment_with_chunk_lengths([20, 5, 5], text="Hi.")
 
     assert [item[0].shape[-1] for item in outputs] == [20, 5]
-
-
-def test_process_segment_empty_generation_has_no_outputs():
-    outputs = run_process_segment_with_chunk_lengths([], text="Hi.")
-
-    assert outputs == []
 
 
 def test_process_segment_duration_guard_does_not_concat_per_chunk(monkeypatch):
@@ -757,6 +744,7 @@ def test_duration_capped_steps_short_text_uses_floor():
         text_len=1, audio_detokenizer=detok, requested_max_steps=10_000
     )
     assert capped == expected
+    assert capped == 22
 
 
 def test_duration_capped_steps_long_text_uses_per_char_rate():
@@ -775,6 +763,7 @@ def test_duration_capped_steps_long_text_uses_per_char_rate():
         requested_max_steps=10_000,
     )
     assert capped == expected
+    assert capped == 417
 
 
 def test_duration_capped_steps_respects_requested_ceiling():

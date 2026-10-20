@@ -17,7 +17,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -54,6 +54,9 @@ JUDGE_NCCL_PORT_OFFSET = 1
 NCCL_PORT_END = NCCL_PORT_BASE + NCCL_PORT_SPAN
 # note (luojiaxuan): v1.0 artifacts of a repeat live under repeat-N/v10/.
 V10_DIR = "v10"
+# note (luojiaxuan): the per-reply listening metrics of a repeat live under
+# repeat-N/listening/.
+LISTENING_DIR = "listening"
 
 
 @dataclass(frozen=True)
@@ -154,10 +157,10 @@ class Settings:
             "JUDGE_CONFIG": str(self.judge_dir / "judge-config.json"),
         }
 
-    def apply_job_isolation(self) -> None:
-        """Give this GPU its own compile and dynamic-module caches.
+    def cache_env(self) -> dict[str, str]:
+        """This GPU's own compile and dynamic-module caches, created on first use.
 
-        Two jobs writing one Triton, Inductor, DeepGEMM, CUDA, NeMo or
+        Two processes writing one Triton, Inductor, DeepGEMM, CUDA, NeMo or
         Transformers dynamic-module directory corrupt it.
         """
         cache_root = self.fdb_work / "cache" / f"gpu-{self.gpu}"
@@ -169,9 +172,20 @@ class Settings:
             "HF_MODULES_CACHE": cache_root / "hf-modules",
             "NEMO_CACHE_DIR": cache_root / "nemo",
         }
-        for name, path in assignments.items():
+        for path in assignments.values():
             path.mkdir(parents=True, exist_ok=True)
-            os.environ[name] = str(path)
+        return {name: str(path) for name, path in assignments.items()}
+
+    def apply_job_isolation(self) -> None:
+        os.environ.update(self.cache_env())
+
+    def on_gpu(self, gpu: str) -> Settings:
+        """The same job with its model server on another GPU and that GPU's port."""
+        return replace(
+            self,
+            gpu=gpu,
+            server_port=derived_port("SERVER_PORT", DEFAULT_SERVER_PORT, gpu),
+        )
 
 
 def env_text(name: str, default: str) -> str:
@@ -200,34 +214,43 @@ def session_timeout(name: str, default: str) -> str:
     return text
 
 
-def resolve_visible_gpu() -> str:
-    """The one GPU this job uses.
+def visible_devices() -> tuple[str, ...]:
+    """The GPU indices ``CUDA_VISIBLE_DEVICES`` lists, which must be set."""
+    visible = os.environ["CUDA_VISIBLE_DEVICES"].strip()
+    if not visible:
+        raise SystemExit("ERROR: CUDA_VISIBLE_DEVICES is empty.")
+    else:
+        pass
+    devices = tuple(part.strip() for part in visible.split(","))
+    if not all(device.isdigit() for device in devices) or len(set(devices)) != len(
+        devices
+    ):
+        raise SystemExit(
+            "ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices "
+            f"(got {visible!r})."
+        )
+    else:
+        pass
+    return devices
 
-    ``CUDA_VISIBLE_DEVICES`` wins, so each terminal can export a different
-    index and the default ``GPU=0`` does not put every job on card 0.
-    ``GPU`` is used only when ``CUDA_VISIBLE_DEVICES`` is unset.
+
+def resolve_visible_gpu() -> str:
+    """The job GPU: it runs generate's one model server unless --gpus lists
+    more, runs asr and judge, and names the ports and caches.
+
+    ``CUDA_VISIBLE_DEVICES`` wins, so each terminal can export its own
+    indices; the job GPU is the first one. ``GPU`` is used only when
+    ``CUDA_VISIBLE_DEVICES`` is unset.
     """
     if "CUDA_VISIBLE_DEVICES" in os.environ:
-        visible = os.environ["CUDA_VISIBLE_DEVICES"].strip()
-        if not visible:
-            raise SystemExit("ERROR: CUDA_VISIBLE_DEVICES is empty.")
-        else:
-            pass
-        devices = [part.strip() for part in visible.split(",") if part.strip()]
-        if len(devices) != 1:
-            raise SystemExit(
-                "ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index "
-                f"(got {visible!r})."
-            )
-        else:
-            pass
-        gpu = devices[0]
+        gpu = visible_devices()[0]
         explicit_gpu = os.environ.get("GPU")
         if explicit_gpu is not None and explicit_gpu.strip() not in {"", gpu}:
             raise SystemExit(
                 "ERROR: GPU and CUDA_VISIBLE_DEVICES disagree "
-                f"(GPU={explicit_gpu!r}, CUDA_VISIBLE_DEVICES={visible!r}). "
-                "Unset GPU, or set it to the same index."
+                f"(GPU={explicit_gpu!r}, "
+                f"CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']!r}). "
+                "Unset GPU, or set it to the first index."
             )
         else:
             pass
@@ -422,6 +445,17 @@ def v10_command(settings: Settings, phase: str, *arguments: str) -> list[str]:
         str(settings.scoring_python),
         "-m",
         "benchmarks.eval.benchmark_duplex_v10",
+        phase,
+        *arguments,
+    ]
+
+
+def listening_command(python: Path, phase: str, *arguments: str) -> list[str]:
+    """A benchmark_duplex_listening phase, run with the given interpreter."""
+    return [
+        str(python),
+        "-m",
+        "benchmarks.eval.benchmark_duplex_listening",
         phase,
         *arguments,
     ]

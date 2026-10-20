@@ -25,8 +25,6 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 @pytest.mark.parametrize(
     "stage_overrides",
     [
-        [("audio_encoder.process", "pipeline")],
-        [("tts_engine.process", "tts_frontend")],
         [("vocoder.process", "tts_frontend")],
         [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "1")],
         [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "null")],

@@ -40,6 +40,8 @@ Two input conventions matter:
 
 The reply text is the thinker's spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.
 
+For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
+
 ## Realtime conversation
 
 ```bash
@@ -63,11 +65,33 @@ It uses the checkpoint's default prompt and voice.
 
 Audio randomness is governed by the checkpoint's own settings, read from `config.json` (`inference_noise_scale`, `inference_top_p_or_k`): the talker samples its codes with Gumbel-max component selection and Gaussian noise inside the MoG head, so two runs on the same input produce different code sequences and slightly different audio even though the text is identical. There is no `seed` control yet.
 
+## Tool calling
+
+VoiceChat can call configured Python functions during a conversation and use their results in its spoken replies. Tool calling is optional; no tools are enabled by default.
+
+To try the random-number example, run this command from the repository root:
+
+```bash
+PYTHONPATH=. sgl-omni serve --config examples/nemotron_voicechat/tool.yaml --enable-realtime --port 8000
+```
+
+Connect your realtime client and ask, for example, "Give me a random number between one and fifty." The server executes the tool and returns its result to the model automatically; the client does not need to handle tool calls.
+
+To use your own tools, copy `examples/nemotron_voicechat/tool.yaml` and update:
+
+- `tools.<name>.function`: the OpenAI function schema, whose name must match the registry key.
+- `tools.<name>.implementation`: the importable Python function path.
+
+Each tool is declared once. Set `tool_names` to a list of registered names to offer a subset; otherwise all registered tools are offered.
+
+Each function accepts an argument dictionary and returns a JSON-serializable value. See `examples/nemotron_voicechat/tools.py` for an example. Make your tool module importable in the server environment, then launch with `--config` pointing to your configuration file.
+
+Keep the realtime audio stream running, including silence while waiting for a reply. Stopping audio input can prevent the model from finishing its response.
+
 ## Known limitations
 
 - The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
-- The `function_head` tool-call channel is decoded and carried through but nothing acts on it.
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.
 - Talker output is not bit-identical to NeMo's offline script even with deterministic sampling on both sides (about 82 % of quantizer cells and 63 of 150 frames agree on a 12 s fixture; transcripts and amplitude envelopes match). Known causes: the backbone and KV cache run in bfloat16 because SGLang's attention backends and `sgl_kernel`'s Gemma RMSNorm have no fp32 path, while NeMo runs the whole talker in fp32; NeMo's offline script enables classifier-free guidance by default; and NeMo's offline recipe walks the system-prompt region before frame 0 (realtime convention here; see `prompt_region_steps`). The thinker is frame-exact with NeMo.
 - NeMo decodes the perception encoder's flush row as a 151st frame; this pipeline computes it but does not decode it, so replies are one frame (80 ms) shorter.

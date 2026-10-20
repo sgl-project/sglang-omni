@@ -305,7 +305,14 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
     def input_key(self, item: FishReferenceInput) -> str | None:
         if item.source_kind == "path":
-            return _reference_path_cache_key(str(item.source), trust_stat=False)
+            source = str(item.source)
+            # Uploaded voices reach the hook as a data URL in audio_path; it is
+            # not a file on disk, so key it by its content instead.
+            if source.startswith("data:"):
+                return f"data:{_hash_bytes(source.encode('utf-8'))}"
+            else:
+                pass
+            return _reference_path_cache_key(source, trust_stat=False)
         else:
             pass
         if item.source_kind == "bytes":

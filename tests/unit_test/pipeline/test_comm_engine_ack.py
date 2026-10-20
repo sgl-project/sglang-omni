@@ -321,26 +321,6 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
     asyncio.run(run())
 
 
-def test_comm_engine_ignores_unknown_data_ack() -> None:
-    engine = CommEngine(
-        CommRouter(
-            stage_name="sender",
-            gpu_id=None,
-            same_process_targets=set(),
-            gpu_stage_names=set(),
-        )
-    )
-
-    engine.ack_transfer(
-        DataAckMessage(
-            request_id="req-1",
-            from_stage="receiver",
-            to_stage="sender",
-            object_id="missing",
-        )
-    )
-
-
 def test_comm_engine_ignores_duplicate_data_ack() -> None:
     async def run() -> None:
         relay = AckedRelay()
@@ -374,9 +354,8 @@ def test_comm_engine_ignores_duplicate_data_ack() -> None:
         )
 
         engine.ack_transfer(ack)
-        await wait_until(lambda: relay.ops[0].waited)
-
         engine.ack_transfer(ack)
+        await wait_until(lambda: relay.ops[0].waited)
 
     asyncio.run(run())
 

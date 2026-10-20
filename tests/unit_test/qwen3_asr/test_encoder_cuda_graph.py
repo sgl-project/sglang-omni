@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -9,6 +10,9 @@ from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
     build_buckets,
+    eager_preamble,
+    plan_mel_chunks,
+    planned_preamble,
     window_lens_from_token_counts,
 )
 from sglang_omni.platforms import current_platform
@@ -56,12 +60,18 @@ def test_get_audio_feature_routing(monkeypatch):
     get = sglang_model.Qwen3ASRForConditionalGeneration.get_audio_feature
 
     model.encoder_graph_runner = SimpleNamespace(
-        tokens_per_window=104, run=lambda h, w: torch.ones(65, 8)
+        tokens_per_window=104,
+        plan=lambda *args: (104, []),
+        failed=set(),
+        run=lambda h, w: torch.ones(65, 8),
     )
     assert torch.equal(get(model, [item]), torch.ones(1, 65, 8))
 
     model.encoder_graph_runner = SimpleNamespace(
-        tokens_per_window=104, run=lambda h, w: None
+        tokens_per_window=104,
+        plan=lambda *args: (104, []),
+        failed=set(),
+        run=lambda h, w: None,
     )
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
 
@@ -200,7 +210,17 @@ def test_graph_matches_eager_tower(asr_server_args):
             [qwen3_asr_num_audio_tokens(f) for f in frame_lens],
             tokens_per_window=runner.tokens_per_window,
         )
-        out = runner.run(eager_preamble(tower, feats, lens), wl)
+        eager_hidden = eager_preamble(tower, feats, lens)
+        features = list(feats.split(frame_lens, dim=1))
+        host_plan = plan_mel_chunks(
+            [feature.unsqueeze(0).cpu() for feature in features],
+            frame_lens,
+            chunk_width=tower.n_window * 2,
+            dtype=torch.bfloat16,
+        )
+        planned_hidden = planned_preamble(tower, host_plan, tower_device)
+        torch.testing.assert_close(planned_hidden, eager_hidden, rtol=0, atol=0)
+        out = runner.run(planned_hidden, wl)
         diff = (out.float() - ref.float()).abs().max().item()
         assert diff < 3e-2, f"{frame_lens}: max|diff|={diff}"
 
@@ -239,3 +259,82 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
     )
 
     assert model.encoder_graph_runner == "untouched"
+
+
+@pytest.mark.parametrize("frame_counts", [[1], [99, 100, 101], [200, 307]])
+@pytest.mark.parametrize("convolution_batch_size", [1, 16])
+def test_host_planned_preamble_matches_eager(frame_counts, convolution_batch_size):
+    class Projection(torch.nn.Linear):
+        def forward(self, hidden_states):
+            return super().forward(hidden_states), None
+
+    torch.manual_seed(7)
+    tower = SimpleNamespace(
+        n_window=50,
+        conv_chunksize=convolution_batch_size,
+        conv2d1=torch.nn.Conv2d(1, 2, 3, stride=2, padding=1),
+        conv2d2=torch.nn.Conv2d(2, 2, 3, stride=2, padding=1),
+        conv2d3=torch.nn.Conv2d(2, 2, 3, stride=2, padding=1),
+        conv_out=Projection(32, 8),
+        positional_embedding=SimpleNamespace(positional_embedding=torch.randn(128, 8)),
+    )
+    features = [torch.randn(1, 128, frames + 11) for frames in frame_counts]
+    packed_features = torch.cat(
+        [feature[0, :, :frames] for feature, frames in zip(features, frame_counts)],
+        dim=1,
+    )
+    plan = plan_mel_chunks(features, frame_counts, chunk_width=100, dtype=torch.float32)
+    with torch.no_grad():
+        expected = eager_preamble(tower, packed_features, torch.tensor(frame_counts))
+        actual = planned_preamble(tower, plan, torch.device("cpu"))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("routing", ["uncovered", "failed", "success", "rejected"])
+def test_host_plan_checks_eligibility_before_frontend(monkeypatch, routing):
+    """Known missing graphs must fall back before running the convolution frontend."""
+    tower = torch.nn.Linear(4, 4)
+    tower.dtype = torch.float32
+    tower.n_window = 50
+    model = object.__new__(sglang_model.Qwen3ASRForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.audio_tower = tower
+    item = MultimodalDataItem(
+        modality=Modality.AUDIO,
+        feature=torch.zeros(1, 128, 500),
+        model_specific_data={
+            "feature_attention_mask": torch.ones(1, 500, dtype=torch.long),
+            "num_audio_tokens": 65,
+        },
+    )
+    preamble = Mock(return_value=torch.zeros(65, 4))
+    monkeypatch.setattr(sglang_model, "planned_preamble", preamble)
+    runner = SimpleNamespace(
+        tokens_per_window=104,
+        plan=Mock(return_value=None if routing == "uncovered" else (104, [])),
+        failed={104} if routing == "failed" else set(),
+        run=Mock(return_value=None if routing == "rejected" else torch.ones(65, 8)),
+    )
+    model.encoder_graph_runner = runner
+    result = model.planned_audio_feature([item], torch.device("cpu"))
+    if routing == "success":
+        torch.testing.assert_close(result, torch.ones(1, 65, 8))
+    else:
+        assert result is None
+    assert preamble.call_count == int(routing in ("success", "rejected"))
+    assert runner.run.call_count == preamble.call_count
+    if routing in ("uncovered", "failed"):
+        tower.forward = Mock(
+            return_value=SimpleNamespace(last_hidden_state=torch.full((1, 65, 8), 7.0))
+        )
+        eager_frontend = Mock(
+            side_effect=AssertionError(
+                "fallback must run the frontend only inside the tower"
+            )
+        )
+        monkeypatch.setattr(sglang_model, "eager_preamble", eager_frontend)
+        torch.testing.assert_close(
+            model.get_audio_feature([item]), torch.full((1, 65, 8), 7.0)
+        )
+        tower.forward.assert_called_once()
+        assert preamble.call_count == 0

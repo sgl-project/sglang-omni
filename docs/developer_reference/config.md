@@ -180,6 +180,7 @@ overrode. Both run the same merge as `serve`.
 | `stream_done_to_fn` | `str` or `None` | `None` | Dotted function path for request-aware stream-completion targets. |
 | `project_payload` | `dict[str, str]` | `{}` | Optional target-stage to dotted projection function mapping used before writing a downstream payload. |
 | `comm` | `CommConfig` or `None` | `None` | Per-stage communication pool and Mooncake options. |
+| `http_routes` | `list[str]` | `[]` | Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage's scheduler provides the ASGI app through `http_app()`, and the stage must run as one instance. |
 
 Routing rule: set exactly one of `next` or `terminal=True`. `route_fn` is an
 optional request-aware override for stages that already declare `next`.
@@ -216,6 +217,12 @@ Class-level hooks a model config may declare:
 - `tensor_parallel_server_args_overrides(stage_name, tp_size)` /
   `topology_gated_custom_all_reduce_stages()` — engine overrides derived from
   the resolved TP topology at launch.
+- `entry_stage_admission_limit()` returns how many requests one entry stage
+  replica admits at once when that stage owns admission, such as a UMM
+  controller. The coordinator caps in-flight requests at this value times the
+  entry process replicas, or at the running+queued capacity of an engine stage
+  when that is lower, since the entry stage may send any request to any engine
+  stage. `None` (the default) derives the cap from the generation engine.
 
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.

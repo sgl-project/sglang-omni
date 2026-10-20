@@ -19,6 +19,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import JsonValue
 
+from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_asr import (
     USE_CUDA_GRAPH_DECODER,
     ParakeetModel,
@@ -34,7 +35,7 @@ from benchmarks.duplex.reference_audio import (
     sha_bytes,
     write_wav,
 )
-from benchmarks.duplex.reference_capture import TraceFormat
+from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
 from benchmarks.duplex.reference_core import (
     ASR_MODEL_ID,
     JUDGE_MAX_ATTEMPTS,
@@ -51,8 +52,13 @@ from benchmarks.duplex.reference_core import (
 )
 from benchmarks.duplex.reference_export import send_receipts_required
 from benchmarks.duplex.run_artifacts import file_sha256
-from benchmarks.duplex.v10_dataset import DECLARED_COUNTS, SUBSET_TASKS, SUBSETS, Task
-from benchmarks.duplex.v10_evaluation import RUN_KIND
+from benchmarks.duplex.v10_dataset import (
+    DECLARED_COUNTS,
+    RUN_KIND,
+    SUBSET_TASKS,
+    SUBSETS,
+    Task,
+)
 from benchmarks.duplex.v15_audio import normalize_audio, write_json
 
 MANIFEST_KIND = "full-duplex-bench-v1.0-reference-audio"
@@ -79,8 +85,14 @@ RESULT_MEAN_LINE = re.compile(r"(?P<label>.+) - Mean: (?P<mean>\S+) ± (?P<std>\
 RESULT_VALUE_LINE = re.compile(r"(?P<label>[^:]+):\s+(?P<value>\S+)")
 
 
-def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, JsonValue]:
+def export(
+    runs: list[Path],
+    dataset_root: Path,
+    output: Path,
+    trace_format: str | None = None,
+) -> dict[str, JsonValue]:
     """Write <output>/<subset>/<id>/output.wav and its dataset annotation per eligible session."""
+    capture_format = resolve_trace_format(trace_format)
     output = output.resolve()
     for run in runs:
         if output.is_relative_to(run.resolve()):
@@ -89,7 +101,7 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
             raise ValueError(f"{run} is not a {RUN_KIND} run")
         else:
             pass
-    chosen, sources, superseded = load_runs(runs, TraceFormat.PCM16)
+    chosen, sources, superseded = load_runs(runs, capture_format)
     output.mkdir(parents=True, exist_ok=False)
     rows = []
     for sample_id in sorted(chosen):
@@ -100,13 +112,33 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
             raise ValueError(f"Variant directory escapes run: {directory}")
         else:
             pass
+        # note (luojiaxuan): load_runs already required a profile of the format's
+        # protocol; the turn-based protocols take their rate from that profile.
+        profile_rate = (
+            PROFILES[read_json(run / "manifest.json")["profile"]].output_sample_rate
+            if capture_format is not TraceFormat.PCM16
+            else None
+        )
         record, pcm, audio = analyze_variant(
             directory,
-            TraceFormat.PCM16,
+            capture_format,
             None if state["input"] is None else state["input"]["sha256"],
             receipts_required=send_receipts_required(run),
+            profile_rate=profile_rate,
         )
         reasons = record["window"]["reasons"]
+        # note (luojiaxuan): A legacy or turn-based session that failed its
+        # protocol replay can be silent for protocol reasons, so silence is only
+        # valid after a pass.
+        if (
+            capture_format is not TraceFormat.PCM16
+            and state["protocol_verdict"] != "pass"
+        ):
+            reasons.append(
+                f"recorder protocol verdict {state['protocol_verdict']!r} is not pass"
+            )
+        else:
+            pass
         annotation = entry["paths"].get("annotation")
         if pcm is not None:
             source = dataset_root / state["source"]["file"]
@@ -159,7 +191,7 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
     manifest = {
         "schema_version": 1,
         "kind": MANIFEST_KIND,
-        "trace_format": TraceFormat.PCM16.value,
+        "trace_format": capture_format.value,
         "created_utc": utc_now(),
         "policy_version": POLICY_VERSION,
         "policy": POLICY,

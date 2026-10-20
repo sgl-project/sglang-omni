@@ -158,3 +158,34 @@ def session_prefill_rows(
     return splice_embedding_spans(
         embed_tokens(token_ids), start, request_data.session_embedding_spans
     )
+
+
+def session_projected_prefill_rows(
+    request_data: SGLangARRequestData,
+    embed_tokens: TokenEmbedding,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """The uncached window of a projected native session request: the spans' rows, and the token embedding of each generated token that no decode step fed back."""
+    session_request = request_data.req
+    start = session_request.extend_range.start
+    end = session_request.extend_range.end
+    spans = request_data.session_embedding_spans
+    rows = torch.zeros(
+        end - start, spans[0].input_embeds.shape[1], device=device, dtype=dtype
+    )
+    covered = torch.zeros(end - start, dtype=torch.bool, device=device)
+    for span in spans:
+        left, right = max(start, span.start), min(end, span.end)
+        if left < right:
+            covered[left - start : right - start] = True
+        else:
+            pass
+    if bool(covered.all()):
+        pass
+    else:
+        token_ids = torch.tensor(
+            session_request.get_fill_ids()[start:end], dtype=torch.long, device=device
+        )
+        rows[~covered] = embed_tokens(token_ids[~covered]).to(dtype)
+    return splice_embedding_spans(rows, start, spans)

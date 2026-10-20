@@ -14,7 +14,7 @@ from sglang_omni.models.moss_tts.hf_loading import (
     MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
     resolve_moss_tts_context_length,
 )
-from sglang_omni.models.moss_tts_local import request_builders
+from sglang_omni.models.moss_tts_local import CAPABILITIES, request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
 from sglang_omni.models.moss_tts_local.request_builders import (
     MossTTSLocalSGLangRequestData,
@@ -26,9 +26,9 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     TtsEngineBuilder,
 )
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
@@ -45,6 +45,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     context_length = MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     model_arch_override = "MossTTSLocalSGLangModel"
     supports_context_length_override = True
+    supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
 
     def resolve_context_length(
         self,
@@ -91,6 +92,9 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             "max_running_requests": 16,
             "dtype": dtype,
             "disable_cuda_graph": False,
+            "cuda_graph_backend_prefill": CudaGraphBackend.FULL,
+            # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
+            "cuda_graph_bs_prefill": [64, 128, 256, 512],
             "disable_overlap_schedule": True,
             # note (Zhang Yiyang): Tests showed costly startup with no consistent throughput gain from compile.
             "enable_torch_compile": False,
@@ -165,7 +169,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -192,7 +196,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MossTTSLocalModelRunner:
         model_runner_mod = importlib.import_module(

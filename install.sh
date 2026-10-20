@@ -279,7 +279,7 @@ clone_or_reuse() {
 clone_or_reuse "$SGLANG_DIR" "$SGLANG_REF" "$SGLANG_REPO" "SGLang"
 
 # SGLang keeps the CUDA-oriented project metadata in pyproject.toml and the
-# platform-neutral/MLX metadata in pyproject_other.toml. Its Python build also
+# platform-neutral metadata in pyproject_other.toml. Its Python build also
 # references Rust and version files at the repository root, so stage the whole
 # checkout and replace only the staged metadata. The source checkout remains
 # untouched and the staged package is installed non-editably before cleanup.
@@ -292,7 +292,7 @@ else
 fi
 
 log "Installing SGLang $SGLANG_REF with the all_mps extra"
-# The optional SGLang Rust extensions are not used by the MLX/Torch-MPS
+# The optional SGLang Rust extensions are not used by the Torch-MPS
 # Qwen3-ASR path. Skipping them avoids requiring a Rust toolchain on a clean Mac.
 SGLANG_BUILD_RUST_EXTS=none \
   "${UV_PIP_INSTALL[@]}" --prerelease=allow "$SGLANG_STAGE_DIR/python[all_mps]"
@@ -321,12 +321,12 @@ uv pip check --python "$PYTHON_BIN"
 [[ -x "$VENV_DIR/bin/sgl-omni" ]] || die "sgl-omni console script was not installed"
 "$VENV_DIR/bin/sgl-omni" --help >/dev/null
 DYLD_LIBRARY_PATH="$FFMPEG_LIB${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-SGLANG_USE_MLX=1 "$PYTHON_BIN" - <<'PY'
-import mlx.core as mx
+"$PYTHON_BIN" - <<'PY'
+import torch
 from torchcodec.decoders import AudioDecoder  # noqa: F401
 
-assert mx.metal.is_available(), "MLX Metal is unavailable"
-print("MLX Metal and TorchCodec FFmpeg loading are available")
+assert torch.backends.mps.is_available(), "PyTorch MPS is unavailable"
+print("PyTorch MPS and TorchCodec FFmpeg loading are available")
 PY
 
 cat <<EOF

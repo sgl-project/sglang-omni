@@ -1,29 +1,20 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
 import time
 
+import github
 from github import Auth, Github
-from github.GithubException import GithubException
+from resolve_ci_labels import (
+    CI_STAGES,
+    RUN_ALL_LABEL,
+    resolve_ci_plan,
+    select_workflows,
+)
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
-TTS_MODEL_LABELS = {
-    "higgs": "run-higgs",
-    "moss": "run-moss",
-    "qwen3-tts": "run-qwen3-tts",
-    "cosyvoice3": "run-cosyvoice3",
-    "qwen3-tts-custom-voice": "run-qwen3-tts-custom-voice",
-    "qwen3-tts-custom-voice": "run-qwen3-tts-custom-voice",
-}
-ASR_MODEL_LABELS = {
-    "fun-asr": "run-fun-asr",
-    "qwen3-asr": "run-qwen3-asr",
-    "whisper-asr": "run-whisper-asr",
-}
-OMNI_MODEL_LABELS = {
-    "qwen3-omni": "run-qwen3-omni",
-    "minicpmo": "run-minicpmo",
-}
 
 
 def get_env_var(name):
@@ -61,150 +52,90 @@ def load_permissions(user_login):
         sys.exit(1)
 
 
-def parse_model_targets(
-    tokens: list[str],
-) -> tuple[str | None, str | None, str | None, str | None]:
-    tts_targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
-    if len(set(tts_targets)) > 1:
-        allowed = ", ".join(sorted(TTS_MODEL_LABELS))
-        return None, None, None, f"Specify only one TTS CI model target: {allowed}."
-
-    asr_targets = [token for token in tokens[1:] if token in ASR_MODEL_LABELS]
-    if len(set(asr_targets)) > 1:
-        allowed = ", ".join(sorted(ASR_MODEL_LABELS))
-        return None, None, None, f"Specify only one ASR CI model target: {allowed}."
-    omni_targets = [token for token in tokens[1:] if token in OMNI_MODEL_LABELS]
-    if len(set(omni_targets)) > 1:
-        allowed = ", ".join(sorted(OMNI_MODEL_LABELS))
-        return None, None, None, f"Specify only one Omni CI model target: {allowed}."
-    return (
-        tts_targets[0] if tts_targets else None,
-        asr_targets[0] if asr_targets else None,
-        omni_targets[0] if omni_targets else None,
-        None,
-    )
-
-
 def handle_tag_run_ci(
-    pr,
-    comment,
-    user_perms,
-    react_on_success=True,
-    tts_model_target=None,
-    asr_model_target=None,
-    omni_model_target=None,
-):
-    """
-    Handles the /tag-run-ci-label command.
-
-    When a model target is set, also applies its matching model label. Labels
-    are mutually exclusive within the TTS, ASR, and Omni families, so remove the
-    opposite label before adding the selected one.
-
-    The combined /tag-and-rerun-ci command restarts Omni CI after updating
-    labels, because labels added by GITHUB_TOKEN do not cascade-trigger a
-    new pull_request.labeled workflow run.
-
-    Returns True if action was taken, False otherwise.
-    """
-    if not user_perms.get("can_tag_run_ci_label", False):
+    pull_request: github.PullRequest.PullRequest,
+    comment: github.IssueComment.IssueComment,
+    user_permissions: dict[str, bool | str],
+    requested_targets: frozenset[str],
+    react_on_success: bool = True,
+) -> bool:
+    """Apply CI stage and model labels."""
+    if not user_permissions.get("can_tag_run_ci_label", False):
         print("Permission denied: can_tag_run_ci_label is false.")
+        comment.create_reaction("confused")
+        return False
+    else:
+        pass
+
+    labels_by_target: dict[str, frozenset[str]] = {}
+    for stage in CI_STAGES:
+        labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
+        for label, preset in stage.preset_by_model_label.items():
+            if stage.name == "asr":
+                target = f"{preset}-asr"
+            elif stage.name == "mps":
+                target = f"mps-{preset}"
+            else:
+                target = preset
+            labels_by_target[target] = frozenset({stage.label, label})
+    unknown_targets = requested_targets - labels_by_target.keys()
+    if unknown_targets:
+        pull_request.create_issue_comment(
+            f"Unknown CI targets: {', '.join(sorted(unknown_targets))}."
+        )
+        comment.create_reaction("confused")
+        return False
+    else:
+        pass
+    if requested_targets:
+        requested_labels = frozenset(
+            label for target in requested_targets for label in labels_by_target[target]
+        )
+    else:
+        requested_labels = frozenset({RUN_ALL_LABEL})
+    current_labels = frozenset(label.name for label in pull_request.get_labels())
+    removed_labels: set[str] = set()
+    for stage in CI_STAGES:
+        model_labels = stage.preset_by_model_label.keys()
+        if requested_labels & model_labels:
+            removed_labels.update((current_labels & model_labels) - requested_labels)
+        else:
+            pass
+    final_labels = (current_labels - removed_labels) | requested_labels
+    try:
+        plan = resolve_ci_plan(final_labels, seed=str(pull_request.number))
+    except ValueError as error:
+        pull_request.create_issue_comment(str(error))
+        comment.create_reaction("confused")
         return False
 
-    labels = ["run-ci"]
-    if tts_model_target or asr_model_target or omni_model_target:
-        current_labels = {label.name for label in pr.get_labels()}
-        for model_target, model_labels in (
-            (tts_model_target, TTS_MODEL_LABELS),
-            (asr_model_target, ASR_MODEL_LABELS),
-            (omni_model_target, OMNI_MODEL_LABELS),
-        ):
-            if not model_target:
-                continue
-            selected_label = model_labels[model_target]
-            for label in model_labels.values():
-                if label != selected_label and label in current_labels:
-                    print(f"Removing mutually exclusive label: {label}.")
-                    pr.remove_from_labels(label)
-            labels.append(selected_label)
-
-    print(f"Permission granted. Adding labels: {labels}.")
-    for label in labels:
-        pr.add_to_labels(label)
+    for label in sorted(removed_labels):
+        pull_request.remove_from_labels(label)
+    pull_request.add_to_labels(*sorted(requested_labels))
+    for label in plan.ignored_model_labels:
+        print(f"Ignoring {label}: its stage is not selected.")
 
     if react_on_success:
         comment.create_reaction("+1")
-        print("Labels added and comment reacted.")
     else:
-        print("Labels added (reaction suppressed).")
-
-    return True
-
-
-def wait_for_workflow_run_completed(gh_repo, run_id):
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        latest_run = gh_repo.get_workflow_run(run_id)
-        if latest_run.status == "completed":
-            return True
-        print(
-            f"Waiting for workflow {run_id} to complete cancellation: "
-            f"{latest_run.status}"
-        )
-        time.sleep(5)
-
-    print(f"Timed out waiting for workflow {run_id} to complete cancellation.")
-    return False
-
-
-def cancel_and_rerun_workflow(gh_repo, run):
-    print(f"Cancelling active workflow before full rerun: {run.name} (ID: {run.id})")
-    try:
-        cancelled = run.cancel()
-    except GithubException as e:
-        latest_run = gh_repo.get_workflow_run(run.id)
-        if latest_run.status != "completed":
-            print(f"Failed to cancel workflow {run.id}: {e}")
-            return False
-    else:
-        if not cancelled:
-            print(f"Failed to cancel workflow {run.id}.")
-            return False
-
-    if not wait_for_workflow_run_completed(gh_repo, run.id):
-        return False
-
-    latest_run = gh_repo.get_workflow_run(run.id)
-    try:
-        rerun_started = latest_run.rerun()
-    except GithubException as e:
-        print(f"Failed to rerun workflow {latest_run.id}: {e}")
-        return False
-    if not rerun_started:
-        print(f"Failed to rerun workflow {latest_run.id}.")
-        return False
-    print(f"Triggered full rerun for workflow {latest_run.name} (ID: {run.id}).")
+        pass
     return True
 
 
 def handle_rerun_failed_ci(
-    gh_repo,
-    pr,
-    comment,
-    user_perms,
-    react_on_success=True,
-    force_full_omni_ci_rerun=False,
-):
-    """
-    Handles the /rerun-failed-ci command.
-    Reruns workflows with 'failure' or 'skipped' conclusions.
-    When force_full_omni_ci_rerun is set, full-reruns the latest Omni CI
-    pull_request workflow even if it is active or successful.
-    Returns True if action was taken, False otherwise.
-    """
+    gh_repo: github.Repository.Repository,
+    pr: github.PullRequest.PullRequest,
+    comment: github.IssueComment.IssueComment,
+    user_perms: dict[str, bool | str],
+    react_on_success: bool = True,
+    full_rerun_workflows: frozenset[str] | None = None,
+) -> bool:
+    """Retry failed jobs, or fully rerun selected completed PR workflows."""
     if not user_perms.get("can_rerun_failed_ci", False):
         print("Permission denied: can_rerun_failed_ci is false.")
         return False
+    else:
+        pass
 
     print("Permission granted. Triggering CI workflow reruns.")
 
@@ -212,98 +143,63 @@ def handle_rerun_failed_ci(
     print(f"Checking workflows for commit: {head_sha}")
 
     runs = gh_repo.get_workflow_runs(head_sha=head_sha)
-
-    latest_runs = []
-    seen_workflows = set()
+    latest_runs: dict[tuple[int, str], github.WorkflowRun.WorkflowRun] = {}
     for run in sorted(runs, key=lambda run: (run.created_at, run.id), reverse=True):
-        workflow_key = (run.workflow_id, run.event)
-        if workflow_key in seen_workflows:
-            continue
-        seen_workflows.add(workflow_key)
-        latest_runs.append(run)
+        latest_runs.setdefault((run.workflow_id, run.event), run)
 
     rerun_count = 0
-    force_rerun_target_found = False
-    force_rerun_succeeded = False
-    for run in latest_runs:
-        force_full_rerun = (
-            run.event == "pull_request"
-            and run.name == "Omni CI"
-            and force_full_omni_ci_rerun
-        )
-        if force_full_rerun:
-            force_rerun_target_found = True
-        if run.status in {"queued", "in_progress", "waiting", "pending", "requested"}:
-            if not force_full_rerun:
-                print(
-                    f"Skipping latest workflow because it is still {run.status}: "
-                    f"{run.name} (ID: {run.id})"
-                )
-                continue
-            if cancel_and_rerun_workflow(gh_repo, run):
-                rerun_count += 1
-                force_rerun_succeeded = True
+    for run in latest_runs.values():
+        if full_rerun_workflows is not None and (
+            run.event != "pull_request" or run.name not in full_rerun_workflows
+        ):
             continue
-
+        else:
+            pass
         if run.status != "completed":
             print(
                 f"Skipping latest workflow because it is still {run.status}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
-        if force_full_rerun:
-            if run.conclusion == "action_required":
-                print(f"Cannot rerun workflow {run.id}: GitHub approval is required.")
-                continue
-            print(f"Processing full workflow rerun: {run.name} (ID: {run.id})")
-            try:
-                rerun_started = run.rerun()
-            except GithubException as e:
-                print(f"Failed to rerun workflow {run.id}: {e}")
-                continue
-            if not rerun_started:
-                print(f"Failed to rerun workflow {run.id}.")
-                continue
-            rerun_count += 1
-            force_rerun_succeeded = True
+        elif run.conclusion == "action_required":
+            print(f"GitHub workflow approval is required: {run.html_url}")
             continue
-        if run.conclusion not in ("failure", "skipped"):
+        elif full_rerun_workflows is None and run.conclusion not in (
+            "failure",
+            "skipped",
+        ):
             print(
                 f"Skipping latest workflow with conclusion {run.conclusion}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
+        else:
+            pass
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
-            if run.conclusion == "skipped":
+            if full_rerun_workflows is not None or run.conclusion == "skipped":
                 print("  Full rerun")
-                run.rerun()
+                rerun_started = run.rerun()
             else:
                 print("  rerun_failed_jobs")
-                run.rerun_failed_jobs()
-            rerun_count += 1
-        except Exception as e:
+                rerun_started = run.rerun_failed_jobs()
+            if rerun_started:
+                rerun_count += 1
+            else:
+                print(f"GitHub did not accept the rerun of workflow {run.id}.")
+        except github.GithubException as e:
             print(f"Failed to rerun workflow {run.id}: {e}")
 
-    if force_full_omni_ci_rerun and not force_rerun_target_found:
-        print(
-            "No Omni CI pull_request workflow run exists for the current PR head "
-            f"{head_sha}."
-        )
-
-    action_succeeded = (
-        force_rerun_succeeded if force_full_omni_ci_rerun else rerun_count > 0
-    )
     if rerun_count > 0:
         print(f"Triggered rerun for {rerun_count} workflows.")
-    elif force_full_omni_ci_rerun:
-        print("No eligible workflows were rerun.")
+        if react_on_success:
+            comment.create_reaction("+1")
+        else:
+            pass
     else:
-        print("No failed or skipped workflows found to rerun.")
-    if action_succeeded and react_on_success:
-        comment.create_reaction("+1")
-    return action_succeeded
+        print("No eligible completed workflows were rerun.")
+    return rerun_count > 0
 
 
 def main():
@@ -324,8 +220,7 @@ def main():
     comment = repo.get_issue(pr_number).get_comment(comment_id)
 
     # PR authors can always rerun failed CI on their own PRs, even if they are
-    # not listed in CI_PERMISSIONS.json. Tagging still requires explicit
-    # CI_PERMISSIONS.json access.
+    # not listed in CI_PERMISSIONS.json.
     if pr.user.login == user_login:
         if user_perms is None:
             print(
@@ -343,77 +238,72 @@ def main():
         print(f"User {user_login} does not have any configured permissions. Exiting.")
         return
 
-    first_line = comment_body.split("\n")[0].strip()
-    tokens = first_line.split()
+    command, *label_arguments = comment_body.split("\n")[0].split()
 
-    if first_line.startswith("/tag-run-ci-label"):
-        tts_model_target, asr_model_target, omni_model_target, parse_error = (
-            parse_model_targets(tokens)
-        )
-        if parse_error:
-            print(parse_error)
-            comment.create_reaction("confused")
-            return
+    if command == "/tag-run-ci-label":
         handle_tag_run_ci(
             pr,
             comment,
             user_perms,
-            tts_model_target=tts_model_target,
-            asr_model_target=asr_model_target,
-            omni_model_target=omni_model_target,
+            frozenset(label_arguments),
         )
 
-    elif first_line.startswith("/rerun-failed-ci"):
+    elif command == "/rerun-failed-ci":
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
-    elif first_line.startswith("/tag-and-rerun-ci"):
-        tts_model_target, asr_model_target, omni_model_target, parse_error = (
-            parse_model_targets(tokens)
-        )
-        if parse_error:
-            print(parse_error)
+    elif command in ("/tag-and-rerun-ci", "/tag-and-rerun-full-ci"):
+        if command == "/tag-and-rerun-ci" and not label_arguments:
+            pr.create_issue_comment(
+                "Specify CI targets, for example /tag-and-rerun-ci tts asr, "
+                "or use /tag-and-rerun-full-ci for all stages."
+            )
             comment.create_reaction("confused")
             return
-        print(
-            "Processing combined command: "
-            f"/tag-and-rerun-ci (tts_model_target={tts_model_target}, "
-            f"asr_model_target={asr_model_target}, omni_model_target={omni_model_target})"
-        )
-
+        elif command == "/tag-and-rerun-full-ci" and label_arguments:
+            pr.create_issue_comment("/tag-and-rerun-full-ci does not accept arguments.")
+            comment.create_reaction("confused")
+            return
+        elif not user_perms.get("can_rerun_failed_ci", False):
+            print("Permission denied: can_rerun_failed_ci is false.")
+            comment.create_reaction("confused")
+            return
+        else:
+            pass
         tagged = handle_tag_run_ci(
             pr,
             comment,
             user_perms,
+            frozenset(label_arguments),
             react_on_success=False,
-            tts_model_target=tts_model_target,
-            asr_model_target=asr_model_target,
-            omni_model_target=omni_model_target,
         )
-
-        if tagged:
-            print("Waiting 5 seconds for label to propagate...")
-            time.sleep(5)
-
+        if not tagged:
+            return
+        else:
+            pass
+        time.sleep(5)
+        pr.update()
+        labels = frozenset(label.name for label in pr.get_labels())
         rerun = handle_rerun_failed_ci(
             repo,
             pr,
             comment,
             user_perms,
             react_on_success=False,
-            force_full_omni_ci_rerun=tagged,
+            full_rerun_workflows=select_workflows(labels),
         )
-
         if rerun:
             comment.create_reaction("+1")
-            print("Combined command processed successfully; reaction added.")
-        elif tagged:
-            comment.create_reaction("confused")
-            print("Labels were updated, but Omni CI was not restarted.")
         else:
-            print("Combined command finished, but no actions were taken.")
+            comment.create_reaction("confused")
+            pr.create_issue_comment(
+                "Labels updated, but no workflow rerun was accepted. "
+                "Active workflows are left running; retry after they finish. "
+                "If GitHub requires workflow approval, approve it first. "
+                "If no PR run exists for this commit, push a commit to create one."
+            )
 
     else:
-        print(f"Unknown or ignored command: {first_line}")
+        print(f"Unknown or ignored command: {command}")
 
 
 if __name__ == "__main__":

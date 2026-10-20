@@ -41,6 +41,22 @@ v1.5 has 498 pairs in four categories: `user_interruption` (200), `user_backchan
 - **Behavior labels**: the judge gives each pair one label for how the model handled the overlap. `C_RESPOND`: it addressed the overlap's content. `C_RESUME`: it ignored the overlap and continued. `C_UNCERTAIN_HANDLING`: it asked for a repeat or showed that it did not catch the overlap. `C_UNKNOWN`: its reply was off-target, or it said nothing. The share that should be high is `C_RESPOND` on `user_interruption` and `C_RESUME` in the other categories; `C_UNKNOWN` should be low.
 - **Semantic quality** (`JUDGE=qwen` only, not part of the paper): a label says what the model did, not whether that was right, so a `C_RESUME` that ignored a real interruption looks the same as one that correctly ignored a backchannel. The semantic judge grades each pair on three axes, each `accept`, `fail` or `unresolved`: `interaction_handling` (the overlap was handled correctly for its category), `relevance` (the reply addressed the request that mattered) and `grounding` (no unsupported facts, claimed actions or false memories). `joint` accepts only when all three accept. A verdict must quote the transcript it relies on, and a verdict with a missing or wrong quote becomes `unresolved`. Each cell reports `quality = A/(A+F)` and `coverage = (A+F)/N` over all N selected pairs; read the two together, since a high quality over a low coverage judges few pairs.
 
+### Listening quality
+
+The timing, label and semantic numbers say what the model did and when, not how its replies sound. `asr` also scores every reply of both datasets on its own, and `RESULTS.md` reports the scores per v1.5 category and per v1.0 subset, never as one total. A reply is the audio of one response, its deltas back to back as a client with enough buffer plays them, up to where the simulated playout stopped when a protocol cuts replies at barge-in; gaps from deltas that arrive late are left out, because the [serving metrics](#serving-metrics) measure them as underruns.
+
+- **Omission rate** (lower is better): the words of the transcript in `response.done` that are missing from the reply's Parakeet transcript, over the transcript's words, pooled over the completed replies of a category. Both texts go through Whisper's English normalizer before alignment. A cancelled reply is not compared: its transcript can run past the audio it played.
+- **WER** (lower is better): substitutions, deletions and insertions of the same alignment. A swallowed syllable often shows up as a substitution rather than a deletion. Both rates include Parakeet's own errors, so compare them between systems rather than read them as absolute rates.
+- **UTMOS** (1-5, higher is better): the UTMOS prediction of each reply of at least 3 s, the model the TTS benchmarks use; it drops for clicks, distortion and unnatural prosody. The table shows the mean and the 10th percentile.
+- **Voice similarity** (higher is better): 100 times the cosine of the WavLM speaker embedding of a reply's middle 3 s with the mean embedding of the same window of every other reply in the repeat, so a reply whose voice drifts from the model's usual one scores low. The table shows the mean and the 10th percentile.
+- **Short replies**: replies with audio shorter than 3 s, such as most backchannels. They are compared for omission but get no UTMOS or voice score.
+
+The 3 s comes from MiniCPM-o replies. Middle crops of replies of 6 s or more score within 0.07 of the full reply's UTMOS from 2 s on and 0.38 below it at 1 s. A speaker embedding depends on length at every duration measured, so the voice score compares windows of one length; copies of the replies shifted up 4 semitones separate from the originals by d = 2.7 with 2 s windows, 4.0 with 3 s and 5.0 with 4 s, while the replies long enough to score drop from 44 of 50 at 3 s to 38 at 4 s.
+
+The metrics move for their own defects. On 24 MiniCPM-o replies, removing the middle 40% of the audio raises the omission rate from 4.4% to 43.4%; adding 10 clicks per second drops UTMOS from 4.26 to 2.08; shifting up 4 semitones drops voice similarity from 72.5 to 52.5. The omission rate moves at most 0.6 points under the clicks and the pitch shift, and voice similarity at most 0.5 under the cut and the clicks. UTMOS also drops 0.22 for the cut, which leaves a splice, and to 1.41 for the pitch shift, whose phase vocoder adds artifacts.
+
+These are reported only, with no pass mark yet. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
+
 ## Setup
 
 You need one GPU with at least 80 GB (H100 or H200), and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter).
@@ -75,38 +91,40 @@ A judge starts only when the step has a request for it: the v1.5 pairs and the v
 
 ## Run the benchmark
 
-A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits.
+A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
+
+```bash
+python -m benchmarks.duplex.fdb generate --run-name minicpmo-10 --v15-per-subset 10 --v10-per-subset 10 --all-stages
+```
+
+Without `--all-stages`, `generate` only records, and each later step is its own subcommand.
 
 | Step | Subcommand | What it does |
 |---|---|---|
 | 1 | `generate` | Starts the model server, streams the selected inputs to `/v1/realtime` (two sessions per v1.5 pair, one per v1.0 sample), records the model's audio, stops the server, then cuts a fixed observation window from each session |
-| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, then writes v1.0 unified metrics from the saved transcript and annotations on CPU |
+| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, writes v1.0 unified metrics from the saved transcript and annotations on CPU, then cuts every reply and scores its [listening quality](#listening-quality) |
 | 3 | `judge` | Runs the official v1.0 evaluator on the v1.0 subsets that need no LLM, then judges the v1.5 pairs and the v1.0 interruption subset (with `JUDGE=qwen` it starts the judge server for them and stops it after), and writes the per-repeat summaries |
 | | `aggregate` | Combines the repeats of a run into `RESULTS.md` |
 
 Run a small preflight first. It takes one pair per v1.5 category and three samples per v1.0 subset (about 15 minutes) and catches environment problems before a long run. v1.0 needs three samples rather than one because the official turn-taking and interruption evaluators divide by the number of takeovers and fail when no selected sample takes the turn.
 
 ```bash
-python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3
-python -m benchmarks.duplex.fdb asr --run-name preflight
-python -m benchmarks.duplex.fdb judge --run-name preflight
-python -m benchmarks.duplex.fdb aggregate --run-name preflight
+python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3 --all-stages
 ```
 
 The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}` for v1.5 and `{"pass": 15}` with 3 eligible samples per v1.0 subset; `asr` prints `{"ok": 16}`, `{"ok": 8}` and 3 transcripts per v1.0 subset; and `judge` prints `{"valid": 4}`, `controls: 18/18 axis statuses match` and the parsed v1.0 results of each subset as JSON (the evaluator's own `[Result]` block is in `repeat-N/v10/reference/logs/evaluate-<subset>.log`). If anything differs, see [Troubleshooting](#troubleshooting).
 
-A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the three steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
+A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
 
 ```bash
 for repeat in 1 2 3; do
-    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12
-    python -m benchmarks.duplex.fdb asr --run-name minicpmo-12 --repeat "$repeat"
-    python -m benchmarks.duplex.fdb judge --run-name minicpmo-12 --repeat "$repeat"
+    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12 --all-stages
 done
-python -m benchmarks.duplex.fdb aggregate --run-name minicpmo-12
 ```
 
-`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
+Each repeat ends with `aggregate`, so `RESULTS.md` covers every repeat finished so far.
+
+`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. When `asr` or `judge` stops a `--all-stages` run, its message names the command that continues it; run that step and the ones after it on their own. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
 
 Every subcommand takes `--log-level` (`info` by default). With `--log-level debug`, a step also prints the server and recorder logs it writes, each line prefixed with the log's name, such as `[judge-server]` or `[record-shard-0]`. The logs are written under `repeat-N/` at either level (see the files table in [Results](#results)).
 
@@ -154,7 +172,7 @@ Sessions run in real time, so `generate` dominates the wall time. Approximate ti
 | 60 v1.0 samples (12 per subset) | ~20 min | ~1 min | ~1 min |
 | 727 v1.0 samples | ~3.6 h | ~10 min | ~5 min |
 
-A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first.
+A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first; `--gpus 0,1 --num-shards 2` halves it without sharing a GPU.
 
 ## Results
 
@@ -186,6 +204,16 @@ The v1.0 unified section first shows per-repeat coverage and metric tables for p
 
 The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see [v1.0 scoring](#v10-scoring)).
 
+The listening-quality section comes last, with one table per dataset and the same mean ± deviation cells; see [Listening quality](#listening-quality) for what each column measures. Its v1.5 table from a validation run (MiniCPM-o 4.5, 4 pairs per category, one repeat):
+
+| Category | Replies | Short replies | Compared replies | Omission rate | WER | UTMOS mean | UTMOS p10 | Voice similarity mean | Voice similarity p10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 35 | 1 | 35 | 4.2% | 7.3% | 4.271 | 3.893 | 74.412 | 67.846 |
+| user_interruption | 9 | 0 | 9 | 3.9% | 7.0% | 4.358 | 4.163 | 76.408 | 68.144 |
+| user_backchannel | 8 | 0 | 8 | 5.5% | 6.7% | 4.248 | 3.960 | 72.195 | 67.167 |
+| talking_to_other | 10 | 0 | 10 | 3.1% | 8.7% | 4.226 | 3.868 | 75.081 | 70.286 |
+| background_speech | 8 | 1 | 8 | 4.0% | 7.1% | 4.250 | 3.910 | 73.422 | 67.977 |
+
 Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
 
 | Path | Content |
@@ -198,6 +226,7 @@ Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
 | `judge-qwen/summary.json` | v1.5 behavior labels with `JUDGE=qwen` |
 | `semantic-qwen/` | Semantic judge: control comparison, the exact packets sent, raw responses, per-pair outcomes and `summary.json` |
 | `report.txt` | Readable v1.5 report: coverage, timing and semantic quality |
+| `listening/` | One 16 kHz WAV per reply in `wav/` and its scored 3 s window in `voice-window/`, `replies.json` with each reply's status, transcript and Parakeet text, `scores.json` with each reply's scores, and the per-category `summary.json` with the checkpoint hashes |
 | `v10/reference/` | v1.0 windows (`<subset>/<id>/output.wav`), `manifest.json`, the ASR receipt `asr.json`, per-repeat `unified.json` and `unified-samples.jsonl`, official `summary.json`, the judge ledger in `judge/` and evaluator logs in `logs/` |
 
 With `JUDGE=qwen`, the "Official behavior label distribution" section of `report.txt` shows `0 / 0` and `not_prepared`, because that section counts GPT-4o labels only; the Qwen labels are in `judge-qwen/summary.json` and `RESULTS.md`.
@@ -210,7 +239,7 @@ Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--
 |---|---|---|
 | `FDB_WORK` | `$HOME/fdb` | Root for downloads, environments and results |
 | `JUDGE` | `qwen` | `qwen` or `gpt` |
-| `CUDA_VISIBLE_DEVICES` | unset | The one GPU index this job uses. See [Running jobs in parallel](#running-jobs-in-parallel) |
+| `CUDA_VISIBLE_DEVICES` | unset | The GPU indices this job may use. The first is the job GPU: it runs the one model server of `generate`, `asr` and `judge`; `generate --gpus` may list any of the others. See [Running jobs in parallel](#running-jobs-in-parallel) |
 | `GPU` | `0` | The GPU index when `CUDA_VISIBLE_DEVICES` is unset |
 | `SERVER_PORT`, `JUDGE_PORT` | `8097 + 10×GPU`, `30000 + 10×GPU` | Local ports. The judge also uses the next port for NCCL. Avoid 29500-29899, which the model server uses for NCCL |
 | `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test |
@@ -236,10 +265,106 @@ python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
 
 The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
 
+## Serving metrics
+
+Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
+
+Start the server yourself, with `max_sessions` at least the largest level, then sweep:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
+  --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
+  --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754 \
+  --max-per-subset 4
+```
+
+The options after `--` go unchanged to the `record` command of `benchmark_duplex_v15` (or `benchmark_duplex_v10` with `--dataset v1.0`); the sweep adds `--concurrency N` and `--output <output>/concurrency-N` for each level. It writes `serving.json`, `SERVING.md` and one run directory per level, and keeps going when a level has failed sessions, since those are part of the result. `report --run <run> --run <run> ... --output serving.json` builds the same table from runs that are already recorded.
+
+Each level is one row:
+
+| Column | Meaning |
+|---|---|
+| `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
+| `sessions failed` | Sessions whose protocol replay failed or that broke off |
+| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
+| `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
+| `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
+| `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
+| `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
+| `meets targets` | `yes`, or the targets the level misses |
+
+A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
+
+### MiniCPM-o 4.5 on one H100
+
+One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.
+
+For this campaign, a recording passed only with **fewer than 1%** late or missing units, all 128 sessions successful, no admission failures, no input pacing violations, and the requested overlap of complete input streams. A unit missed when `sglang.unit.done` arrived more than 1,000 ms after the client had its input ready. This strict campaign gate differs from the general serving target above, which permits exactly 1% misses. `session.created` alone does not establish model admission.
+
+| Concurrent sessions | Recorded result | Qualification |
+| ---: | --- | --- |
+| 1, 2 | One screening run each, with no unit misses | Both passed; neither was repeated. |
+| 4 | Five passing runs, 640 successful sessions, 0 of 8,720 unit misses | Highest tested level confirmed by five runs. The median of the five per-run unit-lag p95 values was 421.4 ms, with a range of 406.5 to 433.1 ms. |
+| 8 | Two valid runs: 3 of 1,744 misses (0.172%) and 25 of 1,744 (1.433%) | The first passed; the second failed the unit gate. |
+| 16 | Two valid runs: 103 of 1,744 misses (5.906%) and 90 of 1,744 (5.161%) | Both failed the unit gate. |
+| 32, 48, 64 | CUDA out-of-memory failures with failed sessions and invalid aggregate input pacing | Observed failures. Their latency and unit-miss aggregates are not qualified paced-load results. |
+
+The C4 runs reached four overlapping complete input streams with no session, admission, or pacing failures. At the separate 80 ms playback reserve, simulated playback still underruns in 438 of 731 C4 replies. Each C4 run recorded audio in 126 or 127 of its 128 sessions. Protocol success does not establish response quality. Concurrencies 5 through 7 were not measured, so the result does not identify an exact maximum concurrency of four. The cohort also does not qualify long calls, video input, semantic quality, or an H100 versus H200 comparison.
+
+The 128 inputs totaled 1,676.565 seconds; the longest was 15.763 seconds. The run used Python 3.12.3, torch 2.13.0+cu130, sglang 0.5.21, transformers 5.12.1, websockets 17.1, and soundfile 0.13.1, with 64 assigned CPU threads. The screen order was C8, C16, C32, C48, C64, C4, C2, then C1. After a valid C8 repeat failed the unit gate, repeats 3 through 5 at C8 and C16 were cancelled and four more C4 runs were recorded. The lower-concurrency cells therefore include the same server's earlier high-load history.
+
+To reproduce the configuration, use server and serving-tool commit [`3ae4c2464eb0b44e0850a9f17da46461a688bc32`](https://github.com/sgl-project/sglang-omni/commit/3ae4c2464eb0b44e0850a9f17da46461a688bc32), the [client changes with the measured file bytes](https://github.com/edwingao28/sglang-omni/commit/0b2ca15afa211cd5c2212a8803a20b7c5db6d880), and model snapshot `503e754207c94da6bb26850b4469f367c9ea3582`. The client changes move per-variant report writes off the event loop and import only the selected recorder. The separate empty-EOS scoring fix in [PR #2868](https://github.com/sgl-project/sglang-omni/pull/2868) was not applied to these measurements; the selected inputs had no integer-second durations. Keep the 80 ms input pacing tolerance unchanged.
+
+The `--dataset-revision` value below is the retained historical label, not a content pin for the upstream Drive archives. The campaign verified all 448 selected file hashes against its retained inputs. Those hashes remain with the private recording artifacts; a fresh dataset download alone does not establish identical inputs.
+
+After [setup](#setup), point `MODEL_PATH` at that exact model snapshot and use the v1.5 dataset described above. Start the server in one terminal:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+export MODEL_PATH="$FDB_WORK/models/MiniCPM-o-4_5"
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" --variant session --max_sessions 64 \
+  --thinker.engine.kv_cache_bytes 17179869184 \
+  --perception.gpu_memory_fraction null \
+  --perception.total_reserve_bytes 17179869184 \
+  --talker.engine.max_total_tokens 65536 \
+  --talker.gpu_memory_fraction 0.08 \
+  --enable-realtime --host 127.0.0.1 --port 8099
+```
+
+Run each concurrency and repeat in a new client process and output directory. For example, set `CONCURRENCY=4` and vary `REPEAT` from 1 through 5:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+CONCURRENCY=4
+REPEAT=1
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency "$CONCURRENCY" \
+  --output "$FDB_WORK/serving/h100-short/c${CONCURRENCY}-r${REPEAT}" -- \
+  --url ws://127.0.0.1:8099/v1/realtime \
+  --profile minicpmo-native-pr2377 \
+  --dataset-root "$FDB_WORK/dataset/v1.5" \
+  --dataset-revision 3e799c45a045256f47d5f1c9cda90157e2d2ec9e \
+  --server-revision 3ae4c2464eb0b44e0850a9f17da46461a688bc32 \
+  --model openbmb/MiniCPM-o-4_5 \
+  --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
+  --timeout 90 --max-per-subset 16
+```
+
+The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, and two C16 runs. C32, C48, and C64 were attempted once each; their failed recordings remain part of the observation. The complete raw traces remain in the original experiment storage, and the selected local audit copy cannot rescore every session. Neither raw tree is hosted with this runbook.
+
 ## Notes
 
 - **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
-- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses a larger value up front.
+- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses more than 2 shards per server up front.
+- **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
 - **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
 - **Failed sessions are never dropped.** They stay in the denominators as ineligible, and an empty set of intervals shows as `n/a`, not as zero.
 
@@ -247,8 +372,8 @@ The ports, the judge config and the compile caches follow the GPU index: the mod
 
 | Symptom | Fix |
 |---|---|
-| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server.log` or `judge-server.log` |
-| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of `repeat-N/logs/model-server.log`. Fix the cause, delete the repeat and generate it again |
+| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server-gpu<N>.log` or `judge-server.log` |
+| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of that GPU's `repeat-N/logs/model-server-gpu<N>.log`. Fix the cause, delete the repeat and generate it again |
 | `ERROR: the judge server exited with code N before ...` or `during ...` | The judge server died; the message names the phase and ends with the last lines of `repeat-N/logs/judge-server.log`. Fix the cause and rerun `judge` with `--retry-failed`. If the phase is the v1.5 semantic judge, delete `repeat-N/semantic-qwen` first, because the batches it could not grade are saved as unresolved and a rerun reuses them |
 | `ERROR: something already serves ...` | Another server holds the port, often left from an interrupted run or a second job on the same GPU. Stop it, or give this job another `CUDA_VISIBLE_DEVICES` |
 | `ERROR: .../repeat-N already holds a recording` | That repeat was generated before; use the next `--repeat`, or delete the directory to redo it |
@@ -258,21 +383,26 @@ The ports, the judge config and the compile caches follow the GPU index: the mod
 | `ERROR: .../dataset/v1.0 lacks the v1.0 subset(s) ...` | The workspace was set up without v1.0; rerun `setup`, which adds it |
 | `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
 | A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
-| `ERROR: --num-shards N exceeds the model server's max_sessions` | Lower `--num-shards`; `generate` refuses values above the server capacity before recording |
+| `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
+| `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
+| `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
-| `ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index`, or `--device cuda needs exactly one visible GPU` | Export a single index, a different one in each terminal |
-| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the same index |
+| `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
+| `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
+| `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
+| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the first index |
 | `WARNING: a v1.5 phase reported failures` | Rerun the command the warning prints; it adds `--retry-failed` |
 | `WARNING: the v1.0 ASR failed` | `repeat-N/v10/reference/logs/asr.log` has the official script's output and the terminal has the traceback. A rerun of `asr` transcribes every v1.0 sample again |
 | `WARNING: v1.0 unified scoring failed` | ASR completed, but the saved export, transcript or annotation did not score. Fix the stated cause and run the CPU-only backfill command printed in the warning; it does not repeat ASR or v1.5 work. Rerun `aggregate` to refresh `RESULTS.md` |
 | `Unified metrics unavailable` in `RESULTS.md` | The report names a missing export/ASR file, missing output pair, stale hashes, unsupported version or incomplete subset. Repair the export or ASR if named, then use the per-repeat backfill command in the report and rerun `aggregate` |
+| `WARNING: the listening-quality phase failed` | The terminal has the traceback. A `ModuleNotFoundError` for `s3prl` or `whisper` means the serving venv lacks the repository's dependencies; reinstall them. Rerun `asr`; it recomputes the listening metrics in full |
 | `WARNING: the v1.0 evaluation failed for ...` | The traceback is at the end of `repeat-N/v10/reference/logs/evaluate-<subset>.log`. A `ZeroDivisionError` in `candor_turn_taking` or `synthetic_user_interruption` means no selected sample took the turn, so select more samples in a new run. After fixing another cause, rerun `judge`; it evaluates the missing subsets again |
 | `judge request ... got no parsable rating in 3 attempts` | The v1.0 relevance judge answered without a rating; the ledger in `v10/reference/judge/` has each reply. The official parser needs `Analysis: <text>`, a line break, then `I would rate the AI's response as <digit>`. The attempts share a seed, so a local judge repeats the same reply and a rerun fails again |
 | `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged, for example after an SGLang upgrade. Delete `repeat-N/judge-qwen` and rerun `judge` |
 | `Control check failed: this judge configuration is not accepted.` | The judge missed a control case, listed in the output; nothing graded alongside the controls is kept. Check that the judge server runs the pinned Qwen3.8-27B revision; do not grade with a configuration that fails the controls |
 | `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` |
 | `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
-| `No module named 'onnx'` (or `einops`) in `model-server.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
+| `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
 | `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
 
 ## Scoring CLI reference
@@ -325,6 +455,28 @@ python -m benchmarks.eval.benchmark_duplex_reference export \
 - A session fails unless `session.updated` echoes the requested `turn_detection.type`, so a detector that silently falls back is caught. There are no input or drain receipts: the session ends `--legacy-tail` seconds (default 1.0) after the input with a no-op `session.update`, whose `session.updated` proves the server is alive.
 - Any `error` event fails the session. A response cancelled with reason `turn_detected` is accepted only after an `input_audio_buffer.speech_started` during it.
 - Simulated playout follows the server's barge-in: it is cut at `output_audio_buffer.cleared`, or at `input_audio_buffer.speech_started` unless the session set `interrupt_response: false`. The export applies the same cut, records `barge_in_cuts`, and marks a session eligible only when its protocol verdict is `pass`.
+
+A turn-based endpoint can also speak the session protocol. It takes `turn_detection` under `session.audio.input` in `session.update`, grants `interaction: turn_based` with 200 ms units and a flushed input tail, sends the `sglang.input_audio.*` receipts and `sglang.unit.done`, detects the turns itself and streams `response.output_audio.delta` at 24 kHz. The profile `turn-based` records it, and its export takes `--trace-format realtime-turn-based-pcm16-v1`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile turn-based \
+    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-turn-based-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+- `--turn-detection` is required. These endpoints accept only `server_vad`, configured by `threshold`, `prefix_padding_ms` and `silence_duration_ms`. A session fails unless `session.updated` echoes the type under `session.audio.input.turn_detection`. The manifest records the setting under `config.turn_based`.
+- The session ends like a native one: `sglang.input_audio.end` at the input end, then `session.close` after `sglang.input_audio.drained`. The server first answers the utterance still open at the input end, so `--timeout` must cover the longest input plus that answer.
+- A response may end `completed` with reason `stop` or `empty_turn`, or `cancelled` with reason `interrupted`. Each cancellation needs its own earlier `input_audio_buffer.speech_started`, but not one during the response, because the server can create the reply it cancels after that event. Any `error` fails the session. `supports_truncate` may take either value.
+- The cut point differs from the legacy rule. These endpoints send no `output_audio_buffer.cleared`, so simulated playout and the export do not cut at `speech_started`; they drop queued audio when a `response.done` with status `cancelled` arrives. As for the legacy protocol, the export records `barge_in_cuts` and marks a session eligible only when its protocol verdict is `pass`.
+- v1.0 recordings export the same way: `benchmark_duplex_v10 reference-export --trace-format realtime-turn-based-pcm16-v1` resamples the 24 kHz audio to 16 kHz and keeps only sessions whose protocol verdict is `pass`.
 
 Score:
 
@@ -404,7 +556,7 @@ CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v1
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
 ```
 
-- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest.
+- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with a turn-based profile needs `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
 - `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
 - `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
 - `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
@@ -412,8 +564,6 @@ CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v1
 The interruption relevance is rated by `gpt-4-turbo` with seed 0, as the official evaluator requests, for every interruption the model took over. That needs `OPENAI_API_KEY` (or the variable named by `--api-key-env`); without a key, evaluate the other subsets with `--subset`. `--base-url URL --served-model NAME` sends the same prompts to a self-hosted judge, with thinking off and the reply capped at 512 tokens, since the evaluator sets neither and SGLang would stop at 128 tokens. `summary.json` records the endpoint actually used and marks the rating official only for OpenAI's endpoint without `--served-model`. Every exchange is appended to `judge/user-interruption-<UTC time>.jsonl`.
 
 The official evaluator has a retry bug: when a rating does not parse, it resends the same request without limit, and each retry counts that sample's takeover again. The client stops after three identical requests, which fails the subset, and `summary.json` reports `retries`. A nonzero value means the interruption takeover rate is inflated.
-
-`transcribe` and `score` (`fdb-v10-synthetic-v4`) remain as a diagnostic beside the official numbers, not in their place. They add gates the official evaluator does not have: turn-taking samples where the model already speaks when the user's turn ends, and interruptions where the model was silent when the user cut in or talked straight through. Report their gate counts next to the official numbers.
 
 ### Measurement definitions
 

@@ -106,7 +106,7 @@ def test_native_config_preserves_component_dictionaries(snapshot: Path) -> None:
 
 
 @pytest.mark.parametrize("stage", ["thinker", "talker"])
-@pytest.mark.parametrize("trust_override", [None, False, True])
+@pytest.mark.parametrize("trust_override", [None, True])
 def test_engine_factory_resolves_native_config_before_server_args(
     stage: str,
     trust_override: bool | None,

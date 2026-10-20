@@ -26,7 +26,6 @@ from sglang_omni.models.zonos2.streaming_contract import (
 from sglang_omni.scheduling.message import OutgoingMessage
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -39,7 +38,7 @@ else:
 class Zonos2ModelRunner(ModelRunner):
     def __init__(
         self,
-        tp_worker: "ModelWorker | MlxTpModelWorker",
+        tp_worker: "ModelWorker",
         output_processor: SGLangOutputProcessor,
         *,
         compile_sampler: bool = False,

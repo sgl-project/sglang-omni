@@ -26,6 +26,8 @@ class RequestInfo:
     state: RequestState = RequestState.PENDING
     current_stage: str | None = None
     terminal_stages: set[str] | None = None
+    # Note (Junnan Li): A session's close and its persistent read bypass admission and hold no in-flight slot.
+    counts_toward_admission: bool = True
     result: object = None
     error: str | None = None
 
@@ -92,3 +94,15 @@ class StagePayload:
             request=request_obj,
             data=data.get("data"),
         )
+
+
+@dataclass(frozen=True)
+class RoutedPayloads:
+    """A stage result whose route sends each named stage its own payload.
+
+    keep_request_state keeps the request live at the routing stage, whose
+    other work for it may already be queued there.
+    """
+
+    payloads: dict[str, StagePayload]
+    keep_request_state: bool = False

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 import yaml
@@ -17,12 +17,14 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.process import exit_without_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +32,14 @@ logger = logging.getLogger(__name__)
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 
 
-def launch_server(*args: object, **kwargs: object) -> object:
+def launch_server(*args: object, **kwargs: object) -> NoReturn:
     from sglang_omni.serve.launcher import launch_server as _launch_server
 
-    return _launch_server(*args, **kwargs)
+    _launch_server(*args, **kwargs)
+    # note (Richard Wang): the launcher has stopped the pipeline and joined
+    # every stage by now. Tearing down the modules and objects the CLI
+    # imported took about a second more, and the server's stop waited for it.
+    exit_without_teardown(0)
 
 
 def validate_colocate_cli_request(
@@ -299,6 +305,42 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def parse_stage_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    else:
+        pass
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--stage-offload-components must not be empty")
+    else:
+        pass
+    return components
+
+
+def apply_stage_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_offload_components: str | None,
+) -> PipelineConfig:
+    components = parse_stage_offload_components(stage_offload_components)
+    if not components:
+        return pipeline_config
+    else:
+        pass
+
+    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+        raise typer.BadParameter(
+            "--stage-offload-components is not supported by this pipeline"
+        )
+    else:
+        pass
+
+    return pipeline_config.with_serial_offload(components)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -317,7 +359,10 @@ def serve(
         bool,
         typer.Option(
             "--text-only",
-            help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+            help=(
+                "Use the model's text output variant on 1 GPU, such as the "
+                "Qwen3-Omni thinker without talker or the Cosmos3 Reasoner."
+            ),
         ),
     ] = False,
     variant: Annotated[
@@ -385,6 +430,17 @@ def serve(
                 "A dotted per-stage flag (--<stage>.engine.mem_fraction_static) "
                 "overrides this for that stage. If omitted, SGLang chooses "
                 "the value automatically."
+            ),
+        ),
+    ] = None,
+    stage_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--stage-offload-components",
+            "--stage_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs."
             ),
         ),
     ] = None,
@@ -507,6 +563,10 @@ def serve(
         validate_colocate_config(merged_config)
     else:
         pass
+    merged_config = apply_stage_offload_cli_overrides(
+        merged_config,
+        stage_offload_components=stage_offload_components,
+    )
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):

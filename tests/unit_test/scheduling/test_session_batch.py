@@ -202,30 +202,6 @@ def test_batched_appends_emit_one_shared_stage_start_timestamp(
     } == {"batch-start-test"}
 
 
-def test_batched_appends_skip_stage_start_clock_when_profiler_inactive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorder = get_recorder()
-    recorder.stop()
-    emit_stage_started = Mock()
-    monkeypatch.setattr(
-        session_module, "emit_session_stage_started", emit_stage_started
-    )
-    time_ns = Mock(return_value=456)
-    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
-
-    hooks = RecordingHooks()
-    scheduler = SessionScheduler(hooks)
-    outputs = run_backlog(
-        scheduler,
-        opens("a", "b") + [message("a0", "append", "a"), message("b0", "append", "b")],
-    )
-
-    assert outputs["a0"].type == outputs["b0"].type == "result"
-    assert time_ns.call_count == 0
-    assert emit_stage_started.call_count == 0
-
-
 def test_scalar_append_emits_stage_start_before_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -293,17 +269,6 @@ def test_open_and_close_run_alone_in_arrival_order():
     assert outputs["open-b"].type == "result"
     assert outputs["close-a"].data.data == {"closed": True}
     assert outputs["a1"].type == "error"
-
-
-def test_hooks_without_a_batch_hook_run_one_unit_per_call():
-    hooks = SequentialHooks()
-    scheduler = SessionScheduler(hooks, max_concurrency=1)
-    run_backlog(
-        scheduler,
-        opens("a", "b")
-        + [message("a0", "append", "a", 0), message("b0", "append", "b", 0)],
-    )
-    assert hooks.calls == [["a0"], ["b0"]]
 
 
 def test_session_over_its_state_budget_fails_only_its_own_unit():

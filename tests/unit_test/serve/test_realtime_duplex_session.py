@@ -567,7 +567,7 @@ def test_adapter_cleanup_failure_replaces_closed_with_fatal_error() -> None:
 
 
 def test_capabilities_endpoint_reports_deployment_grant() -> None:
-    limits = RuntimeLimits(max_output_events=8)
+    limits = RuntimeLimits(max_output_bytes=8192)
     response = build_test_client(ScriptedAdapter(), limits=limits).get(
         "/v1/realtime/capabilities"
     )
@@ -576,7 +576,8 @@ def test_capabilities_endpoint_reports_deployment_grant() -> None:
     body = response.json()
     assert body["model"] == MODEL_NAME
     assert body["native_full_duplex"] is True
-    assert body["limits"]["max_output_events"] == 8
+    assert body["limits"]["max_output_bytes"] == 8192
+    assert "max_output_events" not in body["limits"]
 
 
 def test_capabilities_endpoint_is_unavailable_until_running() -> None:

@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`, shared code in `src/layers`, `src/swift_port`, `src/asr_service`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -44,8 +44,12 @@ agree on it with a maintainer first.
 
 **Placement and reuse**
 
-- A native model adds `<model>_model`, `<model>_transcriber`, a server on the
-  shared `asr_service`, a CLI in `tools/`, and CMake targets.
+- A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`
+  and a server on the shared `asr_service`, a CLI in `tools/`, and CMake
+  targets: a library for the model's own sources that links what it reuses
+  (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
+  `src/common/`, not in another model's directory or library. Include project
+  headers by their path under `src/`, e.g. `#include "common/layers.h"`.
 - Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
   port. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
@@ -91,8 +95,8 @@ agree on it with a maintainer first.
 
 **CI and style**
 
-- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-ci`
-  label. Both Mac CI jobs must pass on a real run.
+- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci`
+  or `run-all-ci` label. Both Mac CI jobs must pass on a real run.
 - Run pre-commit and follow
   [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
 - Update `Voxt/backend/README.md`. Follow the PR format of

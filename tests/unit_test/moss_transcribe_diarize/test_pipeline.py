@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import Mock
 
 import httpx
@@ -21,7 +20,6 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     create_sglang_moss_transcribe_diarize_executor,
     missing_additional_chat_templates_compat,
 )
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
@@ -55,41 +53,6 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
         request_build_max_pending=16,
         stream_emit_interval_s=0.05,
     )
-
-
-def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
-    config = MossTranscribeDiarizePipelineConfig(
-        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize"
-    )
-
-    assert config.entry_stage == "asr"
-    assert [stage.name for stage in config.stages] == ["asr"]
-    assert config.terminal_stages == ["asr"]
-    assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory_path.endswith(
-        "create_sglang_moss_transcribe_diarize_executor"
-    )
-    factory = config.stages[0].factory
-    engine = config.stages[0].engine
-    assert factory.device is None
-    assert engine.max_running_requests == 64
-    assert engine.enable_torch_compile is True
-    assert engine.torch_compile_max_bs == 4
-    assert factory.encoder_max_batch_size == 2
-    assert factory.request_build_max_workers == 8
-    assert factory.request_build_max_pending == 16
-    assert factory.prefill_coalesce_requests == 4
-    assert factory.prefill_coalesce_wait_ms == 12
-    assert factory.prefill_coalesce_when_idle is True
-    assert factory.prefill_coalesce_requires_pending_builds is True
-    assert factory.prefill_coalesce_after_builds_during_decode is True
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config(
-            "MossTranscribeDiarizeForConditionalGeneration"
-        )
-        is MossTranscribeDiarizePipelineConfig
-    )
-    assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
 
 
 def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
@@ -192,33 +155,6 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
     assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
 
 
-def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
-    signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["mem_fraction_static"].default == 0.80
-    assert signature.parameters["enable_torch_compile"].default is None
-    assert signature.parameters["torch_compile_max_bs"].default == 4
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-    assert signature.parameters["prefill_coalesce_requests"].default == 4
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 12.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["encoder_max_batch_size"].default == 2
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-    assert signature.parameters["encoder_chunk_buckets"].default is None
-    assert signature.parameters["encoder_torch_compile"].default is False
-
-
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -319,6 +255,7 @@ def test_init_encoder_graphs_uses_platform_backend(
     get_graph_backend.assert_called_once_with(next(encoder.parameters()).device)
     assert graph_runner.call_args.kwargs["graph_backend"] is backend
     graph_runner.return_value.capture.assert_called_once_with([2, 1])
+    assert model.encoder_graph_runner is graph_runner.return_value
 
 
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):

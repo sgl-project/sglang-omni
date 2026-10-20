@@ -6,6 +6,7 @@ import asyncio
 import logging
 import pickle
 import threading
+import time
 
 import pytest
 import torch
@@ -19,10 +20,24 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto import (
+    DataReadyMessage,
+    ShutdownMessage,
+    StagePayload,
+    SubmitMessage,
+)
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+    TimedChunk,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
     FakeRelay,
@@ -147,6 +162,7 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         scheduler.outbox.put(make_stream_message("req-1", data=torch.tensor([7])))
         scheduler.outbox.put(make_result_message("req-1", data={"answer": 1}))
 
+        stage_obj.end_outbox_drain()
         await stage_obj.drain_outbox()
 
         decode_msg = next(
@@ -295,6 +311,107 @@ def test_stage_starts_only_after_its_session_hooks_warm_the_scheduler_thread() -
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "scheduler_kind", ["serial", "serial-finishing", "threaded-full"]
+)
+def test_idle_stage_blocks_without_timed_polls_until_shutdown(
+    monkeypatch, scheduler_kind: str
+) -> None:
+    release = threading.Event()
+    held = threading.Event()
+
+    def hold(payload: str) -> str:
+        held.set()
+        release.wait(timeout=5.0)
+        return payload
+
+    if scheduler_kind == "serial":
+        scheduler = SimpleScheduler(lambda payload: payload)
+    elif scheduler_kind == "serial-finishing":
+        # Two requests finish while the stage waits for its stopped scheduler,
+        # and the second result publishes after the drain caught up.
+        scheduler = SimpleScheduler(
+            hold,
+            batch_compute_fn=lambda payloads: [hold(p) for p in payloads],
+            max_batch_size=2,
+            max_batch_wait_ms=1000,
+        )
+        stop = scheduler.stop
+        publish = scheduler.outbox.put
+
+        def publish_apart(message, *args, **kwargs):
+            if message.request_id == "late-1":
+                time.sleep(0.2)
+            else:
+                pass
+            publish(message, *args, **kwargs)
+
+        monkeypatch.setattr(scheduler.outbox, "put", publish_apart)
+
+        def stop_then_finish() -> None:
+            stop()
+            threading.Timer(0.2, release.set).start()
+
+        monkeypatch.setattr(scheduler, "stop", stop_then_finish)
+    else:
+        # The held request takes the only slot, so the scheduler waits for capacity.
+        scheduler = ThreadedSimpleScheduler(hold, max_concurrency=1)
+        scheduler.inbox.put(IncomingMessage("held", "new_request", "held"))
+    timed_reads: list[str] = []
+    for name, queue_obj in (("inbox", scheduler.inbox), ("outbox", scheduler.outbox)):
+
+        def record_timed_read(block=True, timeout=None, name=name, read=queue_obj.get):
+            if block and timeout is not None:
+                timed_reads.append(name)
+            return read(block, timeout)
+
+        monkeypatch.setattr(queue_obj, "get", record_timed_read)
+
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(scheduler=scheduler, control_plane=control_plane)
+        run_task = asyncio.create_task(stage_obj.run())
+        if scheduler_kind == "serial-finishing":
+            for request_id in ("late-0", "late-1"):
+                control_plane.inbox.put_nowait(
+                    SubmitMessage(
+                        request_id=request_id,
+                        data=make_stage_payload(request_id=request_id),
+                    )
+                )
+            assert await asyncio.to_thread(held.wait, 5.0)
+        else:
+            pass
+        await asyncio.sleep(0.3)
+        if scheduler_kind != "serial-finishing":
+            assert timed_reads == []
+        else:
+            # Its batch window may wait on the inbox with a deadline.
+            pass
+
+        control_plane.inbox.put_nowait(ShutdownMessage())
+        await asyncio.wait_for(run_task, timeout=2.0)
+        assert stage_obj.scheduler_thread is None
+        # A result published while the scheduler stopped still completes.
+        assert [c.request_id for c in control_plane.completions] == (
+            ["late-0", "late-1"] if scheduler_kind == "serial-finishing" else []
+        )
+        # The drain's waiter thread ends with the stage.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and any(
+            thread.name.startswith("outbox-stage") for thread in threading.enumerate()
+        ):
+            await asyncio.sleep(0.01)
+        assert not any(
+            thread.name.startswith("outbox-stage") for thread in threading.enumerate()
+        )
+
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+
+
 def test_stage_stop_waits_for_scheduler_model_path_terminalization(
     monkeypatch,
 ) -> None:
@@ -312,6 +429,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
+        scheduler.should_run_top_priority_stream = False
         scheduler.prefill_start_done = {"req-active"}
         scheduler.prefill_end_done = set()
         scheduler.request_build_executor = None
@@ -361,6 +479,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
+        scheduler.should_run_top_priority_stream = False
         scheduler.prefill_start_done = set()
         scheduler.prefill_end_done = set()
         scheduler.request_build_executor = None
@@ -1102,48 +1221,6 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
     asyncio.run(run())
 
 
-def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> None:
-    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
-    monkeypatch.setattr(
-        stage_io,
-        "serialize_direct_cuda_ipc_payload",
-        lambda payload: {
-            "_type": "TorchCudaIpcPayload",
-            "version": 1,
-            "header": b"payload",
-            "tensors": [],
-        },
-    )
-
-    async def run() -> None:
-        relay = FakeRelay()
-        control_plane = RecordingStageControlPlane()
-        sender = Stage(
-            name="encoder",
-            role="single",
-            get_next=lambda request_id, output: None,
-            gpu_id=0,
-            endpoints={"mm_aggregate": "inproc://mm"},
-            control_plane=control_plane,
-            relay=relay,
-            scheduler=FakeScheduler(),
-            gpu_stage_names={"mm_aggregate"},
-            stage_gpu_ids={"mm_aggregate": (0,)},
-        )
-
-        payload = make_stage_payload(request_id="req-same-gpu", data={"x": "cuda"})
-        await sender.send_to_stage("req-same-gpu", "mm_aggregate", payload)
-
-        assert relay.storage == {}
-        target, endpoint, msg = control_plane.sent_to_stage[0]
-        assert target == "mm_aggregate"
-        assert endpoint == "inproc://mm"
-        assert msg.data_ref["_type"] == "TorchCudaIpcPayload"
-        assert msg.chunk_id is None
-
-    asyncio.run(run())
-
-
 def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
     monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
 
@@ -1690,5 +1767,89 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
         assert torch.equal(received.to(original.device), original)
         # the sender-side tensor must also be left alone
         assert torch.equal(tensor, original)
+
+    asyncio.run(run())
+
+
+def test_result_resources_survive_partial_fanout():
+    released, sent = [], []
+
+    class OwningScheduler(FakeScheduler):
+        def claim_result(self, result, *, terminal):
+            return True
+
+        def release_result(self, result, *, delivered):
+            released.append(delivered)
+
+    async def run():
+        stage_obj = make_stage(
+            get_next=lambda request_id, result: ["first", "second"],
+            scheduler=OwningScheduler(),
+        )
+
+        async def send(request_id, target, result, **kwargs):
+            if target == "second":
+                raise RuntimeError("second target failed")
+            sent.append(target)
+
+        stage_obj.send_to_stage = send
+        with pytest.raises(RuntimeError, match="second target failed"):
+            await stage_obj.route_result("request", {"output": "value"})
+        assert sent == ["first"]
+        assert released == [True]
+
+    asyncio.run(run())
+
+
+def session_append_payload(request_id: str, stages: tuple[str, ...]) -> StagePayload:
+    chunk = TimedChunk("text", 0, 0, 1, {"text": "hi"}, format="text.delta", turn=1)
+    operation = SessionOperation("append", SessionIdentity("tts"), stages, chunk)
+    payload = make_stage_payload(request_id=request_id, data={"codes": [1]})
+    payload.request.metadata[SESSION_METADATA_KEY] = operation.to_dict()
+    return payload
+
+
+def test_a_session_append_reaches_the_next_owner_before_the_stream() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["vocoder"],
+        )
+        payload = session_append_payload("req-route", ("tts_engine", "vocoder"))
+        await sender.execute(payload)
+        assert [target for target, _, _ in control_plane.sent_to_stage] == ["vocoder"]
+        await sender.route_result("req-route", payload)
+        assert control_plane.completions == []
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "vocoder",
+            "vocoder",
+        ]
+        assert control_plane.sent_to_stage[1][2].is_done
+
+    asyncio.run(run())
+
+
+def test_session_route_rejects_a_stream_edge_off_the_route() -> None:
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder", "monitor": "inproc://monitor"},
+            relay=FakeRelay(),
+            control_plane=control_plane,
+            stream_targets=["monitor"],
+        )
+        await sender.route_result(
+            "req-off", session_append_payload("req-off", ("tts_engine", "vocoder"))
+        )
+        assert [msg.success for msg in control_plane.completions] == [False]
+        assert "linear payload edges" in control_plane.completions[0].error
 
     asyncio.run(run())

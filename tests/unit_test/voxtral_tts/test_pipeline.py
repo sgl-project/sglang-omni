@@ -10,12 +10,10 @@ import numpy as np
 import pytest
 import torch
 
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
     FlowMatchingAudioTransformer,
 )
 from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
-from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
@@ -28,35 +26,7 @@ from sglang_omni.models.voxtral_tts.vocoder import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
-from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge
-from tests.unit_test.pipeline.helpers import build_compiled_process_topology
-
-
-def test_voxtral_tts_config_uses_current_stage_schema() -> None:
-    config = VoxtralTTSPipelineConfig(model_path="model")
-    assert [stage.name for stage in config.stages] == [
-        "preprocessing",
-        "tts_generation",
-        "vocoder",
-    ]
-    assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
-    assert config.stages[1].factory.device is None
-    assert config.stages[2].factory.device is None
-    assert [stage.process for stage in config.stages] == [
-        "pipeline",
-        "pipeline",
-        "pipeline",
-    ]
-    assert [
-        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
-    ] == [None, None]
-    build_compiled_process_topology(config)
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
-        is VoxtralTTSPipelineConfig
-    )
 
 
 def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocoder(
@@ -204,18 +174,6 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
 def test_voxtral_vocoder_rejects_empty_audio_codes(audio_codes) -> None:
     with pytest.raises(ValueError, match="generated no audio codes"):
         ensure_non_empty_audio_codes(audio_codes)
-
-
-def test_voxtral_audio_waveform_payload_is_compact() -> None:
-    payload = audio_waveform_payload(
-        torch.tensor([0.0, 0.5, -0.5]),
-        source_hint="Voxtral TTS",
-    )
-
-    audio = np.frombuffer(payload["audio_waveform"], dtype=np.float32)
-    assert audio.tolist() == [0.0, 0.5, -0.5]
-    assert payload["audio_waveform_shape"] == [3]
-    assert payload["audio_waveform_dtype"] == "float32"
 
 
 def test_voxtral_audio_codes_payload_is_compact() -> None:

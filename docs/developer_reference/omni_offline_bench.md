@@ -192,7 +192,7 @@ It must print `RUN_READY`. `OUT` must be new and port 8000 must be free.
 test ! -e "$OUT" && ! curl -s -o /dev/null localhost:8000/health && mkdir -p "$OUT/videoamme" "$OUT/seedtts" && git rev-parse HEAD > "$OUT/commit.txt" && git status --porcelain > "$OUT/dirty.txt" && echo RUN_READY
 ```
 
-#### Video-AMME Talker
+**Video-AMME Talker**
 
 Start the server. It must print `READY`. `/tmp/omni_server.pid` holds the server's process group, so the stop command stops all of it.
 
@@ -228,7 +228,7 @@ kill -- -"$(cat /tmp/omni_server.pid)"
 timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
 ```
 
-#### seed-tts voice clone
+**seed-tts voice clone**
 
 Start the server. It must print `READY`.
 
@@ -258,7 +258,7 @@ kill -- -"$(cat /tmp/omni_server.pid)"
 timeout 600 bash -c 'until [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -lt 1024 ]; do sleep 5; done' && echo GPU_FREE || echo GPU_BUSY
 ```
 
-#### Score
+**Score**
 
 Start Qwen3-ASR. It must print `READY`.
 
@@ -437,7 +437,7 @@ The #2532 run used MPS. The commands on this page do not.
 - **The first start is slow.** A start with an empty compile cache takes much longer than a warm start. One run starts three servers.
 - **Video-AMME Talker is one batch.** Ten requests do not fill 16 slots, so its throughput is mostly the completion time of that one batch. Small changes in one request move it.
 - **seed-tts output length varies.** The client samples at temperature 0.7 without a seed, as CI does. One long output can move throughput at concurrency 16 a lot. Check `seedtts.completion_tokens_sum` before reading a throughput change. Passing `--seed 0` controls sampling variation, but does not guarantee identical outputs under concurrent scheduling. Record the seed and output lengths. CI sends no seed, so that setting differs from CI.
-- **CI differs from these runs.** CI wraps each stage in `.github/scripts/run_flaky_pytest.sh`, which runs a failed stage up to 3 times. The local test block does not, so a stage that fails only sometimes shows up here. CI gives the GPU pair 28 logical CPUs. This page gives it 56. MiniCPM-o CI runs only when selected (`run-minicpmo` label or `/tag-and-rerun-ci minicpmo`).
+- **CI differs from these runs.** CI wraps each stage in `.github/scripts/run_flaky_pytest.sh`, which runs a failed stage up to 3 times. The local test block does not, so a stage that fails only sometimes shows up here. CI gives the GPU pair 28 logical CPUs. This page gives it 56. Omni CI draws MiniCPM-o or Qwen3-Omni at random; the `run-omni-minicpm-o-4.5` label, with `run-omni-ci` or `run-all-ci`, selects MiniCPM-o.
 - **Stages may fail on main.** A stage can fail on main. Run it on an earlier commit to tell an existing failure from a new one.
 - **Some datasets are CI subsets.** `Video_AMME_ci`, `Video_MME_ci`, `seed-tts-eval-50-arrow`, `mmmu-ci-50` and `mmsu-ci-2000` are CI subsets hosted on Hugging Face. Their results are not full benchmark estimates.
 - **Some CI subsets are not pinned.** `seed-tts-eval-50-arrow`, `mmmu-ci-50` and `mmsu-ci-2000` load at whatever revision is cached. When this page was written, Hugging Face main was `351f38c8d5ea36deda18dd9218645cda8f5c91b3`, `ff72fd69cc7e0719e04a0ddb12d160de89c6fefe` and `5ae6ed4343a89566be6dd90023d529f1bd97802d`.

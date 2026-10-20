@@ -11,7 +11,6 @@ A macOS voice input and translation app with context-aware text enhancement acro
 [![][github-release-shield]][github-release-link]
 [![][macos-version-shield]][macos-version-link]
 [![][license-shield]][license-link]
-[![][release-date-shield]][release-date-link]
 
 <img width="2664" height="1752" alt="Xnip2026-07-15_21-30-44" src="https://github.com/user-attachments/assets/67f6e1d7-0761-4685-992d-15cc89821475" />
 
@@ -46,7 +45,7 @@ A macOS voice input and translation app with context-aware text enhancement acro
 
 - [Official website](https://voxt.actnow.dev)
 - [Download from the official website](https://voxt.actnow.dev/api/app/download)
-- [Latest release](https://github.com/hehehai/voxt/releases/latest)
+- [Voxt releases](https://github.com/sgl-project/sglang-omni/releases?q=Voxt&expanded=true)
 
 - Install via Homebrew:
 
@@ -65,12 +64,10 @@ Apache 2.0. See [LICENSE](LICENSE).
 
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
-[github-issues-link]: https://github.com/hehehai/voxt/issues/new/choose
-[github-release-link]: https://github.com/hehehai/voxt/releases/latest
-[macos-version-link]: https://github.com/hehehai/voxt/releases/latest
+[github-issues-link]: https://github.com/sgl-project/sglang-omni/issues/new/choose
+[github-release-link]: https://github.com/sgl-project/sglang-omni/releases?q=Voxt&expanded=true
+[macos-version-link]: https://github.com/sgl-project/sglang-omni/releases?q=Voxt&expanded=true
 [license-link]: ./LICENSE
-[release-date-link]: https://github.com/hehehai/voxt/releases/latest
-[github-release-shield]: https://img.shields.io/github/v/release/hehehai/voxt?label=release&labelColor=000000&color=3fb950&style=flat-square&logo=github&logoColor=white
+[github-release-shield]: https://img.shields.io/github/v/release/sgl-project/sglang-omni?filter=voxt-v*&label=release&labelColor=000000&color=3fb950&style=flat-square&logo=github&logoColor=white
 [macos-version-shield]: https://img.shields.io/badge/macOS-15.0%2B-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
 [license-shield]: https://img.shields.io/badge/License-Apache%202.0-58a6ff.svg?style=flat-square&labelColor=000000&logo=apache&logoColor=white
-[release-date-shield]: https://img.shields.io/github/release-date/hehehai/voxt?style=flat-square&labelColor=000000&color=58a6ff&logo=github&logoColor=white

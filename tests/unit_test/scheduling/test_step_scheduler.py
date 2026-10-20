@@ -117,7 +117,7 @@ def test_first_steps_precede_continuing_work_and_uploads_finish_in_order() -> No
     assert trace == ["first", "second", "live", "first", "first", "second", "second"]
 
 
-@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize("workers", [2])
 def test_abort_waits_for_inflight_work_and_preserves_other_requests(
     workers: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:

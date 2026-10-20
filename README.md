@@ -60,14 +60,14 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 | Backend | Status | Notes |
 |---------|--------|-------|
 | **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
-| **Apple Silicon** | Experimental | Qwen3-ASR runs through native MLX or Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx). |
+| **Apple Silicon** | Experimental | Qwen3-ASR runs through Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon). |
 | **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, ZONOS2, and Qwen3-Omni serve end-to-end** (ZONOS2 with decode graphs; Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/).
 
 ## Quick Start
 
-- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation.md#macos-apple-silicon).
+- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation_apple_silicon.md).
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
 - [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)

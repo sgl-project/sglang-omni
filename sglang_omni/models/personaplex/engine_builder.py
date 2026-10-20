@@ -17,6 +17,7 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
@@ -79,9 +80,14 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     supports_context_length_override = True
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        enable_async_decode: bool,
+        max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        context_length: int | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.enable_async_decode = enable_async_decode
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -164,4 +170,9 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         return build, apply_lm_result
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[SGLangARRequestData]:
-        return {"stream_output_builder": lm_stream_output_builder}
+        return {
+            "stream_output_builder": lm_stream_output_builder,
+            "async_decode_resolve_before_prefill": True,
+            "enable_async_decode": self.enable_async_decode
+            and current_platform.is_cuda(),
+        }
