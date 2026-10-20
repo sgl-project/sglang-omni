@@ -2369,3 +2369,9 @@
 "Open Notes from the main window" = "メインウィンドウから「メモ」を開く";
 "Try Later" = "後で試す";
 "Less" = "折りたたむ";
+
+"Copy: %@" = "コピー：%@";
+
+"Transcript unavailable" = "文字起こしを利用できません";
+
+"Could not copy transcript" = "文字起こしをコピーできませんでした";
