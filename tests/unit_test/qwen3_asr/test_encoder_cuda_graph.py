@@ -268,6 +268,7 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
 @pytest.mark.parametrize("update_fails", [False, True])
 def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails):
     runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device = torch.device("cpu")
     runner.max_seqlen = 8
     runner.max_windows_for = lambda bucket: 2
     runner.graphs = {}
@@ -384,6 +385,7 @@ def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkey
     )
 
     runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device = torch.device("cpu")
     runner.device_module = device_module
     runner.graph_pool = object()
     runner.update_tasks = {}

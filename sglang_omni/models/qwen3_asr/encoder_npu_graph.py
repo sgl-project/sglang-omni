@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from itertools import accumulate
 from types import ModuleType
 from typing import Any
 
@@ -74,8 +73,7 @@ class NpuGraphCaptureAttention(torch.nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         *,
-        forward_metadata: VisionAttentionMetadata | None = None,
-        attention_mask: torch.Tensor | None = None,
+        forward_metadata: VisionAttentionMetadata,
         softmax_scale: float | None = None,
         **kwargs: object,
     ) -> torch.Tensor:
@@ -175,10 +173,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
     def capture_boundaries(
         self, bucket_size: int
     ) -> tuple[torch.Tensor, VisionAttentionMetadata]:
-        max_windows = self.max_windows_for(bucket_size)
-        base, rem = divmod(bucket_size, max_windows)
-        sizes = [base + 1] * rem + [base] * (max_windows - rem)
-        cu = torch.tensor(list(accumulate(sizes, initial=0)), dtype=torch.int32)
+        cu = super().capture_boundaries(bucket_size)[0].cpu()
         return cu, VisionAttentionMetadata(
             cu_seqlens=cu,
             seq_lens=cu[1:] - cu[:-1],
