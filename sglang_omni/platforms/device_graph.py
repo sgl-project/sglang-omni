@@ -17,9 +17,11 @@ import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
 
 try:
+    # torch.xpu._POOL_HANDLE landed in torch 2.11 (any build flavor); the guard
+    # keeps torch 2.10 working. It can be dropped once the minimum supported
+    # torch is 2.11 or newer.
     from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
 except ImportError:
-    # Older torch builds (and CPU/NPU-only builds) have no torch.xpu pool handle.
     XpuGraphPoolHandle = object
 
 
