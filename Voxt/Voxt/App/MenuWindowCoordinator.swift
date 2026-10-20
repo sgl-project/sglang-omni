@@ -198,7 +198,7 @@ extension AppDelegate {
         menu.addItem(NSMenuItem.separator())
         for entry in entries {
             let item = NSMenuItem(
-                title: StatusMenuHistorySupport.previewTitle(for: entry),
+                title: AppLocalization.format("Copy: %@", StatusMenuHistorySupport.previewTitle(for: entry)),
                 action: #selector(copyRecentHistoryFromMenu(_:)),
                 keyEquivalent: ""
             )
@@ -408,8 +408,17 @@ extension AppDelegate {
         performAfterStatusMenuDismissal {
             // Fetch the full, current text only on selection, never during hover.
             self.historyStore.loadEntry(id: id) { [weak self] entry in
-                guard let self, let entry else { return }
+                guard let self else { return }
+                guard let entry else {
+                    self.showFloatingToast(AppLocalization.localizedString("Transcript unavailable"), kind: .warning)
+                    return
+                }
                 _ = self.pasteboardTextWriter.write(entry.text, to: .general, restorePrevious: false)
+                if NSPasteboard.general.string(forType: .string) == entry.text {
+                    self.showFloatingToast(AppLocalization.localizedString("Copied to clipboard"))
+                } else {
+                    self.showFloatingToast(AppLocalization.localizedString("Could not copy transcript"), kind: .warning)
+                }
             }
         }
     }
