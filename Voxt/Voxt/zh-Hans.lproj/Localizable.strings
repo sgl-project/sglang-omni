@@ -2375,3 +2375,9 @@
 "Open Notes from the main window" = "在主窗口中打开「笔记」";
 "Try Later" = "稍后体验";
 "Less" = "收起";
+
+"Copy: %@" = "复制：%@";
+
+"Transcript unavailable" = "转写记录不可用";
+
+"Could not copy transcript" = "无法复制转写内容";
