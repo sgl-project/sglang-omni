@@ -25,7 +25,6 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     FIRST_CHUNK_MS,
     FIRST_CHUNK_SAMPLES,
     HOP_LENGTH,
-    IMAGE_TOKENS,
     LOG_FLOOR_DB,
     SAMPLE_RATE,
     SLIDE_STRIDE_SAMPLES,
@@ -38,6 +37,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     PerceptionStepPlan,
     PreparedImageFeatures,
 )
+from sglang_omni.models.minicpm_o.native_config import IMAGE_TOKENS
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
 from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload

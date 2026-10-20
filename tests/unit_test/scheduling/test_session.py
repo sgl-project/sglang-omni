@@ -662,8 +662,10 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.on_abort = Mock(side_effect=lambda identity, unit: order.append("model"))
     scheduler = Mock()
     scheduler.model_config.vocab_size = 100
+    scheduler.max_req_len = 100
     native = scheduler.session_controller.get.return_value
     native.session_id = identity.id
+    native.req_nodes = {}
     native.abort_req.side_effect = lambda: order.append("native")
     native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
     native.create_req.return_value = native_request

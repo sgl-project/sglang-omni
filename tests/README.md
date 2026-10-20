@@ -564,6 +564,9 @@ that happened to contain an older version of the test.
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
+  - history unit scorers: KeyDiff keeps the unit whose position-free keys
+    stand out from the mean key and scores a unit by the mean over its tokens
+    and heads (`test_unit_scorers.py`).
   - early-tail flushing remains opt-in when stream completion arrives
     before the final payload (`test_streaming_vocoder.py`).
   - `EvictHeapRadixCache` eviction-order equivalence against upstream

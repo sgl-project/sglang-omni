@@ -8,11 +8,14 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import torch
 from click.testing import Result
 from pydantic import JsonValue, ValidationError
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from typer.testing import CliRunner
@@ -34,9 +37,12 @@ from sglang_omni.models.minicpm_o.native_config import (
     THINKER_CONTEXT_LENGTH,
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexVision,
+    MiniCPMODuplexWindow,
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
+from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
 from sglang_omni.scheduling.session import BatchedSessionHooks
+from sglang_omni.scheduling.sglang_backend.unit_scorers import KeyDiffUnitScorer
 from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
@@ -333,6 +339,129 @@ def test_thinker_kv_pool_holds_the_derived_tokens_within_its_card_share(
         )
 
 
+def build_without_engine(
+    builder: MiniCPMOThinkerEngineBuilder,
+    model_path: str,
+    **build_options: JsonValue,
+) -> MiniCPMOThinkerEngineBuilder:
+    consume_stage_kv_cache_bytes()
+    return builder
+
+
+@pytest.mark.parametrize(
+    ("yaml_settings", "cli_flags", "window"),
+    [
+        ("", [], MiniCPMODuplexWindow()),
+        (
+            'window:\n  mode: "off"\n  high_tokens: 7000\n  low_tokens: 5000\n',
+            [],
+            MiniCPMODuplexWindow(mode="off", high_tokens=7000, low_tokens=5000),
+        ),
+        (
+            "",
+            [
+                "--window.mode",
+                "off",
+                "--window.high_tokens",
+                "7000",
+                "--window.low_tokens",
+                "5000",
+            ],
+            MiniCPMODuplexWindow(mode="off", high_tokens=7000, low_tokens=5000),
+        ),
+        (
+            "",
+            ["--window.mode", "keydiff", "--window.protect_tokens", "1500"],
+            MiniCPMODuplexWindow(mode="keydiff", protect_tokens=1500),
+        ),
+    ],
+    ids=["default", "yaml", "cli", "keydiff"],
+)
+def test_duplex_window_settings_reach_the_thinker_adapter(
+    yaml_settings: str,
+    cli_flags: list[str],
+    window: MiniCPMODuplexWindow,
+    snapshot: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "duplex.yaml"
+    config_path.write_text(
+        "config_cls: MiniCPMODuplexPipelineConfig\nmodel_path: unused\n" + yaml_settings
+    )
+    manager = ConfigManager.from_file(str(config_path))
+    config = manager.merge_config(manager.parse_extra_args(cli_flags))
+    monkeypatch.setattr(MiniCPMOThinkerEngineBuilder, "build", build_without_engine)
+    tokenizer = Mock(unk_token_id=0, bad_token_ids=[])
+    tokenizer.convert_tokens_to_ids.side_effect = dict(
+        zip(REQUIRED_SPECIAL_TOKENS, range(1, len(REQUIRED_SPECIAL_TOKENS) + 1))
+    ).__getitem__
+    rotary_embedding = RotaryEmbedding(8, 8, 64, 10000, True, torch.float32)
+
+    builder = native_stages.create_thinker_scheduler(
+        str(snapshot),
+        device="cpu",
+        total_gpu_memory_fraction=0.4,
+        **apply_typed_stage_kwargs(
+            native_stages.create_thinker_scheduler,
+            config.stage_factory_kwargs("thinker"),
+            resolve_stage_typed_kwargs(config.stage_named("thinker")),
+            stage_name="thinker",
+        ),
+    )
+    builder.tokenizer = tokenizer
+    builder.make_adapters(
+        SimpleNamespace(
+            config=SimpleNamespace(vocab_size=64),
+            model=SimpleNamespace(
+                layers=[
+                    SimpleNamespace(
+                        self_attn=SimpleNamespace(rotary_emb=rotary_embedding)
+                    )
+                ]
+            ),
+        )
+    )
+
+    assert builder.adapter.window == window
+    assert builder.adapter.rotary_embedding is rotary_embedding
+    assert isinstance(builder.adapter.unit_scorer, KeyDiffUnitScorer) == (
+        window.mode == "keydiff"
+    ), "only the keydiff window scores units"
+
+
+@pytest.mark.parametrize(
+    ("cli_flags", "error"),
+    [
+        (["--window.low_tokens", "7499"], None),
+        (["--window.low_tokens", "7500"], "leaves no room"),
+        (["--window.low_tokens", "7500", "--window.mode", "off"], None),
+        (
+            ["--window.low_tokens", "7500", "--thinker.engine.context_length", "16384"],
+            None,
+        ),
+        (["--window.low_tokens", "8000"], "below window.high_tokens"),
+        (["--window.low_tokens", "7500", "--window.mode", "keydiff"], "leaves no room"),
+        (
+            ["--window.low_tokens", "2000", "--window.mode", "keydiff"],
+            "below window.low_tokens",
+        ),
+    ],
+)
+def test_duplex_window_low_tokens_leave_room_for_the_largest_unit(
+    cli_flags: list[str], error: str | None
+) -> None:
+    """With the default vision and sampling limits a unit reaches 692 tokens, so low_tokens stops at 8191 - 692."""
+    manager = ConfigManager(MiniCPMODuplexPipelineConfig(model_path="unused"))
+
+    if error is None:
+        config = manager.merge_config(manager.parse_extra_args(cli_flags))
+        assert config.window.low_tokens == int(cli_flags[1])
+    else:
+        with pytest.raises(ValidationError, match=error):
+            manager.merge_config(manager.parse_extra_args(cli_flags))
+
+
 @pytest.mark.parametrize(
     ("cli_flags", "disable_cuda_graph"),
     [
@@ -384,10 +513,9 @@ def test_duplex_settings_select_decode_graphs_without_compile(
             "unused", device="cpu", server_args_overrides=overrides["talker"]
         )
     assert talker_server_args["disable_cuda_graph"] is disable_cuda_graph
-    assert (
-        "disable_cuda_graph"
-        not in MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
-    )
+    assert "disable_cuda_graph" not in MiniCPMOThinkerEngineBuilder(
+        window=config.window
+    ).generation_defaults(dtype="bfloat16")
 
 
 def test_minicpmo_configs_load_without_sglang(tmp_path: Path) -> None:

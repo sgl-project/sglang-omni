@@ -17,13 +17,13 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
     StreamingAudioChunk,
 )
 from sglang_omni.models.minicpm_o.components.whisper_encoder import AudioEncoderState
+from sglang_omni.models.minicpm_o.native_config import IMAGE_TOKENS
 from sglang_omni.proto.session import ResourceUsage
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
 SAMPLE_RATE = 16000
 UNIT_MS = 1000
 FIRST_CHUNK_MS = 1035
-IMAGE_TOKENS = 64
 MAX_FRAME_PIXELS = 4096 * 4096
 # note (Junnan Li): The constants below reproduce the checkpoint's exact streaming mel in its duplex configuration.
 N_FFT = 400

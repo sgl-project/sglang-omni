@@ -19,6 +19,11 @@ DEFAULT_SPEECH_STATE_BYTES_PER_SESSION = 2 << 30
 THINKER_CONTEXT_LENGTH = 8192
 THINKER_GPU_MEMORY_FRACTION = 0.52
 TALKER_CONTEXT_LENGTH = 4096
+# note (0xtoward): A unit holds <unit> and </unit>, 64 rows between two markers per image tile, and 10 audio rows per second (stride-2 convolution, 5-frame pooling).
+IMAGE_TOKENS = 64
+IMAGE_TILE_MARKER_TOKENS = 2
+UNIT_MARKER_TOKENS = 2
+AUDIO_TOKENS_PER_UNIT = 10
 
 
 def stages() -> list[StageConfig]:
@@ -121,6 +126,36 @@ class MiniCPMODuplexSpeech(BaseModel):
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
 
 
+WindowMode = Literal["off", "basic", "keydiff"]
+
+
+class MiniCPMODuplexWindow(BaseModel):
+    """Thinker history window: once history passes high_tokens, units go until at most low_tokens remain.
+
+    basic drops the oldest units, as the checkpoint's duplex loop does. keydiff drops the units whose
+    cached keys sit closest to the mean key, choosing among units older than the newest protect_tokens.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: WindowMode = "basic"
+    high_tokens: int = Field(default=8000, ge=1)
+    low_tokens: int = Field(default=6000, ge=1)
+    protect_tokens: int = Field(default=2000, ge=0)
+
+    @model_validator(mode="after")
+    def check_watermarks(self) -> "MiniCPMODuplexWindow":
+        if self.low_tokens >= self.high_tokens:
+            raise ValueError("window.low_tokens must be below window.high_tokens")
+        elif self.mode == "keydiff" and self.protect_tokens >= self.low_tokens:
+            raise ValueError("window.protect_tokens must be below window.low_tokens")
+        else:
+            return self
+
+
+DEFAULT_WINDOW_SETTINGS = MiniCPMODuplexWindow()
+
+
 class MiniCPMODuplexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MiniCPMO"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -136,6 +171,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     sampling: MiniCPMODuplexSampling = Field(default_factory=MiniCPMODuplexSampling)
     vision: MiniCPMODuplexVision = Field(default_factory=MiniCPMODuplexVision)
     speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
+    window: MiniCPMODuplexWindow = Field(default_factory=MiniCPMODuplexWindow)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
 
@@ -143,6 +179,35 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
         "sglang_omni.models.minicpm_o.session_adapters.build_realtime_deployment"
     )
     is_realtime_only: ClassVar[bool] = True
+
+    @model_validator(mode="after")
+    def check_window_leaves_room_for_a_unit(self) -> "MiniCPMODuplexPipelineConfig":
+        largest_unit_tokens = (
+            UNIT_MARKER_TOKENS
+            + self.vision.max_tiles_per_unit * (IMAGE_TOKENS + IMAGE_TILE_MARKER_TOKENS)
+            + AUDIO_TOKENS_PER_UNIT
+            + self.sampling.max_new_tokens_per_unit
+        )
+        context_length = self.thinker_context_length()
+        # note (0xtoward): A request finishes only within context_length - 1 tokens, so the largest unit must fit after a cut to low_tokens.
+        if (
+            self.window.mode != "off"
+            and self.window.low_tokens + largest_unit_tokens > context_length - 1
+        ):
+            raise ValueError(
+                f"window.low_tokens={self.window.low_tokens} leaves no room for a "
+                f"{largest_unit_tokens}-token unit in the thinker context of "
+                f"{context_length} tokens; lower window.low_tokens"
+            )
+        else:
+            return self
+
+    def thinker_context_length(self) -> int:
+        return int(
+            self.stage_named("thinker").engine.model_extra.get(
+                "context_length", THINKER_CONTEXT_LENGTH
+            )
+        )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, JsonValue]:
         request_slots = (
@@ -169,7 +234,13 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 pass
             return kwargs
         elif stage_name == "thinker":
-            kwargs = {"server_args_overrides": {"max_running_requests": request_slots}}
+            kwargs = {
+                "server_args_overrides": {"max_running_requests": request_slots},
+                "window_mode": self.window.mode,
+                "window_high_tokens": self.window.high_tokens,
+                "window_low_tokens": self.window.low_tokens,
+                "window_protect_tokens": self.window.protect_tokens,
+            }
             stage = self.stage_named(stage_name)
             # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
             if (
@@ -179,10 +250,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 and stage.engine.max_total_tokens is None
             ):
                 kwargs["kv_cache_tokens"] = (
-                    request_slots
-                    * stage.engine.model_extra.get(
-                        "context_length", THINKER_CONTEXT_LENGTH
-                    )
+                    request_slots * self.thinker_context_length()
                 )
             else:
                 pass

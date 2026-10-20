@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from array import array
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -16,7 +17,8 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
-from sglang.srt.session.session_controller import SessionController
+from sglang.srt.session.session_controller import Session, SessionController
+from sglang.srt.utils.common import ceil_align
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
@@ -39,7 +41,13 @@ from sglang_omni.scheduling.types import RequestOutput
 SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 
+logger = logging.getLogger(__name__)
+
+
 class SessionKV(Protocol):
+    req_pool_idx: int | None
+    cache_protected_len: int
+    kv_committed_len: int
     kv_allocated_len: int
     holds_kv: bool
 
@@ -48,19 +56,41 @@ class SessionSlot(Protocol):
     kv: SessionKV
 
 
+class RequestToTokenPool(Protocol):
+    free_slots: list[int]
+    req_to_token: torch.Tensor
+
+
 class SessionTreeCache(Protocol):
     slots: Mapping[str, SessionSlot]
+    req_to_token_pool: RequestToTokenPool
+    page_size: int
 
     def evictable_size(self) -> int:
         pass
 
+    def free_kv_row(self, kv: SessionKV, ranges: list[tuple[int, int]]) -> None:
+        pass
 
-class RequestToTokenPool(Protocol):
-    free_slots: list[int]
+
+class LayerKVCache(Protocol):
+    size: int
+    page_size: int
+    start_layer: int
+    layer_num: int
+
+    def get_key_buffer(self, layer_id: int) -> torch.Tensor:
+        pass
+
+    def get_value_buffer(self, layer_id: int) -> torch.Tensor:
+        pass
 
 
 class TokenToKVPoolAllocator(Protocol):
     def available_size(self) -> int:
+        pass
+
+    def get_kvcache(self) -> LayerKVCache:
         pass
 
 
@@ -79,6 +109,7 @@ class BridgeScheduler(Protocol):
     waiting_queue: list[Req]
     chunked_req: Req | None
     max_running_requests: int
+    max_req_len: int
 
     def abort(self, request_id: str) -> None:
         pass
@@ -109,6 +140,71 @@ def is_close_request(payload: StagePayload) -> bool:
 class ARSessionPreparation:
     reset_history: bool = False
     bypass_generation: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
+class HistoryCut:
+    """Retained session position ranges [start, end) to drop before the next unit, ascending and apart."""
+
+    ranges: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.ranges
+            or self.ranges[0][0] < 0
+            or any(start >= end for start, end in self.ranges)
+            or any(
+                previous_end >= start
+                for (_, previous_end), (start, _) in zip(self.ranges, self.ranges[1:])
+            )
+        ):
+            raise ValueError(f"invalid history cut {self.ranges}")
+        else:
+            pass
+
+    @property
+    def length(self) -> int:
+        return sum(end - start for start, end in self.ranges)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetainedKeys:
+    """A session's cached history keys, read only when a window scores units by them."""
+
+    tree_cache: SessionTreeCache
+    kv_cache: LayerKVCache
+    session_id: str
+
+    def read(self, start: int, end: int, layer_stride: int) -> list[torch.Tensor]:
+        """Float32 keys of positions [start, end), one [tokens, kv heads, head dim] tensor per layer_stride-th layer.
+
+        Empty while the session holds no KV, as after an abort; its next unit re-prefills the history ids.
+        """
+        slot = self.tree_cache.slots.get(self.session_id)
+        if slot is None or not slot.kv.holds_kv:
+            return []
+        else:
+            pass
+        slots = self.tree_cache.req_to_token_pool.req_to_token[
+            slot.kv.req_pool_idx, start:end
+        ].to(torch.int64)
+        keys: list[torch.Tensor] = []
+        for layer_id in range(
+            self.kv_cache.start_layer,
+            self.kv_cache.start_layer + self.kv_cache.layer_num,
+            layer_stride,
+        ):
+            key_buffer = self.kv_cache.get_key_buffer(layer_id)
+            # note (0xtoward): An FP8 cache is uint8 storage behind float8 views, and index_select has no float8 kernel.
+            key_rows = (
+                key_buffer.view(torch.uint8)
+                if key_buffer.dtype.itemsize == 1
+                else key_buffer
+            )
+            keys.append(
+                key_rows.index_select(0, slots).view(key_buffer.dtype).to(torch.float32)
+            )
+        return keys
 
 
 class ARSessionAdapter:
@@ -164,6 +260,26 @@ class ARSessionAdapter:
         chunk: TimedChunk,
         payload: StagePayload,
     ) -> SGLangARRequestData:
+        raise NotImplementedError
+
+    def plan_history_cut(
+        self,
+        session_identity: SessionIdentity,
+        request_data: SGLangARRequestData,
+        history_length: int,
+        history_capacity: int,
+        retained_keys: RetainedKeys,
+    ) -> HistoryCut | None:
+        """Choose retained history to drop before this unit joins the session.
+
+        The unit can still finish when at most history_capacity tokens stay ahead of it.
+        """
+        return None
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distance: int | torch.Tensor
+    ) -> torch.Tensor:
+        """Re-encode cached keys distance positions earlier, in their dtype; a tensor gives one distance per key."""
         raise NotImplementedError
 
     def result(
@@ -390,6 +506,39 @@ class ARSessionBridge:
         native_session = self.bridge_scheduler.session_controller.get(
             unit.session_identity.id
         )
+        session = self.sessions[unit.session_identity.id]
+        if native_session.req_nodes:
+            [last_node] = native_session.req_nodes.values()
+            last_request = last_node.req
+            # note (0xtoward): Session.create_req puts the committed ids and the last outputs, up to max_new_tokens, ahead of this unit.
+            history_length = native_session.committed_origin_len + len(
+                last_request.output_ids[: last_request.sampling_params.max_new_tokens]
+            )
+        else:
+            history_length = 0
+        # note (0xtoward): SGLang grants the whole max_new_tokens only while input plus output stays below max_req_len.
+        history_capacity = (
+            self.bridge_scheduler.max_req_len
+            - 1
+            - len(adapter_request.origin_input_ids)
+            - int(adapter_request.sampling_params.max_new_tokens or 0)
+        )
+        retained_keys = RetainedKeys(
+            tree_cache=self.bridge_scheduler.tree_cache,
+            kv_cache=self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
+            session_id=native_session.session_id,
+        )
+        history_cut = self.adapter.plan_history_cut(
+            unit.session_identity,
+            request_data,
+            history_length,
+            history_capacity,
+            retained_keys,
+        )
+        if history_cut is not None:
+            self.drop_history(session, native_session, history_cut)
+        else:
+            pass
         tokenized_input = TokenizedGenerateReqInput(
             rid=adapter_request.rid,
             input_text=None,
@@ -434,6 +583,7 @@ class ARSessionBridge:
         )
         unit.native_offset = offset
         unit.prompt_length = len(adapter_request.origin_input_ids)
+        request_data.session_history_length = offset
         unit.embedding_spans = [
             EmbeddingSpan(
                 start=span.start + offset,
@@ -448,7 +598,6 @@ class ARSessionBridge:
             pass
         # note (Junnan Li): Placeholder ids under embedding spans do not identify their rows, so such a unit stays out of the radix tree.
         session_request.skip_radix_cache_insert = bool(unit.embedding_spans)
-        session = self.sessions[unit.session_identity.id]
         request_data.session_embedding_spans = [
             *session.embedding_spans,
             *unit.embedding_spans,
@@ -464,6 +613,131 @@ class ARSessionBridge:
             # Note (Junnan Li): An adapter that rewrote the unit's request keeps its payload; the stream builder reads the params from it.
             pass
         self.adapter.bind_request(unit.session_identity, request_data, unit)
+
+    def drop_history(
+        self, session: BridgeSession, native_session: Session, cut: HistoryCut
+    ) -> None:
+        """Drop the cut's retained position ranges of an idle session; each later position moves down by what went before it."""
+        [last_node] = native_session.req_nodes.values()
+        last_request = last_node.req
+        assert cut.ranges[-1][1] <= min(
+            native_session.committed_origin_len,
+            native_session.committed_unpadded_len,
+            native_session.committed_fill_len,
+        ), f"history cut {cut.ranges} leaves the committed token ids"
+        slot = self.bridge_scheduler.tree_cache.slots.get(native_session.session_id)
+        # note (0xtoward): After an abort the slot is gone and the next unit re-prefills the shortened ids.
+        if slot is not None and slot.kv.holds_kv:
+            self.drop_retained_kv(slot.kv, cut)
+        else:
+            pass
+        # note (0xtoward): The unpadded ids usually alias the origin ids, so each array is cut once.
+        token_id_arrays = {
+            id(token_ids): token_ids
+            for token_ids in (
+                last_request.origin_input_ids,
+                last_request.origin_input_ids_unpadded,
+                last_request.full_untruncated_fill_ids,
+            )
+        }
+        for token_ids in token_id_arrays.values():
+            for start, end in reversed(cut.ranges):
+                del token_ids[start:end]
+        native_session.committed_origin_len -= cut.length
+        native_session.committed_unpadded_len -= cut.length
+        native_session.committed_fill_len -= cut.length
+        kept_spans: list[EmbeddingSpan] = []
+        for span in session.embedding_spans:
+            assert not any(
+                span.start < start < span.end or span.start < end < span.end
+                for start, end in cut.ranges
+            ), f"embedding span [{span.start}, {span.end}) crosses the history cut"
+            dropped_before = sum(
+                end - start for start, end in cut.ranges if end <= span.start
+            )
+            if any(start <= span.start < end for start, end in cut.ranges):
+                pass
+            elif dropped_before:
+                kept_spans.append(
+                    EmbeddingSpan(
+                        start=span.start - dropped_before,
+                        end=span.end - dropped_before,
+                        input_embeds=span.input_embeds,
+                    )
+                )
+            else:
+                kept_spans.append(span)
+        session.embedding_spans = kept_spans
+        logger.info(
+            f"Session {native_session.session_id}: dropped {cut.length} history tokens in "
+            f"{len(cut.ranges)} ranges from [{cut.ranges[0][0]}, {cut.ranges[-1][1]}), "
+            f"{native_session.committed_origin_len} tokens kept"
+        )
+
+    def drop_retained_kv(self, kv: SessionKV, cut: HistoryCut) -> None:
+        """Move the KV kept after each cut range down inside the session row and free the row tail."""
+        tree_cache = self.bridge_scheduler.tree_cache
+        first_start, last_end = cut.ranges[0][0], cut.ranges[-1][1]
+        assert (
+            first_start >= kv.cache_protected_len
+        ), f"history cut at {first_start} reaches the tree-owned prefix of {kv.cache_protected_len} tokens"
+        assert (
+            last_end <= kv.kv_committed_len
+        ), f"history cut ends at {last_end}, past the committed KV of {kv.kv_committed_len} tokens"
+        kept_length = kv.kv_committed_len - cut.length
+        row = tree_cache.req_to_token_pool.req_to_token[kv.req_pool_idx]
+        # note (0xtoward): The positions kept after range i move down by the length of ranges 0..i.
+        kept_after_ranges = [start for start, _ in cut.ranges[1:]] + [
+            kv.kv_committed_len
+        ]
+        source_positions: list[torch.Tensor] = []
+        distances: list[torch.Tensor] = []
+        dropped_before = 0
+        for (start, end), kept_end in zip(cut.ranges, kept_after_ranges):
+            dropped_before += end - start
+            source_positions.append(torch.arange(end, kept_end, device=row.device))
+            distances.append(
+                torch.full(
+                    (kept_end - end,),
+                    dropped_before,
+                    dtype=torch.int64,
+                    device=row.device,
+                )
+            )
+        source_slots = row[torch.cat(source_positions)].to(torch.int64)
+        target_slots = row[first_start:kept_length].to(torch.int64)
+        distance = torch.cat(distances)
+        kv_cache = self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache()
+        # note (0xtoward): Rows keep their slots, so pages stay whole and captured graphs keep their buffers; only the KV moves.
+        for layer_id in range(
+            kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num
+        ):
+            key_buffer = kv_cache.get_key_buffer(layer_id)
+            value_buffer = kv_cache.get_value_buffer(layer_id)
+            assert (
+                key_buffer.shape[0] == kv_cache.size + kv_cache.page_size
+            ), "history cut needs one KV row per token slot"
+            # note (0xtoward): An FP8 cache is uint8 storage behind float8 views, and index_copy_ has no float8 kernel, so its rows move as bytes.
+            key_rows, value_rows = (
+                (key_buffer.view(torch.uint8), value_buffer.view(torch.uint8))
+                if key_buffer.dtype.itemsize == 1
+                else (key_buffer, value_buffer)
+            )
+            shifted_keys = self.adapter.shift_key_positions(
+                key_rows.index_select(0, source_slots).view(key_buffer.dtype),
+                distance,
+            )
+            key_rows.index_copy_(0, target_slots, shifted_keys.view(key_rows.dtype))
+            value_rows.index_copy_(
+                0, target_slots, value_rows.index_select(0, source_slots)
+            )
+        tail_start = ceil_align(kept_length, tree_cache.page_size)
+        if tail_start < kv.kv_allocated_len:
+            tree_cache.free_kv_row(kv, [(tail_start, kv.kv_allocated_len)])
+        else:
+            pass
+        kv.kv_allocated_len = kept_length
+        kv.kv_committed_len = kept_length
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)

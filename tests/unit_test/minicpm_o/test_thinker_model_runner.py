@@ -10,10 +10,14 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
-from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_WINDOW_SETTINGS,
+    MiniCPMODuplexSampling,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
 )
@@ -205,7 +209,12 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
             SimpleNamespace(req=Mock(tokenizer=tokenizer))
         )
     else:
-        special_tokens = ThinkerAdapter(tokenizer, VOCAB_SIZE).special
+        special_tokens = ThinkerAdapter(
+            tokenizer,
+            VOCAB_SIZE,
+            window=DEFAULT_WINDOW_SETTINGS,
+            rotary_embedding=RotaryEmbedding(64, 64, 16, 10_000, True, torch.float32),
+        ).special
         runner = duplex_runner(special_tokens)
     logits = unit_logits(
         {BAD_TOKEN_IDS[0]: 100.0, special_tokens.tts_pad: 99.0, PLAIN_TOKEN_ID: 0.0}

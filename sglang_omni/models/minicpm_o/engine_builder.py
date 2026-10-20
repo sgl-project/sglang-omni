@@ -6,7 +6,7 @@ from typing import ClassVar
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -17,7 +17,10 @@ from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     MiniCPMOThinkerForCausalLM,
 )
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
-from sglang_omni.models.minicpm_o.native_config import THINKER_CONTEXT_LENGTH
+from sglang_omni.models.minicpm_o.native_config import (
+    THINKER_CONTEXT_LENGTH,
+    MiniCPMODuplexWindow,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
@@ -27,6 +30,28 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 
+def check_window_kv_cache(window: MiniCPMODuplexWindow, kv_cache: KVCache) -> None:
+    """Refuse a thinker window over a KV cache whose rows a cut cannot move in place."""
+    if window.mode == "off":
+        pass
+    elif type(kv_cache) is not MHATokenToKVPool:
+        raise ValueError(
+            f"window.mode {window.mode} moves retained thinker KV in place and needs "
+            f"SGLang's MHA token-row KV cache; got {type(kv_cache).__name__}. "
+            "Serve this cache with --window.mode off."
+        )
+    elif kv_cache.is_quantized_kv_cache or kv_cache.kv_cache_layout != "nhd":
+        # note (0xtoward): A quantized cache reads back a dequantized copy and other layouts hold no token rows, so a cut would move nothing.
+        raise ValueError(
+            f"window.mode {window.mode} moves retained thinker KV in place and needs a "
+            f"bf16 or fp8 NHD KV cache; got layout {kv_cache.kv_cache_layout}"
+            f"{' with a quantized KV recipe' if kv_cache.is_quantized_kv_cache else ''}. "
+            "Serve this cache with --window.mode off."
+        )
+    else:
+        pass
+
+
 class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     model_name: str = "MiniCPM-o thinker"
     model_arch_override: str = "MiniCPMO"
@@ -34,6 +59,10 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     supports_context_length_override: ClassVar[bool] = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
+    window: MiniCPMODuplexWindow
+
+    def __init__(self, *, window: MiniCPMODuplexWindow) -> None:
+        self.window = window
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | bool]:
         return dict(
@@ -60,7 +89,12 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         return MiniCPMOThinkerModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: MiniCPMOThinkerForCausalLM) -> tuple[None, None]:
-        self.adapter = ThinkerAdapter(self.tokenizer, model.config.vocab_size)
+        self.adapter = ThinkerAdapter(
+            self.tokenizer,
+            model.config.vocab_size,
+            window=self.window,
+            rotary_embedding=model.model.layers[0].self_attn.rotary_emb,
+        )
         return None, None
 
     def extra_scheduler_kwargs(self) -> dict[str, ThinkerAdapter | int]:
@@ -78,6 +112,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         server_args: ServerArgs,
         model_config: ModelConfig,
     ) -> tuple[OmniScheduler, MiniCPMOThinkerModelRunner]:
+        check_window_kv_cache(self.window, token_to_kv_pool_allocator.get_kvcache())
         output_proc = SGLangOutputProcessor(capture_hidden=True)
         return super().build_runtime(
             model_worker=model_worker,
