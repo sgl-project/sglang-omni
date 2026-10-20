@@ -327,6 +327,51 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                 f"{None if forward_batch is None else forward_batch.rids}"
             )
         else:
+            restored_data = [
+                data for data in batch_request_data if data.pd_state_pending
+            ]
+            if restored_data:
+                rows = torch.tensor(
+                    self.state_rows(restored_data),
+                    dtype=torch.int64,
+                    device=self.device,
+                )
+                self.state_pool.frames.index_copy_(
+                    0,
+                    rows,
+                    torch.tensor(
+                        [data.frame_rows[-1] for data in restored_data],
+                        dtype=torch.int64,
+                        device=self.device,
+                    ),
+                )
+                self.state_pool.ras_windows.index_copy_(
+                    0,
+                    rows,
+                    torch.tensor(
+                        [ras_window(data.frame_rows) for data in restored_data],
+                        dtype=torch.int64,
+                        device=self.device,
+                    ),
+                )
+                for name, dtype in (
+                    ("temperature", torch.float32),
+                    ("top_k", torch.int64),
+                    ("top_p", torch.float32),
+                ):
+                    getattr(self.state_pool, name).index_copy_(
+                        0,
+                        rows,
+                        torch.tensor(
+                            [getattr(data, name) for data in restored_data],
+                            dtype=dtype,
+                            device=self.device,
+                        ),
+                    )
+                for data in restored_data:
+                    data.pd_state_pending = False
+            else:
+                pass
             self.gather_decode_rows(batch_request_data)
 
     def collect_frames(

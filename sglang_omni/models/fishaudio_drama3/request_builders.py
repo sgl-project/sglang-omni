@@ -60,6 +60,7 @@ class Drama3RequestData(SGLangARRequestData):
     frame_rows: list[list[int]] = field(default_factory=list)
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
+    pd_state_pending: bool = False
 
 
 class Drama3RequestBuilder:

@@ -1,0 +1,4 @@
+config_cls: Drama3PDPipelineConfig
+model_path: drama3-checkpoint
+# Prefill and reference preprocessing use GPU 0. Decode and vocoder use GPU 1.
+# For a separate vocoder GPU, set --vocoder.gpu 2 and include it in the GPU budget.

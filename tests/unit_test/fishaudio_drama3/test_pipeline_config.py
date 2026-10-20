@@ -10,6 +10,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
+    Drama3PDPipelineConfig,
     Drama3PipelineConfig,
 )
 from sglang_omni.serve.speech_errors import SpeechAPIError
@@ -245,3 +246,21 @@ def test_speech_fields_the_model_cannot_honor_are_refused(
         speech_validator().parse_raw_request({"input": "hello", field_name: value})
 
     assert rejection.value.param == field_name
+
+
+def test_pd_variant_routes_prefill_to_decode_and_only_decode_to_vocoder():
+    config = Drama3PDPipelineConfig(model_path="checkpoint")
+    topology = build_compiled_process_topology(config)
+    assert topology.stage_to_process["tts_engine"] == "tts_prefill"
+    assert topology.stage_to_process["tts_decode"] == "tts_decode"
+    assert config.stage_named("preprocessing").next == "tts_engine"
+    assert config.stage_named("tts_engine").next == "tts_decode"
+    assert config.stage_named("tts_engine").stream_to == []
+    assert config.stage_named("tts_decode").next == "vocoder"
+    assert config.stage_named("tts_decode").stream_to == ["vocoder"]
+    assert launch_kwargs(config, "tts_engine")["pd_role"] == "prefill"
+    assert launch_kwargs(config, "tts_decode")["pd_role"] == "decode"
+    assert (
+        launch_kwargs(config, "tts_decode")["stream_stride"]
+        == config.stage_named("vocoder").factory.stream_stride
+    )

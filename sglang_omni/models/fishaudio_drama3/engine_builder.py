@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
+from typing import Literal
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -42,6 +44,11 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
+from sglang_omni.models.fishaudio_drama3.pd import (
+    RESUME_SCHEMA,
+    build_state,
+    restore_state,
+)
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
@@ -70,6 +77,10 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
 )
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -95,6 +106,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self,
         *,
         context_length: int,
+        pd_role: Literal["prefill", "decode"] | None = None,
+        pd_stage_name: str | None = None,
+        pd_partner_stage: str | None = None,
         max_running_requests: int,
         stream_stride: int = DEFAULT_STREAM_STRIDE,
         stream_followup_stride_ramp: tuple[
@@ -112,6 +126,17 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     ) -> None:
+        if pd_role not in (None, "prefill", "decode"):
+            raise ValueError("invalid Drama 3 PD role")
+        elif pd_role is not None and not pd_stage_name:
+            raise ValueError("Drama 3 PD requires an explicit stage name")
+        elif pd_role == "prefill" and not pd_partner_stage:
+            raise ValueError("Drama 3 Prefill requires an explicit Decode partner")
+        else:
+            pass
+        self.pd_role = pd_role
+        self.pd_stage_name = pd_stage_name
+        self.pd_partner_stage = pd_partner_stage
         self.context_length = context_length
         self.max_running_requests = max_running_requests
         self.stream_stride = stream_stride
@@ -353,6 +378,42 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 f"{first_frame_graphs.capture_seconds:.2f} s, static inputs "
                 f"{first_frame_graphs.static_input_bytes / 2**20:.1f} MiB, reserved "
                 f"memory +{first_frame_graphs.reserved_bytes / 2**20:.1f} MiB"
+            )
+
+    def make_scheduler(self, **kwargs):
+        if self.pd_role is None:
+            return super().make_scheduler(**kwargs)
+        else:
+            pass
+        model_worker = kwargs.pop("model_worker")
+        extras = kwargs.pop("extra_scheduler_kwargs")
+        kwargs.update(self.extra_scheduler_callbacks())
+        kwargs.update(extras)
+        kwargs.update(
+            tp_worker=model_worker,
+            abort_callback=self.make_abort_callback(),
+            request_finished_callback=self.make_request_finished_callback(),
+        )
+        if self.pd_role == "prefill":
+            kwargs["stream_output_builder"] = None
+            return OmniPrefillScheduler(
+                stage_name=self.pd_stage_name,
+                partner_stage=self.pd_partner_stage,
+                state_builder=build_state,
+                **kwargs,
+            )
+        else:
+            config = model_worker.model_runner.model.config
+            return OmniDecodeScheduler(
+                stage_name=self.pd_stage_name,
+                state_restorer=partial(
+                    restore_state,
+                    frame_width=1 + config.audio_decoder_config.num_codebooks,
+                    codebook_size=config.audio_decoder_config.vocab_size,
+                ),
+                resume_schema=RESUME_SCHEMA,
+                emit_transferred_token=True,
+                **kwargs,
             )
 
     def make_model_runner(

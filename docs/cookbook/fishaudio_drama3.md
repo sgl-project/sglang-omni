@@ -313,3 +313,17 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+### Prefill/Decode disaggregation
+
+The `pd` variant places `tts_engine` (Prefill) on GPU 0 and `tts_decode` on GPU 1. Reference preprocessing stays on GPU 0; the existing streaming vocoder runs on GPU 1. Use a single node with CUDA peer access between the GPUs. Both generation stages load the model and use the existing Drama 3 runner, codebook decoder and CUDA graphs.
+
+```bash
+sgl-omni serve --config examples/configs/drama3_tts_pd.yaml --model-path /path/to/drama3
+```
+
+The handoff transfers full-attention KV for both the backbone and codebook tower, plus linear-attention state. Prefill samples the first complete audio frame; Decode owns audio output, including that frame. Decode restores its local frame history and sampling state before its first forward. No second Prefill is needed to initialize those rows.
+
+The initial scope is TP=1, page size 1, radix caching off, and no extra linear-state tracking buffers or ReplaySSM history. This does not enable retained sessions or reverse KV transfer. Keep the native async decode default; use `--tts_decode.factory.enable_async_decode true` or `false` for comparisons. This integration has not yet passed real-model GPU validation and makes no performance claim.
+
+Validate complete frames and termination against the unsplit model, then cancellation and resource recovery, before measuring performance. Repeat with CUDA graphs and with async decode on/off. Measure first audio latency, throughput, stream gaps and vocoder backlog. Compare equal total GPU budgets, and report vocoder placement: moving it to another GPU can change both contention and the number of cards used.

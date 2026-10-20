@@ -2392,3 +2392,33 @@ def test_engine_rejects_settings_outside_the_supported_runtime(
 
     with pytest.raises(ValueError, match=error):
         builder.validate_before_infrastructure(server_args)
+
+
+@pytest.mark.parametrize("is_lookahead", [False, True], ids=["sync", "lookahead"])
+def test_pd_decode_initializes_local_rows_without_another_prefill(is_lookahead):
+    decode = decode_runner(row_count=4)
+    requests = prompted_requests([3, 5])
+    prefill_step(decode, requests, [3, 1], [[82, 1, 2, 3, 4], [85, 4, 3, 2, 1]])
+    expected = history_staged_rows([request_data_of(request) for request in requests])
+    for request in requests:
+        request_data_of(request).pd_state_pending = True
+    decode.runner.state_pool.frames.zero_()
+    decode.runner.state_pool.ras_windows.zero_()
+    decode.runner.state_pool.temperature.zero_()
+    decode.runner.state_pool.top_k.zero_()
+    decode.runner.state_pool.top_p.zero_()
+    decode.forward.next_frames = [[86, 1, 1, 1, 1], [87, 2, 2, 2, 2]]
+    with patch.object(
+        decode.runner,
+        "before_prefill",
+        side_effect=AssertionError("PD must not repeat Prefill"),
+    ):
+        decode_step(decode.runner, requests, is_lookahead=is_lookahead)
+    assert decode.forward.reads[-1] == expected
+    assert all(not request_data_of(request).pd_state_pending for request in requests)
+    next_expected = history_staged_rows(
+        [request_data_of(request) for request in requests]
+    )
+    decode.forward.next_frames = [[88, 1, 1, 1, 1], [89, 2, 2, 2, 2]]
+    decode_step(decode.runner, requests, is_lookahead=is_lookahead)
+    assert decode.forward.reads[-1] == next_expected

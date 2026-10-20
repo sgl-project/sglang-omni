@@ -222,4 +222,67 @@ class Drama3PipelineConfig(PipelineConfig):
         return True
 
 
+class Drama3PDEngineFactoryArgs(Drama3EngineFactoryArgs):
+    pd_role: Literal["prefill", "decode"]
+    pd_stage_name: str
+    pd_partner_stage: str | None = None
+
+
+class Drama3PDEngineStageConfig(Drama3EngineStageConfig):
+    factory: Drama3PDEngineFactoryArgs
+
+
+def pd_stages() -> list[StageConfig]:
+    preprocessing, engine, vocoder = [
+        stage.model_copy(deep=True)
+        for stage in Drama3PipelineConfig.model_fields["stages"].default
+    ]
+    prefill_values = engine.model_dump()
+    prefill_values.update(
+        process="tts_prefill",
+        next="tts_decode",
+        stream_to=[],
+        factory={
+            **engine.factory.model_dump(),
+            "pd_role": "prefill",
+            "pd_stage_name": "tts_engine",
+            "pd_partner_stage": "tts_decode",
+        },
+    )
+    prefill = Drama3PDEngineStageConfig.model_validate(prefill_values)
+    decode_values = engine.model_dump()
+    decode_values.update(
+        name="tts_decode",
+        process="tts_decode",
+        gpu=1,
+        factory={
+            **engine.factory.model_dump(),
+            "pd_role": "decode",
+            "pd_stage_name": "tts_decode",
+        },
+    )
+    decode = Drama3PDEngineStageConfig.model_validate(decode_values)
+    vocoder.gpu = 1
+    return [preprocessing, prefill, decode, vocoder]
+
+
+class Drama3PDPipelineConfig(Drama3PipelineConfig):
+    """Explicit Prefill and Decode stages with the existing streaming vocoder."""
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        **Drama3PipelineConfig.stage_config_types,
+        "tts_engine": Drama3PDEngineStageConfig,
+        "tts_decode": Drama3PDEngineStageConfig,
+    }
+    stages: list[StageConfig] = Field(default_factory=pd_stages)
+
+    def stage_factory_kwargs(
+        self, stage_name: str
+    ) -> dict[str, int | str | tuple[int, ...]]:
+        return super().stage_factory_kwargs(
+            "tts_engine" if stage_name == "tts_decode" else stage_name
+        )
+
+
 EntryClass = Drama3PipelineConfig
+Variants = {"pd": Drama3PDPipelineConfig}
