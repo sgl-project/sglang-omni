@@ -123,6 +123,13 @@ def register_transcriptions(app: FastAPI) -> None:
         else:
             pass
 
+        speech_to_text.validate_speech_to_text_response_format(
+            form.response_format,
+            stream=form.stream,
+            endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+            response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
+        )
+
         # TODO(Ratish): add the same pre-parser body limit used by voice uploads
         # once transcription upload limits are defined.
         audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
@@ -132,12 +139,6 @@ def register_transcriptions(app: FastAPI) -> None:
         chunking: ResolvedAudioChunking = app.state.audio_chunking
 
         if form.stream:
-            speech_to_text.validate_speech_to_text_response_format(
-                form.response_format,
-                stream=True,
-                endpoint_path=TRANSCRIPTIONS_ENDPOINT,
-                response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
-            )
             duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
             if (
                 chunking.allow_audio_chunking
