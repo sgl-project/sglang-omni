@@ -414,12 +414,14 @@ def test_extra_body_cannot_set_the_fields_the_chat_kind_sets():
 def declared(nodes=None, publish=None, **fields) -> StreamingCascadePipelineConfig:
     """The HTTP profile's declaration with `nodes` and `publish` replacing its own."""
     data = yaml.safe_load(HTTP_PROFILE.read_text())
-    return StreamingCascadePipelineConfig(
+    config = StreamingCascadePipelineConfig(
         model_path="m",
         session_nodes={**data["session_nodes"], **(nodes or {})},
         session_publish={**data["session_publish"], **(publish or {})},
         **fields,
     )
+    config.check_conflicts()
+    return config
 
 
 HTTP_SERVICE = {"base_url": "http://127.0.0.1:8000/v1", "model": "test-model"}
@@ -1078,7 +1080,7 @@ def test_the_reference_profile_routes_reply_progress_through_the_aligner():
         if edge.event == REPLY_PROGRESS
     ] == ["aligner"]
     with pytest.raises(ValueError, match="one source reports it"):
-        aligned_profile(progress_from=["tts"])
+        aligned_profile(progress_from=["tts"]).check_conflicts()
     with pytest.raises(ValueError, match=r"reads \['aligner:reply.progress'\] as data"):
         declared(
             nodes={

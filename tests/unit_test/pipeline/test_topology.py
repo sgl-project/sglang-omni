@@ -65,7 +65,7 @@ def test_non_tp_stages_must_declare_process() -> None:
                 make_stage("a", process="p0", next_stage="b"),
                 make_stage("b", terminal=True),
             ],
-        )
+        ).check_conflicts()
 
 
 def test_tp_process_names_are_derived_when_process_is_missing() -> None:
@@ -179,7 +179,7 @@ def test_tp_process_names_must_be_unique_across_tp_stages() -> None:
                 make_stage("a", gpu=[0, 1], tp_size=2, process="model", next_stage="b"),
                 make_stage("b", gpu=[2, 3], tp_size=2, process="model", terminal=True),
             ],
-        )
+        ).check_conflicts()
 
 
 def byte_budget_stage(

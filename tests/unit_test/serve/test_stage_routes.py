@@ -245,7 +245,7 @@ def test_routes_need_a_scheduler_that_provides_an_app_and_valid_prefixes():
                     name="b", factory_path="f", terminal=True, http_routes=["/v1/x"]
                 ),
             ],
-        )
+        ).check_conflicts()
     omni = [
         Route("/v1/models", lambda request: None, methods=["GET"]),
         Route("/files/{name:path}", lambda request: None, methods=["GET"]),

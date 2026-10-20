@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 from click.testing import Result
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from typer.testing import CliRunner
@@ -435,8 +435,8 @@ for name in ("MiniCPMODuplexPipelineConfig", "MiniCPMOPipelineConfig", "MiniCPMO
     ],
 )
 def test_vision_limits_must_fit_one_frame(limits: dict[str, int]) -> None:
-    with pytest.raises(ValidationError):
-        MiniCPMODuplexVision(**limits)
+    with pytest.raises(ValueError):
+        MiniCPMODuplexVision(**limits).check_conflicts()
 
 
 def test_duplex_deployment_grants_images_by_slice_count() -> None:

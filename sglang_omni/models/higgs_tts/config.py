@@ -147,8 +147,8 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             else:
                 pass
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         stages = {stage.name: stage for stage in self.stages}
         vocoder_extra = stages["vocoder"].factory.model_extra or {}
         tts_engine_extra = stages["tts_engine"].factory.model_extra or {}

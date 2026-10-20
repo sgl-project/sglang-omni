@@ -199,7 +199,9 @@ def test_total_duration_past_the_limit_is_rejected() -> None:
 
 def test_total_limit_below_clip_limit_is_rejected_at_config_time() -> None:
     with pytest.raises(ValueError, match="max_total_audio_s"):
-        AudioChunkingConfig(max_audio_clip_s=60.0, max_total_audio_s=30.0)
+        AudioChunkingConfig(
+            max_audio_clip_s=60.0, max_total_audio_s=30.0
+        ).check_conflicts()
 
 
 def test_clip_length_past_the_native_limit_is_rejected_at_config_time() -> None:
@@ -209,7 +211,7 @@ def test_clip_length_past_the_native_limit_is_rejected_at_config_time() -> None:
         WhisperASRPipelineConfig(
             model_path="dummy",
             audio_chunking=AudioChunkingConfig(max_audio_clip_s=60.0),
-        )
+        ).check_conflicts()
 
 
 def test_long_audio_admission_default_follows_max_running_requests(
@@ -260,7 +262,7 @@ def test_long_audio_admission_at_engine_capacity_warns(monkeypatch, caplog) -> N
         Qwen3ASRPipelineConfig(
             model_path="dummy",
             audio_chunking=AudioChunkingConfig(max_concurrent_long_audio_requests=8),
-        )
+        ).check_conflicts()
         assert any(
             "max_concurrent_long_audio_requests=8" in record.message
             and "max_running_requests=64" in record.message
@@ -268,11 +270,11 @@ def test_long_audio_admission_at_engine_capacity_warns(monkeypatch, caplog) -> N
         )
         # The derived default and anything below the cap stay quiet.
         caplog.clear()
-        Qwen3ASRPipelineConfig(model_path="dummy")
+        Qwen3ASRPipelineConfig(model_path="dummy").check_conflicts()
         Qwen3ASRPipelineConfig(
             model_path="dummy",
             audio_chunking=AudioChunkingConfig(max_concurrent_long_audio_requests=7),
-        )
+        ).check_conflicts()
         assert not [
             r for r in caplog.records if "max_concurrent_long_audio" in r.message
         ]

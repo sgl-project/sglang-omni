@@ -48,7 +48,7 @@ def test_invalid_gpu_memory_fraction_raises() -> None:
 
 def test_invalid_engine_mem_fraction_static_raises() -> None:
     with pytest.raises(ValueError, match="mem_fraction_static"):
-        EngineArgs(mem_fraction_static=1.0)
+        EngineArgs(mem_fraction_static=1.0).check_conflicts()
 
 
 def test_invalid_model_group_values_raise() -> None:
@@ -100,7 +100,7 @@ def test_stage_rejects_terminal_with_next() -> None:
                 make_stage(name="source", next="sink", terminal=True),
                 make_stage(name="sink"),
             ],
-        )
+        ).check_conflicts()
 
 
 def test_tp_size_below_one_raises() -> None:
@@ -134,14 +134,14 @@ def test_engine_kv_cache_bytes_rejects_bad_values(value) -> None:
     from sglang_omni.config import EngineArgs
 
     with pytest.raises(ValueError):
-        EngineArgs(kv_cache_bytes=value)
+        EngineArgs(kv_cache_bytes=value).check_conflicts()
 
 
 def test_engine_kv_cache_bytes_rejects_mem_fraction_static() -> None:
     from sglang_omni.config import EngineArgs
 
     with pytest.raises(ValueError, match="keep exactly one|cannot be set together"):
-        EngineArgs(kv_cache_bytes="2GiB", mem_fraction_static=0.7)
+        EngineArgs(kv_cache_bytes="2GiB", mem_fraction_static=0.7).check_conflicts()
 
 
 def test_stage_total_reserve_rejects_gpu_memory_fraction() -> None:
@@ -154,7 +154,7 @@ def test_stage_total_reserve_rejects_gpu_memory_fraction() -> None:
             terminal=True,
             gpu_memory_fraction=0.5,
             total_reserve_bytes="8GiB",
-        )
+        ).check_conflicts()
 
 
 def test_stage_rejects_kv_above_total_reserve() -> None:
@@ -167,11 +167,11 @@ def test_stage_rejects_kv_above_total_reserve() -> None:
             terminal=True,
             total_reserve_bytes="2GiB",
             engine=EngineArgs(kv_cache_bytes="4GiB"),
-        )
+        ).check_conflicts()
 
 
 def test_engine_kv_cache_bytes_rejects_max_total_tokens() -> None:
     from sglang_omni.config import EngineArgs
 
     with pytest.raises(ValueError, match="cannot be set together"):
-        EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096)
+        EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096).check_conflicts()

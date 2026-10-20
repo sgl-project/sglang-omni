@@ -106,7 +106,7 @@ def test_tool_registry_rejects_name_drift_and_unknown_selection():
     with pytest.raises(ValueError, match="unknown tool"):
         NemotronVoiceChatToolPipelineConfig(
             model_path="voicechat", tools={"lookup": tool}, tool_names=["missing"]
-        )
+        ).check_conflicts()
     config = NemotronVoiceChatToolPipelineConfig(
         model_path="voicechat", tools={"lookup": tool}, tool_names=[]
     )

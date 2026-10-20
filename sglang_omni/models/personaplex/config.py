@@ -112,12 +112,12 @@ class PersonaPlexPipelineConfig(PipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=personaplex_stages_factory)
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         # Note (nightdecode): An unset num_decode_slots stays unset and is
         # derived at launch in stage_factory_kwargs; writing the derivation
         # back would make it look pinned on the next merge. Only a pinned
-        # value is checked, on every rebuild.
+        # value is checked after all configuration sources are resolved.
         num_decode_slots = self.pinned_num_decode_slots()
         lm_max_running = self.lm_max_running_requests()
         if num_decode_slots is not None and num_decode_slots < lm_max_running:

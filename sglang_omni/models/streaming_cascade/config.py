@@ -536,15 +536,13 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         )
         return assembled
 
-    @model_validator(mode="after")
-    def check_graph(self) -> "StreamingCascadePipelineConfig":
-        """Fail at load when the declaration is not a Session graph."""
+    def check_local_conflicts(self) -> None:
+        """Check the final declaration before building its Session graph."""
+        super().check_local_conflicts()
         if any(node.kind is not None for node in self.session_nodes.values()):
             self.component_graph()
         else:
             pass
-        self.session_graph()
-        return self
 
     def session_graph(self) -> SessionGraph:
         """Expand component shorthands without adding another router or host node."""

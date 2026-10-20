@@ -319,6 +319,31 @@ class TestExplain:
         assert "[winner]" in result.stdout
 
 
+def test_file_tp_can_be_completed_by_cli_gpu(runner, tmp_path, base_config, stage):
+    """serve must not reject a file before CLI supplies the TP devices."""
+    path = tmp_path / "partial-tp.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": base_config.config_cls,
+                "model_path": "dummy",
+                "stages": {stage: {"tp_size": 2, "process": stage}},
+            }
+        )
+    )
+    manager = ConfigManager.from_file(str(path))
+    partial = manager.merge_config([])
+    with pytest.raises(ValueError, match="TP placement"):
+        partial.check_conflicts()
+    final = manager.merge_config([(f"{stage}.gpu", "[0,1]")])
+    assert final.stage_named(stage).gpu == [0, 1]
+    result = runner.invoke(
+        config_app,
+        ["resolve", "--config", str(path), f"--{stage}.gpu", "[0,1]"],
+    )
+    assert result.exit_code == 0, output_of(result)
+
+
 class TestTensorParallelDerivation:
     """The post-merge TP derivation: preview shows it, users outrank it."""
 

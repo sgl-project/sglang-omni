@@ -66,7 +66,7 @@ def test_talker_stream_is_terminal_and_accepts_pre_payload_streams():
 def test_streaming_speech_rejects_talker_gpu_in_thinker_tp_range():
     data = config_data_with_thinker_tp(talker_gpu=1)
     with pytest.raises(ValueError, match="collides with thinker TP range"):
-        MingOmniStreamingSpeechPipelineConfig(**data)
+        MingOmniStreamingSpeechPipelineConfig(**data).check_conflicts()
 
 
 def test_variants_dict_exposes_streaming_variant():
@@ -92,4 +92,4 @@ def test_colliding_replica_devices_are_rejected_at_config_entry():
     }
 
     with pytest.raises(ValueError, match="collides with thinker TP range"):
-        MingOmniStreamingSpeechPipelineConfig(**data)
+        MingOmniStreamingSpeechPipelineConfig(**data).check_conflicts()

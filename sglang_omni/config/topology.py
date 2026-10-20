@@ -111,6 +111,7 @@ def compile_logical_processes(
     Returns the plan plus stage-config copies. The input config is left
     untouched.
     """
+    config.check_conflicts()
     stages = [stage.model_copy(deep=True) for stage in config.stages]
     members = group_stages_by_process(stages)
     processes = tuple(

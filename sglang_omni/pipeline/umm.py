@@ -839,11 +839,13 @@ class UMMPipelineConfig(PipelineConfig):
     def entry_stage_admission_limit(self) -> int:
         controller = self.stage_named(type(self).umm_controller_stage)
         max_active = resolve_stage_typed_kwargs(controller)["max_active"]
-        assert type(max_active) is int, "model_post_init validates max_active"
+        assert (
+            type(max_active) is int
+        ), "final configuration validation checks max_active"
         return max_active
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         cls = type(self)
         controller_name = cls.umm_controller_stage
         output_name = cls.umm_output_stage

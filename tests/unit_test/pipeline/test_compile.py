@@ -184,7 +184,9 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
     assert config.gpu_placement == {"thinker": [0, 1]}
 
     with pytest.raises(ValueError, match="unknown stages"):
-        PipelineConfig(model_path="model", stages=[stage("a", next="missing")])
+        PipelineConfig(
+            model_path="model", stages=[stage("a", next="missing")]
+        ).check_conflicts()
     with pytest.raises(ValueError, match="wait_for but no merge_fn"):
         PipelineConfig(
             model_path="model",
@@ -192,12 +194,12 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
                 stage("a", wait_for=["b"], terminal=True),
                 stage("b", terminal=True),
             ],
-        )
+        ).check_conflicts()
     with pytest.raises(ValueError, match="gpu has 1 entries"):
         PipelineConfig(
             model_path="model",
             stages=[stage("tp", gpu=[0], tp_size=2, terminal=True)],
-        )
+        ).check_conflicts()
     with pytest.raises(ValueError, match="route_fn on a terminal stage"):
         PipelineConfig(
             model_path="model",
@@ -208,7 +210,7 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
                     route_fn=fake_factory_path("identity_route"),
                 )
             ],
-        )
+        ).check_conflicts()
     with pytest.raises(ValueError, match="stream_done_to_fn without stream_to"):
         PipelineConfig(
             model_path="model",
@@ -220,7 +222,7 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
                 ),
                 stage("decode", terminal=True),
             ],
-        )
+        ).check_conflicts()
     with pytest.raises(ValueError, match="wait_for_fn but no wait_for"):
         PipelineConfig(
             model_path="model",
@@ -231,7 +233,7 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
                     wait_for_fn=fake_factory_path("identity_wait_sources"),
                 )
             ],
-        )
+        ).check_conflicts()
 
 
 class KwargSeedingPipelineConfig(PipelineConfig):

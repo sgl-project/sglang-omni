@@ -113,4 +113,4 @@ def test_dots_tts_rejects_tp() -> None:
     stage["gpu"] = [0, 1]
     stage["process"] = "latent_engine"
     with pytest.raises(ValueError, match="tp_size=1"):
-        DotsTTSPipelineConfig(**raw)
+        DotsTTSPipelineConfig(**raw).check_conflicts()

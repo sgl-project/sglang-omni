@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.main import IncEx
 from typing_extensions import Unpack
 
+from sglang_omni.config.base import ConfigModel
 from sglang_omni.proto.session import (
     DEFAULT_MAX_OUTPUT_LEAD_MS,
     ControlEdge,
@@ -147,7 +148,7 @@ class EndpointsConfig(BaseModel):
     base_path: str = "/tmp/sglang_omni"
 
 
-class EngineArgs(BaseModel):
+class EngineArgs(ConfigModel):
     """SGLang ServerArgs overrides for one engine stage.
 
     The commonly tuned keys are declared so they validate and show up in path
@@ -184,6 +185,9 @@ class EngineArgs(BaseModel):
             raise ValueError("engine.quantization must not be empty")
         else:
             pass
+
+    def check_local_conflicts(self) -> None:
+        """Check capacity settings after all configuration sources are merged."""
         if self.kv_cache_bytes is not None and self.mem_fraction_static is not None:
             raise ValueError(
                 "engine.kv_cache_bytes cannot be set together with engine.mem_fraction_static; if the fraction comes from the pipeline's built-in defaults, set mem_fraction_static: null on the same stage"
@@ -364,7 +368,7 @@ def normalize_route_prefixes(stage: str, prefixes: Iterable[str]) -> tuple[str, 
     return tuple(out)
 
 
-class StageConfig(BaseModel):
+class StageConfig(ConfigModel):
     """Single pipeline stage configuration.
 
     Stage settings are grouped by consumer: fields at the top level are read
@@ -443,6 +447,48 @@ class StageConfig(BaseModel):
             )
         else:
             pass
+        if self.process is not None:
+            self.process = self.process.strip()
+            if not self.process:
+                raise ValueError(f"Stage {self.name!r} process must not be empty")
+            else:
+                pass
+        else:
+            pass
+        if self.engine is not None and not type(self).engine_stage:
+            raise ValueError(
+                f"Stage {self.name!r} is not an engine stage; the engine block only exists on stages whose factory drives an SGLang engine"
+            )
+        else:
+            pass
+        if self.gpu is not None:
+            gpu_ids = [self.gpu] if isinstance(self.gpu, int) else self.gpu
+            if any(gpu_id < 0 for gpu_id in gpu_ids):
+                raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
+            elif len(set(gpu_ids)) != len(gpu_ids):
+                raise ValueError(
+                    f"Stage {self.name!r}: TP placement requires unique GPU ids"
+                )
+            else:
+                pass
+        else:
+            pass
+        if self.runtime_gpu_ids is not None:
+            if (
+                not self.runtime_gpu_ids
+                or any(gpu_id < 0 for gpu_id in self.runtime_gpu_ids)
+                or len(set(self.runtime_gpu_ids)) != len(self.runtime_gpu_ids)
+            ):
+                raise ValueError(
+                    "runtime_gpu_ids must contain nonempty unique nonnegative GPUs"
+                )
+            else:
+                pass
+        else:
+            pass
+
+    def check_local_conflicts(self) -> None:
+        """Check stage relationships only after source overrides are complete."""
         if self.runtime_gpu_ids is not None:
             if not self.allow_child_processes or self.tp_size != 1:
                 raise ValueError(
@@ -462,47 +508,6 @@ class StageConfig(BaseModel):
                 )
             else:
                 pass
-        else:
-            pass
-        if self.http_routes:
-            self.http_routes = list(
-                normalize_route_prefixes(self.name, self.http_routes)
-            )
-        else:
-            pass
-        if isinstance(self.gpu, int) and self.tp_size > 1:
-            raise ValueError(
-                f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
-            )
-        else:
-            pass
-        if isinstance(self.gpu, list):
-            if len(self.gpu) != self.tp_size:
-                raise ValueError(
-                    f"Stage {self.name!r}: gpu has {len(self.gpu)} entries but tp_size={self.tp_size}"
-                )
-            else:
-                pass
-            if len(set(self.gpu)) != len(self.gpu):
-                raise ValueError(
-                    f"Stage {self.name!r}: TP placement requires unique GPU ids, got {list(self.gpu)}"
-                )
-            else:
-                pass
-        else:
-            pass
-        if self.process is not None:
-            self.process = self.process.strip()
-            if not self.process:
-                raise ValueError(f"Stage {self.name!r} process must not be empty")
-            else:
-                pass
-        else:
-            pass
-        if self.engine is not None and (not type(self).engine_stage):
-            raise ValueError(
-                f"Stage {self.name!r} is not an engine stage; the engine block only exists on stages whose factory drives an SGLang engine"
-            )
         else:
             pass
         if (
@@ -525,30 +530,21 @@ class StageConfig(BaseModel):
             )
         else:
             pass
-        gpu = self.gpu
-        if gpu is None:
+        if self.gpu is None:
             if self.tp_size > 1:
                 raise ValueError(
                     f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
                 )
             else:
                 pass
-            return
-        else:
-            pass
-        gpu_ids = [gpu] if isinstance(gpu, int) else gpu
-        if len(gpu_ids) != self.tp_size:
+        elif isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
-                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries but tp_size={self.tp_size}"
+                f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
             )
-        else:
-            pass
-        if any((gpu_id < 0 for gpu_id in gpu_ids)):
-            raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
-        else:
-            pass
-        if len(set(gpu_ids)) != len(gpu_ids):
-            raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
+        elif isinstance(self.gpu, list) and len(self.gpu) != self.tp_size:
+            raise ValueError(
+                f"Stage {self.name!r}: gpu has {len(self.gpu)} entries but tp_size={self.tp_size}"
+            )
         else:
             pass
 
@@ -573,7 +569,7 @@ def default_max_concurrent_long_audio_requests(
     return max(1, max_running_requests // (2 * max(int(max_concurrent_chunks), 1)))
 
 
-class AudioChunkingConfig(BaseModel):
+class AudioChunkingConfig(ConfigModel):
     """Operator-tunable scheduling policy for long-audio transcription.
 
     These are the knobs a deployment may set (YAML or dotted CLI overrides).
@@ -588,7 +584,7 @@ class AudioChunkingConfig(BaseModel):
     max_concurrent_chunks: int = Field(default=8, ge=1)
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: object = None) -> None:
+    def check_local_conflicts(self) -> None:
         if (
             self.max_total_audio_s is not None
             and self.max_total_audio_s < self.max_audio_clip_s
@@ -715,8 +711,10 @@ class SessionNodeConfig(BaseModel):
     )
 
 
-class PipelineConfig(BaseModel):
+class PipelineConfig(ConfigModel):
     """Top-level pipeline configuration.
+
+    Construction validates fields; call check_conflicts after the final resolve.
 
     Subclasses set ``requires_model_capabilities`` when their model package
     must export static architecture-level capability metadata.
@@ -811,6 +809,18 @@ class PipelineConfig(BaseModel):
         return {**data, "stages": stages}
 
     def model_post_init(self, __context: object = None) -> None:
+        self.config_cls = self.__class__.__name__
+        if self.name is None:
+            self.name = self.model_path
+        else:
+            pass
+        if not self.model_path:
+            raise ValueError("Model path is required")
+        else:
+            pass
+
+    def check_local_conflicts(self) -> None:
+        """Validate the final configuration before inspection or launch."""
         self.validate_general()
         self.validate_processes()
 
@@ -825,11 +835,6 @@ class PipelineConfig(BaseModel):
             raise ValueError(
                 f"audio_chunking.max_audio_clip_s={self.audio_chunking.max_audio_clip_s:g} must be at least the model's minimum useful clip length ({type(self).min_tail_s:g}s)"
             )
-        else:
-            pass
-        self.config_cls = self.__class__.__name__
-        if self.name is None:
-            self.name = self.model_path
         else:
             pass
         self.warn_long_audio_admission_exceeds_engine()

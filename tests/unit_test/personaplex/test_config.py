@@ -135,4 +135,4 @@ def test_code2wav_decode_capacity_follows_the_lm_until_pinned() -> None:
     assert arguments["max_graph_frames"] == 0
     rebuild(config, "--lm.engine.max_running_requests", "24")
     with pytest.raises(ValueError, match="Omit num_decode_slots to derive it"):
-        rebuild(config, "--lm.engine.max_running_requests", "25")
+        rebuild(config, "--lm.engine.max_running_requests", "25").check_conflicts()

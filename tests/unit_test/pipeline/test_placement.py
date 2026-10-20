@@ -231,7 +231,7 @@ def test_tp_scalar_gpu_is_rejected() -> None:
             fraction=0.45,
             tp_size=2,
             terminal=True,
-        )
+        ).check_conflicts()
 
 
 def test_tp_duplicate_gpu_ids_are_rejected() -> None:

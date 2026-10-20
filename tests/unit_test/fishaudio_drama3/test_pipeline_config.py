@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
@@ -125,7 +124,7 @@ def test_preprocessing_cannot_set_what_it_derives(
 ) -> None:
     manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
 
-    with pytest.raises(ValidationError) as rejection:
+    with pytest.raises(ValueError) as rejection:
         manager.merge_config([(f"preprocessing.factory.{field_name}", value)])
 
     assert f"set stages.{owner}.factory.{field_name} instead" in str(rejection.value)
@@ -163,7 +162,7 @@ def test_the_vocoder_sizes_its_decodes_by_the_engine_cap_on_new_frames() -> None
 def test_the_vocoder_cannot_set_the_engine_cap_on_new_frames() -> None:
     manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
 
-    with pytest.raises(ValidationError) as rejection:
+    with pytest.raises(ValueError) as rejection:
         manager.merge_config([("vocoder.factory.max_new_tokens", "1024")])
 
     assert "set stages.tts_engine.factory.max_new_tokens instead" in str(
@@ -182,7 +181,7 @@ def test_the_vocoder_cannot_set_the_engine_cap_on_new_frames() -> None:
 def test_the_engine_cannot_set_the_vocoder_windows(field_name: str, value: str) -> None:
     manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
 
-    with pytest.raises(ValidationError) as rejection:
+    with pytest.raises(ValueError) as rejection:
         manager.merge_config([(f"tts_engine.factory.{field_name}", value)])
 
     assert f"set stages.vocoder.factory.{field_name} instead" in str(rejection.value)

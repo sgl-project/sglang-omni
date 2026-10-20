@@ -64,7 +64,9 @@ def test_dotted_override_sets_the_long_audio_admission_cap():
 def test_clip_length_past_the_native_limit_is_rejected():
     manager = ConfigManager(WhisperASRPipelineConfig(model_path="dummy"))
     with pytest.raises(ValueError, match="native clip limit"):
-        manager.merge_config({"audio_chunking.max_audio_clip_s": "60"})
+        manager.merge_config(
+            {"audio_chunking.max_audio_clip_s": "60"}
+        ).check_conflicts()
 
 
 def test_chunkless_pipelines_reject_the_audio_chunking_path():
@@ -79,7 +81,9 @@ def test_chunkless_pipelines_reject_the_audio_chunking_path():
 def test_clip_length_below_the_minimum_useful_length_is_rejected():
     manager = ConfigManager(WhisperASRPipelineConfig(model_path="dummy"))
     with pytest.raises(ValueError, match="minimum useful clip length"):
-        manager.merge_config({"audio_chunking.max_audio_clip_s": "0.5"})
+        manager.merge_config(
+            {"audio_chunking.max_audio_clip_s": "0.5"}
+        ).check_conflicts()
 
 
 def test_model_owned_fields_are_not_reachable_paths():

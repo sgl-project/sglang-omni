@@ -553,6 +553,7 @@ def serve(
             extra_args,
             extra_patches=flag_patches,
         )
+        merged_config.check_conflicts()
     except (ConfigPathError, ValueError) as exc:
         # Unknown path, unwritable path, two sources disagreeing at one
         # precedence, or a value the schema refuses. Every one of these

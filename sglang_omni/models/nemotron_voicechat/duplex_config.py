@@ -4,7 +4,7 @@
 from collections.abc import Mapping
 from typing import ClassVar
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from sglang_omni.config.schema import (
     EngineArgs,
@@ -140,8 +140,8 @@ class NemotronVoiceChatToolPipelineConfig(NemotronVoiceChatDuplexPipelineConfig)
     tools: ToolRegistry = Field(default_factory=dict)
     tool_names: list[str] | None = None
 
-    @model_validator(mode="after")
-    def check_tool_registry(self) -> "NemotronVoiceChatToolPipelineConfig":
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         for name in self.tools if self.tool_names is None else self.tool_names:
             if name not in self.tools:
                 raise ValueError(f"unknown tool {name!r}")
@@ -154,7 +154,6 @@ class NemotronVoiceChatToolPipelineConfig(NemotronVoiceChatDuplexPipelineConfig)
                 )
             else:
                 pass
-        return self
 
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         kwargs = dict(super().stage_factory_kwargs(stage_name))

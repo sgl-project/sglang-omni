@@ -428,7 +428,7 @@ class TestPerStageTypedGroup:
 
 def test_placement_owned_factory_keys_are_rejected_at_config_validation():
     """factory.gpu_id would silently override the planner's placement; the
-    final config (initial construction and every patch rebuild) refuses it."""
+    final configuration conflict check refuses it."""
     import pytest
 
     from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -445,4 +445,4 @@ def test_placement_owned_factory_keys_are_rejected_at_config_validation():
                     terminal=True,
                 )
             ],
-        )
+        ).check_conflicts()

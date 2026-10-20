@@ -10,7 +10,9 @@ is covered at the bottom.
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
+from sglang_omni.config.base import ConfigModel
 from sglang_omni.config.compat import canonicalize_dotted_key
 from sglang_omni.config.patch import (
     ConfigPatch,
@@ -20,13 +22,58 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPathError
 from sglang_omni.config.resolver import ConfigResolver, diff_configs
-from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.config.schema import EngineArgs, PipelineConfig
 
 MEM_FRACTION = "stages.thinker.engine.mem_fraction_static"
 
 YAML = ConfigSource(SourceKind.YAML_FILE, "configs/omni.yaml")
 CLI = ConfigSource(SourceKind.CLI_DOTTED, "command line")
 MODEL = ConfigSource(SourceKind.MODEL_DEFAULT, "FakeOmniConfig")
+
+
+class EngineWrapper(BaseModel):
+    engine: EngineArgs
+
+
+class NestedConfig(ConfigModel):
+    children: (
+        EngineWrapper
+        | list[EngineWrapper]
+        | dict[str, tuple[EngineWrapper, ...]]
+        | None
+    )
+    reject_parent: bool = False
+
+    def check_local_conflicts(self) -> None:
+        if self.reject_parent:
+            raise ValueError("parent conflict")
+        else:
+            pass
+
+
+@pytest.mark.parametrize("container", ["direct", "list", "dict_tuple"])
+def test_conflicts_recurse_through_models_and_containers(container):
+    """Nested engine conflicts must be found without parent forwarding methods."""
+    engine = EngineArgs(kv_cache_bytes="2GiB", mem_fraction_static=0.7)
+    wrapper = EngineWrapper(engine=engine)
+    children = {
+        "direct": wrapper,
+        "list": [wrapper],
+        "dict_tuple": {"group": (wrapper,)},
+    }[container]
+    config = NestedConfig(children=children, reject_parent=True)
+    before = config.model_dump()
+    with pytest.raises(ValueError, match="engine.kv_cache_bytes"):
+        config.check_conflicts()
+    assert config.model_dump() == before
+
+    engine.mem_fraction_static = None
+    with pytest.raises(ValueError, match="parent conflict"):
+        config.check_conflicts()
+    config.reject_parent = False
+    config.check_conflicts()
+    config.children = None
+    config.check_conflicts()
 
 
 def patchset(*patches: ConfigPatch) -> ConfigPatchSet:
@@ -38,6 +85,61 @@ def make(config, path, value, source=CLI, **kwargs):
 
 
 class TestResolve:
+    @pytest.mark.parametrize(
+        ("first_values", "later_values", "error"),
+        [
+            (
+                {"stages.thinker.tp_size": 2},
+                {"stages.thinker.gpu": [0, 1]},
+                "gpu is required",
+            ),
+            (
+                {
+                    "stages.thinker.engine.kv_cache_bytes": "2GiB",
+                    "stages.thinker.engine.mem_fraction_static": 0.7,
+                },
+                {"stages.thinker.engine.mem_fraction_static": None},
+                "cannot be set together",
+            ),
+        ],
+    )
+    def test_later_source_can_complete_relationships(
+        self, pipeline_config, first_values, later_values, error
+    ):
+        """A file's incomplete relationships must survive until CLI overrides."""
+        intermediate = ConfigResolver(pipeline_config).resolve(
+            patchset(
+                *(
+                    make(pipeline_config, key, value, YAML)
+                    for key, value in first_values.items()
+                )
+            )
+        )
+        with pytest.raises(ValueError, match=error):
+            intermediate.config.check_conflicts()
+        final = ConfigResolver(intermediate.config).resolve(
+            patchset(
+                *(
+                    make(intermediate.config, key, value, CLI)
+                    for key, value in later_values.items()
+                )
+            )
+        )
+        final.config.check_conflicts()
+        for key, value in later_values.items():
+            assert final.value(key) == value
+
+    @pytest.mark.parametrize(
+        ("path", "value"), [("stages.thinker.gpu", -1), ("stages.thinker.tp_size", 0)]
+    )
+    def test_invalid_field_is_rejected_before_final_validation(
+        self, pipeline_config, path, value
+    ):
+        with pytest.raises(ValueError):
+            ConfigResolver(pipeline_config).resolve(
+                patchset(make(pipeline_config, path, value))
+            )
+
     def test_baseline_is_untouched(self, pipeline_config: PipelineConfig):
         ConfigResolver(pipeline_config).resolve(
             patchset(make(pipeline_config, MEM_FRACTION, "0.8"))

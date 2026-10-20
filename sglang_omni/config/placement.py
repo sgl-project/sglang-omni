@@ -213,12 +213,10 @@ def resolve_gpu_stage_names(plan: StagePlacementPlan) -> set[str]:
 
 
 def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
-    # Shape rules (scalar vs list, length == tp_size, unique ids) are
-    # enforced by StageConfig validation, but launcher helpers mutate
-    # tp_size and gpu after construction, so re-check the TP shape here
-    # rather than expanding a scalar into duplicate ranks.
+    # note (MayDomine): Launch helpers mutate placement after final conflict checks, so recheck TP shape here.
     if stage.runtime_gpu_ids is not None:
         stage.model_post_init()
+        stage.check_conflicts()
         return tuple(stage.runtime_gpu_ids)
     else:
         pass

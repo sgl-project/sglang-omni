@@ -88,8 +88,8 @@ class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
         ),
     ]
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         # The adapter module imports the native stages, which a configuration
         # loaded for any model must not import.
         from sglang_omni.models.cosmos3.umm import max_model_bytes

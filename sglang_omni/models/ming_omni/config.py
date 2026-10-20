@@ -330,8 +330,8 @@ class MingOmniPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_text_stages)
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         validate_ming_stage_tp_support(self.stages)
 
 
@@ -347,8 +347,8 @@ class MingOmniSpeechPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_speech_stages)
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         validate_ming_stage_tp_support(self.stages)
         self.validate_talker_gpu_not_in_thinker_tp_range()
 
@@ -375,8 +375,8 @@ class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_streaming_speech_stages)
 
-    def model_post_init(self, __context: object = None) -> None:
-        super().model_post_init(__context)
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         validate_ming_stage_tp_support(self.stages)
         self.validate_talker_stream_gpu_not_in_thinker_tp_range()
 

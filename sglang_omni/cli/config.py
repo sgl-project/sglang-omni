@@ -173,6 +173,7 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
+        resolved.config.check_conflicts()
         # The same post-merge derivation `serve` runs; it only fills engine
         # keys no source set, so the previewed config is the launched one.
         derivation_writes = tensor_parallel_engine_writes(resolved.config)

@@ -538,7 +538,9 @@ class TestRemovedStageLevelReplicaConfig:
 class TestReservedStageNames:
     def test_reserved_instance_suffix_rejected(self):
         with pytest.raises(ValueError, match="reserved"):
-            PipelineConfig(model_path="m", stages=[build_stage_config("foo@r0")])
+            PipelineConfig(
+                model_path="m", stages=[build_stage_config("foo@r0")]
+            ).check_conflicts()
 
     def test_non_numeric_suffix_allowed(self):
         PipelineConfig(model_path="m", stages=[build_stage_config("foo@rx")])

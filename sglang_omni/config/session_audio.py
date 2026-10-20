@@ -123,10 +123,9 @@ class AudioSessionPipelineConfig(PipelineConfig):
             ],
         }
 
-    @model_validator(mode="after")
-    def check_graph(self) -> "AudioSessionPipelineConfig":
+    def check_local_conflicts(self) -> None:
+        super().check_local_conflicts()
         self.session_graph()
-        return self
 
     def model_configs(self) -> list[PipelineConfig]:
         """The config of each model whose stages a node names, over this pipeline's stages of that model."""

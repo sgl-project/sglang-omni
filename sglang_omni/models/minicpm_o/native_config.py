@@ -3,7 +3,7 @@
 
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config import (
@@ -12,6 +12,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.base import ConfigModel
 
 PKG = "sglang_omni.models.minicpm_o.native_stages"
 DEFAULT_MAX_SESSIONS = 2
@@ -85,7 +86,7 @@ class MiniCPMODuplexSampling(BaseModel):
     talker_repetition_penalty: float = Field(default=1.05, ge=1)
 
 
-class MiniCPMODuplexVision(BaseModel):
+class MiniCPMODuplexVision(ConfigModel):
     """Per-unit image limits; each frame costs one overview tile plus its slices."""
 
     model_config = ConfigDict(extra="forbid")
@@ -95,8 +96,7 @@ class MiniCPMODuplexVision(BaseModel):
     max_slice_nums: int = Field(default=1, ge=1)
     max_slice_nums_limit: int = Field(default=9, ge=1, le=9)
 
-    @model_validator(mode="after")
-    def check_limits(self) -> "MiniCPMODuplexVision":
+    def check_local_conflicts(self) -> None:
         if self.max_slice_nums > self.max_slice_nums_limit:
             raise ValueError("max_slice_nums exceeds max_slice_nums_limit")
         elif self.max_slice_nums_limit > 1 and (
@@ -104,7 +104,7 @@ class MiniCPMODuplexVision(BaseModel):
         ):
             raise ValueError("max_tiles_per_unit cannot fit one frame at the limit")
         else:
-            return self
+            pass
 
 
 class MiniCPMODuplexSpeech(BaseModel):

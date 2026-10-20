@@ -3,7 +3,8 @@
 
 ``ConfigResolver.resolve`` takes a baseline config plus a
 :class:`~sglang_omni.config.patch.ConfigPatchSet` and produces exactly two
-things: the validated configuration, and the provenance that explains it.
+things: the field-validated configuration, and the provenance that explains it.
+Final consumers call check_conflicts after all sources have been resolved.
 
 What it deliberately does *not* do:
 
@@ -31,7 +32,7 @@ __all__ = ["ConfigResolver", "ResolvedConfig", "ConfigDifference", "diff_configs
 
 @dataclass(frozen=True)
 class ResolvedConfig:
-    """A validated configuration together with the story of how it got there."""
+    """A resolved configuration and its provenance, before final conflict checks."""
 
     config: PipelineConfig
     provenance: ProvenanceMap
@@ -52,6 +53,7 @@ class ConfigResolver:
         return type(self.base)
 
     def resolve(self, patchset: ConfigPatchSet) -> ResolvedConfig:
+        """Apply patches and validate fields; final consumers check relationships."""
         patchset.require_no_conflicts()
 
         data = self.base.model_dump()
