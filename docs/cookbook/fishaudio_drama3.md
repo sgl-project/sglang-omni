@@ -195,7 +195,7 @@ sgl-omni serve \
 
 The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer.
 
-**Startup timeout:** Cold GPTQ-Marlin compilation on A100 can exceed the default startup deadline. If logs show compilation progressing, set the environment variable `SGLANG_OMNI_STARTUP_TIMEOUT=1800` to allow more waiting time; the required duration depends on the environment and compilation cache.
+**Startup timeout:** The first start on A100 compiles GPTQ-Marlin kernels and can fail with `made no startup progress for 600s`. Set `SGLANG_OMNI_STARTUP_TIMEOUT=1800` to allow more waiting time.
 
 Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.
 
@@ -308,8 +308,6 @@ Triton sampling and the fused codebook tower layers have been validated on Hoppe
 Drama 3 codebook sampling: PyTorch, untested GPU sm_120
 Drama 3 tower fused layers: off, untested GPU sm_120
 ```
-
-These fallbacks cover sampling and codebook tower layers; they do not provide an A100-compatible backend for the backbone's FP8 MoE experts.
 
 
 ## Links
