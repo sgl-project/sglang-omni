@@ -39,7 +39,9 @@ jobs:
   preflight:
     name: voxt-mac-ci-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    outputs:
+      run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -62,17 +64,33 @@ jobs:
           echo "PR is draft. Blocking Voxt Mac CI."
           exit 1
 
-      - name: Require run-ci label
+      - name: Checkout CI label rules
         if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve CI stages
+        if: ${{ github.event_name == 'pull_request' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
         run: |
-          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
-            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt in."
-            exit 1
-          fi
+          python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
 
   native-runtime:
     name: native runtime (golden + API)
     needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true'
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:
@@ -166,6 +184,7 @@ jobs:
   voxt-unit:
     name: Voxt Omni unit tests
     needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true'
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:

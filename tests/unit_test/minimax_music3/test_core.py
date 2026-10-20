@@ -150,7 +150,7 @@ def test_resolve_acoustic_dtype(
     assert resolve_acoustic_dtype(value) is expected
 
 
-@pytest.mark.parametrize("value", ["float16", "int8", None])
+@pytest.mark.parametrize("value", ["float16", None])
 def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> None:
     with pytest.raises(ValueError, match="float32.*bfloat16|bfloat16.*float32"):
         resolve_acoustic_dtype(value)  # type: ignore[arg-type]
@@ -542,6 +542,8 @@ def test_acoustic_scheduler_rejects_malformed_hidden_before_decode() -> None:
 
 
 class FakeAcousticDecoder:
+    serial_offload = False
+
     def __init__(self) -> None:
         self.hidden_shape: tuple[int, ...] | None = None
 

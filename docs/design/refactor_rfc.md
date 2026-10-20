@@ -259,7 +259,7 @@ receiver has finished with the request.
 
 The split between control and data planes is the core architectural decision: ZMQ stays out of the tensor path (it carries only the small `SubmitMessage` / `DataReadyMessage` / `AbortMessage` coordination messages), the relay (SHM/NCCL/NIXL/Mooncake) stays out of the coordination path, and either can be swapped independently.
 
-#### Why not Ray?
+**Why not Ray?**
 
 The thinker→talker relationship is fundamentally producer–consumer: thinker produces hidden states / text tokens, talker consumes them and emits audio codes. Structurally this is the same pattern as RL training (actor produces trajectories, learner consumes them), where Ray is the dominant orchestration layer. So it is a fair first-principles question whether we should use Ray for inter-stage scheduling instead of hand-rolling ZMQ + relay.
 
@@ -299,7 +299,7 @@ For AR stages. Subset of SGLang Scheduler — reuses `get_next_batch_to_run()`, 
 
 Runs in a dedicated thread. Stage communicates via thread-safe queues.
 
-#### Composition boundary with SGLang
+**Composition boundary with SGLang**
 
 Composing on top of SGLang's `Scheduler` is the right call, but only if we pin the boundary deliberately — RL forks of SGLang have hit upgrade pain by letting composition drift into a de facto fork. Three rules govern the boundary:
 
@@ -438,7 +438,7 @@ Model-specific behavior via three callbacks:
 - `extract_output_fn`: read codes / feedback from model after forward
 - `prefill_forward_fn`: custom forward for prefill (optional)
 
-#### Callback pattern: bare functions vs Strategy object
+**Callback pattern: bare functions vs Strategy object**
 
 Each model currently provides three bare functions that get passed in individually. This works, but the three are semantically coupled — they all operate on the same model's buffers — and nothing at the type level enforces that coupling.
 
@@ -620,7 +620,7 @@ Routing rule: exactly one of `next`, `route_fn`, or `terminal=True`. There is no
 | stream_to    | list[str]        | []         | Stream hidden states / codes to these stages (parallel to normal routing)          |
 | relay        | RelayConfig      | None       | Override relay settings. Auto-inferred from gpu if not set                         |
 
-#### `route_fn` contract
+**`route_fn` contract**
 
 `route_fn` has narrow utility: Qwen3-Omni and Fish S2 Pro are fully covered by `next` + `stream_to`. It is only needed when the hidden state itself carries a modality tag and the downstream branch must be decided from the data (e.g. Ming, where the output if/else's into a video or audio head). The contract is therefore narrow on purpose:
 
@@ -630,13 +630,13 @@ Routing rule: exactly one of `next`, `route_fn`, or `terminal=True`. There is no
 
 One field, narrow contract, easy to widen later when a real consumer shows up.
 
-#### Runtime parameter plumbing
+**Runtime parameter plumbing**
 
 Critical runtime params (`mem_fraction_static`, `thinker_max_seq_len`, and soon `video_fps`) are today either hardcoded deep in the stack or routed through ad-hoc overrides that nobody fully understands. CLI, config-file, and override paths do not compose, and every new param reinvents its own precedence resolution.
 
 The refactor should consolidate this into one canonical mechanism: a typed, stage-addressable override primitive at the `PipelineConfig` layer, with CLI / config / env as thin adapters on top. Every runtime param then flows through the same primitive. A related symmetry gap to fix at the same time: length validation guards only the thinker input side. Talker also needs an output-length cap so an unbounded decode loop (missed stop token, hallucination loop) cannot drive OOM or tail latency the same way. Both belong on the same plumbing once it exists.
 
-#### Stage placement — same-GPU co-location
+**Stage placement — same-GPU co-location**
 
 Stages may share GPUs. Earlier topologies hard-rejected same-GPU speech-stage placement, which left Talker on H200 at <2% utilization long-term. The placement model now treats "any stage on any GPU" as first-class, with per-stage memory budgeting and NVML accounting that account for co-tenants rather than rejecting the topology. See [Design Decision History § PR #430](#2026-05-12--pr-430-colocated-stage-execution-colocation) for the typed runtime config + placement planner that shipped this.
 
@@ -697,7 +697,7 @@ The main process resolves all dotted strings, injects `model_path` / `gpu_id` in
 
 The subprocess entrypoint (`stage_process_main`) imports each stage factory, calls it, builds routing callables from `route_fn` or `next_stages`, builds input handlers from `wait_for` / `merge_fn`, constructs all `Stage` instances assigned to that process, and runs them on one event loop.
 
-#### Parallelism axes — TP today, extension path
+**Parallelism axes — TP today, extension path**
 
 `StageProcessSpec` exposes `tp_size` as a top-level field. This treats TP as a special axis, but it is only one of several plausible parallelism strategies — Qwen3-Omni's Thinker is MoE and could want EP, and throughput-oriented stages might want DP across replicas. If we add either later, we will accumulate `tp_size` / `ep_size` / `dp_size` at the top level.
 

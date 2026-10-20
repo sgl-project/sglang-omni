@@ -140,9 +140,9 @@ async def test_aborted_append_closes_session_and_wakes_reader(
     waiting = asyncio.create_task(anext(output))
     await coordinator.append_session(session_identity, chunk(0))
     await wait_until(
-        lambda: any(rid.startswith("session-") for rid in coordinator.requests)
+        lambda: bool(coordinator.sessions[session_identity.id].submitted_appends)
     )
-    request_id = next(rid for rid in coordinator.requests if rid.startswith("session-"))
+    request_id = next(iter(coordinator.sessions[session_identity.id].submitted_appends))
     if drop == "stage_admin_drop":
         await coordinator.handle_completion(
             CompleteMessage(

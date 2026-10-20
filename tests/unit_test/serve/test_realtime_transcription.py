@@ -11,18 +11,13 @@ import numpy as np
 import pytest
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio import vad as vad_module
+from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEvent
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
-from sglang_omni.serve.realtime import vad as vad_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
-)
-from sglang_omni.serve.realtime.vad import (
-    StatelessVAD,
-    StreamingVAD,
-    VADConfig,
-    VADEvent,
 )
 
 

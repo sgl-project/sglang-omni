@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from typing import Iterable, Optional, Tuple
 
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
@@ -319,10 +321,14 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
             )
+            # note (ratish): a forced torch backend runs the rope's native
+            # forward, which cannot store K and V, so attention stores them.
             use_fused_set_kv_buffer = (
                 current_platform.is_cuda()
                 and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
+                and get_fused_op_backend()
+                not in (KernelBackend.TORCH, KernelBackend.TORCH_COMPILE)
             )
             q, k = self.rotary_emb(
                 positions,

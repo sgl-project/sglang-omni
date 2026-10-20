@@ -17,6 +17,10 @@ from sglang_omni.model_runner.prefill_inputs import (
 )
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    session_projected_prefill_rows,
+)
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     SchedulerOutput,
@@ -33,7 +37,6 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 else:
     pass
 
@@ -372,12 +375,21 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
             req = sched_req.data.req
             prefix_len = len(req.prefix_indices)
             extend_len = int(req.extend_range.length)
-            part = self.projected_prefill_slice(
-                sched_req=sched_req,
-                prefix_len=prefix_len,
-                extend_len=extend_len,
-                device=forward_batch.input_ids.device,
-            )
+            if sched_req.data.session_embedding_spans:
+                # Note (Junnan Li): A session unit's projected prompt rides the native request as embedding spans.
+                part = session_projected_prefill_rows(
+                    sched_req.data,
+                    self.model.get_input_embeddings(),
+                    device=forward_batch.input_ids.device,
+                    dtype=self.model.activation_dtype,
+                )
+            else:
+                part = self.projected_prefill_slice(
+                    sched_req=sched_req,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                    device=forward_batch.input_ids.device,
+                )
             if part is not None and part.shape[0] > 0:
                 parts.append(part)
             else:

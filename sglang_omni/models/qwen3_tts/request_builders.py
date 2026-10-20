@@ -22,6 +22,7 @@ from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
+    ReferenceEncoderGraphStats,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
 from sglang_omni.platforms import current_platform
@@ -164,6 +165,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     subtalker_top_k: int = 50
     subtalker_sampling_seed: int = field(default_factory=new_qwen3_tts_sampling_seed)
     engine_start_s: float = 0.0
+    decode_prep_epoch: int | None = None
 
 
 @dataclass
@@ -207,6 +209,7 @@ _ADHOC_REFERENCE_SERVICE_ENTRY: (
             tuple[VoicePrompt, str | None],
             CachedVoicePrompt,
         ],
+        Qwen3TTSAdhocReferenceHook,
     ]
     | None
 ) = None
@@ -231,7 +234,7 @@ def set_qwen3_tts_preprocessing_context(
         if device is not None and supports_device_streams(device) and not standalone
         else None
     )
-    feedback_buffer = model.model.feedback_buffer
+    codec_embedding_weight = model.model.codec_embedding.weight
     # note (ratish): built on the preprocessing stream, which every request's work
     # and ready event follow, so readers on other streams see them complete.
     with (
@@ -244,8 +247,9 @@ def set_qwen3_tts_preprocessing_context(
     ):
         prompt_constants = model.build_prompt_constants()
         prompt_row_cache_keys = PromptRowCacheKeys.for_rows(
-            row_bytes=int(feedback_buffer.shape[-1]) * feedback_buffer.element_size(),
-            device=feedback_buffer.device,
+            row_bytes=int(codec_embedding_weight.shape[-1])
+            * codec_embedding_weight.element_size(),
+            device=codec_embedding_weight.device,
         )
     with _PREPARED_REQUESTS_LOCK:
         get_qwen3_tts_adhoc_reference_service_locked(
@@ -277,6 +281,31 @@ def clear_qwen3_tts_preprocessing_context() -> None:
         _PREPROCESSING_CONTEXT = None
         _ADHOC_REFERENCE_SERVICE_ENTRY = None
         _PREPARED_REQUESTS.clear()
+
+
+class Qwen3TTSReferenceEncoderStats(TypedDict):
+    codec: ReferenceEncoderGraphStats | None
+    speaker: ReferenceEncoderGraphStats | None
+
+
+def qwen3_tts_reference_encoder_stats() -> Qwen3TTSReferenceEncoderStats | None:
+    """Graph stats of the reference encoders preprocessing runs in this process;
+    None when nothing here encodes references (only Base checkpoints clone)."""
+    with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
+        entry = _ADHOC_REFERENCE_SERVICE_ENTRY
+    if context is None or entry is None:
+        return None
+    elif context.model.tts_model_type != "base":
+        return None
+    else:
+        pass
+    codec_runner = entry[2].ref_code_batcher.graph_runner
+    speaker_runner = context.model.speaker_encoder_graph_runner
+    return {
+        "codec": codec_runner.stats() if codec_runner is not None else None,
+        "speaker": speaker_runner.stats() if speaker_runner is not None else None,
+    }
 
 
 def prepared_request_id(payload: StagePayload) -> str | None:
@@ -1301,18 +1330,19 @@ def get_qwen3_tts_adhoc_reference_service_locked(
             entry[1].close()
         else:
             pass
+        hook = Qwen3TTSAdhocReferenceHook(
+            model=model,
+            wrapper=wrapper,
+            graph_bucket_frames=graph_bucket_frames,
+        )
         service = ReferenceEncodeService(
-            Qwen3TTSAdhocReferenceHook(
-                model=model,
-                wrapper=wrapper,
-                graph_bucket_frames=graph_bucket_frames,
-            ),
+            hook,
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
             log_prefix="Qwen3-TTS ad-hoc reference",
         )
-        entry = (owner, service)
+        entry = (owner, service, hook)
         _ADHOC_REFERENCE_SERVICE_ENTRY = entry
     else:
         pass
@@ -1332,14 +1362,7 @@ def get_qwen3_tts_adhoc_reference_service(
 
 
 def normalized_model_type(model: PromptModel) -> str:
-    model_type = getattr(model, "tts_model_type", None)
-    if model_type is None:
-        model_type = getattr(
-            getattr(model, "root_config", None), "tts_model_type", None
-        )
-    else:
-        pass
-    normalized = str(model_type or "base").replace("-", "_").strip().lower()
+    normalized = str(model.tts_model_type or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"
     else:
@@ -1539,13 +1562,13 @@ def prepare_qwen3_tts_request(
     else:
         raise AssertionError(f"unhandled Qwen3-TTS task type: {state.task_type}")
 
-    feedback_buffer = model.model.feedback_buffer
+    codec_embedding_weight = model.model.codec_embedding.weight
     prompt_input_embeds = (
         input_embeds.squeeze(0)
         .detach()
         .to(
-            device=feedback_buffer.device,
-            dtype=feedback_buffer.dtype,
+            device=codec_embedding_weight.device,
+            dtype=codec_embedding_weight.dtype,
         )
     )
     input_ids_list = prompt_row_cache_keys.key_ids(prompt_input_embeds)
@@ -1554,12 +1577,12 @@ def prepare_qwen3_tts_request(
         trailing_text_hidden.squeeze(0)
         .detach()
         .to(
-            device=feedback_buffer.device,
-            dtype=feedback_buffer.dtype,
+            device=codec_embedding_weight.device,
+            dtype=codec_embedding_weight.dtype,
         )
     )
     if ref_code is not None:
-        ref_code = ref_code.detach().to(device=feedback_buffer.device)
+        ref_code = ref_code.detach().to(device=codec_embedding_weight.device)
     else:
         pass
 
@@ -1672,8 +1695,8 @@ def load_prepared_qwen3_tts_request(
     else:
         pass
     state = Qwen3TTSState.from_dict(data)
-    feedback_buffer = model.model.feedback_buffer
-    device, dtype = feedback_buffer.device, feedback_buffer.dtype
+    codec_embedding_weight = model.model.codec_embedding.weight
+    device, dtype = codec_embedding_weight.device, codec_embedding_weight.dtype
     prompt_input_embeds = state.prepared_prompt_embeds.to(device=device, dtype=dtype)
     trailing_text_hidden = state.prepared_text_tail.to(device=device, dtype=dtype)
     ref_code = (
@@ -1737,10 +1760,14 @@ def build_sglang_qwen3_tts_request(
     if state.seed is None:
         semantic_sampling_seed = new_qwen3_tts_sampling_seed()
         subtalker_sampling_seed = new_qwen3_tts_sampling_seed()
+        # note (ratish): only a request seed takes the seeded draw; the private seed
+        # fills this row when it shares a batch with a seeded request.
+        request_sampling_seed = None
     else:
         semantic_sampling_seed, subtalker_sampling_seed = (
             derive_qwen3_tts_sampling_seeds(state.seed)
         )
+        request_sampling_seed = semantic_sampling_seed
     sampling_params = SamplingParams(
         max_new_tokens=int(
             gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
@@ -1750,7 +1777,7 @@ def build_sglang_qwen3_tts_request(
         top_k=int(gen_kwargs.get("top_k", 50)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.05)),
         stop_token_ids=[int(model.config.codec_eos_token_id)],
-        sampling_seed=semantic_sampling_seed,
+        sampling_seed=request_sampling_seed,
     )
     sampling_params.normalize(None)
     sampling_params.verify(int(model.config.vocab_size))

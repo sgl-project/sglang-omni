@@ -22,7 +22,6 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
@@ -209,7 +208,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -258,7 +257,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MingTTSModelRunner:
         from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner

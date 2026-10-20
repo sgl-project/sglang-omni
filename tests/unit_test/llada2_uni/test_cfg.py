@@ -74,8 +74,9 @@ def make_cfg_group(size: int) -> list[LLaDA2UniRequest]:
     return requests
 
 
-@pytest.mark.parametrize("size", [1, 2, 3])
-@pytest.mark.parametrize("rescale", [0.0, 1.0])
+@pytest.mark.parametrize(
+    ("size", "rescale"), [(1, 0.0), (2, 0.0), (3, 0.0), (2, 1.0), (3, 1.0)]
+)
 def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
     algorithm = LowConfidenceCFG(make_config())
     algorithm.threshold = 0.94 if size == 3 else 0.8

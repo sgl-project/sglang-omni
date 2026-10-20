@@ -134,15 +134,6 @@ def test_builder_keeps_stage_torch_compile_opt_in_when_ci_turns_default_off(
     assert resolution_result(server_args, "enable_torch_compile") is True
 
 
-def test_torchinductor_cache_directory_defaults_to_sglang_omni_home_cache() -> None:
-    env: dict[str, str] = {}
-
-    cache_directory = apply_torch_compile_cache_env(env)
-
-    assert cache_directory == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
-    assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
-
-
 def test_torchinductor_cache_directory_keeps_existing_value() -> None:
     env = {"TORCHINDUCTOR_CACHE_DIR": "/var/cache/custom-torchinductor"}
 

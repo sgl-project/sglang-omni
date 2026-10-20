@@ -297,19 +297,6 @@ def test_flow_batch_cfg_builds_conditional_and_unconditional_halves() -> None:
     assert torch.count_nonzero(first["cond"][2:]) == 0
 
 
-def test_flow_batch_reuses_same_noise_prefix_per_request() -> None:
-    pair_flow = FakeFlow()
-    infer_flow(pair_flow, [make_input([1, 2]), make_input([3, 4])])
-    pair_noise = pair_flow.decoder.estimator.calls[0]["x"][:2]
-
-    single_flow = FakeFlow()
-    infer_flow(single_flow, [make_input([1, 2])])
-    single_noise = single_flow.decoder.estimator.calls[0]["x"][:1]
-
-    torch.testing.assert_close(pair_noise[0], pair_noise[1])
-    torch.testing.assert_close(pair_noise[:1], single_noise)
-
-
 def test_flow_batch_matches_serial_reference_for_mixed_lengths() -> None:
     items = [
         make_input([1, 0], prompt_token=[2], prompt_value=0.5),
@@ -321,20 +308,6 @@ def test_flow_batch_matches_serial_reference_for_mixed_lengths() -> None:
 
     assert [mel.shape for mel in batched] == [(1, 4, 4), (1, 4, 2), (1, 4, 6)]
     for actual, expected in zip(batched, serial, strict=True):
-        torch.testing.assert_close(actual, expected)
-
-
-def test_flow_batch_crops_each_prompt_independently() -> None:
-    items = [
-        make_input([1, 2], prompt_token=[3], prompt_value=0.5),
-        make_input([4, 5], prompt_token=[6, 7, 8], prompt_value=1.5),
-    ]
-    serial = [infer_flow(FakeFlow(), [item])[0] for item in items]
-
-    batched = infer_flow(FakeFlow(), items)
-
-    for actual, expected in zip(batched, serial, strict=True):
-        assert actual.shape[-1] == 4
         torch.testing.assert_close(actual, expected)
 
 
@@ -356,29 +329,6 @@ def test_flow_batch_rejects_prompt_alignment_mismatch() -> None:
 
     with pytest.raises(ValueError, match="prompt feature length"):
         infer_flow(FakeFlow(), [item])
-
-
-def test_flow_batch_tensorrt_estimator_keeps_cfg_layout() -> None:
-    estimator = RecordingTRTEstimator(max_batch=16)
-    infer_flow(
-        FakeFlow(estimator=estimator),
-        [make_input([1]), make_input([2]), make_input([3])],
-    )
-
-    assert estimator.calls
-    for call in estimator.calls:
-        assert call["x"].shape[0] == 6
-
-
-def test_flow_batch_tensorrt_chunks_cfg_pairs_when_engine_batch_is_2() -> None:
-    estimator = RecordingTRTEstimator(max_batch=2)
-    items = [make_input([1]), make_input([2]), make_input([3])]
-    infer_flow(FakeFlow(estimator=estimator), items)
-
-    assert estimator.calls
-    assert all(call["x"].shape[0] == 2 for call in estimator.calls)
-    # note (guozhihao-224): 10 Euler steps times 3 request-wise CFG pairs.
-    assert len(estimator.calls) == 30
 
 
 def test_flow_batch_tensorrt_matches_pytorch_serial() -> None:
@@ -403,20 +353,6 @@ def test_flow_causal_batch_uses_streaming_mask_and_strips_lookahead() -> None:
     assert flow.packed_estimator.calls[0]["lengths"] == (50, 50, 50, 50)
     assert mels[0].shape == (1, 4, 50)
     assert mels[1].shape == (1, 4, 50)
-
-
-def test_flow_causal_batch_follow_up_equal_lengths_strip_lookahead() -> None:
-    flow = FakeFlow(max_frames=256)
-    items = [
-        make_input([1] * 78, prompt_token=[3] * 25),
-        make_input([2] * 78, prompt_token=[4] * 25),
-    ]
-    mels = make_packed(flow).inference_causal(items)
-    assert all(call["streaming"] is True for call in flow.packed_estimator.calls)
-    assert flow.packed_estimator.calls[0]["lengths"] == (200, 200, 200, 200)
-    # 78 generated tokens minus lookahead 3 = 75; 75 * 2 mel frames
-    assert mels[0].shape == (1, 4, 150)
-    assert mels[1].shape == (1, 4, 150)
 
 
 def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:

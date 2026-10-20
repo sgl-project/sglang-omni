@@ -98,7 +98,7 @@ class Depformer(nn.Module):
         forced_BK: torch.Tensor,
         sample: Callable[[torch.Tensor], torch.Tensor],
     ) -> torch.Tensor:
-        """Spell out one frame of agent codes.
+        """Spell out one frame of agent codes. Subsequent calls do not overwrite them.
 
         Args:
             text_token_B: the frame's sampled text token.

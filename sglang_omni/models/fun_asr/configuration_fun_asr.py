@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, TypedDict
+from typing import ClassVar, TypedDict
 
 import numpy as np
 import numpy.typing as npt
@@ -22,11 +22,6 @@ from transformers.feature_extraction_sequence_utils import SequenceFeatureExtrac
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
-
-if TYPE_CHECKING:
-    import mlx.core as mx
-else:
-    pass
 
 AUDIO_PLACEHOLDER_TOKEN = "<|object_ref_start|>"
 
@@ -242,11 +237,7 @@ class FunAsrNanoInputs(TypedDict, total=False):
     input_features: torch.Tensor | npt.NDArray[np.float32]
     feature_attention_mask: torch.Tensor | npt.NDArray[np.int64]
     input_ids: (
-        torch.Tensor
-        | npt.NDArray[np.int64 | np.object_]
-        | mx.array
-        | list[int]
-        | list[list[int]]
+        torch.Tensor | npt.NDArray[np.int64 | np.object_] | list[int] | list[list[int]]
     )
 
 

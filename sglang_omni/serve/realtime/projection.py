@@ -21,10 +21,14 @@ from sglang_omni.serve.realtime.control import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    InputTranscription,
     OutputEvent,
     ResponseFinished,
+    ResponseProgress,
     ResponseStarted,
     ResponseStatus,
+    SpeechStarted,
+    SpeechStopped,
     TextDelta,
     TextFinished,
     TurnFailure,
@@ -112,6 +116,8 @@ class ServerEvent(TypedDict, total=False):
     delta: str
     transcript: str
     text: str
+    audio_start_ms: float
+    audio_end_ms: float
     error: WireError
     session: WireSession
     client_event_id: str | None
@@ -124,6 +130,8 @@ class ServerEvent(TypedDict, total=False):
     consumed_ms: float
     padding_ms: float
     tail_policy: TailPolicy
+    text_end: int
+    audio_ms: float
 
 
 def project_output(
@@ -198,10 +206,46 @@ def project_output(
         else:
             pass
         return server_event
+    elif isinstance(event, ResponseProgress):
+        return dict(
+            type="sglang.response.progress",
+            response_id=event.response_id,
+            item_id=event.item_id,
+            output_index=0,
+            content_index=0,
+            text_end=event.text_end,
+            audio_ms=event.audio_ms,
+        )
     elif isinstance(event, TurnFailure):
         return dict(
             type="error",
             error=dict(type=event.error_type, code=event.code, message=event.message),
+        )
+    elif isinstance(event, SpeechStarted):
+        return dict(
+            type="input_audio_buffer.speech_started",
+            item_id=event.item_id,
+            audio_start_ms=event.audio_start_ms,
+        )
+    elif isinstance(event, SpeechStopped):
+        return dict(
+            type="input_audio_buffer.speech_stopped",
+            item_id=event.item_id,
+            audio_end_ms=event.audio_end_ms,
+        )
+    elif isinstance(event, InputTranscription) and event.is_final:
+        return dict(
+            type="conversation.item.input_audio_transcription.completed",
+            item_id=event.item_id,
+            content_index=0,
+            transcript=event.text,
+        )
+    elif isinstance(event, InputTranscription):
+        return dict(
+            type="conversation.item.input_audio_transcription.delta",
+            item_id=event.item_id,
+            content_index=0,
+            delta=event.text,
         )
     else:
         raise TypeError(f"Unsupported typed output: {type(event)}")

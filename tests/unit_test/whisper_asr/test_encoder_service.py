@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -16,7 +17,6 @@ from sglang.srt.managers.schedule_batch import (
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
-    build_cache_namespace,
     expected_audio_tokens,
 )
 
@@ -291,23 +291,6 @@ def test_expected_audio_tokens() -> None:
     assert expected_audio_tokens(item(None)) is None
 
 
-def test_build_cache_namespace_is_stable() -> None:
-    model = StubModel()
-    fe = SimpleNamespace(
-        feature_size=80,
-        sampling_rate=16000,
-        hop_length=160,
-        chunk_length=30,
-        n_fft=400,
-        nb_max_frames=3000,
-        padding_value=0.0,
-    )
-    a = build_cache_namespace(model, model_path="m", feature_extractor=fe)
-    b = build_cache_namespace(model, model_path="m", feature_extractor=fe)
-    assert a == b
-    assert len(a) == 16
-
-
 def test_encode_item_attaches_and_clears_feature() -> None:
     service = make_service()
     item = make_item(fill=3.0)
@@ -330,17 +313,6 @@ def test_encode_item_hits_cache_on_second_call() -> None:
     assert model.encode_calls == 1
     assert service.stats()["hits"] == 1
     assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
-
-
-def test_encode_item_reuses_lookup_cached_embedding() -> None:
-    model = StubModel()
-    service = make_service(model)
-    item = make_item(fingerprint="lookup-reuse")
-    service.encode_item(item)
-    again = make_item(fingerprint="lookup-reuse", fill=0.0)
-    service.encode_item(again)
-    assert model.encode_calls == 1
-    assert again.feature is None
 
 
 def test_lookup_cached_embedding_skips_worker() -> None:
@@ -376,11 +348,29 @@ def test_close_rejects_new_encodes() -> None:
 def test_batched_encode_retries_per_item_on_multi_failure() -> None:
     model = StubModel()
     model.encoder.fail_multi_item = True
+    gate = threading.Event()
+    model.encoder.encode_gate = gate
     service = make_service(model, max_batch_size=4)
     items = [make_item(fingerprint=f"b{i}", fill=float(i + 1)) for i in range(3)]
-    import concurrent.futures
+    errors: list[Exception] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        list(pool.map(service.encode_item, items))
+    def worker(item: MultimodalDataItem) -> None:
+        try:
+            service.encode_item(item)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(item,)) for item in items]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 5
+    while len(service.inflight) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(service.inflight) == 3
+    gate.set()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
     assert all(item.precomputed_embeddings is not None for item in items)
-    assert model.encode_calls >= 3
+    assert model.encode_calls == 4

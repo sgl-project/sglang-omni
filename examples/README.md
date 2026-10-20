@@ -4,8 +4,8 @@ Run these commands from the repository root after installing `sglang-omni`.
 
 ## Full-duplex audio
 
-MiniCPM-o launch commands, server settings, and the realtime protocol are in the
-[MiniCPM-o cookbook](../docs/cookbook/minicpm_o.md).
+MiniCPM-o launch commands, server settings, and the realtime protocol are in
+[Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#native-full-duplex-minicpm-o).
 
 ## Unified Launcher
 

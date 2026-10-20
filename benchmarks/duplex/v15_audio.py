@@ -17,7 +17,7 @@ from pydantic import JsonValue
 from scipy.signal import resample_poly
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 PLAYOUT_CAVEATS = [
     "physical_acoustics",
@@ -38,6 +38,17 @@ LEGACY_BARGE_IN_CUT = (
     "input_audio_buffer.speech_started when turn_detection.interrupt_response is not "
     "false"
 )
+# note (luojiaxuan): A turn-based server sends no output_audio_buffer.cleared; it
+# drops the undelivered audio of the reply it cancels, and the cancelled
+# response.done is the first event that shows it.
+TURN_BASED_BARGE_IN_CUT = (
+    "playout cursor cut at the client receipt of a response.done with status "
+    "cancelled"
+)
+BARGE_IN_CUTS: dict[Protocol, str] = {
+    "legacy": LEGACY_BARGE_IN_CUT,
+    "turn_based": TURN_BASED_BARGE_IN_CUT,
+}
 # note (wenyao): Playout and event spans assume paced source time within one packet.
 PACING_TOLERANCE_S = PACKET_MS / 1000
 INPUT_TIMING_CAVEAT = (
@@ -118,7 +129,8 @@ def reconstruct_output(
     """Rebuild model audio and a SIMULATED zero-buffer client playout from a trace."""
     profile_contract = PROFILES[profile]
     output_sample_rate = profile_contract.output_sample_rate
-    legacy = profile_contract.protocol == "legacy"
+    protocol = profile_contract.protocol
+    legacy = protocol == "legacy"
     audio_delta = LEGACY_AUDIO_DELTA if legacy else AUDIO_DELTA
     transcript_deltas = LEGACY_TRANSCRIPT_DELTAS if legacy else TRANSCRIPT_DELTAS
     errors: list[str] = []
@@ -150,6 +162,24 @@ def reconstruct_output(
     appends = []
     input_end_s = 0.0
     interrupts_on_speech = None
+
+    def cut_playout(line_number: int, event_type: str, elapsed_s: float) -> None:
+        cut_sample = round(elapsed_s * output_sample_rate)
+        dropped = len(playout) // 2 - cut_sample
+        if dropped > 0:
+            del playout[2 * cut_sample :]
+            cuts.append(
+                {
+                    "trace_line": line_number,
+                    "type": event_type,
+                    "receipt_s": elapsed_s,
+                    "cut_sample": cut_sample,
+                    "dropped_samples": dropped,
+                }
+            )
+        else:
+            pass
+
     for line_number, record in records:
         event = record["event"]
         event_type = event.get("type")
@@ -197,21 +227,13 @@ def reconstruct_output(
                 and interrupts_on_speech
             )
         ):
-            cut_sample = round(elapsed_s * output_sample_rate)
-            dropped = len(playout) // 2 - cut_sample
-            if dropped > 0:
-                del playout[2 * cut_sample :]
-                cuts.append(
-                    {
-                        "trace_line": line_number,
-                        "type": event_type,
-                        "receipt_s": elapsed_s,
-                        "cut_sample": cut_sample,
-                        "dropped_samples": dropped,
-                    }
-                )
-            else:
-                pass
+            cut_playout(line_number, event_type, elapsed_s)
+        elif (
+            protocol == "turn_based"
+            and event_type == "response.done"
+            and (event.get("response") or {}).get("status") == "cancelled"
+        ):
+            cut_playout(line_number, event_type, elapsed_s)
         elif event_type in transcript_deltas:
             transcript_events.append(
                 {
@@ -340,8 +362,8 @@ def reconstruct_output(
         "input_timing": input_timing,
         "errors": errors,
     }
-    if legacy:
-        summary["barge_in"] = {"rule": LEGACY_BARGE_IN_CUT, "cuts": len(cuts)}
+    if protocol in BARGE_IN_CUTS:
+        summary["barge_in"] = {"rule": BARGE_IN_CUTS[protocol], "cuts": len(cuts)}
     else:
         pass
     write_json(
@@ -350,7 +372,7 @@ def reconstruct_output(
             **summary,
             "input_timing": {**input_timing, "appends": appends},
             "chunks": chunks,
-            **({"cuts": cuts} if legacy else {}),
+            **({"cuts": cuts} if protocol in BARGE_IN_CUTS else {}),
         },
     )
     return summary

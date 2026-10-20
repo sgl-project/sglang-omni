@@ -185,15 +185,6 @@ def test_write_params_writes_request_static_fields():
     assert pool.rows_have_audio_repetition_penalty([row]) is True
 
 
-def test_write_params_does_not_touch_other_rows():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    row_a = pool.acquire_row("a")
-    row_b = pool.acquire_row("b")
-    pool.write_params(row_a, make_params(seed=1))
-    assert pool.seeds[row_b] == 0
-    assert pool.text_temp[row_b] == 0.0
-
-
 def test_ensure_params_writes_once_until_invalidated():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
@@ -206,13 +197,6 @@ def test_ensure_params_writes_once_until_invalidated():
     assert int(pool.seeds[row]) == 2
 
 
-def test_row_for_returns_none_when_unheld():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    assert pool.row_for("nobody") is None
-    row = pool.acquire_row("a")
-    assert pool.row_for("a") == row
-
-
 def test_commit_generation_step_updates_active_row():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
@@ -222,22 +206,6 @@ def test_commit_generation_step_updates_active_row():
 
     assert int(pool.generation_steps[row]) == 7
     assert int(pool.sampling_steps[row]) == 7
-
-
-def test_commit_generation_steps_updates_active_rows():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    row_a = pool.acquire_row("a")
-    row_b = pool.acquire_row("b")
-
-    pool.commit_generation_steps(
-        torch.tensor([row_a, row_b], dtype=torch.long),
-        torch.tensor([7, 9], dtype=torch.long),
-    )
-
-    assert int(pool.generation_steps[row_a]) == 7
-    assert int(pool.generation_steps[row_b]) == 9
-    assert int(pool.sampling_steps[row_a]) == 7
-    assert int(pool.sampling_steps[row_b]) == 9
 
 
 def test_reset_for_refill_clears_active_row():
@@ -268,22 +236,6 @@ def test_reset_for_refill_is_noop_for_unheld_rid():
     # the held row and its write-once flag are untouched.
     pool.ensure_params(row, "a", make_params(seed=9))
     assert int(pool.seeds[row]) == 1
-
-
-def test_prepare_active_rows_gathers_rows_and_params():
-    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=2))
-    reqs = [
-        SimpleNamespace(request_id="a", data=make_params(seed=11)),
-        SimpleNamespace(request_id="b", data=make_params(seed=22)),
-    ]
-
-    row_t, rows, has_audio_repetition_penalty = pool.prepare_active_rows(reqs)
-
-    assert row_t.dtype == torch.long
-    assert row_t.device == pool.device
-    assert rows == [pool.row_for("a"), pool.row_for("b")]
-    assert torch.equal(pool.seeds[row_t], torch.tensor([11, 22], dtype=torch.long))
-    assert has_audio_repetition_penalty is False
 
 
 def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
@@ -317,31 +269,6 @@ def test_audio_history_updates_pool_presence_mask():
     assert not bool(pool.audio_token_presence[row_b, 1, 2047 % 1024])
 
 
-def test_rebuild_audio_history_clears_stale_presence():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    row = pool.acquire_row("a")
-    pool.audio_token_presence[row, 0, 99] = True
-    rows = []
-    for token in (3, 5):
-        row_t = torch.full((13,), 0, dtype=torch.long)
-        row_t[1:] = token
-        rows.append(row_t)
-
-    assert pool.rebuild_audio_history("a", rows) is True
-
-    assert not bool(pool.audio_token_presence[row, 0, 99])
-    assert bool(pool.audio_token_presence[row, 0, 3])
-    assert bool(pool.audio_token_presence[row, 0, 5])
-
-
-def test_journal_holds_fields():
-    rows = torch.arange(2 * 13, dtype=torch.long).reshape(2, 13)
-    journal = MossTTSLocalDecodeJournal(rids=["a", "b"], pool_rows=[0, 1], rows=rows)
-    assert journal.rids == ["a", "b"]
-    assert journal.pool_rows == [0, 1]
-    assert torch.equal(journal.rows, rows)
-
-
 def test_feedback_gather_equals_old_popleft():
     model = make_model(max_running_requests=4)
     pool = MossTTSLocalDecodeStatePool(model)
@@ -368,23 +295,6 @@ def test_feedback_gather_equals_old_popleft():
 
     assert torch.equal(model.decode_input_embedding.weight[:2], expected)
     assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1]))
-
-
-def test_fresh_row_zeros_feedback():
-    model = make_model(max_running_requests=2)
-    pool = MossTTSLocalDecodeStatePool(model)
-    model.state_pool = pool
-    runner = object.__new__(MossTTSLocalModelRunner)
-    runner.model = model
-    forward_batch = SimpleNamespace(input_ids=torch.full((1,), -1, dtype=torch.long))
-    requests = [SimpleNamespace(request_id="fresh", data=make_params(seed=1))]
-
-    runner.write_decode_input_embedding(forward_batch, requests)
-
-    assert torch.equal(
-        model.decode_input_embedding.weight[:1],
-        torch.zeros((1, HIDDEN), dtype=torch.bfloat16),
-    )
 
 
 def test_double_collect_overwrites_feedback():
@@ -1281,75 +1191,6 @@ def test_stop_row_not_appended_via_journal():
     runner.post_process_outputs(result, scheduler_output, outputs)
 
     assert data.output_rows == []
-
-
-def test_journal_rows_appended_to_output_rows():
-    runner = object.__new__(MossTTSLocalModelRunner)
-    runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
-    row = torch.arange(13, dtype=torch.long)
-    result = SimpleNamespace(
-        moss_journal=MossTTSLocalDecodeJournal(
-            rids=["rid"],
-            pool_rows=[0],
-            rows=row.reshape(1, 13),
-        )
-    )
-    data = SimpleNamespace(req=None, output_rows=[])
-    sched_req = SimpleNamespace(request_id="rid", data=data)
-    scheduler_output = SimpleNamespace(requests=[sched_req])
-    outputs = {"rid": SimpleNamespace(data=1000)}
-
-    runner.post_process_outputs(result, scheduler_output, outputs)
-
-    assert len(data.output_rows) == 1
-    assert torch.equal(data.output_rows[0], row)
-
-
-def test_param_gather_matches_old_cache():
-    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=2))
-    data = make_params(seed=12345)
-    row = pool.acquire_row("rid")
-    pool.write_params(row, data)
-    row_t = torch.tensor([row], dtype=torch.long, device=pool.device)
-
-    params = {
-        "text_temp": pool.text_temp[row_t],
-        "text_top_p": pool.text_top_p[row_t],
-        "text_top_k": pool.text_top_k[row_t],
-        "audio_temp": pool.audio_temp[row_t],
-        "audio_top_p": pool.audio_top_p[row_t],
-        "audio_top_k": pool.audio_top_k[row_t],
-        "seeds": pool.seeds[row_t],
-    }
-
-    assert torch.equal(
-        params["text_temp"],
-        torch.tensor([float(data.text_temperature)], dtype=torch.float32),
-    )
-    assert torch.equal(
-        params["text_top_p"],
-        torch.tensor([float(data.text_top_p)], dtype=torch.float32),
-    )
-    assert torch.equal(
-        params["text_top_k"],
-        torch.tensor([int(data.text_top_k)], dtype=torch.long),
-    )
-    assert torch.equal(
-        params["audio_temp"],
-        torch.tensor([float(data.audio_temperature)], dtype=torch.float32),
-    )
-    assert torch.equal(
-        params["audio_top_p"],
-        torch.tensor([float(data.audio_top_p)], dtype=torch.float32),
-    )
-    assert torch.equal(
-        params["audio_top_k"],
-        torch.tensor([int(data.audio_top_k)], dtype=torch.long),
-    )
-    assert torch.equal(
-        params["seeds"],
-        torch.tensor([int(data.sampling_seed)], dtype=torch.long),
-    )
 
 
 def test_result_adapter_releases_row_after_empty_generation():

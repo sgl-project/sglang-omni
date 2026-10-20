@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,12 +25,17 @@ def isolate_router_state_dir(
 
 
 @pytest.fixture(autouse=True)
-def restore_router_logging():
-    """Undo the dictConfig a serve.main() call applies process-wide.
-
-    It sets propagate=False on the router logger, which silently stops caplog
-    from seeing any later test's warnings.
-    """
+def restore_router_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Restore router logging and keep Abseil off pytest-owned capture streams."""
+    absl_logging = sys.modules.get("absl.logging")
+    if absl_logging is not None:
+        monkeypatch.setattr(
+            absl_logging.get_absl_handler().python_handler,
+            "stream",
+            sys.__stderr__,
+        )
+    else:
+        pass
     logger = logging.getLogger("sglang_omni_router.python")
     saved = (list(logger.handlers), logger.propagate, logger.level)
     yield

@@ -491,7 +491,7 @@ def test_one_step_moves_token_ids_to_the_host_exactly_twice(
     states = [session_state(greedy=greedy, temperature=0.7) for _ in range(6)]
     logits = unit_logits(*([{PLAIN_TOKEN_ID: 1.0}] * len(states)))
 
-    runner.sample_next_token_ids(
+    token_ids = runner.sample_next_token_ids(
         SimpleNamespace(next_token_logits=logits),
         None,
         None,
@@ -500,3 +500,7 @@ def test_one_step_moves_token_ids_to_the_host_exactly_twice(
 
     assert transfers == ["tolist", "tolist"]
     assert multinomial_calls == []
+    assert token_ids.tolist() == [PLAIN_TOKEN_ID] * len(states)
+    assert [state.generated_history for state in states] == [[PLAIN_TOKEN_ID]] * len(
+        states
+    )

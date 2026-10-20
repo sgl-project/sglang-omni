@@ -14,14 +14,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.cache_utils import Cache, CacheLayerMixin
 
-from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
-from sglang_omni.models.ming_omni.talker.audio_vae.vae_modules import (
-    Decoder,
-    StreamingLinearUpsample,
-)
 from sglang_omni.models.ming_tts.payload_types import (
     load_ming_tts_state,
     store_ming_tts_state,
+)
+from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
+from sglang_omni.modules.ming_audio.vae.vae_modules import (
+    Decoder,
+    StreamingLinearUpsample,
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage

@@ -7,7 +7,7 @@ from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_config_file
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY, resolve_variant
 from sglang_omni.utils import (
     architecture_from_hf_config,
     try_resolve_arch_from_auk_layout,
@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_ming3_dense_tts,
 )
 
 
@@ -28,6 +29,11 @@ def resolve_config_cls_for_model_path(model_path: str):
     if "@" in model_path and not os.path.isdir(model_path):
         repo_id, _, pinned = model_path.partition("@")
         revision = pinned or None
+    else:
+        pass
+    dense_arch = try_resolve_ming3_dense_tts(repo_id, revision=revision)
+    if dense_arch is not None:
+        return PIPELINE_CONFIG_REGISTRY.get_config(dense_arch)
     else:
         pass
     hf_kwargs = {"revision": revision} if revision else {}
@@ -156,7 +162,7 @@ class ConfigManager:
             module = importlib.import_module(config_cls.__module__)
             variants = getattr(module, "Variants", None)
             if variants and variant in variants:
-                config_cls = variants[variant]
+                config_cls = resolve_variant(variants[variant])
             else:
                 raise ValueError(
                     f"Unknown variant '{variant}' for {config_cls.__name__}. "

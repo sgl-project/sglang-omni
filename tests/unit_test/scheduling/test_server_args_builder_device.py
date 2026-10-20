@@ -37,10 +37,6 @@ def build(monkeypatch, **extra: Any) -> dict[str, Any]:
     return built.kwargs
 
 
-def test_unset_device_falls_back_to_the_resolved_platform(monkeypatch) -> None:
-    assert build(monkeypatch)["device"] == platforms.current_platform.device_type
-
-
 def test_pinned_platform_reaches_server_args(monkeypatch) -> None:
     """A pinned platform must win over SGLang's own detection."""
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)

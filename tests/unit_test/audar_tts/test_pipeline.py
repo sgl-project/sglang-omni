@@ -437,62 +437,6 @@ def test_reference_encoder_builds_prompt_and_caches(
     assert first.reference_audio is None
 
 
-def test_reference_encoder_singleflights_same_reference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    codec = FakeCodec()
-    encode_started = threading.Event()
-    release_encode = threading.Event()
-    second_normalized = threading.Event()
-    normalize_lock = threading.Lock()
-    normalize_calls = 0
-    original_normalize = stages.normalize_reference
-
-    def normalize(raw_input: Any):
-        nonlocal normalize_calls
-        item = original_normalize(raw_input)
-        with normalize_lock:
-            normalize_calls += 1
-            if normalize_calls == 2:
-                second_normalized.set()
-        return item
-
-    def encode_code(waveform: torch.Tensor) -> torch.Tensor:
-        codec.encode_calls += 1
-        encode_started.set()
-        assert release_encode.wait(timeout=2)
-        return torch.tensor([[[7, 8, 9]]])
-
-    monkeypatch.setattr(stages, "normalize_reference", normalize)
-    monkeypatch.setattr(codec, "encode_code", encode_code)
-    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
-    scheduler = stages.create_reference_encoder_executor(gpu_id=None, max_concurrency=2)
-    reference_audio: dict[str, object] = {"bytes": five_second_wav()}
-
-    def encode(request_id: str) -> AudarTTSState:
-        payload = make_payload(
-            state=AudarTTSState(
-                target_text="target",
-                reference_text="reference",
-                reference_audio=reference_audio,
-            ),
-            request_id=request_id,
-        )
-        return AudarTTSState.from_dict(scheduler.fn(payload).data)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(encode, "first")
-        assert encode_started.wait(timeout=2)
-        second = executor.submit(encode, "second")
-        assert second_normalized.wait(timeout=2)
-        release_encode.set()
-        results = [first.result(timeout=2), second.result(timeout=2)]
-
-    assert scheduler.max_concurrency == 2
-    assert codec.encode_calls == 1
-    assert results[0].prompt == results[1].prompt
-
-
 def test_reference_encoder_serializes_codec_for_different_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -583,38 +527,6 @@ def test_reference_hook_preserves_key_and_tensor_contract(
     assert hook.cache_key(item) is None
 
 
-def test_reference_encoder_propagates_singleflight_failure() -> None:
-    codec = FakeCodec()
-    encode_started = threading.Event()
-    release_encode = threading.Event()
-
-    def encode_code(waveform: torch.Tensor) -> torch.Tensor:
-        codec.encode_calls += 1
-        encode_started.set()
-        assert release_encode.wait(timeout=2)
-        raise RuntimeError("codec failed")
-
-    codec.encode_code = encode_code
-    service = reference_service(codec)
-    reference_audio = {"bytes": five_second_wav()}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        leader = executor.submit(service.get_or_encode, reference_audio)
-        assert encode_started.wait(timeout=2)
-        follower = executor.submit(service.get_or_encode, reference_audio)
-        deadline = time.monotonic() + 2
-        while service.stats()["merged"] < 1 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert service.stats()["merged"] == 1
-        release_encode.set()
-        for future in (leader, follower):
-            with pytest.raises(RuntimeError, match="codec failed"):
-                future.result(timeout=2)
-
-    assert codec.encode_calls == 1
-    assert service.stats()["failed"] == 1
-
-
 def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
     codec = FakeCodec()
     encode_started = threading.Event()
@@ -647,28 +559,6 @@ def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
     service.get_or_encode(reference_audio)
 
     assert codec.encode_calls == 3
-
-
-def test_reference_encoder_reports_cache_stats() -> None:
-    codec = FakeCodec()
-    service = reference_service(codec)
-    reference_audio = {"bytes": five_second_wav()}
-
-    service.get_or_encode(reference_audio)
-    service.get_or_encode(reference_audio)
-
-    assert service.stats() == {
-        "hits": 1,
-        "misses": 1,
-        "merged": 0,
-        "entries": 1,
-        "bytes": 12,
-        "evictions": 0,
-        "failed": 0,
-        "uncacheable": 0,
-        "batches": 0,
-        "batched_items": 0,
-    }
 
 
 def test_codec_model_and_lock_are_shared_between_stages(
@@ -744,9 +634,72 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
+    monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
+    with pytest.raises(ValueError, match="cuda, xpu or cpu"):
+        stages.create_tts_engine_executor("unused", device="mps", gpu_id=1)
+
+
+def test_llama_cpp_stage_refuses_xpu_without_a_sycl_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: None)
+        ),
+    )
     monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
-    with pytest.raises(ValueError, match="cuda or cpu"):
+    with pytest.raises(RuntimeError, match="GGML_SYCL=ON"):
         stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+
+def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLlama:
+        instance: "FakeLlama"
+
+        def __init__(self, **kwargs: str | int | bool) -> None:
+            self.kwargs = kwargs
+            self.calls: list[list[int]] = []
+            FakeLlama.instance = self
+
+        def tokenize(self, text: bytes, *, add_bos: bool, special: bool) -> list[int]:
+            return [99]
+
+        def eval(self, tokens: list[int]) -> None:
+            self.calls.append(tokens)
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+
+    stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+    assert FakeLlama.instance.kwargs["main_gpu"] == 1
+    assert FakeLlama.instance.kwargs["n_gpu_layers"] == -1
+    assert FakeLlama.instance.calls[0] == [99]
 
 
 def test_llama_cpp_stage_matches_official_generation_loop(

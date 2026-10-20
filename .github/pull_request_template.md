@@ -30,14 +30,18 @@
 
 ## CI
 
-CI runs on self-hosted GPU runners and requires a maintainer to add the
-`run-ci` label. Once labeled, every subsequent push re-triggers CI as
-long as the label remains. Use `/tag-and-rerun-ci higgs` or
-`/tag-and-rerun-ci moss` or `/tag-and-rerun-ci qwen3-tts` or
-`/tag-and-rerun-ci cosyvoice3` to select a TTS CI model, and
-`/tag-and-rerun-ci fun-asr`, `/tag-and-rerun-ci qwen3-asr` or
-`/tag-and-rerun-ci whisper-asr` to select an ASR CI model. Use
-`/tag-and-rerun-ci qwen3-omni` or `/tag-and-rerun-ci minicpmo` to select
-the Omni CI model (Qwen3-Omni by default). One selector from each family
-can be combined, for example `/tag-and-rerun-ci moss fun-asr minicpmo`.
-Draft PRs are skipped even if labeled.
+Lint, Test Layout, Docs Check, Rust Router and the NPU image build run on GitHub-hosted runners for every PR, and `lint` must pass before merging. The rest of CI runs on self-hosted runners, starts only after lint passes, and requires a maintainer to add CI labels. Once labeled, every subsequent push re-triggers CI as long as the labels remain. Draft PRs are skipped even if labeled.
+
+- `run-all-ci` runs every stage below.
+- A stage label runs one stage: `run-asr-ci`, `run-tts-ci`, `run-mps-ci` and `run-omni-ci` on H100, `run-intel-cpu-ci` (Intel Xeon), `run-intel-xpu-ci` (Intel GPU) and `run-mac-ci` (Apple Silicon). The hardware stages still skip a PR that touches none of their paths.
+- Any stage label also runs the H100 unit tests.
+- `run-unit-test-ci-only` runs just the H100 unit tests after shared setup when no other stage labels or `run-all-ci` are present. Use `/tag-and-rerun-ci unit-test` to add it and re-run completed CI.
+- A model label picks the model of a selected stage; without one, the stage draws its model at random. A model label without its stage label (or `run-all-ci`) is ignored. Keep at most one model label per stage.
+  - ASR: `run-asr-fun-asr-nano-2512`, `run-asr-qwen3-asr-1.7b`, `run-asr-whisper-large-v3`
+  - TTS: `run-tts-higgs-tts-3-4b`, `run-tts-moss-tts-local-transformer-v1.5`, `run-tts-qwen3-tts-12hz-1.7b-base`, `run-tts-qwen3-tts-12hz-1.7b-customvoice` (label only, never drawn), `run-tts-fun-cosyvoice3-0.5b-2512`
+  - MPS: `run-mps-higgs-tts-3-4b`, `run-mps-moss-tts-local-transformer-v1.5`
+  - Omni: `run-omni-qwen3-omni-30b-a3b-instruct`, `run-omni-minicpm-o-4.5`
+
+Use `/tag-and-rerun-ci` with short targets, for example `/tag-and-rerun-ci tts asr` or `/tag-and-rerun-ci qwen3-tts qwen3-asr`. Use `/tag-and-rerun-full-ci` for all stages. The bare command and full GitHub label arguments are not accepted. Existing stage selections stay enabled. Use `/rerun-failed-ci` to retry failed jobs.
+
+The rules live in `.github/scripts/resolve_ci_labels.py`, and [docs/developer_reference/ci_labels.md](https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/ci_labels.md) describes what every stage covers.

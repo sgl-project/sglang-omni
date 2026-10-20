@@ -96,8 +96,8 @@ def add_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--turn-detection",
         type=turn_detection_argument,
-        help="JSON turn_detection object for session.update; legacy-protocol "
-        "profiles require it and native ones reject it",
+        help="JSON turn_detection object for session.update; legacy-protocol and "
+        "turn-based profiles require it and native ones reject it",
     )
     parser.add_argument(
         "--legacy-tail",

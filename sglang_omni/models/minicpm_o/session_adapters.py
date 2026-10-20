@@ -218,7 +218,6 @@ def build_realtime_deployment(
     def factory() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
-            stages=["perception", "thinker", "talker", "speech"],
             request_builder=lambda session: OmniRequest(
                 None,
                 params={

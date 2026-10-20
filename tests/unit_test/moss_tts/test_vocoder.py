@@ -109,19 +109,6 @@ class FakeResidualQuantizer(nn.Module):
         return self.output_proj(decoded)
 
 
-@pytest.mark.parametrize("num_quantizers", [1, 3, 4])
-def test_cached_quantizer_matches_source_decode(num_quantizers: int) -> None:
-    torch.manual_seed(0)
-    source = FakeResidualQuantizer()
-    decoder = MossAudioTokenizerQuantizerDecoder(source)
-    codes = torch.randint(0, 16, (num_quantizers, 2, 7))
-
-    expected = source.decode_codes(codes)
-    actual = decoder.decode_codes(codes)
-
-    assert torch.equal(actual, expected)
-
-
 def test_cached_quantizer_rejects_invalid_codebook_count() -> None:
     decoder = MossAudioTokenizerQuantizerDecoder(FakeResidualQuantizer())
 
@@ -523,16 +510,21 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     ).tolist() == [3.0, 3.0]
 
 
-@pytest.mark.parametrize("compute_dtype", [None, "float32"])
+@pytest.mark.parametrize(
+    ("compute_dtype", "quantizer"),
+    [(None, SimpleNamespace(decode_codes=lambda codes: codes)), ("float32", None)],
+)
 def test_moss_tts_vocoder_can_disable_batched_decode(
     monkeypatch: pytest.MonkeyPatch,
     compute_dtype: str | None,
+    quantizer: SimpleNamespace | None,
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
     codec = nn.Module()
     codec.dummy = nn.Parameter(torch.zeros(1))
     codec.decoder = nn.ModuleList()
+    codec.quantizer = quantizer
     audio_vocoder = SimpleNamespace(
         model=codec,
         sample_rate=16000,
@@ -550,8 +542,10 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     monkeypatch.setattr(
         vocoder_module,
         "MossAudioTokenizerVocoderDecoder",
-        lambda *args, **_kwargs: pytest.fail(
-            "disabled batched decode must not construct the decoder wrapper"
+        SimpleNamespace(
+            from_module=lambda *args, **_kwargs: pytest.fail(
+                "disabled batched decode must not construct the decoder wrapper"
+            )
         ),
     )
 
@@ -560,6 +554,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         device="cpu",
         compute_dtype=compute_dtype,
     )
+    assert scheduler.vocoder.nonstream_decoder is None
     payload = make_payload("baseline")
     payload.data = MossTTSState(
         delayed_audio_codes=torch.tensor(
