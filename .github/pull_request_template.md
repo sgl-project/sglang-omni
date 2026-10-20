@@ -42,6 +42,6 @@ Lint, Test Layout, Docs Check, Rust Router and the NPU image build run on GitHub
   - MPS: `run-mps-higgs-tts-3-4b`, `run-mps-moss-tts-local-transformer-v1.5`
   - Omni: `run-omni-qwen3-omni-30b-a3b-instruct`, `run-omni-minicpm-o-4.5`
 
-Use `/tag-and-rerun-ci` with short targets, for example `/tag-and-rerun-ci tts asr` or `/tag-and-rerun-ci qwen3-tts qwen3-asr`. Use `/tag-and-rerun-full-ci` for all stages. The bare command and full GitHub label arguments are not accepted. Existing stage selections stay enabled. Use `/rerun-failed-ci` to retry failed jobs.
+Use `/tag-and-rerun-ci` with short targets, for example `/tag-and-rerun-ci tts asr` or `/tag-and-rerun-ci qwen3-tts qwen3-asr`. Use `/tag-and-rerun-full-ci` for all stages, with optional model targets. Bare `/tag-and-rerun-ci` and full GitHub label arguments are not accepted. Existing stage selections stay enabled. Use `/rerun-failed-ci` to retry failed jobs.
 
 The rules live in `.github/scripts/resolve_ci_labels.py`, and [docs/developer_reference/ci_labels.md](https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/ci_labels.md) describes what every stage covers.
