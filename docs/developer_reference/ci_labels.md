@@ -4,7 +4,7 @@ SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for
 
 **A pull request runs none of the self-hosted CI until a maintainer adds CI labels.** Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.
 
-In this sense, two kinds of labels exist: a stage label decides whether a part of the self-hosted CI runs, and a model label decides which model that part tests. The full label rules come after the workflows. `.github/scripts/resolve_ci_labels.py` implements them, and every self-hosted workflow resolves its labels through that script.
+In this sense, two kinds of labels exist: a stage label decides whether a part of the self-hosted CI runs, and a model label decides which model that part tests. `run-lint-only` is separate: it satisfies the gate and runs no self-hosted job. The full label rules come after the workflows. `.github/scripts/resolve_ci_labels.py` implements them, and every self-hosted workflow resolves its labels through that script.
 
 ## Overview
 
@@ -59,7 +59,7 @@ The CPU partitions run as independent matrix jobs with fail-fast disabled. Files
 
 The initial weights are per-file p90 elapsed estimates from three successful H100 CPU jobs: [118185861718](https://github.com/sgl-project/sglang-omni/actions/runs/39288752772/job/118185861718), [118197139172](https://github.com/sgl-project/sglang-omni/actions/runs/39292142439/job/118197139172) and [118244967308](https://github.com/sgl-project/sglang-omni/actions/runs/39305977181/job/118244967308). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
-`run-unit-test-ci-only` selects PR Test without selecting model or hardware stages. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included.
+`run-unit-test-ci-only` selects PR Test without selecting model or hardware stages. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. `run-lint-only` does not run PR Test or setup.
 
 ### ASR
 
@@ -156,7 +156,7 @@ The stage label is `run-mac-ci`.
 ## Label rules
 
 1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage.
-2. Self-hosted CI needs at least one stage label. Without one, the gates of Omni CI and the hardware workflows fail with `No CI label found`. The checks on GitHub-hosted runners do not depend on labels.
+2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the gates of Omni CI and the hardware workflows fail with `No CI label found`. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label only picks the model of a selected stage. It never selects a stage by itself. If neither its stage label nor `run-all-ci` is present, the label is ignored and the gate prints a warning.
 5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
@@ -166,6 +166,7 @@ The stage label is `run-mac-ci`.
 | Stage label | Selects |
 | --- | --- |
 | `run-all-ci` | Every stage |
+| `run-lint-only` | No self-hosted job. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test in Omni CI |
 | `run-asr-ci` | ASR in Omni CI |
 | `run-tts-ci` | TTS in Omni CI |
@@ -182,6 +183,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 | Labels | What runs |
 | --- | --- |
 | none | Nothing. The self-hosted gates fail with `No CI label found`. |
+| `run-lint-only` | Nothing self-hosted. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test only, after shared setup. |
 | `run-tts-ci` | PR Test, then TTS on a random model from its pool. |
 | `run-tts-ci`, `run-tts-moss-tts-local-transformer-v1.5` | PR Test, then TTS on MOSS-TTS. |
@@ -197,7 +199,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
-Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
+Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
 Re-running jobs reuses the run ID, so every stage keeps the model it drew. The gate reads the live labels from the pull request, so re-running all jobs picks up labels added or removed since the run started.
 
@@ -222,7 +224,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more sho
 /tag-and-rerun-ci mps-higgs
 ```
 
-Stage targets are `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label.
+Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. `lint` adds `run-lint-only`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. A short model target adds both its stage label and its model label.
 
 Use `/tag-and-rerun-full-ci` to add `run-all-ci` and select all stages. It also accepts short model targets, for example `/tag-and-rerun-full-ci qwen3-tts qwen3-asr qwen3-omni`. Add `mps-higgs` or `mps-moss` to select the MPS model independently. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci` or `run-all-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
 
@@ -234,7 +236,7 @@ The command replaces conflicting model labels only in the requested stages and k
 
 | Message | Meaning |
 | --- | --- |
-| `No CI label found. Add run-all-ci or a stage label: ...` | The pull request has no stage label. Add `run-all-ci` or a stage label. |
+| `No CI label found. Add run-all-ci, run-lint-only, or a stage label: ...` | The pull request has none of those labels. Add one of them. |
 | `Keep only one <stage> model label: ...` | Two model labels name the same stage. Remove one of them. |
 | `Ignoring <label>: its stage label and run-all-ci are both missing.` | A warning, not a failure. The model label has no effect until its stage is selected. |
 | `'lint' check completed with conclusion=failure; skip staged CI.` | Lint failed on this commit. Fix it and push; self-hosted CI starts once lint passes. |

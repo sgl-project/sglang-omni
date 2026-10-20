@@ -157,7 +157,7 @@ jobs:
           echo "Tested commit SHA: ${TEST_SHA}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py

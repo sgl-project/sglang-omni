@@ -85,9 +85,17 @@ Organizations interested in supporting SGLang-Omni, TTS, or omni model serving c
 
 ## Citation
 
-If you use SGLang-Omni for your research, please cite our [technical blog](https://www.sglang.io/blog/spg-topology):
+If you use SGLang-Omni for your research, please cite our technical blogs on the [unified interactive runtime](https://www.sglang.io/blog/omni-interactive-runtime) and the [Stage--Process--GPU topology](https://www.sglang.io/blog/spg-topology):
 
 ```bibtex
+@misc{sglangomniinteractive2026,
+  title={Unified Runtime for Full-Duplex Interactive Intelligence with {SGLang Omni}},
+  author={{SGLang-Omni Team}},
+  howpublished={\url{https://www.sglang.io/blog/omni-interactive-runtime}},
+  year={2026},
+  month={oct}
+}
+
 @misc{sglangomni2026,
   title={Fish Audio Drama 3 Meets {SGLang-Omni}: Day-0 Support and the Stage--Process--GPU Topology},
   author={{SGLang-Omni Team}},

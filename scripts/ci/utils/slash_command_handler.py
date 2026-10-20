@@ -10,6 +10,7 @@ from github import Auth, Github
 from resolve_ci_labels import (
     CI_STAGES,
     RUN_ALL_LABEL,
+    RUN_LINT_ONLY_LABEL,
     resolve_ci_plan,
     select_workflows,
 )
@@ -68,7 +69,9 @@ def handle_tag_run_ci(
     else:
         pass
 
-    labels_by_target: dict[str, frozenset[str]] = {}
+    labels_by_target: dict[str, frozenset[str]] = {
+        "lint": frozenset({RUN_LINT_ONLY_LABEL}),
+    }
     for stage in CI_STAGES:
         labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
@@ -282,13 +285,19 @@ def main():
         time.sleep(5)
         pr.update()
         labels = frozenset(label.name for label in pr.get_labels())
+        workflows_to_rerun = select_workflows(labels)
+        if not workflows_to_rerun:
+            comment.create_reaction("+1")
+            return
+        else:
+            pass
         rerun = handle_rerun_failed_ci(
             repo,
             pr,
             comment,
             user_perms,
             react_on_success=False,
-            full_rerun_workflows=select_workflows(labels),
+            full_rerun_workflows=workflows_to_rerun,
         )
         if rerun:
             comment.create_reaction("+1")

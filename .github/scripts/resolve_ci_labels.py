@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs with its stage label or run-all-ci. A model label picks the model of
-a selected stage; a selected stage without one draws its model at random.
+A stage runs with its stage label or run-all-ci. run-lint-only satisfies the
+gate and runs no self-hosted job. A model label picks the model of a selected
+stage; a selected stage without one draws its model at random.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 RUN_ALL_LABEL = "run-all-ci"
+RUN_LINT_ONLY_LABEL = "run-lint-only"
 OMNI_CI_WORKFLOW = "Omni CI"
 
 
@@ -141,12 +143,14 @@ def select_workflows(labels: frozenset[str]) -> frozenset[str]:
 
 
 def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
-    """Raises ValueError without a stage label or with two model labels in a stage."""
+    """Raises ValueError without a CI label or with two model labels in a stage."""
     enabled_stage_names = select_stage_names(labels)
-    if not enabled_stage_names:
+    if not enabled_stage_names and RUN_LINT_ONLY_LABEL not in labels:
         stage_labels = ", ".join(stage.label for stage in CI_STAGES)
         raise ValueError(
-            f"No CI label found. Add {RUN_ALL_LABEL} or a stage label: {stage_labels}."
+            "No CI label found. Add "
+            f"{RUN_ALL_LABEL}, {RUN_LINT_ONLY_LABEL}, "
+            f"or a stage label: {stage_labels}."
         )
     else:
         pass
@@ -190,6 +194,8 @@ def format_github_outputs(plan: CiPlan) -> list[str]:
             pass
     mps_preset = plan.preset_by_stage_name.get("mps", "")
     output_lines.append(f"mps_ci_config={MPS_CONFIG_BY_PRESET.get(mps_preset, '')}")
+    is_self_hosted = bool(plan.enabled_stage_names)
+    output_lines.append(f"run_self_hosted={str(is_self_hosted).lower()}")
     return output_lines
 
 
