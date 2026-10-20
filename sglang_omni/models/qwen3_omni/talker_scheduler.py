@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import replace
 
-from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.server_args import ServerArgs
 from typing_extensions import Unpack
 
@@ -186,6 +186,20 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         )
 
     def get_next_batch_to_run(self) -> ScheduleBatch | None:
+        if (
+            not self.enable_overlap
+            and self.async_pending is None
+            and self.previous_pending_decode is None
+        ):
+            for request in self.running_batch.reqs:
+                if request.rid in self.aborted_request_ids and isinstance(
+                    request.to_finish, FINISH_ABORT
+                ):
+                    self.abort(request.rid, defer_running_cleanup=False)
+                else:
+                    pass
+        else:
+            pass
         batch = super().get_next_batch_to_run()
         if batch is not None and (not self.is_batch_ready_to_run(batch)):
             self.rollback_decode_prep_after_skip(batch)

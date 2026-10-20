@@ -21,16 +21,18 @@ import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.managers.schedule_batch import ReqKvInfo, ScheduleBatch
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
     CacheRequestOutcome,
 )
-from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -1180,8 +1182,11 @@ def test_stage_request_build_payloads(
     assert stage_ids(scheduler.backlogged_request_build_payloads) == leftover_backlog
 
 
-def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
-    scheduler = object.__new__(OmniScheduler)
+@pytest.mark.parametrize("scheduler_type", [OmniScheduler, QwenTalkerScheduler])
+def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output(
+    monkeypatch: pytest.MonkeyPatch, scheduler_type: type[OmniScheduler]
+) -> None:
+    scheduler = object.__new__(scheduler_type)
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
     scheduler.enable_hierarchical_cache = False
@@ -1199,15 +1204,19 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     )
     scheduler.beam_coordinator = SimpleNamespace(retire_group=lambda req: None)
     aborts: list[tuple[str, bool]] = []
-    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
-        (rid, defer_running_cleanup)
-    )
+
+    def finish_request(request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        aborts.append((request_id, defer_running_cleanup))
+        req.finished_reason, req.to_finish = req.to_finish, None
+
+    scheduler.abort = finish_request
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
 
     req = SimpleNamespace(
         rid="req-kv-exhausted",
         to_finish=omni_scheduler_module.FINISH_ABORT("decode KV exhausted"),
+        finished_reason=None,
         weight_version_events=[],
         output_ids=[],
         beam_group=None,
@@ -1222,7 +1231,9 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
             return len(self.reqs)
 
         def filter_batch(self) -> None:
-            pass
+            self.reqs = [
+                request for request in self.reqs if request.finished_reason is None
+            ]
 
         def is_empty(self) -> bool:
             return not self.reqs
@@ -1235,12 +1246,24 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
             return [], 0.5, [req]
 
     batch = ExhaustedBatch()
-    result = omni_scheduler_module._Upstream.update_running_batch(
-        scheduler, batch
+    upstream = (
+        omni_scheduler_module._Upstream
     )  # noqa: leading-underscore  # production name
+    if scheduler_type is QwenTalkerScheduler:
+        scheduler.running_batch = batch
+        scheduler.enable_overlap = False
+        scheduler.async_pending = None
+        scheduler.aborted_request_ids = set()
+
+        def select_batch(scheduler: QwenTalkerScheduler) -> None:
+            upstream.update_running_batch(scheduler, batch)
+
+        monkeypatch.setattr(OmniScheduler, "get_next_batch_to_run", select_batch)
+        assert scheduler.get_next_batch_to_run() is None
+    else:
+        assert upstream.update_running_batch(scheduler, batch) is batch
 
     output = scheduler.outbox.get_nowait()
-    assert result is batch
     assert output.request_id == req.rid
     assert output.type == "error"
     assert "decode KV exhausted" in str(output.data)
@@ -1551,6 +1574,120 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
     assert cleaned == ["req-run"]
     assert scheduler.prefill_start_done == set()
     assert model_path_ends == [("req-run", "aborted")]
+
+
+@pytest.mark.parametrize(
+    ("pending_mode", "live_ready"),
+    [
+        ("none", False),
+        ("none", True),
+        ("async", True),
+        ("previous", True),
+        ("overlap", True),
+    ],
+)
+def test_talker_abort_releases_chunk_wait_without_bypassing_live_input_gate(
+    monkeypatch: pytest.MonkeyPatch, pending_mode: str, live_ready: bool
+) -> None:
+    """Cancelled talker rows must release KV without waiting for another text chunk."""
+    scheduler = object.__new__(QwenTalkerScheduler)
+    init_sync_request_build_state(scheduler)
+    scheduler.scheduler_thread_id = threading.get_ident()
+    scheduler.tp_size = 1
+    scheduler.inbox = Queue()
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.pending_stream_ingress = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.enable_overlap = pending_mode == "overlap"
+    cleaned: list[str] = []
+    freed: list[str] = []
+    scheduler.abort_callback = cleaned.append
+    scheduler.tree_cache = SimpleNamespace()
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "release_kv_cache",
+        lambda request, cache: freed.append(request.rid),
+    )
+    scheduler.rollback_decode_prep_after_skip = lambda batch: None
+    scheduler.model_runner = object.__new__(QwenTalkerModelRunner)
+    scheduler.model_runner.feedback_enabled = True
+
+    requests = [
+        make_abortable_req(
+            request_id,
+            kv=ReqKvInfo(req_pool_idx=index),
+            return_hidden_states_mode=CaptureHiddenMode.NULL,
+            omni_data=SimpleNamespace(
+                pending_feedback_queue=deque([torch.ones(1)]),
+                pending_text_queue=(
+                    deque([torch.ones(1)])
+                    if request_id == "live" and live_ready
+                    else deque()
+                ),
+                thinker_chunks_done=False,
+                tts_pad_embed=torch.zeros(1),
+            ),
+        )
+        for index, request_id in enumerate(("cancelled", "live"))
+    ]
+    batch = ScheduleBatch(
+        reqs=requests.copy(),
+        device="cpu",
+        forward_mode=ForwardMode.DECODE,
+        model_config=SimpleNamespace(is_encoder_decoder=False),
+        req_pool_indices=torch.tensor([0, 1]),
+        req_pool_indices_cpu=torch.tensor([0, 1]),
+        seq_lens=torch.tensor([3, 7]),
+        seq_lens_cpu=torch.tensor([3, 7]),
+        orig_seq_lens=torch.tensor([3, 7]),
+        sampling_info=SimpleNamespace(filter_batch=lambda *arguments: None),
+    )
+    scheduler.running_batch = scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    if pending_mode == "async":
+        scheduler.async_pending = SimpleNamespace(batch=batch)
+    elif pending_mode == "previous":
+        scheduler.previous_pending_decode = SimpleNamespace(batch=batch)
+    else:
+        pass
+
+    def select_batch(scheduler: QwenTalkerScheduler) -> ScheduleBatch:
+        scheduler.running_batch.filter_batch()
+        return scheduler.running_batch
+
+    monkeypatch.setattr(OmniScheduler, "get_next_batch_to_run", select_batch)
+    scheduler.abort("cancelled")
+    assert not cleaned and not freed and scheduler.outbox.empty()
+
+    selected = scheduler.get_next_batch_to_run()
+
+    if pending_mode != "none":
+        assert selected is None
+        assert not cleaned and not freed and scheduler.outbox.empty()
+        assert requests[0].omni_data is not None
+        if pending_mode in ("async", "previous"):
+            scheduler.async_pending = None
+            scheduler.previous_pending_decode = None
+            selected = scheduler.get_next_batch_to_run()
+
+    if pending_mode != "overlap":
+        assert cleaned == freed == ["cancelled"]
+        assert requests[0].omni_data is None
+        assert batch.reqs == [requests[1]]
+        assert batch.req_pool_indices.tolist() == [1]
+        assert batch.seq_lens.tolist() == [7]
+        assert (selected is batch) == live_ready
+        scheduler.get_next_batch_to_run()
+        assert cleaned == freed == ["cancelled"]
+        assert scheduler.outbox.empty()
+    assert not requests[1].finished()
+    assert requests[1].omni_data is not None
 
 
 def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> None:
