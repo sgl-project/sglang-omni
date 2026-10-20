@@ -7,7 +7,7 @@ on macOS Apple Silicon (arm64) with `./install.sh`. CUDA users should follow
 the [CUDA installation](./installation.md).
 
 The native C++ MLX runtime under `sglang_omni_mlx/native/` has a separate build
-and run workflow. See the [MLX path documentation](../developer_reference/mlx.md)
+and run workflow. See the [MLX path documentation](../mlx/index.md)
 and the [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md) for that path.
 
 ```bash
