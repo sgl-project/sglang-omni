@@ -634,9 +634,72 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
+    monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
+    with pytest.raises(ValueError, match="cuda, xpu or cpu"):
+        stages.create_tts_engine_executor("unused", device="mps", gpu_id=1)
+
+
+def test_llama_cpp_stage_refuses_xpu_without_a_sycl_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: None)
+        ),
+    )
     monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
-    with pytest.raises(ValueError, match="cuda or cpu"):
+    with pytest.raises(RuntimeError, match="GGML_SYCL=ON"):
         stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+
+def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLlama:
+        instance: "FakeLlama"
+
+        def __init__(self, **kwargs: str | int | bool) -> None:
+            self.kwargs = kwargs
+            self.calls: list[list[int]] = []
+            FakeLlama.instance = self
+
+        def tokenize(self, text: bytes, *, add_bos: bool, special: bool) -> list[int]:
+            return [99]
+
+        def eval(self, tokens: list[int]) -> None:
+            self.calls.append(tokens)
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp._ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+
+    stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+    assert FakeLlama.instance.kwargs["main_gpu"] == 1
+    assert FakeLlama.instance.kwargs["n_gpu_layers"] == -1
+    assert FakeLlama.instance.calls[0] == [99]
 
 
 def test_llama_cpp_stage_matches_official_generation_loop(

@@ -457,6 +457,42 @@ python examples/run_nemotron_voicechat.py \
   --talker.engine.mem_fraction_static 0.50
 ```
 
+### Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)
+
+The `audar-tts` extra builds `llama-cpp-python` for the CPU and pins `torchao==0.13.0`
+rather than an `+xpu` build. Build a SYCL wheel of the same version instead, with
+oneAPI sourced in the build shell only. `GGML_OPENMP=OFF` avoids a `libiomp5.so` the
+environment does not ship, and `GGML_SYCL_DNN=OFF` avoids a second SYCL runtime. Then
+install it, NeuCodec, and the XPU build of `torchao` whose `nf4tensor` module
+NeuCodec's `torchtune` imports, all with `--no-deps`:
+
+```bash
+(
+  source /opt/intel/oneapi/setvars.sh --force
+  CMAKE_ARGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
+    -DGGML_SYCL_DNN=OFF -DGGML_OPENMP=OFF -DLLAVA_BUILD=OFF" \
+    pip wheel --no-deps --no-binary llama-cpp-python llama-cpp-python==0.3.34 -w wheels/
+)
+pip install --no-deps wheels/llama_cpp_python-0.3.34-*.whl
+pip install --no-deps --extra-index-url https://download.pytorch.org/whl/xpu \
+  torchao==0.17.0+xpu neucodec==0.0.6 torchtune==0.6.1 torchdata==0.11.0 \
+  vector-quantize-pytorch==1.17.8 local-attention==1.11.2 \
+  hyper-connections==0.4.11 torch-einops-utils==0.1.31
+```
+
+`neuphonic/neucodec` is gated on Hugging Face, so accept its terms and export
+`HF_TOKEN` before the first start. Reference clips must be 5-15 seconds long.
+
+```bash
+sgl-omni serve --config examples/configs/audar_tts_turbo.yaml \
+  --allowed-local-media-path /path/to/references --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"مرحبا، أهلا وسهلا بكم.","response_format":"wav",
+       "ref_audio":"file:///path/to/references/voice.wav","ref_text":"reference transcript"}' \
+  -o out.wav
+```
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
