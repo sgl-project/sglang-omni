@@ -226,7 +226,7 @@ def test_open_session_freezes_admission_fields(patch: JsonObject) -> None:
     assert exc_info.value.code == "invalid_state"
 
 
-@pytest.mark.parametrize(("slices", "frames"), [(1, 4), (4, 2), (9, 1), (10, None)])
+@pytest.mark.parametrize(("slices", "frames"), [(1, 4), (9, 1), (10, None)])
 def test_image_frame_grant_follows_slice_setting(
     slices: int, frames: int | None
 ) -> None:

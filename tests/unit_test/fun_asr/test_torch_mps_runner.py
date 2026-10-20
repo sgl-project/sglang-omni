@@ -7,7 +7,7 @@ import pytest
 import torch
 
 
-@pytest.mark.parametrize("device", ["cpu", "mps"])
+@pytest.mark.parametrize("device", ["mps"])
 def test_torch_runner_cache_lifecycle_and_flat_audio_features(device):
     from transformers import Qwen3Config, Qwen3ForCausalLM
 

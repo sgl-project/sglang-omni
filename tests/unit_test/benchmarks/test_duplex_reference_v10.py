@@ -23,7 +23,7 @@ from benchmarks.duplex.reference_core import JUDGE_MAX_ATTEMPTS, V10_REFERENCE_F
 from benchmarks.duplex.reference_source import verify_reference
 from benchmarks.duplex.v10_dataset import SUBSET_TASKS
 from benchmarks.eval.benchmark_duplex_v10 import main
-from tests.unit_test.benchmarks.test_duplex_reference_audio import (
+from tests.unit_test.fixtures.duplex_fakes import (
     make_constant_pcm,
     make_input_pcm,
     make_session_trace,

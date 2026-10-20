@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -10,6 +11,13 @@ from threading import Lock
 import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.sampler import (
+    Sampler,
+    _SamplingMaskCapture,
+    _select_sampling_mask_rows,
+    register_sampler_backend,
+    top_k_top_p_min_p_sampling_from_probs_torch,
+)
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
@@ -20,6 +28,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from torch import nn
 
@@ -56,6 +65,56 @@ def install_prefill_runner_dispatch() -> None:
 
         cuda_graph_setup.PrefillCudaGraphRunner = _dispatch_prefill_runner
         _PREFILL_RUNNER_DISPATCH_DEFAULT = default_cls
+
+
+class FlashInferSeededSampler(Sampler):
+    def _sample_from_probs(  # noqa: leading-underscore
+        self,
+        probs: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+        positions: torch.Tensor,
+        simple_sampling_case: bool,
+    ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
+        if simple_sampling_case or (
+            sampling_info.sampling_seed is None
+            and not sampling_info.need_min_p_sampling
+        ):
+            return super()._sample_from_probs(  # noqa: leading-underscore
+                probs, sampling_info, positions, simple_sampling_case
+            )
+        else:
+            pass
+        # note (ratish): FlashInfer seeds a batch from its first row's seed and each
+        # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
+        # row of the batch, so either batch takes the PyTorch backend's draw and mask.
+        capture_rows = sampling_info.sampling_mask_batch_indices
+        sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
+            probs,
+            sampling_info.top_ks,
+            sampling_info.top_ps,
+            sampling_info.min_ps,
+            sampling_info.need_min_p_sampling,
+            sampling_info.sampling_seed,
+            positions,
+            return_filtered_probs=capture_rows is not None,
+        )
+        if capture_rows is None:
+            return sample_result, None
+        else:
+            pass
+        batch_next_token_ids, filtered_probs, token_ids, selected_weight = sample_result
+        return batch_next_token_ids, _SamplingMaskCapture(
+            weights=_select_sampling_mask_rows(filtered_probs, capture_rows),
+            token_ids=_select_sampling_mask_rows(token_ids, capture_rows),
+            selected_weight=_select_sampling_mask_rows(selected_weight, capture_rows),
+            batch_rows=capture_rows,
+        )
+
+
+@functools.cache
+def register_flashinfer_seeded_sampler() -> None:
+    """Make the FlashInfer backend build FlashInferSeededSampler, once per process."""
+    register_sampler_backend("flashinfer", FlashInferSeededSampler)
 
 
 def filter_weights_by_prefix(
@@ -308,6 +367,7 @@ class SGLModelRunner(ModelRunner):
         self.extra_prefill_graph_attention_layers: list[RadixAttention] = []
         self.prefill_graph_runner_class: type[PrefillCudaGraphRunner] | None = None
         self.register_omni_model()
+        register_flashinfer_seeded_sampler()
 
         super().__init__(
             model_config=model_config,

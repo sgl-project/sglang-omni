@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypedDict
 
@@ -316,6 +316,36 @@ class ProcessConfig(BaseModel):
             pass
 
 
+def normalize_route_prefixes(stage: str, prefixes: Iterable[str]) -> tuple[str, ...]:
+    """Validate the path prefixes a stage declares and return them in order.
+
+    A prefix starts with a slash, names at least one path segment, and covers
+    itself and everything below it.
+    """
+    out: list[str] = []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not prefix.startswith("/"):
+            raise ValueError(
+                f"stages.{stage}.http_routes entries must be paths starting "
+                f"with '/', got {prefix!r}"
+            )
+        else:
+            pass
+        stripped = prefix.rstrip("/")
+        if not stripped or "?" in stripped or "#" in stripped:
+            raise ValueError(
+                f"stages.{stage}.http_routes entry {prefix!r} must name a path "
+                "below '/'"
+            )
+        elif stripped in out:
+            raise ValueError(
+                f"stages.{stage}.http_routes lists {stripped!r} more than once"
+            )
+        else:
+            out.append(stripped)
+    return tuple(out)
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -350,6 +380,10 @@ class StageConfig(BaseModel):
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
     process: str | None = None
+    allow_child_processes: bool = False
+    """Allow a native engine to own subprocesses inside this stage process."""
+    runtime_gpu_ids: list[int] | None = None
+    """GPUs reserved for an engine that launches its own workers."""
     gpu_memory_fraction: float | None = Field(
         default=None,
         gt=0,
@@ -379,8 +413,45 @@ class StageConfig(BaseModel):
     disable_direct_cuda_ipc_payload: bool = False
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None
+    http_routes: list[str] = Field(
+        default_factory=list,
+        description="Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, whose scheduler provides the app through http_app(), so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage must run as one instance.",
+    )
 
     def model_post_init(self, __context: object = None) -> None:
+        if self.http_routes:
+            self.http_routes = list(
+                normalize_route_prefixes(self.name, self.http_routes)
+            )
+        else:
+            pass
+        if self.runtime_gpu_ids is not None:
+            if not self.allow_child_processes or self.tp_size != 1:
+                raise ValueError(
+                    "runtime_gpu_ids requires one stage process that owns children"
+                )
+            else:
+                pass
+            if (
+                not isinstance(self.gpu, int)
+                or not self.runtime_gpu_ids
+                or self.runtime_gpu_ids[0] != self.gpu
+                or any(gpu < 0 for gpu in self.runtime_gpu_ids)
+                or len(set(self.runtime_gpu_ids)) != len(self.runtime_gpu_ids)
+            ):
+                raise ValueError(
+                    "runtime_gpu_ids must be unique GPUs starting with the stage GPU"
+                )
+            else:
+                pass
+        else:
+            pass
+        if self.http_routes:
+            self.http_routes = list(
+                normalize_route_prefixes(self.name, self.http_routes)
+            )
+        else:
+            pass
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
@@ -593,6 +664,8 @@ class PipelineConfig(BaseModel):
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
+    freeze_api_gc_on_startup: ClassVar[bool] = False
+    supports_image_api: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
@@ -600,10 +673,13 @@ class PipelineConfig(BaseModel):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None
+    # True when results are ordered interleaved (UMM) segments, which
+    # /generate can stream.
+    interleaved_output: ClassVar[bool] = False
     is_realtime_only: ClassVar[bool] = False
-    # Import path of the function that builds, from this config, the chat or
-    # transcription request the server sends itself before it reports ready;
-    # None skips the warmup.
+    # Import path of the function that builds, from this config, the chat,
+    # speech or transcription request the server sends itself before it reports
+    # ready; None skips the warmup.
     server_warmup_request_factory: ClassVar[str | None] = None
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
@@ -771,6 +847,12 @@ class PipelineConfig(BaseModel):
         """
         return frozenset()
 
+    def image_decode_mode(self) -> Literal["normal", "decoder-turbo"]:
+        return "normal"
+
+    def image_decode_steps(self) -> int:
+        return 50
+
     def stage_named(self, stage_name: str) -> StageConfig:
         """The stage with this name; raises ``KeyError`` when absent."""
         for stage in self.stages:
@@ -811,13 +893,34 @@ class PipelineConfig(BaseModel):
 
         Stage settings override pipeline defaults; model policies may derive
         missing values here without persisting them in the configuration.
+        A stage whose native engine owns worker processes gets the per worker
+        thread default of native multimodal_gen, since its children inherit
+        the stage process environment instead of an equal share of the plan.
         """
-        return {**self.resolved_env_defaults(), **self.stage_named(stage_name).env}
+        stage = self.stage_named(stage_name)
+        env_defaults = {**self.resolved_env_defaults(), **stage.env}
+        if stage.allow_child_processes and "OMP_NUM_THREADS" not in env_defaults:
+            from sglang_omni.utils.cpu import native_worker_intraop_threads
+
+            workers = len(stage.runtime_gpu_ids) if stage.runtime_gpu_ids else 1
+            env_defaults["OMP_NUM_THREADS"] = str(
+                native_worker_intraop_threads(workers)
+            )
+        else:
+            pass
+        return env_defaults
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
+
+    def entry_stage_admission_limit(self) -> int | None:
+        """Requests one entry stage replica admits at once, when it owns admission.
+
+        None derives the coordinator in-flight cap from the generation engine.
+        """
+        return None
 
     @classmethod
     def code2wav_stage(cls) -> str | None:
@@ -892,6 +995,23 @@ class PipelineConfig(BaseModel):
             raise ValueError("Stage names must be unique")
         else:
             pass
+        # The server relays a path to the first stage whose prefix covers it.
+        claimed: list[tuple[str, str]] = []
+        for s in self.stages:
+            for prefix in s.http_routes:
+                for owner, other in claimed:
+                    if owner != s.name and (
+                        f"{prefix}/".startswith(f"{other}/")
+                        or f"{other}/".startswith(f"{prefix}/")
+                    ):
+                        raise ValueError(
+                            f"Stages {owner!r} and {s.name!r} both declare "
+                            f"http_routes over {min(prefix, other, key=len)!r}. "
+                            "Give each path prefix one stage."
+                        )
+                    else:
+                        pass
+                claimed.append((s.name, prefix))
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")

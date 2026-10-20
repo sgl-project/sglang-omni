@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "parakeet_transcriber.h"
+#include "parakeet/parakeet_transcriber.h"
 
 int main(int argc, char **argv) {
   std::string model_path;

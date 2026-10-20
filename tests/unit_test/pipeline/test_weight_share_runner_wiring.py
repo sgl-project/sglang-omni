@@ -228,6 +228,37 @@ async def test_a_dead_leader_stops_the_run_before_any_follower_spawns(
     assert follower.spawn_env is None
 
 
+class StillStartingGroup(FakeGroup):
+    """Keeps starting after another group is ready, and that group then dies."""
+
+    def __init__(self, events: list[str], process_name: str, ready_group: FakeGroup):
+        super().__init__(events, process_name)
+        self.ready_group = ready_group
+
+    async def wait_ready(self, timeout: float) -> None:
+        self.ready_timeout = timeout
+        self.ready_group.dead = True
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("weight_share", ["on", "off"])
+@pytest.mark.asyncio
+async def test_a_ready_group_that_dies_fails_startup_while_another_still_starts(
+    tmp_path, monkeypatch, weight_share: str
+) -> None:
+    events: list[str] = []
+    ready = FakeGroup(events, "gen@r0")
+    starting = StillStartingGroup(events, "gen@r1", ready)
+    patch(monkeypatch, events, [ready, starting])
+    monkeypatch.setattr(mp_runner, "STARTUP_SUPERVISION_POLL_S", 0.01)
+    runner = MultiProcessPipelineRunner(
+        make_config(tmp_path, weight_share=weight_share)
+    )
+
+    with pytest.raises(RuntimeError, match="gen@r0 exited"):
+        await asyncio.wait_for(runner.start(timeout=5.0), 5)
+
+
 @pytest.mark.asyncio
 async def test_a_replica_alone_on_its_gpu_still_gets_spawned(
     tmp_path, monkeypatch

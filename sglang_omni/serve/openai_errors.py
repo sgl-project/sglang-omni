@@ -58,7 +58,11 @@ _BAD_REQUEST_MARKERS = (
     "PersonaPlex takes one caller recording",
     "Unsupported PersonaPlex audio input",
     "Drama 3 request:",
+    "Ming 3 ASR request:",
     "; packaged voices:",
+    "Native generation request ",
+    "Native chat request rejected: ",
+    "Invalid UMM request: ",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(

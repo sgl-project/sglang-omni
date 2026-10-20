@@ -18,7 +18,10 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     forward_prefix,
     run_prefix_solve,
 )
-from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import (
+    SolveGraphCapture,
+    row_tiers,
+)
 from sglang_omni.platforms.device_graph import ReplayableGraph
 
 
@@ -64,15 +67,7 @@ class PrefixCudaGraphRunner:
         self.euler_steps = len(pool.keys)
         self.mel_channels = mel_channels
         self.speaker_channels = speaker_channels
-        row_ladder = sorted(
-            {
-                rows
-                for rows in (1, 2, 4, 8, 12, *range(16, max_rows + 1, 8))
-                if rows <= max_rows
-            }
-            | {max_rows}
-        )
-        self.tier_frames = [rows * hop_frames for rows in row_ladder]
+        self.tier_frames = [rows * hop_frames for rows in row_tiers(max_rows)]
         chunk_size = estimator.chunk_size
         self.layouts: list[PrefixStepLayout] = []
         for frames in self.tier_frames:

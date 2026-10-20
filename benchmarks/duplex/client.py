@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Record native full-duplex or legacy turn-based sessions over a real WebSocket."""
+"""Record native full-duplex, legacy or turn-based sessions over a real WebSocket."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from typing import Literal, TypedDict
 import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
+from benchmarks.duplex.oracle_models import turn_detection_type
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 SAMPLE_RATE = 16000
 PACKET_MS = 80
@@ -50,6 +51,13 @@ LEGACY_TRANSPORT: dict[str, JsonValue] = {
     "session_end": "input end + tail, then a no-op session.update liveness probe; "
     "the socket closes after its session.updated without session.close",
 }
+# note (luojiaxuan): A turn-based server answers the utterance still open at the
+# input end before it drains, so only the session deadline bounds that wait.
+TURN_BASED_TRANSPORT: dict[str, JsonValue] = {
+    "session_end": "sglang.input_audio.end at the input end, then session.close "
+    "after sglang.input_audio.drained, which follows the server's answer to the "
+    "last utterance; no deadline other than the session timeout bounds that wait",
+}
 
 
 class TurnDetection(BaseModel):
@@ -59,16 +67,18 @@ class TurnDetection(BaseModel):
     type: Literal["server_vad", "semantic_vad"]
 
 
-def legacy_protocol(profile: ProfileName, turn_detection: TurnDetection | None) -> bool:
-    """Whether profile records the legacy protocol, which alone takes turn_detection."""
-    legacy = PROFILES[profile].protocol == "legacy"
-    if legacy != (turn_detection is not None):
+def profile_protocol(
+    profile: ProfileName, turn_detection: TurnDetection | None
+) -> Protocol:
+    """The protocol profile records; every protocol but native takes turn_detection."""
+    protocol = PROFILES[profile].protocol
+    if (protocol != "native") != (turn_detection is not None):
         raise ValueError(
-            "turn_detection is required by legacy-protocol profiles and rejected by "
-            "native ones"
+            "turn_detection is required by legacy-protocol profiles and turn-based "
+            "profiles and rejected by native ones"
         )
     else:
-        return legacy
+        return protocol
 
 
 class InputAudioMetadata(TypedDict):
@@ -95,23 +105,31 @@ async def run_session(
 ) -> None:
     """Save observations and failures; classification belongs to offline replay.
 
-    turn_detection configures a legacy-protocol session; tail_s is the delay after
-    the input end before that session's liveness probe.
+    turn_detection configures a legacy-protocol or turn-based session; tail_s is the
+    delay after the input end before a legacy-protocol session's liveness probe.
     """
     if not pcm or len(pcm) % 2:
         raise ValueError("Input must be nonempty PCM16")
     else:
         pass
-    legacy = legacy_protocol(profile, turn_detection)
+    protocol = profile_protocol(profile, turn_detection)
+    legacy = protocol == "legacy"
     requested_type = turn_detection.type if turn_detection is not None else None
-    configure: dict[str, JsonValue] = (
-        {"output_modalities": ["audio"]}
-        if turn_detection is None
-        else {
+    configure: dict[str, JsonValue]
+    if turn_detection is None:
+        configure = {"output_modalities": ["audio"]}
+    elif legacy:
+        configure = {
             "modalities": ["text", "audio"],
             "turn_detection": turn_detection.model_dump(mode="json"),
         }
-    )
+    else:
+        configure = {
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {"turn_detection": turn_detection.model_dump(mode="json")}
+            },
+        }
     input_s = len(pcm) / (2 * SAMPLE_RATE)
 
     receipts: list[SendReceipt] = []
@@ -267,15 +285,6 @@ async def run_session(
                     else:
                         pass
 
-                def echoed_turn_detection_type() -> JsonValue:
-                    session_fields = latest["session.updated"].get("session")
-                    turn = (
-                        session_fields.get("turn_detection")
-                        if isinstance(session_fields, dict)
-                        else None
-                    )
-                    return turn.get("type") if isinstance(turn, dict) else None
-
                 async def drive() -> None:
                     streamed = False
                     if await settle("session.created"):
@@ -283,10 +292,16 @@ async def run_session(
                     else:
                         pass
                     if await settle("session.updated"):
-                        # note (luojiaxuan): The facade substitutes server_vad when no
-                        # Smart Turn model is loaded, so the echo is the only evidence
-                        # of which detector ran.
-                        echoed = echoed_turn_detection_type() if legacy else None
+                        # note (luojiaxuan): The legacy facade substitutes server_vad
+                        # when no Smart Turn model is loaded, so the echo is the only
+                        # evidence of which detector ran.
+                        echoed = (
+                            turn_detection_type(
+                                latest["session.updated"].get("session"), protocol
+                            )
+                            if turn_detection is not None
+                            else None
+                        )
                         if echoed != requested_type:
                             raise RuntimeError(
                                 f"session.updated echoed turn_detection.type {echoed!r}, "

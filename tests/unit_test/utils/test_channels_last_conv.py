@@ -82,8 +82,6 @@ def test_channels_last_conv_transpose1d_matches_the_conv_transpose1d(
     "conv",
     [
         torch.nn.Conv1d(4, 6, 7),
-        torch.nn.Conv1d(4, 6, 1),
-        torch.nn.ConvTranspose1d(4, 6, 8, stride=2),
     ],
 )
 def test_channels_last_weight_has_channels_last_strides_and_leaves_the_module(

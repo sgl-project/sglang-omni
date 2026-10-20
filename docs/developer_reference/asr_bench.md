@@ -11,7 +11,7 @@ The workloads are the ones in the ASR CI (`.github/workflows/test-asr-ci.yaml`).
 | 1 | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
 | 2 | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
 
-CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-fun-asr`, `run-qwen3-asr` or `run-whisper-asr` label is set.
+CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-asr-fun-asr-nano-2512`, `run-asr-qwen3-asr-1.7b` or `run-asr-whisper-large-v3` label is set with `run-asr-ci` or `run-all-ci`.
 
 This page uses one server on one GPU, with the same datasets, concurrency and request settings as CI.
 

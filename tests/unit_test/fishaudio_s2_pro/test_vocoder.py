@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from hydra.utils import instantiate
@@ -56,9 +57,35 @@ def test_fish_vocoder_batches_and_trims_audio_by_code_length(
     outputs = {first.request_id: first.data, second.request_id: second.data}
 
     assert codec.calls == [(2, 2, 3)]
-    assert outputs["req-short"].data["audio_data"] == [1.0] * 8
-    assert outputs["req-long"].data["audio_data"] == [2.0] * 12
+    assert (
+        np.frombuffer(
+            outputs["req-short"].data["audio_waveform"], dtype=np.float32
+        ).tolist()
+        == [1.0] * 8
+    )
+    assert (
+        np.frombuffer(
+            outputs["req-long"].data["audio_waveform"], dtype=np.float32
+        ).tolist()
+        == [2.0] * 12
+    )
     assert outputs["req-short"].data["usage"]["total_tokens"] == 6
+    for request_id, sample_count in (("req-short", 8), ("req-long", 12)):
+        result = outputs[request_id]
+        assert result.request_id == request_id
+        assert result.data["audio_waveform_shape"] == [sample_count]
+        assert result.data["audio_waveform_dtype"] == "float32"
+        assert result.data["sample_rate"] == 44100
+        assert result.data["modality"] == "audio"
+        assert "audio_samples_bytes" not in result.data
+        assert set(result.data) == {
+            "audio_waveform",
+            "audio_waveform_shape",
+            "audio_waveform_dtype",
+            "sample_rate",
+            "modality",
+            "usage",
+        }
 
 
 CODEC_CONFIG_PATH = (
@@ -134,3 +161,26 @@ def test_a_codec_decode_can_be_captured_in_a_cuda_graph() -> None:
         graph.replay()
 
     torch.testing.assert_close(graph_audio, eager_audio)
+
+
+@pytest.mark.parametrize("samples", [4096, 4133])
+def test_reference_code_only_quantization_matches_full_forward(samples: int) -> None:
+    codec = tiny_codec()
+    audio = torch.randn(1, samples) * 0.1
+    padded = torch.nn.functional.pad(
+        audio.unsqueeze(1), (0, (-samples) % codec.frame_length)
+    )
+    reconstructed = []
+    hook = codec.quantizer.post_module.register_forward_hook(
+        lambda module, inputs, output: reconstructed.append(output)
+    )
+    with torch.no_grad():
+        expected = codec.quantizer(codec.encoder(padded)).codes
+        assert len(reconstructed) == 1
+        actual, lengths = codec.encode(audio, torch.tensor([samples]))
+    hook.remove()
+    assert torch.equal(actual, expected)
+    assert len(reconstructed) == 1
+    assert lengths.tolist() == [
+        (samples + codec.frame_length - 1) // codec.frame_length
+    ]

@@ -1,4 +1,4 @@
-# 🚀 Installation — Intel CPU
+# Installation — Intel CPU
 
 Installs `sglang-omni` for **CPU-only inference**. The default
 [installation](./installation.md) targets CUDA, so this path uses the separate

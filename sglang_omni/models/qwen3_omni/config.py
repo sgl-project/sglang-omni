@@ -13,6 +13,7 @@ from sglang_omni.config import (
     FactoryArgs,
     PipelineConfig,
     PlacementConfig,
+    ProcessConfig,
     StageConfig,
 )
 from sglang_omni.platforms import current_platform
@@ -32,6 +33,8 @@ MIN_PARTIAL_START_CHUNKS = 3
 TALKER_START_MIN_CHUNKS = 1
 
 ENABLE_TALKER_START_TOPOLOGY = False
+
+TALKER_MAX_RUNNING_REQUESTS = 32
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -450,7 +453,7 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
         )
     )
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool | int]:
         process_by_stage = {stage.name: stage.process for stage in self.stages}
         code2wav_shares_talker_process = (
             process_by_stage["code2wav"] == process_by_stage["talker_ar"]
@@ -460,17 +463,39 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
                 "speech_enabled": True,
                 "feedback_enabled": True,
                 "code2wav_in_process": code2wav_shares_talker_process,
+                "max_running_requests": TALKER_MAX_RUNNING_REQUESTS,
             }
         else:
             pass
         if stage_name == "code2wav":
+            talker = self.stage_named("talker_ar")
+            talker_process = self.processes.get(talker.process, ProcessConfig())
             return {
                 "enable_cuda_graph": current_platform.enable_code2wav_graph(),
                 "talker_in_process": code2wav_shares_talker_process,
+                "codec_state_slots": self.talker_max_running_requests()
+                * talker_process.num_replicas,
             }
         else:
             pass
         return super().stage_factory_kwargs(stage_name)
+
+    def talker_max_running_requests(self) -> int:
+        """The talker's running-request cap as its factory resolves it: an engine override, then
+        a factory override, then this pipeline's default."""
+        talker = self.stage_named("talker_ar")
+        engine_overrides = (
+            talker.engine.overrides() if talker.engine is not None else {}
+        )
+        factory_overrides = talker.factory.model_extra or {}
+        return int(
+            engine_overrides.get(
+                "max_running_requests",
+                factory_overrides.get(
+                    "max_running_requests", TALKER_MAX_RUNNING_REQUESTS
+                ),
+            )
+        )
 
 
 class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):

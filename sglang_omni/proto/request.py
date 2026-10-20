@@ -92,3 +92,15 @@ class StagePayload:
             request=request_obj,
             data=data.get("data"),
         )
+
+
+@dataclass(frozen=True)
+class RoutedPayloads:
+    """A stage result whose route sends each named stage its own payload.
+
+    keep_request_state keeps the request live at the routing stage, whose
+    other work for it may already be queued there.
+    """
+
+    payloads: dict[str, StagePayload]
+    keep_request_state: bool = False

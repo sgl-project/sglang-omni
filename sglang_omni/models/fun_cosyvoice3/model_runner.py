@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from queue import Queue
-from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -16,7 +15,6 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
@@ -36,19 +34,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
-from sglang_omni.scheduling.types import (
-    ARRequestData,
-    RequestOutput,
-    SchedulerOutput,
-    SchedulerRequest,
-)
-
-if TYPE_CHECKING:
-
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-
-else:
-    pass
+from sglang_omni.scheduling.types import ARRequestData, SchedulerRequest
 
 COSYVOICE3_RAS_WINDOW_SIZE = 10
 # note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
@@ -581,168 +567,4 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         return GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=False,
-        )
-
-
-class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
-    """MLX scheduler bridge that records generated speech-code tokens.
-
-    MlxSchedulerModelRunner finalizes lazy launches directly through its
-    shared _finalize path, so the Torch runner's phase hooks are not used.
-    post_process_outputs is the common point for both sync and lookahead
-    MLX execution and runs after the worker has materialized the sampled ids.
-    """
-
-    def __init__(
-        self,
-        tp_worker: MlxTpModelWorker,
-        output_processor: SGLangOutputProcessor,
-        *,
-        token_hop_len: int = TOKEN_HOP_LEN,
-    ) -> None:
-        super().__init__(tp_worker, output_processor)
-        hop = int(token_hop_len)
-        if hop <= 0:
-            raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
-        else:
-            pass
-        self.token_hop_len = hop
-
-    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
-        self.outbox = outbox
-        self.vocoder_target = "vocoder"
-
-    def on_request_finished(
-        self, request_id: str, req_data: ARRequestData | None
-    ) -> None:
-        if req_data is not None:
-            self.flush_code_chunks(request_id, req_data, force=True)
-        else:
-            pass
-
-    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        if len(batch.reqs) != 1 or batch.has_grammar:
-            return False
-        else:
-            pass
-        previous = self.last_mlx_pending
-        if previous is not None:
-            previous_ids = [req.rid for req in previous.reqs]
-            current_ids = [req.rid for req in batch.reqs]
-            if previous.launch.mode != "decode" or previous_ids != current_ids:
-                return False
-            else:
-                pass
-        else:
-            pass
-        req = batch.reqs[0]
-        sampling_params = req.sampling_params
-        return (
-            sampling_params.frequency_penalty == 0.0
-            and sampling_params.presence_penalty == 0.0
-            and req.custom_logit_processor is None
-        )
-
-    def post_process_outputs(
-        self,
-        result: GenerationBatchResult,
-        scheduler_output: SchedulerOutput,
-        outputs: dict[str, RequestOutput],
-    ) -> None:
-        del outputs
-        token_ids = result.next_token_ids
-        if token_ids is None:
-            return
-        else:
-            pass
-        token_ids = token_ids.reshape(-1).tolist()
-        requests = scheduler_output.requests
-        if len(token_ids) != len(requests):
-            raise RuntimeError(
-                "Fun-CosyVoice3 MLX sampled-token row count does not match "
-                f"the scheduler batch ({len(token_ids)} != {len(requests)})"
-            )
-        else:
-            pass
-        for sched_req, token_id in zip(requests, token_ids, strict=True):
-            if sched_req.request_id in self.resolve_skip_rids:
-                continue
-            else:
-                pass
-            token_id = int(token_id)
-            if 0 <= token_id < VOCAB_SIZE:
-                token = torch.tensor([token_id], dtype=torch.long)
-                sched_req.data.output_codes.append(token)
-                self.queue_or_emit_code_chunk(sched_req, token)
-            else:
-                pass
-
-    def queue_or_emit_code_chunk(
-        self, sched_req: SchedulerRequest, token: torch.Tensor
-    ) -> None:
-        data: CosyVoice3SGLangRequestData = sched_req.data
-        if getattr(self, "outbox", None) is None or data.stream_metadata is None:
-            return
-        else:
-            pass
-        if not accept_cosyvoice3_stream_token(data, token):
-            return
-        else:
-            pass
-        data.stream_code_buffer.append(token)
-        data.stream_code_seen += 1
-        if int(data.stream_code_next_flush) <= 0:
-            data.stream_code_next_flush = first_ar_flush_tokens(
-                prompt_token_len(data.flow_prompt_speech_token),
-                hop_len=getattr(self, "token_hop_len", TOKEN_HOP_LEN),
-            )
-        else:
-            pass
-        if data.stream_code_seen >= data.stream_code_next_flush:
-            self.flush_code_chunks(sched_req.request_id, data, force=False)
-        else:
-            pass
-
-    def flush_code_chunks(
-        self, request_id: str, data: CosyVoice3SGLangRequestData, *, force: bool
-    ) -> None:
-        pending = data.stream_code_buffer
-        if not pending:
-            return
-        else:
-            pass
-        payload = pending[0] if len(pending) == 1 else torch.cat(pending, dim=0)
-        pending.clear()
-        if not force:
-            data.stream_code_next_flush = int(data.stream_code_seen) + getattr(
-                self, "token_hop_len", TOKEN_HOP_LEN
-            )
-        else:
-            pass
-        self.emit_code_chunk(request_id, data, payload)
-
-    def emit_code_chunk(
-        self, request_id: str, data: CosyVoice3SGLangRequestData, codes: torch.Tensor
-    ) -> None:
-        outbox = getattr(self, "outbox", None)
-        if outbox is None or data.stream_metadata is None:
-            return
-        else:
-            pass
-        metadata = dict(data.stream_metadata)
-        if not data.stream_prompt_sent:
-            metadata["flow_prompt_speech_token"] = data.flow_prompt_speech_token
-            metadata["flow_prompt_speech_feat"] = data.flow_prompt_speech_feat
-            metadata["flow_embedding"] = data.flow_embedding
-            data.stream_prompt_sent = True
-        else:
-            pass
-        outbox.put(
-            OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                target=getattr(self, "vocoder_target", "vocoder"),
-                data=codes,
-                metadata=metadata,
-            )
         )

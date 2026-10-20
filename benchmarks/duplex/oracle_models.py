@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from benchmarks.duplex.profiles import Protocol
+
 Identifier = Annotated[str, Field(min_length=1)]
 Nonnegative = Annotated[float, Field(ge=0)]
 
@@ -75,6 +77,20 @@ class WireEvent(BaseModel):
     padding_ms: Nonnegative | None = None
     reason: str | None = None
     error: dict[str, JsonValue] | None = None
+
+
+def turn_detection_type(session: JsonValue, protocol: Protocol) -> JsonValue:
+    """turn_detection.type of a session object: top-level on the legacy protocol,
+    under audio.input on the turn-based one; None when absent."""
+    fields = session if isinstance(session, dict) else {}
+    if protocol == "turn_based":
+        audio = fields.get("audio")
+        audio_input = audio.get("input") if isinstance(audio, dict) else None
+        fields = audio_input if isinstance(audio_input, dict) else {}
+    else:
+        pass
+    turn = fields.get("turn_detection")
+    return turn.get("type") if isinstance(turn, dict) else None
 
 
 @dataclass

@@ -17,6 +17,7 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
@@ -79,7 +80,10 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     supports_context_length_override = True
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        context_length: int | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.model_arch_override = PERSONAPLEX_ARCH

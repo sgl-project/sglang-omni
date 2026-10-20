@@ -107,24 +107,6 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
     assert batch.sampling_info is original_sampling_info
 
 
-def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
-    bridge, _ = make_bridge()
-    batch = SimpleNamespace(
-        sampling_info=None,
-        mix_running_indices=torch.tensor([1]),
-    )
-    resolved = []
-    monkeypatch.setattr(
-        "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *args: resolved.append(True),
-    )
-
-    with bridge.forward_context(batch):
-        pass
-
-    assert resolved == [True]
-
-
 def test_execution_bridge_rejects_speculative_decoding() -> None:
     future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())

@@ -25,6 +25,7 @@ Export a config to JSON::
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import os
@@ -57,9 +58,16 @@ from sglang_omni.serve.openai_api import ServerStatus, create_app
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
     ChatCompletionRequest,
+    CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.serve.stage_routes import (
+    KEEP_ALIVE_S,
+    StageRoutes,
+    check_route_ownership,
+    export_server_port,
+)
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
@@ -135,7 +143,42 @@ class PipelineUvicornServer(uvicorn.Server):
     the interpreter before ``_run_server`` can stop spawned pipeline workers.
     The pipeline launcher owns child-process cleanup, so it restores the
     original handlers but deliberately consumes the already-handled signal.
+
+    The optional startup GC freeze is process-wide and lasts until serve exits.
     """
+
+    def __init__(
+        self,
+        config: uvicorn.Config,
+        *,
+        freeze_api_gc_on_startup: bool = False,
+    ) -> None:
+        super().__init__(config)
+        self.freeze_api_gc_on_startup: bool = freeze_api_gc_on_startup
+        self.has_frozen_api_gc: bool = False
+
+    async def serve(self, sockets: list[socket.socket] | None = None) -> None:
+        try:
+            await super().serve(sockets=sockets)
+        finally:
+            if self.has_frozen_api_gc:
+                gc.unfreeze()
+                self.has_frozen_api_gc = False
+            else:
+                pass
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        if self.started and self.freeze_api_gc_on_startup:
+            # note (yxs): New request cycles retain normal GC outside the startup graph.
+            gc.collect()
+            gc.freeze()
+            self.has_frozen_api_gc = True
+            logger.info(
+                f"Frozen API startup object graph ({gc.get_freeze_count()} objects)"
+            )
+        else:
+            pass
 
     @contextmanager
     def capture_signals(self) -> Generator[None, None, None]:
@@ -481,7 +524,9 @@ async def warm_up_server(
     app: FastAPI,
     *,
     base_url: str,
-    requests: list[ChatCompletionRequest | TranscriptionWarmupRequest],
+    requests: list[
+        ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
+    ],
     timeout_s: float,
 ) -> None:
     """Mark the server up once its warmup requests have crossed every stage.
@@ -509,6 +554,11 @@ async def warm_up_server(
                 if isinstance(request, ChatCompletionRequest):
                     post = http_client.post(
                         "/v1/chat/completions",
+                        json=request.model_dump(exclude_none=True),
+                    )
+                elif isinstance(request, CreateSpeechRequest):
+                    post = http_client.post(
+                        "/v1/audio/speech",
                         json=request.model_dump(exclude_none=True),
                     )
                 else:
@@ -569,6 +619,7 @@ async def run_server(
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
+    export_server_port(port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -623,6 +674,9 @@ async def run_server(
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
+            supports_image_api=pipeline_config.supports_image_api,
+            image_decode_mode=pipeline_config.image_decode_mode(),
+            image_decode_steps=pipeline_config.image_decode_steps(),
             requires_uploaded_voice_for_named_voice=(
                 pipeline_config.requires_uploaded_voice_for_named_voice()
             ),
@@ -654,10 +708,22 @@ async def run_server(
             tts_batch_max_items=tts_batch_max_items,
             architectures=[pipeline_config.architecture],
             audio_chunking=pipeline_config.resolved_audio_chunking,
+            interleaved_output=type(pipeline_config).interleaved_output,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        # Added last, and refused where a stage prefix reaches Omni's own routes.
+        omni_routes = list(app.router.routes)
+        for stage_name, prefixes, socket_path in mp_runner.stage_http_routes:
+            route = StageRoutes(stage_name, prefixes, socket_path)
+            check_route_ownership(omni_routes, route)
+            app.router.routes.append(route)
+            logger.info(
+                "Stage %s serves %s from its own process",
+                stage_name,
+                ", ".join(prefixes),
+            )
         app.state.server_status = ServerStatus.STARTING
 
         config = uvicorn.Config(
@@ -665,9 +731,12 @@ async def run_server(
             host=host,
             port=port,
             log_level=log_level,
-            timeout_keep_alive=120,
+            timeout_keep_alive=KEEP_ALIVE_S,
         )
-        server = PipelineUvicornServer(config)
+        server = PipelineUvicornServer(
+            config,
+            freeze_api_gc_on_startup=pipeline_config.freeze_api_gc_on_startup,
+        )
         # note (ratish): a wildcard bind address is not a destination, so the
         # server reaches itself on loopback.
         if not host or host == "0.0.0.0":

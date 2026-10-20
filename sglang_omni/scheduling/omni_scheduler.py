@@ -13,6 +13,7 @@ inheriting from ``SGLangScheduler``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue as _queue_mod
 import threading
@@ -25,7 +26,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
-from typing import TYPE_CHECKING, Callable, Generic
+from typing import Callable, Generic
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
@@ -64,7 +65,6 @@ from sglang_omni.admission import (
     QueueFullError,
 )
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
-from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import WeightCheckResult
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -112,12 +112,6 @@ from sglang_omni.scheduling.types import (
     StreamOutputBuilder,
 )
 
-if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-
-else:
-    pass
-
 logger = logging.getLogger(__name__)
 
 
@@ -155,7 +149,7 @@ class PendingDecode:
 
     batch: ScheduleBatch
     scheduler_output: SchedulerOutput
-    device_step: PendingStep | MlxSchedulerPendingStep
+    device_step: PendingStep
 
 
 class PendingStreamIngress:
@@ -258,7 +252,7 @@ _REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
 class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
-    tp_worker: ModelWorker | MlxTpModelWorker
+    tp_worker: ModelWorker
     tree_cache: BasePrefixCache
     req_to_token_pool: ReqToTokenPool
     token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator
@@ -281,6 +275,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
+    should_run_top_priority_stream: bool
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -313,7 +308,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -340,6 +335,7 @@ class OmniScheduler(Generic[RequestDataT]):
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 1,
         async_decode_resolve_before_prefill: bool = False,
+        should_run_top_priority_stream: bool = False,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
@@ -439,6 +435,10 @@ class OmniScheduler(Generic[RequestDataT]):
         # runner allows through the lookahead.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
+        # note (ratish): a model whose process shares the card with a busy stream of its
+        # own (a vocoder) runs the loop on the device's top priority stream, so its
+        # replays go first on the SMs. Only when the model asks.
+        self.should_run_top_priority_stream = should_run_top_priority_stream
         if self.enable_overlap and self.enable_async_decode:
             raise ValueError(
                 "enable_overlap and enable_async_decode are mutually "
@@ -938,7 +938,7 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         return attr
 
-    def init_parallel_state(self, tp_worker: ModelWorker | MlxTpModelWorker) -> None:
+    def init_parallel_state(self, tp_worker: ModelWorker) -> None:
         from sglang.srt.runtime_context import get_parallel
 
         enable_dp_attention = get_parallel().enable_dp_attention
@@ -2069,6 +2069,20 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
+    def stash_chunked_request(self, req: Req) -> None:
+        # note (ratish): a prompt-only-radix request with output keeps its tail out of the tree, so
+        # SGLang's stash would not advance a retracted re-prefill.
+        if req.skip_radix_cache_insert and getattr(
+            req, "_omni_prompt_only_radix", False
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            req.prefix_indices = self.req_to_token_pool.req_to_token[
+                req.kv.req_pool_idx, : req.extend_range.end
+            ].to(dtype=torch.int64, copy=True)
+            return
+        else:
+            pass
+        _Upstream.stash_chunked_request(self, req)
+
     def stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
         self.forward_ct += 1
@@ -2515,12 +2529,25 @@ class OmniScheduler(Generic[RequestDataT]):
         self.running = True
         model_path_status = "error"
         try:
-            if self.enable_async_decode:
-                self.event_loop_async_decode()
-            elif self.enable_overlap:
-                self.event_loop_overlap()
+            if self.should_run_top_priority_stream:
+                loop_stream = self.device_module.Stream(
+                    priority=self.device_module.Stream.priority_range()[1]
+                )
+                # note (ratish): a new stream does not wait for the default stream, so
+                # the loop's stream waits once for the work it holds.
+                loop_stream.wait_stream(self.device_module.current_stream())
+                loop_stream_context: contextlib.AbstractContextManager[None] = (
+                    self.device_module.stream(loop_stream)
+                )
             else:
-                self.event_loop_normal()
+                loop_stream_context = contextlib.nullcontext()
+            with loop_stream_context:
+                if self.enable_async_decode:
+                    self.event_loop_async_decode()
+                elif self.enable_overlap:
+                    self.event_loop_overlap()
+                else:
+                    self.event_loop_normal()
             model_path_status = "aborted"
         finally:
             try:
@@ -2811,6 +2838,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def admin_model_info(self) -> AdminActionResult:
         info = self.model_worker.model_info()
+        if self.model_runner is not None:
+            info.update(self.model_runner.model_info())
+        else:
+            pass
         with self.request_admission_lock:
             request_build_pending = len(self.pending_request_builds)
             request_admission_pending = len(self.pending_request_admissions)

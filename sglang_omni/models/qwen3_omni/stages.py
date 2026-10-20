@@ -1240,7 +1240,7 @@ def create_sglang_thinker_executor_from_config(
         enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
-        sampling_backend="pytorch",
+        sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size
@@ -1368,6 +1368,7 @@ def create_talker_ar_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int | None = None,
+    max_running_requests: int,
     server_args_overrides: Mapping[str, object] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
@@ -1403,7 +1404,7 @@ def create_talker_ar_executor_from_config(
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
-        max_running_requests=32,
+        max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         # note (zhaochenyang20): the native rotary path under torch compile rejects fused_set_kv_buffer_arg.

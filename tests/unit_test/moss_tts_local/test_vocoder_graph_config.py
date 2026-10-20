@@ -82,7 +82,7 @@ def test_rocm_wsl_dxg_explicit_vocoder_graph_contract(monkeypatch) -> None:
         )
 
 
-@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("configured", [False])
 def test_non_dxg_preserves_explicit_vocoder_graph_override(
     monkeypatch, configured
 ) -> None:

@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -40,6 +40,7 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.hf import use_text_rope
 from sglang_omni.utils.json import JsonValue
 
 if TYPE_CHECKING:
@@ -158,11 +159,11 @@ def register_qwen3_tts_hf_config() -> None:
 
         def _patched_init(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
-            talker_config = getattr(self, "talker_config", None)
-            if talker_config is not None:
-                self.text_config = talker_config
-            else:
-                pass
+            # note (ratish): the talker's three MRoPE position rows are identical, so it
+            # rotates as text RoPE; dropping the MRoPE keys before the runtime reads the
+            # text config means no MRoPE positions are built or copied for it.
+            use_text_rope(self.talker_config)
+            self.text_config = self.talker_config
 
         Qwen3TTSConfig.__init__ = _patched_init
         Qwen3TTSConfig._sglang_omni_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -320,8 +321,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 2,
+    max_batch_size: int | None = None,
+    max_batch_wait_ms: int | None = None,
     stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_initial_followup_stride: int | None = None,
@@ -347,6 +348,7 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
+    running_stream_count: int | None = None,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
@@ -367,9 +369,30 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
+    checkpoint_config = load_qwen3_tts_checkpoint_config(model_path)
+    model_type = normalize_qwen3_tts_model_type(checkpoint_config.get("tts_model_type"))
+    configured_model_size = checkpoint_config.get("tts_model_size")
+    tts_model_size: Literal["0b6", "1b7"] | None = None
+    if model_type == "base" and configured_model_size in {"0b6", "1b7"}:
+        tts_model_size = configured_model_size
+    else:
+        pass
+    uses_small_base_cuda_policy = (
+        tts_model_size == "0b6" and torch.device(device).type == "cuda"
+    )
+    if max_batch_size is None:
+        max_batch_size = 2 if uses_small_base_cuda_policy else 8
+    else:
+        pass
+    if max_batch_wait_ms is None:
+        max_batch_wait_ms = 0 if uses_small_base_cuda_policy else 2
+    else:
+        pass
+
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
+        tts_model_size=tts_model_size,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,
@@ -405,13 +428,11 @@ def create_vocoder_executor(
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
         # note (ratish): only a Base checkpoint clones a reference voice, so only its
         # first chunks carry reference codes.
-        has_reference_prefixed_first_chunks=normalize_qwen3_tts_model_type(
-            load_qwen3_tts_checkpoint_config(model_path).get("tts_model_type")
-        )
-        == "base",
+        has_reference_prefixed_first_chunks=model_type == "base",
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
     # from colocated stages.
     scheduler.warmup_now()
+    scheduler.log_cuda_graph_coverage(running_stream_count)
     return scheduler

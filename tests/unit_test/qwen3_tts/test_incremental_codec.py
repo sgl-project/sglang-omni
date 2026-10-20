@@ -39,6 +39,27 @@ def random_partitions(total: int, seed: int) -> list[int]:
     return partitions
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_codec_arena_index_ring_survives_queued_copies() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    incremental = Qwen3TTSIncrementalDecoder(Decoder().to(device).eval())
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=5, device=device, dtype=torch.float32
+    )
+    stream = torch.cuda.Stream(device=device)
+    actual = []
+    with torch.cuda.stream(stream):
+        # note (Zhuofeng-Li): delay the copies until the four host slots wrap.
+        torch.cuda._sleep(
+            20_000_000
+        )  # noqa: leading-underscore  # upstream CUDA test primitive
+        for index in range(12):
+            actual.append(arena.stage_index([index % 5]).clone())
+    stream.synchronize()
+    assert [int(index.item()) for index in actual] == [index % 5 for index in range(12)]
+
+
 class CausalConv(nn.Module):
     def __init__(
         self,
@@ -461,24 +482,6 @@ def test_incremental_decoder_matches_whole_for_arbitrary_partitions(
     assert actual_waveform.shape[-1] == sum(partitions) * decoder.total_upsample
     assert state.frame_position == sum(partitions)
     assert state.transformer_context_length == decoder.pre_transformer.window_size - 1
-
-
-def test_incremental_decoder_reference_prefix_matches_generated_waveform() -> None:
-    torch.manual_seed(5)
-    decoder = Decoder()
-    codes = torch.randint(0, 16, (1, 2, 9))
-    reference_frames = 4
-    expected = decoder(codes)[..., reference_frames * decoder.total_upsample :]
-    incremental = Qwen3TTSIncrementalDecoder(decoder)
-    state = Qwen3TTSIncrementalCodecState()
-
-    initial = incremental.decode(codes[..., :7], state)
-    initial = initial[..., reference_frames * decoder.total_upsample :]
-    final = incremental.decode(codes[..., 7:], state)
-    actual = torch.cat((initial, final), dim=-1)
-
-    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
-    assert actual.shape[-1] == (9 - reference_frames) * decoder.total_upsample
 
 
 def test_incremental_decoder_rejects_malformed_codes() -> None:

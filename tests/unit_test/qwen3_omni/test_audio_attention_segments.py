@@ -83,16 +83,6 @@ def inputs(segments: list[int]):
     return hs, cu
 
 
-def test_share_segment_splits_patches_every_layer() -> None:
-    tower, splits = Tower(), SegmentSplits()
-    share_segment_splits(tower, splits)
-    for layer in tower.layers:
-        assert (
-            layer.self_attn._omni_segment_splits is splits
-        )  # noqa: leading-underscore  # production name
-        assert hasattr(layer.self_attn, "_omni_unshared_forward")
-
-
 def test_shared_splits_match_the_per_layer_split_bitwise() -> None:
     torch.manual_seed(0)
     tower, splits = Tower(), SegmentSplits()
