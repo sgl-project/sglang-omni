@@ -18,6 +18,28 @@ from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
 class SenseNovaRMSNorm(RMSNorm):
     """Use shared device dispatch while keeping CPU inputs on native kernels."""
 
+    def forward_cuda(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor | None = None,
+        post_residual_addition: torch.Tensor | None = None,
+        quant_linear: nn.Module | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if not x.is_cuda:
+            return self.forward_native(
+                x,
+                residual,
+                post_residual_addition,
+                quant_linear,
+            )
+        else:
+            return super().forward_cuda(
+                x,
+                residual,
+                post_residual_addition,
+                quant_linear,
+            )
+
     def forward_npu(
         self,
         x: torch.Tensor,

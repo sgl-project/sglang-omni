@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -275,6 +276,59 @@ def test_shared_rmsnorm_uses_framework_dispatch():
         norm._forward_method
         != norm.forward_native  # noqa: leading-underscore -- SGLang CustomOp dispatch field
     )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("hidden_size", [32, 4])
+@pytest.mark.parametrize("has_residual", [False, True])
+def test_shared_rmsnorm_cuda_cpu_input_uses_native(
+    monkeypatch: pytest.MonkeyPatch,
+    dtype: torch.dtype,
+    hidden_size: int,
+    has_residual: bool,
+) -> None:
+    """CPU inputs must not reach CUDA RMSNorm kernels on accelerator hosts."""
+    norm = make_qwen3_rms_norm(hidden_size, eps=1e-6).to(dtype)
+    hidden_states = torch.randn(2, 3, hidden_size * 2, dtype=dtype)[..., hidden_size:]
+    if has_residual:
+        residual = torch.randn_like(hidden_states)
+        post_residual_addition = torch.randn_like(hidden_states)
+    else:
+        residual = None
+        post_residual_addition = None
+    expected = norm.forward_native(hidden_states, residual, post_residual_addition)
+    cuda_forward = Mock(
+        side_effect=AssertionError("CUDA RMSNorm must not receive CPU inputs")
+    )
+    monkeypatch.setattr(RMSNorm, "forward_cuda", cuda_forward)
+    norm._forward_method = (  # noqa: leading-underscore -- SGLang CustomOp dispatch field
+        norm.forward_cuda
+    )
+
+    actual = norm(hidden_states, residual, post_residual_addition)
+
+    torch.testing.assert_close(actual, expected)
+    cuda_forward.assert_not_called()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_shared_rmsnorm_cuda_input_preserves_framework_kernel(
+    dtype: torch.dtype,
+) -> None:
+    """CUDA inputs retain the shared optimized RMSNorm implementation."""
+    norm = make_qwen3_rms_norm(32, eps=1e-6).to(device="cuda", dtype=dtype)
+    hidden_states = torch.randn(2, 3, 32, device="cuda", dtype=dtype)
+    expected = norm.forward_native(hidden_states)
+
+    with patch.object(
+        RMSNorm, "forward_cuda", autospec=True, side_effect=RMSNorm.forward_cuda
+    ) as cuda_forward:
+        actual = norm.forward_cuda(hidden_states)
+
+    torch.testing.assert_close(actual, expected)
+    cuda_forward.assert_called_once_with(norm, hidden_states, None, None, None)
 
 
 def test_shared_rmsnorm_aiter_cpu_input_uses_native(monkeypatch):
