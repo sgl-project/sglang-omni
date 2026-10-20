@@ -260,6 +260,6 @@ class NEOVisionModel(PreTrainedModel):
         return BaseModelOutputWithPooling(
             last_hidden_state=hidden_states,
             pooler_output=None,
-            hidden_states=None,
+            hidden_states=(hidden_states,) if output_hidden_states else None,
             attentions=None,
         )

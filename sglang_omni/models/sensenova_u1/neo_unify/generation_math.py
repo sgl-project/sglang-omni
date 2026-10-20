@@ -152,7 +152,3 @@ def build_abs_positions_from_grid_hw(
     abs_y = patch_id_within_image // W_per_patch
 
     return abs_x, abs_y
-
-
-# note (Codex): Preserve existing import and serialized class lookup names.
-randn_with_seed = randn_with_seed

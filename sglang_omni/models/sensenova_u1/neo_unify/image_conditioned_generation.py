@@ -139,9 +139,7 @@ def it2i_generate(
             tokenizer, query_img_condition, pixel_values, grid_hw
         )
     else:
-        input_embeds_img_condition = indexes_img_condition = (
-            attention_mask_img_condition_prefix
-        ) = None
+        input_embeds_img_condition = indexes_img_condition = None
     if query_uncondition is not None:
         (
             input_embeds_uncondition,
@@ -149,9 +147,7 @@ def it2i_generate(
             attention_mask_uncondition_prefix,
         ) = self.build_it2i_inputs(tokenizer, query_uncondition)
     else:
-        input_embeds_uncondition = indexes_uncondition = (
-            attention_mask_uncondition_prefix
-        ) = None
+        input_embeds_uncondition = indexes_uncondition = None
 
     token_h = image_size[1] // (self.patch_size * merge_size)
     token_w = image_size[0] // (self.patch_size * merge_size)

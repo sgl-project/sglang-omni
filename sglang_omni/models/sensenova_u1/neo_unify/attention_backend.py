@@ -312,8 +312,10 @@ def create_block_causal_mask(
 
 def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12) -> None:
     """mask: (1,1, L, L)"""
-    submask = torch.where(mask[0, 0, :, :] == 0, torch.tensor(1.0), torch.tensor(0.0))
-    submask = mask[i:j, i:j].int().cpu().numpy()
+    submask = torch.where(
+        mask[0, 0, :, :] == 0, mask.new_tensor(1.0), mask.new_tensor(0.0)
+    )
+    submask = submask[i:j, i:j].int().cpu().numpy()
     for row in submask:
         print(" ".join(map(str, row)))
 
@@ -321,4 +323,3 @@ def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12) -> None:
 # note (Codex): Preserve existing import and serialized class lookup names.
 _HAS_FLASH_ATTN = HAS_FLASH_ATTN
 _flash_or_sdpa = flash_or_sdpa
-sdpa_attn_func = sdpa_attn_func

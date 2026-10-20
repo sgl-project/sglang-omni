@@ -12,7 +12,6 @@ import torch.distributed as distributed
 
 from sglang_omni.proto.request import StagePayload
 
-
 SENSENOVA_DEADLINE_METADATA_KEY = "sensenova_deadline_monotonic_s"
 
 

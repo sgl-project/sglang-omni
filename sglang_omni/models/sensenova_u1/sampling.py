@@ -10,6 +10,25 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 
 
+def resolve_generation_parameters(
+    parameters: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    """Apply generate-stage overrides before sampling and resource validation."""
+    resolved_parameters = dict(parameters)
+    stage_parameters = resolved_parameters.pop("stage_params", None)
+    if stage_parameters is None:
+        return resolved_parameters
+    elif not isinstance(stage_parameters, dict):
+        raise ValueError("stage_params must be a mapping")
+    else:
+        generate_parameters = stage_parameters.get("generate", {})
+    if not isinstance(generate_parameters, dict):
+        raise ValueError("stage_params.generate must be a mapping")
+    else:
+        resolved_parameters.update(generate_parameters)
+    return resolved_parameters
+
+
 @dataclass(frozen=True)
 class SenseNovaU1Sampling:
     width: int = 2048
@@ -23,7 +42,7 @@ class SenseNovaU1Sampling:
 
     @classmethod
     def from_params(cls, params: dict[str, JsonValue]) -> SenseNovaU1Sampling:
-        params = generation_params(params)
+        params = resolve_generation_parameters(params)
         n = params.get("n", 1)
         if type(n) is not int or not 1 <= n <= 10:
             raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
@@ -56,7 +75,7 @@ class SenseNovaU1ImageEditSampling:
 
     @classmethod
     def from_params(cls, params: dict[str, JsonValue]) -> SenseNovaU1ImageEditSampling:
-        params = generation_params(params)
+        params = resolve_generation_parameters(params)
         input_max_pixels = params.get("input_max_pixels")
         if input_max_pixels is not None and (
             type(input_max_pixels) is not int or input_max_pixels < 512 * 512
@@ -94,21 +113,6 @@ class SenseNovaU1ImageEditSampling:
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
         )
-
-
-def generation_params(params: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """Apply generate-stage overrides consistently before validation or execution."""
-    stage_params = params.get("stage_params")
-    if stage_params is None:
-        return params
-    elif not isinstance(stage_params, dict):
-        raise ValueError("stage_params must be a mapping")
-    else:
-        overrides = stage_params.get("generate", {})
-    if not isinstance(overrides, dict):
-        raise ValueError("stage_params.generate must be a mapping")
-    else:
-        return {**params, **overrides}
 
 
 def validated_values(

@@ -272,7 +272,5 @@ def preallocate_think_cache(cache: DynamicCache, additional_tokens: int) -> None
 # note (Codex): Preserve existing import and serialized class lookup names.
 _SenseNovaPreallocatedLayer = SenseNovaPreallocatedLayer
 _dump_native_prefix_kv = dump_native_prefix_kv
-load_srt_prefix_kv = load_srt_prefix_kv
 _merge_srt_prefix_caches = merge_srt_prefix_caches
-preallocate_think_cache = preallocate_think_cache
 _token_ids_sha256 = token_ids_sha256

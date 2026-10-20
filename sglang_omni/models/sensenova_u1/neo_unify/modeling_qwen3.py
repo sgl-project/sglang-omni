@@ -50,7 +50,9 @@ from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
     position_ids_from_indexes as position_ids_from_indexes,
 )
-from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import sdpa_attn_func
+from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
+    sdpa_attn_func as sdpa_attn_func,
+)
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
     set_attn_backend as set_attn_backend,
 )
@@ -124,7 +126,6 @@ from sglang_omni.models.sensenova_u1.neo_unify.transformers_compat import (
 # note (Codex): Preserve legacy module exports for existing callers.
 _HAS_FLASH_ATTN = HAS_FLASH_ATTN
 _flash_or_sdpa = flash_or_sdpa
-sdpa_attn_func = sdpa_attn_func
 _SENSENOVA_NPU_FUSED_ROPE_ENV = SENSENOVA_NPU_FUSED_ROPE_ENV
 _SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL = SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL
 _can_use_sensenova_npu_fused_rope = can_use_sensenova_npu_fused_rope

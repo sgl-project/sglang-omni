@@ -60,9 +60,6 @@ def interleaved_image_denoise(
 
     noise_scale = self.noise_scale
     if self.noise_scale_mode in ("resolution", "dynamic", "dynamic_sqrt"):
-        noise_scale = math.sqrt(
-            (grid_h * grid_w) / (merge_size**2) / self.noise_scale_base_image_seq_len
-        )
         base = float(self.noise_scale_base_image_seq_len)
         noise_scale = math.sqrt((grid_h * grid_w) / (merge_size**2) / base) * float(
             self.noise_scale
