@@ -20,6 +20,7 @@ from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
     seeded_gumbel_argmax,
 )
+from sglang_omni.models.moss_tts.sampling_npu import multinomial_with_seed_npu
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.request_builders import MossTTSSGLangRequestData
@@ -104,6 +105,10 @@ def sample_default_audio_tokens(
 
     if scores.device.type == "cuda" and output is not None:
         return seeded_gumbel_argmax(scores, seeds, positions, output)
+    else:
+        pass
+    if scores.device.type == "npu":
+        return multinomial_with_seed_npu(scores, seeds, positions)
     else:
         pass
     return multinomial_with_seed(scores, seeds, positions).view(-1).long()
@@ -211,7 +216,12 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
             torch.full_like(delay_logits, _NEG_INF),
             delay_logits,
         )
-        sampled_control = multinomial_with_seed_and_token_ids(
+        control_sampler = (
+            multinomial_with_seed_npu
+            if masked_control_logits.device.type == "npu"
+            else multinomial_with_seed_and_token_ids
+        )
+        sampled_control = control_sampler(
             masked_control_logits,
             seeds,
             generation_steps * self.num_channels,
