@@ -94,6 +94,14 @@ audio = client.audio.speech.create(
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
 
+
+### HiFT CUDA graphs
+
+Set the Code2Wav factory's `hift_cuda_graph_capture_shapes` to explicit `[batch_size, mel_frames]` pairs, for example `[[1, 64], [2, 64], [1, 128]]`, to capture HiFT's decode body at startup on CUDA. The default empty list disables capture. Shapes must match exactly: HiFT's noncausal convolutions make padding the time dimension change the waveform. Unlisted shapes use the original decode body; non-CUDA devices skip capture.
+
+This captures the convolution, upsampling and activation body, including its compiled form when `enable_hift_torch_compile` is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.
+
+
 ## Speculative Decoding
 
 The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
@@ -112,3 +120,4 @@ An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggi
 - **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
 - **Scheduling.** Async decode is turned off, and so is the stage's own mixed-chunk default. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
 - **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.
+
