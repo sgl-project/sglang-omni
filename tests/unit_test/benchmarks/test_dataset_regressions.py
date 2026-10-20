@@ -131,6 +131,93 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].target_text == "target one"
 
 
+@pytest.mark.parametrize(
+    ("metadata_row", "target_text", "reference_text"),
+    [
+        (
+            "sample-1|hello|ref.wav|<|emotion:elation|>Hello!",
+            "<|emotion:elation|>Hello!",
+            "hello",
+        ),
+        (
+            "sample-1|hello|ref.wav|Read the literal separator A | B aloud.",
+            "Read the literal separator A | B aloud.",
+            "hello",
+        ),
+        (
+            "sample-1|你好, hello|ref.wav|<|emotion:elation|>你好 | Hello, café!",
+            "<|emotion:elation|>你好 | Hello, café!",
+            "你好, hello",
+        ),
+        ("sample-1||ref.wav||Hello||world|", "|Hello||world|", ""),
+        ("sample-1|hello|ref.wav|", "", "hello"),
+    ],
+    ids=[
+        "control_tokens",
+        "literal_pipe",
+        "code_switching",
+        "edge_pipes",
+        "empty_target",
+    ],
+)
+def test_local_meta_lst_preserves_target_pipes(
+    tmp_path: Path, metadata_row: str, target_text: str, reference_text: str
+) -> None:
+    reference_path = tmp_path / "ref.wav"
+    reference_path.write_bytes(b"wav")
+    metadata_path = tmp_path / "meta.lst"
+    metadata_path.write_text(
+        f"\nmalformed\nonly|two\nonly|three|columns\n{metadata_row}\n"
+        "sample-2|world|ref.wav|not selected\n",
+        encoding="utf-8",
+    )
+
+    samples = seedtts.load_seedtts_samples(str(metadata_path), max_samples=1)
+
+    assert samples == [
+        seedtts.SampleInput(
+            sample_id="sample-1",
+            ref_text=reference_text,
+            ref_audio=str(reference_path),
+            target_text=target_text,
+        )
+    ]
+
+
+def test_local_meta_lst_preserves_reference_columns(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "meta.lst"
+    absolute_audio_path = tmp_path / "absolute.wav"
+    metadata_path.write_text(
+        "relative|  reference text  |audio/ref.wav|<|emotion:elation|>Hello!\n"
+        f"absolute|reference|{absolute_audio_path}|你好 | Hello!\n"
+        "empty|||Read A | B.\n",
+        encoding="utf-8",
+    )
+
+    samples = seedtts.load_seedtts_samples(str(metadata_path))
+
+    assert samples == [
+        seedtts.SampleInput(
+            sample_id="relative",
+            ref_text="  reference text  ",
+            ref_audio=str(tmp_path / "audio" / "ref.wav"),
+            target_text="<|emotion:elation|>Hello!",
+        ),
+        seedtts.SampleInput(
+            sample_id="absolute",
+            ref_text="reference",
+            ref_audio=str(absolute_audio_path),
+            target_text="你好 | Hello!",
+        ),
+        seedtts.SampleInput(
+            sample_id="empty",
+            ref_text="",
+            ref_audio=f"{tmp_path}/",
+            target_text="Read A | B.",
+        ),
+    ]
+
+
 def test_local_seedtts_source_does_not_claim_huggingface_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
