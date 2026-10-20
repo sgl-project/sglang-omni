@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
     from sglang_omni.models.dots_tts.model_runner import DotsFlowLaunchBuf
+    from sglang_omni.models.personaplex.model_runner import PersonaPlexFrameBatch
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
             torch.cuda.Event | torch.xpu.Event,
         ]
         | DotsFlowLaunchBuf
+        | PersonaPlexFrameBatch
         | None
     )
 else:

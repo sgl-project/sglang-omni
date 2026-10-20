@@ -21,7 +21,9 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 
 
 def sched_req(**data_kwargs: object) -> SimpleNamespace:
-    return SimpleNamespace(data=SimpleNamespace(**data_kwargs))
+    return SimpleNamespace(
+        data=SimpleNamespace(session_embedding_spans=[], **data_kwargs)
+    )
 
 
 def projected_req(

@@ -34,11 +34,12 @@ class RecordingSessionClient:
         self,
         request: OmniRequest,
         *,
-        stages: list[str],
+        stages: list[str] | None = None,
+        graph: object | None = None,
         limits: SessionLimits,
         session_id: str,
     ) -> SessionIdentity:
-        assert stages == ["perception", "thinker", "talker", "code2wav"]
+        assert stages is None and graph is None
         self.identity = SessionIdentity(session_id)
         self.output_queue = asyncio.Queue()
         return self.identity

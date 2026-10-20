@@ -262,9 +262,7 @@ def apply_lm_result(data: SGLangARRequestData) -> StagePayload:
         int(token) for token in data.output_ids
     ]
     state.text_ids = text_ids[: len(frames)]
-    state.codes = (
-        torch.stack(frames).cpu() if frames else torch.zeros(0, 8, dtype=torch.long)
-    )
+    state.codes = torch.stack(frames) if frames else torch.zeros(0, 8, dtype=torch.long)
     for name in (
         "waveform",
         "voice_waveform",
@@ -287,7 +285,7 @@ def lm_stream_output_builder(
         return []
     else:
         pass
-    frames = torch.stack(pending).cpu()
+    frames = torch.stack(pending)
     pending.clear()
     return [
         OutgoingMessage(

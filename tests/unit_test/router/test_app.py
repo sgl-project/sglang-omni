@@ -3050,6 +3050,7 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
 # fails and points you here.
 WORKER_ROUTES_NOT_PROXIED = {
     "/v1/realtime",  # the router has no websocket proxy for it yet
+    "/v1/session",  # the router has no native session websocket proxy yet
     "/v1/audio/diarizations",  # the router has no diarization forward yet
     "/v1/audio/diarizations/stream",
 }

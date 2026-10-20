@@ -77,6 +77,8 @@ SERVER_PORT_ENV = "SGLANG_OMNI_SERVER_PORT"
 # Seconds the Omni HTTP server keeps an idle client connection open, which the
 # relay applies to its idle stage connections too.
 KEEP_ALIVE_S = 120
+# note (Yuhao Chen): Some Python builds expose SOMAXCONN as 128 despite a larger kernel limit.
+LISTEN_BACKLOG = max(socket.SOMAXCONN, 4096)
 
 
 def export_server_port(port: int) -> None:
@@ -421,11 +423,8 @@ class StageHttpServer:
         try:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(self.socket_path)
-            # Queue connections up to the system limit, as a blocking listen
-            # would. asyncio's default of 100 refuses the rest of a burst while
-            # the loop is busy, and asyncio then reports those as connected.
             server = await asyncio.start_unix_server(
-                self.accept, path=self.socket_path, backlog=socket.SOMAXCONN
+                self.accept, path=self.socket_path, backlog=LISTEN_BACKLOG
             )
             os.chmod(self.socket_path, 0o600)
             self.started.set()

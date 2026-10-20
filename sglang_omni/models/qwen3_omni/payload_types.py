@@ -16,6 +16,12 @@ else:
     pass
 
 
+# A talker result whose reply was too short to speak; code2wav ends it without audio.
+NO_SPEECH = "no_speech"
+# The dialog's unit of one user turn; the model route answers it with one whole reply.
+UNIT_FORMAT = "qwen.unit"
+
+
 class PromptInputs(TypedDict):
     """Tokenized prompt inputs for the thinker."""
 

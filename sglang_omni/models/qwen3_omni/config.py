@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import base64
+import math
+from dataclasses import replace
 from typing import ClassVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -16,7 +19,12 @@ from sglang_omni.config import (
     ProcessConfig,
     StageConfig,
 )
+from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
+from sglang_omni.models.qwen3_omni.session_input import INPUT_BYTES_PER_SECOND
+from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
 from sglang_omni.platforms import current_platform
+from sglang_omni.proto.session import GRAPH_INPUT, SessionLimits
+from sglang_omni.proto.streams import IMAGE, SessionPorts
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
 from sglang_omni.serve.server_warmup import WARMUP_MAX_TOKENS, warmup_tone_wav_bytes
 from sglang_omni.utils.cpu import effective_cpu_count
@@ -522,9 +530,182 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     )
 
 
+def qwen_session_stages() -> list[StageConfig]:
+    native = f"{_PKG}.native_stages"
+    return [
+        StageConfig(
+            name="dialog",
+            process="dialog",
+            terminal=True,
+            factory_path=f"{native}.create_input_scheduler",
+        ),
+        StageConfig(
+            name="preprocessing",
+            process="preprocessing",
+            next="image_encoder",
+            factory_path=f"{native}.create_preprocessing_scheduler",
+            factory=FactoryArgs(max_seq_len=32768),
+        ),
+        StageConfig(
+            name="image_encoder",
+            process="image_encoder",
+            gpu=0,
+            next="audio_encoder",
+            factory_path=f"{native}.create_encoder_scheduler",
+            factory=FactoryArgs(stage_name="image_encoder"),
+        ),
+        StageConfig(
+            name="audio_encoder",
+            process="audio_encoder",
+            gpu=0,
+            next="thinker",
+            factory_path=f"{native}.create_encoder_scheduler",
+            factory=FactoryArgs(
+                stage_name="audio_encoder", enable_layer_cuda_graph=True
+            ),
+        ),
+        EngineStageConfig(
+            name="thinker",
+            process="thinker",
+            gpu=0,
+            next="talker_ar",
+            stream_to=["talker_ar"],
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                execution_mode="session",
+                max_seq_len=32768,
+                speech_enabled=True,
+                enable_async_decode=False,
+                encoder_mem_reserve=0.0,
+            ),
+        ),
+        EngineStageConfig(
+            name="talker_ar",
+            process="talker",
+            env=talker_stage_env(),
+            gpu=0,
+            next="code2wav",
+            stream_to=["code2wav"],
+            project_payload={
+                "code2wav": f"{_PKG}.request_builders.project_talker_to_code2wav",
+            },
+            can_accept_stream_before_payload=True,
+            factory_path=f"{_PKG}.stages.create_talker_ar_executor_from_config",
+            # The same prompt, partial-start and codec window settings as the speech profile's talker stage.
+            factory=FactoryArgs(
+                execution_mode="session",
+                max_seq_len=32768,
+                enable_partial_start=True,
+                partial_start_min_chunks=5,
+                codec_coalesce_frames=10,
+                codec_coalesce_early_frames=10,
+                codec_coalesce_first_frames=0,
+            ),
+        ),
+        StageConfig(
+            name="code2wav",
+            process="speech",
+            gpu=0,
+            terminal=True,
+            can_accept_stream_before_payload=True,
+            factory_path=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
+        ),
+    ]
+
+
+class Qwen3OmniSessionPipelineConfig(AudioSessionPipelineConfig):
+    """Incremental Qwen stage routes over the shared Session schedulers."""
+
+    stage_groups: ClassVar[tuple[StageGroup, ...]] = (
+        *AudioSessionPipelineConfig.stage_groups,
+        StageGroup(qwen_session_stages, None, SESSION_PORTS),
+    )
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        **AudioSessionPipelineConfig.stage_config_types,
+        "thinker": EngineStageConfig,
+        "talker_ar": EngineStageConfig,
+    }
+    max_sessions: int = Field(ge=1)
+    # The audio the dialog holds for one user turn before speech.stopped or a commit ends it; a client that never ends a turn is cut here.
+    max_utterance_seconds: float = Field(default=60, gt=0)
+    # Finished utterances waiting behind the turn being answered; a client that keeps committing without listening is cut here.
+    max_queued_turns: int = Field(default=8, ge=1)
+    # The newest camera frames of an utterance that go to the model with it, as many as the executor route sent.
+    max_utterance_frames: int = Field(default=4, ge=0)
+    placement_policy: str | None = None
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_COLOCATED_STAGE_ENV_DEFAULTS)
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def select_entry_stage(cls, configuration: object) -> object:
+        if isinstance(configuration, dict):
+            return {"entry_stage": "dialog", **configuration}
+        else:
+            return configuration
+
+    def stage_factory_kwargs(
+        self, stage_name: str
+    ) -> dict[str, float | int | dict[str, int]]:
+        if stage_name in {"thinker", "talker_ar"}:
+            kwargs = {
+                "server_args_overrides": {
+                    "max_running_requests": self.max_sessions
+                    + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
+                }
+            }
+            if stage_name == "talker_ar":
+                kwargs["max_running_requests"] = (
+                    self.max_sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+                )
+            else:
+                pass
+            return kwargs
+        elif stage_name in {"vad", "code2wav"}:
+            return {}
+        elif stage_name == "dialog":
+            return {
+                "max_open_sessions": self.max_sessions,
+                "max_utterance_seconds": self.max_utterance_seconds,
+                "max_queued_turns": self.max_queued_turns,
+                "max_utterance_frames": self.max_utterance_frames,
+            }
+        else:
+            return {"max_open_sessions": self.max_sessions}
+
+    def session_ports(self) -> SessionPorts:
+        ports = super().session_ports()
+        blind_readers = sorted(
+            name
+            for name, node in self.session_graph().nodes.items()
+            if node.edges().get(GRAPH_INPUT, frozenset()) is None
+            and (
+                self.node_ports(name, self.session_nodes[name]) is None
+                or IMAGE
+                not in self.node_ports(name, self.session_nodes[name]).input_modalities
+            )
+        )
+        if IMAGE in ports.input_modalities and blind_readers:
+            raise ValueError(
+                f"nodes {blind_readers} read every format of {GRAPH_INPUT!r}, including camera frames they cannot consume"
+            )
+        else:
+            return ports
+
+    def session_limits(self) -> SessionLimits:
+        limits = super().session_limits()
+        # The dialog forwards the complete utterance in one unit, including its wire envelope.
+        utterance_bytes = math.ceil(self.max_utterance_seconds * INPUT_BYTES_PER_SECOND)
+        return replace(
+            limits, max_chunk_bytes=max(limits.max_chunk_bytes, utterance_bytes + 1024)
+        )
+
+
 EntryClass = Qwen3OmniSpeechPipelineConfig
 
 Variants = {
+    "session": Qwen3OmniSessionPipelineConfig,
     "text": Qwen3OmniPipelineConfig,
     "speech": Qwen3OmniSpeechPipelineConfig,
     "speech-colocated": Qwen3OmniSpeechColocatedPipelineConfig,

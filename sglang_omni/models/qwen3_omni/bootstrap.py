@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.talker_session import QwenTalkerSessionAdapter
+from sglang_omni.models.qwen3_omni.thinker_session import QwenThinkerSessionAdapter
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -20,6 +24,7 @@ def create_thinker_scheduler(
     gpu_id: int = 0,
     *,
     speech_enabled: bool = False,
+    execution_mode: Literal["request", "session"] = "request",
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
@@ -31,6 +36,7 @@ def create_thinker_scheduler(
     operator_selected_prefill_backend: bool = False,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
+    # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -40,6 +46,9 @@ def create_thinker_scheduler(
     )
     from sglang_omni.models.qwen3_omni.thinker_model_runner import (
         Qwen3OmniThinkerModelRunner,
+    )
+    from sglang_omni.models.qwen3_omni.thinker_session_runner import (
+        QwenSessionThinkerModelRunner,
     )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.generation_batch_policy import (
@@ -81,7 +90,9 @@ def create_thinker_scheduler(
 
     output_proc = SGLangOutputProcessor()
 
-    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+    if execution_mode == "session":
+        model_runner = QwenSessionThinkerModelRunner(model_worker, output_proc)
+    elif speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
         model_runner = ThinkerModelRunner(model_worker, output_proc)
     else:
         model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
@@ -96,9 +107,16 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
     )
+    # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
     stream_output_builder = make_thinker_stream_output_builder(
         speech_enabled=speech_enabled
     )
+    if execution_mode == "request":
+        session_adapter = None
+    else:
+        session_adapter = QwenThinkerSessionAdapter(
+            tokenizer, model_config.vocab_size, thinker_config
+        )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -111,6 +129,7 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        session_adapter=session_adapter,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
@@ -125,6 +144,7 @@ def create_talker_scheduler(
     *,
     weight_prefix: str = "talker.",
     speech_enabled: bool = True,
+    execution_mode: Literal["request", "session"] = "request",
     feedback_enabled: bool = True,
     tp_rank: int = 0,
     nccl_port: int | None = None,
@@ -218,36 +238,71 @@ def create_talker_scheduler(
     thinker_config = root_config.thinker_config
     talker_config = root_config.talker_config
     codec_vocab_size = talker_config.text_config.vocab_size
-    (
-        request_builder,
-        result_adapter,
-        stream_chunk_handler,
-        stream_done_handler,
-    ) = make_talker_scheduler_adapters(
-        tokenizer=tokenizer,
-        codec_vocab_size=codec_vocab_size,
-        model=model_worker.model_runner.model,
-        model_path=model_config.model_path,
-        thinker_config=thinker_config,
-        codec_bos_id=talker_config.codec_bos_id,
-        codec_eos_id=talker_config.codec_eos_token_id,
-        codec_nothink_id=talker_config.codec_nothink_id,
-        codec_think_bos_id=talker_config.codec_think_bos_id,
-        codec_think_eos_id=talker_config.codec_think_eos_id,
-        codec_pad_id=talker_config.codec_pad_id,
-        audio_token_id=thinker_config.audio_token_id,
-        image_token_id=thinker_config.image_token_id,
-        video_token_id=thinker_config.video_token_id,
-        tts_bos_token_id=root_config.tts_bos_token_id,
-        tts_eos_token_id=root_config.tts_eos_token_id,
-        tts_pad_token_id=root_config.tts_pad_token_id,
-        im_start_token_id=root_config.im_start_token_id,
-        im_end_token_id=root_config.im_end_token_id,
-        system_token_id=root_config.system_token_id,
-        user_token_id=root_config.user_token_id,
-        assistant_token_id=root_config.assistant_token_id,
-        speaker_map=talker_config.speaker_id,
-    )
+    if execution_mode == "request":
+        (
+            request_builder,
+            result_adapter,
+            stream_chunk_handler,
+            stream_done_handler,
+        ) = make_talker_scheduler_adapters(
+            tokenizer=tokenizer,
+            codec_vocab_size=codec_vocab_size,
+            model=model_worker.model_runner.model,
+            model_path=model_config.model_path,
+            thinker_config=thinker_config,
+            codec_bos_id=talker_config.codec_bos_id,
+            codec_eos_id=talker_config.codec_eos_token_id,
+            codec_nothink_id=talker_config.codec_nothink_id,
+            codec_think_bos_id=talker_config.codec_think_bos_id,
+            codec_think_eos_id=talker_config.codec_think_eos_id,
+            codec_pad_id=talker_config.codec_pad_id,
+            audio_token_id=thinker_config.audio_token_id,
+            image_token_id=thinker_config.image_token_id,
+            video_token_id=thinker_config.video_token_id,
+            tts_bos_token_id=root_config.tts_bos_token_id,
+            tts_eos_token_id=root_config.tts_eos_token_id,
+            tts_pad_token_id=root_config.tts_pad_token_id,
+            im_start_token_id=root_config.im_start_token_id,
+            im_end_token_id=root_config.im_end_token_id,
+            system_token_id=root_config.system_token_id,
+            user_token_id=root_config.user_token_id,
+            assistant_token_id=root_config.assistant_token_id,
+            speaker_map=talker_config.speaker_id,
+        )
+        session_adapter = None
+    else:
+        prefill_builder = TalkerPrefillBuilder(
+            model=model_worker.model_runner.model,
+            model_path=model_config.model_path,
+            codec_bos_id=talker_config.codec_bos_id,
+            codec_nothink_id=talker_config.codec_nothink_id,
+            codec_think_bos_id=talker_config.codec_think_bos_id,
+            codec_think_eos_id=talker_config.codec_think_eos_id,
+            codec_pad_id=talker_config.codec_pad_id,
+            audio_token_id=thinker_config.audio_token_id,
+            image_token_id=thinker_config.image_token_id,
+            video_token_id=thinker_config.video_token_id,
+            tts_bos_token_id=root_config.tts_bos_token_id,
+            tts_eos_token_id=root_config.tts_eos_token_id,
+            tts_pad_token_id=root_config.tts_pad_token_id,
+            im_start_token_id=root_config.im_start_token_id,
+            im_end_token_id=root_config.im_end_token_id,
+            system_token_id=root_config.system_token_id,
+            user_token_id=root_config.user_token_id,
+            assistant_token_id=root_config.assistant_token_id,
+            speaker_map=talker_config.speaker_id,
+        )
+        session_adapter = QwenTalkerSessionAdapter(
+            prefill_builder,
+            tokenizer,
+            codec_vocab_size,
+            talker_config.codec_eos_token_id,
+            thinker_config,
+        )
+        request_builder = None
+        result_adapter = None
+        stream_chunk_handler = session_adapter.append_text_chunk
+        stream_done_handler = session_adapter.mark_thinker_done
 
     scheduler = QwenTalkerScheduler(
         tp_worker=model_worker,
@@ -260,12 +315,17 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         stream_chunk_handler=stream_chunk_handler,
         stream_done_handler=stream_done_handler,
+        session_adapter=session_adapter,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
         enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
     )
 
+    if session_adapter is not None:
+        session_adapter.outbox = scheduler.outbox
+    else:
+        pass
     model_runner = QwenTalkerModelRunner(
         model_worker,
         output_proc,

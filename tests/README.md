@@ -697,6 +697,14 @@ that happened to contain an older version of the test.
     ownership, first-flush, post-prefix window cadence, EOS removal, final-tail,
     and feedback-order contracts. Early Talker startup opt-in, chunk gates, and
     config forwarding are covered in `test_talker.py` and `test_config_manager.py`.
+  - the realtime Session route (`test_session_config.py`, `test_session_stage_graph.py`,
+    `test_session_input.py`, `test_session_preprocessing.py`, `test_session_encoders.py`,
+    `test_thinker_session.py`, `test_thinker_session_positions.py`, `test_talker_session.py`):
+    the profile's stage routes and graph, the dialog's turn cutting, frame cap, interrupt
+    and truncate forwarding over real coordinator routes, one prompt per turn with
+    retained media rows, the thinker's native-session history, refill of an interrupted
+    reply and rebuild after a truncate, M-RoPE positions over retained history against a
+    one-shot computation, and the talker's one request per reply.
   - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
     fire rules, sub-batch decomposition, output equivalence, and lifecycle.
     `test_code2wav_batching.py` also covers per-window batch ceilings,
@@ -998,7 +1006,20 @@ that happened to contain an older version of the test.
   accounting, exact binary chunk wire sizes and state cleanup without worker processes. Run the session suite with
   `python -m pytest tests/unit_test/pipeline/test_session_*.py tests/unit_test/scheduling/test_session.py -q`.
 
+- `unit_test/pipeline/test_session_graph_edges.py`: Graph edge semantics over spawned
+  stage owners: a preempting interrupt drops the turn's queued output and not the next
+  turn, input during an interrupt waits unfenced, `drop_oldest` edges between nodes and
+  on the client's input, a control edge passing a full data edge, a blocking edge
+  holding its producer, and a node failure failing the outputs and closing the graph.
 - `unit_test/pipeline/test_session_shutdown.py`: Deterministic thread and trace
   fences cover shutdown during abort/append hooks and the open/append window
   between the final hook check and owner unlock, requiring exactly-once cleanup
   after native work returns without blocking shutdown.
+
+### Streaming cascade
+
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#streaming-cascade).
+
+```bash
+python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q
+```

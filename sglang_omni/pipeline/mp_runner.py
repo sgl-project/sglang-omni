@@ -767,6 +767,7 @@ class MultiProcessPipelineRunner:
                 if self.config.terminal_stages_fn
                 else None
             )
+            session_graph = self.config.session_graph()
             max_in_flight = resolve_coordinator_max_in_flight(
                 self.config,
                 logical_process_plan=prep.logical_process_plan,
@@ -782,6 +783,11 @@ class MultiProcessPipelineRunner:
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
                 max_total_backlog_bytes=stream_delivery.max_total_backlog_bytes,
+                session_route=(
+                    self.config.session_route if session_graph is None else None
+                ),
+                session_graph=session_graph,
+                max_output_lead_ms=self.config.max_output_lead_ms,
             )
             logger.info(
                 f"Coordinator stream backlog cap: "

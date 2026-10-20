@@ -8,7 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .vad import (
+from sglang_omni.audio.vad import (
     VAD_FRAME_SAMPLES,
     VAD_SAMPLE_RATE,
     Emit,
@@ -64,6 +64,29 @@ class SemanticVADConfig:
         else:
             pass
         return cls(eagerness=eagerness, **presets[eagerness])
+
+    def required_silence_ms(self, probability: float | None) -> int:
+        """The silence that ends the turn after the end-of-turn model scored it `probability`; the longest pause when it did not score."""
+        if probability is None:
+            return self.max_pause_ms
+        elif probability >= self.immediate_confidence_threshold:
+            return max(self.candidate_pause_ms, self.immediate_silence_ms)
+        elif probability >= self.confidence_threshold:
+            return max(self.candidate_pause_ms, self.confidence_silence_ms)
+        else:
+            return self.max_pause_ms
+
+
+def end_of_turn_probability(
+    eou_model: SemanticEOUModel, pcm16: bytes, max_utterance_seconds: int
+) -> float:
+    """Score the last `max_utterance_seconds` of a 16 kHz pcm16 utterance."""
+    audio = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+    return float(
+        eou_model.predict(
+            audio[-max_utterance_seconds * VAD_SAMPLE_RATE :], VAD_SAMPLE_RATE
+        )
+    )
 
 
 class SemanticTurnDetector:
@@ -167,27 +190,9 @@ class SemanticTurnDetector:
             else:
                 pass
 
-            required_silence_ms = self.config.max_pause_ms
-            if (
-                self.candidate_probability is not None
-                and self.candidate_probability
-                >= self.config.immediate_confidence_threshold
+            if silence_ms >= self.config.required_silence_ms(
+                self.candidate_probability
             ):
-                required_silence_ms = max(
-                    self.config.candidate_pause_ms,
-                    self.config.immediate_silence_ms,
-                )
-            elif (
-                self.candidate_probability is not None
-                and self.candidate_probability >= self.config.confidence_threshold
-            ):
-                required_silence_ms = max(
-                    self.config.candidate_pause_ms,
-                    self.config.confidence_silence_ms,
-                )
-            else:
-                pass
-            if silence_ms >= required_silence_ms:
                 emits.append(self.end_turn())
             else:
                 pass
@@ -195,14 +200,11 @@ class SemanticTurnDetector:
         return emits
 
     def predict_eou(self) -> float:
-        audio = np.frombuffer(self.utterance_audio, dtype="<i2").astype(np.float32)
-        audio /= 32768.0
-        max_samples = self.config.max_utterance_seconds * VAD_SAMPLE_RATE
-        if audio.size > max_samples:
-            audio = audio[-max_samples:]
-        else:
-            pass
-        return float(self.eou_model.predict(audio, VAD_SAMPLE_RATE))
+        return end_of_turn_probability(
+            self.eou_model,
+            bytes(self.utterance_audio),
+            self.config.max_utterance_seconds,
+        )
 
     def end_turn(self) -> Emit:
         self.is_speech = False

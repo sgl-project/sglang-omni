@@ -1119,18 +1119,18 @@ class OmniScheduler(Generic[RequestDataT]):
         elif bridge is None:
             raise ValueError("AR streaming sessions are not enabled for this stage")
         elif operation.operation != "append":
-            session_payload = bridge.apply_operation(payload, operation)
-            if payload.request_id in self.aborted_request_ids:
-                return False
-            else:
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=payload.request_id,
-                        type="result",
-                        data=session_payload,
+            for session_payload in bridge.apply_operation(payload, operation):
+                if session_payload.request_id in self.aborted_request_ids:
+                    pass
+                else:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=session_payload.request_id,
+                            type="result",
+                            data=session_payload,
+                        )
                     )
-                )
-                return False
+            return False
         else:
             unit = bridge.accept(payload, operation)
             chunk = unit.chunk
@@ -1247,11 +1247,24 @@ class OmniScheduler(Generic[RequestDataT]):
             pending_stream_done = ingress.done if ingress is not None else False
             payload.prefetched_stream_done = pending_stream_done
             session_unit = self.active_session_unit(req_id)
-            if session_unit is None and not self.is_request_build_ready(
+            if not self.is_request_build_ready(
                 payload,
                 pending_stream_done=pending_stream_done,
             ):
                 self.deferred_request_payloads[req_id] = payload
+                continue
+            else:
+                pass
+            result = self.complete_without_generation(payload, session_unit)
+            if result is not None:
+                self.pending_stream_ingress.pop(req_id, None)
+                if session_unit is not None:
+                    self.session_bridge.complete(req_id)
+                else:
+                    pass
+                self.outbox.put(
+                    OutgoingMessage(request_id=req_id, type="result", data=result)
+                )
                 continue
             else:
                 pass
@@ -1824,6 +1837,12 @@ class OmniScheduler(Generic[RequestDataT]):
         del request_id, chunk
         return True
 
+    def complete_without_generation(
+        self, payload: StagePayload, session_unit: SessionUnit | None
+    ) -> StagePayload | None:
+        """The result of a build-ready request its model cannot generate for, or None to build it."""
+        return None
+
     def is_request_build_ready(
         self,
         payload: StagePayload,
@@ -2152,14 +2171,29 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             req_output = mr_output.outputs[rid]
             session_unit = self.active_session_unit(rid)
-            if session_unit is not None:
-                assert bridge is not None
-                messages = bridge.stream_messages(rid, sched_req.data, req_output)
-            elif self.stream_output_builder is not None:
-                messages = self.stream_output_builder(rid, sched_req.data, req_output)
+            try:
+                if (
+                    session_unit is not None
+                    and _get_active_stage() == session_unit.stages[-1]
+                ):
+                    assert bridge is not None
+                    messages = bridge.stream_messages(rid, sched_req.data, req_output)
+                elif self.stream_output_builder is not None:
+                    messages = self.stream_output_builder(
+                        rid, sched_req.data, req_output
+                    )
+                else:
+                    continue
+                messages = list(messages)
+            except Exception as error:
+                logger.exception(
+                    f"OmniScheduler stream output failed for request {rid}"
+                )
+                self.emit_request_error(rid, error)
+                self.emit_model_path_end_once(rid, status="error")
+                self.abort(rid)
             else:
-                continue
-            self.stage_stream_messages(rid, messages, step_messages)
+                self.stage_stream_messages(rid, messages, step_messages)
         put_messages(self.outbox, step_messages)
 
     def stage_stream_messages(
@@ -2189,7 +2223,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def flush_stream_output(self, request_id: str, req_data: ARRequestData) -> None:
         session_unit = self.active_session_unit(request_id)
-        if session_unit is not None:
+        if session_unit is not None and _get_active_stage() == session_unit.stages[-1]:
             bridge = self.session_bridge
             assert bridge is not None
             self.put_stream_messages(
@@ -2445,8 +2479,6 @@ class OmniScheduler(Generic[RequestDataT]):
                     terminal_error = callback_error
                 else:
                     pass
-                data.prefill_input_embeds = None
-                data.decode_input_embeds = None
                 # Note: (Jiaxin Deng) close the model-path interval before
                 # _close_completed_request, which discards the same rid that
                 # _emit_model_path_end_once dedups on. Emitting afterwards
@@ -2456,6 +2488,8 @@ class OmniScheduler(Generic[RequestDataT]):
                     status="error" if terminal_error is not None else "success",
                 )
                 abort_cleanup_needed = self.close_completed_request(req)
+                data.prefill_input_embeds = None
+                data.decode_input_embeds = None
 
             if abort_cleanup_needed:
                 self.run_abort_callback(rid)
@@ -3837,7 +3871,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_id = req.rid
         bridge = self.session_bridge
         if bridge is not None:
-            bridge.complete(request_id)
+            bridge.complete(request_id, req.omni_data)
         else:
             pass
         with self.request_admission_lock:

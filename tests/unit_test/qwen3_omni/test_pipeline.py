@@ -42,6 +42,7 @@ from sglang_omni.models.ming_omni.config import (
     MingOmniSpeechPipelineConfig,
     MingOmniStreamingSpeechPipelineConfig,
 )
+from sglang_omni.models.qwen3_omni import thinker_session_runner
 from sglang_omni.models.qwen3_omni.components import preprocessor as preprocessor_mod
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
@@ -50,7 +51,10 @@ from sglang_omni.models.qwen3_omni.config import (
 )
 from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
 from sglang_omni.models.qwen3_omni.mrope_positions import feat_extract_output_lengths
-from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.payload_types import (
+    NO_SPEECH,
+    Qwen3OmniPipelineState,
+)
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_thinker_result,
     build_sglang_thinker_request,
@@ -865,6 +869,8 @@ def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
     assert projected.request_id == payload.request_id
     assert projected.request is payload.request
     assert projected.data == {}
+    payload.data[NO_SPEECH] = True
+    assert project_talker_to_code2wav(payload).data == {NO_SPEECH: True}
 
 
 def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
@@ -1199,9 +1205,11 @@ def test_qwen_encoder_mem_reserve_routes_as_scheduler_group_value() -> None:
 
 
 @pytest.mark.parametrize("speech_enabled", [False, True])
+@pytest.mark.parametrize("execution_mode", ["request", "session"])
 def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     speech_enabled: bool,
+    execution_mode: str,
 ) -> None:
     from sglang.srt.utils import hf_transformers_utils
 
@@ -1215,6 +1223,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
     server_args = SimpleNamespace(
+        enable_streaming_session=True,
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
         cuda_graph_config=SimpleNamespace(
@@ -1281,15 +1290,20 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
     )
+    ordinary_request_builder = Mock()
+    ordinary_result_adapter = Mock()
+    ordinary_stream_builder = Mock()
+    make_adapters = Mock(
+        return_value=(ordinary_request_builder, ordinary_result_adapter)
+    )
+    make_stream_builder = Mock(return_value=ordinary_stream_builder)
     monkeypatch.setattr(
-        request_builders,
-        "make_thinker_scheduler_adapters",
-        lambda **kwargs: (object(), object()),
+        request_builders, "make_thinker_scheduler_adapters", make_adapters
     )
     monkeypatch.setattr(
         request_builders,
         "make_thinker_stream_output_builder",
-        lambda *, speech_enabled: object(),
+        make_stream_builder,
     )
     monkeypatch.setattr(
         sglang_backend, "SGLangOutputProcessor", lambda **kwargs: output_proc
@@ -1314,8 +1328,14 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         SimpleNamespace,
     )
 
+    session_runner = Mock()
+    session_adapter = Mock()
+    monkeypatch.setattr(
+        thinker_session_runner, "QwenSessionThinkerModelRunner", session_runner
+    )
+    monkeypatch.setattr(bootstrap, "QwenThinkerSessionAdapter", session_adapter)
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled
+        server_args, speech_enabled=speech_enabled, execution_mode=execution_mode
     )
 
     assert infrastructure_saw_graph_disabled == [False]
@@ -1324,13 +1344,25 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert infrastructure_saw_return_hidden == [False]
     assert server_args.enable_return_hidden_states is False
     assert server_args.disable_cuda_graph is False
-    assert generic_runner_calls == (
-        [(model_worker, output_proc)] if speech_enabled else []
-    )
-    assert qwen_runner_calls == (
-        [] if speech_enabled else [(model_worker, output_proc)]
-    )
     assert scheduler.server_args is server_args
+    assert scheduler.request_builder is ordinary_request_builder
+    assert scheduler.result_adapter is ordinary_result_adapter
+    assert scheduler.stream_output_builder is ordinary_stream_builder
+    make_adapters.assert_called_once()
+    make_stream_builder.assert_called_once_with(speech_enabled=speech_enabled)
+    if execution_mode == "request":
+        assert generic_runner_calls == (
+            [(model_worker, output_proc)] if speech_enabled else []
+        )
+        assert qwen_runner_calls == (
+            [] if speech_enabled else [(model_worker, output_proc)]
+        )
+        assert getattr(scheduler, "session_adapter", None) is None
+        assert scheduler.enable_async_decode is True
+    else:
+        assert generic_runner_calls == qwen_runner_calls == []
+        assert scheduler.model_runner is session_runner.return_value
+        assert scheduler.session_adapter is session_adapter.return_value
 
 
 def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
@@ -1438,8 +1470,9 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
 
 
 @pytest.mark.parametrize("prefill_backend", ["breakable", "disabled"])
+@pytest.mark.parametrize("execution_mode", ["request", "session"])
 def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
-    monkeypatch: pytest.MonkeyPatch, prefill_backend: str
+    monkeypatch: pytest.MonkeyPatch, prefill_backend: str, execution_mode: str
 ) -> None:
     from sglang.srt.utils import hf_transformers_utils
 
@@ -1455,6 +1488,7 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
     from sglang_omni.utils import cuda_graph_batch_validator
 
     server_args = SimpleNamespace(
+        enable_streaming_session=True,
         disable_cuda_graph=False,
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=prefill_backend)
@@ -1527,10 +1561,20 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
     )
+    ordinary_request_builder = Mock()
+    ordinary_result_adapter = Mock()
+    ordinary_chunk_handler = Mock()
+    ordinary_done_handler = Mock()
+    make_adapters = Mock(
+        return_value=(
+            ordinary_request_builder,
+            ordinary_result_adapter,
+            ordinary_chunk_handler,
+            ordinary_done_handler,
+        )
+    )
     monkeypatch.setattr(
-        request_builders,
-        "make_talker_scheduler_adapters",
-        lambda **kwargs: (object(), object(), object(), object()),
+        request_builders, "make_talker_scheduler_adapters", make_adapters
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda: object())
     monkeypatch.setattr(talker_scheduler, "QwenTalkerScheduler", FakeTalkerScheduler)
@@ -1540,9 +1584,33 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
         lambda *args, **kwargs: object(),
     )
 
-    bootstrap.create_talker_scheduler(
-        server_args, operator_selected_prefill_backend=True
+    session_adapter = Mock()
+    monkeypatch.setattr(bootstrap, "QwenTalkerSessionAdapter", session_adapter)
+    monkeypatch.setattr(bootstrap, "TalkerPrefillBuilder", Mock())
+    scheduler = bootstrap.create_talker_scheduler(
+        server_args,
+        execution_mode=execution_mode,
+        operator_selected_prefill_backend=True,
+        enable_partial_start=True,
+        enable_talker_start_topology=True,
     )
+    assert scheduler.enable_partial_start is True
+    assert scheduler.enable_talker_start_topology is True
+    if execution_mode == "request":
+        assert getattr(scheduler, "session_adapter", None) is None
+        assert scheduler.request_builder is ordinary_request_builder
+        assert scheduler.result_adapter is ordinary_result_adapter
+        assert scheduler.stream_chunk_handler is ordinary_chunk_handler
+        assert scheduler.stream_done_handler is ordinary_done_handler
+        make_adapters.assert_called_once()
+    else:
+        adapter = session_adapter.return_value
+        assert scheduler.session_adapter is adapter
+        assert adapter.outbox is scheduler.outbox
+        assert scheduler.request_builder is None
+        assert scheduler.stream_chunk_handler is adapter.append_text_chunk
+        assert scheduler.stream_done_handler is adapter.mark_thinker_done
+        make_adapters.assert_not_called()
 
     is_breakable = prefill_backend == CudaGraphBackend.BREAKABLE
     assert captured["enable_prefill_input_embeds"] is is_breakable

@@ -128,13 +128,12 @@ class Client:
         self,
         request: OmniRequest,
         *,
-        stages: list[str],
         limits: SessionLimits | None = None,
         session_id: str | None = None,
     ) -> SessionIdentity:
-        """Open an explicitly configured stateful pipeline route."""
+        """Open the Session the pipeline declares."""
         return await self.coordinator.open_session(
-            request, stages=stages, limits=limits, session_id=session_id
+            request, limits=limits, session_id=session_id
         )
 
     async def append_session(
@@ -156,6 +155,18 @@ class Client:
         self, session_identity: SessionIdentity
     ) -> AsyncIterator[OutputChunk]:
         return self.coordinator.session_outputs(session_identity)
+
+    async def control_session(
+        self,
+        session_identity: SessionIdentity,
+        event: TimedChunk,
+        *,
+        stages: list[str] | None = None,
+        should_preempt: bool = False,
+    ) -> None:
+        await self.coordinator.control_session(
+            session_identity, event, stages=stages, should_preempt=should_preempt
+        )
 
     async def close_session(self, session_identity: SessionIdentity) -> None:
         await self.coordinator.close_session(session_identity)

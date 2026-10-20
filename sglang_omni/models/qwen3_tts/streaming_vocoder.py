@@ -3475,18 +3475,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             return
         else:
             pass
-        self.outbox.put(
-            OutgoingMessage(
-                request_id=request_id,
-                type="result",
-                data=StagePayload(
-                    request_id=payload.request_id,
-                    request=payload.request,
-                    data=self.final_result_data(request_id, payload, state),
-                ),
-            )
-        )
-        self.record_completed_stream_request_id(request_id)
+        for message in self.terminal_messages(request_id, payload, state):
+            self.outbox.put(message)
         self.clear_request_state(request_id)
 
     def fallback_full_decode(

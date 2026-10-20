@@ -85,6 +85,7 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -120,6 +121,7 @@ from sglang_omni.serve.protocol import (
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
+from sglang_omni.serve.session_wire import register_session_wire
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
@@ -271,7 +273,8 @@ def create_app(
             other and unknown fields are refused before parsing. None accepts
             every protocol field and ignores unknown ones.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
-            endpoint (OpenAI Realtime API).
+            endpoint (OpenAI Realtime API) and the Session protocol on
+            ``/v1/session``.
         supports_realtime_audio_output: Whether the mounted realtime endpoint
             can request streamed audio from the configured pipeline.
         realtime_transcription: Pipeline-owned live-ASR strategy declaration.
@@ -368,6 +371,14 @@ def create_app(
     register_translations(app)
     if enable_realtime or realtime_deployment is not None:
         register_realtime(app)
+        register_session_wire(
+            app,
+            limits=(
+                realtime_deployment.session_limits
+                if realtime_deployment is not None
+                else SessionLimits()
+            ),
+        )
     else:
         pass
 
@@ -1751,8 +1762,8 @@ def realtime_unavailable_response(message: str) -> JSONResponse:
 
 def register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
+    from sglang_omni.audio.smart_turn import load_smart_turn
     from sglang_omni.serve.realtime import RealtimeSessionManager
-    from sglang_omni.serve.realtime.smart_turn import load_smart_turn
 
     client: Client = app.state.client
     model_name: str = app.state.model_name

@@ -24,6 +24,14 @@ CODE2WAV_STAGE = "code2wav"
 DEFAULT_LM_MAX_RUNNING_REQUESTS = 1
 
 
+class PersonaPlexLMFactoryArgs(FactoryArgs):
+    enable_async_decode: bool = False
+
+
+class PersonaPlexLMStageConfig(EngineStageConfig):
+    factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
+
+
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
     """Streaming decode: num_decode_slots streams resident at once, up to
     max_batch_size of them per step, device graphs for chunks of up to
@@ -61,11 +69,11 @@ def personaplex_stages_factory() -> list[StageConfig]:
             gpu=0,
             next=LM_STAGE,
         ),
-        EngineStageConfig(
+        PersonaPlexLMStageConfig(
             name=LM_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_lm_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=PersonaPlexLMFactoryArgs(dtype="bfloat16"),
             gpu=0,
             engine=EngineArgs(mem_fraction_static=0.3),
             next=["decode", CODE2WAV_STAGE],
@@ -92,7 +100,7 @@ def personaplex_stages_factory() -> list[StageConfig]:
 class PersonaPlexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = PERSONAPLEX_ARCH
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: EngineStageConfig,
+        LM_STAGE: PersonaPlexLMStageConfig,
         CODE2WAV_STAGE: PersonaPlexCode2WavStageConfig,
     }
 

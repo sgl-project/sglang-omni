@@ -5,8 +5,9 @@ name: Omni CI
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
-# any stage label runs pr-test, and each model suite runs only when its stage is
-# selected. Model suites wait for the previous suite to finish but use always()
+# any stage label, including run-unit-test-ci-only, runs pr-test, and each model
+# suite runs only when its stage is selected. run-lint-only passes the gate and
+# skips setup. Model suites wait for the previous suite to finish but use always()
 # so a failed or skipped suite does not skip later suites. Only setup blocks all
 # downstream model CI.
 #
@@ -64,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
+      run_self_hosted: ${{ steps.plan.outputs.run_self_hosted }}
       run_asr: ${{ steps.plan.outputs.run_asr }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
@@ -130,7 +132,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
@@ -142,7 +144,7 @@ jobs:
   setup:
     name: setup - omni venv
     needs: preflight
-    if: needs.preflight.result == 'success'
+    if: needs.preflight.result == 'success' && needs.preflight.outputs.run_self_hosted == 'true'
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:

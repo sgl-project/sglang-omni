@@ -29,6 +29,7 @@
 
 ## News
 
+- [2026/10] 🗺️ A unified runtime for interactive intelligence: native full-duplex models, turn-based multimodal models, and cascaded systems, coordinated through composable graphs and persistent sessions. \[[Blog](https://www.sglang.io/blog/omni-interactive-runtime)\]
 - [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
 - [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://github.com/sgl-project/sglang-omni/releases#release-voxt-v1.16.0)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
 - [2026/10] 🚀 SGLang-Omni **v0.1.8** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.8"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
@@ -67,7 +68,6 @@ Additional model guides, including experimental and research-oriented paths, are
 
 ## Quick Start
 
-- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation_apple_silicon.md).
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
 - [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
@@ -85,9 +85,17 @@ Organizations interested in supporting SGLang-Omni, TTS, or omni model serving c
 
 ## Citation
 
-If you use SGLang-Omni for your research, please cite our [technical blog](https://www.sglang.io/blog/spg-topology):
+If you use SGLang-Omni for your research, please cite our technical blogs on the [unified interactive runtime](https://www.sglang.io/blog/omni-interactive-runtime) and the [Stage--Process--GPU topology](https://www.sglang.io/blog/spg-topology):
 
 ```bibtex
+@misc{sglangomniinteractive2026,
+  title={Unified Runtime for Full-Duplex Interactive Intelligence with {SGLang Omni}},
+  author={{SGLang-Omni Team}},
+  howpublished={\url{https://www.sglang.io/blog/omni-interactive-runtime}},
+  year={2026},
+  month={oct}
+}
+
 @misc{sglangomni2026,
   title={Fish Audio Drama 3 Meets {SGLang-Omni}: Day-0 Support and the Stage--Process--GPU Topology},
   author={{SGLang-Omni Team}},

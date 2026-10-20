@@ -271,6 +271,7 @@ def test_image_audio_commit_atomically(
         origin_input_ids=[7] * 12 + list(request.req.origin_input_ids), to_finish=None
     )
     bridge = ARSessionBridge.__new__(ARSessionBridge)
+    bridge.adapter = adapter
     bridge.drain = Mock()
     bridge.sessions = {IDENTITY.id: session}
     bridge.units_by_request_id = {"unit": unit}

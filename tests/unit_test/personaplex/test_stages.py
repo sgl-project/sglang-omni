@@ -153,18 +153,22 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
     built = {}
 
     class Builder:
-        def __init__(self, *, max_running_requests, context_length):
+        def __init__(
+            self, *, max_running_requests, context_length, enable_async_decode
+        ):
             built["context_length"] = context_length
 
         def build(self, model_path, **kwargs):
             built["overrides"] = kwargs["server_args_overrides"]
 
     monkeypatch.setattr(stages, "PersonaPlexEngineBuilder", Builder)
-    stages.create_lm_executor("m", server_args_overrides={"context_length": 16384})
+    stages.create_lm_executor(
+        "m", enable_async_decode=False, server_args_overrides={"context_length": 16384}
+    )
     assert built["context_length"] == 16384
     assert built["overrides"] == {"context_length": 16384}
 
-    stages.create_lm_executor("m", context_length=4096)
+    stages.create_lm_executor("m", enable_async_decode=False, context_length=4096)
     assert built["context_length"] == 4096 and built["overrides"] is None
 
 
@@ -370,9 +374,10 @@ def test_code2wav_graph_limit_follows_resolved_configuration(
         {"code2wav": {"factory": overrides}}, type(config), ["code2wav"]
     )
     resolved = ConfigResolver(config).resolve(patches).config
-    codec = Mock()
+    codec = Mock(device=torch.device("cpu"))
     decode_slots = Mock(
         return_value=SimpleNamespace(
+            codec=codec,
             max_batch_size=8,
             max_chunk_frames=max(max(chunk_ramp_frames), expected_graph_frames),
         )

@@ -20,6 +20,7 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
     resolve_encoder_next_stages,
@@ -617,6 +618,29 @@ def test_code2wav_done_without_audio_raises():
     sched.abort("req-1")
     assert "req-1" not in sched.stream_states
     assert "req-1" not in sched.stream_payloads
+
+
+def test_code2wav_done_without_audio_for_an_unspoken_reply_returns_empty_audio():
+    """A reply the talker did not speak ends with an empty waveform, not an error."""
+    sched = Code2WavScheduler(
+        model=FakeCode2Wav(),
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=0,
+    )
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={"stream": False}),
+        data={NO_SPEECH: True},
+    )
+    sched.stream_payloads["req-1"] = payload
+    state = sched.get_or_create_stream_state("req-1")
+    state.stream_enabled = False
+
+    sched.handle_stream_done("req-1")
+    results = [m for m in list(sched.outbox.queue) if m.type == "result"]
+    assert len(results) == 1
+    assert results[0].data.data["sample_rate"] == sched.sample_rate
 
 
 def bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:

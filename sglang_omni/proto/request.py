@@ -26,6 +26,8 @@ class RequestInfo:
     state: RequestState = RequestState.PENDING
     current_stage: str | None = None
     terminal_stages: set[str] | None = None
+    # Note (Junnan Li): A session's close and its persistent read bypass admission and hold no in-flight slot.
+    counts_toward_admission: bool = True
     result: object = None
     error: str | None = None
 

@@ -19,7 +19,7 @@ from sglang_omni.pipeline.replicas import (
     RoundRobinBindingPolicy,
     assign_replica_bindings,
 )
-from sglang_omni.pipeline.sessions import CoordinatorSessions
+from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
@@ -38,6 +38,7 @@ from sglang_omni.proto import (
     is_update_action,
 )
 from sglang_omni.proto.admin import AdminResponse
+from sglang_omni.proto.session import DEFAULT_MAX_OUTPUT_LEAD_MS, SessionGraph
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ class AdminPendingOperation:
     future: asyncio.Future[dict[str, AdminResult]] | None = None
 
 
-class Coordinator(CoordinatorSessions):
+class Coordinator(SessionGraphRunner):
     """Central coordinator for the multi-stage pipeline.
 
     Responsibilities:
@@ -140,6 +141,9 @@ class Coordinator(CoordinatorSessions):
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
         max_total_backlog_bytes: int | None = None,
+        session_route: Callable[[], list[str]] | None = None,
+        session_graph: SessionGraph | None = None,
+        max_output_lead_ms: float = DEFAULT_MAX_OUTPUT_LEAD_MS,
     ) -> None:
         """Initialize coordinator.
 
@@ -158,8 +162,22 @@ class Coordinator(CoordinatorSessions):
             max_total_backlog_bytes: If set, once all streams together hold
                 more undelivered bytes than this, fail the streams whose
                 readers have been idle longest until the total fits.
+            session_route: Gives the stage chain a Session follows when the
+                caller names none; session_graph the node graph it is
+                instead. A pipeline declares one of them.
+            max_output_lead_ms: How far ahead of real time, counted from
+                a reply's start, a Session delivers the reply's audio.
         """
-        super().__init__()
+        super().__init__(max_output_lead_ms)
+        if session_route is not None and session_graph is not None:
+            raise ValueError(
+                "pass session_route or session_graph, not both: a pipeline's "
+                "Session is one route or one graph"
+            )
+        else:
+            pass
+        self.session_route = session_route
+        self.session_graph = session_graph
         self.entry_stage = entry_stage
         self.terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
@@ -562,7 +580,8 @@ class Coordinator(CoordinatorSessions):
         if (
             not should_bypass_admission
             and self.max_in_flight is not None
-            and len(self.requests) >= self.max_in_flight
+            and sum(info.counts_toward_admission for info in self.requests.values())
+            >= self.max_in_flight
         ):
             logger.warning(
                 "Rejecting request %s before pipeline submit: in-flight cap "
@@ -607,6 +626,7 @@ class Coordinator(CoordinatorSessions):
                 if terminal_stages is None
                 else terminal_stages
             ),
+            counts_toward_admission=not should_bypass_admission,
         )
 
         # Create future for completion

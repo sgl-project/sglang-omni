@@ -88,6 +88,7 @@ if HAS_TRITON:
         SELECTED: tl.constexpr,
         TAIL_WIDTH: tl.constexpr,
         MINIMUM_TEMPERATURE: tl.constexpr,
+        KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr,
     ) -> None:
         row = tl.program_id(0)
         columns = tl.arange(0, BLOCK_WIDTH)
@@ -134,6 +135,7 @@ if HAS_TRITON:
             stream_id,
             INDEX_BITS,
             KEY_BITS,
+            KEEP_TOP_P_CROSSING_TOKEN,
         )
         tl.store(sampled_codes_pointer + row, sampled_code.to(tl.int64))
 
@@ -251,6 +253,7 @@ if HAS_TRITON:
             FIRST_STREAM,
             INDEX_BITS,
             KEY_BITS,
+            True,
         )
         ras_candidate = draw_candidate(
             ras_main_keys,
@@ -268,6 +271,7 @@ if HAS_TRITON:
             RAS_STREAM,
             INDEX_BITS,
             KEY_BITS,
+            True,
         )
         first_token = tl.load(candidate_token_ids_pointer + first_candidate)
         ras_token = tl.load(candidate_token_ids_pointer + ras_candidate)
@@ -347,6 +351,8 @@ def sample_codebook_head(
     sampler: CodebookSampler,
     stream_id: int,
     minimum_temperature: float,
+    *,
+    keep_top_p_crossing_token: bool = False,
 ) -> torch.Tensor:
     row_count, codebook_size = logits.shape
     assert logits.stride(1) == 1
@@ -369,6 +375,7 @@ def sample_codebook_head(
         SELECTED=SELECTED_CANDIDATES,
         TAIL_WIDTH=TAIL_BLOCK_WIDTH,
         MINIMUM_TEMPERATURE=minimum_temperature,
+        KEEP_TOP_P_CROSSING_TOKEN=keep_top_p_crossing_token,
         num_warps=SAMPLER_WARPS,
     )
     return sampled_codes

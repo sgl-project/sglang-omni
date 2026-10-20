@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -15,6 +18,7 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     planned_preamble,
     window_lens_from_token_counts,
 )
+from sglang_omni.models.qwen3_asr.encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
 from sglang_omni.platforms import current_platform
 
 
@@ -122,7 +126,12 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
 def asr_server_args():
     from sglang.srt.runtime_context import get_context, get_parallel
 
-    mm_attention_backend = "aiter_attn" if current_platform.is_rocm() else "triton_attn"
+    if current_platform.is_rocm():
+        mm_attention_backend = "aiter_attn"
+    elif current_platform.is_npu():
+        mm_attention_backend = "ascend_attn"
+    else:
+        mm_attention_backend = "triton_attn"
     with (
         get_context().override_server_args(
             model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
@@ -188,16 +197,22 @@ def test_graph_matches_eager_tower(asr_server_args):
             else:
                 prm.zero_()
 
-    runner = Qwen3ASREncoderLayerStackGraphRunner(
+    runner_cls = (
+        Qwen3ASREncoderNpuGraphRunner
+        if tower_device.type == "npu"
+        else Qwen3ASREncoderLayerStackGraphRunner
+    )
+    runner = runner_cls(
         tower,
         buckets=build_buckets(4, 104),
         max_batch_size=4,
         graph_backend=current_platform.get_device_graph_backend(tower_device),
     )
     runner.capture_all()
-    assert runner.graphs and not runner.failed
-    pools = [entry.graph.pool() for entry in runner.graphs.values()]
-    assert len(set(pools)) == len(pools)
+    if tower_device.type != "npu":
+        assert runner.graphs and not runner.failed
+        pools = [entry.graph.pool() for entry in runner.graphs.values()]
+        assert len(set(pools)) == len(pools)
 
     def check(frame_lens):
         feats = (torch.randn(128, sum(frame_lens), device=device) * 0.05).to(
@@ -221,6 +236,7 @@ def test_graph_matches_eager_tower(asr_server_args):
         planned_hidden = planned_preamble(tower, host_plan, tower_device)
         torch.testing.assert_close(planned_hidden, eager_hidden, rtol=0, atol=0)
         out = runner.run(planned_hidden, wl)
+        assert out is not None
         diff = (out.float() - ref.float()).abs().max().item()
         assert diff < 3e-2, f"{frame_lens}: max|diff|={diff}"
 
@@ -229,10 +245,18 @@ def test_graph_matches_eager_tower(asr_server_args):
     # is the order a long clip followed by a short one produces, which no shared
     # graph memory may assume away.
     sequence = ([500], [450], [300, 500, 120], [800, 800, 800, 800])
-    for frame_lens in sequence:
+    check(sequence[0])
+    if tower_device.type == "npu":
+        entry = next(iter(runner.graphs.values()))
+        assert entry.cu_seqlens[1].item() != qwen3_asr_num_audio_tokens(sequence[0][0])
+    graph_count = len(runner.graphs)
+    check(sequence[1])
+    assert len(runner.graphs) == graph_count
+    for frame_lens in sequence[2:]:
         check(frame_lens)
     for frame_lens in reversed(sequence):
         check(frame_lens)
+    assert runner.graphs and not runner.failed
 
     assert (
         runner.run(
@@ -259,6 +283,176 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
     )
 
     assert model.encoder_graph_runner == "untouched"
+
+
+@pytest.mark.parametrize("update_fails", [False, True])
+def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails):
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device = torch.device("cpu")
+    runner.max_seqlen = 8
+    runner.max_windows_for = lambda bucket: 2
+    runner.graphs = {}
+    runner.failed = set()
+    runner.plan = lambda total, windows: (8, [8 - total])
+    caller = threading.get_ident()
+    waits = []
+    updates = []
+    captures = []
+    runner.update_tasks = {}
+    replay_started = threading.Event()
+    runner.update_stream = SimpleNamespace(
+        wait_stream=lambda stream: waits.append(threading.get_ident())
+    )
+    runner.device_module = SimpleNamespace(
+        current_stream=lambda: "compute", stream=lambda stream: nullcontext()
+    )
+
+    def apply(device_module, stream, boundaries):
+        # Force update to start after replay: the dependency must already exist.
+        assert replay_started.wait(timeout=2)
+        updates.append((threading.get_ident(), boundaries))
+        if update_fails:
+            raise RuntimeError("update failed")
+
+    def replay():
+        assert waits == [caller] * (len(updates) + 1)
+        replay_started.set()
+
+    def capture(bucket_size):
+        cu, metadata = runner.capture_boundaries(bucket_size)
+        captures.append(cu.tolist())
+        runner.update_tasks[bucket_size] = (SimpleNamespace(apply=apply),)
+        return SimpleNamespace(
+            hidden_states=torch.zeros(8, 2),
+            output=torch.zeros(8, 2),
+            graph=SimpleNamespace(replay=replay),
+        )
+
+    runner.capture = capture
+
+    def initialize_worker():
+        assert replay_started.wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=1, initializer=initialize_worker) as executor:
+        runner.update_executor = executor
+        runner.capture_all()
+        assert not runner.graphs
+        for length in (3, 2):
+            replay_started.clear()
+            if update_fails:
+                with pytest.raises(RuntimeError, match="update failed"):
+                    runner.run(torch.ones(length, 2), [length])
+            else:
+                assert runner.run(torch.ones(length, 2), [length]) is not None
+    assert captures == [[0, 4, 8]]
+    assert [bounds for _, bounds in updates] == [[3, 8], [2, 8]]
+    assert updates[0][0] == updates[1][0] != caller
+
+
+def test_npu_attention_capture_restores_partial_setup():
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device_module = SimpleNamespace()
+    runner.graph_pool = object()
+    original = torch.nn.Identity()
+    attention = torch.nn.Module()
+    attention.qkv_backend_name = "ascend_attn"
+    attention.qkv_backend = original
+    runner.tower = SimpleNamespace(
+        layers=[
+            SimpleNamespace(self_attn=attention),
+            SimpleNamespace(self_attn=SimpleNamespace(qkv_backend_name="unsupported")),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="ascend_attn"):
+        runner.record_graph(8, lambda: pytest.fail("partial setup must abort capture"))
+    assert attention.qkv_backend is original
+
+
+def test_npu_attention_capture_registers_and_applies_an_explicit_fia_task(monkeypatch):
+    calls = []
+
+    def operation(**kwargs):
+        calls.append(("operation", kwargs))
+
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "_npu_fused_infer_attention_score_get_max_workspace",
+        lambda **kwargs: torch.empty(16),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        torch.ops.npu,
+        "npu_fused_infer_attention_score",
+        SimpleNamespace(out=operation),
+        raising=False,
+    )
+
+    event = SimpleNamespace(
+        wait=lambda stream: calls.append(("wait", stream)),
+        reset=lambda stream: calls.append(("reset", stream)),
+        record=lambda stream: calls.append(("record", stream)),
+    )
+    device_module = SimpleNamespace(
+        current_stream=lambda: "capture-stream",
+        ExternalEvent=lambda: event,
+        graph_task_group_begin=lambda stream: calls.append(("begin", stream)),
+        graph_task_group_end=lambda stream: "fia-handle",
+        graph_task_update_begin=lambda stream, handle: calls.append(
+            ("update_begin", stream, handle)
+        ),
+        graph_task_update_end=lambda stream: calls.append(("update_end", stream)),
+    )
+
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device = torch.device("cpu")
+    runner.device_module = device_module
+    runner.graph_pool = object()
+    runner.update_tasks = {}
+    runner.graph_backend = SimpleNamespace(
+        capture=lambda **kwargs: nullcontext("graph")
+    )
+    original = torch.nn.Identity()
+    attention = SimpleNamespace(qkv_backend_name="ascend_attn", qkv_backend=original)
+    runner.tower = SimpleNamespace(layers=[SimpleNamespace(self_attn=attention)])
+    runner.max_seqlen = 8
+    runner.max_windows_for = lambda bucket: 2
+    cu, metadata = runner.capture_boundaries(8)
+    assert cu.device.type == "cpu"
+
+    graph, output = runner.record_graph(
+        8,
+        lambda: attention.qkv_backend(
+            torch.zeros(8, 2, 4),
+            torch.zeros(8, 2, 4),
+            torch.zeros(8, 2, 4),
+            forward_metadata=metadata,
+        ),
+    )
+
+    assert graph == "graph" and attention.qkv_backend is original
+    assert output.shape == (8, 2, 4)
+    (task,) = runner.update_tasks[8]
+    assert task.handle == "fia-handle"
+    assert [call[0] for call in calls] == ["wait", "reset", "begin", "operation"]
+    capture_kwargs = calls[-1][1]
+    assert capture_kwargs["actual_seq_lengths"] == [4, 8]
+    assert capture_kwargs["actual_seq_lengths_kv"] == [4, 8]
+
+    calls.clear()
+    task.apply(device_module, "update-stream", [2, 8])
+
+    assert [call[0] for call in calls] == [
+        "update_begin",
+        "operation",
+        "update_end",
+        "record",
+    ]
+    assert calls[0] == ("update_begin", "update-stream", "fia-handle")
+    update_kwargs = calls[1][1]
+    assert update_kwargs["actual_seq_lengths"] == [2, 8]
+    assert update_kwargs["actual_seq_lengths_kv"] == [2, 8]
+    assert calls[2:] == [("update_end", "update-stream"), ("record", "update-stream")]
 
 
 @pytest.mark.parametrize("frame_counts", [[1], [99, 100, 101], [200, 307]])

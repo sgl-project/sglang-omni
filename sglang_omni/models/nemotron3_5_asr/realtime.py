@@ -78,7 +78,6 @@ def create_realtime_deployment(
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
-            stages=[pipeline_config.entry_stage],
             request_builder=build_session_request,
             output_converter=convert_session_output,
             input_sample_rate_hz=16000,

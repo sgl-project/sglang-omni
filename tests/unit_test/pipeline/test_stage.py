@@ -7,6 +7,7 @@ import logging
 import pickle
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -20,7 +21,18 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.proto import DataReadyMessage, ShutdownMessage, SubmitMessage
+from sglang_omni.proto import (
+    DataReadyMessage,
+    ShutdownMessage,
+    StagePayload,
+    SubmitMessage,
+)
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+    TimedChunk,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -281,6 +293,28 @@ class BlockingWarmUpHooks(SessionHooks):
         self.warm_up_thread_names.append(threading.current_thread().name)
         self.entered.set()
         self.release.wait()
+
+
+def test_stage_start_propagates_warmup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(
+        scheduler,
+        "warm_up_serving_thread",
+        Mock(
+            spec=scheduler.warm_up_serving_thread,
+            side_effect=RuntimeError("warmup failed"),
+        ),
+    )
+
+    async def run() -> None:
+        stage = make_stage(scheduler=scheduler)
+        try:
+            with pytest.raises(RuntimeError, match="warmup failed"):
+                await asyncio.wait_for(stage.start(), timeout=2.0)
+        finally:
+            await stage.stop()
+
+    asyncio.run(run())
 
 
 def test_stage_starts_only_after_its_session_hooks_warm_the_scheduler_thread() -> None:
@@ -1786,5 +1820,59 @@ def test_result_resources_survive_partial_fanout():
             await stage_obj.route_result("request", {"output": "value"})
         assert sent == ["first"]
         assert released == [True]
+
+    asyncio.run(run())
+
+
+def session_append_payload(request_id: str, stages: tuple[str, ...]) -> StagePayload:
+    chunk = TimedChunk("text", 0, 0, 1, {"text": "hi"}, format="text.delta", turn=1)
+    operation = SessionOperation("append", SessionIdentity("tts"), stages, chunk)
+    payload = make_stage_payload(request_id=request_id, data={"codes": [1]})
+    payload.request.metadata[SESSION_METADATA_KEY] = operation.to_dict()
+    return payload
+
+
+def test_a_session_append_reaches_the_next_owner_before_the_stream() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["vocoder"],
+        )
+        payload = session_append_payload("req-route", ("tts_engine", "vocoder"))
+        await sender.execute(payload)
+        assert [target for target, _, _ in control_plane.sent_to_stage] == ["vocoder"]
+        await sender.route_result("req-route", payload)
+        assert control_plane.completions == []
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "vocoder",
+            "vocoder",
+        ]
+        assert control_plane.sent_to_stage[1][2].is_done
+
+    asyncio.run(run())
+
+
+def test_session_route_rejects_a_stream_edge_off_the_route() -> None:
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder", "monitor": "inproc://monitor"},
+            relay=FakeRelay(),
+            control_plane=control_plane,
+            stream_targets=["monitor"],
+        )
+        await sender.route_result(
+            "req-off", session_append_payload("req-off", ("tts_engine", "vocoder"))
+        )
+        assert [msg.success for msg in control_plane.completions] == [False]
+        assert "linear payload edges" in control_plane.completions[0].error
 
     asyncio.run(run())

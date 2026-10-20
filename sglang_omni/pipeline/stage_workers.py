@@ -1114,7 +1114,6 @@ def construct_stage(
         stage.stream_queue = StreamQueue()
     else:
         pass
-
     return stage
 
 
