@@ -14,44 +14,52 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
 
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionBridge,
+    SessionUnit,
+)
 
 CONTEXT_LENGTH = 64
 RETAINED_TOKEN_COUNT = 8
 UNIT_TOKEN_IDS = list(range(1, RETAINED_TOKEN_COUNT + 4))
+PAGE_SIZE = 16
 
 
 class KVAllocator:
     device = "cpu"
-    page_size = 1
+    free_token_count = 1 << 20
+
+    def __init__(self, page_size: int) -> None:
+        self.page_size = page_size
 
     def free(self, free_index: torch.Tensor) -> None:
         pass
 
     def available_size(self) -> int:
-        return 1 << 20
+        return self.free_token_count
 
 
 class AdmissionScheduler:
     get_num_allocatable_reqs = OmniScheduler.get_num_allocatable_reqs
 
-    def __init__(self, *, request_rows: int) -> None:
+    def __init__(self, *, request_rows: int, page_size: int = 1) -> None:
         self.req_to_token_pool = ReqToTokenPool(
             size=request_rows,
             max_context_len=CONTEXT_LENGTH,
             device="cpu",
             enable_memory_saver=False,
         )
-        self.token_to_kv_pool_allocator = KVAllocator()
+        self.token_to_kv_pool_allocator = KVAllocator(page_size)
         self.tree_cache = StreamingSession(
             RadixCache(
                 CacheInitParams(
                     disable=False,
                     req_to_token_pool=self.req_to_token_pool,
                     token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                    page_size=1,
+                    page_size=page_size,
                     enable_kv_cache_events=False,
                     eviction_policy="lru",
                 )
@@ -64,25 +72,36 @@ class AdmissionScheduler:
         self.waiting_queue: list[Req] = []
         self.session_bridge = ARSessionBridge(self, adapter=None)
 
-    def open_session(self, session_id: str, *, holds_row: bool) -> None:
+    def open_session(
+        self,
+        session_id: str,
+        *,
+        holds_row: bool,
+        retained_tokens: int = RETAINED_TOKEN_COUNT,
+    ) -> None:
         assert self.session_bridge.open_streaming_session(session_id)
         if holds_row:
             (row,) = self.req_to_token_pool.alloc_rows(1)
             self.tree_cache.slots[session_id] = SessionSlot(
                 kv=ReqKvInfo(
                     req_pool_idx=row,
-                    kv_committed_len=RETAINED_TOKEN_COUNT,
-                    kv_allocated_len=RETAINED_TOKEN_COUNT,
+                    kv_committed_len=retained_tokens,
+                    kv_allocated_len=retained_tokens,
                 )
             )
         else:
             pass
 
-    def queue_request(self, request_id: str, session_id: str | None = None) -> Req:
+    def queue_request(
+        self,
+        request_id: str,
+        session_id: str | None = None,
+        token_ids: list[int] | None = None,
+    ) -> Req:
         request = Req(
             rid=request_id,
             origin_input_text="",
-            origin_input_ids=UNIT_TOKEN_IDS,
+            origin_input_ids=UNIT_TOKEN_IDS if token_ids is None else token_ids,
             sampling_params=SamplingParams(max_new_tokens=1),
         )
         if session_id is not None:
@@ -178,3 +197,84 @@ def test_session_units_stay_within_the_per_batch_limit(
         )
         == 4
     )
+
+
+def open_pending_units(
+    scheduler: AdmissionScheduler, *, retained_tokens: int, token_ids: list[int]
+) -> ARSessionBridge:
+    """Create two pending units with retained session KV."""
+    bridge = scheduler.session_bridge
+    for session_id in ("session-a", "session-b"):
+        scheduler.open_session(
+            session_id, holds_row=True, retained_tokens=retained_tokens
+        )
+        bridge.units_by_request_id[f"unit-{session_id}"] = SessionUnit(
+            request_id=f"unit-{session_id}",
+            session_identity=SessionIdentity(session_id),
+            stages=("thinker",),
+            chunk=TimedChunk("audio", 0, 20, 0, b"x"),
+            session_request=scheduler.queue_request(
+                f"unit-{session_id}", session_id, token_ids
+            ),
+        )
+    return bridge
+
+
+@pytest.mark.parametrize(
+    "restore_other_unit", [False, True], ids=["pending", "restored"]
+)
+@pytest.mark.parametrize(
+    ("spare_tokens", "capacity_message"),
+    [(0, None), (-1, "session KV capacity exhausted")],
+    ids=["fits", "one-token-short"],
+)
+def test_kv_check_counts_retained_history_once_before_and_after_restore(
+    spare_tokens: int, capacity_message: str | None, restore_other_unit: bool
+) -> None:
+    scheduler = AdmissionScheduler(request_rows=4)
+    bridge = open_pending_units(
+        scheduler, retained_tokens=RETAINED_TOKEN_COUNT, token_ids=UNIT_TOKEN_IDS
+    )
+    tokens_past_history = len(UNIT_TOKEN_IDS) + 1 - RETAINED_TOKEN_COUNT
+    scheduler.token_to_kv_pool_allocator.free_token_count = (
+        2 * tokens_past_history + spare_tokens
+    )
+    if restore_other_unit:
+        other_request = bridge.units_by_request_id["unit-session-b"].session_request
+        assert other_request is not None
+        scheduler.tree_cache.slots["session-b"].restore_to_req(other_request)
+    else:
+        pass
+
+    message = bridge.check_session_capacity("unit-session-a")
+
+    assert message == capacity_message, "the other unit's retained history counts once"
+
+
+@pytest.mark.parametrize(
+    ("retained_tokens", "unit_token_count", "free_pages", "capacity_message"),
+    [
+        (PAGE_SIZE, PAGE_SIZE + 1, 1, "session KV capacity exhausted"),
+        (PAGE_SIZE - 4, PAGE_SIZE - 3, 0, None),
+    ],
+    ids=["each-unit-needs-a-new-page", "units-stay-in-their-pages"],
+)
+def test_kv_check_reserves_whole_pages_past_the_pages_a_unit_holds(
+    retained_tokens: int,
+    unit_token_count: int,
+    free_pages: int,
+    capacity_message: str | None,
+) -> None:
+    scheduler = AdmissionScheduler(request_rows=4, page_size=PAGE_SIZE)
+    bridge = open_pending_units(
+        scheduler,
+        retained_tokens=retained_tokens,
+        token_ids=list(range(1, unit_token_count + 1)),
+    )
+    scheduler.token_to_kv_pool_allocator.free_token_count = free_pages * PAGE_SIZE
+
+    message = bridge.check_session_capacity("unit-session-a")
+
+    assert (
+        message == capacity_message
+    ), "each unit reserves the pages past those it holds"
