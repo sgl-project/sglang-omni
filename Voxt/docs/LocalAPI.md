@@ -31,7 +31,7 @@ Every request needs `Authorization: Bearer <token>`. **Regenerate** issues a new
 | --- | --- |
 | `GET /v1/health` | `{"ok": true, "app": "Voxt", "version": "…"}` |
 | `GET /v1/capabilities` | API version, endpoints, accepted audio types, size limit, and whether the selected transcription and text models are ready |
-| `POST /v1/dictations` | Body: audio bytes. `Content-Type`: `audio/wav`, `audio/x-m4a`, `audio/mp4`, `audio/aac`, `audio/mpeg` or `audio/x-caf`. Add `?enhance=0` to skip the text model. Returns `id`, `text`, `rawText`, `enhanced`, `asrMs`, `enhanceMs` |
+| `POST /v1/dictations` | Body: audio bytes. `Content-Type`: `audio/wav`, `audio/x-m4a`, `audio/mp4`, `audio/aac`, `audio/mpeg` or `audio/x-caf`. Add `?enhance=0` to skip the text model, and `?language=auto` (detect) or `?language=English` (a language name) to override your language settings for this recording. Returns `id`, `text`, `rawText`, `enhanced`, `asrMs`, `enhanceMs` |
 
 `capabilities` example:
 
@@ -52,7 +52,7 @@ Errors return `{"error": "…"}`.
 
 | Status | When |
 | --- | --- |
-| 400 | Empty body or audio that cannot be read |
+| 400 | Empty body, audio that cannot be read, or a `language` that is not `auto` or a language name |
 | 401 | Missing or wrong token |
 | 404 / 405 | Unknown path or wrong method |
 | 411 | Chunked request body; send `Content-Length` |

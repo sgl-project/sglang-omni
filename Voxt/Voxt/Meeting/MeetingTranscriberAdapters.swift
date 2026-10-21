@@ -35,12 +35,16 @@ extension RemoteASRTranscriber {
         return MeetingConfiguration(provider: provider, configuration: configuration)
     }
 
-    func transcribeMeetingAudioFile(_ fileURL: URL) async throws -> String {
+    func transcribeMeetingAudioFile(
+        _ fileURL: URL,
+        languageSelection: ASRLanguageSelection = .userSettings
+    ) async throws -> String {
         let meetingConfiguration = currentMeetingConfiguration()
         return try await transcribeDebugAudioFile(
             fileURL,
             provider: meetingConfiguration.provider,
-            configuration: meetingConfiguration.configuration
+            configuration: meetingConfiguration.configuration,
+            languageSelection: languageSelection
         )
     }
 }

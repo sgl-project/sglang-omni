@@ -50,6 +50,23 @@ final class LocalAPIRouterTests: XCTestCase {
         )
     }
 
+    func testDictationLanguageComesFromTheQuery() {
+        let audio = Data([1])
+        func route(_ query: [String: String]) -> LocalAPIRoute {
+            router.route(request("POST", "/v1/dictations", query: query, contentType: "audio/wav", body: audio))
+        }
+        func dictation(_ language: ASRLanguageSelection) -> LocalAPIRoute {
+            .dictation(LocalAPIDictationRequest(audio: audio, fileExtension: "wav", enhance: true, language: language))
+        }
+        XCTAssertEqual(route([:]), dictation(.userSettings))
+        XCTAssertEqual(route(["language": "auto"]), dictation(.request(nil)))
+        XCTAssertEqual(route(["language": "Chinese"]), dictation(.request("Chinese")))
+        XCTAssertEqual(route(["language": "Simplified Chinese"]), dictation(.request("Simplified Chinese")))
+        for bad in ["", "  ", "en\"; x", String(repeating: "a", count: 41)] {
+            XCTAssertEqual(status(route(["language": bad])), 400, bad)
+        }
+    }
+
     func testDictationRejectsBadInput() {
         XCTAssertEqual(status(router.route(request("POST", "/v1/dictations", contentType: "audio/wav"))), 400)
         XCTAssertEqual(status(router.route(request("POST", "/v1/dictations", contentType: "text/plain", body: Data([1])))), 415)

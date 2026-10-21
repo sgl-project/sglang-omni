@@ -11,6 +11,22 @@ struct ResolvedASRHintPayload {
     var otherLanguages: [String] = []
     var multilingualContext: String?
     var contextualPhrases: [String] = []
+
+    func selectingLanguage(_ selection: ASRLanguageSelection) -> Self {
+        switch selection {
+        case .userSettings:
+            return self
+        case .request(let language):
+            var result = self
+            let trimmed = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+            result.language = trimmed?.isEmpty == false ? trimmed : nil
+            result.languageHints = result.language.map { [$0] } ?? []
+            result.otherLanguages = []
+            result.multilingualContext = nil
+            result.chineseOutputVariant = nil
+            return result
+        }
+    }
 }
 
 struct ResolvedDictationSettings: Equatable {

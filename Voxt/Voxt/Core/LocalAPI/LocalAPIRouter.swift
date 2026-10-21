@@ -8,6 +8,7 @@ nonisolated struct LocalAPIDictationRequest: Equatable, Sendable {
     var audio: Data
     var fileExtension: String
     var enhance: Bool
+    var language: ASRLanguageSelection = .userSettings
 }
 
 nonisolated enum LocalAPIRoute: Equatable, Sendable {
@@ -55,14 +56,29 @@ nonisolated struct LocalAPIRouter: Sendable {
             guard let fileExtension = Self.audioExtensions[mediaType] else {
                 return .reject(.error(status: 415, "Send audio/wav or audio/mp4."))
             }
+            guard let language = Self.languageSelection(request.query["language"]) else {
+                return .reject(.error(status: 400, "Set language to auto or a language name such as English."))
+            }
             return .dictation(LocalAPIDictationRequest(
                 audio: request.body,
                 fileExtension: fileExtension,
-                enhance: request.query["enhance"] != "0"
+                enhance: request.query["enhance"] != "0",
+                language: language
             ))
         default:
             return .reject(.error(status: 404, "Unknown path."))
         }
+    }
+
+    /// No value keeps the user's language settings; "auto" detects the language; a name such as
+    /// "English" transcribes in that language. nil for a value that is not a language name.
+    static func languageSelection(_ value: String?) -> ASRLanguageSelection? {
+        guard let value else { return .userSettings }
+        let name = value.trimmingCharacters(in: .whitespaces)
+        if name.lowercased() == "auto" { return .request(nil) }
+        guard (1...40).contains(name.count),
+              name.allSatisfy({ $0.isLetter || $0 == " " || $0 == "-" }) else { return nil }
+        return .request(name)
     }
 
     private func isAuthorized(_ request: LocalAPIHTTPRequest) -> Bool {
