@@ -1,0 +1,11 @@
+{
+  "asrMs" : 531,
+  "enhanced" : false,
+  "enhanceMs" : 412,
+  "id" : "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+  "message" : "Couldn't apply that edit",
+  "mode" : "edit",
+  "rawText" : "um tomorrow at three we meet in room four",
+  "status" : "not_applied",
+  "text" : "See you at the cafe."
+}
