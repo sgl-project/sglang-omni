@@ -14,7 +14,7 @@ curl -H "Authorization: Bearer $VOXT_TOKEN" -H "Content-Type: audio/wav" \
 ```
 
 ```json
-{"id":"5214EBF0-…","text":"Please send Alice fifty dollars by Friday.","rawText":"Please send Alice fifty dollars by Friday.","enhanced":false,"asrMs":531,"enhanceMs":0}
+{"id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","text":"Please send Alice fifty dollars by Friday.","rawText":"Please send Alice fifty dollars by Friday.","enhanced":false,"asrMs":531,"enhanceMs":0}
 ```
 
 `text` is the result after your enhancement prompt and dictionary; `rawText` is the transcript before them. This example used Qwen3-ASR 0.6B with enhancement off. The result is also saved to History with the source **Local API**.
@@ -67,6 +67,8 @@ Every compose mode needs a working text model; without one the request fails wit
 `locations` says where the selected models run: `local`, `remote` (a cloud provider) or `unknown` (Apple Speech without on-device recognition, or anything Voxt cannot vouch for). A client that must keep audio and text on the Mac sends `X-Voxt-Model-Policy: local-only` with a dictation or compose request; Voxt then answers 403 unless both are `local`.
 
 Model states are `ready`, `missing` (selected but not downloaded or not configured), `off` (no text model) and `unsupported` (Apple Speech cannot transcribe recorded files).
+
+Example requests, responses and errors live in [`Voxt/Mobile/contract`](../Mobile/contract): `LocalAPIContractTests` checks them against the real router, and Voxt Mobile's tests decode the same files.
 
 `/v1` only gains fields and endpoints. Clients should ignore fields they do not know. A breaking change would use `/v2`.
 

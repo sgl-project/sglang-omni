@@ -1,0 +1,20 @@
+{
+  "audio": "AQID",
+  "contentType": "audio/wav",
+  "language": "auto",
+  "options": {
+    "contextAfter": "",
+    "contextBefore": "Meeting notes:",
+    "languageVariants": [
+      "zh-Hans"
+    ],
+    "mode": "translate",
+    "selectedText": "",
+    "style": "automatic",
+    "styleExamples": [],
+    "targetLanguage": "zh-Hans",
+    "vocabulary": [
+      "Voxt"
+    ]
+  }
+}
