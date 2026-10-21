@@ -942,13 +942,14 @@ that happened to contain an older version of the test.
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
   filler values, seeds, stream chunks, context limit, input validation), and
-  realtime calls (a call stepped unit by unit through the LM session adapter
-  matches one offline request row for row, frame for frame and text id for
-  text id, however the audio is cut into units; per-call Mimi encode and
-  decode state; the prompt handed on once; the realtime route, engine and
-  request slots; the `/v1/realtime` events, and a call over the WebSocket
-  against a scripted pipeline). CPU only, no weights; runner and request
-  tests need SGLang but start no engine.
+  full-duplex sessions (a session stepped unit by unit through the LM session
+  adapter matches one offline request row for row, frame for frame and word
+  for word, however the audio is cut into units; per-session Mimi encode and
+  batched decode on the offline decode slots; the prompt handed on once; stage
+  sizes and settings resolved through the session config; deployment and
+  session voice, role prompt and sampling; the `/v1/realtime` events, and a
+  session over the WebSocket against a scripted pipeline). CPU only, no
+  weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
