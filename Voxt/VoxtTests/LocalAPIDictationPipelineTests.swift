@@ -8,6 +8,7 @@ import XCTest
 final class LocalAPIDictationPipelineTests: XCTestCase {
     private var directory: URL!
     private var transcribedFiles: [(URL, Data)] = []
+    private var transcribedLanguages: [ASRLanguageSelection] = []
     private var enhancedInputs: [String] = []
     private var recorded: [LocalAPIDictationOutcome] = []
 
@@ -16,6 +17,7 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
             .appendingPathComponent("LocalAPIDictationPipelineTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         transcribedFiles = []
+        transcribedLanguages = []
         enhancedInputs = []
         recorded = []
     }
@@ -35,8 +37,9 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
             temporaryDirectory: directory,
             busyReason: { busyReason },
             isReadableAudio: checksAudioWithAVFoundation ? LocalAPIDictationPipeline.isReadableAudioFile : { _ in true },
-            transcribe: { [unowned self] url in
+            transcribe: { [unowned self] url, language in
                 transcribedFiles.append((url, (try? Data(contentsOf: url)) ?? Data()))
+                transcribedLanguages.append(language)
                 if transcribeDelay != .zero { try await Task.sleep(for: transcribeDelay) }
                 return try transcript.get()
             },
@@ -60,6 +63,15 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
     }
 
     private let request = LocalAPIDictationRequest(audio: Data([9, 8, 7]), fileExtension: "m4a", enhance: true)
+
+    func testTranscriptionGetsTheRequestedLanguage() async {
+        let pipeline = makePipeline()
+        var chinese = request
+        chinese.language = .request("Chinese")
+        _ = await pipeline.run(request)
+        _ = await pipeline.run(chinese)
+        XCTAssertEqual(transcribedLanguages, [.userSettings, .request("Chinese")])
+    }
 
     func testSuccessfulDictationTranscribesEnhancesFinalizesAndRecords() async throws {
         let pipeline = makePipeline()

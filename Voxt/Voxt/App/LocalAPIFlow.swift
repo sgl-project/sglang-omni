@@ -27,9 +27,9 @@ extension AppDelegate {
         let pipeline = LocalAPIDictationPipeline(
             temporaryDirectory: FileManager.default.temporaryDirectory,
             busyReason: { [weak self] in self?.localAPIBusyReason() },
-            transcribe: { [weak self] url in
+            transcribe: { [weak self] url, language in
                 guard let self else { throw CancellationError() }
-                return try await self.transcribeLocalAPIAudio(at: url)
+                return try await self.transcribeLocalAPIAudio(at: url, language: language)
             },
             enhance: { [weak self] text in
                 guard let self else { return text }

@@ -37,7 +37,7 @@ final class LocalAPIDictationPipeline {
     let busyReason: () -> String?
     let isReadableAudio: (URL) -> Bool
     /// Audio file → normalized transcript, using the engine selected in Voxt.
-    let transcribe: (URL) async throws -> String
+    let transcribe: (URL, ASRLanguageSelection) async throws -> String
     /// Transcript → cleaned-up text, using Voxt's transcription enhancement settings.
     let enhance: (String) async throws -> String
     /// Applies dictionary corrections to the final text.
@@ -50,7 +50,7 @@ final class LocalAPIDictationPipeline {
         temporaryDirectory: URL,
         busyReason: @escaping () -> String?,
         isReadableAudio: @escaping (URL) -> Bool = LocalAPIDictationPipeline.isReadableAudioFile,
-        transcribe: @escaping (URL) async throws -> String,
+        transcribe: @escaping (URL, ASRLanguageSelection) async throws -> String,
         enhance: @escaping (String) async throws -> String,
         finalize: @escaping (String) -> LocalAPIFinalText,
         record: @escaping (LocalAPIDictationOutcome) -> Void
@@ -94,7 +94,7 @@ final class LocalAPIDictationPipeline {
         let rawText: String
         let transcriptionStart = Date()
         do {
-            rawText = try await transcribe(audioURL).trimmingCharacters(in: .whitespacesAndNewlines)
+            rawText = try await transcribe(audioURL, request.language).trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             VoxtLog.warning("Local API transcription failed: \(error.localizedDescription)")
             return .error(status: 500, error.localizedDescription)

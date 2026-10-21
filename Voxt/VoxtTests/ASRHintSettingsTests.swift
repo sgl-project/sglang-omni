@@ -7,6 +7,35 @@ import MLXAudioSTT
 
 @MainActor
 final class ASRHintSettingsTests: XCTestCase {
+    // Given an English hint, the native server translated Chinese speech into English.
+    func testLocalAPIAutoDoesNotInheritEnglishMainLanguage() {
+        let macHint = ASRHintResolver.resolve(
+            target: .mlxAudio, settings: ASRHintSettings(),
+            userLanguageCodes: ["en"], mlxModelRepo: "mlx-community/Qwen3-ASR-0.6B-4bit"
+        )
+        XCTAssertNotNil(macHint.language)
+        let automatic = macHint.selectingLanguage(.request(nil))
+        XCTAssertNil(automatic.language)
+        XCTAssertTrue(automatic.languageHints.isEmpty)
+        XCTAssertEqual(macHint.selectingLanguage(.userSettings).language, macHint.language)
+    }
+
+    func testLocalAPIExplicitLanguageOverridesMacAndKeepsVocabulary() {
+        let original = ResolvedASRHintPayload(
+            language: "en", languageHints: ["en"], prompt: "Voxt",
+            otherLanguages: ["English"], multilingualContext: "English",
+            contextualPhrases: ["Voxt"]
+        )
+        let explicit = original.selectingLanguage(.request("Chinese"))
+        XCTAssertEqual(explicit.language, "Chinese")
+        XCTAssertEqual(explicit.languageHints, ["Chinese"])
+        XCTAssertEqual(explicit.contextualPhrases, ["Voxt"])
+        XCTAssertEqual(explicit.prompt, "Voxt")
+        XCTAssertTrue(explicit.otherLanguages.isEmpty)
+        XCTAssertNil(explicit.multilingualContext)
+        XCTAssertNil(original.selectingLanguage(.request("  ")).language)
+    }
+
     func testLoadSanitizesUnsupportedPromptEditors() {
         let raw = """
         {"mlxAudio":{"followsUserMainLanguage":true,"promptTemplate":"  should be removed  "},"openAIWhisper":{"followsUserMainLanguage":false,"promptTemplate":"  Bias {{USER_MAIN_LANGUAGE}}  "}}

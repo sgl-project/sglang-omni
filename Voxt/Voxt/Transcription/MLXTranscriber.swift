@@ -1671,12 +1671,13 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     private func resolvedInferenceConfiguration(
         for stage: MLXCorrectionPassKind,
-        audioDurationSeconds: Double? = nil
+        audioDurationSeconds: Double? = nil,
+        languageSelection: ASRLanguageSelection = .userSettings
     ) -> ResolvedInferenceConfiguration {
         MLXInferenceConfiguration.resolve(
             for: stage,
             audioDurationSeconds: audioDurationSeconds,
-            hintPayload: resolvedHintPayload(),
+            hintPayload: resolvedHintPayload().selectingLanguage(languageSelection),
             tuningSettings: resolvedLocalTuningSettings(),
             transcriptionPurpose: transcriptionPurpose,
             userLanguageCodes: UserMainLanguageOption.storedSelection(
@@ -1898,7 +1899,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     func transcribeBufferedResult(
         samples: [Float],
-        sampleRate: Double
+        sampleRate: Double,
+        languageSelection: ASRLanguageSelection = .userSettings
     ) async throws -> MLXBufferedTranscriptionResult? {
         guard !samples.isEmpty else { return nil }
 
@@ -1911,7 +1913,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         let audioDurationSeconds = Double(samples.count) / safeSampleRate(sampleRate)
         let inferenceConfiguration = resolvedInferenceConfiguration(
             for: .postStopFinal,
-            audioDurationSeconds: audioDurationSeconds
+            audioDurationSeconds: audioDurationSeconds,
+            languageSelection: languageSelection
         )
         let inferenceResult = try await runStreamingInference(
             model: model,
@@ -1936,12 +1939,16 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         )
     }
 
-    func transcribeAudioFile(_ fileURL: URL) async throws -> String {
+    func transcribeAudioFile(
+        _ fileURL: URL,
+        languageSelection: ASRLanguageSelection = .userSettings
+    ) async throws -> String {
         let loaded = try DebugAudioClipIO.loadMonoSamples(from: fileURL)
-        return try await transcribeBufferedChunk(
+        return try await transcribeBufferedResult(
             samples: loaded.samples,
-            sampleRate: loaded.sampleRate
-        ) ?? ""
+            sampleRate: loaded.sampleRate,
+            languageSelection: languageSelection
+        )?.text ?? ""
     }
 
     func debugReplayAudioFileWithTrace(

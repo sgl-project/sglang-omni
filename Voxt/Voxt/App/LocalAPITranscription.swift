@@ -11,7 +11,7 @@ extension AppDelegate {
         var remoteModel: String?
     }
 
-    func transcribeLocalAPIAudio(at url: URL) async throws -> String {
+    func transcribeLocalAPIAudio(at url: URL, language: ASRLanguageSelection = .userSettings) async throws -> String {
         prepareLegacySettingsForSession(outputMode: .transcription)
         synchronizeRuntimeASRStateForSession(outputMode: .transcription)
 
@@ -31,9 +31,9 @@ extension AppDelegate {
             }
             let transcriber = mlxTranscriber ?? MLXTranscriber(modelManager: mlxModelManager)
             mlxTranscriber = transcriber
-            text = try await transcriber.transcribeAudioFile(url)
+            text = try await transcriber.transcribeAudioFile(url, languageSelection: language)
         case .remote:
-            text = try await remoteASRTranscriber.transcribeMeetingAudioFile(url)
+            text = try await remoteASRTranscriber.transcribeMeetingAudioFile(url, languageSelection: language)
         case .dictation:
             throw LocalAPIError(message: AppLocalization.localizedString(
                 "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription."
