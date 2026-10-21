@@ -338,7 +338,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 sample_first_frames=model.sample_first_frames,
                 attention_backend=attention_backend,
                 max_request_count=max_request_count,
-                vocab_size=text_config.vocab_size,
+                vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
                 hidden_size=text_config.hidden_size,
                 hidden_dtype=sglang_runner.model_config.dtype,
                 frame_width=1 + model.config.audio_decoder_config.num_codebooks,

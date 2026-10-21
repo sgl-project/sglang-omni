@@ -79,7 +79,7 @@ class TupleLinear(nn.Module):
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
         self.quant_method = UnquantizedLinearMethod()
-        self.tp_size = 1
+        self.tp_group = None
 
     @property
     def weight(self) -> torch.Tensor:

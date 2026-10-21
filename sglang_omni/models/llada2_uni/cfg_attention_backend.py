@@ -146,6 +146,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 False,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                plan=forward_batch.kv_loc_plan,
             )
             cfg_prefill_wrapper.begin_forward(
                 qo_indptr,
@@ -178,6 +179,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 True,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                plan=forward_batch.kv_loc_plan,
             )
 
         self.forward_metadata = PrefillMetadata(

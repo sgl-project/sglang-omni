@@ -12,7 +12,8 @@ from sglang_omni.audio.semantic_vad import (
     SemanticVADConfig,
     end_of_turn_probability,
 )
-from sglang_omni.audio.smart_turn import SMART_TURN_MODEL_REPO, SmartTurnEOU
+from sglang_omni.audio.smart_turn import SmartTurnEOU
+from sglang_omni.models.turn_detection.node import SMART_TURN_MODEL_REPO
 from sglang_omni.models.vad.session import boundary_chunk
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk

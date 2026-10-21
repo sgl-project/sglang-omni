@@ -615,6 +615,12 @@ class SGLModelRunner(ModelRunner):
             return layers
         else:
             extra_layers = self.extra_prefill_graph_attention_layers
+            if self.model_arch_override == "WhisperForConditionalGeneration":
+                extra_layers = [
+                    layer.encoder_attn.attn for layer in self.model.model.decoder.layers
+                ] + extra_layers
+            else:
+                pass
             return AttentionAndMoeLayers(
                 attention_layers=[*layers.attention_layers, *extra_layers],
                 moe_layers=layers.moe_layers,

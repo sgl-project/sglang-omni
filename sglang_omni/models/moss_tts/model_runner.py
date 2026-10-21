@@ -124,8 +124,8 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             else:
                 pass
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             if data.output_rows:
                 # note (Richard Wang): prompt_rows is short by the generated tail
                 generated = torch.stack(data.output_rows, dim=0)

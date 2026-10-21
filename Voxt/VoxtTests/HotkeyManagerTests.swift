@@ -7,6 +7,81 @@ import IOKit.hidsystem
 
 @MainActor
 final class HotkeyManagerTests: HotkeyManagerTestCase {
+    func testProductionEscapeDispatchesOnceOnMainThreadWithoutBlockingEventTap() async {
+        let manager = makeManager()
+        var callbackCount = 0
+        let callbackExpectation = expectation(description: "Escape callback")
+        callbackExpectation.assertForOverFulfill = true
+        manager.onEscapeKeyDown = {
+            XCTAssertTrue(Thread.isMainThread)
+            callbackCount += 1
+            manager.resetTransientState(reason: "escape-cancelled-recording")
+            callbackExpectation.fulfill()
+            return true
+        }
+
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: []
+        )
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: [], isAutoRepeat: true
+        )
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyUp, keyCode: UInt16(kVK_Escape), flags: []
+        )
+        XCTAssertEqual(callbackCount, 0)
+
+        await fulfillment(of: [callbackExpectation], timeout: 1.0)
+        XCTAssertEqual(callbackCount, 1)
+    }
+
+    func testQueuedEscapeCannotCancelAfterSessionRoutingReset() async {
+        let manager = makeManager()
+        var callbackCount = 0
+        let callbackExpectation = expectation(description: "current Escape callback")
+        callbackExpectation.assertForOverFulfill = true
+        manager.onEscapeKeyDown = {
+            callbackCount += 1
+            callbackExpectation.fulfill()
+            return true
+        }
+
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: []
+        )
+        manager.resetTransientState(reason: "session-replaced")
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: []
+        )
+        XCTAssertEqual(callbackCount, 0)
+
+        await fulfillment(of: [callbackExpectation], timeout: 1.0)
+        XCTAssertEqual(callbackCount, 1)
+    }
+
+    func testProductionEscapeIgnoresInjectedEventsAndShortcutRecording() async {
+        let manager = makeManager()
+        var callbackCount = 0
+        manager.onEscapeKeyDown = {
+            callbackCount += 1
+            return true
+        }
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: [],
+            eventSourceUserData: voxtInjectedEventSourceUserData()
+        )
+        HotkeyCaptureState.shared.setCaptureInProgress(true)
+        manager.testingHandleEventUsingProductionCallbackDispatch(
+            type: .keyDown, keyCode: UInt16(kVK_Escape), flags: []
+        )
+        HotkeyCaptureState.shared.setCaptureInProgress(false)
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(callbackCount, 0)
+    }
+
     func testEscapeKeyDownCanBeConsumedViaCallback() {
         let manager = makeManager()
         var escapeCallbackCount = 0

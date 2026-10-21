@@ -186,8 +186,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             seq = seq[-len(known_tts_output_ids) - 1 : -1]
         else:
             pass
-        stacked = torch.stack(seq).to("cpu")
-        req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
+        req_data.extra_model_outputs["hidden_states_seq"] = torch.stack(seq).to("cpu")
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""

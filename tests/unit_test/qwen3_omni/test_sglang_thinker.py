@@ -11,6 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
+transformers = pytest.importorskip("transformers")
 
 from flashinfer.sampling import get_sampling_module
 from sglang.kernels.ops.moe.fused_moe_triton_kernels import fused_moe_kernel
@@ -37,6 +38,7 @@ from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
+    Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTextConfig,
     Qwen3OmniMoeThinkerConfig,
 )
@@ -127,6 +129,36 @@ def test_real_qwen_config_drives_prefill_positions(
         forward_batch
     )  # noqa: leading-underscore  # upstream name
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
+
+
+def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta() -> (
+    None
+):
+    """A talker config rebuilt from transformers' to_dict keeps the M-RoPE sections and the theta
+    that transformers serializes under rope_parameters."""
+    hf_text_config = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "rope_parameters": {
+            "rope_type": "default",
+            "mrope_section": [1, 1, 2],
+            "interleaved": True,
+            "rope_theta": 123456.0,
+        },
+    }
+    serialized = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config=hf_text_config
+    ).to_dict()
+
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized)
+
+    assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
+    assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
+    assert rebuilt.text_config.rope_theta == 123456.0
 
 
 def test_outer_thinker_forward_accepts_sidecar_request_identity():

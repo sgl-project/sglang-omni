@@ -62,8 +62,12 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.extra_key = extra_key
             self.output_ids = []
-            self.prefix_indices = []
-            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
+            self.prefix_len = 0
+            self.extend_end = len(origin_input_ids)
+
+        @property
+        def extend_len(self) -> int:
+            return self.extend_end - self.prefix_len
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -1466,9 +1470,7 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     )
     sched_req = SimpleNamespace(
         data=SimpleNamespace(
-            req=SimpleNamespace(
-                extend_range=SimpleNamespace(length=2), prefix_indices=[0]
-            ),
+            req=SimpleNamespace(extend_len=2, prefix_len=1),
             prompt_rows=prompt_rows,
             output_rows=[],
         )
@@ -1515,8 +1517,8 @@ def retract_sched_req(*, prompt_rows, output_rows, extend_len, feedback_queue):
         data=SimpleNamespace(
             req=SimpleNamespace(
                 rid="a",
-                extend_range=SimpleNamespace(length=extend_len),
-                prefix_indices=[],
+                extend_len=extend_len,
+                prefix_len=0,
             ),
             prompt_rows=prompt_rows,
             output_rows=output_rows,

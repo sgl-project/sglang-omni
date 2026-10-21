@@ -28,6 +28,7 @@ struct RemoteProviderConfigurationSheet: View {
     @State var searchEnabled = false
     @State var openAIChunkPseudoRealtimeEnabled = false
     @State var openAITextVerbosity = OpenAITextVerbosity.automatic.rawValue
+    @State var openAIAPIFormat = OpenAIAPIFormat.automatic.rawValue
     @State var generationMaxOutputTokensText = ""
     @State var generationTemperatureText = ""
     @State var generationTopPText = ""
@@ -206,6 +207,7 @@ struct RemoteProviderConfigurationSheet: View {
             searchEnabled = configuration.searchEnabled
             openAIChunkPseudoRealtimeEnabled = configuration.openAIChunkPseudoRealtimeEnabled
             openAITextVerbosity = configuration.openAITextVerbosity
+            openAIAPIFormat = configuration.openAIAPIFormat
             configureGenerationSettingsState()
             doubaoDictionaryMode = configuration.doubaoDictionaryMode
             doubaoEnableRequestHotwords = configuration.doubaoEnableRequestHotwords

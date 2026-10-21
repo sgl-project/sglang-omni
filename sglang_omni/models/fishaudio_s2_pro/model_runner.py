@@ -232,7 +232,7 @@ class FishS2ProModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
+            req_len = req.extend_len
 
             if (
                 data.vq_mask_tokens is None
@@ -250,7 +250,7 @@ class FishS2ProModelRunner(ModelRunner):
             else:
                 pass
 
-            prefix_len = len(req.prefix_indices)
+            prefix_len = req.prefix_len
             mask_slice = vq_mask[prefix_len : prefix_len + req_len]
             if not bool(mask_slice.any()):
                 offset += req_len

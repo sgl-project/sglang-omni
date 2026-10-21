@@ -180,7 +180,9 @@ def stub_device_runtime(
         SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
     )
     monkeypatch.setattr(
-        incremental_codec_cuda_graph, "supports_device_streams", lambda device: True
+        incremental_codec_cuda_graph,
+        "has_device_streams",
+        lambda device: True,
     )
     monkeypatch.setattr(
         incremental_codec_cuda_graph, "device_guard", lambda device: DeviceContext()
