@@ -32,9 +32,10 @@
 #include <typeinfo>
 #include <vector>
 
-#include "qwen3_asr/asr_service.h"
 #include "civetweb.h"
 #include "common/http.h"
+#include "qwen3_asr/asr_service.h"
+#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "voxtral_tts/voxtral_tts_model.h"
 
 namespace {
@@ -133,8 +134,8 @@ SpeechRequest ParseRequest(const Json &body,
   }
   RejectUnsupportedFields(body);
   const Json input = FieldOr(body, "input", Json());
-  if (!input.is_string() || input.get<std::string>().find_first_not_of(
-                                " \t\n\r\f\v") == std::string::npos) {
+  if (!input.is_string() ||
+      qwen3_asr::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
     throw std::invalid_argument("input must be a non-empty string");
   } else {
   }
@@ -337,8 +338,8 @@ private:
     auto channel = std::make_shared<AudioChannel>();
     const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
     worker_->Submit(
-        [this, request, channel](const std::atomic<bool> &cancelled) {
-          return Synthesize(request, *channel, cancelled);
+        [this, request, channel, deadline](const std::atomic<bool> &cancelled) {
+          return Synthesize(request, *channel, cancelled, deadline);
         },
         cancel,
         [this, channel](std::optional<TranscriptionResult> result,
@@ -379,6 +380,11 @@ private:
         break;
       } else if (channel->chunks.empty()) {
         break;
+      } else if (std::chrono::steady_clock::now() >= deadline) {
+        // Note (Minyi Tang): a write that blocked past the deadline leaves
+        // audio waiting, which wait_until hands back without waiting.
+        timed_out = true;
+        break;
       } else {
       }
       std::vector<float> chunk = std::move(channel->chunks.front());
@@ -398,6 +404,13 @@ private:
       lock.lock();
     }
     lock.unlock();
+    // Note (Minyi Tang): the generation stops at the deadline itself, and may
+    // report that before this thread's wait reaches the deadline.
+    if (!timed_out && channel->error &&
+        std::chrono::steady_clock::now() >= deadline) {
+      timed_out = true;
+    } else {
+    }
     if (timed_out) {
       // Note (Minyi Tang): a request still queued is dropped once the worker
       // reaches it.
@@ -442,9 +455,10 @@ private:
     return 200;
   }
 
-  TranscriptionResult Synthesize(const SpeechRequest &request,
-                                 AudioChannel &channel,
-                                 const std::atomic<bool> &cancel) const {
+  TranscriptionResult
+  Synthesize(const SpeechRequest &request, AudioChannel &channel,
+             const std::atomic<bool> &cancel,
+             std::chrono::steady_clock::time_point deadline) const {
     voxtral_tts::CodecStream stream(model_.codec());
     const auto send = [&channel](std::vector<float> samples) {
       if (!samples.empty()) {
@@ -458,9 +472,22 @@ private:
     result.finish_reason =
         model_.Generate(request.prompt_ids, request.voice, request.max_frames,
                         cancel, [&](const mlx::core::array &codes) {
+                          // Note (Minyi Tang): the generation checks its own
+                          // deadline, since the request's thread may be blocked
+                          // writing to a slow client.
+                          if (std::chrono::steady_clock::now() >= deadline) {
+                            throw qwen3_asr::TranscriptionCancelled();
+                          } else {
+                          }
                           ++result.generated_token_count;
                           send(stream.Push(codes));
                         });
+    if (result.generated_token_count == 0) {
+      // Note (Minyi Tang): the CUDA vocoder raises on an end of audio at the
+      // first frame rather than answer silence.
+      throw std::runtime_error("Voxtral TTS generated no audio codes");
+    } else {
+    }
     send(stream.Finish());
     return result;
   }

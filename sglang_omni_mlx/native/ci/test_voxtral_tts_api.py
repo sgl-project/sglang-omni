@@ -79,10 +79,19 @@ def speak(server: Server, body: dict) -> tuple[int, dict[str, str], bytes]:
     return response.status, dict(response.getheaders()), response.read()
 
 
-def open_speech_stream(server: Server, text: str) -> socket.socket:
-    """Sends a streamed speech request; returns once its headers arrive."""
+def open_speech_stream(
+    server: Server, text: str, receive_buffer_bytes: int | None = None
+) -> socket.socket:
+    """Sends a streamed speech request; returns once its 200 headers arrive."""
     body = json.dumps({"input": text, "response_format": "pcm", "stream": True})
-    client = socket.create_connection(("127.0.0.1", server.port))
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # The receive buffer is sized before connecting, so the window follows it.
+    if receive_buffer_bytes is not None:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes)
+    else:
+        pass
+    client.settimeout(300)
+    client.connect(("127.0.0.1", server.port))
     client.sendall(
         b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
         b"Content-Type: application/json\r\n"
@@ -90,7 +99,17 @@ def open_speech_stream(server: Server, text: str) -> socket.socket:
     )
     received = b""
     while b"\r\n\r\n" not in received:
-        received += client.recv(65536)
+        chunk = client.recv(65536)
+        if not chunk:
+            client.close()
+            raise ConnectionError(f"stream closed before its headers: {received!r}")
+        else:
+            received += chunk
+    if not received.startswith(b"HTTP/1.1 200 "):
+        client.close()
+        raise AssertionError(f"stream was refused: {received!r}")
+    else:
+        pass
     return client
 
 
@@ -261,6 +280,16 @@ def test_voxtral_times_out_a_request_past_its_deadline(
     wait_until_idle(voxtral_server)
 
 
+def test_voxtral_stops_a_stream_its_client_stops_reading_at_its_deadline(
+    voxtral_server: Server,
+) -> None:
+    # Note (Minyi Tang): seconds of audio fill a 4 KB receive window and the
+    # server's send buffer, so the server's write blocks while generation runs.
+    with open_speech_stream(voxtral_server, PASSAGE, receive_buffer_bytes=4096):
+        assert request_states(voxtral_server) == {"running": 1}
+        wait_until_idle(voxtral_server, REQUEST_TIMEOUT_SECONDS + CANCEL_SECONDS)
+
+
 def test_voxtral_accepts_any_model_without_a_chosen_name(
     voxtral_server: Server,
 ) -> None:
@@ -308,6 +337,7 @@ def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
     [
         ([1], "speech request body must be a JSON object"),
         ({"input": "  "}, "input must be a non-empty string"),
+        ({"input": "\u3000\u00a0\u2028"}, "input must be a non-empty string"),
         ({"input": "x" * 4097}, "input must be at most 4096 characters"),
         ({"input": "hi", "model": 5}, "model must be a string"),
         ({"input": "hi", "voice": "nobody"}, "Unknown voice 'nobody'. "),
