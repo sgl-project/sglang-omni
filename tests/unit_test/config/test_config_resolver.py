@@ -74,6 +74,56 @@ class TestResolve:
             )
 
 
+class TestReplicaGpuOverrides:
+    """replica_devices owns the GPU of every stage in its process at launch,
+    so a user-written stage GPU there is refused whichever source wrote it."""
+
+    GPU = "stages.thinker.gpu"
+    REPLICAS = "processes.gen.replica_devices"
+
+    @pytest.mark.parametrize("source", [CLI, YAML], ids=["cli", "yaml"])
+    def test_a_user_written_gpu_is_refused(
+        self, pipeline_config: PipelineConfig, source: ConfigSource
+    ):
+        with pytest.raises(ValueError, match="processes.gen.replica_devices"):
+            ConfigResolver(pipeline_config).resolve(
+                patchset(
+                    make(pipeline_config, self.GPU, 3, source),
+                    make(pipeline_config, self.REPLICAS, [1], YAML),
+                )
+            )
+
+    def test_a_gpu_without_replica_devices_is_kept(
+        self, pipeline_config: PipelineConfig
+    ):
+        resolved = ConfigResolver(pipeline_config).resolve(
+            patchset(make(pipeline_config, self.GPU, 3))
+        )
+        assert resolved.value(self.GPU) == 3
+
+    def test_a_model_default_gpu_is_not_a_user_write(
+        self, pipeline_config: PipelineConfig
+    ):
+        resolved = ConfigResolver(pipeline_config).resolve(
+            patchset(
+                make(pipeline_config, self.GPU, 0, MODEL),
+                make(pipeline_config, self.REPLICAS, [1], YAML),
+            )
+        )
+        assert resolved.value(self.REPLICAS) == [1]
+
+    def test_a_gpu_written_by_an_earlier_resolution_is_refused(
+        self, pipeline_config: PipelineConfig
+    ):
+        """serve folds the config file in first; the command line that adds
+        replica_devices afterwards must still see the file's GPU."""
+        with pytest.raises(ValueError, match="processes.gen.replica_devices"):
+            ConfigResolver(pipeline_config).resolve(
+                patchset(make(pipeline_config, self.REPLICAS, [1])),
+                earlier_written_paths=frozenset({self.GPU}),
+            )
+
+
 class TestProvenance:
     def test_explains_the_full_chain(self, pipeline_config: PipelineConfig):
         resolved = ConfigResolver(pipeline_config).resolve(
