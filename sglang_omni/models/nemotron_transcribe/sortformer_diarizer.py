@@ -93,7 +93,7 @@ class SortformerDiarizer(nn.Module):
         state_predictions = self.mask_predictions(state_predictions, encoded_lengths)
         saved_cache = state.speaker_cache.shape[1]
         saved_recent = state.recent_embeddings.shape[1]
-        state, _ = modules.update_cache(
+        state = modules.update_cache(
             state, pre_encoded, state_predictions, left_frames, right_frames
         )
         if self.high_resolution:
