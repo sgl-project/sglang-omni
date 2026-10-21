@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The PersonaPlex pipelines on one GPU, the LM under SGLang.
 
-The default pipeline answers a whole recording; the realtime variant holds
-full-duplex calls over /v1/realtime.
+The default pipeline answers a whole recording; the session variant holds
+full-duplex sessions over /v1/realtime.
 """
 
 from collections.abc import Mapping
@@ -25,8 +25,6 @@ PREPROCESSING_STAGE = "preprocessing"
 MIMI_ENCODE_STAGE = "mimi_encode"
 LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
-# A full-duplex call visits these in order, one 80 ms unit at a time.
-REALTIME_STAGES = (PREPROCESSING_STAGE, MIMI_ENCODE_STAGE, LM_STAGE, CODE2WAV_STAGE)
 # The LM's concurrency when lm.engine.max_running_requests is unset.
 DEFAULT_LM_MAX_RUNNING_REQUESTS = 1
 
@@ -104,26 +102,26 @@ def personaplex_stages_factory() -> list[StageConfig]:
     ]
 
 
-def personaplex_realtime_stages_factory() -> list[StageConfig]:
-    """REALTIME_STAGES as one linear route, the only shape a session unit takes."""
+def personaplex_session_stages_factory() -> list[StageConfig]:
+    """One linear route, the only shape a session unit takes."""
     return [
         StageConfig(
             name=PREPROCESSING_STAGE,
             process="pipeline",
-            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_preprocessing_executor",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_preprocessing_executor",
             next=MIMI_ENCODE_STAGE,
         ),
         StageConfig(
             name=MIMI_ENCODE_STAGE,
             process="pipeline",
-            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_mimi_encode_executor",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_mimi_encode_executor",
             gpu=0,
             next=LM_STAGE,
         ),
         EngineStageConfig(
             name=LM_STAGE,
             process="lm",
-            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_lm_executor",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_lm_executor",
             factory=FactoryArgs(dtype="bfloat16"),
             gpu=0,
             engine=EngineArgs(mem_fraction_static=0.3),
@@ -132,7 +130,7 @@ def personaplex_realtime_stages_factory() -> list[StageConfig]:
         StageConfig(
             name=CODE2WAV_STAGE,
             process="lm",
-            factory_path=f"{MODEL_STAGES_PREFIX}.create_realtime_code2wav_executor",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_code2wav_executor",
             gpu=0,
             terminal=True,
         ),
@@ -205,7 +203,7 @@ class PersonaPlexPipelineConfig(PipelineConfig):
         return next((stage for stage in self.stages if stage.name == stage_name), None)
 
 
-class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
+class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     realtime_deployment_factory: ClassVar[str | None] = (
         "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
     )
@@ -218,7 +216,7 @@ class PersonaPlexRealtimePipelineConfig(PersonaPlexPipelineConfig):
 
     max_sessions: int = Field(default=1, ge=1)
     stages: list[StageConfig] = Field(
-        default_factory=personaplex_realtime_stages_factory
+        default_factory=personaplex_session_stages_factory
     )
 
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, int]:
@@ -229,5 +227,5 @@ EntryClass = PersonaPlexPipelineConfig
 
 Variants = {
     "offline": PersonaPlexPipelineConfig,
-    "realtime": PersonaPlexRealtimePipelineConfig,
+    "session": PersonaPlexSessionPipelineConfig,
 }

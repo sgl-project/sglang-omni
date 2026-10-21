@@ -182,6 +182,11 @@ def delay_user_frames(user_frames_FK: torch.Tensor) -> torch.Tensor:
     return delay_stream(user_frames_FK, DELAYS[USER_STREAM_OFFSET:], AUDIO_INITIAL_ID)
 
 
+def no_codes() -> torch.Tensor:
+    """A unit's codes when it carries no frame."""
+    return torch.zeros(0, AUDIO_CODEBOOKS_PER_STREAM, dtype=torch.long)
+
+
 def build_timeline(
     prompt: PromptFrames,
     user_codes_UK: torch.Tensor,
@@ -281,6 +286,7 @@ __all__ = [
     "build_prompt_frames",
     "build_timeline",
     "delay_stream",
+    "no_codes",
     "output_frame",
     "voice_tail_codes_from_cache",
 ]

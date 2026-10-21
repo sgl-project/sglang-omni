@@ -179,8 +179,8 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         }
 
 
-class PersonaPlexRealtimeEngineBuilder(PersonaPlexEngineBuilder):
-    """The LM of full-duplex calls: one SGLang streaming session per call."""
+class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
+    """The LM of full-duplex sessions: one SGLang streaming session each."""
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
         return {

@@ -63,7 +63,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 The realtime variant holds a live call: the client streams the caller's microphone, and the server streams the agent's voice back continuously while the model decides for itself when to speak, listen or interrupt.
 
 ```bash
-python -m sglang_omni.cli serve --model-path nvidia/personaplex-7b-v1 --variant realtime --enable-realtime --port 8000
+python -m sglang_omni.cli serve --model-path nvidia/personaplex-7b-v1 --variant session --enable-realtime --port 8000
 ```
 
 Each 80 ms unit of caller audio (24 kHz mono PCM16, 3840 bytes) goes through preprocessing, Mimi encode, the LM and Mimi decode as one step. The LM keeps one SGLang streaming session per call: the first unit prefills the voice and role prompt, and every later unit extends the retained KV cache by exactly one position, so a call produces the frames the offline pipeline produces for the same audio and options.

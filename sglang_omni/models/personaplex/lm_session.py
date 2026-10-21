@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The LM side of a full-duplex call: one SGLang streaming-session request per unit.
+"""The LM side of a full-duplex session: one SGLang streaming-session request per unit.
 
-Forward j reads caller frame j - 1, so after F caller frames a call can run F + 1
+Forward j reads caller frame j - 1, so after F caller frames a session can run F + 1
 forwards; SGLang extends the retained history by the one position each unit lacks."""
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ from sglang_omni.models.personaplex.request_builders import (
     request_sampling,
     timeline_from_state,
 )
-from sglang_omni.models.personaplex.session_hooks import no_codes
-from sglang_omni.models.personaplex.timeline import Timeline
+from sglang_omni.models.personaplex.timeline import Timeline, no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
@@ -31,8 +30,8 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 
 
 @dataclass(kw_only=True)
-class LMCall:
-    """What a call's finished units left; a failed unit closes the whole call.
+class LMHistory:
+    """What a session's finished units left; a failed unit closes the session.
 
     next_text_id is the next frame's text token: audio trails text by one step."""
 
@@ -42,24 +41,26 @@ class LMCall:
 
 
 @dataclass(kw_only=True)
-class LMSession:
+class LMSessionState:
     sampling: RequestSampling
-    call: LMCall | None = None
+    history: LMHistory | None = None
 
 
 class PersonaPlexSessionAdapter(ARSessionAdapter):
     def __init__(self, *, vocab_size: int, context_length: int) -> None:
         self.vocab_size = vocab_size
         self.context_length = context_length
-        self.sessions: dict[SessionIdentity, LMSession] = {}
+        self.states: dict[SessionIdentity, LMSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.sessions[session_identity] = LMSession(sampling=request_sampling(request))
+        self.states[session_identity] = LMSessionState(
+            sampling=request_sampling(request)
+        )
 
     def close(self, session_identity: SessionIdentity) -> None:
         # Note (wilsonzheng0327): The bridge registers a session before calling
         # open, so a close can follow an open that raised.
-        self.sessions.pop(session_identity, None)
+        self.states.pop(session_identity, None)
 
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
@@ -68,9 +69,11 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         payload.data = PersonaPlexState(codes=no_codes()).to_dict()
         return payload
 
-    def start_call(self, session: LMSession, state: PersonaPlexState) -> LMCall:
+    def start_history(
+        self, session: LMSessionState, state: PersonaPlexState
+    ) -> LMHistory:
         timeline = timeline_from_state(state, no_codes())
-        return LMCall(
+        return LMHistory(
             timeline=timeline,
             model_inputs=new_model_inputs(timeline, session.sampling),
             next_text_id=int(timeline.prefill_tokens[-1, 0]),
@@ -82,28 +85,28 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         chunk: TimedChunk,
         payload: StagePayload,
     ) -> SGLangARRequestData:
-        session = self.sessions[session_identity]
+        session = self.states[session_identity]
         state = PersonaPlexState.from_dict(payload.data)
-        if session.call is None:
-            session.call = self.start_call(session, state)
+        if session.history is None:
+            session.history = self.start_history(session, state)
         else:
             pass
-        call = session.call
-        timeline = call.timeline
+        history = session.history
+        timeline = history.timeline
         caller_codes = state.user_codes
         num_forwards = timeline.num_frames + int(caller_codes.shape[0]) + 1
         positions = timeline.num_prompt_positions + num_forwards
         if positions > self.context_length - 1:
             raise ContextExhaustedError(
-                f"{ContextExhaustedError.CODE}: PersonaPlex call needs {positions} "
+                f"{ContextExhaustedError.CODE}: PersonaPlex session needs {positions} "
                 f"positions but the LM context holds {self.context_length - 1}; "
-                "raise the lm stage's context_length for longer calls"
+                "raise the lm stage's context_length for longer sessions"
             )
         else:
             pass
 
         timeline.append_caller_frames(caller_codes)
-        forwards_done = len(call.model_inputs["agent_rows"])
+        forwards_done = len(history.model_inputs["agent_rows"])
         input_ids = prompt_input_ids(timeline) if forwards_done == 0 else []
         max_new_tokens = num_forwards - forwards_done
         sglang_request = Req(
@@ -124,20 +127,20 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
             max_new_tokens=max_new_tokens,
             temperature=session.sampling.text_temperature,
         )
-        data.talker_model_inputs = call.model_inputs
+        data.talker_model_inputs = history.model_inputs
         return data
 
     def result(
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
-        call = self.sessions[session_identity].call
-        frames = call.model_inputs["pending_frames"]
-        text_ids = [call.next_text_id]
+        history = self.states[session_identity].history
+        frames = history.model_inputs["pending_frames"]
+        text_ids = [history.next_text_id]
         text_ids.extend(int(token) for token in request_data.output_ids)
-        call.next_text_id = text_ids.pop()
+        history.next_text_id = text_ids.pop()
         codes = torch.stack(frames).cpu()
         frames.clear()
-        call.model_inputs["frames"].clear()
+        history.model_inputs["frames"].clear()
         payload = request_data.stage_payload
         payload.data = PersonaPlexState(codes=codes, text_ids=text_ids).to_dict()
         return payload

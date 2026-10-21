@@ -12,12 +12,12 @@ from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.config import (
     PersonaPlexPipelineConfig,
-    PersonaPlexRealtimePipelineConfig,
+    PersonaPlexSessionPipelineConfig,
     Variants,
 )
 from sglang_omni.models.personaplex.realtime import (
     PersonaPlexOutputConverter,
-    build_call_request,
+    build_session_request,
     create_realtime_deployment,
 )
 from sglang_omni.proto.request import OmniRequest
@@ -72,7 +72,7 @@ def test_a_call_that_ends_before_any_output_opens_no_response():
 
 def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls():
     client = Client(None)
-    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex", max_sessions=2)
+    config = PersonaPlexSessionPipelineConfig(model_path="personaplex", max_sessions=2)
     # Note (wilsonzheng0327): Called the way the launcher calls it.
     deployment = import_string(config.realtime_deployment_factory)(client, config)
     capabilities = deployment.capabilities
@@ -90,18 +90,18 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls
 
 
 def test_only_the_realtime_variant_serves_and_needs_realtime():
-    assert Variants["realtime"] is PersonaPlexRealtimePipelineConfig
+    assert Variants["session"] is PersonaPlexSessionPipelineConfig
     assert Variants["offline"] is PersonaPlexPipelineConfig
     assert PersonaPlexPipelineConfig.realtime_deployment_factory is None
-    assert PersonaPlexRealtimePipelineConfig.is_realtime_only
+    assert PersonaPlexSessionPipelineConfig.is_realtime_only
     assert not PersonaPlexPipelineConfig.is_realtime_only
 
 
 def test_instructions_become_the_role_prompt():
-    assert build_call_request({"instructions": "Be brief."}).params == {
+    assert build_session_request({"instructions": "Be brief."}).params == {
         "instructions": "Be brief."
     }
-    assert build_call_request({}).params == {}
+    assert build_session_request({}).params == {}
 
 
 class ScriptedPipeline:
@@ -186,7 +186,7 @@ def test_a_call_over_the_websocket_streams_speech_and_its_transcript():
         client,
         model_name="personaplex",
         realtime_deployment=create_realtime_deployment(
-            client, PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+            client, PersonaPlexSessionPipelineConfig(model_path="personaplex")
         ),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:

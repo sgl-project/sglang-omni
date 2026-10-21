@@ -17,9 +17,12 @@ from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.config import (
-    REALTIME_STAGES,
+    CODE2WAV_STAGE,
+    LM_STAGE,
+    MIMI_ENCODE_STAGE,
+    PREPROCESSING_STAGE,
     PersonaPlexPipelineConfig,
-    PersonaPlexRealtimePipelineConfig,
+    PersonaPlexSessionPipelineConfig,
 )
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
@@ -34,6 +37,7 @@ from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 CALLER_SAMPLES = 2000
+SESSION_STAGES = (PREPROCESSING_STAGE, MIMI_ENCODE_STAGE, LM_STAGE, CODE2WAV_STAGE)
 
 
 class FakeTokenizer:
@@ -190,8 +194,8 @@ def test_realtime_engine_keeps_a_request_slot_beyond_its_calls(monkeypatch):
         def build(self, model_path, **kwargs):
             pass
 
-    monkeypatch.setattr(stages, "PersonaPlexRealtimeEngineBuilder", Builder)
-    stages.create_realtime_lm_executor("m", max_sessions=2)
+    monkeypatch.setattr(stages, "PersonaPlexSessionEngineBuilder", Builder)
+    stages.create_session_lm_executor("m", max_sessions=2)
     assert built["max_running_requests"] == (
         2 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
     )
@@ -209,12 +213,10 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
 
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "load_codec", load_codec)
-    prompt = stages.create_realtime_preprocessing_executor(
-        str(tmp_path), max_sessions=3
-    )
+    prompt = stages.create_session_preprocessing_executor(str(tmp_path), max_sessions=3)
     codecs = [
-        stages.create_realtime_mimi_encode_executor(str(tmp_path), max_sessions=3),
-        stages.create_realtime_code2wav_executor(str(tmp_path), max_sessions=3),
+        stages.create_session_mimi_encode_executor(str(tmp_path), max_sessions=3),
+        stages.create_session_code2wav_executor(str(tmp_path), max_sessions=3),
     ]
     for scheduler in [prompt, *codecs]:
         assert scheduler.max_open_sessions == 3
@@ -222,15 +224,15 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     assert loaded_modes == ["encode", "decode"]
 
 
-def test_a_call_follows_the_realtime_stages_and_streams_nothing():
-    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex")
-    assert config.session_route() == list(REALTIME_STAGES)
+def test_a_session_follows_the_four_stages_and_streams_nothing():
+    config = PersonaPlexSessionPipelineConfig(model_path="personaplex")
+    assert config.session_route() == list(SESSION_STAGES)
     assert config.session_graph() is None
     assert not any(stage.stream_to for stage in config.stages)
 
 
-def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
-    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex")
+def test_session_factories_get_no_offline_factory_fields_after_an_override():
+    config = PersonaPlexSessionPipelineConfig(model_path="personaplex")
     patches = patches_from_stages_mapping(
         {"lm": {"engine": {"mem_fraction_static": 0.5}}}, type(config), ["lm"]
     )
@@ -243,10 +245,10 @@ def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
     assert "chunk_ramp_frames" not in code2wav_args
 
 
-def test_every_realtime_stage_holds_max_sessions_calls():
-    assert PersonaPlexRealtimePipelineConfig(model_path="personaplex").max_sessions == 1
-    config = PersonaPlexRealtimePipelineConfig(model_path="personaplex", max_sessions=3)
-    for name in REALTIME_STAGES:
+def test_every_session_stage_holds_max_sessions_sessions():
+    assert PersonaPlexSessionPipelineConfig(model_path="personaplex").max_sessions == 1
+    config = PersonaPlexSessionPipelineConfig(model_path="personaplex", max_sessions=3)
+    for name in SESSION_STAGES:
         assert config.stage_factory_kwargs(name) == {"max_sessions": 3}
 
 

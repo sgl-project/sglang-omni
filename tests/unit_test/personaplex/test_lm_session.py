@@ -208,4 +208,4 @@ def test_an_empty_end_of_input_is_relayed_without_a_step():
 def test_close_after_a_failed_open_is_a_no_op():
     adapter = PersonaPlexSessionAdapter(vocab_size=32000, context_length=4096)
     adapter.close(CALL)
-    assert adapter.sessions == {}
+    assert adapter.states == {}

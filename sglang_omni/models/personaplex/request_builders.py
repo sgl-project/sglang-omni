@@ -151,7 +151,7 @@ def resolve_sampling(
 
 
 class LMInputs(TypedDict, total=False):
-    """The model runner's state for one request, or for every unit of one call.
+    """The model runner's state for one request, or for every unit of one session.
 
     timeline through pending_frames are set when the request is built, and
     num_samples for an offline request; the runner adds the rest.

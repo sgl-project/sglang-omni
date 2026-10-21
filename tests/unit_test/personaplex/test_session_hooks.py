@@ -10,9 +10,9 @@ import torch
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
-    Code2WavSessionHooks,
-    MimiEncodeSessionHooks,
-    PromptSessionHooks,
+    Code2WavHooks,
+    MimiEncodeHooks,
+    PreprocessingHooks,
     pcm16_to_waveform,
     waveform_to_pcm16,
 )
@@ -49,7 +49,7 @@ def open_hooks(hooks):
 
 def test_only_the_first_unit_carries_the_prompt():
     hooks = open_hooks(
-        PromptSessionHooks(lambda request: PersonaPlexState(text_prompt_ids=PROMPT_IDS))
+        PreprocessingHooks(lambda request: PersonaPlexState(text_prompt_ids=PROMPT_IDS))
     )
     waveform = torch.linspace(-0.5, 0.5, SAMPLES_PER_FRAME)
     states = []
@@ -85,7 +85,7 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     whole = random_codec.encode(waveform.view(1, 1, -1))[0].T
     voice = torch.randn(2 * SAMPLES_PER_FRAME) * 0.3
 
-    hooks = open_hooks(MimiEncodeSessionHooks(random_codec, torch.device("cpu")))
+    hooks = open_hooks(MimiEncodeHooks(random_codec, torch.device("cpu")))
     streamed = []
     for index in range(frames):
         state = PersonaPlexState(
@@ -115,7 +115,7 @@ def test_code2wav_streams_audio_and_the_words_spoken(random_codec):
     codes = torch.randint(0, 2048, (frames, 8))
     whole = random_codec.decode(codes.T[None])[0, 0]
     hooks = open_hooks(
-        Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+        Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
     )
     emitted: list[TimedChunk] = []
     # Note (wilsonzheng0327): 3 is PAD and 0 is EPAD, frame markers never spoken.
@@ -141,7 +141,7 @@ def test_code2wav_streams_audio_and_the_words_spoken(random_codec):
 
 def test_an_empty_end_of_input_emits_only_the_end(random_codec):
     hooks = open_hooks(
-        Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+        Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
     )
     emitted: list[TimedChunk] = []
     state = PersonaPlexState(codes=torch.zeros(0, 8, dtype=torch.long))
@@ -152,8 +152,8 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
 
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
-    encode = MimiEncodeSessionHooks(random_codec, torch.device("cpu"))
-    decode = Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+    encode = MimiEncodeHooks(random_codec, torch.device("cpu"))
+    decode = Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
     encode.warm_up_serving_thread()
     decode.warm_up_serving_thread()
-    assert encode.encode_states == {} and decode.calls == {}
+    assert encode.states == {} and decode.states == {}

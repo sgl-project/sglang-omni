@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage factories: preprocessing, Mimi encode, the LM engine, decode and code2wav,
-for recordings and for full-duplex calls."""
+for recordings and for full-duplex sessions."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from sglang_omni.models.personaplex.config import (
 )
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
-    PersonaPlexRealtimeEngineBuilder,
+    PersonaPlexSessionEngineBuilder,
 )
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -45,10 +45,10 @@ from sglang_omni.models.personaplex.prompts import (
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
 from sglang_omni.models.personaplex.session_hooks import (
-    Code2WavSessionHooks,
-    MimiEncodeSessionHooks,
+    Code2WavHooks,
+    MimiEncodeHooks,
+    PreprocessingHooks,
     PromptPreparer,
-    PromptSessionHooks,
     encode_waveform,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
@@ -165,12 +165,12 @@ def create_preprocessing_executor(
     return SimpleScheduler(preprocess)
 
 
-def create_realtime_preprocessing_executor(
+def create_session_preprocessing_executor(
     model_path: str, *, max_sessions: int, **_
 ) -> SessionScheduler:
     model_dir = Path(resolve_model_path(model_path))
     return SessionScheduler(
-        PromptSessionHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
+        PreprocessingHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
         max_open_sessions=max_sessions,
     )
 
@@ -210,7 +210,7 @@ def create_mimi_encode_executor(
     return SimpleScheduler(encode)
 
 
-def create_realtime_mimi_encode_executor(
+def create_session_mimi_encode_executor(
     model_path: str,
     *,
     max_sessions: int,
@@ -220,7 +220,7 @@ def create_realtime_mimi_encode_executor(
 ) -> SessionScheduler:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
     return SessionScheduler(
-        MimiEncodeSessionHooks(codec, device),
+        MimiEncodeHooks(codec, device),
         max_open_sessions=max_sessions,
         max_concurrency=1,
     )
@@ -279,7 +279,7 @@ def create_lm_executor(
     )
 
 
-def create_realtime_lm_executor(
+def create_session_lm_executor(
     model_path: str,
     *,
     max_sessions: int,
@@ -291,10 +291,10 @@ def create_realtime_lm_executor(
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
     return start_lm_engine(
-        PersonaPlexRealtimeEngineBuilder,
+        PersonaPlexSessionEngineBuilder,
         model_path,
-        # Note (wilsonzheng0327): The session bridge admits a call's first unit
-        # only while these slots stay free for calls already holding KV.
+        # Note (wilsonzheng0327): The session bridge admits a session's first unit
+        # only while these slots stay free for sessions already holding KV.
         max_running_requests=max_sessions
         + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
         enable_async_decode=False,
@@ -367,7 +367,7 @@ def create_code2wav_executor(
     )
 
 
-def create_realtime_code2wav_executor(
+def create_session_code2wav_executor(
     model_path: str,
     *,
     max_sessions: int,
@@ -378,7 +378,7 @@ def create_realtime_code2wav_executor(
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
     tokenizer = load_text_tokenizer(resolve_model_path(model_path))
     return SessionScheduler(
-        Code2WavSessionHooks(codec, device, tokenizer),
+        Code2WavHooks(codec, device, tokenizer),
         max_open_sessions=max_sessions,
         max_concurrency=1,
     )
@@ -390,8 +390,8 @@ __all__ = [
     "create_lm_executor",
     "create_mimi_encode_executor",
     "create_preprocessing_executor",
-    "create_realtime_code2wav_executor",
-    "create_realtime_lm_executor",
-    "create_realtime_mimi_encode_executor",
-    "create_realtime_preprocessing_executor",
+    "create_session_code2wav_executor",
+    "create_session_lm_executor",
+    "create_session_mimi_encode_executor",
+    "create_session_preprocessing_executor",
 ]

@@ -14,7 +14,7 @@ from transformers import PretrainedConfig
 from sglang_omni.models.personaplex.architecture import TEMPORAL_TRANSFORMER, TEXT_CARD
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
-    PersonaPlexRealtimeEngineBuilder,
+    PersonaPlexSessionEngineBuilder,
     shim_checkpoint_dir,
 )
 from sglang_omni.models.personaplex.hf_config import (
@@ -148,7 +148,7 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
 
 
 def test_realtime_engine_serves_calls_through_streaming_sessions():
-    builder = PersonaPlexRealtimeEngineBuilder(
+    builder = PersonaPlexSessionEngineBuilder(
         enable_async_decode=False, max_running_requests=2, context_length=4096
     )
     defaults = builder.generation_defaults(dtype="bfloat16")

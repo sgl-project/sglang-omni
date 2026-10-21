@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-call state of the realtime stages around the LM: the prompt handed on with
-the first unit, the streaming Mimi encoder and the streaming Mimi decoder."""
+"""Per-session state of the stages around the LM: the prompt handed on with the
+first unit, the streaming Mimi encoder and the streaming Mimi decoder."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import torch
 from sentencepiece import SentencePieceProcessor
 
 from sglang_omni.models.personaplex.architecture import (
-    AUDIO_CODEBOOKS_PER_STREAM,
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
     SILENCE_CODES,
@@ -24,17 +23,18 @@ from sglang_omni.models.personaplex.components.mimi import (
     MimiEncodeState,
 )
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
+from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import PCM16, PCM16_BYTES_PER_SAMPLE
 from sglang_omni.scheduling.session import SessionContext, SessionHooks
+from sglang_omni.serve.realtime.types import samples_to_ms
 
-PCM16_FORMAT = "pcm16"
 PCM16_SCALE = 32768.0
-PCM16_BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2
-MS_PER_SECOND = 1000
+PCM16_BYTES_PER_FRAME = SAMPLES_PER_FRAME * PCM16_BYTES_PER_SAMPLE
 WORD_BOUNDARY = "▁"
-# Note (wilsonzheng0327): A call's first unit returns two agent frames, the prompt's
-# last among them, and every later unit one.
+# Note (wilsonzheng0327): A session's first unit returns two agent frames, the
+# prompt's last among them, and every later unit one.
 MAX_FRAMES_PER_UNIT = 2
 WARM_UP_FRAMES_PER_UNIT = (MAX_FRAMES_PER_UNIT, 1)
 
@@ -47,8 +47,8 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
     """A unit's PCM16 payload as float32 samples: whole 80 ms frames, at least
     one unless the unit is an empty end of input."""
     payload = chunk.payload
-    if chunk.format != PCM16_FORMAT or not isinstance(payload, bytes):
-        raise ValueError(f"PersonaPlex sessions take {PCM16_FORMAT} audio units")
+    if chunk.format != PCM16 or not isinstance(payload, bytes):
+        raise ValueError(f"PersonaPlex sessions take {PCM16} audio units")
     elif len(payload) % PCM16_BYTES_PER_FRAME or (
         not payload and not is_empty_end_of_input(chunk)
     ):
@@ -66,14 +66,6 @@ def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
     return samples.to(torch.int16).cpu().numpy().astype("<i2").tobytes()
 
 
-def samples_to_ms(num_samples: int) -> float:
-    return num_samples * MS_PER_SECOND / SAMPLE_RATE
-
-
-def no_codes() -> torch.Tensor:
-    return torch.zeros(0, AUDIO_CODEBOOKS_PER_STREAM, dtype=torch.long)
-
-
 def encode_waveform(
     codec: MimiCodec, device: torch.device, waveform: torch.Tensor
 ) -> torch.Tensor:
@@ -86,51 +78,49 @@ class PromptPreparer(Protocol):
     def __call__(self, request: OmniRequest) -> PersonaPlexState: ...
 
 
-class PromptSessionHooks(SessionHooks):
-    """Prepares the prompt at open; the call's first unit carries it to the LM."""
+class PreprocessingHooks(SessionHooks):
+    """Prepares the prompt at open; the session's first unit carries it to the LM."""
 
     def __init__(self, prepare_prompt: PromptPreparer) -> None:
         self.prepare_prompt = prepare_prompt
-        self.prompts: dict[SessionIdentity, PersonaPlexState] = {}
+        self.states: dict[SessionIdentity, PersonaPlexState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.prompts[session_identity] = self.prepare_prompt(request)
+        self.states[session_identity] = self.prepare_prompt(request)
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = self.prompts.pop(context.session_identity, None) or PersonaPlexState()
+        state = self.states.pop(context.session_identity, None) or PersonaPlexState()
         state.waveform = pcm16_to_waveform(chunk)
         payload.data = state.to_dict()
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        # Note (wilsonzheng0327): The first unit takes the prompt, so a call that
+        # Note (wilsonzheng0327): The first unit takes the prompt, so a session that
         # carried any audio has nothing left here.
-        self.prompts.pop(session_identity, None)
+        self.states.pop(session_identity, None)
 
 
-class MimiEncodeSessionHooks(SessionHooks):
-    """Encodes each unit with the call's streaming encoder state."""
+class MimiEncodeHooks(SessionHooks):
+    """Encodes each unit with the session's streaming encoder state."""
 
     def __init__(self, codec: MimiCodec, device: torch.device) -> None:
         self.codec = codec
         self.device = device
-        self.encode_states: dict[SessionIdentity, MimiEncodeState] = {}
+        self.states: dict[SessionIdentity, MimiEncodeState] = {}
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
         """Encode a unit of silence on a throwaway state, so the codec's first use
-        on the serving thread happens before the first call."""
+        on the serving thread happens before the first session."""
         self.codec.encode_step(
             torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
             self.codec.init_encode_state(batch_size=1),
         )
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.encode_states[session_identity] = self.codec.init_encode_state(
-            batch_size=1
-        )
+        self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
 
     @torch.inference_mode()
     def append(
@@ -148,8 +138,10 @@ class MimiEncodeSessionHooks(SessionHooks):
             state.user_codes = no_codes()
         else:
             codes = self.codec.encode_step(
-                state.waveform.to(device=self.device, dtype=torch.float32).view(1, 1, -1),
-                self.encode_states[context.session_identity],
+                state.waveform.to(device=self.device, dtype=torch.float32).view(
+                    1, 1, -1
+                ),
+                self.states[context.session_identity],
             )
             state.user_codes = codes[0].T.cpu()
         state.waveform = None
@@ -157,17 +149,17 @@ class MimiEncodeSessionHooks(SessionHooks):
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.encode_states.pop(session_identity)
+        self.states.pop(session_identity)
 
 
 @dataclass(kw_only=True)
-class Code2WavCall:
+class Code2WavState:
     decode_state: MimiDecodeState
     num_samples: int = 0
     has_spoken: bool = False
 
 
-class Code2WavSessionHooks(SessionHooks):
+class Code2WavHooks(SessionHooks):
     """Decodes each unit's agent frames and emits the audio and spoken words."""
 
     def __init__(
@@ -179,12 +171,12 @@ class Code2WavSessionHooks(SessionHooks):
         self.codec = codec
         self.device = device
         self.tokenizer = tokenizer
-        self.calls: dict[SessionIdentity, Code2WavCall] = {}
+        self.states: dict[SessionIdentity, Code2WavState] = {}
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
-        """Decode silence as a call's units arrive, on a throwaway state, so the
-        codec's first use on the serving thread happens before the first call."""
+        """Decode silence as a session's units arrive, on a throwaway state, so the
+        codec's first use on the serving thread happens before the first session."""
         decode_state = self.codec.init_decode_state(
             batch_size=1, max_chunk_frames=MAX_FRAMES_PER_UNIT
         )
@@ -193,13 +185,13 @@ class Code2WavSessionHooks(SessionHooks):
             self.codec.decode_step(silence.repeat(num_frames, 1).T[None], decode_state)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.calls[session_identity] = Code2WavCall(
+        self.states[session_identity] = Code2WavState(
             decode_state=self.codec.init_decode_state(
                 batch_size=1, max_chunk_frames=MAX_FRAMES_PER_UNIT
             )
         )
 
-    def spoken_words(self, call: Code2WavCall, text_ids: list[int]) -> str:
+    def spoken_words(self, session: Code2WavState, text_ids: list[int]) -> str:
         """Word pieces as they are spoken, frame markers dropped."""
         # Note (wilsonzheng0327): Piece by piece, since decoding a growing id list
         # could rewrite text already sent.
@@ -210,9 +202,9 @@ class Code2WavSessionHooks(SessionHooks):
             else:
                 pass
             piece = self.tokenizer.id_to_piece(token).replace(WORD_BOUNDARY, " ")
-            if not call.has_spoken:
+            if not session.has_spoken:
                 piece = piece.lstrip(" ")
-                call.has_spoken = bool(piece)
+                session.has_spoken = bool(piece)
             else:
                 pass
             pieces.append(piece)
@@ -222,48 +214,48 @@ class Code2WavSessionHooks(SessionHooks):
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        call = self.calls[context.session_identity]
+        session = self.states[context.session_identity]
         state = PersonaPlexState.from_dict(payload.data)
         codes = state.codes
-        start_ms = samples_to_ms(call.num_samples)
+        start_ms = samples_to_ms(session.num_samples, SAMPLE_RATE)
         num_samples = 0
         if codes.shape[0]:
             waveform = self.codec.decode_step(
                 codes.to(device=self.device, dtype=torch.long).T[None],
-                call.decode_state,
+                session.decode_state,
             )[0, 0]
             num_samples = int(waveform.shape[-1])
             context.emit(
                 TimedChunk(
                     "audio",
                     start_ms,
-                    samples_to_ms(num_samples),
+                    samples_to_ms(num_samples, SAMPLE_RATE),
                     chunk.seq,
                     waveform_to_pcm16(waveform),
-                    format=PCM16_FORMAT,
+                    format=PCM16,
                 )
             )
         else:
             pass
-        words = self.spoken_words(call, state.text_ids)
+        words = self.spoken_words(session, state.text_ids)
         if words:
             context.emit(
                 TimedChunk(
                     "text",
                     start_ms,
-                    samples_to_ms(num_samples),
+                    samples_to_ms(num_samples, SAMPLE_RATE),
                     chunk.seq,
                     {"text": words},
                 )
             )
         else:
             pass
-        call.num_samples += num_samples
+        session.num_samples += num_samples
         if chunk.eos:
             context.emit(
                 TimedChunk(
                     "audio",
-                    samples_to_ms(call.num_samples),
+                    samples_to_ms(session.num_samples, SAMPLE_RATE),
                     0.0,
                     chunk.seq,
                     None,
@@ -276,16 +268,15 @@ class Code2WavSessionHooks(SessionHooks):
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.calls.pop(session_identity)
+        self.states.pop(session_identity)
 
 
 __all__ = [
-    "Code2WavSessionHooks",
-    "MimiEncodeSessionHooks",
+    "Code2WavHooks",
+    "MimiEncodeHooks",
     "PromptPreparer",
-    "PromptSessionHooks",
+    "PreprocessingHooks",
     "encode_waveform",
-    "no_codes",
     "pcm16_to_waveform",
     "waveform_to_pcm16",
 ]

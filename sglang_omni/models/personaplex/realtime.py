@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serves PersonaPlex over /v1/realtime as a native full-duplex call."""
+"""Serves PersonaPlex over /v1/realtime as a native full-duplex session."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import uuid
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
-from sglang_omni.models.personaplex.config import PersonaPlexRealtimePipelineConfig
+from sglang_omni.models.personaplex.config import PersonaPlexSessionPipelineConfig
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -33,8 +33,8 @@ CAPABILITIES = Capabilities(
 )
 
 
-def build_call_request(config: SessionConfiguration) -> OmniRequest:
-    """instructions is the role prompt; the call keeps the default voice."""
+def build_session_request(config: SessionConfiguration) -> OmniRequest:
+    """instructions is the role prompt; the session keeps the default voice."""
     if "instructions" in config:
         params = {"instructions": config["instructions"]}
     else:
@@ -43,7 +43,7 @@ def build_call_request(config: SessionConfiguration) -> OmniRequest:
 
 
 class PersonaPlexOutputConverter:
-    """The agent's side of a call is one response: its audio every frame and the
+    """The agent's side of a session is one response: its audio every frame and the
     words it speaks as it speaks them, finished when the caller's input ends."""
 
     def __init__(self) -> None:
@@ -94,12 +94,12 @@ class PersonaPlexOutputConverter:
 
 
 def create_realtime_deployment(
-    client: Client, pipeline_config: PersonaPlexRealtimePipelineConfig
+    client: Client, pipeline_config: PersonaPlexSessionPipelineConfig
 ) -> RealtimeDeployment:
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
-            request_builder=build_call_request,
+            request_builder=build_session_request,
             output_converter=PersonaPlexOutputConverter(),
             input_sample_rate_hz=SAMPLE_RATE,
             atomic_consumption=True,
@@ -115,6 +115,6 @@ def create_realtime_deployment(
 __all__ = [
     "CAPABILITIES",
     "PersonaPlexOutputConverter",
-    "build_call_request",
+    "build_session_request",
     "create_realtime_deployment",
 ]

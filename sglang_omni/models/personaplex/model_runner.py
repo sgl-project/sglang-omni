@@ -109,8 +109,8 @@ class PersonaPlexModelRunner(ModelRunner):
         return data.talker_model_inputs["timeline"]
 
     def decode_feedback(self, data: SGLangARRequestData) -> DecodeFeedback:
-        """Cache device inputs and per-request decode state; user rows a call's
-        later units append are copied as they arrive."""
+        """Cache device inputs and per-request decode state; user rows a
+        session's later units append are copied as they arrive."""
         inputs = data.talker_model_inputs
         timeline = self.request_timeline(data)
         cached = inputs.get("decode_feedback")
