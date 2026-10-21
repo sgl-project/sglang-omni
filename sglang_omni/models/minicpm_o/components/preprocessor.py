@@ -11,6 +11,9 @@ import numpy.typing as npt
 import torch
 from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
+from sglang_omni.models.minicpm_o.components.audio_processing import (
+    BoundedAudioFeatureExtractor,
+)
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.payload_types import (
     AudioEncoderInputs,
@@ -125,8 +128,11 @@ class MiniCPMOPreprocessor:
             self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
+            processor = self._processor  # noqa: leading-underscore
+            processor.audio_processor = BoundedAudioFeatureExtractor(
+                processor.audio_processor
+            )
             if self.device.type == "cuda":
-                processor = self._processor  # noqa: leading-underscore
                 processor.process_image = CUDAImageProcessor(
                     processor.image_processor, self.device
                 )

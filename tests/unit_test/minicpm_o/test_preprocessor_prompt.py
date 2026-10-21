@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 import wave
 from types import SimpleNamespace
 from typing import Literal, TypedDict
@@ -14,9 +15,12 @@ import torch
 from PIL import Image
 from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.common import maybe_cache_unfinished_req
-from transformers import PreTrainedTokenizerBase
+from transformers import AutoProcessor, PreTrainedTokenizerBase, WhisperFeatureExtractor
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
+from sglang_omni.models.minicpm_o.components.audio_processing import (
+    BoundedAudioFeatureExtractor,
+)
 from sglang_omni.models.minicpm_o.components.preprocessor import (
     ASR_PROMPT_EN,
     ASR_PROMPT_ZH,
@@ -49,6 +53,104 @@ GENERATION_TEMPLATE = """
     {%- endif %}
 {%- endif %}
 """
+
+
+@pytest.mark.parametrize("lengths", [[1], [159], [160], [161], [16001], [16000, 32121]])
+@pytest.mark.parametrize("signal", ["random", "silence", "edge"])
+def test_bounded_audio_features_preserve_valid_frames(
+    lengths: list[int], signal: str
+) -> None:
+    extractor = WhisperFeatureExtractor()
+    bounded = BoundedAudioFeatureExtractor(extractor)
+    generator = np.random.default_rng(42)
+    audios = []
+    for length in lengths:
+        audio = np.zeros(length, dtype=np.float32)
+        if signal == "random":
+            audio = generator.normal(0, 0.1, length).astype(np.float32)
+        elif signal == "edge":
+            audio[-1] = 1.0
+        else:
+            pass
+        audios.append(audio)
+    parameters = {
+        "sampling_rate": 16000,
+        "return_attention_mask": True,
+        "padding": "max_length",
+        "return_tensors": "pt",
+    }
+    expected = extractor(audios, **parameters)
+    actual = bounded(audios, **parameters)
+    for row, length in enumerate(lengths):
+        frames = int(expected["attention_mask"][row].sum())
+        assert int(actual["attention_mask"][row].sum()) == frames
+        torch.testing.assert_close(
+            actual["input_features"][row, :, :frames],
+            expected["input_features"][row, :, :frames],
+            rtol=0,
+            atol=0,
+        )
+    assert actual["input_features"].shape[-1] < expected["input_features"].shape[-1]
+
+
+@pytest.mark.parametrize("length", [479999, 480000, 480001])
+def test_bounded_audio_features_keep_checkpoint_truncation(length: int) -> None:
+    extractor = WhisperFeatureExtractor()
+    audio = np.zeros(length, dtype=np.float32)
+    parameters = {
+        "sampling_rate": 16000,
+        "return_attention_mask": True,
+        "padding": "max_length",
+        "return_tensors": "pt",
+    }
+    expected = extractor(audio, **parameters)
+    actual = BoundedAudioFeatureExtractor(extractor)(audio, **parameters)
+    torch.testing.assert_close(
+        actual["input_features"], expected["input_features"], rtol=0, atol=0
+    )
+    torch.testing.assert_close(actual["attention_mask"], expected["attention_mask"])
+
+
+def test_bounded_audio_features_keep_dither_padding() -> None:
+    extractor = WhisperFeatureExtractor(dither=0.1)
+    audio = np.zeros(16000, dtype=np.float32)
+    parameters = {
+        "sampling_rate": 16000,
+        "return_attention_mask": True,
+        "padding": "max_length",
+        "return_tensors": "pt",
+    }
+    torch.manual_seed(42)
+    expected = extractor(audio, **parameters)
+    torch.manual_seed(42)
+    actual = BoundedAudioFeatureExtractor(extractor)(audio, **parameters)
+    torch.testing.assert_close(
+        actual["input_features"], expected["input_features"], rtol=0, atol=0
+    )
+
+
+def test_bounded_checkpoint_audio_preserves_processor_contract() -> None:
+    checkpoint = os.environ.get("MINICPMO_CHECKPOINT")
+    if checkpoint is None:
+        pytest.skip("MINICPMO_CHECKPOINT is required for checkpoint audio validation")
+    else:
+        pass
+    processor = AutoProcessor.from_pretrained(checkpoint, trust_remote_code=True)
+    generator = np.random.default_rng(42)
+    audios = [
+        generator.normal(0, 0.1, length).astype(np.float32) for length in (16000, 32121)
+    ]
+    prompt = "<audio>./</audio><audio>./</audio>"
+    expected = processor(prompt, audios=[audios], return_tensors="pt")
+    processor.audio_processor = BoundedAudioFeatureExtractor(processor.audio_processor)
+    actual = processor(prompt, audios=[audios], return_tensors="pt")
+    for name in ("input_ids", "audio_features"):
+        torch.testing.assert_close(actual[name], expected[name], rtol=0, atol=0)
+    for name in ("audio_bounds", "audio_feature_lens"):
+        for actual_rows, expected_rows in zip(
+            actual[name], expected[name], strict=True
+        ):
+            torch.testing.assert_close(actual_rows, expected_rows, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("use_tts_template", [False, True])

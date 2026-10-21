@@ -66,6 +66,13 @@ performs the final resize. video_max_frames limits the sampled frame count,
 while video_max_pixels and video_total_pixels resize frames after decoding.
 Those pixel options do not bound the initial native-resolution allocation.
 
+Offline audio preprocessing bounds mel extraction to the longest audio segment
+plus an FFT window of zero padding, rather than computing a full thirty-second
+mel for every short segment. This particularly reduces CPU work for interleaved
+video audio. Segment boundaries, checkpoint normalization, and valid mel frames
+are preserved; thirty-second inputs and extractors with dither retain the original
+padding. The native full-duplex streaming processor is unchanged.
+
 ## Native Full-Duplex Ability
 
 MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-minicpm-o).
