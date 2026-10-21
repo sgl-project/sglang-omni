@@ -92,6 +92,45 @@ final class LocalAPIComposePromptTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    func testChineseDictationAnsweredInEnglishIsRetriedInChinese() async throws {
+        let raw = "嗯明天下午三点我们在三楼会议室开会 讨论下个季度的发布计划 大家提前准备好材料"
+        var prompts: [String] = []
+        let result = try await LocalAPIComposePrompt.compose(rawTranscription: raw, options: options(.dictate)) { prompt in
+            prompts.append(prompt)
+            return prompts.count == 1
+                ? "We will meet tomorrow at 3 PM in the third floor meeting room to discuss next quarter's release plan."
+                : "明天下午三点我们在三楼会议室开会，讨论下个季度的发布计划，大家提前准备好材料。"
+        }
+        XCTAssertEqual(result, "明天下午三点我们在三楼会议室开会，讨论下个季度的发布计划，大家提前准备好材料。")
+        XCTAssertEqual(prompts.count, 2)
+        let retry = try XCTUnwrap(prompts.last)
+        let note = try XCTUnwrap(retry.range(of: EnhancementLanguageGuard.retryInstruction(for: raw)))
+        let transcript = try XCTUnwrap(retry.range(of: EnhancementPromptResolver.rawTranscriptionTemplateVariable))
+        XCTAssertLessThan(note.lowerBound, transcript.lowerBound, "the language line sits before the transcript")
+    }
+
+    func testChineseDictationStillInEnglishAfterRetryReturnsTheTranscript() async throws {
+        let raw = "嗯明天下午三点我们在三楼会议室开会 讨论下个季度的发布计划 大家提前准备好材料"
+        var calls = 0
+        let result = try await LocalAPIComposePrompt.compose(rawTranscription: raw, options: options(.dictate)) { _ in
+            calls += 1
+            return "We will meet tomorrow at 3 PM in the third floor meeting room to discuss next quarter's release plan."
+        }
+        XCTAssertEqual(result, raw)
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testTranslationIntoAnotherScriptIsNotRetried() async throws {
+        let raw = "明天下午三点我们在三楼会议室开会，讨论下个季度的发布计划。"
+        var calls = 0
+        let result = try await LocalAPIComposePrompt.compose(rawTranscription: raw, options: options(.translate, targetLanguage: "en")) { _ in
+            calls += 1
+            return "We will meet at 3 PM tomorrow in the third floor meeting room to discuss next quarter's release plan."
+        }
+        XCTAssertEqual(result, "We will meet at 3 PM tomorrow in the third floor meeting room to discuss next quarter's release plan.")
+        XCTAssertEqual(calls, 1)
+    }
+
     private func options(
         _ mode: LocalAPIComposeMode,
         targetLanguage: String? = nil,
