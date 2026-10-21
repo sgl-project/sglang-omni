@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from sentencepiece import SentencePieceProcessor
 
-from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.models.personaplex.architecture import MIMI_WEIGHTS_GLOB, SAMPLE_RATE
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
@@ -166,12 +165,12 @@ def create_preprocessing_executor(
 
 
 def create_session_preprocessing_executor(
-    model_path: str, *, max_sessions: int, **_
+    model_path: str, *, max_open_sessions: int
 ) -> SessionScheduler:
     model_dir = Path(resolve_model_path(model_path))
     return SessionScheduler(
         PreprocessingHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
-        max_open_sessions=max_sessions,
+        max_open_sessions=max_open_sessions,
     )
 
 
@@ -213,45 +212,18 @@ def create_mimi_encode_executor(
 def create_session_mimi_encode_executor(
     model_path: str,
     *,
-    max_sessions: int,
+    max_open_sessions: int,
+    max_concurrency: int = 1,
     device: str | None = None,
     gpu_id: int | None = None,
-    **_,
 ) -> SessionScheduler:
+    """Each session encodes on its own streaming state; max_concurrency sessions'
+    units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
     return SessionScheduler(
         MimiEncodeHooks(codec, device),
-        max_open_sessions=max_sessions,
-        max_concurrency=1,
-    )
-
-
-def start_lm_engine(
-    builder_type: type[PersonaPlexEngineBuilder],
-    model_path: str,
-    *,
-    max_running_requests: int,
-    enable_async_decode: bool,
-    dtype: str | None,
-    device: str | None,
-    gpu_id: int | None,
-    context_length: int | None,
-    server_args_overrides: dict[str, object],
-) -> OmniScheduler[SGLangARRequestData]:
-    # Note (wilsonzheng0327): The shim config is written before the engine reads its
-    # overrides, so an engine context_length must reach the builder too.
-    context_length = server_args_overrides.get("context_length", context_length)
-    builder = builder_type(
-        max_running_requests=max_running_requests,
-        context_length=context_length,
-        enable_async_decode=enable_async_decode,
-    )
-    return builder.build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype or "bfloat16",
-        server_args_overrides=server_args_overrides or None,
+        max_open_sessions=max_open_sessions,
+        max_concurrency=max_concurrency,
     )
 
 
@@ -266,23 +238,27 @@ def create_lm_executor(
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
-    return start_lm_engine(
-        PersonaPlexEngineBuilder,
-        model_path,
+    server_args_overrides = {**overrides, **(server_args_overrides or {})}
+    # Note (wilsonzheng0327): The shim config is written before the engine reads its
+    # overrides, so an engine context_length must reach the builder too.
+    context_length = server_args_overrides.get("context_length", context_length)
+    builder = PersonaPlexEngineBuilder(
         max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        context_length=context_length,
         enable_async_decode=enable_async_decode,
-        dtype=dtype,
+    )
+    return builder.build(
+        model_path,
         device=device,
         gpu_id=gpu_id,
-        context_length=context_length,
-        server_args_overrides={**overrides, **(server_args_overrides or {})},
+        dtype=dtype or "bfloat16",
+        server_args_overrides=server_args_overrides or None,
     )
 
 
 def create_session_lm_executor(
     model_path: str,
     *,
-    max_sessions: int,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -290,19 +266,19 @@ def create_session_lm_executor(
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
-    return start_lm_engine(
-        PersonaPlexSessionEngineBuilder,
-        model_path,
-        # Note (wilsonzheng0327): The session bridge admits a session's first unit
-        # only while these slots stay free for sessions already holding KV.
-        max_running_requests=max_sessions
-        + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
+    server_args_overrides = {**overrides, **(server_args_overrides or {})}
+    builder = PersonaPlexSessionEngineBuilder(
+        context_length=server_args_overrides.get("context_length", context_length),
+        # Note (Junnan Li): A unit decodes one or two frames, so async
+        # lookahead past it would only be discarded.
         enable_async_decode=False,
-        dtype=dtype,
+    )
+    return builder.build(
+        model_path,
         device=device,
         gpu_id=gpu_id,
-        context_length=context_length,
-        server_args_overrides={**overrides, **(server_args_overrides or {})},
+        dtype=dtype or "bfloat16",
+        server_args_overrides=server_args_overrides or None,
     )
 
 
@@ -370,16 +346,15 @@ def create_code2wav_executor(
 def create_session_code2wav_executor(
     model_path: str,
     *,
-    max_sessions: int,
+    max_open_sessions: int,
     device: str | None = None,
     gpu_id: int | None = None,
-    **_,
 ) -> SessionScheduler:
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
     tokenizer = load_text_tokenizer(resolve_model_path(model_path))
     return SessionScheduler(
         Code2WavHooks(codec, device, tokenizer),
-        max_open_sessions=max_sessions,
+        max_open_sessions=max_open_sessions,
         max_concurrency=1,
     )
 

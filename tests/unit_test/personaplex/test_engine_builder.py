@@ -149,11 +149,10 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
 
 def test_realtime_engine_serves_calls_through_streaming_sessions():
     builder = PersonaPlexSessionEngineBuilder(
-        enable_async_decode=False, max_running_requests=2, context_length=4096
+        context_length=4096, enable_async_decode=False
     )
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["enable_streaming_session"] is True
-    assert defaults["max_running_requests"] == 2
     assert defaults["disable_radix_cache"] is True
     adapter = builder.extra_scheduler_kwargs()["session_adapter"]
     assert isinstance(adapter, PersonaPlexSessionAdapter)

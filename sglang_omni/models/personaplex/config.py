@@ -10,6 +10,7 @@ from typing import Annotated, ClassVar
 
 from pydantic import Field, PositiveInt
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
@@ -219,8 +220,37 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
         default_factory=personaplex_session_stages_factory
     )
 
-    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, int]:
-        return {"max_sessions": self.max_sessions}
+    def model_post_init(self, __context: object = None) -> None:
+        super().model_post_init(__context)
+        lm_max_running = self.lm_max_running_requests()
+        if lm_max_running < self.lm_request_slots():
+            raise ValueError(
+                f"{LM_STAGE}.engine.max_running_requests={lm_max_running} is below "
+                f"max_sessions + {REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV}"
+                f"={self.lm_request_slots()}: the session bridge admits a session's "
+                "first unit only while a slot stays free for sessions holding KV."
+            )
+        else:
+            pass
+
+    def lm_request_slots(self) -> int:
+        return self.max_sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+
+    def lm_max_running_requests(self) -> int:
+        """The LM's concurrency: its engine setting, else the session slots."""
+        engine = self.stage_named(LM_STAGE).engine
+        value = engine.max_running_requests
+        return int(value) if value is not None else self.lm_request_slots()
+
+    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
+        if stage_name == LM_STAGE:
+            return {
+                "server_args_overrides": {
+                    "max_running_requests": self.lm_request_slots()
+                }
+            }
+        else:
+            return {"max_open_sessions": self.max_sessions}
 
 
 EntryClass = PersonaPlexPipelineConfig

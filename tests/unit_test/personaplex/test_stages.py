@@ -17,10 +17,6 @@ from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.config import (
-    CODE2WAV_STAGE,
-    LM_STAGE,
-    MIMI_ENCODE_STAGE,
-    PREPROCESSING_STAGE,
     PersonaPlexPipelineConfig,
     PersonaPlexSessionPipelineConfig,
 )
@@ -37,7 +33,6 @@ from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 CALLER_SAMPLES = 2000
-SESSION_STAGES = (PREPROCESSING_STAGE, MIMI_ENCODE_STAGE, LM_STAGE, CODE2WAV_STAGE)
 
 
 class FakeTokenizer:
@@ -181,24 +176,18 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
     assert built["context_length"] == 4096 and built["overrides"] is None
 
 
-def test_realtime_engine_keeps_a_request_slot_beyond_its_calls(monkeypatch):
+def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
     built = {}
 
     class Builder:
-        def __init__(
-            self, *, max_running_requests, context_length, enable_async_decode
-        ):
-            built["max_running_requests"] = max_running_requests
+        def __init__(self, *, context_length, enable_async_decode):
             built["enable_async_decode"] = enable_async_decode
 
         def build(self, model_path, **kwargs):
             pass
 
     monkeypatch.setattr(stages, "PersonaPlexSessionEngineBuilder", Builder)
-    stages.create_session_lm_executor("m", max_sessions=2)
-    assert built["max_running_requests"] == (
-        2 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
-    )
+    stages.create_session_lm_executor(str(tmp_path))
     assert built["enable_async_decode"] is False
 
 
@@ -213,10 +202,12 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
 
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "load_codec", load_codec)
-    prompt = stages.create_session_preprocessing_executor(str(tmp_path), max_sessions=3)
+    prompt = stages.create_session_preprocessing_executor(
+        str(tmp_path), max_open_sessions=3
+    )
     codecs = [
-        stages.create_session_mimi_encode_executor(str(tmp_path), max_sessions=3),
-        stages.create_session_code2wav_executor(str(tmp_path), max_sessions=3),
+        stages.create_session_mimi_encode_executor(str(tmp_path), max_open_sessions=3),
+        stages.create_session_code2wav_executor(str(tmp_path), max_open_sessions=3),
     ]
     for scheduler in [prompt, *codecs]:
         assert scheduler.max_open_sessions == 3
@@ -224,14 +215,14 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     assert loaded_modes == ["encode", "decode"]
 
 
-def test_a_session_follows_the_four_stages_and_streams_nothing():
+def test_a_call_follows_the_realtime_stages_and_streams_nothing():
     config = PersonaPlexSessionPipelineConfig(model_path="personaplex")
-    assert config.session_route() == list(SESSION_STAGES)
+    assert config.session_route() == ["preprocessing", "mimi_encode", "lm", "code2wav"]
     assert config.session_graph() is None
     assert not any(stage.stream_to for stage in config.stages)
 
 
-def test_session_factories_get_no_offline_factory_fields_after_an_override():
+def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
     config = PersonaPlexSessionPipelineConfig(model_path="personaplex")
     patches = patches_from_stages_mapping(
         {"lm": {"engine": {"mem_fraction_static": 0.5}}}, type(config), ["lm"]
@@ -245,11 +236,51 @@ def test_session_factories_get_no_offline_factory_fields_after_an_override():
     assert "chunk_ramp_frames" not in code2wav_args
 
 
-def test_every_session_stage_holds_max_sessions_sessions():
+def test_every_realtime_stage_holds_max_sessions_calls():
     assert PersonaPlexSessionPipelineConfig(model_path="personaplex").max_sessions == 1
     config = PersonaPlexSessionPipelineConfig(model_path="personaplex", max_sessions=3)
-    for name in SESSION_STAGES:
-        assert config.stage_factory_kwargs(name) == {"max_sessions": 3}
+    for name in ["preprocessing", "mimi_encode", "code2wav"]:
+        assert config.stage_factory_kwargs(name) == {"max_open_sessions": 3}
+    assert config.stage_factory_kwargs("lm") == {
+        "server_args_overrides": {
+            "max_running_requests": 3 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+        }
+    }
+
+
+def resolve_session_config(
+    model_path: str = "personaplex", **stages_mapping
+) -> PersonaPlexSessionPipelineConfig:
+    config = PersonaPlexSessionPipelineConfig(model_path=model_path, max_sessions=3)
+    patches = patches_from_stages_mapping(
+        stages_mapping, type(config), list(stages_mapping)
+    )
+    return ConfigResolver(config).resolve(patches).config
+
+
+def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
+    monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
+    config = resolve_session_config(
+        str(tmp_path),
+        mimi_encode={"factory": {"max_concurrency": 2}},
+        lm={"engine": {"max_running_requests": 8}},
+    )
+    stage = config.stage_named("mimi_encode")
+    encode = stages.create_session_mimi_encode_executor(
+        **resolve_stage_factory_args(stage, config)
+    )
+    assert encode.max_concurrency == 2
+    lm_args = resolve_stage_factory_args(config.stage_named("lm"), config)
+    assert lm_args["server_args_overrides"]["max_running_requests"] == 8
+
+    config = resolve_session_config(mimi_encode={"factory": {"unknown": 1}})
+    with pytest.raises(ValueError, match="does not accept"):
+        resolve_stage_factory_args(config.stage_named("mimi_encode"), config)
+
+
+def test_session_lm_slots_below_max_sessions_plus_one_are_rejected():
+    with pytest.raises(ValueError, match="max_running_requests=3"):
+        resolve_session_config(lm={"engine": {"max_running_requests": 3}})
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):

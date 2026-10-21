@@ -89,7 +89,7 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls
     assert first.output_converter is not second.output_converter
 
 
-def test_only_the_realtime_variant_serves_and_needs_realtime():
+def test_only_the_session_variant_serves_and_needs_realtime():
     assert Variants["session"] is PersonaPlexSessionPipelineConfig
     assert Variants["offline"] is PersonaPlexPipelineConfig
     assert PersonaPlexPipelineConfig.realtime_deployment_factory is None
