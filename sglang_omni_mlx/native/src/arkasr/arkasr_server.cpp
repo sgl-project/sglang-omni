@@ -12,8 +12,8 @@
 #include <memory>
 #include <stdexcept>
 
-#include "arkasr_transcriber.h"
-#include "asr_service.h"
+#include "arkasr/arkasr_transcriber.h"
+#include "qwen3_asr/asr_service.h"
 
 namespace {
 

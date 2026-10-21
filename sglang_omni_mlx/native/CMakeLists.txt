@@ -229,11 +229,11 @@ install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 
 # Note (AzizbekMuminoff): ARK-ASR: arkasr_server, with qwen3_asr_server's API
 # without realtime, and its parity tool; the decoder is Qwen3-ASR's run as
-# Qwen2, and the front end is Qwen3-ASR's Whisper log-mel.
-add_library(arkasr STATIC src/arkasr_model.cpp src/arkasr_transcriber.cpp)
+# Qwen2, and the front end is the shared Whisper log-mel.
+add_library(arkasr STATIC src/arkasr/arkasr_model.cpp src/arkasr/arkasr_transcriber.cpp)
 target_link_libraries(arkasr PUBLIC qwen3_asr)
 target_compile_options(arkasr PRIVATE -Wall -Wextra)
-add_executable(arkasr_server src/arkasr_server.cpp)
+add_executable(arkasr_server src/arkasr/arkasr_server.cpp)
 target_link_libraries(arkasr_server PRIVATE arkasr asr_service)
 add_executable(arkasr_transcribe tools/arkasr_transcribe.cpp)
 target_link_libraries(arkasr_transcribe PRIVATE arkasr)

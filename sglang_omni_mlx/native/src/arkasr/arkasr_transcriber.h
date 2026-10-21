@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "arkasr_model.h"
-#include "tokenizer.h"
-#include "transcriber.h"
+#include "arkasr/arkasr_model.h"
+#include "common/tokenizer.h"
+#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace arkasr {
 

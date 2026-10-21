@@ -12,8 +12,8 @@
 #include <string>
 #include <vector>
 
-#include "arkasr_transcriber.h"
-#include "audio.h"
+#include "arkasr/arkasr_transcriber.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
 
 int main(int argc, char **argv) {

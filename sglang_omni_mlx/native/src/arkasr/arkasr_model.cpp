@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "arkasr_model.h"
+#include "arkasr/arkasr_model.h"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
-#include "audio.h"
+#include "common/audio.h"
 
 namespace arkasr {
 

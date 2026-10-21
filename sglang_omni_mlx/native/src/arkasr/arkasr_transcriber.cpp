@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "arkasr_transcriber.h"
+#include "arkasr/arkasr_transcriber.h"
 
 #include <algorithm>
 #include <iterator>
 #include <stdexcept>
 
-#include "audio.h"
+#include "common/audio.h"
 
 namespace arkasr {
 
@@ -99,6 +99,10 @@ TranscriptionResult
 ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
                                  int max_new_tokens,
                                  const std::atomic<bool> &cancel) const {
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
   const mx::array mel =
       qwen3_asr::LogMel(samples, qwen3_asr::AudioLayout::kReference);
   const int audio_token_count = model_.AudioTokenCount(mel.shape(1));
@@ -120,6 +124,13 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
        mx::slice(token_embeddings, {0, audio_end, 0},
                  {1, prompt_length, hidden})},
       1);
+  // Note (AzizbekMuminoff): encoding a window takes about a second, so a
+  // request cancelled meanwhile stops before its prefill too.
+  mx::eval(embeddings);
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
 
   std::vector<KVCache> caches = model_.decoder().NewCaches();
   mx::array next_token = mx::argmax(model_.decoder().LastLogits(
