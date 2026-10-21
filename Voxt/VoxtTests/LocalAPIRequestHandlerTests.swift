@@ -96,6 +96,8 @@ final class LocalAPIRequestHandlerTests: XCTestCase {
         XCTAssertEqual(audio["contentTypes"] as? [String], LocalAPIRouter.audioExtensions.keys.sorted())
         let models = try XCTUnwrap(body["models"] as? [String: String])
         XCTAssertEqual(models, ["transcription": "ready", "text": "off"])
+        XCTAssertEqual(body["locations"] as? [String: String], ["transcription": "unknown", "text": "unknown"],
+                       "a handler that is not told where the models run says unknown")
     }
 
     func testBuiltInPromptsRequireTheTokenAndListEveryMode() async throws {
@@ -132,5 +134,62 @@ final class LocalAPIRequestHandlerTests: XCTestCase {
         let response = await handler(compose)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: String])
         XCTAssertEqual(body["mode"], "write")
+    }
+
+    func testLocationsAreConservativeAndMatchTheSelectedProviders() {
+        func resolve(_ engine: String, _ mode: String, onDevice: Bool = false) -> LocalAPIModelLocations {
+            .resolve(transcriptionEngine: engine, enhancementMode: mode, appleSpeechOnDevice: onDevice)
+        }
+        XCTAssertEqual(resolve("mlxAudio", "customLLM"), .init(transcription: .local, text: .local))
+        XCTAssertEqual(resolve("remote", "remoteLLM"), .init(transcription: .remote, text: .remote))
+        XCTAssertEqual(resolve("dictation", "appleIntelligence").transcription, .unknown)
+        XCTAssertEqual(resolve("dictation", "appleIntelligence", onDevice: true).transcription, .local)
+        XCTAssertEqual(resolve("mlxAudio", "appleIntelligence").text, .local)
+        XCTAssertEqual(resolve("mlxAudio", "off").text, .local, "no text model sends nothing anywhere")
+        XCTAssertEqual(resolve("future", "future"), .init(transcription: .unknown, text: .unknown))
+    }
+
+    func testCapabilitiesSayWhereTheSelectedModelsRun() async throws {
+        let handler = LocalAPIRequestHandler.make(
+            router: LocalAPIRouter(token: "t", maxBodyBytes: 10), version: "1",
+            modelStatus: Self.readyModels,
+            modelLocations: { .init(transcription: .local, text: .remote) },
+            dictate: { _ in .error(status: 500, "unused") })
+        let response = await handler(request("GET", "/v1/capabilities"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertEqual(body["locations"] as? [String: String], ["transcription": "local", "text": "remote"])
+    }
+
+    func testLocalOnlyRequestNeverReachesACloudModel() async throws {
+        func handler(_ locations: LocalAPIModelLocations) -> LocalAPIServer.Handler {
+            LocalAPIRequestHandler.make(
+                router: LocalAPIRouter(token: "t", maxBodyBytes: 1_000), version: "1",
+                modelStatus: Self.readyModels,
+                modelLocations: { locations },
+                dictate: { _ in .json(status: 200, ["text": "local"]) },
+                compose: { _ in .json(status: 200, ["text": "local"]) })
+        }
+        var dictation = request("POST", "/v1/dictations")
+        dictation.headers["content-type"] = "audio/wav"
+        dictation.headers["x-voxt-model-policy"] = "local-only"
+        dictation.body = Data([1])
+        var compose = request("POST", "/v1/compose")
+        compose.headers["content-type"] = "application/json"
+        compose.headers["x-voxt-model-policy"] = "local-only"
+        compose.body = try JSONSerialization.data(withJSONObject: [
+            "audio": Data([1]).base64EncodedString(), "contentType": "audio/wav", "options": ["mode": "dictate"]])
+        for audio in [dictation, compose] {
+            let cloud = await handler(.init(transcription: .remote, text: .local))(audio)
+            XCTAssertEqual(cloud.status, 403)
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: cloud.body) as? [String: String], ["error": "Your Mac is set to a cloud model."])
+            let unknown = await handler(.init(transcription: .local, text: .unknown))(audio)
+            XCTAssertEqual(unknown.status, 403)
+            let local = await handler(.init(transcription: .local, text: .local))(audio)
+            XCTAssertEqual(local.status, 200)
+            var allowed = audio
+            allowed.headers["x-voxt-model-policy"] = "cloud-allowed"
+            let cloudAllowed = await handler(.init(transcription: .remote, text: .remote))(allowed)
+            XCTAssertEqual(cloudAllowed.status, 200)
+        }
     }
 }
