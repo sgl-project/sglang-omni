@@ -333,6 +333,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ggufTranslationModelManager = GGUFTranslationModelManager(modelID: ggufModelID)
         UserDefaults.standard.register(defaults: [
             AppPreferenceKey.localAPIServerEnabled: false,
+            AppPreferenceKey.historySyncEnabled: false,
             AppPreferenceKey.localAPIServerPort: LocalAPISettings.defaultPort,
             AppPreferenceKey.interactionSoundsEnabled: true,
             AppPreferenceKey.interactionSoundPreset: InteractionSoundPreset.soft.rawValue,

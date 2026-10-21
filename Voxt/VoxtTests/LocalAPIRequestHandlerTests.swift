@@ -88,6 +88,7 @@ final class LocalAPIRequestHandlerTests: XCTestCase {
             "health",
             "capabilities",
             "dictations",
+            "history/sync",
             "compose",
             "compose/prompts",
             "corrections",

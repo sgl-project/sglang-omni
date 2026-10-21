@@ -1911,6 +1911,8 @@
 "Always Allow" = "Always Allow";
 "Allow Once" = "Allow Once";
 "Don't Allow" = "Don't Allow";
+"Sync history with Voxt Mobile" = "Sync history with Voxt Mobile";
+"Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac." = "Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac.";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences.";

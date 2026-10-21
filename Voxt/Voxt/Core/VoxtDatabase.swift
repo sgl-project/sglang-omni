@@ -243,6 +243,32 @@ final class VoxtDatabase: @unchecked Sendable {
                 """)
         }
 
+        migrator.registerMigration("v7_history_sync") { db in
+            try db.execute(sql: """
+                CREATE TABLE history_sync_state (
+                    singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+                    storeID TEXT NOT NULL,
+                    revision INTEGER NOT NULL
+                );
+                CREATE TABLE history_sync_changes (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    revision INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL
+                );
+                CREATE INDEX idx_history_sync_changes_revision
+                    ON history_sync_changes(revision);
+                CREATE TABLE history_sync_metadata (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    mode TEXT,
+                    elapsedSeconds REAL
+                );
+                """)
+            try db.execute(
+                sql: "INSERT INTO history_sync_state (singleton, storeID, revision) VALUES (1, ?, 0)",
+                arguments: [UUID().uuidString]
+            )
+        }
+
         return migrator
     }
 }
