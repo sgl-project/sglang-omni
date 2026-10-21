@@ -1,8 +1,6 @@
 # Images response and usage
 
-Scope: `/v1/images/generations` and `/v1/images/edits`.
-The shared response builder matches SenseNova commit
-`f3a2befe0902ce25d5784bdc540ff66ba70bcc3c`.
+Scope: `/v1/images/generations` and `/v1/images/edits`. The shared response builder follows the field semantics in SenseNova commit `f3a2befe0902ce25d5784bdc540ff66ba70bcc3c`.
 
 - Each image has `output_format`, determined from its actual encoded bytes.
 - `usage.image_count` counts returned images.
@@ -12,10 +10,12 @@ The shared response builder matches SenseNova commit
 - Missing model token statistics remain unavailable; output pixels are not tokens.
 - Repeated outputs for the same prompt do not multiply its input token count.
 
-The main-based branch supplies the response builder and image usage carrier.
-The SenseNova validation branch supplies the model producer and mounts both APIs.
-No SenseNova model implementation is imported into the main-based branch.
+An ordinary result carries one image in `image_b64`, several in `images_b64`, and producer statistics in `image_usage`. The client preserves string images and lists containing only strings. The existing `image` result field is unchanged.
 
-The previous Chat usage extensions, streaming usage options, and `/generate`
-cached-token mapping are withdrawn. Existing base token usage is unchanged.
-Metrics remain a separate branch and are outside this change.
+A UMM result reports these statistics in one `usage` segment whose data contains `image_usage` and the producing `stage_name`. Non-streaming final results expose these fields on the client chunk. A streamed request already received the segment data, so its final result leaves these fields unset; the streamed usage chunk identifies the producing stage.
+
+UMM image segments can use `InlineImage` data, whose byte count and SHA-256 must match its inline data URL. Token statistics extracted from a non-streaming UMM usage segment are validated strictly and cannot be negative.
+
+This module supplies the shared response builder and client usage carriers. Model integrations supply token statistics and register the Images endpoints. No model implementation is included.
+
+Existing Chat and `/generate` token usage behavior is unchanged. Metrics are outside this scope.

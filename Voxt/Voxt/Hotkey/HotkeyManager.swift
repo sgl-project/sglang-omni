@@ -284,8 +284,7 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
     }
 
     private func preflightAndPromptPermissionsIfNeeded() -> Bool {
-        // The modifying (.defaultTap) backend uses Accessibility authorization.
-        // Input Monitoring is a different backend's requirement, not a prerequisite.
+        // Accessibility permits an installation attempt; the granted event mask is checked separately.
         let accessibilityGranted = AccessibilityPermissionManager.isTrusted()
         guard accessibilityGranted else {
             if !accessibilityGranted, !didPromptAccessibility {

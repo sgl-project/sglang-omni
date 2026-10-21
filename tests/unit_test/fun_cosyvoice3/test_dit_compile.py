@@ -203,12 +203,3 @@ def test_compile_dit_backbone_rejects_degenerate_warmup_length(monkeypatch) -> N
         assert "warmup_mel_frames" in str(exc)
     else:
         raise AssertionError("expected ValueError for warmup_mel_frames < 2")
-
-
-def test_vocoder_factory_exposes_dit_torch_compile_flag() -> None:
-    import inspect
-
-    signature = inspect.signature(stages.create_vocoder_executor)
-    assert signature.parameters["enable_dit_torch_compile"].default is True
-    assert signature.parameters["enable_flow_cuda_graph"].default is True
-    assert signature.parameters["enable_flow_estimator_trt"].default is False

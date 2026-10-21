@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import sys
 import types
@@ -28,10 +27,16 @@ from benchmarks.duplex import (
 )
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.eval import benchmark_duplex_reference as cli_module
-
-REFERENCE_PATH = os.environ.get("FDB_REFERENCE_SOURCE")
-REF = Path(REFERENCE_PATH) if REFERENCE_PATH else None
-SR = 16000
+from tests.unit_test.fixtures.duplex_fakes import (
+    REF,
+    SR,
+    StubBehavior,
+    build_trees,
+    response,
+    tree_digest,
+    variant,
+    write_transcripts,
+)
 
 
 @pytest.mark.parametrize("phase", ["prepare-judge", "summarize", "custom-summarize"])
@@ -77,31 +82,6 @@ def test_judge_work_limit_alias_rejects_conflicting_limits() -> None:
             [*arguments, "--limit", "2", "--max-requests", "3"]
         )
     assert error.value.code == 2
-
-
-class StubBehavior:
-    instruction: str = "Return a behavior label as JSON."
-    model: str = reference_core.JUDGE_MODEL
-    initial_seed: int = 1
-
-    @staticmethod
-    def template(
-        input_clean_text: str,
-        input_noisy_text: str,
-        output_clean_text: str,
-        output_noisy_text: str,
-    ) -> str:
-        return "\n".join(
-            (input_clean_text, input_noisy_text, output_clean_text, output_noisy_text)
-        )
-
-    @staticmethod
-    def json_dict_to_compact_text(transcript: JsonValue) -> str:
-        return json.dumps(transcript)
-
-    @staticmethod
-    def parse_eval(prediction: str) -> dict[str, JsonValue]:
-        return json.loads(prediction)
 
 
 def speech_runs(wav: np.ndarray) -> list[tuple[int, int]]:
@@ -175,86 +155,6 @@ def test_parakeet_disables_graphs_and_preserves_checkpoint_settings() -> None:
     assert applied_decoding_config["greedy"] == {
         "max_symbols": 10,
         "use_cuda_graph_decoder": False,
-    }
-
-
-def write_wav(path: Path, spans: list[tuple[float, float]]) -> None:
-    audio = np.zeros(3 * SR, dtype=np.float32)
-    for start_s, end_s in spans:
-        audio[int(start_s * SR) : int(end_s * SR)] = 0.3
-    path.parent.mkdir(parents=True, exist_ok=True)
-    soundfile.write(path, audio, SR, subtype="PCM_16")
-
-
-def variant(eligible=True, reasons=(), **extra):
-    return {"eligible": eligible, "reasons": list(reasons), **extra}
-
-
-def build_trees(tmp: Path) -> dict[str, Path]:
-    """Two engines share identical inputs; outputs and one clean eligibility differ."""
-    inputs = {
-        "user_interruption/1": {
-            "input.wav": [(0.5, 1.5), (2.0, 2.5)],
-            "clean_input.wav": [(0.5, 1.5)],
-        },
-        "background_speech/2": {
-            "input.wav": [(0.2, 0.8)],
-            "clean_input.wav": [(0.3, 0.9)],
-        },
-    }
-    outputs = {
-        "sgl": {
-            "user_interruption/1": {
-                "output.wav": [(1.0, 2.2)],
-                "clean_output.wav": [(1.8, 2.4)],
-            },
-            "background_speech/2": {
-                "output.wav": [(1.2, 3.0)],
-                "clean_output.wav": [(1.0, 1.6)],
-            },
-        },
-        "vllm": {
-            "user_interruption/1": {"output.wav": [], "clean_output.wav": [(1.7, 2.3)]},
-            "background_speech/2": {
-                "output.wav": [(1.1, 1.9)],
-                "clean_output.wav": [(1.0, 2.0)],
-            },
-        },
-    }
-    trees = {}
-    for engine, outs in outputs.items():
-        tree = tmp / "trees" / engine
-        samples = []
-        for sid, files in inputs.items():
-            for name, spans in {**files, **outs[sid]}.items():
-                write_wav(tree / sid / name, spans)
-            clean_ok = not (engine == "vllm" and sid == "background_speech/2")
-            samples.append(
-                {
-                    "sample_id": sid,
-                    "event_span_s": (
-                        [2.0, 2.5] if sid.startswith("user") else [0.2, 0.8]
-                    ),
-                    "variants": {
-                        "overlap": variant(
-                            flags=["eof_speech"] if sid.startswith("back") else []
-                        ),
-                        "clean": variant(
-                            clean_ok, [] if clean_ok else ["capture_window_invalid"]
-                        ),
-                    },
-                }
-            )
-        (tree / "reference-manifest.json").write_text(json.dumps({"samples": samples}))
-        trees[engine] = tree
-    return trees
-
-
-def tree_digest(root: Path) -> dict[str, str]:
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
     }
 
 
@@ -351,30 +251,6 @@ EXPECTED_USER_MSG = (
 )
 
 
-def write_transcripts(sample: Path) -> None:
-    docs = {
-        "clean_input.json": {
-            "text": "hi",
-            "chunks": [{"text": "hi", "timestamp": [0.5, 0.9]}],
-        },
-        "input.json": {
-            "text": "hi ñ",
-            "chunks": [
-                {"text": "hi", "timestamp": [0.5, 0.9]},
-                {"text": "ñ", "timestamp": [1.0, 1.2]},
-            ],
-        },
-        "clean_output.json": {"text": "", "chunks": []},
-        "output.json": {
-            "text": "ok",
-            "chunks": [{"text": "ok", "timestamp": [1.3, 1.6]}],
-        },
-    }
-    sample.mkdir(parents=True, exist_ok=True)
-    for name, doc in docs.items():
-        (sample / name).write_text(json.dumps(doc, indent=4))
-
-
 @pytest.mark.skipif(
     REF is None, reason="Set FDB_REFERENCE_SOURCE to the pinned external checkout"
 )
@@ -412,15 +288,6 @@ def test_behavior_request_bytes_match_official_template(tmp_path):
         reference_behavior.build_request(official, tmp_path)["request_hash"]
         != request["request_hash"]
     )
-
-
-def response(content, model="gpt-4o-2024-08-06"):
-    return {
-        "id": "x",
-        "model": model,
-        "system_fingerprint": "fp_1",
-        "choices": [{"message": {"role": "assistant", "content": content}}],
-    }
 
 
 @pytest.fixture
@@ -544,7 +411,7 @@ def test_phases_end_to_end_resume_and_denominators(
     assert counts["ok"] == len(model.calls) == len(eligible_files) < 14
     out = tmp_path / "out" / "engines"
     silent = json.loads(
-        (out / "vllm/samples/user_interruption/1/output.json").read_text()
+        (out / "sgl-alt/samples/user_interruption/1/output.json").read_text()
     )
     assert silent == {
         "text": "",
@@ -558,7 +425,7 @@ def test_phases_end_to_end_resume_and_denominators(
             {"text": "w1", "timestamp": [2.0, 2.5]},
         ],
     }
-    assert not (out / "vllm/samples/background_speech/2/clean_output.json").exists()
+    assert not (out / "sgl-alt/samples/background_speech/2/clean_output.json").exists()
 
     args, engines, paths, hashes = cli(
         "asr", tmp_path, trees, "--nemo", str(nemo), "--device", "cpu"
@@ -576,10 +443,10 @@ def test_phases_end_to_end_resume_and_denominators(
         "latency_stop_list": [[1.0, 2.2]],
         "latency_resp_list": [],
     }
-    vllm1 = json.loads(
-        (out / "vllm/samples/user_interruption/1/latency_intervals.json").read_text()
+    alt1 = json.loads(
+        (out / "sgl-alt/samples/user_interruption/1/latency_intervals.json").read_text()
     )
-    assert vllm1 == {"latency_stop_list": [], "latency_resp_list": []}
+    assert alt1 == {"latency_stop_list": [], "latency_resp_list": []}
     sgl2 = json.loads(
         (out / "sgl/samples/background_speech/2/latency_intervals.json").read_text()
     )
@@ -655,15 +522,15 @@ def test_phases_end_to_end_resume_and_denominators(
     report = reference_report.render_report(args.out, "sgl")
     assert "manifest and selected sample IDs match" in report
     assert "C_RESPOND" in report and "1 / 1; 100.0%" in report
-    vllm_all = summary["engines"]["vllm"]["all"]
-    assert vllm_all["timing_supplementary_clean"]["status"] == {
+    alt_all = summary["engines"]["sgl-alt"]["all"]
+    assert alt_all["timing_supplementary_clean"]["status"] == {
         "ineligible": 1,
         "ok": 1,
     }
-    assert vllm_all["timing_supplementary_clean"]["ineligible_reasons"] == {
+    assert alt_all["timing_supplementary_clean"]["ineligible_reasons"] == {
         "capture_window_invalid": 1
     }
-    stop = vllm_all["timing_official_overlap"]["official_all_intervals"]["stop"]
+    stop = alt_all["timing_official_overlap"]["official_all_intervals"]["stop"]
     assert (
         stop["samples"],
         stop["zero_interval_samples"],
@@ -683,8 +550,8 @@ def test_phases_end_to_end_resume_and_denominators(
         sgl_stop["mean_s"] == pytest.approx(1.2)
         and sgl_stop["bootstrap_pooled_mean"]["unit_n"] == 2
     )
-    assert vllm_all["behavior"]["status"]["variant_ineligible"] == 1
-    assert vllm_all["asr_files"]["output.wav:ok_empty_transcript"] == 1
+    assert alt_all["behavior"]["status"]["variant_ineligible"] == 1
+    assert alt_all["asr_files"]["output.wav:ok_empty_transcript"] == 1
     sgl_all = summary["engines"]["sgl"]["all"]
     assert sgl_all["behavior"]["status"] == {"stale_request": 1, "valid": 1}
     assert sgl_all["timing_official_overlap"]["manifest_flags"] == {"eof_speech": 1}

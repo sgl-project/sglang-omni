@@ -33,7 +33,7 @@ _PREFILL_PADDING_FACTOR = 2
 # an ordinary EXTEND batch. The triton backend captures decode, target verify,
 # draft extend and dLLM extend, so a full prefill graph over it fails during
 # capture.
-FULL_PREFILL_ATTENTION_BACKENDS = frozenset({"fa3", "flashinfer"})
+FULL_PREFILL_ATTENTION_BACKENDS = frozenset({"fa3", "fa4", "flashinfer"})
 
 
 def get_decode_cuda_graph_max_bs(server_args: ServerArgs) -> int | None:
@@ -152,18 +152,19 @@ def operator_selected_prefill_backend(
 
 class GenerationStageDefaults(TypedDict, total=False):
     cuda_graph_bs_prefill: list[int]
+    cuda_graph_max_bs_prefill: int
     disable_cuda_graph: bool
     disable_overlap_schedule: bool
     disable_radix_cache: bool
     enable_torch_compile: bool | None
     enable_mixed_chunk: bool
     trust_remote_code: bool
-    mlx_enable_sampling: bool
     max_prefill_tokens: int
     chunked_prefill_size: int
     max_total_tokens: int
     context_length: int
     max_queued_requests: int
+    prefill_decode_interval: int
     random_seed: int
     mem_fraction_static: float | None
     dtype: str
@@ -254,9 +255,9 @@ def build_generation_batch_overrides(
 
     prefill_bs = overrides.get("cuda_graph_bs_prefill")
     prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
-    if (
-        prefill_bs is None
-        and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
+    if prefill_bs is None and overrides.get("cuda_graph_backend_prefill") in (
+        CudaGraphBackend.BREAKABLE,
+        CudaGraphBackend.FULL,
     ):
         # note (ratish): SGLang's prefill generator omits an off-grid cap, and
         # an unset chunk is only known inside ServerArgs.

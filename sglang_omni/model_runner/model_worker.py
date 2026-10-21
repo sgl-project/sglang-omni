@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import socket
 from bisect import bisect_left
 from collections import Counter
 from collections.abc import Mapping
@@ -38,8 +37,6 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
-    mlx_model_path: str | None = None
-    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)
@@ -284,7 +281,7 @@ class ModelWorker:
             self.model_runner.effective_max_total_num_tokens
         )
         max_req_len = min(
-            self.server_args.context_length - 1,
+            self.model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         max_req_input_len = max_req_len - 1
@@ -619,16 +616,15 @@ def resolve_nccl_port() -> int:
     else:
         pass
 
+    from sglang_omni.utils.port_claim import NCCL_PORT_BASE, claim_tcp_port
+
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("", 0))
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            port = sock.getsockname()[1]
+        port = claim_tcp_port()
     except PermissionError:
-        # Some restricted CI / sandbox environments do not allow ephemeral socket
-        # binding during test-time configuration. Fall back to a stable default so
+        # Some restricted CI / sandbox environments do not allow socket binding
+        # during test-time configuration. Fall back to a stable default so
         # callers still receive a valid NCCL port choice.
-        port = 29500
+        port = NCCL_PORT_BASE
 
     os.environ["MASTER_PORT"] = str(port)
     return port

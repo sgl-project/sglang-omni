@@ -1,4 +1,4 @@
-# 🚀 Installation — MUSA
+# Installation — MUSA
 
 This document describes how to install SGLang-Omni on Moore Threads GPUs.
 
@@ -10,7 +10,7 @@ environment first, then install SGLang-Omni as an overlay.
 Install the Moore Threads driver and MUSA runtime on the host first. For the
 base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
 Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.21`.
 
@@ -47,7 +47,7 @@ docker run -it --rm \
   sglang-omni:main-musa520-s5000
 ```
 
-## 🛠️ Option B: Install from Source
+## Option B: Install from Source
 
 Start from an environment where SGLang `v0.5.21` has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than

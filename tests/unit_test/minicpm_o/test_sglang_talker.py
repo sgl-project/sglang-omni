@@ -1,17 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Public talker contract: condition embeddings match the reference math."""
+"""Public talker contract: condition embeddings and prefill CUDA graph wiring."""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn.functional as F
+from sglang.srt.model_loader.utils import resolve_language_model
 from torch import nn
 
+from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components.sglang_talker import (
     MiniCPMOTalkerForCausalLM,
     MiniCPMTTSProjector,
 )
+from sglang_omni.platforms import current_platform
 
 HIDDEN = 8
 LLM_DIM = 16
@@ -60,3 +65,63 @@ def test_condition_length_mismatch_raises():
     model = bare_model()
     with pytest.raises(ValueError, match="length mismatch"):
         model.build_condition_embeddings(torch.tensor([1, 2]), torch.randn(3, LLM_DIM))
+
+
+def test_prefill_graphs_resolve_the_talker_decoder():
+    model = bare_model()
+    model.llama = SimpleNamespace(model=nn.Identity())
+    assert resolve_language_model(model) is model.llama.model
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "is_cuda", "backend", "operator_selected"),
+    [
+        ({}, True, "breakable", False),
+        ({"cuda_graph_backend_prefill": "disabled"}, True, "disabled", True),
+        ({}, False, "disabled", False),
+    ],
+)
+def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    is_cuda: bool,
+    backend: str,
+    operator_selected: bool,
+) -> None:
+    built: dict[str, object] = {}
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(current_platform, "enable_talker_graph", lambda: True)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
+    monkeypatch.setattr(stages, "register_minicpm_o_hf_config", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "build_sglang_server_args",
+        lambda model_path, context_length, **overrides: built.update(overrides),
+    )
+    monkeypatch.setattr(
+        stages,
+        "resolved_view",
+        lambda server_args: SimpleNamespace(
+            mem_fraction_static=0.5, max_running_requests=32, max_total_tokens=None
+        ),
+    )
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
+    monkeypatch.setattr(stages, "avail_gpu_mem", lambda gpu_id: 0)
+    monkeypatch.setattr(
+        stages,
+        "create_talker_scheduler",
+        lambda server_args, gpu_id, **kwargs: built.update(scheduler=kwargs),
+    )
+
+    stages.create_sglang_talker_executor_from_config(
+        "model", server_args_overrides=server_args_overrides
+    )
+
+    assert built["cuda_graph_backend_prefill"] == backend
+    assert (
+        max(built["cuda_graph_bs_prefill"])
+        == stages.TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+    )
+    assert built["scheduler"]["operator_selected_prefill_backend"] is operator_selected

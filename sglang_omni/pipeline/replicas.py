@@ -37,6 +37,7 @@ __all__ = [
     "parse_replica_instance_name",
     "ReplicaTopology",
     "expand_replica_stages",
+    "warn_replica_device_overrides",
     "BindingPolicy",
     "RoundRobinBindingPolicy",
     "assign_replica_bindings",
@@ -121,6 +122,28 @@ class ReplicaTopology:
         )
 
 
+def warn_replica_device_overrides(
+    stages_cfg: list[StageConfig],
+    plan: LogicalProcessPlan,
+) -> None:
+    """Warn when process devices replace a GPU stage's declared placement."""
+    stage_by_name = {stage.name: stage for stage in stages_cfg}
+    for process in plan.processes:
+        if process.replica_devices is not None:
+            for stage_name in process.stage_names:
+                stage = stage_by_name[stage_name]
+                if stage.gpu is not None:
+                    logger.warning(
+                        f"Stage {stage.name!r}: processes.{process.name}.replica_devices "
+                        f"overrides gpu={stage.gpu!r}; replica GPU assignments: "
+                        f"{[replica_stage_gpu(stage, devices) for devices in process.replica_devices]}"
+                    )
+                else:
+                    pass
+        else:
+            pass
+
+
 def expand_replica_stages(
     stages_cfg: list[StageConfig],
     plan: LogicalProcessPlan,
@@ -148,6 +171,18 @@ def expand_replica_stages(
             )
 
     stage_by_name = {stage.name: stage for stage in stages_cfg}
+    for stage_name, instances in replicas.items():
+        if stage_by_name[stage_name].http_routes:
+            # The relay sends every request under a prefix to one socket, and
+            # a route's state (such as a job a later request polls) lives in
+            # the instance that served it.
+            raise ValueError(
+                f"Stage {stage_name!r} serves http_routes, so it must run as one "
+                f"instance, but its process has {len(instances)} replicas"
+            )
+        else:
+            pass
+    warn_replica_device_overrides(stages_cfg, plan)
     for process in plan.processes:
         if not process.is_replicated:
             # Note (kaige): replica_devices covers index 0 too, so a single
@@ -249,7 +284,7 @@ def validate_device_assignment(
             continue
         else:
             pass
-        ids = [gpu] if isinstance(gpu, int) else gpu
+        ids = stage_cfg.runtime_gpu_ids or ([gpu] if isinstance(gpu, int) else gpu)
         for gpu_id in ids:
             if gpu_id >= device_count:
                 raise ValueError(

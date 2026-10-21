@@ -8,19 +8,26 @@ import logging
 import math
 import os
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Iterable, Literal, Optional, Tuple, TypeAlias
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Iterable,
+    Literal,
+    Optional,
+    Tuple,
+    TypeAlias,
+    TypedDict,
+)
 
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
+from sglang.srt.layers.linear import RowParallelLinear
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.layers.quantization.unquant import (
-    UnquantizedLinearMethod,
-    get_bf16_gemm_backend,
-)
+from sglang.srt.layers.quantization.unquant import get_bf16_gemm_backend
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import ServerArgs
@@ -52,6 +59,10 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -185,6 +196,16 @@ def sample_seeded_categorical(
     else:
         pass
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
+
+
+class PredictorGraphStats(TypedDict):
+    enabled: bool | None
+    startup_graph_count: int
+    lazy_graph_count: int
+    replays: int
+    eager_runs: int
+    capacity_fallbacks: int
+    capture_failures: int
 
 
 class PredictorDecodeGraph:
@@ -340,17 +361,6 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         max_batch_size = get_schedule().max_running_requests
-        self.feedback_buffer = torch.zeros(
-            max_batch_size,
-            config.hidden_size,
-            device=self.codec_embedding.weight.device,
-            dtype=self.codec_embedding.weight.dtype,
-        )
-        self.feedback_mask = torch.zeros(
-            max_batch_size,
-            dtype=torch.bool,
-            device=self.codec_embedding.weight.device,
-        )
         self.decode_feedback_embedding = nn.Embedding(
             max_batch_size,
             config.hidden_size,
@@ -365,19 +375,6 @@ class Qwen3TTSTalkerTextModel(nn.Module):
     def get_text_embeddings(self) -> nn.Embedding:
         return self.text_embedding
 
-    def build_input_hidden_states(
-        self,
-        input_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        hidden_states = self.codec_embedding(input_ids)
-        bs = hidden_states.shape[0]
-        feedback_mask = self.feedback_mask[:bs]
-        return torch.where(
-            feedback_mask.unsqueeze(-1),
-            self.feedback_buffer[:bs].to(hidden_states.dtype),
-            hidden_states,
-        )
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -385,13 +382,8 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        forward_mode = getattr(forward_batch, "forward_mode", None)
-        is_decode = forward_mode is not None and forward_mode.is_decode()
-        if input_embeds is None:
-            if is_decode:
-                hidden_states = self.decode_feedback_embedding(input_ids)
-            else:
-                hidden_states = self.build_input_hidden_states(input_ids)
+        if forward_batch.forward_mode.is_decode():
+            hidden_states = self.decode_feedback_embedding(input_ids)
         else:
             hidden_states = input_embeds
 
@@ -412,17 +404,53 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         return hidden_states
 
 
+def load_codec_table(
+    param: nn.Parameter, loaded_weight: torch.Tensor, codebook_index: int
+) -> None:
+    param.data[codebook_index].copy_(loaded_weight)
+
+
+class Qwen3TTSCodecTables(nn.Module):
+    """The residual codebooks' embedding tables as one (codebooks, vocab, hidden) weight;
+    each checkpoint table loads into its codebook's slice."""
+
+    def __init__(self, num_codebooks: int, vocab_size: int, hidden_size: int) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.randn(num_codebooks, vocab_size, hidden_size), requires_grad=False
+        )
+        self.weight.weight_loader = load_codec_table
+        self.register_buffer(
+            "row_offsets", torch.arange(num_codebooks) * vocab_size, persistent=False
+        )
+
+    def forward(self, codes: torch.Tensor) -> torch.Tensor:
+        """Embed (..., codebooks) codes as (..., codebooks, hidden) rows in one lookup."""
+        return torch.nn.functional.embedding(
+            codes + self.row_offsets, self.weight.flatten(0, 1)
+        )
+
+    @staticmethod
+    def make_params_mapping(num_codebooks: int) -> dict[str, tuple[str, int]]:
+        """Each codebook's checkpoint table name -> the stacked weight's name and the codebook."""
+        module_name = "code_predictor.model.codec_embedding"
+        return {
+            f"{module_name}.{codebook_index}.weight": (
+                f"{module_name}.weight",
+                codebook_index,
+            )
+            for codebook_index in range(num_codebooks)
+        }
+
+
 class Qwen3TTSCodePredictor(nn.Module):
     def __init__(self, config: "Qwen3TTSTalkerConfig", prefix: str = "") -> None:
         super().__init__()
         self.config = config
         cp_config = config.code_predictor_config
         self.model = nn.Module()
-        self.model.codec_embedding = nn.ModuleList(
-            [
-                nn.Embedding(cp_config.vocab_size, config.hidden_size)
-                for _ in range(config.num_code_groups - 1)
-            ]
+        self.model.codec_embedding = Qwen3TTSCodecTables(
+            config.num_code_groups - 1, cp_config.vocab_size, config.hidden_size
         )
         self.model.layers = nn.ModuleList(
             [
@@ -461,10 +489,25 @@ class Qwen3TTSCodePredictor(nn.Module):
         return self.small_to_mtp_projection(hidden_states)
 
 
+@dataclass(frozen=True, kw_only=True)
+class Qwen3TTSPromptConstants:
+    """Prompt rows that depend on the checkpoint alone, each embedded once the way a
+    request embeds it, as (1, rows, hidden); feedback_pad_embed is the one (hidden,)
+    row decode reads after the text ends, in the codec embedding's dtype."""
+
+    tts_bos_embed: torch.Tensor
+    tts_eos_embed: torch.Tensor
+    tts_pad_embed: torch.Tensor
+    codec_pad_bos_embed: torch.Tensor
+    codec_prefill_embeds: Mapping[int | None, torch.Tensor]
+    custom_voice_speaker_embeds: Mapping[str, torch.Tensor]
+    feedback_pad_embed: torch.Tensor
+
+
 class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    Expects model (embedding tables and the feedback buffer), text_projection,
+    Expects model (embedding tables), text_projection,
     code_predictor.model.codec_embedding, speaker_encoder, speaker_encoder_graph_runner,
     speech_tokenizer, config, root_config and speaker_encoder_sample_rate on the instance.
     """
@@ -492,7 +535,7 @@ class Qwen3TTSPromptBuilderMixin:
         return ["auto", *list(self.config.codec_language_id.keys())]
 
     def get_supported_speakers(self):
-        return (getattr(self.config, "spk_id", None) or {}).keys()
+        return (self.config.spk_id or {}).keys()
 
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
@@ -527,12 +570,9 @@ class Qwen3TTSPromptBuilderMixin:
             pass
         return self.text_projection(self.get_text_embeddings()(instruct_id))
 
-    def build_tts_special_embeds(
-        self,
-        *,
-        dtype: torch.dtype,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        ids = torch.tensor(
+    def build_prompt_constants(self) -> Qwen3TTSPromptConstants:
+        """Embed the checkpoint-only prompt rows, each at the shape a request embeds it."""
+        special_ids = torch.tensor(
             [
                 [
                     self.root_config.tts_bos_token_id,
@@ -541,9 +581,66 @@ class Qwen3TTSPromptBuilderMixin:
                 ]
             ],
             device=self.device,
-            dtype=dtype,
+            dtype=torch.long,
         )
-        return self.text_projection(self.get_text_embeddings()(ids)).chunk(3, dim=1)
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.text_projection(
+            self.get_text_embeddings()(special_ids)
+        ).chunk(3, dim=1)
+        codec_embedding = self.get_input_embeddings()
+        codec_prefill_embeds: dict[int | None, torch.Tensor] = {}
+        for language_id in (None, *set(self.config.codec_language_id.values())):
+            if language_id is None:
+                codec_prefill = [
+                    self.config.codec_nothink_id,
+                    self.config.codec_think_bos_id,
+                    self.config.codec_think_eos_id,
+                ]
+            else:
+                codec_prefill = [
+                    self.config.codec_think_id,
+                    self.config.codec_think_bos_id,
+                    language_id,
+                    self.config.codec_think_eos_id,
+                ]
+            codec_prefill_embeds[language_id] = codec_embedding(
+                torch.tensor([codec_prefill], device=self.device, dtype=torch.long)
+            )
+        speaker_ids = self.config.spk_id or {}
+        return Qwen3TTSPromptConstants(
+            tts_bos_embed=tts_bos_embed,
+            tts_eos_embed=tts_eos_embed,
+            tts_pad_embed=tts_pad_embed,
+            codec_pad_bos_embed=codec_embedding(
+                torch.tensor(
+                    [[self.config.codec_pad_id, self.config.codec_bos_id]],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+            ),
+            codec_prefill_embeds=codec_prefill_embeds,
+            custom_voice_speaker_embeds={
+                str(name)
+                .lower(): codec_embedding(
+                    torch.tensor([speaker_id], device=self.device, dtype=torch.long)
+                )
+                .view(1, 1, -1)
+                for name, speaker_id in speaker_ids.items()
+            },
+            feedback_pad_embed=self.text_projection(
+                self.get_text_embeddings()(
+                    torch.tensor(
+                        [[self.root_config.tts_pad_token_id]],
+                        device=self.device,
+                        dtype=torch.long,
+                    )
+                )
+            )
+            .squeeze(0)
+            .squeeze(0)
+            .to(
+                device=codec_embedding.weight.device, dtype=codec_embedding.weight.dtype
+            ),
+        )
 
     def resolve_language_id(
         self,
@@ -562,7 +659,7 @@ class Qwen3TTSPromptBuilderMixin:
             return None
         else:
             pass
-        spk_is_dialect = getattr(self.config, "spk_is_dialect", None) or {}
+        spk_is_dialect = self.config.spk_is_dialect or {}
         dialect = spk_is_dialect.get(voice.lower())
         if isinstance(dialect, str) and dialect:
             return self.config.codec_language_id.get(dialect)
@@ -570,68 +667,31 @@ class Qwen3TTSPromptBuilderMixin:
             pass
         return None
 
-    def build_codec_prefill(
-        self,
-        *,
-        language: str,
-        dtype: torch.dtype,
-        voice: str | None = None,
-    ) -> torch.Tensor:
-        language_id = self.resolve_language_id(language=language, voice=voice)
-        if language_id is None:
-            codec_prefill = [
-                self.config.codec_nothink_id,
-                self.config.codec_think_bos_id,
-                self.config.codec_think_eos_id,
-            ]
-        else:
-            codec_prefill = [
-                self.config.codec_think_id,
-                self.config.codec_think_bos_id,
-                language_id,
-                self.config.codec_think_eos_id,
-            ]
-        return self.get_input_embeddings()(
-            torch.tensor([codec_prefill], device=self.device, dtype=dtype)
-        )
-
     def finish_text_prompt(
         self,
         *,
         talker_input_embed: torch.Tensor,
         input_id: torch.Tensor,
         codec_last_embed: torch.Tensor,
-        tts_pad_embed: torch.Tensor,
-        tts_eos_embed: torch.Tensor,
+        prompt_constants: Qwen3TTSPromptConstants,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        codec_pad_bos_embed = prompt_constants.codec_pad_bos_embed
         if non_streaming_mode:
             text_all = self.text_projection(
                 self.get_text_embeddings()(input_id[:, 3:-5])
             )
-            text_all = torch.cat([text_all, tts_eos_embed], dim=1)
-            pad_ids = torch.full(
-                (1, int(text_all.shape[1])),
-                int(self.config.codec_pad_id),
-                device=self.device,
-                dtype=input_id.dtype,
-            )
+            text_all = torch.cat([text_all, prompt_constants.tts_eos_embed], dim=1)
             talker_input_embed = torch.cat(
                 [
                     talker_input_embed,
-                    text_all + self.get_input_embeddings()(pad_ids),
-                    tts_pad_embed
-                    + self.get_input_embeddings()(
-                        torch.tensor(
-                            [[self.config.codec_bos_id]],
-                            device=self.device,
-                            dtype=input_id.dtype,
-                        )
-                    ),
+                    text_all
+                    + codec_pad_bos_embed[:, :1].expand(-1, int(text_all.shape[1]), -1),
+                    prompt_constants.tts_pad_embed + codec_pad_bos_embed[:, 1:],
                 ],
                 dim=1,
             )
-            return talker_input_embed, tts_pad_embed
+            return talker_input_embed, prompt_constants.tts_pad_embed
         else:
             pass
 
@@ -643,7 +703,7 @@ class Qwen3TTSPromptBuilderMixin:
         trailing_text_hidden = torch.cat(
             [
                 self.text_projection(self.get_text_embeddings()(input_id[:, 4:-5])),
-                tts_eos_embed,
+                prompt_constants.tts_eos_embed,
             ],
             dim=1,
         )
@@ -666,13 +726,17 @@ class Qwen3TTSPromptBuilderMixin:
         *,
         input_id: torch.Tensor,
         codec_input: torch.Tensor,
-        tts_bos_embed: torch.Tensor,
-        tts_pad_embed: torch.Tensor,
+        prompt_constants: Qwen3TTSPromptConstants,
     ) -> torch.Tensor:
         role_embed = self.text_projection(self.get_text_embeddings()(input_id[:, :3]))
         prompt_embed = (
             torch.cat(
-                [tts_pad_embed.expand(-1, codec_input.shape[1] - 2, -1), tts_bos_embed],
+                [
+                    prompt_constants.tts_pad_embed.expand(
+                        -1, codec_input.shape[1] - 2, -1
+                    ),
+                    prompt_constants.tts_bos_embed,
+                ],
                 dim=1,
             )
             + codec_input[:, :-1]
@@ -687,33 +751,26 @@ class Qwen3TTSPromptBuilderMixin:
         voice_clone_prompt: VoicePrompt,
         language: str,
         non_streaming_mode: bool,
+        prompt_constants: Qwen3TTSPromptConstants,
         instruct_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         voice_clone_spk_embeds = self.generate_speaker_prompt(voice_clone_prompt)
         speaker_embed = voice_clone_spk_embeds[0]
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
-            dtype=input_id.dtype
-        )
-        codec_input_0 = self.build_codec_prefill(
-            language=language,
-            dtype=input_id.dtype,
-        )
-        codec_input_1 = self.get_input_embeddings()(
-            torch.tensor(
-                [[self.config.codec_pad_id, self.config.codec_bos_id]],
-                device=self.device,
-                dtype=input_id.dtype,
-            )
-        )
         codec_input = torch.cat(
-            [codec_input_0, speaker_embed.view(1, 1, -1), codec_input_1], dim=1
+            [
+                prompt_constants.codec_prefill_embeds[
+                    self.resolve_language_id(language=language)
+                ],
+                speaker_embed.view(1, 1, -1),
+                prompt_constants.codec_pad_bos_embed,
+            ],
+            dim=1,
         )
         talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
-            tts_bos_embed=tts_bos_embed,
-            tts_pad_embed=tts_pad_embed,
+            prompt_constants=prompt_constants,
         )
 
         ref_code = None
@@ -732,8 +789,7 @@ class Qwen3TTSPromptBuilderMixin:
                 text_id=input_id[:, 3:-5],
                 ref_id=ref_id[:, 3:-2],
                 ref_code=ref_code.to(self.device),
-                tts_pad_embed=tts_pad_embed,
-                tts_eos_embed=tts_eos_embed,
+                prompt_constants=prompt_constants,
                 non_streaming_mode=non_streaming_mode,
             )
             talker_input_embed = torch.cat([talker_input_embed, icl_embed], dim=1)
@@ -742,8 +798,7 @@ class Qwen3TTSPromptBuilderMixin:
                 talker_input_embed=talker_input_embed,
                 input_id=input_id,
                 codec_last_embed=codec_input[:, -1:],
-                tts_pad_embed=tts_pad_embed,
-                tts_eos_embed=tts_eos_embed,
+                prompt_constants=prompt_constants,
                 non_streaming_mode=non_streaming_mode,
             )
 
@@ -763,19 +818,19 @@ class Qwen3TTSPromptBuilderMixin:
         voice: str,
         language: str,
         non_streaming_mode: bool,
+        prompt_constants: Qwen3TTSPromptConstants,
         instruct_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
-        spk_id = getattr(self.config, "spk_id", None) or {}
-        if not spk_id:
+        speaker_embeds = prompt_constants.custom_voice_speaker_embeds
+        if not speaker_embeds:
             raise ValueError(
                 "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id"
             )
         else:
             pass
         speaker_key = voice.lower()
-        spk_id_map = {str(key).lower(): value for key, value in spk_id.items()}
-        if speaker_key not in spk_id_map:
-            supported = ", ".join(sorted(str(key) for key in spk_id))
+        if speaker_key not in speaker_embeds:
+            supported = ", ".join(sorted(str(key) for key in self.config.spk_id))
             raise ValueError(
                 f"Unsupported Qwen3-TTS CustomVoice speaker {voice!r}. "
                 f"Supported speakers: {supported}"
@@ -783,39 +838,26 @@ class Qwen3TTSPromptBuilderMixin:
         else:
             pass
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
-            dtype=input_id.dtype
+        codec_input = torch.cat(
+            [
+                prompt_constants.codec_prefill_embeds[
+                    self.resolve_language_id(language=language, voice=speaker_key)
+                ],
+                speaker_embeds[speaker_key],
+                prompt_constants.codec_pad_bos_embed,
+            ],
+            dim=1,
         )
-        codec_input_0 = self.build_codec_prefill(
-            language=language,
-            dtype=input_id.dtype,
-            voice=speaker_key,
-        )
-        speaker_embed = self.get_input_embeddings()(
-            torch.tensor(
-                [spk_id_map[speaker_key]], device=self.device, dtype=input_id.dtype
-            )
-        ).view(1, 1, -1)
-        codec_input_1 = self.get_input_embeddings()(
-            torch.tensor(
-                [[self.config.codec_pad_id, self.config.codec_bos_id]],
-                device=self.device,
-                dtype=input_id.dtype,
-            )
-        )
-        codec_input = torch.cat([codec_input_0, speaker_embed, codec_input_1], dim=1)
         talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
-            tts_bos_embed=tts_bos_embed,
-            tts_pad_embed=tts_pad_embed,
+            prompt_constants=prompt_constants,
         )
         talker_input_embed, trailing_text_hidden = self.finish_text_prompt(
             talker_input_embed=talker_input_embed,
             input_id=input_id,
             codec_last_embed=codec_input[:, -1:],
-            tts_pad_embed=tts_pad_embed,
-            tts_eos_embed=tts_eos_embed,
+            prompt_constants=prompt_constants,
             non_streaming_mode=non_streaming_mode,
         )
         talker_input_embed = self.apply_instruct_prefix(
@@ -833,6 +875,7 @@ class Qwen3TTSPromptBuilderMixin:
         input_id: torch.Tensor,
         language: str,
         non_streaming_mode: bool,
+        prompt_constants: Qwen3TTSPromptConstants,
         instruct_id: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         if instruct_id is None:
@@ -840,33 +883,25 @@ class Qwen3TTSPromptBuilderMixin:
         else:
             pass
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
-            dtype=input_id.dtype
+        codec_input = torch.cat(
+            [
+                prompt_constants.codec_prefill_embeds[
+                    self.resolve_language_id(language=language)
+                ],
+                prompt_constants.codec_pad_bos_embed,
+            ],
+            dim=1,
         )
-        codec_input_0 = self.build_codec_prefill(
-            language=language,
-            dtype=input_id.dtype,
-        )
-        codec_input_1 = self.get_input_embeddings()(
-            torch.tensor(
-                [[self.config.codec_pad_id, self.config.codec_bos_id]],
-                device=self.device,
-                dtype=input_id.dtype,
-            )
-        )
-        codec_input = torch.cat([codec_input_0, codec_input_1], dim=1)
         talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
-            tts_bos_embed=tts_bos_embed,
-            tts_pad_embed=tts_pad_embed,
+            prompt_constants=prompt_constants,
         )
         talker_input_embed, trailing_text_hidden = self.finish_text_prompt(
             talker_input_embed=talker_input_embed,
             input_id=input_id,
             codec_last_embed=codec_input[:, -1:],
-            tts_pad_embed=tts_pad_embed,
-            tts_eos_embed=tts_eos_embed,
+            prompt_constants=prompt_constants,
             non_streaming_mode=non_streaming_mode,
         )
         talker_input_embed = self.apply_instruct_prefix(
@@ -883,47 +918,31 @@ class Qwen3TTSPromptBuilderMixin:
         text_id: torch.Tensor,
         ref_id: torch.Tensor,
         ref_code: torch.Tensor,
-        tts_pad_embed: torch.Tensor,
-        tts_eos_embed: torch.Tensor,
+        prompt_constants: Qwen3TTSPromptConstants,
         non_streaming_mode: bool,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        tts_pad_embed = prompt_constants.tts_pad_embed
+        codec_pad_bos_embed = prompt_constants.codec_pad_bos_embed
         text_embed = self.text_projection(
             self.get_text_embeddings()(torch.cat([ref_id, text_id], dim=-1))
         )
-        text_embed = torch.cat([text_embed, tts_eos_embed], dim=1)
-        codec_embed = []
-        for idx in range(self.config.num_code_groups):
-            if idx == 0:
-                codec_embed.append(self.get_input_embeddings()(ref_code[:, :1]))
-            else:
-                codec_embed.append(
-                    self.code_predictor.model.codec_embedding[idx - 1](
-                        ref_code[:, idx : idx + 1]
-                    )
-                )
-        codec_embed = torch.cat(codec_embed, dim=1).sum(1).unsqueeze(0)
+        text_embed = torch.cat([text_embed, prompt_constants.tts_eos_embed], dim=1)
         codec_embed = torch.cat(
             [
-                self.get_input_embeddings()(
-                    torch.tensor(
-                        [[self.config.codec_bos_id]],
-                        device=self.device,
-                        dtype=text_id.dtype,
-                    )
+                self.get_input_embeddings()(ref_code[:, :1]),
+                self.code_predictor.model.codec_embedding(
+                    ref_code[:, 1 : self.config.num_code_groups]
                 ),
-                codec_embed,
             ],
             dim=1,
         )
+        codec_embed = codec_embed.sum(1).unsqueeze(0)
+        codec_embed = torch.cat([codec_pad_bos_embed[:, 1:], codec_embed], dim=1)
         text_lens = text_embed.shape[1]
         codec_lens = codec_embed.shape[1]
         if non_streaming_mode:
-            icl_input_embed = text_embed + self.get_input_embeddings()(
-                torch.tensor(
-                    [[self.config.codec_pad_id] * text_lens],
-                    device=self.device,
-                    dtype=text_id.dtype,
-                )
+            icl_input_embed = text_embed + codec_pad_bos_embed[:, :1].expand(
+                -1, text_lens, -1
             )
             icl_input_embed = torch.cat(
                 [icl_input_embed, codec_embed + tts_pad_embed], dim=1
@@ -944,34 +963,24 @@ class Qwen3TTSPromptBuilderMixin:
 class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
 
-    # The outer forward substitutes ForwardBatch.mrope_positions whenever they
-    # are present. Prefill CUDA graph runners capture the inner text model
-    # directly and use this marker to preserve that position contract.
-    is_mrope_enabled = True
-
     def __init__(
         self,
-        config: "Qwen3TTSConfig | Qwen3TTSTalkerConfig",
+        config: "Qwen3TTSConfig",
         quant_config: object = None,
         prefix: str = "",
     ) -> None:
         del quant_config
         super().__init__()
-        if hasattr(config, "talker_config"):
-            root_config = config
-            config = config.talker_config
-        else:
-            root_config = None
+        root_config = config
+        config = root_config.talker_config
         self.root_config = root_config
         self.config = config
         self.vocab_size = config.vocab_size
-        self.tts_model_type = getattr(root_config, "tts_model_type", "base")
-        self.tokenizer_type = getattr(root_config, "tokenizer_type", "")
-        self.tts_model_size = getattr(root_config, "tts_model_size", "")
-        self.speaker_encoder_sample_rate = getattr(
-            getattr(root_config, "speaker_encoder_config", None),
-            "sample_rate",
-            24000,
+        self.tts_model_type = root_config.tts_model_type
+        self.tokenizer_type = root_config.tokenizer_type
+        self.tts_model_size = root_config.tts_model_size
+        self.speaker_encoder_sample_rate = (
+            root_config.speaker_encoder_config.sample_rate
         )
 
         self.text_projection = ResizeMLP(
@@ -991,8 +1000,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             config,
             prefix=add_prefix("code_predictor", prefix),
         )
+        self.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(
+            config.num_code_groups - 1
+        )
 
-        if root_config is not None and self.tts_model_type == "base":
+        if self.tts_model_type == "base":
             apply_qwen_tts_transformers_compatibility_patches()
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
 
@@ -1013,8 +1025,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         predictor_len = config.num_code_groups + 1
         device = self.model.codec_embedding.weight.device
         dtype = self.model.codec_embedding.weight.dtype
-        self.feedback_buffer = self.model.feedback_buffer
-        self.feedback_mask = self.model.feedback_mask
         self.decode_feedback_embedding = self.model.decode_feedback_embedding
         cp_layers = self.code_predictor.model.layers
         cp_attn = cp_layers[0].self_attn
@@ -1125,6 +1135,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.sub_sampled_max_top_k = 0
         self.sub_sampled_has_unbounded_top_k = False
         self.decode_prep_rids: list[tuple[str, int]] | None = None
+        self.decode_prep_epoch = 0
         self.predictor_graph_batch_sizes = self.normalize_predictor_graph_batch_sizes(
             server_args,
             max_batch_size=max_batch_size,
@@ -1139,6 +1150,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_graph_capacity_warned = False
         self.predictor_graph_capture_count = 0
         self.predictor_graph_startup_count = 0
+        self.predictor_graph_replay_count = 0
+        self.predictor_eager_count = 0
         self.predictor_graph_pool = None
         self.predictor_capture_stream: torch.Stream | None = None
         bind_default_weight_loaders(self)
@@ -1165,18 +1178,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             else:
                 pass
             data = sched_req.data
-            epoch = getattr(
-                data, "_qwen3_tts_prep_epoch", None
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            if epoch is None:
-                epoch = self.decode_prep_epoch = (
-                    getattr(self, "decode_prep_epoch", 0) + 1
-                )
-                data._qwen3_tts_prep_epoch = epoch  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if data.decode_prep_epoch is None:
+                self.decode_prep_epoch += 1
+                data.decode_prep_epoch = self.decode_prep_epoch
             else:
                 pass
-            rids.append((rid, epoch))
-        if rids is not None and rids == getattr(self, "decode_prep_rids", None):
+            rids.append((rid, data.decode_prep_epoch))
+        if rids is not None and rids == self.decode_prep_rids:
             return
         else:
             pass
@@ -1271,11 +1279,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
         del input_embeds_are_projected, omni_prefill_rids
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-        else:
-            pass
-
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
@@ -1288,8 +1291,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         else:
             pass
         logits, _ = self.codec_head(hidden_states)
+        # note (ratish): the sampler divides and softmaxes in the logits' own dtype, and
+        # FlashInfer's draw needs probabilities that sum to 1; a bf16 row that falls short
+        # draws the last valid id, EOS.
         logits_output = LogitsProcessorOutput(
-            next_token_logits=logits,
+            next_token_logits=logits.float(),
             hidden_states=hidden_states,
         )
         return logits_output
@@ -1327,15 +1333,28 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             semantic_positions,
         )
         if graph_result is not None:
+            self.predictor_graph_replay_count += 1
             return graph_result
         else:
-            pass
+            self.predictor_eager_count += 1
         result_codes, summed_embeddings = self.code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
             semantic_positions=semantic_positions,
         )
         return result_codes, summed_embeddings
+
+    def predictor_graph_stats(self) -> PredictorGraphStats:
+        return {
+            "enabled": self.predictor_graph_enabled,
+            "startup_graph_count": self.predictor_graph_startup_count,
+            "lazy_graph_count": len(self.predictor_graphs)
+            - self.predictor_graph_startup_count,
+            "replays": self.predictor_graph_replay_count,
+            "eager_runs": self.predictor_eager_count,
+            "capacity_fallbacks": self.predictor_graph_capacity_fallback_count,
+            "capture_failures": self.predictor_graph_failure_count,
+        }
 
     @staticmethod
     def normalize_predictor_graph_batch_sizes(
@@ -1805,7 +1824,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     ),
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
-                codec_embedding = self.code_predictor.model.codec_embedding[layer_idx]
+                codec_table = self.code_predictor.model.codec_embedding.weight[
+                    layer_idx
+                ]
                 has_next_step = layer_idx < num_groups - 2
                 should_gather_projection = (
                     projected_tables is not None and has_next_step
@@ -1815,7 +1836,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     and embedding_buffer.dtype == predictor_dtype
                     and gather_codec_embedding_and_add(
                         next_code,
-                        codec_embedding.weight,
+                        codec_table,
                         embedding_buffer,
                         pos_summed,
                         projected_weight=(
@@ -1831,9 +1852,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 if fused_embedding:
                     new_embed = embedding_buffer.unsqueeze(1)
                 else:
-                    new_embed = codec_embedding(next_code.unsqueeze(1)).to(
-                        dtype=predictor_dtype
-                    )
+                    new_embed = torch.nn.functional.embedding(
+                        next_code.unsqueeze(1), codec_table
+                    ).to(dtype=predictor_dtype)
                     pos_summed.add_(new_embed[:, 0, :])
                 if has_next_step:
                     if projected_tables is None:
@@ -2077,13 +2098,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
 
     @staticmethod
     def predictor_o_proj_add_residual(
-        o_proj: nn.Module,
+        o_proj: RowParallelLinear,
         attn_input: torch.Tensor,
         residual: torch.Tensor,
     ) -> torch.Tensor:
         """Run the Predictor attention output projection and residual add."""
 
-        weight = getattr(o_proj, "weight", None)
+        weight = o_proj.weight
         # note(ratish): the fusion stands in for sglang's linear only where that
         # linear is torch's GEMM: batch invariant mode overrides aten::addmm but
         # not the out variant, and the cutedsl backend replaces F.linear on sm100.
@@ -2092,12 +2113,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             and not is_batch_invariant_mode_enabled()
             and not get_bf16_gemm_backend().is_cutedsl()
             and not torch.is_grad_enabled()
-            and isinstance(
-                getattr(o_proj, "quant_method", None), UnquantizedLinearMethod
-            )
-            and getattr(o_proj, "tp_size", None) == 1
-            and getattr(o_proj, "bias", None) is None
-            and isinstance(weight, torch.Tensor)
+            and o_proj.tp_size == 1
+            and o_proj.bias is None
             and weight.is_cuda
             and weight.dtype == torch.bfloat16
             and weight.ndim == 2
@@ -2214,6 +2231,22 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return attn_output
 
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty every request reaches and the seeded draw a
+        request seed reaches, on the codec head's fp32 logits, and load FlashInfer's
+        sampling module when it draws the unseeded requests."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.codec_head.weight.device,
+                vocab_size=self.config.vocab_size,
+                seeded_log_probability_dtype=torch.float64,
+                penalized_logits_dtype=torch.float32,
+                should_load_flashinfer_sampling=(
+                    get_exec().kernel.sampling_backend == "flashinfer"
+                ),
+            )
+        )
+
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         params_dict = self.cached_params_dict
         stacked_params = [
@@ -2230,6 +2263,15 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 target = name
             else:
                 continue
+
+            codec_table_slot = self.codec_table_params_mapping.get(target)
+            if codec_table_slot is not None:
+                param_name, codebook_index = codec_table_slot
+                param = params_dict[param_name]
+                param.weight_loader(param, loaded_weight, codebook_index)
+                continue
+            else:
+                pass
 
             handled = False
             for param_name, weight_name, shard_id in stacked_params:
@@ -2249,11 +2291,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 pass
             param = params_dict.get(target)
             if param is not None:
-                weight_loader = getattr(param, "weight_loader", None)
-                if weight_loader is None:
-                    param.data.copy_(loaded_weight)
-                else:
-                    weight_loader(param, loaded_weight)
+                param.weight_loader(param, loaded_weight)
             else:
                 pass
         self.post_load_weights()
@@ -2265,11 +2303,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         if self.predictor_projected_embeddings is None:
             pass
         else:
-            for table, embedding in zip(
+            for table, codec_table in zip(
                 self.predictor_projected_embeddings,
-                self.code_predictor.model.codec_embedding,
+                self.code_predictor.model.codec_embedding.weight,
             ):
-                table.copy_(self.code_predictor.project_input(embedding.weight))
+                table.copy_(self.code_predictor.project_input(codec_table))
 
 
 EntryClass = Qwen3TTSTalker

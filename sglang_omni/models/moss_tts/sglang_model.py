@@ -42,6 +42,10 @@ from sglang_omni.models.moss_tts.sampling_cuda_graph import (
     MossTTSDelaySamplingCudaGraphRunner,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.request_builders import MossTTSSGLangRequestData
@@ -809,6 +813,17 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             - 1
         )
         return hidden_states[last_index]
+
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the seeded draw every request's eager text step reaches, on float32
+        scores."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.device,
+                vocab_size=int(self.config.vocab_size_list[0]),
+                seeded_log_probability_dtype=torch.float32,
+            )
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         stacked_params_mapping = [

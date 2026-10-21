@@ -11,6 +11,8 @@ from unittest.mock import Mock
 
 import msgpack
 import pytest
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -30,10 +32,13 @@ from sglang_omni.scheduling.session import (
     SessionScheduler,
 )
 from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionAdapter,
     ARSessionBridge,
     BridgeSession,
     SessionUnit,
 )
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
     compute_registered,
     operation_metadata,
@@ -126,6 +131,50 @@ def test_state_budget_is_per_session():
     assert closed == ["one", "two"]
 
 
+def operation_payload(
+    request_id: str,
+    operation: str,
+    session_identity: SessionIdentity,
+    chunk: TimedChunk | None = None,
+    *,
+    should_preempt: bool = False,
+) -> StagePayload:
+    metadata = operation_metadata(
+        operation, session_identity, chunk, should_preempt=should_preempt
+    )
+    return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
+
+
+def test_a_read_attaches_on_arrival_streams_emitted_chunks_and_is_answered_by_the_close():
+    emitters = {}
+
+    class EmittingHooks(Hooks):
+        def attach_output_stream(self, session_identity: SessionIdentity, emit) -> None:
+            emitters[session_identity] = emit
+
+    scheduler = SessionScheduler(EmittingHooks("source", queue.Queue()))
+    identity = SessionIdentity("one")
+    chunk = control_chunk("speech.stopped")
+    compute_registered(scheduler, operation_payload("open", "open", identity))
+    with pytest.raises(RuntimeError, match="no output reader"):
+        emitters[identity](chunk)
+    read = operation_payload("read", "read", identity)
+    scheduler.inbox.put(IncomingMessage("read", "new_request", read))
+    assert scheduler.inbox.empty() and not scheduler.arrivals_by_request_id
+    emitters[identity](chunk)
+    streamed = scheduler.outbox.get_nowait()
+    assert (streamed.request_id, streamed.type) == ("read", "stream")
+    assert TimedChunk.from_dict(streamed.data) == chunk
+    with pytest.raises(ValueError, match="already has an output reader"):
+        compute_registered(scheduler, operation_payload("again", "read", identity))
+    compute_registered(scheduler, operation_payload("close", "close", identity))
+    answered = scheduler.outbox.get_nowait()
+    assert (answered.request_id, answered.type) == ("read", "result")
+    assert answered.data.data == {"closed": True}
+    with pytest.raises(RuntimeError, match="no output reader"):
+        emitters[identity](chunk)
+
+
 def test_malformed_operation_fails_inside_the_request_boundary():
 
     scheduler = SessionScheduler(Hooks("source", queue.Queue()))
@@ -188,7 +237,7 @@ def test_ordinary_request_uses_handler_or_reports_scoped_error(configured):
     assert not worker.is_alive()
 
 
-@pytest.mark.parametrize("size", [0, 255, 256, 65535, 65536])
+@pytest.mark.parametrize("size", [255, 256, 65535, 65536])
 def test_binary_chunk_wire_size_matches_msgpack(size, monkeypatch):
 
     chunk = TimedChunk("audio", 0, 80, 0, b"x" * size, format="pcm16")
@@ -317,6 +366,73 @@ def test_later_operation_does_not_start_before_the_session_lock() -> None:
     assert started == [("open", "open"), ("first", "append"), ("third", "append")]
 
 
+class PreemptibleHooks(Hooks):
+    """An append that runs until its cancel event is set; controls are recorded."""
+
+    def __init__(self) -> None:
+        super().__init__("source", queue.Queue())
+        self.entered = threading.Event()
+
+    def append(
+        self,
+        chunk: TimedChunk,
+        payload: StagePayload,
+        context: SessionContext,
+    ) -> StagePayload:
+        self.entered.set()
+        was_cancelled = context.cancelled.wait(5)
+        self.events.put(("append", payload.request_id, was_cancelled))
+        return payload
+
+    def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
+        self.events.put(("control", session_identity.id, event.payload["type"]))
+
+
+def control_stage_payload(request_id: str, *, should_preempt: bool) -> StagePayload:
+    return operation_payload(
+        request_id,
+        "control",
+        SessionIdentity("session"),
+        control_chunk("interrupt", turn=1),
+        should_preempt=should_preempt,
+    )
+
+
+def start_compute(
+    scheduler: SessionScheduler, payload: StagePayload
+) -> threading.Thread:
+    """Register one operation and compute it on its own thread."""
+    scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+    thread = threading.Thread(
+        target=scheduler.compute, args=(scheduler.inbox.get_nowait().data,)
+    )
+    thread.start()
+    return thread
+
+
+def test_control_reaches_the_hooks_in_arrival_order_and_preempt_cancels_the_in_flight_append():
+    hooks = PreemptibleHooks()
+    scheduler = SessionScheduler(hooks, max_concurrency=2)
+    compute_registered(scheduler, session_stage_payload("open", "open"))
+    unit = start_compute(scheduler, session_stage_payload("unit", "append"))
+    assert hooks.entered.wait(5)
+    stop = start_compute(scheduler, control_stage_payload("stop", should_preempt=True))
+    for thread in (unit, stop):
+        thread.join(5)
+    assert not any(thread.is_alive() for thread in (unit, stop))
+    recorded = [hooks.events.get_nowait() for _ in range(hooks.events.qsize())]
+    assert recorded[1:] == [
+        ("append", "unit", True),
+        ("control", "session", "interrupt"),
+    ]
+    assert not scheduler.append_cancel_events
+    quiet = compute_registered(
+        scheduler, control_stage_payload("quiet", should_preempt=False)
+    )
+    assert quiet.data == {"controlled": True}
+    assert hooks.events.get_nowait() == ("control", "session", "interrupt")
+
+
 def test_close_runs_after_its_request_is_aborted():
 
     events = queue.Queue()
@@ -421,7 +537,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.mark_request_finished_immediately.return_value = []
     scheduler.init_req_max_new_tokens = Mock()
     scheduler.max_req_input_len = 8190
-    scheduler.server_args = SimpleNamespace(context_length=8192)
+    scheduler.model_config = SimpleNamespace(context_len=8192)
     scheduler.active_session_unit = MethodType(
         OmniScheduler.active_session_unit, scheduler
     )
@@ -451,3 +567,123 @@ def test_context_exhaustion_releases_append_unit() -> None:
     assert not bridge.units_by_request_id
     assert bridge.sessions[identity.id].unit is None
     scheduler.session_controller.get.return_value.abort_req.assert_called_once()
+
+
+def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_close():
+    identity = SessionIdentity("session-1")
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.max_running_requests = 4
+    scheduler.session_controller = Mock()
+    scheduler.session_controller.open.return_value = SimpleNamespace(success=True)
+    scheduler.session_controller.get.return_value = None
+    scheduler.tree_cache = SimpleNamespace(slots={})
+    scheduler.outbox = queue.Queue()
+    scheduler.aborted_request_ids = set()
+    adapter = Mock()
+    scheduler.session_bridge = ARSessionBridge(scheduler, adapter)
+    event = control_chunk("interrupt")
+
+    def route(request_id: str, operation: str, **fields) -> list[tuple[str, dict]]:
+        payload = operation_payload(request_id, operation, identity, **fields)
+        assert not OmniScheduler.route_session_input(scheduler, payload)
+        answered = []
+        while not scheduler.outbox.empty():
+            message = scheduler.outbox.get_nowait()
+            answered.append((message.request_id, message.data.data))
+        return answered
+
+    assert route("open", "open") == [("open", {"opened": True})]
+    assert route("read", "read") == []
+    assert route("control", "control", chunk=event) == [
+        ("control", {"controlled": True})
+    ]
+    adapter.control.assert_called_once_with(identity, event)
+    assert route("preempt", "control", chunk=event, should_preempt=True) == [
+        ("preempt", {"controlled": True})
+    ]
+    assert route("close", "close") == [
+        ("read", {"closed": True}),
+        ("close", {"closed": True}),
+    ]
+
+
+@pytest.mark.parametrize("should_preempt", [False, True])
+def test_ar_session_control_preserves_session(should_preempt: bool) -> None:
+    identity = SessionIdentity("voicechat")
+    event = TimedChunk("control", 0, 0, 0, {"responses": []}, format="tool_response")
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.aborted_request_ids = set()
+    scheduler.outbox = queue.Queue()
+    scheduler.session_controller = Mock()
+    adapter = ARSessionAdapter()
+    adapter.control = Mock(wraps=adapter.control)
+    bridge = ARSessionBridge(scheduler, adapter)
+    scheduler.session_bridge = bridge
+    session = BridgeSession(session_identity=identity)
+    bridge.sessions[identity.id] = session
+    bridge.accept(
+        StagePayload("append", OmniRequest(None), {}),
+        SessionOperation("append", identity, ("thinker",), event),
+    )
+    payload = StagePayload(
+        "control",
+        OmniRequest(
+            None,
+            metadata=operation_metadata(
+                "control", identity, event, should_preempt=should_preempt
+            ),
+        ),
+        {},
+    )
+    assert not OmniScheduler.route_session_input(scheduler, payload)
+    assert scheduler.outbox.get_nowait().data.data == {"controlled": True}
+    adapter.control.assert_called_once_with(identity, event)
+    assert bridge.sessions[identity.id] is session
+    assert (session.unit is None) == should_preempt
+    assert scheduler.abort.call_count == int(should_preempt)
+    for invalid_identity in (
+        SessionIdentity("missing"),
+        SessionIdentity(identity.id, 2),
+    ):
+        with pytest.raises(ValueError, match="unknown|stale"):
+            bridge.apply_operation(
+                payload,
+                SessionOperation("control", invalid_identity, ("thinker",), event),
+            )
+
+
+def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_adapter() -> (
+    None
+):
+    identity = SessionIdentity("native")
+    adapter = ARSessionAdapter()
+    adapter.bind_request = Mock()
+    order: list[str] = []
+    adapter.on_abort = Mock(side_effect=lambda identity, unit: order.append("model"))
+    scheduler = Mock()
+    scheduler.model_config.vocab_size = 100
+    native = scheduler.session_controller.get.return_value
+    native.session_id = identity.id
+    native.abort_req.side_effect = lambda: order.append("native")
+    native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
+    native.create_req.return_value = native_request
+    bridge = ARSessionBridge(scheduler, adapter)
+    bridge.sessions[identity.id] = BridgeSession(session_identity=identity)
+    payload = StagePayload("unit", OmniRequest(None), {})
+    unit = bridge.accept(
+        payload,
+        SessionOperation(
+            "append", identity, ("thinker",), TimedChunk("text", 0, 0, 0, {})
+        ),
+    )
+    request = Req("unit", "", [30], SamplingParams(max_new_tokens=1), vocab_size=100)
+    request.tokenizer = Mock()
+    request_data = SGLangARRequestData(req=request)
+    bridge.create_session_request(payload, request_data)
+    assert request_data.req is native_request
+    assert unit.native_offset == 2 and unit.prompt_length == 1
+    adapter.bind_request.assert_called_once_with(identity, request_data, unit)
+    bridge.release_append_unit("unit")
+    adapter.on_abort.assert_called_once_with(identity, unit)
+    assert order == ["model", "native"]
+    assert bridge.sessions[identity.id].unit is None

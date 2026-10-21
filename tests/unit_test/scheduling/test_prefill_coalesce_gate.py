@@ -13,7 +13,7 @@ patched to a sentinel.
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from unittest import mock
 
 import pytest
@@ -60,6 +60,16 @@ class StubScheduler:
         self.pending_request_builds: dict = {}
         self.pending_request_admissions: dict = {}
         self.backlogged_request_build_payloads: list = []
+
+    def prefill_coalesce_waiting_requests(
+        self, running_batch: SimpleNamespace | None
+    ) -> list[SimpleNamespace] | None:
+        return OmniScheduler.prefill_coalesce_waiting_requests(self, running_batch)
+
+    def prefill_coalesce_holds(
+        self, waiting: list[SimpleNamespace], now_s: float
+    ) -> bool:
+        return OmniScheduler.prefill_coalesce_holds(self, waiting, now_s)
 
     def get_new_batch_prefill(self):
         # Upstream takes running_batch in and hands back a NextBatchPlan;
@@ -121,33 +131,6 @@ def test_small_queue_is_held_until_oldest_expires(upstream, clock):
     upstream.assert_called_once()
 
 
-def test_reaching_target_releases_before_deadline(upstream, clock):
-    sched = StubScheduler(coalesce_requests=3, wait_ms=60.0)
-    sched.waiting_queue = [make_req(100.0)]
-    assert sched.get_new_batch_prefill() is None
-
-    sched.waiting_queue = [make_req(100.0)] * 3  # target reached, clock unchanged
-    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
-
-
-def test_partial_admission_leftovers_keep_their_deadline(upstream, clock):
-    # Note: (maydomine) leftovers of a partially admitted wave keep their old
-    # stamps and must not re-wait a fresh window.
-    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
-    clock.return_value = 100.1
-    sched.waiting_queue = [make_req(100.0), make_req(100.02)]  # both past the deadline
-    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
-
-
-def test_abort_does_not_hand_newcomers_an_expired_deadline(upstream, clock):
-    # Note: (maydomine) a fresh arrival after an abort waits its own window
-    # rather than inheriting the nearly expired one.
-    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
-    clock.return_value = 100.1
-    sched.waiting_queue = [make_req(100.09)]  # newcomer, 10ms old
-    assert sched.get_new_batch_prefill() is None
-
-
 def test_idle_loop_bypasses_gate(upstream):
     # Note: (maydomine) no decode in flight: holding amortizes nothing, only
     # costs TTFB.
@@ -176,7 +159,7 @@ def test_idle_loop_can_coalesce_when_explicitly_enabled(upstream, clock):
     assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
-@pytest.mark.parametrize("source", ["pending", "backlog"])
+@pytest.mark.parametrize("source", ["pending", "admission", "backlog"])
 def test_pending_build_work_holds_small_prefill(upstream, clock, source):
     sched = StubScheduler(
         coalesce_requests=8,
@@ -188,6 +171,8 @@ def test_pending_build_work_holds_small_prefill(upstream, clock, source):
     sched.waiting_queue = [make_req(100.0)]
     if source == "pending":
         sched.pending_request_builds["building"] = object()
+    elif source == "admission":
+        sched.pending_request_admissions["admitting"] = object()
     else:
         sched.backlogged_request_build_payloads.append(object())
 
@@ -338,20 +323,132 @@ def test_newcomer_after_queue_drain_waits_its_own_window(upstream, clock):
     assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
-def test_unstamped_request_is_stamped_and_eventually_released(upstream, clock):
-    # Note: (maydomine) stamp-on-miss: held at first observation, released
-    # within the wait deadline (never a K-only unbounded hold).
-    sched = StubScheduler(coalesce_requests=8, wait_ms=60.0)
-    clock.return_value = 200.0
-    req = make_req(None)
-    sched.waiting_queue = [req]
-    assert sched.get_new_batch_prefill() is None
-    assert (
-        req._coalesce_enqueue_t == 200.0
-    )  # noqa: leading-underscore  # production name
+class CountingLock:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.acquire_count = 0
 
-    clock.return_value = 200.03  # inside the window
-    assert sched.get_new_batch_prefill() is None
+    def __enter__(self) -> bool:
+        self.acquire_count += 1
+        return self.lock.__enter__()
 
-    clock.return_value = 200.07  # past the deadline
-    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.lock.__exit__(exc_type, exc, traceback)
+
+
+class ClockAdvancingLock(CountingLock):
+    def __init__(self, clock: mock.MagicMock, now_after_acquire_s: float) -> None:
+        super().__init__()
+        self.clock = clock
+        self.now_after_acquire_s = now_after_acquire_s
+
+    def __enter__(self) -> bool:
+        self.clock.return_value = self.now_after_acquire_s
+        return super().__enter__()
+
+
+def gate_state(
+    *,
+    coalesce_requests: int,
+    has_chunked_request: bool,
+    coalesce_when_idle: bool,
+    decode_is_idle: bool,
+    requires_pending_builds: bool,
+    has_build_work: bool,
+    coalesce_after_builds_during_decode: bool,
+    enqueue_times: tuple[float | None, ...],
+) -> StubScheduler:
+    sched = StubScheduler(
+        coalesce_requests=coalesce_requests,
+        wait_ms=60.0,
+        coalesce_when_idle=coalesce_when_idle,
+        requires_pending_builds=requires_pending_builds,
+        coalesce_after_builds_during_decode=coalesce_after_builds_during_decode,
+    )
+    sched.chunked_req = object() if has_chunked_request else None
+    sched.running_batch = SimpleNamespace(is_empty=lambda: decode_is_idle)
+    sched.request_admission_lock = CountingLock()
+    sched.pending_request_builds = {"build": object()} if has_build_work else {}
+    sched.waiting_queue = [make_req(enqueue_t) for enqueue_t in enqueue_times]
+    return sched
+
+
+def enqueue_stamps(sched: StubScheduler) -> list[float | None]:
+    return [
+        getattr(
+            req, "_coalesce_enqueue_t", None
+        )  # noqa: leading-underscore  # production name
+        for req in sched.waiting_queue
+    ]
+
+
+@pytest.mark.parametrize("enqueue_times", [(99.99, 99.995, None)])
+@pytest.mark.parametrize("requires_pending_builds", [False, True])
+def test_the_hold_predicate_stamps_nothing_and_agrees_with_the_gate(
+    upstream: mock.MagicMock,
+    clock: mock.MagicMock,
+    enqueue_times: tuple[float | None, ...],
+    requires_pending_builds: bool,
+) -> None:
+    sched = gate_state(
+        coalesce_requests=8,
+        has_chunked_request=False,
+        coalesce_when_idle=False,
+        decode_is_idle=False,
+        requires_pending_builds=requires_pending_builds,
+        has_build_work=True,
+        coalesce_after_builds_during_decode=False,
+        enqueue_times=enqueue_times,
+    )
+
+    waiting = sched.prefill_coalesce_waiting_requests(sched.running_batch)
+    assert waiting is not None
+    is_held = OmniScheduler.prefill_coalesce_holds(sched, waiting, clock.return_value)
+
+    assert enqueue_stamps(sched) == list(enqueue_times)
+    assert is_held == (sched.get_new_batch_prefill() is None)
+
+
+class DecodingStubScheduler(StubScheduler):
+    def __init__(self, *, request_admission_lock: CountingLock) -> None:
+        super().__init__(coalesce_requests=8, requires_pending_builds=True)
+        self.is_mixed_chunk = False
+        self.dllm_config = None
+        self._prefill_decode_interval_remaining = (
+            0  # noqa: leading-underscore  # production name
+        )
+        self.enable_priority_preemption = False
+        self.is_hybrid_swa = False
+        self.enable_hisparse = False
+        self.min_free_slots_delayer = None
+        self.running_batch = SimpleNamespace(
+            is_empty=lambda: False, reqs=[object()], batch_is_full=False
+        )
+        self.request_admission_lock = request_admission_lock
+        self.pending_request_builds = {"build": object()}
+        self.waiting_queue = [make_req(100.0)]
+
+    def get_num_allocatable_reqs(
+        self, running_request_count: int, running_batch: SimpleNamespace
+    ) -> int:
+        return 4
+
+
+def test_the_prefill_expectation_reads_the_clock_before_the_pending_builds(
+    clock: mock.MagicMock,
+) -> None:
+    clock.return_value = 100.059999
+    lock = ClockAdvancingLock(clock, now_after_acquire_s=100.060001)
+    sched = DecodingStubScheduler(request_admission_lock=lock)
+
+    is_expected = OmniScheduler.is_prefill_expected(sched)
+
+    assert lock.acquire_count == 1
+    assert clock.return_value == 100.060001
+    assert is_expected is False
+    assert enqueue_stamps(sched) == [100.0]

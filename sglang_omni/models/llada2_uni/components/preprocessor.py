@@ -7,9 +7,11 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.llada2_uni.components.common import (
     load_llada2_tokenizer,
@@ -19,12 +21,18 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationParams,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     ImageEncoderInputs,
     LLaDA2UniPipelineState,
+    LLaDA2UniStreamState,
     SkippedEncoderInputs,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.umm import UMMRequestError
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
@@ -35,7 +43,15 @@ from sglang_omni.proto import StagePayload
 ROLE_HUMAN = "<role>HUMAN</role>"
 ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
-DEFAULT_SYSTEM_PROMPT = "detailed thinking off"
+DEFAULT_SYSTEM_PROMPT = "You are a multimodal understanding assistant."
+SYSTEM_PROMPT_T2I = "You are a text-to-image generation assistant."
+SYSTEM_PROMPT_T2I_THINKING = (
+    "You are a text-to-image generation assistant with a thinking process."
+)
+EDIT_SYSTEM_PROMPT = "You are an image editing assistant."
+UNCOND_TEXT = "<uncondition>"
+DEFAULT_T2I_IMAGE_H = 1024
+DEFAULT_T2I_IMAGE_W = 1024
 
 # Image special token strings
 SOI_TOKEN = "<|image|>"  # id=156901
@@ -52,6 +68,31 @@ MULTI_IMAGE_MIN_PIXELS = 128 * 128
 MULTI_IMAGE_MAX_PIXELS = 448 * 448
 
 logger = logging.getLogger(__name__)
+
+
+def align_cfg_unconditional_input_ids(
+    tokenizer: PreTrainedTokenizerBase,
+    conditional_input_ids: list[int],
+    unconditional_input_ids: list[int],
+) -> tuple[list[int], int]:
+    """Left-pad a CFG companion for the low_confidence_cfg scheduler contract."""
+    left_pad_len = len(conditional_input_ids) - len(unconditional_input_ids)
+    if left_pad_len < 0:
+        raise ValueError(
+            "CFG unconditional input cannot be longer than conditional input"
+        )
+    else:
+        pass
+    if not left_pad_len:
+        return list(unconditional_input_ids), 0
+    else:
+        pass
+    mask_id = tokenizer.mask_token_id
+    if mask_id is None:
+        raise ValueError("LLaDA2 tokenizer has no mask_token_id for CFG padding")
+    else:
+        pass
+    return [int(mask_id)] * left_pad_len + list(unconditional_input_ids), left_pad_len
 
 
 def validate_prompt_seq_len(
@@ -167,11 +208,97 @@ def resize_images(
     return result
 
 
+def preprocess_image_edit(images: list[Image.Image], factor: int) -> list[Image.Image]:
+    """Resize and center-crop edit inputs to a supported grid without padding."""
+    num_patches = (512 // factor) ** 2
+    candidates: list[tuple[int, int]] = []
+    wp, hp = num_patches, 1
+    while wp > 0:
+        if max(wp, hp) / min(wp, hp) <= 4.0:
+            candidates.append((wp * factor, hp * factor))
+        else:
+            pass
+        if (hp + 1) * wp <= num_patches:
+            hp += 1
+        else:
+            wp -= 1
+    if not candidates:
+        raise ValueError("Image patch factor exceeds the edit pixel budget")
+    else:
+        pass
+    result = []
+    for img in images:
+        w, h = img.size
+        cw, ch = max(
+            candidates,
+            key=lambda size: (
+                min(size[0] / w, size[1] / h) / max(size[0] / w, size[1] / h),
+                size,
+            ),
+        )
+        result.append(
+            img.copy()
+            if img.size == (cw, ch)
+            else ImageOps.fit(
+                img, (cw, ch), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5)
+            )
+        )
+    return result
+
+
+def edit_image_pixel_values(
+    images: list[Image.Image],
+    patch_size: int,
+    temporal_patch_size: int,
+    merge_size: int,
+    image_mean: list[float],
+    image_std: list[float],
+    rescale_factor: float,
+) -> ImageEncoderInputs:
+    """Patchify edit inputs with float32 normalization before temporal expansion."""
+    import numpy as np
+
+    patches: list[torch.Tensor] = []
+    grids: list[list[int]] = []
+    mean = torch.tensor(image_mean, dtype=torch.float32).view(-1, 1, 1)
+    std = torch.tensor(image_std, dtype=torch.float32).view(-1, 1, 1)
+    for img in images:
+        values = torch.from_numpy(np.array(img.convert("RGB"))).permute(2, 0, 1).float()
+        values = (values * rescale_factor - mean) / std
+        _, h, w = values.shape
+        gh, gw = h // patch_size, w // patch_size
+        values = values.unsqueeze(0).repeat(temporal_patch_size, 1, 1, 1)
+        # Match Qwen2VL's spatial merge ordering without merging VQ tokens.
+        values = values.reshape(
+            1,
+            temporal_patch_size,
+            3,
+            gh // merge_size,
+            merge_size,
+            patch_size,
+            gw // merge_size,
+            merge_size,
+            patch_size,
+        ).permute(0, 3, 6, 4, 7, 2, 1, 5, 8)
+        patches.append(values.reshape(gh * gw, 3 * temporal_patch_size * patch_size**2))
+        grids.append([1, gh, gw])
+    return {
+        "pixel_values": torch.cat(patches),
+        "image_grid_thw": torch.tensor(grids, dtype=torch.long),
+    }
+
+
 class LLaDA2Preprocessor:
     """Preprocessor for LLaDA2-Uni model (text + image)."""
 
-    def __init__(self, model_path: str, max_seq_len: int | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_len: int | None = None,
+        interleaved: bool = False,
+    ):
         self.max_seq_len = max_seq_len
+        self.interleaved = interleaved
         self.model_dir = resolve_local_model_dir(model_path)
         self.tokenizer = load_llada2_tokenizer(model_path)
 
@@ -205,26 +332,71 @@ class LLaDA2Preprocessor:
         # Cache special token IDs
         self.eoi_id = self.tokenizer.convert_tokens_to_ids(EOI_TOKEN)
         self.boi_id = self.tokenizer.convert_tokens_to_ids(BOI_TOKEN)
+        self.soi_id = self.tokenizer.convert_tokens_to_ids(SOI_TOKEN)
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         request = payload.request
         raw_inputs = request.inputs
         if isinstance(raw_inputs, list):
             messages = raw_inputs
+            self.validate_messages(messages)
             raw_images, image_counts_per_msg = self.extract_raw_images(messages)
         else:
             messages = raw_inputs.get("messages", [])
+            self.validate_messages(messages)
             raw_images = raw_inputs.get("images")
             if raw_images is None:
                 raw_images, image_counts_per_msg = self.extract_raw_images(messages)
             else:
                 image_counts_per_msg = None
 
-        self.validate_messages(messages)
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        image_generation = metadata.get("image_generation")
+        if image_generation is None and "image" in metadata.get(
+            "output_modalities", []
+        ):
+            image_generation = {}
+            metadata = {**metadata, "image_generation": image_generation}
+        else:
+            pass
+        task_kind = "chat"
+        stage_params = request.params.get("stage_params")
+        wants_interleaved = (
+            isinstance(image_generation, dict)
+            and image_generation.get("mode") == "interleaved"
+        )
+        if (
+            wants_interleaved
+            or isinstance(stage_params, dict)
+            and "orchestrator" in stage_params
+        ) and not self.interleaved:
+            raise UMMRequestError(
+                "Interleaved generation needs the interleaved pipeline, "
+                "sgl-omni serve --variant interleaved"
+            )
+        elif wants_interleaved:
+            config = InterleavedGenerationParams.model_validate(image_generation)
+            task_kind = "interleaved"
+        elif isinstance(image_generation, dict):
+            task_kind = "edit" if raw_images else "t2i"
+        else:
+            pass
+        if task_kind == "edit":
+            if image_generation.get("mode") == "thinking":
+                raise ValueError("Thinking mode only supports text-to-image generation")
+            else:
+                pass
+            self.require_edit_instruction(messages)
+        else:
+            pass
         # note (Richard Wang): load first, so the media policy refuses a path
         # before the cache key reads the file.
         images = await ensure_image_list_async(raw_images) if raw_images else []
         image_cache_key = compute_image_cache_key(raw_images)
+        if task_kind == "edit":
+            return self.build_edit_payload(payload, messages, images, metadata)
+        else:
+            pass
 
         encoder_inputs: dict[str, ImageEncoderInputs | SkippedEncoderInputs] = {}
         image_token_counts: list[int] = []
@@ -256,7 +428,6 @@ class LLaDA2Preprocessor:
             else:
                 pass
 
-            merge_sq = self.merge_size**2
             img_idx = 0
             for msg_idx, count in image_counts_per_msg:
                 parts: list[str] = []
@@ -264,7 +435,8 @@ class LLaDA2Preprocessor:
                     t, h, w = image_grid_thw[img_idx].tolist()
                     h_token = f"<|reserved_token_{h}|>"
                     w_token = f"<|reserved_token_{w}|>"
-                    num_image_tokens = t * h * w // merge_sq
+                    # The VQ encoder has no PatchMerger: one token per patch.
+                    num_image_tokens = t * h * w
                     img_header = f"{SOI_TOKEN}{h_token}{w_token}{BOI_TOKEN}"
                     image_token_counts.append(num_image_tokens)
                     parts.extend([img_header, EOI_TOKEN])
@@ -273,11 +445,83 @@ class LLaDA2Preprocessor:
         else:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
-        text_prompt = self.build_prompt(messages, image_parts_by_msg=image_parts_by_msg)
+        thinking_mode = (
+            task_kind == "t2i" and image_generation.get("mode") == "thinking"
+        )
+        text_prompt = self.build_prompt(
+            messages,
+            image_parts_by_msg=image_parts_by_msg,
+            task_kind="t2i_thinking" if thinking_mode else task_kind,
+        )
         input_ids = self.tokenizer.encode(text_prompt, add_special_tokens=False)
 
         if image_token_counts:
             input_ids = self.insert_image_placeholders(input_ids, image_token_counts)
+        else:
+            pass
+
+        stream_state: LLaDA2UniStreamState = {}
+        max_new_tokens = request.params.get(
+            "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+        )
+        if task_kind == "interleaved":
+            max_seq_len = self.max_seq_len
+            if max_seq_len is None:
+                raise ValueError("Interleaved generation requires max_seq_len")
+            else:
+                pass
+            stream_state["image_token_offset"] = IMAGE_TOKEN_OFFSET
+            stream_state["interleaved"] = {
+                **config.model_dump(),
+                "phase": "text",
+                "frame_index": 0,
+                "segment_start": len(input_ids),
+                "prompt_length": len(input_ids),
+                "max_seq_len": max_seq_len,
+                "segments": [],
+            }
+            max_new_tokens = min(
+                config.text_max_new_tokens, max_seq_len - len(input_ids)
+            )
+        else:
+            pass
+        if task_kind == "t2i":
+            ig = image_generation
+            image_h = int(ig.get("image_h", DEFAULT_T2I_IMAGE_H))
+            image_w = int(ig.get("image_w", DEFAULT_T2I_IMAGE_W))
+            if image_h <= 0 or image_w <= 0 or image_h % 32 or image_w % 32:
+                raise ValueError(
+                    "Image generation dimensions must be positive multiples of 32"
+                )
+            else:
+                pass
+            grid_h, grid_w = image_h // 32, image_w // 32
+            stream_state["image_info"] = [{"grid_h": grid_h, "grid_w": grid_w}]
+            if ig.get("dllm_steps") is not None:
+                stream_state["dllm_steps"] = int(ig["dllm_steps"])
+            else:
+                pass
+            cfg_scale = float(ig.get("cfg_scale", 1.0))
+            stream_state["cfg_scale"] = cfg_scale
+            stream_state["cfg_rescale"] = float(ig.get("cfg_rescale", 0.7))
+            mode = ig.get("mode", "normal")
+            if mode == "thinking":
+                max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS + grid_h * grid_w
+            elif mode == "normal":
+                input_ids.extend(self.build_t2i_header_ids(grid_h, grid_w))
+                max_new_tokens = grid_h * grid_w
+                if cfg_scale > 1.0:
+                    uncond = self.tokenizer.encode(
+                        self.build_prompt(
+                            [{"role": "user", "content": UNCOND_TEXT}], task_kind="t2i"
+                        ),
+                        add_special_tokens=False,
+                    ) + self.build_t2i_header_ids(grid_h, grid_w)
+                    self.set_cfg_branch(stream_state, input_ids, uncond)
+                else:
+                    pass
+            else:
+                raise ValueError(f"Unsupported image generation mode: {mode!r}")
         else:
             pass
 
@@ -286,9 +530,7 @@ class LLaDA2Preprocessor:
         validate_prompt_seq_len(
             input_ids_tensor,
             max_seq_len=self.max_seq_len,
-            max_new_tokens=request.params.get(
-                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
-            ),
+            max_new_tokens=max_new_tokens,
             request_id=payload.request_id,
         )
 
@@ -297,10 +539,14 @@ class LLaDA2Preprocessor:
         state = LLaDA2UniPipelineState(
             prompt=prompt,
             encoder_inputs=encoder_inputs,
+            request_metadata=metadata,
+            task_kind=task_kind,
+            stream_state=stream_state,
+            thinking_phase="text" if thinking_mode else None,
         )
         return StagePayload(
             request_id=payload.request_id,
-            request=payload.request,
+            request=request,
             data=state.to_dict(),
         )
 
@@ -364,6 +610,7 @@ class LLaDA2Preprocessor:
         self,
         messages: Sequence[Mapping[str, object]],
         image_parts_by_msg: dict[int, list[str]] | None = None,
+        task_kind: str = "chat",
     ) -> str:
         """Build LLaDA2-Uni chat format prompt.
 
@@ -372,7 +619,13 @@ class LLaDA2Preprocessor:
         """
         parts: list[str] = []
 
-        parts.append(f"{ROLE_SYSTEM} {DEFAULT_SYSTEM_PROMPT} ")
+        system_prompt = {
+            "t2i": SYSTEM_PROMPT_T2I,
+            "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
+            "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
+        }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
+        parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 
         for msg_idx, msg in enumerate(messages):
             role = msg.get("role", "user")
@@ -412,6 +665,163 @@ class LLaDA2Preprocessor:
 
         parts.append(ROLE_ASSISTANT)
         return "".join(parts)
+
+    def build_t2i_header_ids(self, grid_h: int, grid_w: int) -> list[int]:
+        return (
+            [self.soi_id]
+            + self.tokenizer.encode(
+                f"<|reserved_token_{grid_h}|><|reserved_token_{grid_w}|>",
+                add_special_tokens=False,
+            )
+            + [self.boi_id]
+        )
+
+    @staticmethod
+    def extract_user_prompt_text(messages: Sequence[Mapping[str, object]]) -> str:
+        for msg in reversed(messages):
+            if msg.get("role", "user") != "user":
+                continue
+            else:
+                pass
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content
+            else:
+                pass
+            if isinstance(content, list):
+                return "".join(
+                    item if isinstance(item, str) else item.get("text", "")
+                    for item in content
+                    if isinstance(item, str)
+                    or isinstance(item, dict)
+                    and item.get("type", "text") == "text"
+                )
+            else:
+                pass
+        return ""
+
+    @classmethod
+    def require_edit_instruction(cls, messages: Sequence[Mapping[str, object]]) -> str:
+        instruction = cls.extract_user_prompt_text(messages)
+        if not instruction.strip():
+            raise ValueError("Image editing requires a non-empty instruction")
+        else:
+            pass
+        return instruction
+
+    def set_cfg_branch(
+        self,
+        stream_state: LLaDA2UniStreamState,
+        conditional: list[int],
+        unconditional: list[int],
+        *,
+        branch: Literal["uncond", "uncond_img"] = "uncond",
+    ) -> None:
+        ids, pad_len = align_cfg_unconditional_input_ids(
+            self.tokenizer, conditional, unconditional
+        )
+        if branch == "uncond":
+            stream_state["uncond_input_ids"] = ids
+            stream_state["uncond_left_pad_len"] = pad_len
+        else:
+            stream_state["uncond_img_input_ids"] = ids
+            stream_state["uncond_img_left_pad_len"] = pad_len
+
+    def build_edit_payload(
+        self,
+        payload: StagePayload,
+        messages: Sequence[Mapping[str, object]],
+        images: list[Image.Image],
+        request_metadata: dict[str, object],
+    ) -> StagePayload:
+        instruction = self.require_edit_instruction(messages)
+        if len(images) != 1:
+            raise ValueError("Image editing requires exactly one source image")
+        else:
+            pass
+        processor = self.image_processor
+        encoded = edit_image_pixel_values(
+            preprocess_image_edit(images, self.factor),
+            patch_size=processor.patch_size,
+            temporal_patch_size=processor.temporal_patch_size,
+            merge_size=processor.merge_size,
+            image_mean=processor.image_mean,
+            image_std=processor.image_std,
+            rescale_factor=processor.rescale_factor,
+        )
+        t, h, w = encoded["image_grid_thw"][0].tolist()
+        num_tokens = t * h * w
+        encoder_inputs = {IMAGE_STAGE: encoded}
+        grid_h, grid_w = t * h // self.merge_size, w // self.merge_size
+        source = (
+            f"{SOI_TOKEN}<|reserved_token_{h}|><|reserved_token_{w}|>"
+            f"{BOI_TOKEN}{EOI_TOKEN}"
+        )
+        header = self.build_t2i_header_ids(grid_h, grid_w)
+
+        def encode_prompt(text: str, *, with_image: bool = True) -> list[int]:
+            prompt = self.build_prompt(
+                [{"role": "user", "content": text}],
+                image_parts_by_msg={0: [source if with_image else SOI_TOKEN]},
+                task_kind="edit",
+            )
+            ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            if with_image:
+                ids = self.insert_image_placeholders(ids, [num_tokens])
+            else:
+                pass
+            return ids + header
+
+        input_ids = encode_prompt(instruction)
+        input_tensor = torch.tensor([input_ids], dtype=torch.long)
+        validate_prompt_seq_len(
+            input_tensor,
+            max_seq_len=self.max_seq_len,
+            max_new_tokens=grid_h * grid_w,
+            request_id=payload.request_id,
+        )
+        ig = request_metadata["image_generation"]
+        stream_state: LLaDA2UniStreamState = {
+            "image_info": [{"grid_h": grid_h, "grid_w": grid_w}],
+        }
+        if ig.get("dllm_steps") is not None:
+            stream_state["dllm_steps"] = int(ig["dllm_steps"])
+        else:
+            pass
+        if "cfg_text_scale" in ig:
+            text_scale = float(ig["cfg_text_scale"])
+        elif "cfg_scale" in ig:
+            legacy_scale = float(ig["cfg_scale"])
+            text_scale = 0.0 if legacy_scale == 1.0 else legacy_scale
+        else:
+            text_scale = 4.0
+        image_scale = float(ig.get("cfg_image_scale", 0.0))
+        if text_scale > 0.0 or image_scale > 0.0:
+            self.set_cfg_branch(stream_state, input_ids, encode_prompt(UNCOND_TEXT))
+            stream_state["cfg_scale"] = text_scale
+            stream_state["cfg_rescale"] = float(ig.get("cfg_rescale", 0.7))
+            if image_scale > 0.0:
+                self.set_cfg_branch(
+                    stream_state,
+                    input_ids,
+                    encode_prompt(instruction, with_image=False),
+                    branch="uncond_img",
+                )
+                stream_state["cfg_image_scale"] = image_scale
+            else:
+                pass
+        else:
+            pass
+        state = LLaDA2UniPipelineState(
+            prompt={"input_ids": input_tensor},
+            encoder_inputs=encoder_inputs,
+            request_metadata=request_metadata,
+            task_kind="edit",
+            stream_state=stream_state,
+        )
+        return StagePayload(
+            request_id=payload.request_id, request=payload.request, data=state.to_dict()
+        )
 
     def insert_image_placeholders(
         self,

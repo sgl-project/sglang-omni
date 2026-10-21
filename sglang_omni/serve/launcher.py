@@ -25,6 +25,7 @@ Export a config to JSON::
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import os
@@ -37,9 +38,11 @@ from contextlib import contextmanager, suppress
 from types import FrameType
 from typing import TypedDict
 
+import httpx
 import uvicorn
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+from sglang.srt.utils.network import NetworkAddress
 
 from sglang_omni.client import Client
 from sglang_omni.client.types import GenerateChunk
@@ -51,9 +54,22 @@ from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
-from sglang_omni.serve.openai_api import create_app
-from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.openai_api import ServerStatus, create_app
+from sglang_omni.serve.protocol import (
+    DEFAULT_TTS_BATCH_MAX_ITEMS,
+    ChatCompletionRequest,
+    CreateSpeechRequest,
+)
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.serve.services import ServiceProcesses
+from sglang_omni.serve.stage_routes import (
+    KEEP_ALIVE_S,
+    StageRoutes,
+    check_route_ownership,
+    export_server_port,
+)
+from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
@@ -65,6 +81,7 @@ from sglang_omni.utils.imports import import_string
 logger = logging.getLogger(__name__)
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+SERVER_START_POLL_S = 0.1
 
 
 class ClientOptions(TypedDict, total=False):
@@ -127,7 +144,42 @@ class PipelineUvicornServer(uvicorn.Server):
     the interpreter before ``_run_server`` can stop spawned pipeline workers.
     The pipeline launcher owns child-process cleanup, so it restores the
     original handlers but deliberately consumes the already-handled signal.
+
+    The optional startup GC freeze is process-wide and lasts until serve exits.
     """
+
+    def __init__(
+        self,
+        config: uvicorn.Config,
+        *,
+        freeze_api_gc_on_startup: bool = False,
+    ) -> None:
+        super().__init__(config)
+        self.freeze_api_gc_on_startup: bool = freeze_api_gc_on_startup
+        self.has_frozen_api_gc: bool = False
+
+    async def serve(self, sockets: list[socket.socket] | None = None) -> None:
+        try:
+            await super().serve(sockets=sockets)
+        finally:
+            if self.has_frozen_api_gc:
+                gc.unfreeze()
+                self.has_frozen_api_gc = False
+            else:
+                pass
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        if self.started and self.freeze_api_gc_on_startup:
+            # note (yxs): New request cycles retain normal GC outside the startup graph.
+            gc.collect()
+            gc.freeze()
+            self.has_frozen_api_gc = True
+            logger.info(
+                f"Frozen API startup object graph ({gc.get_freeze_count()} objects)"
+            )
+        else:
+            pass
 
     @contextmanager
     def capture_signals(self) -> Generator[None, None, None]:
@@ -162,6 +214,11 @@ def find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # note (Richard Wang): probe the way the server binds. Uvicorn sets
+            # SO_REUSEADDR, so a port whose last connections are still in
+            # TIME_WAIT after a restart is free for it, while a live listener
+            # still fails this bind.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:
@@ -463,6 +520,85 @@ def mount_profiler_routes(
     app.include_router(router)
 
 
+async def warm_up_server(
+    server: uvicorn.Server,
+    app: FastAPI,
+    *,
+    base_url: str,
+    requests: list[
+        ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
+    ],
+    timeout_s: float,
+) -> None:
+    """Mark the server up once its warmup requests have crossed every stage.
+
+    A fresh process builds kernels on its first request; this keeps that cost
+    off user requests. A failed warmup stops the server and raises; a shutdown
+    that starts first drops the request in flight and leaves the server down.
+    """
+    while not server.started:
+        await asyncio.sleep(SERVER_START_POLL_S)
+    if not requests:
+        app.state.server_status = ServerStatus.UP
+        return
+    else:
+        pass
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url, timeout=timeout_s, trust_env=False
+        ) as http_client:
+            # note (ratish): one request at a time keeps warmup within the
+            # coordinator's admission limit; consecutive admissions still bind
+            # every replica of each process.
+            for request in requests:
+                if isinstance(request, ChatCompletionRequest):
+                    post = http_client.post(
+                        "/v1/chat/completions",
+                        json=request.model_dump(exclude_none=True),
+                    )
+                elif isinstance(request, CreateSpeechRequest):
+                    post = http_client.post(
+                        "/v1/audio/speech",
+                        json=request.model_dump(exclude_none=True),
+                    )
+                else:
+                    post = http_client.post(
+                        TRANSCRIPTIONS_ENDPOINT,
+                        data={"max_new_tokens": str(request.max_new_tokens)},
+                        files={"file": ("warmup.wav", request.wav_bytes, "audio/wav")},
+                    )
+                post_task = asyncio.create_task(post)
+                while not post_task.done() and not server.should_exit:
+                    await asyncio.wait({post_task}, timeout=SERVER_START_POLL_S)
+                if not post_task.done():
+                    # note (ratish): HTTP shutdown waits for in-flight requests, so
+                    # the warmup drops its own; the route aborts it on disconnect.
+                    post_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await post_task
+                    return
+                else:
+                    pass
+                response = post_task.result()
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Server warmup failed with status {response.status_code}: "
+                        f"{response.text}"
+                    )
+                else:
+                    pass
+    except (httpx.HTTPError, RuntimeError) as exc:
+        logger.error(f"Server warmup failed, stopping the server: {exc!r}")
+        server.should_exit = True
+        raise
+    app.state.server_status = ServerStatus.UP
+    logger.info(
+        f"Server warmup of {len(requests)} request(s) finished in "
+        f"{time.perf_counter() - start:.1f} s; the server is ready"
+    )
+
+
 async def run_server(
     pipeline_config: PipelineConfig,
     *,
@@ -475,6 +611,7 @@ async def run_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    skip_server_warmup: bool = False,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
 
@@ -483,94 +620,159 @@ async def run_server(
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
+    export_server_port(port)
 
-    mp_runner = MultiProcessPipelineRunner(pipeline_config)
-    startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
-    await mp_runner.start(timeout=startup_timeout)
-    coordinator = mp_runner.coordinator
+    async with ServiceProcesses(pipeline_config.services) as services:
+        mp_runner = MultiProcessPipelineRunner(pipeline_config)
+        startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
+        await mp_runner.start(timeout=startup_timeout)
+        coordinator = mp_runner.coordinator
 
-    # Plans are resolved once inside ``mp_runner.start()`` (which applies
-    # stage fusion); read them back from the runner for logging rather than
-    # recomputing on the un-fused config.
-    placement_plan = mp_runner.prep.placement_plan
-    process_plan = mp_runner.prep.process_plan
-    gpu_ids = set(placement_plan.gpus)
-    placement_summary = placement_log_summary(
-        placement_plan,
-        process_plan,
-        pipeline_config,
-    )
-    logger.info(
-        f"Resolved placement/topology plan: placement={placement_summary}",
-    )
-    log_model_capabilities(pipeline_config)
-    logger.info(
-        "Pipeline '%s' started (%d GPU(s))",
-        pipeline_config.name,
-        len(gpu_ids),
-    )
-
-    try:
-        cl_kwargs = client_kwargs or {}
-        client = Client(coordinator, **cl_kwargs)
-        deployment_factory = type(pipeline_config).realtime_deployment_factory
-        if enable_realtime and deployment_factory is not None:
-            realtime_deployment: RealtimeDeployment | None = import_string(
-                deployment_factory
-            )(client, pipeline_config)
-        else:
-            realtime_deployment = None
-        app = create_app(
-            client,
-            model_name=model_name or pipeline_config.name,
-            requires_uploaded_voice_for_named_voice=(
-                pipeline_config.requires_uploaded_voice_for_named_voice()
-            ),
-            supports_uploaded_voice_references=(
-                pipeline_config.supports_uploaded_voice_references()
-            ),
-            custom_voice_config=pipeline_config.resolve_custom_voice_config(),
-            supports_audio_translation=(pipeline_config.supports_audio_translation()),
-            required_speech_reference_count=(
-                pipeline_config.required_speech_reference_count
-            ),
-            speech_reference_text_required=(
-                pipeline_config.speech_reference_text_required
-            ),
-            speech_reference_text_excludes_instructions=(
-                pipeline_config.speech_reference_text_excludes_instructions
-            ),
-            additional_speech_languages=pipeline_config.additional_speech_languages,
-            max_speech_input_chars=pipeline_config.max_speech_input_chars,
-            enable_realtime=enable_realtime,
-            realtime_deployment=realtime_deployment,
-            supports_realtime_audio_output=(
-                type(pipeline_config).code2wav_stage() is not None
-            ),
-            realtime_transcription=type(pipeline_config).realtime_transcription,
-            allowed_local_media_path=allowed_local_media_path,
-            allowed_media_domains=allowed_media_domains,
-            tts_batch_max_items=tts_batch_max_items,
-            architectures=[pipeline_config.architecture],
-            audio_chunking=pipeline_config.resolved_audio_chunking,
+        # Plans are resolved once inside ``mp_runner.start()`` (which applies
+        # stage fusion); read them back from the runner for logging rather than
+        # recomputing on the un-fused config.
+        placement_plan = mp_runner.prep.placement_plan
+        process_plan = mp_runner.prep.process_plan
+        gpu_ids = set(placement_plan.gpus)
+        placement_summary = placement_log_summary(
+            placement_plan,
+            process_plan,
+            pipeline_config,
         )
-        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-        profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
-        mount_profiler_routes(app, profiler_ctl, profiler_dir)
-
-        config = uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level=log_level,
-            timeout_keep_alive=120,
+        logger.info(
+            f"Resolved placement/topology plan: placement={placement_summary}",
         )
-        server = PipelineUvicornServer(config)
-        await serve_with_failure_watch(server, [mp_runner.wait_failed()])
-    finally:
-        logger.info("Shutting down pipeline …")
-        await mp_runner.stop()
-        logger.info("Pipeline stopped.")
+        log_model_capabilities(pipeline_config)
+        logger.info(
+            "Pipeline '%s' started (%d GPU(s))",
+            pipeline_config.name,
+            len(gpu_ids),
+        )
+
+        try:
+            warmup_factory = type(pipeline_config).server_warmup_request_factory
+            if skip_server_warmup or warmup_factory is None:
+                warmup_requests = []
+            else:
+                # note (ratish): admission binds each replicated process round robin,
+                # so one request per replica of the most replicated process warms
+                # every replica.
+                num_replicas = max(
+                    process.num_replicas
+                    for process in mp_runner.prep.logical_process_plan.processes
+                )
+                warmup_requests = [
+                    import_string(warmup_factory)(pipeline_config)
+                ] * num_replicas
+            cl_kwargs = client_kwargs or {}
+            client = Client(coordinator, **cl_kwargs)
+            deployment_factory = type(pipeline_config).realtime_deployment_factory
+            if enable_realtime and deployment_factory is not None:
+                realtime_deployment: RealtimeDeployment | None = import_string(
+                    deployment_factory
+                )(client, pipeline_config)
+            else:
+                realtime_deployment = None
+            app = create_app(
+                client,
+                model_name=model_name or pipeline_config.name,
+                supports_image_api=pipeline_config.supports_image_api,
+                image_decode_mode=pipeline_config.image_decode_mode(),
+                image_decode_steps=pipeline_config.image_decode_steps(),
+                requires_uploaded_voice_for_named_voice=(
+                    pipeline_config.requires_uploaded_voice_for_named_voice()
+                ),
+                supports_uploaded_voice_references=(
+                    pipeline_config.supports_uploaded_voice_references()
+                ),
+                custom_voice_config=pipeline_config.resolve_custom_voice_config(),
+                supports_audio_translation=(
+                    pipeline_config.supports_audio_translation()
+                ),
+                required_speech_reference_count=(
+                    pipeline_config.required_speech_reference_count
+                ),
+                speech_reference_text_required=(
+                    pipeline_config.speech_reference_text_required
+                ),
+                speech_reference_text_excludes_instructions=(
+                    pipeline_config.speech_reference_text_excludes_instructions
+                ),
+                additional_speech_languages=pipeline_config.additional_speech_languages,
+                max_speech_input_chars=pipeline_config.max_speech_input_chars,
+                supported_speech_fields=pipeline_config.supported_speech_fields,
+                enable_realtime=enable_realtime,
+                realtime_deployment=realtime_deployment,
+                supports_realtime_audio_output=(
+                    type(pipeline_config).code2wav_stage() is not None
+                ),
+                realtime_transcription=type(pipeline_config).realtime_transcription,
+                allowed_local_media_path=allowed_local_media_path,
+                allowed_media_domains=allowed_media_domains,
+                tts_batch_max_items=tts_batch_max_items,
+                architectures=[pipeline_config.architecture],
+                audio_chunking=pipeline_config.resolved_audio_chunking,
+                interleaved_output=type(pipeline_config).interleaved_output,
+            )
+            profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
+            mount_profiler_routes(app, profiler_ctl, profiler_dir)
+            # Added last, and refused where a stage prefix reaches Omni's own routes.
+            omni_routes = list(app.router.routes)
+            for stage_name, prefixes, socket_path in mp_runner.stage_http_routes:
+                route = StageRoutes(stage_name, prefixes, socket_path)
+                check_route_ownership(omni_routes, route)
+                app.router.routes.append(route)
+                logger.info(
+                    "Stage %s serves %s from its own process",
+                    stage_name,
+                    ", ".join(prefixes),
+                )
+            app.state.server_status = ServerStatus.STARTING
+
+            config = uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level=log_level,
+                timeout_keep_alive=KEEP_ALIVE_S,
+            )
+            server = PipelineUvicornServer(
+                config,
+                freeze_api_gc_on_startup=pipeline_config.freeze_api_gc_on_startup,
+            )
+            # note (ratish): a wildcard bind address is not a destination, so the
+            # server reaches itself on loopback.
+            if not host or host == "0.0.0.0":
+                loopback_host = "127.0.0.1"
+            elif host == "::":
+                loopback_host = "::1"
+            else:
+                loopback_host = host
+            base_url = NetworkAddress(loopback_host, port).to_url()
+            warmup_task = asyncio.create_task(
+                warm_up_server(
+                    server,
+                    app,
+                    base_url=base_url,
+                    requests=warmup_requests,
+                    timeout_s=float(
+                        os.environ.get("SGLANG_OMNI_WARMUP_TIMEOUT", "600")
+                    ),
+                )
+            )
+            try:
+                await serve_with_failure_watch(
+                    server, [mp_runner.wait_failed(), services.watch()]
+                )
+            finally:
+                warmup_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await warmup_task
+        finally:
+            logger.info("Shutting down pipeline …")
+            await mp_runner.stop()
+            logger.info("Pipeline stopped.")
 
 
 async def serve_with_failure_watch(
@@ -639,6 +841,7 @@ def launch_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    skip_server_warmup: bool = False,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
 
@@ -660,6 +863,8 @@ def launch_server(
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
+        skip_server_warmup: Report ready without sending the pipeline's
+            warmup requests first.
     """
     apply_gpu_compat_env_defaults()
     sigterm_received = False
@@ -683,6 +888,7 @@ def launch_server(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
+            skip_server_warmup=skip_server_warmup,
         )
         previous_handler = signal.getsignal(signal.SIGTERM)
         if (

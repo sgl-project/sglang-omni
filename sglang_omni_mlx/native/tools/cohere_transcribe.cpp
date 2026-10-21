@@ -16,11 +16,11 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "cohere_transcriber.h"
-#include "form.h"
+#include "cohere/cohere_transcriber.h"
+#include "common/audio.h"
+#include "common/form.h"
 #include "nlohmann/json.hpp"
-#include "speech_segments.h"
+#include "silero_vad/speech_segments.h"
 
 int main(int argc, char **argv) {
   std::string model_path;
@@ -115,6 +115,9 @@ int main(int argc, char **argv) {
                         .count()},
     };
     std::cout << line.dump() << std::endl;
+    // Note (Jiaxin Deng): as the server does between requests; buffers of one
+    // clip's sizes rarely fit the next, so the cache would grow without end.
+    mlx::core::clear_cache();
   }
   return 0;
 }

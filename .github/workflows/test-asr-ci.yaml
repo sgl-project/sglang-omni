@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       asr_ci_model:
-        description: ASR CI model preset selected by the parent pick-asr-model job.
+        description: ASR CI model preset selected by the parent omni-ci preflight.
         type: string
         required: false
         default: fun

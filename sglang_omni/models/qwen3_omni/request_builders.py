@@ -16,6 +16,7 @@ from transformers import PreTrainedTokenizerBase
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
+    NO_SPEECH,
     EncoderInputs,
     Qwen3OmniPipelineState,
     StreamState,
@@ -241,7 +242,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={},
+        data={NO_SPEECH: True} if NO_SPEECH in payload.data else {},
     )
 
 
@@ -981,6 +982,8 @@ def build_sglang_talker_request(
     else:
         req.omni_model_inputs = None
 
+    # note (ratish): sglang's request limits cut the frame cap to the context the
+    # replayed prompt leaves, so a long spoken prompt gets shorter audio, not an error.
     data = SGLangARRequestData(
         input_ids=input_ids_tensor,
         max_new_tokens=max_new_tokens,
@@ -988,6 +991,7 @@ def build_sglang_talker_request(
         output_ids=req.output_ids,
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
+        enforce_request_limits=True,
     )
     data.suppress_tokens = list(
         req._codec_suppress_tokens or []

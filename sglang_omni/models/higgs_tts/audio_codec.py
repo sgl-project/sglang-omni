@@ -10,12 +10,13 @@ engine and the codec.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import threading
 import types
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ import torch.nn.functional as F
 import torchaudio
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import HiggsAudioV2TokenizerConfig, HiggsAudioV2TokenizerModel
 from transformers.models.higgs_audio_v2_tokenizer.modeling_higgs_audio_v2_tokenizer import (
     HiggsAudioV2TokenizerResidualVectorQuantization,
@@ -153,6 +155,9 @@ class HiggsAudioCodec:
     """Frozen encode/decode wrapper around :class:`HiggsAudioV2TokenizerModel`."""
 
     SAMPLE_RATE: int = 24_000
+    # Note (Jiaxin Deng): cuDNN/SDPA backend flags are process-global, so overlapping
+    # encodes would restore them out of order and leave cuDNN off for good.
+    encode_kernel_lock = threading.Lock()
 
     def __init__(
         self, model: HiggsAudioV2TokenizerModel, *, device: torch.device
@@ -338,8 +343,31 @@ class HiggsAudioCodec:
             pass
 
         wav = wav.to(device=self.device, dtype=self.dtype)
-        codes_BNT = self.model.encode(wav).audio_codes
+        with self.encode_kernel_context():
+            codes_BNT = self.model.encode(wav).audio_codes
         return codes_BNT.squeeze(0).transpose(0, 1).to(torch.long).cpu()
+
+    @contextlib.contextmanager
+    def encode_kernel_context(self) -> Iterator[None]:
+        """Keep cuDNN out of reference encoding on CUDA."""
+        if self.device.type != "cuda":
+            yield
+            return
+        else:
+            pass
+        # Note (Jiaxin Deng): cuDNN rebuilds its conv and attention plans for every
+        # new clip length (~60 ms per clip, 6x the encode itself).
+        backends = [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+        ]
+        with (
+            self.encode_kernel_lock,
+            torch.backends.cudnn.flags(enabled=False),
+            sdpa_kernel(backends),
+        ):
+            yield
 
     def bucketed_batch(
         self,
@@ -396,7 +424,8 @@ class HiggsAudioCodec:
 
         def _batch_fn(batch_items: list[torch.Tensor]) -> list[torch.Tensor]:
             batch = torch.cat(batch_items).to(device=self.device, dtype=self.dtype)
-            codes_BNT = self.model.encode(batch).audio_codes.to(torch.long).cpu()
+            with self.encode_kernel_context():
+                codes_BNT = self.model.encode(batch).audio_codes.to(torch.long).cpu()
             return [codes_BNT[j].transpose(0, 1) for j in range(len(batch_items))]
 
         return self.bucketed_batch(

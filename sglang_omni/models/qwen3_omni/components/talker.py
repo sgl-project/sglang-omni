@@ -14,7 +14,6 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.runtime_context import get_context, get_schedule
-from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import add_prefix
@@ -31,6 +30,10 @@ from sglang_omni.models.qwen3_omni.hf_config import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -598,7 +601,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         forward_batch: ForwardBatch,
     ):
         """
-        Forward through the code predictor (matches vLLM-Omni's mtp_block pattern).
+        Forward through the code predictor (MTP block).
 
         Args:
             inputs_embeds: [batch, seq_len, hidden_size] or [total_tokens, hidden_size]
@@ -935,7 +938,7 @@ class Qwen3OmniTalker(nn.Module):
         self.repetition_penalties = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.suppress_mask = torch.zeros(
@@ -947,12 +950,12 @@ class Qwen3OmniTalker(nn.Module):
         self.sampling_temperatures = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ps = torch.ones(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ks = torch.full(
@@ -963,7 +966,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         self.sampling_min_ps = torch.zeros(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_seeds = torch.zeros(
@@ -1367,7 +1370,7 @@ class Qwen3OmniTalker(nn.Module):
         pruned_states = hidden_states[last_index]
         next_token_logits, _ = self.codec_head(pruned_states)
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=pruned_states,
         )
 
@@ -1377,8 +1380,10 @@ class Qwen3OmniTalker(nn.Module):
     ) -> LogitsProcessorOutput:
         """Compute codec logits directly for decode/CUDA-graph capture."""
         next_token_logits, _ = self.codec_head(hidden_states)
+        # note (ratish): sglang's sampler divides and softmaxes in the logits' own dtype.
+        # The reference samples from fp32 logits, as sglang's logits processor returns them.
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=hidden_states,
         )
 
@@ -1388,9 +1393,7 @@ class Qwen3OmniTalker(nn.Module):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         batch_size = logits.shape[0]
-        logits = logits.clone()
-
-        penalties = self.repetition_penalties[:batch_size].to(dtype=logits.dtype)
+        penalties = self.repetition_penalties[:batch_size]
         penalized_logits = torch.where(
             logits > 0, logits / penalties, logits * penalties
         )
@@ -1928,26 +1931,16 @@ class Qwen3OmniTalker(nn.Module):
         )
         return result_codes, summed_embeddings
 
-    @torch.no_grad()
     def precompile_kernels_after_loading(self) -> None:
-        """Compile the repetition penalty a request's first sample would compile: one row
-        and several rows are two graphs, as a dimension of 1 specializes."""
-        activations = self.model.codec_embedding.weight
-        for rows in (1, 2):
-            apply_scaling_penalties(
-                torch.zeros(
-                    rows,
-                    self.config.text_config.vocab_size,
-                    device=activations.device,
-                    dtype=activations.dtype,
-                ),
-                torch.ones(
-                    rows,
-                    self.config.text_config.vocab_size,
-                    device=activations.device,
-                    dtype=torch.float32,
-                ),
+        """Compile the repetition penalty a request's first sample would compile, on the
+        float32 logits it receives."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.model.codec_embedding.weight.device,
+                vocab_size=self.config.text_config.vocab_size,
+                penalized_logits_dtype=torch.float32,
             )
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         """Load weights from HuggingFace checkpoint."""

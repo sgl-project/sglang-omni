@@ -25,6 +25,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     FIRST_CHUNK_MS,
     FIRST_CHUNK_SAMPLES,
     HOP_LENGTH,
+    IMAGE_TOKENS,
     LOG_FLOOR_DB,
     SAMPLE_RATE,
     SLIDE_STRIDE_SAMPLES,
@@ -35,6 +36,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     LogMelFilterBank,
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
+    PreparedImageFeatures,
 )
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
 from sglang_omni.preprocessing.cache_key import hash_bytes
@@ -151,6 +153,76 @@ def encoded_image(format: str) -> bytes:
     return encoded.getvalue()
 
 
+def test_prepare_images_and_batch_encoder_preserve_frame_order(
+    state: MiniCPMOPerceptionState,
+) -> None:
+    first_slice = torch.full((3, 2, 3), 1.0)
+    second_slice = torch.full((3, 2, 6), 2.0)
+    third_slice = torch.full((3, 2, 9), 3.0)
+    fourth_slice = torch.full((3, 2, 12), 4.0)
+    first_tgt_sizes = torch.tensor([[1, 1], [1, 2], [1, 3]], dtype=torch.int32)
+    second_tgt_sizes = torch.tensor([[1, 4]], dtype=torch.int32)
+    state.max_slice_nums = 4
+    state.processor.process_image.side_effect = [
+        {
+            "pixel_values": [[first_slice, second_slice, third_slice]],
+            "tgt_sizes": [first_tgt_sizes],
+        },
+        {"pixel_values": [[fourth_slice]], "tgt_sizes": [second_tgt_sizes]},
+    ]
+    all_image_embeds = torch.arange(4 * IMAGE_TOKENS * 4, dtype=torch.float32).reshape(
+        4 * IMAGE_TOKENS, 4
+    )
+    state.image_encoder.return_value = {"image_embeds": all_image_embeds}
+
+    first_image = state.prepare_image(encoded_image("PNG"))
+    second_image = state.prepare_image(encoded_image("JPEG"))
+    image_embeds = state.encode_images((first_image, second_image))
+
+    assert state.processor.process_image.call_count == 2
+    for process_image_call in state.processor.process_image.call_args_list:
+        assert len(process_image_call.args) == 1
+        assert len(process_image_call.args[0]) == 1
+        assert process_image_call.kwargs == {"max_slice_nums": 4}
+    state.image_encoder.assert_called_once()
+    encoder_call = state.image_encoder.call_args
+    assert encoder_call is not None
+    for actual, expected in zip(
+        encoder_call.kwargs["pixel_values"],
+        [first_slice, second_slice, third_slice, fourth_slice],
+        strict=True,
+    ):
+        torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(
+        encoder_call.kwargs["tgt_sizes"],
+        torch.cat([first_tgt_sizes, second_tgt_sizes]),
+    )
+    torch.testing.assert_close(image_embeds[0], all_image_embeds[: 3 * IMAGE_TOKENS])
+    torch.testing.assert_close(image_embeds[1], all_image_embeds[3 * IMAGE_TOKENS :])
+
+
+def test_encode_images_empty_skips_image_encoder(
+    state: MiniCPMOPerceptionState,
+) -> None:
+    assert state.encode_images(()) == ()
+    state.image_encoder.assert_not_called()
+
+
+def test_encode_images_rejects_output_row_mismatch(
+    state: MiniCPMOPerceptionState,
+) -> None:
+    prepared_image = PreparedImageFeatures(
+        pixel_values=[torch.zeros((3, 2, 3))],
+        tgt_sizes=torch.tensor([[1, 1]], dtype=torch.int32),
+    )
+    state.image_encoder.return_value = {
+        "image_embeds": torch.zeros((IMAGE_TOKENS - 1, 4))
+    }
+
+    with pytest.raises(AssertionError):
+        state.encode_images((prepared_image,))
+
+
 @pytest.mark.parametrize(
     ("encoded", "error", "match", "pixel_limit"),
     [
@@ -176,7 +248,7 @@ def test_reject_frame_before_processor(
     else:
         pass
     with pytest.raises(error, match=match):
-        state.encode_image(encoded)
+        state.prepare_image(encoded)
     state.processor.process_image.assert_not_called()
 
 

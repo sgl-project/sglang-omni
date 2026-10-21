@@ -34,17 +34,23 @@ class RecordingSessionClient:
         self,
         request: OmniRequest,
         *,
-        stages: list[str],
+        stages: list[str] | None = None,
+        graph: object | None = None,
         limits: SessionLimits,
         session_id: str,
     ) -> SessionIdentity:
-        assert stages == ["perception", "thinker", "talker", "code2wav"]
+        assert stages is None and graph is None
         self.identity = SessionIdentity(session_id)
         self.output_queue = asyncio.Queue()
         return self.identity
 
     async def append_session(
-        self, identity: SessionIdentity, chunk: TimedChunk
+        self,
+        identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> None:
         assert identity == self.identity
         self.chunks.append(chunk)

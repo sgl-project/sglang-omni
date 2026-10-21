@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from PIL import Image
 from pydantic import JsonValue
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.mem_cache.kv_cache_dtype import configure_kv_cache_dtype
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
@@ -28,6 +30,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     UNIT_SAMPLES,
     LogMelFilterBank,
     MiniCPMOPerceptionState,
+    PreparedImageFeatures,
     StreamingAudioProcessor,
     audio_feature_batch,
 )
@@ -37,13 +40,16 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
-from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
+from sglang_omni.models.minicpm_o.hf_config import (
+    MiniCPMOConfig,
+    register_minicpm_o_hf_config,
+)
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SPEECH_SETTINGS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
-from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -64,6 +70,8 @@ logger = logging.getLogger(__name__)
 WARM_UP_UNITS = 2
 # note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
 FORWARD_FLOOR_MS = 45
+# note (0xtoward): these KV formats store per-block scales, so their bytes per token are not one element size.
+BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -157,21 +165,24 @@ class PerceptionHooks(BatchedSessionHooks):
                 else:
                     pcm, encoded_images = chunk.payload, ()
                 # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
-                image_embeds = []
+                prepared_image_features: list[PreparedImageFeatures] = []
                 for encoded_image in encoded_images:
                     try:
-                        image_embeds.append(state.encode_image(encoded_image))
+                        prepared_image_features.append(
+                            state.prepare_image(encoded_image)
+                        )
                     except (OSError, ValueError, Image.DecompressionBombError) as exc:
                         logger.warning(
                             f"Dropping undecodable frame of unit {chunk.seq}: {exc}"
                         )
+                image_embeds = state.encode_images(tuple(prepared_image_features))
                 waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
                 pending_mel_units.append(
                     PendingMelUnit(
                         payload=payload,
                         state=state,
                         mel_window=state.prepare_audio(waveform),
-                        image_embeds=tuple(image_embeds),
+                        image_embeds=image_embeds,
                     )
                 )
         windows: dict[int, list[PendingMelUnit]] = defaultdict(list)
@@ -258,6 +269,16 @@ class SpeechState:
     clock_ms: float = 0
 
 
+def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
+    """A listening unit carries no codec tokens; only a turn or input end flushes the vocoder."""
+    talker_result = payload.data
+    return bool(
+        talker_result["end_of_turn"]
+        or chunk.eos
+        or (not talker_result["is_listen"] and talker_result["talker_conditions"])
+    )
+
+
 class SpeechHooks(BatchedSessionHooks):
     # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
     gather_window_ms = FORWARD_FLOOR_MS / 2
@@ -278,6 +299,9 @@ class SpeechHooks(BatchedSessionHooks):
     def warm_up_serving_thread(self) -> None:
         self.runtime.warm_up_vocoder()
 
+    def gathers_peers(self, payload: StagePayload, chunk: TimedChunk) -> bool:
+        return vocoder_runs_unit(payload, chunk)
+
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         is_turn_end = [
             append.payload.data["end_of_turn"] or append.chunk.eos for append in appends
@@ -285,11 +309,7 @@ class SpeechHooks(BatchedSessionHooks):
         speaking_indices = [
             index
             for index, append in enumerate(appends)
-            if is_turn_end[index]
-            or (
-                not append.payload.data["is_listen"]
-                and append.payload.data["talker_conditions"]
-            )
+            if vocoder_runs_unit(append.payload, append.chunk)
         ]
 
         def emit(index: int, waveform: np.ndarray | None) -> None:
@@ -419,12 +439,31 @@ def create_thinker_scheduler(
         )
     else:
         text_config = MiniCPMOConfig.from_pretrained(model_path).get_text_config()
+        overrides = server_args_overrides or {}
+        register_minicpm_o_hf_config()
+        # note (0xtoward): SGLang's ModelConfig resolves the engine dtype and its aliases (auto, half, float), so the budget sizes the same elements the engine allocates.
+        model_dtype = ModelConfig(model_path, dtype=overrides.get("dtype", dtype)).dtype
+        cache_format = overrides.get("kv_cache_dtype", "auto")
+        if cache_format in BLOCK_QUANTIZED_KV_CACHE_DTYPES:
+            raise ValueError(
+                "Set thinker.engine.kv_cache_bytes for block-quantized KV caches"
+            )
+        else:
+            pass
+        _, cache_dtype = configure_kv_cache_dtype(
+            server_args_kv_cache_dtype=cache_format,
+            model=None,
+            model_dtype=model_dtype,
+            is_draft_worker=False,
+            is_dflash=False,
+            speculative_draft_attention_backend=None,
+        )
         kv_bytes_per_token = (
             2
             * text_config.num_hidden_layers
             * text_config.num_key_value_heads
             * text_config.head_dim
-            * resolve_dtype(dtype).itemsize
+            * cache_dtype.itemsize
         )
         kv_cache_bytes = kv_cache_tokens * kv_bytes_per_token
         logger.info(
@@ -439,6 +478,7 @@ def create_thinker_scheduler(
         ).total_memory_bytes
         if (
             total_memory_bytes is not None
+            and total_gpu_memory_fraction is not None
             and kv_cache_bytes > total_gpu_memory_fraction * total_memory_bytes
         ):
             raise ValueError(
@@ -469,6 +509,7 @@ def create_speech_scheduler(
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
     dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
     enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
+    enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
@@ -480,7 +521,11 @@ def create_speech_scheduler(
         n_timesteps=n_timesteps,
         prompt_wav=reference_audio,
         enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
         enable_flow_variable_length=False,
+        enable_flow_cuda_graph=False,
+        flow_cuda_graph_capture_shapes=(),
+        packed_dit_cuda_graph_capture_shapes=(),
         reference_workers=1,
         prompt_cache_capacity=max_open_sessions,
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,

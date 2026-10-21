@@ -194,7 +194,7 @@ class BailingMoeV2Attention(nn.Module):
     ) -> torch.Tensor:
         """Attention computation with paged KV cache."""
         attn_output = self.attn(q, k, v, forward_batch)
-        return attn_output
+        return attn_output.flatten(1)
 
     def forward(
         self,

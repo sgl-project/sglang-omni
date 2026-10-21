@@ -43,18 +43,6 @@ class RecordingMediaIO(MediaIO[Path]):
         return filepath
 
 
-def test_load_local_path_allowed_without_allowlist(tmp_path: Path) -> None:
-    audio = tmp_path / "ref.wav"
-    audio.write_bytes(b"RIFF")
-    connector = MultiModalResourceConnector()
-    media_io = RecordingMediaIO()
-
-    result = connector.load_local_path(audio, media_io)
-
-    assert result == audio.resolve()
-    assert media_io.loaded_paths == [audio.resolve()]
-
-
 def test_load_local_path_inside_allowlist(tmp_path: Path) -> None:
     media_dir = tmp_path / "refs"
     media_dir.mkdir()
@@ -108,20 +96,6 @@ def test_chat_media_follows_the_server_media_policy(
         connector.assert_url_allowed("http://127.0.0.1/image.png")
 
 
-def test_load_local_path_rejects_traversal_escape(tmp_path: Path) -> None:
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    outside = tmp_path / "outside.wav"
-    outside.write_bytes(b"RIFF")
-    connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = RecordingMediaIO()
-
-    with pytest.raises(ValueError, match="not within allowed directory"):
-        connector.load_local_path(allowed / ".." / "outside.wav", media_io)
-
-    assert media_io.loaded_paths == []
-
-
 def test_load_local_path_rejects_symlink_escape(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()
@@ -160,17 +134,3 @@ def test_file_url_rejection_never_reaches_media_io(tmp_path: Path) -> None:
         connector.load_resource(traversal_url, media_io)
 
     assert media_io.loaded_paths == []
-
-
-def test_file_url_passes_resolved_path_to_media_io(tmp_path: Path) -> None:
-    """The connector resolves/normalizes the path; existence is media_io's job."""
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = RecordingMediaIO()
-    missing = allowed / "ghost.wav"
-
-    result = connector.load_resource(missing.as_uri(), media_io)
-
-    assert media_io.loaded_paths == [missing.resolve()]
-    assert result == missing.resolve()

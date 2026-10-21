@@ -28,7 +28,13 @@ from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     CausalMaskedDiffWithXvec,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
@@ -206,6 +212,36 @@ class Token2Wav(torch.nn.Module):
         self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).to(
             device
         )
+
+    @torch.inference_mode()
+    def capture_flow_graphs(
+        self,
+        flow_capture_shapes: tuple[tuple[int, int], ...],
+        packed_capture_shapes: tuple[tuple[int, int], ...],
+    ) -> None:
+        """Capture dense steps or compose Flow boundaries around eager packed DiT."""
+        decoder = self.flow.decoder
+        estimator = decoder.estimator
+        if estimator.enable_variable_length and packed_capture_shapes:
+            packed_runner = PackedDiTCudaGraphRunner(
+                estimator.run_packed_blocks,
+                device=self.device,
+                hidden_size=estimator.in_proj.out_features,
+                output_channels=estimator.out_channels,
+                convolution_guard_frames=estimator.blocks[0].conv.kernel_size - 1,
+            )
+            packed_runner.capture(packed_capture_shapes)
+            estimator.packed_graph_runner = packed_runner
+        else:
+            pass
+        runner = FlowCudaGraphRunner(
+            decoder.euler_step,
+            decoder.rand_noise,
+            estimator=estimator,
+            inference_cfg_rate=decoder.inference_cfg_rate,
+        )
+        runner.capture(flow_capture_shapes)
+        decoder.graph_runner = runner
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:

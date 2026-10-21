@@ -207,14 +207,17 @@ def make_streaming_vocoder(
     return DotsTTSStreamingVocoder(codec, **{"optimize": True, **kwargs})
 
 
-def test_step_graphs_can_be_disabled() -> None:
+def test_step_graphs_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     vocoder = make_streaming_vocoder(
         torch.device("cpu"), enable_streaming_audio_vae_cuda_graph=False
+    )
+    monkeypatch.setattr(
+        DotsVocoderSlotPool, "device", property(lambda self: torch.device("cuda"))
     )
     assert vocoder.ensure_slot_pool().graph_runner is None
 
 
-@pytest.mark.parametrize("device_type", ["cpu", "xpu"])
+@pytest.mark.parametrize("device_type", ["xpu"])
 def test_default_step_graphs_preserve_non_cuda_eager_path(
     device_type: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

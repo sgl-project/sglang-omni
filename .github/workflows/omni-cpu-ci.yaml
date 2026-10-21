@@ -100,6 +100,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       test_sha: ${{ steps.meta.outputs.test_sha }}
+      run_intel_cpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_intel_cpu }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -109,7 +110,7 @@ jobs:
           github-token: ${{ github.token }}
           script: |
             // Reruns reuse the original pull_request event payload, so fetch
-            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
+            // the live labels and draft state.
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -130,16 +131,19 @@ jobs:
           echo "PR is draft. Blocking CPU CI."
           exit 1
 
-      - name: Require run-ci label
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
-            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into CPU CI."
-            exit 1
-          fi
-
       - name: Checkout workflow scripts
         uses: actions/checkout@v4
+
+      - name: Resolve CI stages
+        if: ${{ github.event_name == 'pull_request' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+        run: |
+          python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Resolve tested commit
         id: meta
@@ -153,7 +157,7 @@ jobs:
           echo "Tested commit SHA: ${TEST_SHA}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
@@ -165,7 +169,7 @@ jobs:
   cpu-ci:
     name: cpu-ci (unit_test/cpu)
     needs: [check-changes, preflight]
-    if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' }}
+    if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' && needs.preflight.outputs.run_intel_cpu == 'true' }}
     runs-on: [self-hosted, intel-omni-spr]
     timeout-minutes: 90
     env:

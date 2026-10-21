@@ -36,6 +36,36 @@ final class OmniVoiceActivityIntegrationTests: XCTestCase {
         return try SileroVADModelSupport.loadModel(from: directory)
     }
 
+    /// Dictation replaces its frame decider for every recording. Dropping that
+    /// owner must close the stream and return its shared-runtime lease.
+    func testDiscardedRecordingDecidersDoNotExhaustVADWorkers() async throws {
+        let samples = try clip()
+        let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
+        let runtime = OmniSharedModelRuntime(kind: .sileroVAD)
+        _ = try await runtime.acquire(modelDirectory: directory)
+        var completed = 0
+        for round in 1...70 {
+            let detector = ASRSileroStreamingVoiceActivityDetector(omniRuntime: runtime)
+            let decider = RecordingVoiceActivityFrameDecider(
+                mode: .automatic, useCase: .transcription, energyThreshold: 0.01, sileroDetector: detector
+            )
+            let result = await decider.decision(for: ASRVoiceActivityAudioFrame(
+                samples: Array(samples.prefix(1600)), sampleRate: 16_000, startSeconds: 0, endSeconds: 0.1, level: 0.5
+            ))
+            guard result?.source == .silero else {
+                XCTFail("Recording \(round) could not open a Silero stream after prior recording owners were discarded")
+                break
+            }
+            completed += 1
+        }
+        XCTAssertEqual(completed, 70)
+        // This is the only surviving owner: its release must stop the server.
+        await runtime.release()
+        let gone = await ProcessTree.waitUntilNoDescendants(timeoutSeconds: 5)
+        XCTAssertTrue(gone, "Discarded recording detectors retained runtime leases")
+        await runtime.shutdownForApplicationTermination()
+    }
+
     /// The streaming detector, fed in uneven buffers, reports the same
     /// probabilities as MLXAudioVAD fed chunk by chunk.
     func testStreamingDetectorMatchesMLXAudioVAD() async throws {

@@ -164,6 +164,8 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
             return False
 
     class FakeRunner:
+        sliding_window_size: int | None = None
+
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
 

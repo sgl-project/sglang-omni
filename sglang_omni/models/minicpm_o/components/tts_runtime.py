@@ -111,15 +111,15 @@ class MiniCPMOVocoderRuntime:
                 prompt=prompt,
                 base_caches=self.token2wav.open_stream(prompt),
             )
-            self.speakers[reference_key] = speaker
         else:
             pass
-        speaker.session_ids.append(session_id)
         state = MiniCPMOVocoderSessionState(
             speaker=speaker,
             caches=clone_caches(speaker.base_caches),
             pre_lookahead_tokens=self.token2wav.flow.pre_lookahead_len,
         )
+        self.speakers[reference_key] = speaker
+        speaker.session_ids.append(session_id)
         self.sessions[session_id] = state
         return state
 

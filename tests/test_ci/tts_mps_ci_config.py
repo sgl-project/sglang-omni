@@ -48,6 +48,10 @@ MPS_SIMILARITY_MEAN_MIN = {
     "moss": MPS_MOSS_SIMILARITY_MEAN_MIN,
 }
 
+# Note (Jiaxin Deng): a 50-sample similarity mean swings ~0.7 points run to run
+# (same under plain DP2), so the bare worst-of-five floor failed ~1/3 of runs.
+MPS_SIMILARITY_SLACK = 0.97
+
 MINIMUM = "minimum"
 MAXIMUM = "maximum"
 
@@ -80,6 +84,14 @@ def derive_threshold(reference: float, direction: str) -> float:
     if direction == MINIMUM:
         return reference * MPS_SLACK_HIGHER
     return reference * MPS_SLACK_LOWER
+
+
+def similarity_floor(model: str) -> float | None:
+    """Apply CI slack to the stored pre-slack speaker-similarity reference."""
+    reference = MPS_SIMILARITY_MEAN_MIN[model]
+    if reference is None:
+        return None
+    return reference * MPS_SIMILARITY_SLACK
 
 
 def check_mps_performance(
