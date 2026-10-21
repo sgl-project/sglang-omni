@@ -37,10 +37,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from cookbook_order_data import DOWNLOADS_DESC, HF_REPO, ROADMAP_ORDER
+from cookbook_order_data import DOWNLOADS_DESC, ROADMAP_ORDER
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_FILE = REPO_ROOT / "scripts" / "cookbook_order_data.py"
 DEFAULT_TARGET = REPO_ROOT / "docs" / "index.rst"
 
 ROADMAP_SET = frozenset(ROADMAP_ORDER)
@@ -136,7 +135,7 @@ def check_source(path: Path, source: str) -> list[Violation]:
                 "cookbook-order",
                 f"unknown entry '{entry}': add it to ROADMAP_ORDER (roadmap model) or "
                 f"to HF_REPO + DOWNLOADS_DESC (non-roadmap model) in "
-                f"{repo_relative(DATA_FILE)}",
+                f"scripts/cookbook_order_data.py",
             )
         )
 
