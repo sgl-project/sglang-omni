@@ -59,6 +59,9 @@ constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
 constexpr auto kClientPollInterval = std::chrono::milliseconds(50);
 // The status civetweb logs for a request whose client left before its answer.
 constexpr int kClientLeftStatus = 499;
+// The most one disconnect check reads of what a client sent after its request,
+// so a client that keeps sending cannot hold the check.
+constexpr size_t kMaxUnreadBytesPerCheck = 64 * 1024;
 // Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
 // (validate_voxtral_speech_params), each counted as given by the same rule:
 // sampling fields when not null, text fields when not null or "", and the
@@ -287,8 +290,11 @@ int ClientSocket(const mg_connection *connection) {
   return -1;
 }
 
-// Whether the client of client_socket closed it: a client waiting for its
-// answer sends nothing more, so its socket reads as ended or fails only then.
+// Whether the client of client_socket closed it, which its socket shows by
+// reading as ended or failing.
+// Note (Minyi Tang): civetweb keeps no connection alive, so it never serves
+// what a client sends after its request; that is read and dropped here, since
+// bytes left unread would hide the end of the socket from every later check.
 // Note (Minyi Tang): a client that only shuts down its sending side also reads
 // as ended and is treated as gone, as uvicorn treats it for the CUDA server.
 // TCP tells the two apart only once something is written to the socket.
@@ -297,9 +303,20 @@ bool ClientLeft(int client_socket) {
     return false;
   } else {
   }
-  char byte = 0;
-  const ssize_t peeked = recv(client_socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
-  return peeked == 0 || (peeked < 0 && errno != EAGAIN && errno != EINTR);
+  std::array<char, 4096> unread{};
+  size_t dropped_bytes = 0;
+  while (dropped_bytes < kMaxUnreadBytesPerCheck) {
+    const ssize_t received =
+        recv(client_socket, unread.data(), unread.size(), MSG_DONTWAIT);
+    if (received == 0) {
+      return true;
+    } else if (received < 0) {
+      return errno != EAGAIN && errno != EINTR;
+    } else {
+      dropped_bytes += static_cast<size_t>(received);
+    }
+  }
+  return false;
 }
 
 void LogFailure(std::exception_ptr error) {

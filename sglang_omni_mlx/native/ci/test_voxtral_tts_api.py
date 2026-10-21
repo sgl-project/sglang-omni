@@ -129,6 +129,13 @@ def request_states(server: Server) -> dict[str, int]:
     return json.loads(server.request("GET", "/health")[1])["request_states"]
 
 
+def wait_until_running(server: Server) -> None:
+    started_at = time.monotonic()
+    while request_states(server) != {"running": 1}:
+        assert time.monotonic() - started_at < CANCEL_SECONDS
+        time.sleep(0.05)
+
+
 def wait_until_idle(server: Server, timeout_seconds: float = CANCEL_SECONDS) -> None:
     started_at = time.monotonic()
     while request_states(server):
@@ -261,10 +268,17 @@ def test_voxtral_disconnect_stops_a_generation_it_has_not_answered(
 ) -> None:
     """A WAV request kept generating after its client disconnected."""
     with send_speech_request(voxtral_server, {"input": PASSAGE}):
-        started_at = time.monotonic()
-        while request_states(voxtral_server) != {"running": 1}:
-            assert time.monotonic() - started_at < CANCEL_SECONDS
-            time.sleep(0.05)
+        wait_until_running(voxtral_server)
+    wait_until_idle(voxtral_server)
+
+
+def test_voxtral_disconnect_is_seen_past_bytes_sent_after_the_request(
+    voxtral_server: Server,
+) -> None:
+    """Bytes a client sent after its request hid that it then disconnected."""
+    with send_speech_request(voxtral_server, {"input": PASSAGE}) as client:
+        wait_until_running(voxtral_server)
+        client.sendall(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
     wait_until_idle(voxtral_server)
 
 
@@ -408,5 +422,8 @@ def test_voxtral_rejects_invalid_requests(
 
 
 def test_voxtral_server_serves_no_transcriptions(voxtral_server: Server) -> None:
-    status, _ = voxtral_server.post_form({}, None)
+    # Note (Minyi Tang): civetweb answers a path it does not serve without
+    # reading the request's body, and a socket closed with bytes unread is
+    # reset, which can drop the answer; so the request has no body.
+    status, _ = voxtral_server.request("POST", "/v1/audio/transcriptions")
     assert status == 404
