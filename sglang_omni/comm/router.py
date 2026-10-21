@@ -442,6 +442,12 @@ def tensor_devices(obj: object, seen: set[int] | None = None) -> set[str]:
             return {obj.device.type}
         else:
             pass
+        if obj.device.type == "npu":
+            # is_cuda reports True for Ascend NPU tensors (torch_npu patch),
+            # so check the device type directly.
+            return {"npu"}
+        else:
+            pass
         if obj.is_cuda:
             return {"cuda"}
         else:
