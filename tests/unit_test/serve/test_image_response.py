@@ -8,10 +8,14 @@ from PIL import Image
 from sglang_omni.serve.image_response import build_image_response
 
 
-def encode_image(width: int = 64, height: int = 32, output_format: str = "PNG") -> str:
-    buffer = io.BytesIO()
-    Image.new("RGB", (width, height)).save(buffer, format=output_format)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+def encode_image(
+    width_pixels: int = 64, height_pixels: int = 32, output_format: str = "PNG"
+) -> str:
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (width_pixels, height_pixels)).save(
+        image_buffer, format=output_format
+    )
+    return base64.b64encode(image_buffer.getvalue()).decode("ascii")
 
 
 @pytest.mark.parametrize("image_tokens", [0, 1024])

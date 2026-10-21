@@ -14,7 +14,7 @@ An ordinary result carries one image in `image_b64`, several in `images_b64`, an
 
 A UMM result reports these statistics in one `usage` segment whose data contains `image_usage` and the producing `stage_name`. Non-streaming final results expose these fields on the client chunk. A streamed request already received the segment data, so its final result leaves these fields unset; the streamed usage chunk identifies the producing stage.
 
-UMM image segments can use `InlineImage` data, whose byte count and SHA-256 must match its inline data URL. Token statistics extracted from a non-streaming UMM usage segment are validated strictly and cannot be negative.
+UMM image segments can use `InlineImage` data, whose byte count and SHA-256 must match its inline data URL. Producer token statistics in ordinary results and non-streaming UMM usage segments are validated strictly and cannot be negative.
 
 This module supplies the shared response builder and client usage carriers. Model integrations supply token statistics and register the Images endpoints. No model implementation is included.
 

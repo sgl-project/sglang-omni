@@ -48,20 +48,25 @@ def build_image_response(
     images_b64: list[str], image_usage: ImageUsageDict | None = None
 ) -> ImageGenerationResponse:
     """Return actual output format, common size, and producer token statistics."""
-    images = []
-    sizes = []
+    image_responses: list[ImageGenerationData] = []
+    image_dimensions_pixels: list[tuple[int, int]] = []
     for encoded_image in images_b64:
         with Image.open(
             io.BytesIO(base64.b64decode(encoded_image, validate=True))
         ) as image:
             output_format = image.format.lower() if image.format is not None else None
-            sizes.append(image.size)
-        images.append(
+            image_dimensions_pixels.append(image.size)
+        image_responses.append(
             ImageGenerationData(b64_json=encoded_image, output_format=output_format)
         )
-    usage = ImageUsage(**(image_usage or {}), image_count=len(images))
-    if sizes and all(size == sizes[0] for size in sizes):
-        usage.width, usage.height = sizes[0]
+    usage = ImageUsage(**(image_usage or {}), image_count=len(image_responses))
+    if image_dimensions_pixels and all(
+        dimensions_pixels == image_dimensions_pixels[0]
+        for dimensions_pixels in image_dimensions_pixels
+    ):
+        usage.width, usage.height = image_dimensions_pixels[0]
     else:
         pass
-    return ImageGenerationResponse(created=int(time.time()), data=images, usage=usage)
+    return ImageGenerationResponse(
+        created=int(time.time()), data=image_responses, usage=usage
+    )

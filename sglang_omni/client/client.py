@@ -848,7 +848,7 @@ class Client:
                 pass
             images_b64 = result.get("images_b64")
             if isinstance(images_b64, list) and all(
-                isinstance(item, str) for item in images_b64
+                isinstance(encoded_image, str) for encoded_image in images_b64
             ):
                 chunk.images_b64 = images_b64
             else:
@@ -859,7 +859,7 @@ class Client:
             else:
                 pass
             chunk.usage = Client.build_usage_info(result)
-            chunk.image_usage = result.get("image_usage")
+            chunk.image_usage = parse_image_usage(result.get("image_usage"))
             diarization = result.get("diarization")
             chunk.diarization = (
                 None

@@ -212,6 +212,7 @@ def test_final_result_reads_image_usage_from_its_usage_segment(streamed: bool) -
     assert streamed_chunk.segment.data == usage_data
 
 
+@pytest.mark.parametrize("result_format", ["ordinary", "umm"])
 @pytest.mark.parametrize(
     "usage_data",
     [
@@ -226,11 +227,35 @@ def test_final_result_reads_image_usage_from_its_usage_segment(streamed: bool) -
         },
     ],
 )
-def test_invalid_usage_segment_is_rejected(usage_data: object) -> None:
+def test_invalid_image_usage_is_rejected(
+    usage_data: object, result_format: Literal["ordinary", "umm"]
+) -> None:
+    """Invalid producer counts must not become successful ordinary results."""
+    if result_format == "umm":
+        result = result_with_image_usage(usage_data, False)
+    elif isinstance(usage_data, dict):
+        result = usage_data
+    else:
+        result = {"image_usage": usage_data}
     with pytest.raises(ValueError):
-        Client.default_result_builder(
-            "request", result_with_image_usage(usage_data, False)
-        )
+        Client.default_result_builder("request", result)
+
+
+@pytest.mark.parametrize(
+    "image_usage",
+    [
+        None,
+        {},
+        IMAGE_USAGE,
+        {"input_tokens_details": {"text_tokens": None, "image_tokens": 4}},
+    ],
+)
+def test_ordinary_result_preserves_image_usage(
+    image_usage: ImageUsageDict | None,
+) -> None:
+    chunk = Client.default_result_builder("request", {"image_usage": image_usage})
+    assert chunk.image_usage == image_usage
+    assert chunk.to_dict()["image_usage"] == image_usage
 
 
 def test_usage_without_token_statistics_remains_unavailable() -> None:
