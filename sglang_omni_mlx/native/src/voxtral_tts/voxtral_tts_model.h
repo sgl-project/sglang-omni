@@ -13,8 +13,8 @@
 
 #include "common/layers.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "qwen3_asr/qwen3_decoder.h"
 #include "voxtral_tts/voxtral_tts_codec.h"
 #include "voxtral_tts/voxtral_tts_tokenizer.h"
 
