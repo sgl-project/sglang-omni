@@ -1,0 +1,20 @@
+exit 65
+DesignTourUITests.testAnUnsentRecordingSurvivesARelaunchAndTheKeyboardRetrySendsIt passed 98.058 s
+DesignTourUITests.testChangedFieldAfterHandoffOffersCopy passed 55.849 s
+DesignTourUITests.testConsecutiveDictationsAreSeparatedByOneSpace passed 57.229 s
+DesignTourUITests.testDesignTour passed 120.793 s
+DesignTourUITests.testDeveloperModePromptReachesTheMacOnlyWhileOnAndResets passed 130.543 s
+DesignTourUITests.testExternalKeyboardWarmupCancelThenRecord failed 74.517 s
+DesignTourUITests.testFirstHandoffInsertsIntoSameField passed 61.999 s
+DesignTourUITests.testFirstHandoffWithAQuickReturnStillInserts passed 63.053 s
+DesignTourUITests.testHandoffScreenShowsHowToGoBackAndHowToSkipIt passed 131.183 s
+DesignTourUITests.testHoldingTheMicAndSlidingToAPillTranslatesOneRecording passed 78.173 s
+DesignTourUITests.testKeyboardShowsOnlyEnabledLanguages passed 51.724 s
+DesignTourUITests.testPenWritesEditsTheLastResultOrTheSelectionWithOneUndo passed 71.963 s
+DesignTourUITests.testQuickReturnAfterARelaunchWithSavedStateStillInserts passed 89.199 s
+DesignTourUITests.testRecordingShowsOnlyTheMicTheCaptionAndCancel passed 54.549 s
+DesignTourUITests.testRecordingSurvivesFifteenSecondsInTheBackgroundAfterHandoff passed 135.571 s
+DesignTourUITests.testSettingsDictationRowsAlign failed 164.049 s
+DesignTourUITests.testUndoTakesBackAJustDictatedResult passed 69.461 s
+DesignTourUITests.testUnpairedScreenAccessibilityQueryReturns passed 6.111 s
+18 tests: 16 passed, 2 failed, 1514.0 s

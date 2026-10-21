@@ -1,0 +1,12 @@
+{
+  "body": {
+    "asrMs": 1351,
+    "enhanceMs": 2900,
+    "enhanced": true,
+    "id": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+    "mode": "dictate",
+    "rawText": "嗯，那个，我们明天下午三点开会，讨论一下新版本的发布计划。",
+    "text": "嗯，那个，我们明天下午三点开会，讨论一下新版本的发布计划。"
+  },
+  "status": 200
+}
