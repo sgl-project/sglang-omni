@@ -92,4 +92,186 @@ final class LocalAPIRouterTests: XCTestCase {
         XCTAssertEqual(status(router.route(request("GET", "/v1/capabilities", token: nil))), 401)
         XCTAssertEqual(status(router.route(request("POST", "/v1/capabilities"))), 405)
     }
+
+    // MARK: Compose
+
+    private func composeBody(
+        mode: String = "dictate",
+        targetLanguage: String? = nil,
+        selectedText: String? = nil,
+        contextBefore: String? = nil,
+        contextAfter: String? = nil,
+        style: String? = nil,
+        vocabulary: [String]? = nil,
+        languageVariants: [String]? = nil,
+        omitLanguageVariants: Bool = false,
+        styleExamples: Any? = nil,
+        sendStyleExamples: Bool = false,
+        audio: String = Data([9, 8, 7]).base64EncodedString(),
+        contentType: String = "audio/wav"
+    ) throws -> Data {
+        var options: [String: Any] = ["mode": mode]
+        options["targetLanguage"] = targetLanguage
+        options["selectedText"] = selectedText ?? ""
+        options["contextBefore"] = contextBefore ?? ""
+        options["contextAfter"] = contextAfter ?? ""
+        options["style"] = style ?? "automatic"
+        options["vocabulary"] = vocabulary ?? []
+        if !omitLanguageVariants {
+            options["languageVariants"] = languageVariants ?? []
+        }
+        if sendStyleExamples {
+            options["styleExamples"] = styleExamples ?? NSNull()
+        }
+        let body: [String: Any] = ["audio": audio, "contentType": contentType, "options": options]
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    private func composeRequest(_ body: Data, contentType: String = "application/json") -> LocalAPIHTTPRequest {
+        request("POST", "/v1/compose", contentType: contentType, body: body)
+    }
+
+    func testComposeRoutesDecodedRequest() throws {
+        let route = router.route(composeRequest(try composeBody(
+            mode: "translate",
+            targetLanguage: "zh-Hans",
+            selectedText: "hello",
+            style: "formal",
+            vocabulary: ["Voxt"]
+        )))
+
+        guard case let .compose(compose) = route else {
+            return XCTFail("expected .compose, got \(route)")
+        }
+        XCTAssertEqual(compose.audio, Data([9, 8, 7]))
+        XCTAssertEqual(compose.fileExtension, "wav")
+        XCTAssertEqual(compose.options.mode, .translate)
+        XCTAssertEqual(compose.options.targetLanguage, "zh-Hans")
+        XCTAssertEqual(compose.options.selectedText, "hello")
+        XCTAssertEqual(compose.options.style, .formal)
+        XCTAssertEqual(compose.options.vocabulary, ["Voxt"])
+    }
+
+    func testComposeRejectsUnauthorizedAndWrongMethod() throws {
+        XCTAssertEqual(status(router.route(request("POST", "/v1/compose", token: nil))), 401)
+        XCTAssertEqual(status(router.route(request("GET", "/v1/compose"))), 405)
+    }
+
+    func testComposeRejectsNonJSONAndBrokenBodies() throws {
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(), contentType: "audio/wav"))), 415)
+        XCTAssertEqual(status(router.route(composeRequest(Data("not json".utf8)))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(audio: "%%%not-base64%%%")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(audio: "")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(contentType: "text/plain")))), 415)
+    }
+
+    func testComposeRejectsUnknownEnums() throws {
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "summarize")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(style: "playful")))), 400)
+    }
+
+    func testComposeEnforcesModeRequirements() throws {
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "translate")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "translate", targetLanguage: "klingon")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "translate", targetLanguage: "zz")))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "translate", targetLanguage: String(repeating: "a", count: 65))))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "edit")))), 400)
+        if case .reject = router.route(composeRequest(try composeBody(mode: "edit", selectedText: "keep this"))) {
+            XCTFail("edit with a selection must pass routing")
+        }
+        if case .reject = router.route(composeRequest(try composeBody(mode: "translate", targetLanguage: "zh-Hans"))) {
+            XCTFail("translate with a BCP-47 tag must pass routing")
+        }
+    }
+
+    func testComposeEnforcesSizeLimits() throws {
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(mode: "edit", selectedText: String(repeating: "a", count: 8_001))))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(contextBefore: String(repeating: "a", count: 2_001))))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(contextAfter: String(repeating: "a", count: 2_001))))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(vocabulary: Array(repeating: "term", count: 201))))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(vocabulary: [String(repeating: "a", count: 101)])))), 400)
+    }
+
+    func testComposeAcceptsOneVariantPerLanguageBase() throws {
+        if case .reject = router.route(composeRequest(try composeBody(
+            languageVariants: ["en-US", "zh-Hans", "es-MX", "fr-CA", "pt-BR"]
+        ))) {
+            XCTFail("one variant per base must pass")
+        }
+    }
+
+    func testComposeRejectsInvalidLanguageVariants() throws {
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(languageVariants: ["en-US", "klingon"])))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(languageVariants: ["banana"])))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(languageVariants: ["en-US", "en-GB"])))), 400)
+        XCTAssertEqual(status(router.route(composeRequest(try composeBody(languageVariants: ["zh-Hans", "zh-Hant"])))), 400)
+    }
+
+    private func rejection(_ route: LocalAPIRoute) -> String? {
+        guard case let .reject(response) = route,
+              let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: String] else { return nil }
+        return object["error"]
+    }
+
+    private func stylePair(_ before: String, _ after: String, extra: String? = nil) -> [String: Any] {
+        var pair: [String: Any] = ["before": before, "after": after]
+        if let extra { pair["label"] = extra }
+        return pair
+    }
+
+    func testComposeAbsentStyleExamplesDecodesEmpty() throws {
+        guard case let .compose(compose) = router.route(composeRequest(try composeBody())) else {
+            return XCTFail("a request without styleExamples must still route")
+        }
+        XCTAssertEqual(compose.options.styleExamples, [])
+    }
+
+    func testComposeAcceptsEightDifferentStyleExamples() throws {
+        let examples = (1...8).map { stylePair("Send file \($0).", "Send the file \($0).") }
+        guard case let .compose(compose) = router.route(composeRequest(try composeBody(styleExamples: examples, sendStyleExamples: true))) else {
+            return XCTFail("eight examples must route")
+        }
+        XCTAssertEqual(compose.options.styleExamples.count, 8)
+        XCTAssertEqual(compose.options.styleExamples[0].before, "Send file 1.")
+        XCTAssertEqual(compose.options.styleExamples[0].after, "Send the file 1.")
+    }
+
+    func testComposeRejectsInvalidStyleExamples() throws {
+        let ninth = (1...9).map { stylePair("Send file \($0).", "Send the file \($0).") }
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: ninth, sendStyleExamples: true)))), "Use at most 8 personal style examples.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair("", "Cheers")], sendStyleExamples: true)))), "A personal style example must be 1 to 120 characters.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair(String(repeating: "a", count: 121), "b")], sendStyleExamples: true)))), "A personal style example must be 1 to 120 characters.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair(" \n\t ", "Cheers")], sendStyleExamples: true)))), "A personal style example must not be blank.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair("Thanks", "Thanks")], sendStyleExamples: true)))), "The personal style example texts must differ.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair("at 3", "at 4")], sendStyleExamples: true)))), "Personal style examples must keep the same digit sequences.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair("$50", "fifty")], sendStyleExamples: true)))), "Personal style examples must keep the same digit sequences.")
+        let duplicated = stylePair("Thanks, I'll send Alice the file at 3.", "Cheers — I'll send Alice the file at 3.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [duplicated, duplicated], sendStyleExamples: true)))), "Personal style examples must not repeat.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [stylePair("Thanks", "Cheers", extra: "habit")], sendStyleExamples: true)))), "The personal style request has invalid fields.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: "Cheers", sendStyleExamples: true)))), "The personal style request has invalid fields.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: NSNull(), sendStyleExamples: true)))), "The personal style request has invalid fields.")
+        XCTAssertEqual(rejection(router.route(composeRequest(try composeBody(styleExamples: [["before": 1, "after": "Cheers"]], sendStyleExamples: true)))), "The personal style request has invalid fields.")
+    }
+
+    func testComposeAcceptsOmittedLanguageVariants() throws {
+        if case .reject = router.route(composeRequest(try composeBody(omitLanguageVariants: true))) {
+            XCTFail("requests without languageVariants must keep working")
+        }
+    }
+
+
+    func testComposeLanguageFollowsTheDictationRule() throws {
+        func language(_ value: Any?) throws -> LocalAPIRoute {
+            var body = try JSONSerialization.jsonObject(with: try composeBody()) as! [String: Any]
+            body["language"] = value
+            return router.route(composeRequest(try JSONSerialization.data(withJSONObject: body)))
+        }
+        guard case let .compose(settings) = try language(nil),
+              case let .compose(automatic) = try language("auto"),
+              case let .compose(chinese) = try language("Chinese") else { return XCTFail("expected compose routes") }
+        XCTAssertEqual(settings.language, .userSettings)
+        XCTAssertEqual(automatic.language, .request(nil))
+        XCTAssertEqual(chinese.language, .request("Chinese"))
+        XCTAssertEqual(status(try language("en\"; x")), 400)
+    }
 }

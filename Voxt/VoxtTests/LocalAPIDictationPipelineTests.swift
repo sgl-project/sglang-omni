@@ -199,4 +199,196 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
         wav += Data("data".utf8) + littleEndian(dataBytes) + Data(count: Int(dataBytes))
         return wav
     }
+
+    // MARK: Compose
+
+    private var composeOptions: LocalAPIComposeOptions {
+        LocalAPIComposeOptions(
+            mode: .translate,
+            targetLanguage: "en",
+            selectedText: "",
+            contextBefore: "",
+            contextAfter: "",
+            style: .automatic,
+            vocabulary: []
+        )
+    }
+
+    private func makeComposeRequest(_ options: LocalAPIComposeOptions? = nil) -> LocalAPIComposeRequest {
+        LocalAPIComposeRequest(
+            audio: Data([9, 8, 7]),
+            fileExtension: "m4a",
+            options: options ?? composeOptions
+        )
+    }
+
+    func testComposeTranslateRunsModelAndReportsMode() async throws {
+        var composed: [(String, LocalAPIComposeOptions)] = []
+        let pipeline = makePipeline()
+        pipeline.composeHandler = { text, options in
+            composed.append((text, options))
+            return "Tomorrow at three, meeting about the release."
+        }
+
+        let response = await pipeline.runCompose(makeComposeRequest())
+
+        XCTAssertEqual(response.status, 200)
+        let body = try json(response)
+        XCTAssertEqual(body["text"] as? String, "Tomorrow at three, meeting about the release.")
+        XCTAssertEqual(body["rawText"] as? String, "嗯 那个 明天下午三点开会")
+        XCTAssertEqual(body["mode"] as? String, "translate")
+        XCTAssertEqual(composed.count, 1)
+        XCTAssertEqual(composed.first?.1.mode, .translate)
+        XCTAssertEqual(composed.first?.0, "嗯 那个 明天下午三点开会")
+        XCTAssertEqual(recorded.count, 1)
+        XCTAssertEqual(recorded.first?.mode, .translate)
+        XCTAssertTrue(enhancedInputs.isEmpty, "compose must not run the plain enhancement path")
+    }
+
+    func testRejectedEditReturnsNotAppliedWithoutFinalizingOrRecordingSelection() async throws {
+        let selection = "The server has a cash limit."
+        let pipeline = makePipeline()
+        pipeline.composeHandler = { _, options in
+            try await LocalAPIComposePrompt.compose(rawTranscription: "Fix cash to cash.", options: options) { _ in
+                "The server has a cash to cash limit."
+            }
+        }
+        var options = composeOptions
+        options.mode = .edit
+        options.selectedText = selection
+        let response = await pipeline.runCompose(makeComposeRequest(options))
+        XCTAssertEqual(response.status, 200)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertEqual(json["status"] as? String, "not_applied")
+        XCTAssertEqual(json["message"] as? String, "Couldn't apply that edit")
+        XCTAssertEqual(json["text"] as? String, selection)
+        XCTAssertEqual(json["mode"] as? String, "edit")
+        XCTAssertTrue(recorded.isEmpty)
+    }
+
+    func testComposeModelFailureReturns503WithoutFakeSuccess() async throws {
+        struct Unavailable: LocalizedError { var errorDescription: String? { "No text model is selected." } }
+        let pipeline = makePipeline()
+        pipeline.composeHandler = { _, _ in throw Unavailable() }
+
+        let response = await pipeline.runCompose(makeComposeRequest())
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertEqual(try json(response)["error"] as? String, "No text model is selected.")
+        XCTAssertTrue(recorded.isEmpty, "a failed compose must not be recorded as a success")
+    }
+
+    func testComposeWithoutModelHandlerFailsClosedForNonDictateModes() async throws {
+        let pipeline = makePipeline()
+
+        let response = await pipeline.runCompose(makeComposeRequest())
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertTrue(recorded.isEmpty)
+    }
+
+    func testComposeEmptyModelOutputFailsClosed() async throws {
+        let pipeline = makePipeline()
+        pipeline.composeHandler = { _, _ in "  \n " }
+
+        let response = await pipeline.runCompose(makeComposeRequest())
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertTrue(recorded.isEmpty)
+    }
+
+    func testDictateDiscardsCleanupThatChangesTranscriptScript() async throws {
+        // Qwen3.5-4B translated these Chinese ASR results.
+        let examples = [
+            ("第一，保存报告；第二，发送邮件；第三，关闭窗口。", "First, save the report. Second, send the email. Third, close the window."),
+            ("第一，检查门锁。第二，关掉灯。", "First, check the door lock. Second, turn off the lights."),
+            ("Check the door lock.", "检查门锁。")
+        ]
+        for (raw, cleaned) in examples {
+            let pipeline = makePipeline(transcript: .success(raw))
+            pipeline.composeHandler = { _, _ in cleaned }
+            let response = await pipeline.runCompose(makeComposeRequest(.init()))
+            XCTAssertEqual(response.status, 200)
+            XCTAssertEqual(try json(response)["text"] as? String, raw)
+            XCTAssertEqual(recorded.last?.text, raw)
+        }
+    }
+
+    func testScriptGuardPreservesSameScriptMixedTextAndExplicitTranslation() async throws {
+        for (raw, cleaned) in [("今天用 Voxt 写报告。", "今天用 Voxt 写报告。"), ("um call Alex", "Call Alex."), ("下午三点。", "下午三点！")] {
+            let pipeline = makePipeline(transcript: .success(raw))
+            pipeline.composeHandler = { _, _ in cleaned }
+            let response = await pipeline.runCompose(makeComposeRequest(.init()))
+            XCTAssertEqual(try json(response)["text"] as? String, cleaned)
+        }
+        let pipeline = makePipeline(transcript: .success("检查门锁。"))
+        pipeline.composeHandler = { _, _ in "Check the door lock." }
+        let response = await pipeline.runCompose(makeComposeRequest(composeOptions))
+        XCTAssertEqual(try json(response)["text"] as? String, "Check the door lock.")
+    }
+
+    func testComposeDictateAlwaysUsesTheModelPath() async throws {
+        var composed: [(String, LocalAPIComposeOptions)] = []
+        let pipeline = makePipeline(transcript: .success("um clean up this text"))
+        pipeline.composeHandler = { text, options in
+            composed.append((text, options))
+            return "Cleaned up text."
+        }
+
+        var dictateOptions = composeOptions
+        dictateOptions.mode = .dictate
+        dictateOptions.targetLanguage = nil
+        let response = await pipeline.runCompose(makeComposeRequest(dictateOptions))
+
+        XCTAssertEqual(response.status, 200)
+        let body = try json(response)
+        XCTAssertEqual(body["text"] as? String, "Cleaned up text.")
+        XCTAssertEqual(body["mode"] as? String, "dictate")
+        XCTAssertEqual(composed.count, 1, "even a plain compose dictate runs the model path")
+        XCTAssertTrue(enhancedInputs.isEmpty, "compose never takes the legacy enhancement path")
+    }
+
+    func testComposeDictateWithOptionsUsesTheModelPath() async throws {
+        var composed: [(String, LocalAPIComposeOptions)] = []
+        let pipeline = makePipeline()
+        pipeline.composeHandler = { text, options in
+            composed.append((text, options))
+            return "Cleaned up text."
+        }
+
+        var dictateOptions = composeOptions
+        dictateOptions.mode = .dictate
+        dictateOptions.targetLanguage = nil
+        dictateOptions.style = .formal
+        dictateOptions.vocabulary = ["SGLang"]
+        let response = await pipeline.runCompose(makeComposeRequest(dictateOptions))
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(try json(response)["mode"] as? String, "dictate")
+        XCTAssertEqual(composed.count, 1, "non-plain dictate must run the compose path")
+        XCTAssertEqual(composed.first?.1.vocabulary, ["SGLang"])
+        XCTAssertTrue(enhancedInputs.isEmpty, "the plain enhancement prompt must not run for option-carrying dictate")
+    }
+
+    func testComposeDictateFailsClosedWhenTheModelThrows() async throws {
+        struct Boom: Error {}
+        let pipeline = makePipeline(enhanced: .failure(Boom()))
+
+        var dictateOptions = composeOptions
+        dictateOptions.mode = .dictate
+        dictateOptions.targetLanguage = nil
+        let response = await pipeline.runCompose(makeComposeRequest(dictateOptions))
+
+        XCTAssertEqual(response.status, 503, "compose dictate must not fall back to the raw transcript")
+        XCTAssertTrue(recorded.isEmpty)
+    }
+
+    func testComposeSharesTheBusyGuardWithDictations() async throws {
+        let pipeline = makePipeline(busyReason: "Voxt is recording on the Mac.")
+
+        let response = await pipeline.runCompose(makeComposeRequest())
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertTrue(transcribedFiles.isEmpty)
+    }
 }

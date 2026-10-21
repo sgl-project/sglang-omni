@@ -84,11 +84,53 @@ final class LocalAPIRequestHandlerTests: XCTestCase {
         XCTAssertEqual(api["minor"], 0)
         XCTAssertEqual(body["app"] as? String, "Voxt")
         XCTAssertEqual(body["version"] as? String, "2.0")
-        XCTAssertEqual(body["endpoints"] as? [String], ["health", "capabilities", "dictations"])
+        XCTAssertEqual(body["endpoints"] as? [String], [
+            "health",
+            "capabilities",
+            "dictations",
+            "compose",
+            "compose/prompts",
+        ])
         let audio = try XCTUnwrap(body["audio"] as? [String: Any])
         XCTAssertEqual(audio["maxBodyBytes"] as? Int, 4_096)
         XCTAssertEqual(audio["contentTypes"] as? [String], LocalAPIRouter.audioExtensions.keys.sorted())
         let models = try XCTUnwrap(body["models"] as? [String: String])
         XCTAssertEqual(models, ["transcription": "ready", "text": "off"])
+    }
+
+    func testBuiltInPromptsRequireTheTokenAndListEveryMode() async throws {
+        let handler = LocalAPIRequestHandler.make(
+            router: LocalAPIRouter(token: "t", maxBodyBytes: 10), version: "1",
+            modelStatus: Self.readyModels,
+            dictate: { _ in .error(status: 500, "unused") },
+            compose: { _ in .error(status: 500, "unused") })
+        let forbidden = await handler(request("GET", "/v1/compose/prompts", token: "wrong"))
+        XCTAssertEqual(forbidden.status, 401)
+        let wrongMethod = await handler(request("POST", "/v1/compose/prompts"))
+        XCTAssertEqual(wrongMethod.status, 405)
+        let response = await handler(request("GET", "/v1/compose/prompts"))
+        XCTAssertEqual(response.status, 200)
+        let body = try JSONDecoder().decode([String: [String: String]].self, from: response.body)
+        XCTAssertEqual(body["prompts"], LocalAPIComposePrompt.builtInPrompts())
+    }
+
+    func testComposeIsForwarded() async throws {
+        let handler = LocalAPIRequestHandler.make(
+            router: LocalAPIRouter(token: "t", maxBodyBytes: 1_000),
+            version: "1",
+            modelStatus: Self.readyModels,
+            dictate: { @MainActor _ in .json(status: 200, ["text": "x"]) },
+            compose: { @MainActor request in .json(status: 200, ["mode": request.options.mode.rawValue]) }
+        )
+        var compose = request("POST", "/v1/compose")
+        compose.headers["content-type"] = "application/json"
+        compose.body = try JSONSerialization.data(withJSONObject: [
+            "audio": Data([1]).base64EncodedString(),
+            "contentType": "audio/wav",
+            "options": ["mode": "write", "style": "concise", "vocabulary": [], "selectedText": "", "contextBefore": "", "contextAfter": "", "targetLanguage": NSNull()]
+        ])
+        let response = await handler(compose)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: String])
+        XCTAssertEqual(body["mode"], "write")
     }
 }

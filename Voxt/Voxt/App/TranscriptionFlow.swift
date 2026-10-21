@@ -211,4 +211,58 @@ extension AppDelegate {
         }
         return guarded.text
     }
+
+    /// The compose execution path of the Local API: translate, edit, write, and dictations
+    /// that carry options. Unlike enhanceTextForCurrentMode it never falls back to the raw
+    /// text: every unavailable exit throws, and the transcription truncation guard is not
+    /// applied because a much shorter result is a valid outcome of these operations.
+    func composeTextStrictly(_ text: String, instruction: String) async throws -> String {
+        guard let provider = resolvedTranscriptionEnhancementProvider() else {
+            throw LocalAPIError(message: AppLocalization.localizedString(
+                "No text model is available. Choose one in Voxt Settings > Transcription."
+            ))
+        }
+
+        let promptResolution = resolvedEnhancementPrompt(
+            rawTranscription: text,
+            usesAppBranch: false,
+            instructionOverride: instruction
+        )
+        if promptResolution.delivery == .skipEnhancement {
+            throw LocalAPIError(message: AppLocalization.localizedString(
+                "The selected text model is configured to skip enhancement."
+            ))
+        }
+
+        if enhancementMode == .remoteLLM {
+            let context = resolvedRemoteLLMContext(forTranslation: false)
+            guard RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
+                provider: context.provider,
+                stored: remoteLLMConfigurations
+            ) else {
+                throw LocalAPIError(message: AppLocalization.localizedString(
+                    "No text model is available. Choose one in Voxt Settings > Transcription."
+                ))
+            }
+        }
+
+        guard let plan = buildEnhancementExecutionPlan(
+            rawText: text,
+            promptResolution: promptResolution,
+            providerOverride: provider,
+            executionStrategy: TaskLLMStrategyResolver.resolve(
+                taskKind: .transcriptionEnhancement,
+                rawText: text,
+                promptCharacterCount: promptResolution.content.count
+                    + (promptResolution.dictionaryGlossary?.count ?? 0),
+                baseGlossarySelectionPolicy: DictionaryGlossaryPurpose.enhancement.selectionPolicy,
+                capabilities: llmProviderModelCapabilities(for: provider)
+            )
+        ) else {
+            throw LocalAPIError(message: AppLocalization.localizedString(
+                "The selected text model cannot run this operation."
+            ))
+        }
+        return try await executeLLMExecutionPlan(plan)
+    }
 }

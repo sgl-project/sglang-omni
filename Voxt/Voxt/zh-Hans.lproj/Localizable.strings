@@ -1903,6 +1903,9 @@
 "Voxt is recording on the Mac. Try again in a moment." = "Mac 上的 Voxt 正在录音，请稍后再试。";
 "Voxt is recording a meeting on the Mac." = "Mac 上的 Voxt 正在录制会议。";
 "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple 语音识别不能转写录好的音频。请在 Voxt 设置 > 转写 中选择本地或远程模型。";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "没有可用的文本模型。请在 Voxt 设置 > 转写 中选择一个。";
+"The selected text model is configured to skip enhancement." = "所选文本模型设置为跳过增强。";
+"The selected text model cannot run this operation." = "所选文本模型无法执行此操作。";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "补全标点和段落节奏。例如：口语停顿会整理成可读句子。";

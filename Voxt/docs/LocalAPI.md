@@ -33,11 +33,28 @@ Every request needs `Authorization: Bearer <token>`. **Regenerate** issues a new
 | `GET /v1/capabilities` | API version, endpoints, accepted audio types, size limit, and whether the selected transcription and text models are ready |
 | `POST /v1/dictations` | Body: audio bytes. `Content-Type`: `audio/wav`, `audio/x-m4a`, `audio/mp4`, `audio/aac`, `audio/mpeg` or `audio/x-caf`. Add `?enhance=0` to skip the text model, and `?language=auto` (detect) or `?language=English` (a language name) to override your language settings for this recording. Returns `id`, `text`, `rawText`, `enhanced`, `asrMs`, `enhanceMs` |
 
+| `POST /v1/compose` | JSON body: `audio` (base64), `contentType` (one of the audio types above), optional `language` (as for dictations) and `options`. Runs the selected text model with an instruction for `options.mode`. Returns the dictation fields plus `mode`, and `status: "not_applied"` with the unchanged selection when an edit could not be applied |
+| `GET /v1/compose/prompts` | `{"prompts": {"dictate": "…", "translate": "…", "edit": "…", "write": "…"}}`: the built-in instruction of each mode |
+
+`options` of a compose request:
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | `dictate` (clean up the speech), `translate` (needs `targetLanguage`, a BCP-47 tag such as `zh-Hans`), `edit` (apply the spoken instruction to `selectedText`) or `write` (draft from the spoken request) |
+| `selectedText`, `contextBefore`, `contextAfter` | Text at the caller's cursor: up to 8,000 characters selected and 2,000 on each side |
+| `style` | `automatic`, `formal`, `casual` or `concise` |
+| `vocabulary` | Up to 200 preferred spellings, each up to 100 characters |
+| `languageVariants` | At most one per language: `en-US`, `en-GB`, `en-AU`, `en-CA`, `zh-Hans`, `zh-Hant`, `es-ES`, `es-MX`, `fr-FR`, `fr-CA`, `pt-PT`, `pt-BR` |
+| `styleExamples` | Up to 8 `{"before", "after"}` wording pairs of 1 to 120 characters that keep the same digits; used only with `style: automatic` and not for `translate` |
+| `customPrompt` | Replaces the built-in instruction of the mode for this request, up to 4,000 characters |
+
+Every compose mode needs a working text model; without one the request fails with 503 instead of returning the raw transcript.
+
 `capabilities` example:
 
 ```json
 {"api":{"major":1,"minor":0},"app":"Voxt","version":"1.15.0",
- "endpoints":["health","capabilities","dictations"],
+ "endpoints":["health","capabilities","dictations","compose","compose/prompts"],
  "audio":{"contentTypes":["audio/aac","audio/m4a","audio/mp4","audio/mpeg","audio/wav","audio/wave","audio/x-caf","audio/x-m4a","audio/x-wav"],"maxBodyBytes":26214400},
  "models":{"transcription":"ready","text":"off"}}
 ```
@@ -59,7 +76,7 @@ Errors return `{"error": "…"}`.
 | 413 | Body larger than 25 MB |
 | 415 | Unsupported audio type |
 | 422 | No speech detected |
-| 503 | Voxt is recording or in a meeting, or another API dictation is still running |
+| 503 | Voxt is recording or in a meeting, another API dictation is still running, or a compose request has no working text model |
 | 500 | The selected model failed, for example a remote provider could not be reached |
 
 If the text model fails, the request still succeeds with the raw transcript and `"enhanced": false`.

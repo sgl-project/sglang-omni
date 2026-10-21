@@ -132,3 +132,9 @@ nonisolated struct LocalAPIHTTPResponse: Equatable, Sendable {
         }
     }
 }
+
+/// A failure whose message the Local API returns to the client as is.
+struct LocalAPIError: LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
+}

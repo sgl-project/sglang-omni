@@ -20,6 +20,7 @@ struct LocalAPIDictationOutcome: Equatable {
     var enhancementSeconds: TimeInterval?
     var dictionaryHitTerms: [String]
     var dictionaryCorrectedTerms: [String]
+    var mode: LocalAPIComposeMode = .dictate
 }
 
 private struct LocalAPIDictationResponseBody: Encodable {
@@ -29,6 +30,10 @@ private struct LocalAPIDictationResponseBody: Encodable {
     var enhanced: Bool
     var asrMs: Int
     var enhanceMs: Int
+    var mode: LocalAPIComposeMode = .dictate
+    /// "not_applied" when an edit could not be applied; `text` is then the unchanged selection.
+    var status: String?
+    var message: String?
 }
 
 final class LocalAPIDictationPipeline {
@@ -43,6 +48,9 @@ final class LocalAPIDictationPipeline {
     /// Applies dictionary corrections to the final text.
     let finalize: (String) -> LocalAPIFinalText
     let record: (LocalAPIDictationOutcome) -> Void
+    /// Raw transcript → mode-specific result (cleanup, translate, edit, write), using the
+    /// same selected text model through a strict path that never returns raw speech.
+    var composeHandler: ((String, LocalAPIComposeOptions) async throws -> String)?
 
     private var isRunning = false
 
@@ -122,6 +130,107 @@ final class LocalAPIDictationPipeline {
             enhancementSeconds = Date().timeIntervalSince(enhancementStart)
         }
 
+        return finish(
+            mode: .dictate,
+            rawText: rawText,
+            text: text,
+            usedEnhancement: usedEnhancement,
+            transcriptionSeconds: transcriptionSeconds,
+            enhancementSeconds: enhancementSeconds
+        )
+    }
+
+    /// Every compose mode requires a working text model. Dictate restores the ASR text
+    /// when cleanup changes its script; other model failures remain errors.
+    func runCompose(_ request: LocalAPIComposeRequest) async -> LocalAPIHTTPResponse {
+        if let reason = busyReason() {
+            return .error(status: 503, reason)
+        }
+        guard !isRunning else {
+            return .error(status: 503, "Voxt is still working on the previous dictation.")
+        }
+        isRunning = true
+        defer { isRunning = false }
+
+        let audioURL = temporaryDirectory.appendingPathComponent("local-api-\(UUID().uuidString).\(request.fileExtension)")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        do {
+            try request.audio.write(to: audioURL, options: .atomic)
+        } catch {
+            VoxtLog.warning("Local API could not store the audio: \(error.localizedDescription)")
+            return .error(status: 500, error.localizedDescription)
+        }
+        guard isReadableAudio(audioURL) else {
+            return .error(status: 400, "The audio could not be read.")
+        }
+
+        let rawText: String
+        let transcriptionStart = Date()
+        do {
+            rawText = try await transcribe(audioURL, request.language).trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            VoxtLog.warning("Local API compose transcription failed: \(error.localizedDescription)")
+            return .error(status: 500, error.localizedDescription)
+        }
+        let transcriptionSeconds = Date().timeIntervalSince(transcriptionStart)
+
+        guard !rawText.isEmpty else {
+            return .error(status: 422, "No speech detected.")
+        }
+
+        guard let composeHandler else {
+            return .error(status: 503, "No text model is available for this operation.")
+        }
+        let enhancementStart = Date()
+        let text: String
+        do {
+            let composed = try await composeHandler(rawText, request.options)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !composed.isEmpty else {
+                return .error(status: 503, "The text model returned nothing.")
+            }
+            if request.options.mode == .dictate {
+                text = LocalAPIComposePrompt.preservingDictationScript(composed, rawText: rawText)
+                if text != composed {
+                    VoxtLog.warning("Local API dictate cleanup discarded: transcript script changed.")
+                }
+            } else {
+                text = composed
+            }
+        } catch is LocalAPIComposePrompt.EditNotApplied {
+            // No dictionary finalization or history entry: the selection must remain
+            // byte-for-byte unchanged when the edit could not be applied.
+            return .json(status: 200, LocalAPIDictationResponseBody(
+                id: UUID().uuidString, text: request.options.selectedText, rawText: rawText, enhanced: false,
+                asrMs: Int(transcriptionSeconds * 1000),
+                enhanceMs: Int(Date().timeIntervalSince(enhancementStart) * 1000),
+                mode: request.options.mode, status: "not_applied", message: "Couldn't apply that edit"
+            ))
+        } catch {
+            VoxtLog.warning("Local API compose failed: \(error.localizedDescription)")
+            return .error(status: 503, error.localizedDescription)
+        }
+        let enhancementSeconds = Date().timeIntervalSince(enhancementStart)
+
+        return finish(
+            mode: request.options.mode,
+            rawText: rawText,
+            text: text,
+            usedEnhancement: true,
+            transcriptionSeconds: transcriptionSeconds,
+            enhancementSeconds: enhancementSeconds
+        )
+    }
+
+    private func finish(
+        mode: LocalAPIComposeMode,
+        rawText: String,
+        text: String,
+        usedEnhancement: Bool,
+        transcriptionSeconds: TimeInterval,
+        enhancementSeconds: TimeInterval?
+    ) -> LocalAPIHTTPResponse {
         let final = finalize(text)
         let outcome = LocalAPIDictationOutcome(
             id: UUID(),
@@ -131,7 +240,8 @@ final class LocalAPIDictationPipeline {
             transcriptionSeconds: transcriptionSeconds,
             enhancementSeconds: enhancementSeconds,
             dictionaryHitTerms: final.dictionaryHitTerms,
-            dictionaryCorrectedTerms: final.dictionaryCorrectedTerms
+            dictionaryCorrectedTerms: final.dictionaryCorrectedTerms,
+            mode: mode
         )
         record(outcome)
 
@@ -141,7 +251,8 @@ final class LocalAPIDictationPipeline {
             rawText: outcome.rawText,
             enhanced: usedEnhancement,
             asrMs: Int(transcriptionSeconds * 1000),
-            enhanceMs: Int((enhancementSeconds ?? 0) * 1000)
+            enhanceMs: Int((enhancementSeconds ?? 0) * 1000),
+            mode: mode
         ))
     }
 }
