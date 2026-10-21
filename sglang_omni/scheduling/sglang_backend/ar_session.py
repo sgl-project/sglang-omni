@@ -44,12 +44,9 @@ class SessionKV(Protocol):
     holds_kv: bool
 
 
-class SessionSlot(Protocol):
-    kv: SessionKV
-
-
 class SessionTreeCache(Protocol):
-    slots: Mapping[str, SessionSlot]
+    def session_records(self) -> Mapping[str, SessionKV]:
+        pass
 
     def evictable_size(self) -> int:
         pass
@@ -348,7 +345,7 @@ class ARSessionBridge:
         )
         if (
             self.bridge_scheduler.session_controller.get(session_id) is not None
-            or session_id in self.bridge_scheduler.tree_cache.slots
+            or session_id in self.bridge_scheduler.tree_cache.session_records()
         ):
             raise RuntimeError("streaming session close is still pending")
         else:
@@ -530,14 +527,15 @@ class ARSessionBridge:
             session_request is not None
         ), f"session capacity check {request_id} requires a session request"
         cache = self.bridge_scheduler.tree_cache
-        slot = cache.slots.get(unit.session_identity.id)
-        retained_kv_tokens = slot.kv.kv_allocated_len if slot is not None else 0
+        records = cache.session_records()
+        record = records.get(unit.session_identity.id)
+        retained_kv_tokens = record.kv_allocated_len if record is not None else 0
         free_request_slots = self.bridge_scheduler.req_to_token_pool.free_slots
         unallocated_request_count = sum(
             active_append_unit is not unit
             and active_append_unit.session_request is not None
             and not active_append_unit.session_request.kv.holds_kv
-            and active_append_unit.session_identity.id not in cache.slots
+            and active_append_unit.session_identity.id not in records
             for active_append_unit in self.units_by_request_id.values()
         )
         if (
@@ -589,19 +587,19 @@ class ARSessionBridge:
         self, waiting_queue: list[Req], free_request_rows: int
     ) -> int:
         """Count queued units that reuse their slot's row, up to the first request no free row is left for."""
-        slots = self.bridge_scheduler.tree_cache.slots
+        records = self.bridge_scheduler.tree_cache.session_records()
         fresh_request_count = 0
         row_reusing_request_count = 0
         for queued_request in waiting_queue:
             session = queued_request.session
             if session is not None and session.streaming:
-                slot = slots.get(session.session_id)
+                record = records.get(session.session_id)
             else:
-                slot = None
+                record = None
             # note (Junnan Li): An aborted unit does not take its slot's row.
             if (
-                slot is not None
-                and slot.kv.holds_kv
+                record is not None
+                and record.holds_kv
                 and queued_request.to_finish is None
             ):
                 row_reusing_request_count += 1

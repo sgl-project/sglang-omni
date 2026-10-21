@@ -494,9 +494,7 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
     requests = [
         SimpleNamespace(
             data=SimpleNamespace(
-                req=SimpleNamespace(
-                    extend_range=SimpleNamespace(length=2), prefix_indices=[99]
-                ),
+                req=SimpleNamespace(extend_len=2, prefix_len=1),
                 prompt_input_embeds=torch.arange(12, dtype=torch.float32).reshape(3, 4),
             )
         )

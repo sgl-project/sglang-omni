@@ -98,7 +98,13 @@ def sample_semantic_with_ras(
             f"previous_main_tokens must hold the last {RAS_WINDOW_FRAMES} frames; "
             f"got shape {tuple(previous_main_tokens.shape)}"
         )
-    elif sampler is not None:
+    else:
+        pass
+    if semantic_logits.shape[-1] != candidate_token_ids.shape[0]:
+        semantic_logits = semantic_logits.index_select(-1, candidate_token_ids)
+    else:
+        pass
+    if sampler is not None:
         return sample_semantic_candidates(
             semantic_logits,
             candidate_token_ids,
@@ -116,7 +122,7 @@ def sample_semantic_with_ras(
         )
     else:
         pass
-    candidate_logits = semantic_logits.index_select(-1, candidate_token_ids).float()
+    candidate_logits = semantic_logits.float()
     first_draw = candidate_token_ids[
         sample_top_k_top_p(
             candidate_logits,

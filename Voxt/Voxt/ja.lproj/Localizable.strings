@@ -2369,3 +2369,7 @@
 "Open Notes from the main window" = "メインウィンドウから「メモ」を開く";
 "Try Later" = "後で試す";
 "Less" = "折りたたむ";
+
+"API Format" = "API 形式";
+
+"Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自動では OpenAI に Responses を使用し、カスタムエンドポイントに明示した Chat Completions URL を維持します。";

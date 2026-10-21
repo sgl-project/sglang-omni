@@ -66,9 +66,9 @@ struct RemoteLLMRuntimeClient {
         let model = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? provider.suggestedModel
             : configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let endpointValue = provider.usesResponsesAPI
-            ? responsesEndpointValue(provider: provider, endpoint: configuration.endpoint, model: model)
-            : resolvedLLMEndpoint(provider: provider, endpoint: configuration.endpoint, model: model)
+        let endpointValue = configuration.usesResponsesAPI(for: provider)
+            ? responsesEndpointValue(provider: provider, endpoint: configuration.endpoint, model: model, apiFormat: configuration.openAIAPIFormatValue)
+            : resolvedLLMEndpoint(provider: provider, endpoint: configuration.endpoint, model: model, apiFormat: configuration.openAIAPIFormatValue)
         guard let url = URL(string: endpointValue) else {
             throw NSError(
                 domain: "Voxt.RemoteLLM",
@@ -125,15 +125,15 @@ struct RemoteLLMRuntimeClient {
 
         let usesResponsesConversation =
             intent == .rewrite &&
-            provider.usesResponsesAPI &&
+            configuration.usesResponsesAPI(for: provider) &&
             (!request.conversationHistory.isEmpty ||
              !(request.previousResponseID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty)
         let usesChatConversation =
             intent == .rewrite &&
-            !provider.usesResponsesAPI &&
+            !configuration.usesResponsesAPI(for: provider) &&
             !request.conversationHistory.isEmpty
 
-        if provider.usesResponsesAPI {
+        if configuration.usesResponsesAPI(for: provider) {
             let trimmedPreviousResponseID = request.previousResponseID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let inputPayload: Any
             let currentUserInputPayload = prompt
@@ -227,7 +227,7 @@ struct RemoteLLMRuntimeClient {
     ) async throws -> String {
         let input = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return "" }
-        if provider.usesResponsesAPI {
+        if configuration.usesResponsesAPI(for: provider) {
             let result = try await completeResponses(
                 systemPrompt: "",
                 debugInput: input,
@@ -259,7 +259,7 @@ struct RemoteLLMRuntimeClient {
     ) async throws -> [String] {
         let input = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return [] }
-        if provider.usesResponsesAPI {
+        if configuration.usesResponsesAPI(for: provider) {
             let result = try await completeResponses(
                 systemPrompt: "",
                 debugInput: input,

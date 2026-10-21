@@ -36,7 +36,7 @@ families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
 ```bash
 docker build -f docker/xpu.Dockerfile -t sglang-omni:xpu .
@@ -46,7 +46,7 @@ docker run -it --device /dev/dri --shm-size 32g --ipc host --network host sglang
 Built on Intel Deep Learning Essentials with the `+xpu` torch wheels. It deliberately does **not**
 source oneAPI — see [Runtime environment](#runtime-environment-important).
 
-## 🛠️ Option B: Install into an existing XPU env (recommended here)
+## Option B: Install into an existing XPU env (recommended here)
 
 The helper swaps in `pyproject_xpu.toml`, installs with the XPU index, then restores the CUDA one:
 
@@ -87,7 +87,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.21   # the pinned release
+git checkout v0.5.22   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -188,7 +188,7 @@ See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request paramete
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
 Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
-would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
+would replace this project's 5.19.0, and resolving `sox` lifts `numpy` past the
 `numba==0.65.1` ceiling. See
 [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
@@ -570,8 +570,8 @@ so concurrent requests raise throughput almost linearly.
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
-wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu`
+wheel that SGLang v0.5.22 pins (0.4.0); sgl-kernel builds older than 0.3.0 fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800
@@ -594,7 +594,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;

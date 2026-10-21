@@ -32,7 +32,7 @@ import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
-from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
+from sglang.srt.layers.dp_attention import get_dp_tp_group
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.schedule_batch import (
@@ -423,7 +423,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.tp_size = get_parallel().tp_size
         self.pp_rank = 0
         self.pp_size = get_parallel().pp_size
-        self.dp_size = get_parallel().dp_size
         self.attn_cp_size = get_parallel().attn_cp_size
         self.page_size = get_schedule().page_size
         self.enable_overlap = enable_overlap
@@ -498,6 +497,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.sliding_window_size = None
         self.min_free_slots_delayer = None
         self.enable_fpm = False
+        self.enable_skip_finishing_decode = False
 
         from sglang.srt.runtime_context import get_context, get_parallel
 
@@ -817,8 +817,6 @@ class OmniScheduler(Generic[RequestDataT]):
             max_total_num_tokens=(
                 self.max_total_num_tokens * get_parallel().attn_dcp_size
             ),
-            get_last_batch=lambda: self.last_batch,
-            get_running_batch=lambda: self.running_batch,
         )
         empty_queue = types.SimpleNamespace(queue=[], retracted_queue=[])
         self.total_prefill_uncached_tokens = 0
@@ -941,33 +939,22 @@ class OmniScheduler(Generic[RequestDataT]):
     def init_parallel_state(self, tp_worker: ModelWorker) -> None:
         from sglang.srt.runtime_context import get_parallel
 
-        enable_dp_attention = get_parallel().enable_dp_attention
-        (
-            self.attn_tp_rank,
-            self.attn_tp_size,
-            self.attn_dp_rank,
-            self.attn_dp_size,
-        ) = compute_dp_attention_world_info(
-            enable_dp_attention,
-            self.tp_rank,
-            self.tp_size,
-            self.dp_size,
-            self.attn_cp_size,
-        )
+        self.attn_tp_rank = get_parallel().attn_tp_rank
+        self.attn_tp_size = get_parallel().attn_tp_size
+        self.attn_dp_rank = get_parallel().attn_dp_rank
+        self.attn_dp_size = get_parallel().attn_dp_size
 
         self.tp_group = tp_worker.get_tp_group()
         self.tp_cpu_group = self.tp_group.cpu_group
         self.attn_tp_group = tp_worker.get_attention_tp_group()
         self.attn_tp_cpu_group = tp_worker.get_attention_tp_cpu_group()
 
-        if enable_dp_attention:
-            self.cpu_group = self.attn_tp_cpu_group
-            self.entry_rank = self.attn_tp_group.first_rank
-            self.is_entry_rank = self.attn_tp_rank == 0
-        else:
-            self.cpu_group = self.tp_cpu_group
-            self.entry_rank = self.tp_group.first_rank
-            self.is_entry_rank = self.tp_group.rank_in_group == 0
+        # note (ratish): the request-plane group is the attention-TP group under
+        # attention DP and the TP group otherwise; its first rank takes requests.
+        dp_tp_group = get_dp_tp_group()
+        self.cpu_group = dp_tp_group.cpu_group
+        self.entry_rank = dp_tp_group.first_rank
+        self.is_entry_rank = dp_tp_group.rank_in_group == 0
 
         self.pad_input_ids_func = tp_worker.get_pad_input_ids_func()
 
@@ -2088,20 +2075,6 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
-    def stash_chunked_request(self, req: Req) -> None:
-        # note (ratish): a prompt-only-radix request with output keeps its tail out of the tree, so
-        # SGLang's stash would not advance a retracted re-prefill.
-        if req.skip_radix_cache_insert and getattr(
-            req, "_omni_prompt_only_radix", False
-        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req.prefix_indices = self.req_to_token_pool.req_to_token[
-                req.kv.req_pool_idx, : req.extend_range.end
-            ].to(dtype=torch.int64, copy=True)
-            return
-        else:
-            pass
-        _Upstream.stash_chunked_request(self, req)
-
     def stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
         self.forward_ct += 1
@@ -2171,17 +2144,29 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             req_output = mr_output.outputs[rid]
             session_unit = self.active_session_unit(rid)
-            if (
-                session_unit is not None
-                and _get_active_stage() == session_unit.stages[-1]
-            ):
-                assert bridge is not None
-                messages = bridge.stream_messages(rid, sched_req.data, req_output)
-            elif self.stream_output_builder is not None:
-                messages = self.stream_output_builder(rid, sched_req.data, req_output)
+            try:
+                if (
+                    session_unit is not None
+                    and _get_active_stage() == session_unit.stages[-1]
+                ):
+                    assert bridge is not None
+                    messages = bridge.stream_messages(rid, sched_req.data, req_output)
+                elif self.stream_output_builder is not None:
+                    messages = self.stream_output_builder(
+                        rid, sched_req.data, req_output
+                    )
+                else:
+                    continue
+                messages = list(messages)
+            except Exception as error:
+                logger.exception(
+                    f"OmniScheduler stream output failed for request {rid}"
+                )
+                self.emit_request_error(rid, error)
+                self.emit_model_path_end_once(rid, status="error")
+                self.abort(rid)
             else:
-                continue
-            self.stage_stream_messages(rid, messages, step_messages)
+                self.stage_stream_messages(rid, messages, step_messages)
         put_messages(self.outbox, step_messages)
 
     def stage_stream_messages(
@@ -3367,7 +3352,7 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
-        release_kv_cache(req, self.tree_cache)
+        release_kv_cache(req, self.tree_cache, checkpoint=True)
 
     # note (0xtoward): with autograd on, writes to reused buffers leak every step.
     @DynamicGradMode()

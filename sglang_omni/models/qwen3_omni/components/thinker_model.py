@@ -17,7 +17,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     AuxHiddenStateList,
     MRotaryEmbedding,
@@ -28,15 +27,15 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RoutingMethodType,
     RowParallelLinear,
+    StageDeclaration,
     TopK,
     VocabParallelEmbedding,
+    append_stages,
     declare_attn,
     declare_ffn,
     get_moe_impl_class,
     get_rope,
-    make_stages,
     residual_batch,
-    should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
@@ -177,7 +176,6 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.hidden_size = hidden_size
         self.layer_id = layer_id
 
-        attn_tp_rank = get_parallel().attn_tp_rank
         attn_tp_size = get_parallel().attn_tp_size
 
         self.config = config
@@ -209,8 +207,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             self.total_num_kv_heads,
             bias=attention_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("qkv_proj", prefix),
         )
 
@@ -219,8 +216,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             hidden_size,
             bias=attention_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             reduce_results=False,
             prefix=add_prefix("o_proj", prefix),
         )
@@ -459,20 +455,11 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
 
-        return self.forward_normal(
-            hidden_states, should_allreduce_fusion, use_reduce_scatter
-        )
+        return self.forward_normal(hidden_states)
 
-    def forward_normal(
-        self,
-        hidden_states: torch.Tensor,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
-    ) -> torch.Tensor:
+    def forward_normal(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
@@ -480,16 +467,6 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         router_logits, _ = self.gate(hidden_states)
         topk_output = self.topk(hidden_states, router_logits)
         final_hidden_states = self.experts(hidden_states, topk_output)
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        else:
-            pass
-
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
@@ -537,10 +514,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         self.attn_tp_size = get_parallel().attn_tp_size
         self.attn_tp_rank = get_parallel().attn_tp_rank
 
-        # Qwen3MoE all layers are sparse and have no nextn now
-        self.is_layer_sparse = True
-        is_previous_layer_sparse = True
-        is_next_layer_sparse = True
+        attn, ffn = self.stage_facts(config, layer_id)
+        self.is_layer_sparse = ffn.sparse
 
         if self.is_layer_sparse:
             self.mlp = self.sparse_moe_block_cls(
@@ -559,22 +534,22 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
-        self.attn_boundary, self.ffn_boundary = make_stages(
-            (declare_attn(), self.input_layernorm),
-            (
-                declare_ffn(
-                    sparse=self.is_layer_sparse, next_sparse=is_next_layer_sparse
-                ),
-                self.post_attention_layernorm,
-            ),
-            previous=(
-                declare_ffn(
-                    sparse=is_previous_layer_sparse, next_sparse=self.is_layer_sparse
-                )
-                if layer_id != 0
-                else None
-            ),
-            terminal=layer_id == config.num_hidden_layers - 1,
+        self.attn_boundary, self.ffn_boundary = append_stages(
+            (attn, self.input_layernorm),
+            (ffn, self.post_attention_layernorm),
+        )
+
+    @staticmethod
+    def stage_facts(
+        config: Qwen3OmniMoeTextConfig, layer_id: int
+    ) -> tuple[StageDeclaration, StageDeclaration]:
+        """The stages the layer declares, from the config alone (see make_layers)."""
+        # Qwen3MoE all layers are sparse and have no nextn now
+        is_layer_sparse = True
+        is_next_layer_sparse = True
+        return (
+            declare_attn(),
+            declare_ffn(sparse=is_layer_sparse, next_layer_sparse=is_next_layer_sparse),
         )
 
     def forward(
@@ -588,7 +563,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         hidden_states = self.attn_boundary.prepare(
             hidden_states,
             forward_batch,
-            captured_last_layer_outputs=captured_last_layer_outputs,
+            capture_gathered=captured_last_layer_outputs,
             **kwargs,
         )
 
@@ -604,17 +579,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
         hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
 
-        # note (ratish): the block reduces its own output, so it takes the
-        # exit's decision or the sum is taken twice.
-        with self.ffn_boundary.exit(forward_batch) as ffn_exit:
-            hidden_states = self.mlp(
-                hidden_states,
-                forward_batch,
-                ffn_exit.fuse_mlp_allreduce,
-                ffn_exit.mlp_reduce_scatter,
-            )
-
-        return ffn_exit.finish(hidden_states)
+        hidden_states = self.mlp(hidden_states, forward_batch)
+        return self.ffn_boundary.finish(hidden_states, forward_batch)
 
 
 class Qwen3OmniMoeThinkerTextModel(nn.Module):
@@ -652,6 +618,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 alt_stream=alt_stream,
             ),
             prefix=add_prefix("layers", prefix),
+            stage_facts=lambda idx: Qwen3OmniMoeThinkerTextDecoderLayer.stage_facts(
+                config, idx
+            ),
         )
         self.layers = result
         self.start_layer = 0
@@ -706,11 +675,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 )
             else:
                 pass
-        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
-        if hidden_states.shape[0] != 0:
-            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
 
         if len(aux_hidden_states) == 0:
             return hidden_states

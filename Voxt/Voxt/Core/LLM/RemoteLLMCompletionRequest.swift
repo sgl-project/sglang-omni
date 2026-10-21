@@ -27,7 +27,8 @@ extension RemoteLLMRuntimeClient {
                 provider: provider,
                 endpoint: endpointValue,
                 model: model,
-                streamingEnabled: streamingEnabled
+                streamingEnabled: streamingEnabled,
+                apiFormat: configuration.openAIAPIFormatValue
             )
         }
         guard let url = URL(string: resolvedEndpoint) else {

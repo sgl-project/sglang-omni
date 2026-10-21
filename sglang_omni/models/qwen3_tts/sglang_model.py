@@ -66,6 +66,7 @@ from sglang_omni.sampling.sampler_compile import (
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 
@@ -2113,7 +2114,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             and not is_batch_invariant_mode_enabled()
             and not get_bf16_gemm_backend().is_cutedsl()
             and not torch.is_grad_enabled()
-            and o_proj.tp_size == 1
+            and get_group_rank_size(o_proj.tp_group)[1] == 1
             and o_proj.bias is None
             and weight.is_cuda
             and weight.dtype == torch.bfloat16

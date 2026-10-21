@@ -546,7 +546,7 @@ def commit_step_slot(allocator, req_to_token_pool, req):
 
 def test_prompt_only_radix_reuses_prompt_without_caching_tail():
     from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
+    from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
     from sglang.srt.mem_cache.radix_cache import MatchPrefixParams, RadixKey
     from sglang.srt.runtime_context import get_context
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -558,13 +558,13 @@ def test_prompt_only_radix_reuses_prompt_without_caching_tail():
         first = decoding_req(allocator, req_to_token_pool, "first", prompt, [20])
         first.extra_key = "qwen3_tts:prompt:v1"
         first.init_next_round_input(cache)
-        first.set_extend_range(0, len(prompt))
-        maybe_cache_unfinished_req(first, cache)
+        first.extend_end = len(prompt)
+        checkpoint_kv_cache(first, cache)
 
         first.skip_radix_cache_insert = True
         commit_step_slot(allocator, req_to_token_pool, first)
         first.output_ids.append(21)
-        release_kv_cache(first, cache)
+        release_kv_cache(first, cache, checkpoint=True)
 
         second = Req(
             "second",
@@ -581,8 +581,8 @@ def test_prompt_only_radix_reuses_prompt_without_caching_tail():
             )
         )
 
-        assert len(second.prefix_indices) == len(prompt) - 1
-        assert len(tail_match.device_indices) == cache.total_size() == len(prompt)
+        assert second.prefix_len == len(prompt) - 1
+        assert tail_match.device_prefix_len == cache.total_size() == len(prompt)
         assert allocator.available_size() + cache.evictable_size() == total
 
 
@@ -618,9 +618,9 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
         ]
 
         finished.finished_reason = FINISH_MATCHED_TOKEN(matched=31)
-        release_kv_cache(finished, cache)
+        release_kv_cache(finished, cache, checkpoint=True)
         retracted.is_retracted = True
-        release_kv_cache(retracted, cache, is_insert=False)
+        release_kv_cache(retracted, cache, checkpoint=False)
 
         s = OmniScheduler.__new__(OmniScheduler)
         s.page_size = 1
@@ -641,9 +641,8 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
             == total - survivor_slots
         )
         free = allocator.free_pages.tolist()
-        cached = cache.match_prefix(
-            MatchPrefixParams(key=RadixKey([3, 4, 30, 31]))
-        ).device_indices.tolist()
+        match = cache.match_prefix(MatchPrefixParams(key=RadixKey([3, 4, 30, 31])))
+        cached = cache.path_device_indices(match.last_device_node).tolist()
         assert step_slots[0] not in free and step_slots[0] not in cached
         assert free.count(step_slots[1]) == 0 and cached.count(step_slots[1]) == 1
         assert free.count(step_slots[2]) == 1 and step_slots[2] not in cached

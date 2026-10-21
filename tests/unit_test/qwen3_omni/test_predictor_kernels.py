@@ -60,7 +60,7 @@ class PlainLinear(TupleLinear):
 
     quant_method = UnquantizedLinearMethod()
     bias = None
-    tp_size = 1
+    tp_group = None
 
 
 class SwiGLU(nn.Module):
@@ -505,7 +505,9 @@ def test_resolver_keeps_the_plain_path_for_a_partitioned_projection() -> None:
     """
     device = torch.device("cuda")
     talker = build_talker(device, seed=19)
-    talker.code_predictor.model.layers[1].mlp.down_proj.tp_size = 2
+    talker.code_predictor.model.layers[1].mlp.down_proj.tp_group = SimpleNamespace(
+        rank_in_group=0, world_size=2
+    )
     assert (
         resolve_predictor_layer_shape(talker.code_predictor, PREDICTOR_LEN, device)
         is None

@@ -51,7 +51,7 @@ from sglang_omni.scheduling.speaker_cache import (
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams, supports_device_streams
 
 logger = logging.getLogger(__name__)
 
@@ -1989,7 +1989,7 @@ def make_qwen3_tts_scheduler_adapters(
                 codes = torch.cat((ref_code, codes), dim=0)
                 # note (luojiaxuan): the step's ready event was recorded before
                 # this cat, so the prefixed chunk needs its own.
-                if supports_device_streams(codes.device):
+                if has_device_streams(codes.device):
                     data.codes_ready_event = torch.get_device_module(
                         codes.device
                     ).Event()

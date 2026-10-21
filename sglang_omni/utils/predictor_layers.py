@@ -43,6 +43,7 @@ from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.runtime_context import get_exec
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 
 try:  # keep the module importable where Triton is unavailable
     import triton
@@ -76,6 +77,8 @@ MIN_BLOCK_M = 16
 # their head, exceed 255 registers per thread; a second program rereads the weights.
 MAX_FUSED_ROWS = 64
 NUM_WARPS = 4
+# note (ratish): the 16-row block runs faster on two warps; wider blocks spill there.
+QKV_SMALL_BLOCK_WARPS = 2
 NUM_STAGES = 3
 
 
@@ -426,8 +429,8 @@ if HAS_TRITON:
         USE_GDC: tl.constexpr,
     ):
         """One program per activation tile: the weighted input against the tile's gate
-        and up rows with the rows' sum of squares alongside, the norm scale applied to
-        both products, both rounded, then silu(gate) * up rounded once."""
+        and up rows in one dot with the rows' sum of squares alongside, the norm scale
+        applied to both products, both rounded, then silu(gate) * up rounded once."""
         if USE_GDC:
             gdc_wait()
         else:
@@ -435,13 +438,17 @@ if HAS_TRITON:
         pid = tl.program_id(0)
         rm = tl.arange(0, BLOCK_M)
         rk = tl.arange(0, BLOCK_K)
+        rn = tl.arange(0, 2 * BLOCK_N)
         row_mask = rm < rows
         rows_off = row_offsets(x_stride_row, x_stride_t, T, BLOCK_M)
         gate_cols = pid * BLOCK_N + tl.arange(0, BLOCK_N)
-        up_cols = INTERMEDIATE + gate_cols
+        # note (ratish): the tile's gate rows then its up rows as one weight tile, so the
+        # scaled input feeds a single dot; the pinned Triton rebuilds an operand per dot.
+        stacked_cols = pid * BLOCK_N + tl.where(
+            rn < BLOCK_N, rn, INTERMEDIATE - BLOCK_N + rn
+        )
         square = tl.zeros([BLOCK_M, BLOCK_M], dtype=tl.float32)
-        acc_gate = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        acc_up = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, 2 * BLOCK_N], dtype=tl.float32)
         for block in range(0, K // BLOCK_K):
             k0 = block * BLOCK_K
             x = tl.load(
@@ -451,19 +458,18 @@ if HAS_TRITON:
             )
             square = tl.dot(x, tl.trans(x), square)
             scaled = scaled_tile(x, NORM_W, k0, BLOCK_K)
-            acc_gate = tl.dot(
-                scaled, tl.trans(weight_tile(W, gate_cols, k0, K, BLOCK_K)), acc_gate
-            )
-            acc_up = tl.dot(
-                scaled, tl.trans(weight_tile(W, up_cols, k0, K, BLOCK_K)), acc_up
+            acc = tl.dot(
+                scaled, tl.trans(weight_tile(W, stacked_cols, k0, K, BLOCK_K)), acc
             )
         if USE_GDC:
             gdc_launch_dependents()
         else:
             pass
         rstd = libdevice.rsqrt(diagonal(square) / K + norm_eps)
-        gate = (acc_gate * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
-        up = (acc_up * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
+        products = (acc * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
+        gate, up = tl.split(
+            tl.permute(tl.reshape(products, [BLOCK_M, 2, BLOCK_N]), [0, 2, 1])
+        )
         activated = gate / (1.0 + libdevice.exp(-gate)) * up
         offsets = rm[:, None] * INTERMEDIATE + gate_cols[None, :]
         tl.store(OUT + offsets, activated.to(tl.bfloat16), mask=row_mask[:, None])
@@ -566,7 +572,7 @@ def is_plain_bf16_linear(linear: torch.nn.Module) -> bool:
         isinstance(linear.quant_method, UnquantizedLinearMethod)
         and linear.bias is None
         and linear.weight.dtype == torch.bfloat16
-        and linear.tp_size == 1
+        and get_group_rank_size(linear.tp_group)[1] == 1
     )
 
 
@@ -691,6 +697,7 @@ def attention_inputs(
     into the caches at each row's position. x is (rows, hidden) with unit column stride;
     the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
     rows = x.shape[0]
+    block_m = block_rows(rows)
     heads = shape.num_q_heads + 2 * shape.num_kv_heads
     use_gdc = is_arch_support_pdl()
     norm_qkv_rope_store_kernel[(heads, shape.split_qkv)](
@@ -721,10 +728,10 @@ def attention_inputs(
         NUM_Q_HEADS=shape.num_q_heads,
         NUM_KV_HEADS=shape.num_kv_heads,
         SPLIT=shape.split_qkv,
-        BLOCK_M=block_rows(rows),
+        BLOCK_M=block_m,
         BLOCK_K=BLOCK_K,
         USE_GDC=use_gdc,
-        num_warps=NUM_WARPS,
+        num_warps=QKV_SMALL_BLOCK_WARPS if block_m == MIN_BLOCK_M else NUM_WARPS,
         num_stages=NUM_STAGES,
         launch_pdl=use_gdc,
     )

@@ -10,7 +10,10 @@ from sglang_omni.audio.segmentation import (
     OPEN_UTTERANCE,
     UtteranceSegmenter,
 )
-from sglang_omni.models.qwen3_omni.payload_types import UNIT_FORMAT
+from sglang_omni.models.qwen3_omni.payload_types import (
+    INPUT_BYTES_PER_SECOND,
+    UNIT_FORMAT,
+)
 from sglang_omni.models.qwen3_omni.thinker_session import TRUNCATE_FORMAT
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
@@ -33,8 +36,6 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter, SessionContext, SessionHooks
-
-INPUT_BYTES_PER_SECOND = 32000
 
 
 @dataclass(kw_only=True)

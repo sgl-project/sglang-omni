@@ -576,7 +576,7 @@ def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_clos
     scheduler.session_controller = Mock()
     scheduler.session_controller.open.return_value = SimpleNamespace(success=True)
     scheduler.session_controller.get.return_value = None
-    scheduler.tree_cache = SimpleNamespace(slots={})
+    scheduler.tree_cache = SimpleNamespace(session_records=lambda: {})
     scheduler.outbox = queue.Queue()
     scheduler.aborted_request_ids = set()
     adapter = Mock()

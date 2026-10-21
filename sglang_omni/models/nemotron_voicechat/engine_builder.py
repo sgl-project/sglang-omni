@@ -36,6 +36,7 @@ from sglang_omni.models.nemotron_voicechat.talker_scheduler import (
     NemotronTalkerScheduler,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -43,6 +44,7 @@ from sglang_omni.scheduling.engine_factory import (
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 TALKER_SPEAKER = "Aria"
 TALKER_PROMPT_FRAMES = 37
@@ -230,6 +232,14 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
             self.context_length = int(context_length)
         else:
             pass
+
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults = super().generation_defaults(dtype=dtype)
+        if current_platform.is_cuda() and get_visible_gpu_sm_version(self.gpu_id) != 90:
+            defaults["attention_backend"] = "triton"
+        else:
+            pass
+        return defaults
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))

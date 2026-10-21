@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import pickle
 import threading
@@ -15,6 +16,7 @@ import torch
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef, TransportKind
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage import runtime as stage_runtime_module
 from sglang_omni.pipeline.stage.input import AggregatedInput
@@ -593,6 +595,68 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         stream_ref = DataRef.from_dict(msg.data_ref)
         assert stream_ref.metadata["token_id"] == 1
         assert [ref.path for ref in stream_ref.metadata_tensors] == ["hidden"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("legacy_header", [False, True])
+def test_payload_header_round_trips_binary_control_plane(
+    legacy_header: bool,
+) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_stage_payload(
+            request_id="binary-header",
+            data={"hidden": torch.arange(32, dtype=torch.bfloat16).reshape(4, 8)},
+        )
+        payload.request.params = {"seed": 42, "temperature": 0.7}
+        payload.request.metadata = {"ref_audio": b"\x00\xff\x01" * 4096}
+        reference, operation = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        assert isinstance(reference.header, bytes)
+        serialized = reference.to_dict()
+        if legacy_header:
+            serialized["header"] = base64.b64encode(reference.header).decode("ascii")
+        else:
+            pass
+        message = DataReadyMessage(
+            request_id=payload.request_id,
+            from_stage="thinker",
+            to_stage="talker",
+            data_ref=serialized,
+        )
+        received = deserialize_message(serialize_message(message))
+        received_reference = DataRef.from_dict(received.data_ref)
+        assert received_reference.header == reference.header
+        restored = await stage_io.read_payload(
+            relay, payload.request_id, received_reference
+        )
+        assert tensor_equal(restored.data, payload.data)
+        assert restored.request.params == payload.request.params
+        assert restored.request.metadata == payload.request.metadata
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid_header", [42, [], {}, bytearray(b"header")])
+def test_payload_header_rejects_invalid_wire_type(invalid_header) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        reference, operation = await stage_io.write_payload(
+            relay,
+            "invalid-header",
+            make_stage_payload(request_id="invalid-header"),
+            transport=TransportKind.SHM,
+        )
+        serialized = reference.to_dict()
+        serialized["header"] = invalid_header
+        with pytest.raises(TypeError, match="header must be"):
+            DataRef.from_dict(serialized)
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
 
     asyncio.run(run())
 

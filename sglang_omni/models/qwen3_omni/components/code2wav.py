@@ -24,7 +24,7 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavTransformerLayer,
     Qwen3OmniMoeCode2WavTransformerModel,
     Qwen3OmniMoeConvNeXtBlock,
-    SnakeBeta,
+    Qwen3OmniMoeSnakeBeta,
 )
 
 from sglang_omni.models.qwen3_omni.components.codec_state_pool import (
@@ -75,7 +75,7 @@ def channels_last_block(
         return causal_conv(module, hidden_states)
     elif isinstance(module, Qwen3OmniMoeCausalTransConvNet):
         return causal_transconv(module, hidden_states)
-    elif isinstance(module, (SnakeBeta, FusedSnakeBeta)):
+    elif isinstance(module, (Qwen3OmniMoeSnakeBeta, FusedSnakeBeta)):
         return module(hidden_states.transpose(1, 2)).transpose(1, 2)
     elif isinstance(module, Qwen3OmniMoeConvNeXtBlock):
         # note (ratish): the depthwise conv stays on PyTorch's own (B, C, L) kernel,

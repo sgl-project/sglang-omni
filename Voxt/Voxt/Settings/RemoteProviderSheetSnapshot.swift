@@ -12,6 +12,7 @@ extension RemoteProviderConfigurationSheet {
             accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
             searchEnabled: (llmProviderForPicker?.supportsHostedSearch == true) ? searchEnabled : false,
             openAIChunkPseudoRealtimeEnabled: isOpenAIASRTest ? openAIChunkPseudoRealtimeEnabled : false,
+            openAIAPIFormat: isOpenAILLMProvider ? openAIAPIFormat : OpenAIAPIFormat.automatic.rawValue,
             openAIReasoningEffort: usesOpenAIResponsesOptions ? openAIReasoningEffortSnapshot() : OpenAIReasoningEffort.automatic.rawValue,
             openAITextVerbosity: usesOpenAIResponsesOptions ? openAITextVerbosity : OpenAITextVerbosity.automatic.rawValue,
             openAIMaxOutputTokens: usesOpenAIResponsesOptions ? parsedOptionalInt(generationMaxOutputTokensText) : nil,
@@ -162,7 +163,7 @@ extension RemoteProviderConfigurationSheet {
     func openAIReasoningEffortSnapshot() -> String {
         guard LLMThinkingMode(rawValue: generationThinkingMode) == .effort,
               let effort = normalizedOptionalString(generationThinkingEffort),
-              OpenAIReasoningEffort(rawValue: effort) != nil
+              isCustomOpenAILLMEndpoint || OpenAIReasoningEffort(rawValue: effort) != nil
         else {
             return OpenAIReasoningEffort.automatic.rawValue
         }

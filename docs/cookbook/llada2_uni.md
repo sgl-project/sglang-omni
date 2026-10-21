@@ -98,15 +98,17 @@ Image endpoints imply image output; no `modalities` field is required.
 `/v1/chat/completions` retains text and image-understanding requests; use the
 image endpoints for T2I and editing.
 
-Only non-thinking generation (`mode: "normal"`) is supported. This is separate
-from `decode_mode`, which selects `normal` or `decoder-turbo` diffusion decoding.
+The response's `usage` counts prompt and generated tokens, including both
+passes in thinking mode.
+
+Text-to-image supports `mode: "normal"` and `mode: "thinking"`. Editing supports
+only `mode: "normal"`. Generation mode is separate from `decode_mode`, which
+selects `normal` or `decoder-turbo` diffusion decoding.
 For normal decoding, `num_inference_steps` specifies at least two sampling
 points, giving `num_inference_steps - 1` solver intervals. For decoder-turbo, it specifies at
 least one decoder iteration. The examples use eight turbo iterations.
 When `decode_mode` is omitted, validation uses the decoder factory's configured
 mode, so a turbo factory accepts `num_inference_steps=1` without a mode override.
-Thinking and interleaved generation are incoming features and are not supported
-by this pipeline yet.
 
 Common controls include `seed`, `cfg_rescale`, and `dllm_steps`. T2I uses
 `guidance_scale` (the thinker's `cfg_scale`); editing uses `cfg_text_scale` and
@@ -118,6 +120,84 @@ then resizes proportionally and center-crops the image to that grid. Small
 images are enlarged without black padding; images already matching the grid
 are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
 Image understanding retains its separate preprocessing and pixel budgets.
+
+## Thinking Image Generation
+
+Use the same `POST /v1/images/generations` endpoint with top-level
+`mode: "thinking"`. For example, add it to the T2I request above:
+
+```python
+request["mode"] = "thinking"
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+Path("thinking.png").write_bytes(
+    base64.b64decode(response.json()["data"][0]["b64_json"])
+)
+```
+
+The thinker first generates text with a 2048-token budget, stopping at
+`<boi>`. It then retains that context and generates the requested VQ grid
+with CFG before image decoding. Both phases must fit the configured context
+length. The native response remains `data[]` containing one PNG; it does not
+expose the thinking text. No `modalities` field is needed. Thinking-mode
+editing is unsupported, and chat completions remain for understanding.
+
+## Interleaved Output
+
+The interleaved variant answers with text and images in one response. Each
+image decodes while the model writes the next text.
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --variant interleaved --port 8000 \
+  --thinker.engine.enable_torch_compile false
+```
+
+Send text-only `messages` to `POST /v1/chat/completions`:
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/LLaDA2.0-Uni",
+        "messages": [{"role": "user", "content": "Illustrate a three-frame story"}],
+        "stage_params": {"orchestrator": {"max_frames": 3, "seed": 42}},
+    },
+    timeout=1800,
+)
+segments = response.json()["choices"][0]["message"]["segments"]
+```
+
+`choices[0].message.segments` lists the text and image segments in the order
+the model wrote them, and `message.content` holds the text. With
+`stream: true`, each segment arrives in `choices[0].delta.segment` as soon as it
+is ready. An image segment carries the PNG with its size and SHA-256, and `url` is a
+PNG data URL:
+
+```json
+{
+  "type": "segment",
+  "execution_id": "...",
+  "segment_index": 1,
+  "kind": "image",
+  "data": {
+    "kind": "image",
+    "mime_type": "image/png",
+    "size_bytes": 12345,
+    "sha256": "...",
+    "url": "..."
+  }
+}
+```
+
+Optional controls go in `stage_params.orchestrator`: `max_frames` (default
+10, the most the default server admits), `text_max_new_tokens`,
+`image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`,
+`cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decode_mode`,
+`decoder_steps`, and `seed`.
 
 ## Text Input
 
@@ -231,13 +311,8 @@ The table below lists common text and image-understanding parameters for
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
-### Incoming Features
-
-- Text-to-Image Generation with Thinking
-- Interleaved Generation
-
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
-- Thinking mode and interleaved generation are incoming features and are not
-  supported by this pipeline yet.
+- Thinking mode supports text-to-image only.
+- Interleaved output takes text-only input.
