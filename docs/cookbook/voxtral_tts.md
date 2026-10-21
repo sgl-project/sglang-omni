@@ -192,7 +192,9 @@ back with Qwen3-ASR-0.6B, 10 English sentences give 2.6% WER and one sentence in
 other 8 supported languages gives 5.3% WER. With the same seed and MLX version, its audio codes
 are bit-identical to the Python MLX port in
 [#2788](https://github.com/sgl-project/sglang-omni/pull/2788), and so is its 16-bit PCM after
-the first 10 ms, which it fades in float32 as the CUDA vocoder does.
+the first 10 ms, which it fades in float32 as the CUDA vocoder does. Mac CI checks five seeded
+requests' codes (English, French, German, Hindi, and a `max_new_tokens` cap) against
+`sglang_omni_mlx/native/ci/model_golden/voxtral-4b-tts-2603.json`.
 
 ## Known Limitations
 
