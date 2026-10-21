@@ -65,9 +65,11 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         self.states: dict[SessionIdentity, LMSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.states[session_identity] = LMSessionState(
-            sampling=request_sampling(request)
-        )
+        sampling = request_sampling(request)
+        # Note (Junnan Li): A session's sampling comes from its client, so it is
+        # checked once here and fails the open rather than the first unit.
+        lm_sampling_params(sampling, max_new_tokens=1, vocab_size=self.vocab_size)
+        self.states[session_identity] = LMSessionState(sampling=sampling)
 
     def close(self, session_identity: SessionIdentity) -> None:
         # Note (wilsonzheng0327): The bridge registers a session before calling

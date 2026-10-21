@@ -6,6 +6,7 @@ import base64
 from collections.abc import AsyncIterator
 from typing import Literal
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.client import Client
@@ -13,6 +14,7 @@ from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER
 from sglang_omni.models.personaplex.config import (
     PersonaPlexPipelineConfig,
     PersonaPlexSessionPipelineConfig,
+    PersonaPlexSessionSampling,
     Variants,
 )
 from sglang_omni.models.personaplex.realtime import (
@@ -59,7 +61,7 @@ def output(
     )
 
 
-def test_a_session_is_one_response_until_the_caller_stops():
+def test_the_call_is_one_response_until_the_caller_stops():
     converter = PersonaPlexOutputConverter()
     first = converter(output(pcm=b"\x01\x00"))
     assert [type(event) for event in first] == [ResponseStarted, AudioDelta]
@@ -86,13 +88,23 @@ def test_a_session_is_one_response_until_the_caller_stops():
     assert not reopened[-1].has_audio
 
 
-def test_a_session_that_ends_before_any_output_opens_no_response():
+def test_a_call_that_ends_before_any_output_opens_no_response():
     assert PersonaPlexOutputConverter()(output(eos=True)) == []
 
 
-def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls():
+@pytest.fixture
+def model_dir(tmp_path):
+    (tmp_path / "voices").mkdir()
+    for voice in ("NATF2", "NATM1"):
+        (tmp_path / "voices" / f"{voice}.pt").write_bytes(b"")
+    return str(tmp_path)
+
+
+def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls(
+    model_dir,
+):
     client = Client(None)
-    config = PersonaPlexSessionPipelineConfig(model_path="personaplex", max_sessions=2)
+    config = PersonaPlexSessionPipelineConfig(model_path=model_dir, max_sessions=2)
     # Note (wilsonzheng0327): Called the way the launcher calls it.
     deployment = import_string(config.realtime_deployment_factory)(client, config)
     capabilities = deployment.capabilities
@@ -101,6 +113,8 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls
     assert capabilities.native_unit_ms == 80
     assert capabilities.native_unit_bytes == UNIT_BYTES
     assert capabilities.tail_policy == "pad"
+    assert capabilities.voices == ("NATF2", "NATM1")
+    assert set(capabilities.sampling_parameters) >= {"temperature", "audio_top_k"}
     assert deployment.max_connections == 2
 
     first, second = deployment.adapter_factory(), deployment.adapter_factory()
@@ -117,11 +131,31 @@ def test_only_the_session_variant_serves_and_needs_realtime():
     assert not PersonaPlexPipelineConfig.is_realtime_only
 
 
-def test_instructions_become_the_role_prompt():
-    assert build_session_request({"instructions": "Be brief."}).params == {
-        "instructions": "Be brief."
+def test_session_settings_override_the_deployment_for_that_session_only(model_dir):
+    config = PersonaPlexSessionPipelineConfig(
+        model_path=model_dir,
+        voice="NATM1",
+        instructions="Be kind.",
+        sampling=PersonaPlexSessionSampling(temperature=0.5, seed=3),
+    )
+    session = {
+        "instructions": "Be brief.",
+        "sglang": {"voice": "NATF2", "sampling": {"temperature": 0.9}},
     }
-    assert build_session_request({}).params == {}
+    assert build_session_request(config, session).params == {
+        "temperature": 0.9,
+        "seed": 3,
+        "voice": "NATF2",
+        "instructions": "Be brief.",
+    }
+    assert build_session_request(config, {}).params == {
+        "temperature": 0.5,
+        "seed": 3,
+        "voice": "NATM1",
+        "instructions": "Be kind.",
+    }
+    default = PersonaPlexSessionPipelineConfig(model_path=model_dir)
+    assert build_session_request(default, {}).params == {}
 
 
 class ScriptedPipeline:
@@ -195,14 +229,14 @@ class ScriptedPipeline:
         self.outputs.put_nowait(None)
 
 
-def test_a_call_over_the_websocket_streams_speech_and_its_transcript():
+def test_a_call_over_the_websocket_streams_speech_and_its_transcript(model_dir):
     pipeline = ScriptedPipeline()
     client = Client(pipeline)
     app = create_app(
         client,
         model_name="personaplex",
         realtime_deployment=create_realtime_deployment(
-            client, PersonaPlexSessionPipelineConfig(model_path="personaplex")
+            client, PersonaPlexSessionPipelineConfig(model_path=model_dir)
         ),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
@@ -211,7 +245,10 @@ def test_a_call_over_the_websocket_streams_speech_and_its_transcript():
             {
                 "event_id": "update",
                 "type": "session.update",
-                "session": {"instructions": "Be brief."},
+                "session": {
+                    "instructions": "Be brief.",
+                    "sglang": {"voice": "NATM1", "sampling": {"seed": 7}},
+                },
             }
         )
         events = [websocket.receive_json()]
@@ -234,7 +271,11 @@ def test_a_call_over_the_websocket_streams_speech_and_its_transcript():
 
     assert granted["native_unit_ms"] == 80
     assert granted["output_modalities"] == ["audio"]
-    assert pipeline.opened[0].params == {"instructions": "Be brief."}
+    assert pipeline.opened[0].params == {
+        "seed": 7,
+        "voice": "NATM1",
+        "instructions": "Be brief.",
+    }
     # Note (wilsonzheng0327): Input ending on a unit boundary is closed by an
     # empty end-of-input unit.
     assert [chunk.eos for chunk in pipeline.appended] == [False, False, True]

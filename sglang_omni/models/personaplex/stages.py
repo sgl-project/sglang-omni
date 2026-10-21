@@ -96,7 +96,10 @@ def caller_audio_source(payload: StagePayload) -> str | bytes:
 
 
 def prompt_preparer(
-    model_dir: Path, tokenizer: SentencePieceProcessor
+    model_dir: Path,
+    tokenizer: SentencePieceProcessor,
+    *,
+    voice_prompt_cache_bytes: int,
 ) -> PromptPreparer:
     """The role prompt and voice a request asks for, as the LM's prompt state."""
 
@@ -104,7 +107,7 @@ def prompt_preparer(
         return value_size_bytes((prompt.embeddings, prompt.tail_codes, prompt.waveform))
 
     voice_prompt_cache = StageOutputCache(
-        max_bytes=VOICE_PROMPT_CACHE_MAX_BYTES,
+        max_bytes=voice_prompt_cache_bytes,
         size_fn=voice_prompt_size,
     )
 
@@ -145,7 +148,11 @@ def create_preprocessing_executor(
     model_path: str, **_
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     model_dir = Path(resolve_model_path(model_path))
-    prepare_prompt = prompt_preparer(model_dir, load_text_tokenizer(model_dir))
+    prepare_prompt = prompt_preparer(
+        model_dir,
+        load_text_tokenizer(model_dir),
+        voice_prompt_cache_bytes=VOICE_PROMPT_CACHE_MAX_BYTES,
+    )
 
     def preprocess(payload: StagePayload) -> StagePayload:
         # Note (wilsonzheng0327): Channel 0, not a downmix: in a two-party recording the
@@ -166,12 +173,19 @@ def create_preprocessing_executor(
 
 
 def create_session_preprocessing_executor(
-    model_path: str, *, max_open_sessions: int
+    model_path: str,
+    *,
+    max_open_sessions: int,
+    voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
 ) -> SessionScheduler:
     model_dir = Path(resolve_model_path(model_path))
+    prepare_prompt = prompt_preparer(
+        model_dir,
+        load_text_tokenizer(model_dir),
+        voice_prompt_cache_bytes=voice_prompt_cache_bytes,
+    )
     return SessionScheduler(
-        PreprocessingHooks(prompt_preparer(model_dir, load_text_tokenizer(model_dir))),
-        max_open_sessions=max_open_sessions,
+        PreprocessingHooks(prepare_prompt), max_open_sessions=max_open_sessions
     )
 
 

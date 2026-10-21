@@ -8,7 +8,7 @@ full-duplex sessions over /v1/realtime.
 from collections.abc import Mapping
 from typing import Annotated, ClassVar
 
-from pydantic import Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config.schema import (
@@ -204,6 +204,22 @@ class PersonaPlexPipelineConfig(PipelineConfig):
         return next((stage for stage in self.stages if stage.name == stage_name), None)
 
 
+class PersonaPlexSessionSampling(BaseModel):
+    """Deployment sampling for sessions; unset fields keep the offline defaults,
+    and a session may override any field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float | None = Field(default=None, ge=0)
+    top_k: int | None = Field(default=None, ge=-1)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    min_p: float | None = Field(default=None, ge=0, le=1)
+    repetition_penalty: float | None = Field(default=None, gt=0)
+    audio_temperature: float | None = Field(default=None, ge=0)
+    audio_top_k: int | None = Field(default=None, ge=-1)
+    seed: int | None = None
+
+
 class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     realtime_deployment_factory: ClassVar[str | None] = (
         "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
@@ -216,6 +232,12 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     }
 
     max_sessions: int = Field(default=1, ge=1)
+    # Note (Junnan Li): None keeps the offline default voice and role prompt.
+    voice: str | None = None
+    instructions: str | None = None
+    sampling: PersonaPlexSessionSampling = Field(
+        default_factory=PersonaPlexSessionSampling
+    )
     stages: list[StageConfig] = Field(
         default_factory=personaplex_session_stages_factory
     )

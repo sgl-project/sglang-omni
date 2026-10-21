@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
-from sglang_omni.models.personaplex.config import PersonaPlexSessionPipelineConfig
+from sglang_omni.models.personaplex.config import (
+    PersonaPlexSessionPipelineConfig,
+    PersonaPlexSessionSampling,
+)
+from sglang_omni.models.personaplex.prompts import packaged_voices
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -22,21 +27,25 @@ from sglang_omni.serve.realtime.output import (
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import MS_PER_SECOND, Capabilities
 
-CAPABILITIES = Capabilities(
-    input_sample_rate_hz=SAMPLE_RATE,
-    output_sample_rate_hz=SAMPLE_RATE,
-    output_modalities=("audio", "text"),
-    native_unit_ms=SAMPLES_PER_FRAME * MS_PER_SECOND // SAMPLE_RATE,
-    tail_policy="pad",
-)
 
-
-def build_session_request(config: SessionConfiguration) -> OmniRequest:
-    """instructions is the role prompt; the session keeps the default voice."""
-    if "instructions" in config:
-        params = {"instructions": config["instructions"]}
-    else:
-        params = {}
+def build_session_request(
+    config: PersonaPlexSessionPipelineConfig, session: SessionConfiguration
+) -> OmniRequest:
+    """The deployment's voice, role prompt and sampling under the session's own;
+    the request takes offline PersonaPlex params."""
+    extension = session.get("sglang", {})
+    params = {
+        **config.sampling.model_dump(exclude_none=True),
+        **extension.get("sampling", {}),
+    }
+    for name, value in (
+        ("voice", extension.get("voice", config.voice)),
+        ("instructions", session.get("instructions", config.instructions)),
+    ):
+        if value is not None:
+            params[name] = value
+        else:
+            pass
     return OmniRequest(inputs=None, params=params)
 
 
@@ -105,21 +114,30 @@ def create_realtime_deployment(
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
-            request_builder=build_session_request,
+            request_builder=lambda session: build_session_request(
+                pipeline_config, session
+            ),
             output_converter=PersonaPlexOutputConverter(),
             input_sample_rate_hz=SAMPLE_RATE,
             atomic_consumption=True,
         )
 
     return RealtimeDeployment(
-        capabilities=CAPABILITIES,
+        capabilities=Capabilities(
+            input_sample_rate_hz=SAMPLE_RATE,
+            output_sample_rate_hz=SAMPLE_RATE,
+            output_modalities=("audio", "text"),
+            native_unit_ms=SAMPLES_PER_FRAME * MS_PER_SECOND // SAMPLE_RATE,
+            tail_policy="pad",
+            sampling_parameters=tuple(PersonaPlexSessionSampling.model_fields),
+            voices=packaged_voices(resolve_model_path(pipeline_config.model_path)),
+        ),
         adapter_factory=create_adapter,
         max_connections=pipeline_config.max_sessions,
     )
 
 
 __all__ = [
-    "CAPABILITIES",
     "PersonaPlexOutputConverter",
     "build_session_request",
     "create_realtime_deployment",

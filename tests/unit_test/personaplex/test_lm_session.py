@@ -218,7 +218,17 @@ def test_an_empty_end_of_input_is_relayed_without_a_step():
     assert state.codes.shape == (0, 8) and state.text == ""
 
 
-def test_close_after_a_failed_open_is_a_no_op():
-    PersonaPlexSessionAdapter(
+def test_a_session_with_invalid_sampling_fails_its_open():
+    adapter = PersonaPlexSessionAdapter(
         vocab_size=32000, context_length=CONTEXT_LENGTH, tokenizer=PieceTokenizer()
-    ).close(CALL)
+    )
+    with pytest.raises(ValueError, match="sampling parameters"):
+        adapter.open(CALL, OmniRequest(inputs=None, params={"top_p": 0.0}))
+
+
+def test_close_after_a_failed_open_is_a_no_op():
+    adapter = PersonaPlexSessionAdapter(
+        vocab_size=32000, context_length=4096, tokenizer=PieceTokenizer()
+    )
+    adapter.close(CALL)
+    assert adapter.states == {}
