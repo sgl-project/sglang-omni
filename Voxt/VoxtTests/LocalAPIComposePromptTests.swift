@@ -163,9 +163,9 @@ final class LocalAPIComposePromptTests: XCTestCase {
         let prompt = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: dictate, rawTranscription: "Hello there."))
         XCTAssertTrue(prompt.hasPrefix("Write the speech as a haiku."))
         XCTAssertTrue(prompt.contains("{{RAW_TRANSCRIPTION}}"))
-        XCTAssertFalse(prompt.contains("Clean up the transcribed speech."))
+        XCTAssertFalse(prompt.contains("Turn this speech transcript into the text this speaker would have written themselves:"))
         let builtIn = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: options(.dictate), rawTranscription: "Hello there."))
-        XCTAssertTrue(builtIn.contains("Clean up the transcribed speech."))
+        XCTAssertTrue(builtIn.contains("Turn this speech transcript into the text this speaker would have written themselves:"))
 
         var translate = options(.translate, targetLanguage: "fr")
         translate.customPrompt = "Translate into {{TARGET_LANGUAGE}} like a pirate."
@@ -207,7 +207,7 @@ final class LocalAPIComposePromptTests: XCTestCase {
     func testBuiltInPromptsListEveryModeForThePhoneEditor() {
         let prompts = LocalAPIComposePrompt.builtInPrompts()
         XCTAssertEqual(Set(prompts.keys), ["dictate", "edit", "translate", "write"])
-        XCTAssertTrue(prompts["dictate"]?.contains("Clean up the transcribed speech.") == true)
+        XCTAssertTrue(prompts["dictate"]?.contains("Turn this speech transcript into the text this speaker would have written themselves:") == true)
         XCTAssertTrue(prompts["translate"]?.contains("{{TARGET_LANGUAGE}}") == true)
         XCTAssertFalse(prompts.values.contains { $0.contains("{{RAW_TRANSCRIPTION}}") })
     }
@@ -216,41 +216,6 @@ final class LocalAPIComposePromptTests: XCTestCase {
         before: "Thanks, I'll send Alice the file at 3.",
         after: "Cheers — I'll send Alice the file at 3."
     )
-
-    func testDictatePromptMatchesTranscriptLanguageAndIncludesCorrectionExamples() throws {
-        let chinese = try XCTUnwrap(LocalAPIComposePrompt.instruction(
-            for: options(.dictate), rawTranscription: "第一，保存报告；第二，发送邮件。"
-        ))
-        XCTAssertTrue(chinese.contains("整理转写的口述内容。"))
-        XCTAssertTrue(chinese.contains("带三样东西：钥匙、外套和水。"))
-        XCTAssertTrue(chinese.contains("口述：把评审改到周三——不对——周四下午三点。"))
-        XCTAssertTrue(chinese.contains("输出：把评审改到周四下午三点。"))
-        XCTAssertTrue(chinese.contains("口述转写：{{RAW_TRANSCRIPTION}}"))
-        XCTAssertFalse(chinese.contains("Clean up the transcribed speech."))
-        let english = try XCTUnwrap(LocalAPIComposePrompt.instruction(
-            for: options(.dictate), rawTranscription: "Move the review to Thursday."
-        ))
-        XCTAssertTrue(english.contains("Clean up the transcribed speech."))
-        XCTAssertTrue(english.contains("Speech: Bring three things: keys, a coat, and water."))
-        XCTAssertTrue(english.contains("Speech: Move the review to Wednesday — no wait — Thursday at three."))
-        XCTAssertTrue(english.contains("Output: Move the review to Thursday at three."))
-        XCTAssertTrue(english.contains("Speech transcript: {{RAW_TRANSCRIPTION}}"))
-    }
-
-    // A landlord email dictated as "Hi Karen, first …, second …, and also …" came back as one
-    // paragraph (EN) or as "- 第一，…" bullets with the closing merged into an item (ZH).
-    func testDictatePromptNumbersCountedPointsAndLaysOutMessages() throws {
-        let english = try XCTUnwrap(LocalAPIComposePrompt.instruction(
-            for: options(.dictate), rawTranscription: "Hi Karen, first the heater, second the window."
-        ))
-        XCTAssertTrue(english.contains("number them 1., 2., 3. on separate lines and drop the counting words"))
-        let chinese = try XCTUnwrap(LocalAPIComposePrompt.instruction(
-            for: options(.dictate), rawTranscription: "王先生您好，第一，暖气坏了，第二，窗户关不上。"
-        ))
-        XCTAssertTrue(chinese.contains("编号写成 1. 2. 3.，去掉“第一”“还有”等分点词"))
-        XCTAssertTrue(chinese.contains("称呼单独一行"))
-        XCTAssertTrue(chinese.contains("输出：\n李老师您好，\n\n有两件事：\n1. 报告晚交一天。\n2. 会议改到周一。\n\n您看可以吗？\n\n谢谢。"))
-    }
 
     // Cleaned outputs of Qwen3.5-4B for dictated messages with uncounted points.
     func testMessageWithGreetingAndThreePointsIsLaidOutWithANumberedList() {
@@ -543,9 +508,9 @@ final class LocalAPIComposePromptTests: XCTestCase {
 
     func testPlainDictateAlsoGetsTheCleanupPrompt() {
         let prompt = LocalAPIComposePrompt.instruction(for: options(.dictate))!
-        XCTAssertTrue(prompt.contains("Clean up"), "even a default compose dictate asks for cleanup")
+        XCTAssertTrue(prompt.contains("Turn this speech transcript"), "even a default compose dictate asks for cleanup")
         XCTAssertTrue(prompt.contains("fillers"))
-        XCTAssertTrue(prompt.contains("Do not add"), "cleanup must not invent content")
+        XCTAssertTrue(prompt.contains("Keep their meaning"), "cleanup keeps what was said")
         XCTAssertTrue(prompt.contains(EnhancementPromptResolver.rawTranscriptionTemplateVariable))
         XCTAssertFalse(prompt.contains("Tone:"), "automatic style adds no tone line")
         XCTAssertFalse(prompt.contains("Prefer these spellings"))
@@ -554,21 +519,19 @@ final class LocalAPIComposePromptTests: XCTestCase {
 
     func testDictatePromptPreservesSpokenLanguageWithoutVariants() {
         let prompt = LocalAPIComposePrompt.instruction(for: options(.dictate))!
-        XCTAssertTrue(prompt.contains("Do not translate"), "dictate must never translate")
-        XCTAssertTrue(prompt.lowercased().contains("mixes languages"), "mixed-language speech keeps its language mix")
-        XCTAssertTrue(prompt.contains("original spoken language"))
+        XCTAssertTrue(prompt.contains("in the language or mix of languages they spoke"), "dictate keeps the spoken languages, mix included")
     }
 
     func testDictateWithOptionsBuildsACleanupPrompt() {
         let prompt = LocalAPIComposePrompt.instruction(
             for: options(.dictate, contextBefore: "Dear team,", style: .formal, vocabulary: ["SGLang"])
         )!
-        XCTAssertTrue(prompt.contains("Clean up"), "option-carrying dictate asks for cleanup")
+        XCTAssertTrue(prompt.contains("Turn this speech transcript"), "option-carrying dictate asks for cleanup")
         XCTAssertTrue(prompt.contains("fillers"), "cleanup names fillers and repetitions")
         XCTAssertFalse(prompt.contains("Dear team,"), "plain cleanup gets no cursor context")
         XCTAssertTrue(prompt.contains("formal"))
         XCTAssertTrue(prompt.contains("SGLang"))
-        XCTAssertTrue(prompt.contains("Do not add"), "cleanup must not invent content")
+        XCTAssertTrue(prompt.contains("Keep their meaning"), "cleanup keeps what was said")
         XCTAssertTrue(prompt.contains(EnhancementPromptResolver.rawTranscriptionTemplateVariable))
     }
 
@@ -990,7 +953,7 @@ final class LocalAPIComposePromptTests: XCTestCase {
             XCTAssertTrue(prompt.contains(wordingExample.after))
             XCTAssertTrue(prompt.contains("Do not change facts, names, numbers, or the output language."))
             XCTAssertTrue(prompt.contains("Prefer these spellings: grey."))
-            let task = prompt.range(of: mode == .dictate ? "Do not translate" : mode == .edit ? "Keep the selected text's language" : "Write the actual message requested")!
+            let task = prompt.range(of: mode == .dictate ? "Keep their meaning" : mode == .edit ? "Keep the selected text's language" : "Write the actual message requested")!
             let spellings = prompt.range(of: "Prefer these spellings")!
             let section = prompt.range(of: "Personal wording examples")!
             XCTAssertLessThan(task.lowerBound, section.lowerBound)
@@ -1023,7 +986,7 @@ final class LocalAPIComposePromptTests: XCTestCase {
             XCTAssertFalse(prompt.contains("Cheers"))
             XCTAssertTrue(prompt.contains("Tone: \(style.rawValue)."))
             XCTAssertTrue(prompt.contains("Prefer these spellings: grey."))
-            XCTAssertTrue(prompt.contains("Do not translate"))
+            XCTAssertTrue(prompt.contains("in the language or mix of languages they spoke"))
         }
     }
 
@@ -1094,5 +1057,69 @@ final class LocalAPIComposePromptTests: XCTestCase {
             resolverInput(globalPrompt: "Clean this up.", appendsLanguagePreservationRules: true)
         )
         XCTAssertTrue(dictation.content.contains("Language rule"), "the standard dictation prompt keeps its rules")
+    }
+
+    // MARK: Dictate principles
+
+    // On Qwen3.5-4B, the rule-based prompt passed 14/24 and 16/24 of two test
+    // sets (fillers, self-corrections, casual, rambling, lists, terms in zh, en, ja, mixed); these principles 19/24 and 21/24.
+    func testDictatePromptFollowsTheTranscriptsScript() throws {
+        let japanese = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: options(.dictate), rawTranscription: "えーと、明日の会議は三時からです。"))
+        XCTAssertTrue(japanese.contains("話し手が自分で書いたらこうなる"), "kana gets the Japanese prompt")
+        XCTAssertTrue(japanese.contains("書き起こし：{{RAW_TRANSCRIPTION}}"))
+        XCTAssertTrue(japanese.hasSuffix("出力："))
+        // 9 Han and 15 Latin letters: under the old 50% rule this went to the English prompt and came back translated.
+        let mixed = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: options(.dictate), rawTranscription: "我觉得这个 project 的 timeline 有点紧"))
+        XCTAssertTrue(mixed.contains("说话人自己会写出来的文字"), "Chinese with English words gets the Chinese prompt")
+        XCTAssertTrue(mixed.contains("口述转写：{{RAW_TRANSCRIPTION}}"))
+        XCTAssertTrue(mixed.hasSuffix("输出："))
+        let english = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: options(.dictate), rawTranscription: "Move the review to Thursday."))
+        XCTAssertTrue(english.contains("the text this speaker would have written themselves"))
+        XCTAssertTrue(english.hasSuffix("Output:"))
+    }
+
+    // Qwen3.5-4B wrote "会議は 4 時から" and "10 分" even when asked not to.
+    func testDictateDropsSpacesBetweenDigitsAndHanOrKana() async throws {
+        let japanese = try await LocalAPIComposePrompt.compose(rawTranscription: "会議は四時から", options: options(.dictate)) { _ in
+            "会議は 4 時から、10 分くらいで着く。"
+        }
+        XCTAssertEqual(japanese, "会議は4時から、10分くらいで着く。")
+        let english = try await LocalAPIComposePrompt.compose(rawTranscription: "Meet at 4 pm", options: options(.dictate)) { _ in
+            "Meet at 4 pm in room 2."
+        }
+        XCTAssertEqual(english, "Meet at 4 pm in room 2.")
+    }
+
+    // The recognizer spells some acronyms letter by letter inside Chinese ("放到 C I C D 里面").
+    func testSpelledOutAcronymsNextToChineseOrJapaneseAreJoined() {
+        XCTAssertEqual(LocalAPIComposePrompt.joinedSpelledAcronyms("整个东西应该放到 C I C D 里面，每次都要跑。"), "整个东西应该放到 CI/CD 里面，每次都要跑。")
+        XCTAssertEqual(LocalAPIComposePrompt.joinedSpelledAcronyms("这个 A P I 太慢了"), "这个 API 太慢了")
+        XCTAssertEqual(LocalAPIComposePrompt.joinedSpelledAcronyms("用 A I 写的"), "用 AI 写的")
+        XCTAssertEqual(LocalAPIComposePrompt.joinedSpelledAcronyms("APIの I O が遅い"), "APIの I/O が遅い")
+        for unchanged in ["Plan A I think works.", "I went to A B C Mart.", "这个 API 太慢了", "用 Q 键"] {
+            XCTAssertEqual(LocalAPIComposePrompt.joinedSpelledAcronyms(unchanged), unchanged)
+        }
+    }
+
+    func testDictateJoinsSpelledOutAcronyms() async throws {
+        let result = try await LocalAPIComposePrompt.compose(rawTranscription: "放到 C I C D 里面", options: options(.dictate)) { _ in
+            "整个放进 C I C D 里，每次强制跑。"
+        }
+        XCTAssertEqual(result, "整个放进 CI/CD 里，每次强制跑。")
+    }
+
+    // The dictate prompt states the intent and lets the model judge structure: a rule list made the 4B model add
+    // unasked bullets and stiffen the register. Compared blind on 42 dictations, this
+    // prompt read more like the speaker 22 times, the rule list 7 times, with 13 ties.
+    func testDictatePromptIsAShortStatementOfIntent() throws {
+        for (speech, intent) in [("Um, see you later.", "Keep their meaning, their voice and their register"),
+                                 ("嗯，明天见。", "保留他的意思、口吻和语体"),
+                                 ("えーと、また明日。", "意味、話し方の雰囲気、丁寧さの度合いはそのままにし")] {
+            let prompt = try XCTUnwrap(LocalAPIComposePrompt.instruction(for: options(.dictate), rawTranscription: speech))
+            XCTAssertTrue(prompt.contains(intent), intent)
+            let task = prompt.components(separatedBy: "\n\n")[0]
+            XCTAssertLessThanOrEqual(task.components(separatedBy: "\n").count, 5, "a few lines, not a rule list")
+            for rule in ["Format example", "格式示例", "書式の例", "1. ", "- "] { XCTAssertFalse(task.contains(rule), rule) }
+        }
     }
 }
