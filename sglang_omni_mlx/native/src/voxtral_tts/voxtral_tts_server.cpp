@@ -311,7 +311,10 @@ private:
     } catch (const std::invalid_argument &error) {
       return omni_server::BadRequest(connection, error.what());
     }
-    if (request.model.has_value() && *request.model != model_name()) {
+    // Note (Minyi Tang): no client can know a generated name, and the CUDA
+    // speech API ignores model, so only a chosen name is enforced.
+    if (has_chosen_model_name() && request.model.has_value() &&
+        *request.model != model_name()) {
       return omni_server::WriteJson(
           connection, 404, {{"detail", "Unknown model: " + *request.model}});
     } else {

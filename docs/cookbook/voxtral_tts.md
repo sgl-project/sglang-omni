@@ -177,7 +177,8 @@ The requests above work unchanged. The native server differs from the CUDA serve
 - `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`.
 - `max_new_tokens` is at most `4096` audio frames (12.5 per second, about 5.5 minutes).
 - An unknown `voice` returns 400 with the list of the checkpoint's 20 preset voices.
-- A `model` other than the `--model-name` it serves returns 404.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model`
+  is ignored, as on CUDA.
 - Errors are `{"detail": "..."}`.
 - Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get
   503, and `/health` shows the queue.
@@ -188,9 +189,10 @@ The requests above work unchanged. The native server differs from the CUDA serve
 Measured on an M4 MacBook Air (16 GB), warm: 3.3 s load, 0.55–0.85 s to the first streamed
 audio, real-time factor 0.72 (mean of 18 utterances), about 3.4 GB peak MLX memory. Transcribed
 back with Qwen3-ASR-0.6B, 10 English sentences give 2.6% WER and one sentence in each of the
-other 8 supported languages gives 5.3% WER. With the same seed, its audio codes and 16-bit PCM
+other 8 supported languages gives 5.3% WER. With the same seed and MLX version, its audio codes
 are bit-identical to the Python MLX port in
-[#2788](https://github.com/sgl-project/sglang-omni/pull/2788).
+[#2788](https://github.com/sgl-project/sglang-omni/pull/2788), and so is its 16-bit PCM after
+the first 10 ms, which it fades in float32 as the CUDA vocoder does.
 
 ## Known Limitations
 

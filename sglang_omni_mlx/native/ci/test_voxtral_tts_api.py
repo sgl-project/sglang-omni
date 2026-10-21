@@ -26,6 +26,7 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 VOXTRAL_REPO = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+CHOSEN_MODEL_NAME = "mistralai/Voxtral-4B-TTS-2603"
 SAMPLE_RATE = 24000
 ASR_SAMPLE_RATE = 16000
 # One audio frame is 80 ms of 16-bit samples.
@@ -43,12 +44,16 @@ REQUEST_TIMEOUT_SECONDS = 20
 CANCEL_SECONDS = 8.0
 
 
+def voxtral_directory() -> Path:
+    return Path(DATA_ROOT) / "models" / VOXTRAL_REPO.replace("/", "_")
+
+
 @pytest.fixture(scope="module")
 def voxtral_server() -> Iterator[Server]:
     running = Server(
         "voxtral_tts_server",
         "voxtral_tts",
-        Path(DATA_ROOT) / "models" / VOXTRAL_REPO.replace("/", "_"),
+        voxtral_directory(),
         (
             "--max-queued-requests",
             str(MAX_QUEUED_REQUESTS),
@@ -256,13 +261,46 @@ def test_voxtral_times_out_a_request_past_its_deadline(
     wait_until_idle(voxtral_server)
 
 
-def test_voxtral_rejects_another_model(voxtral_server: Server) -> None:
-    status, response = voxtral_server.request(
-        "POST",
-        "/v1/audio/speech",
-        json.dumps({"input": "hi", "model": "tts-1"}).encode(),
+def test_voxtral_accepts_any_model_without_a_chosen_name(
+    voxtral_server: Server,
+) -> None:
+    status, _, _ = speak(
+        voxtral_server,
+        {
+            "input": "hi",
+            "model": "tts-1",
+            "response_format": "pcm",
+            "max_new_tokens": 1,
+        },
     )
-    assert (status, json.loads(response)) == (404, {"detail": "Unknown model: tts-1"})
+    assert status == 200
+
+
+def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
+    named_server = Server(
+        "voxtral_tts_server",
+        "voxtral_tts",
+        voxtral_directory(),
+        ("--model-name", CHOSEN_MODEL_NAME),
+    )
+    try:
+        status, _, _ = speak(
+            named_server,
+            {
+                "input": "hi",
+                "model": CHOSEN_MODEL_NAME,
+                "response_format": "pcm",
+                "max_new_tokens": 1,
+            },
+        )
+        assert status == 200
+        status, _, body = speak(named_server, {"input": "hi", "model": "tts-1"})
+        assert (status, json.loads(body)) == (
+            404,
+            {"detail": "Unknown model: tts-1"},
+        )
+    finally:
+        named_server.stop()
 
 
 @pytest.mark.parametrize(

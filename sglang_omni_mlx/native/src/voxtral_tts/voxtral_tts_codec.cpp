@@ -313,21 +313,22 @@ std::vector<float> CodecStream::DecodeWindow() {
       (emitted_frames_ + kWarmupFrames - start) * samples_per_frame;
   const int new_frames = total_frames - emitted_frames_;
   const int sample_count = new_frames * samples_per_frame;
-  mx::array audio = mx::slice(codec_.Decode(mx::stack(window, 0)),
-                              {first_sample}, {first_sample + sample_count});
+  // Note (Minyi Tang): the fade runs on float32 samples, as the CUDA
+  // vocoder's does; a bfloat16 fade rounds the first samples differently.
+  mx::array audio =
+      mx::astype(mx::slice(codec_.Decode(mx::stack(window, 0)), {first_sample},
+                           {first_sample + sample_count}),
+                 mx::float32);
   if (emitted_frames_ == 0) {
-    // Note (Minyi Tang): The fade runs in the codec dtype, as the CUDA
-    // vocoder's does, so the first samples round the same way.
     const int fade_samples = std::min(
         codec_.sample_rate() * kFadeInMilliseconds / 1000, sample_count);
     audio = mx::concatenate(
         {mx::multiply(mx::slice(audio, {0}, {fade_samples}),
-                      mx::linspace(0.0, 1.0, fade_samples, audio.dtype())),
+                      mx::linspace(0.0, 1.0, fade_samples, mx::float32)),
          mx::slice(audio, {fade_samples}, {sample_count})},
         0);
   } else {
   }
-  audio = mx::astype(audio, mx::float32);
   mx::eval(audio);
   emitted_frames_ = total_frames;
   return std::vector<float>(audio.data<float>(),
