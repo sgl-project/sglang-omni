@@ -1343,18 +1343,21 @@ def test_higgs_producer_uses_uniform_followup_windows(
     data = SimpleNamespace(
         stream_metadata=metadata,
         num_codebooks=num_codebooks,
+        output_codes=[],
+        max_new_tokens=99,
+        generation_done=False,
         stream_code_buffer=[],
         stream_code_seen_rows=0,
         stream_code_next_flush_rows=0,
     )
-    scheduler_request = SimpleNamespace(request_id="req", data=data)
+    sched_req = SimpleNamespace(request_id="req", data=data)
     delayed_rows = torch.arange(
         (expected_flush_rows[-1] + 1) * num_codebooks, dtype=torch.long
     ).reshape(-1, num_codebooks)
     previous_flush_rows = 0
 
     for row_index, code_row in enumerate(delayed_rows):
-        runner.queue_or_emit_code_chunk(scheduler_request, code_row)
+        runner.queue_or_emit_code_chunk(sched_req, code_row)
         if row_index + 1 in expected_flush_rows:
             message = runner.outbox.get_nowait()
             assert message.type == "stream"
@@ -2010,6 +2013,7 @@ def test_higgs_initial_chunk_resumes_after_followup_boundary(
         codebook_size=1026,
         initial_codec_chunk_frames=initial_frames,
     )
+
     scheduler.handle_streaming_new_request("req", payload)
     streamed_parts: list[np.ndarray[tuple[int], np.dtype[np.float32]]] = []
 
