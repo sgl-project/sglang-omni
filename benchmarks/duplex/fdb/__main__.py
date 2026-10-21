@@ -151,14 +151,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="After recording, run asr, judge and aggregate; stops at the first "
         "failing step",
     )
+    step_parsers = {}
     for name, help_text in (
         ("asr", "Step 2: Parakeet ASR, v1.5 timing, v1.0 unified scoring"),
         ("judge", "Step 3: behavior and semantic judges, report"),
     ):
-        commands.add_parser(
+        step_parsers[name] = commands.add_parser(
             name, parents=[repeat_options], help=help_text
-        ).add_argument(
+        )
+        step_parsers[name].add_argument(
             "--retry-failed", action="store_true", help="Retry failed work units"
+        )
+    for semantic_parser in (generate_parser, step_parsers["judge"]):
+        semantic_parser.add_argument(
+            "--skip-semantic-judge",
+            action="store_true",
+            help="Leave out the v1.5 semantic A/F/U judge, the judge step's "
+            "slowest phase; the behavior labels and the report still run",
         )
     commands.add_parser(
         "aggregate",
@@ -233,6 +242,7 @@ def generate_stages(
     num_shards: int,
     gpus: tuple[str, ...],
     all_stages: bool,
+    should_run_semantic_judge: bool,
 ) -> None:
     """Step 1, and with all_stages steps 2 and 3 and aggregate after it. A failing
     step stops the chain with its own message, which names the command that
@@ -240,7 +250,12 @@ def generate_stages(
     generate(settings, repeat, selection, v10_selection, num_shards, gpus)
     if all_stages:
         asr(settings, repeat, retry_failed=False)
-        judge(settings, repeat, retry_failed=False)
+        judge(
+            settings,
+            repeat,
+            retry_failed=False,
+            should_run_semantic_judge=should_run_semantic_judge,
+        )
         aggregate(settings)
     else:
         pass
@@ -277,11 +292,17 @@ def main() -> None:
             args.num_shards,
             (settings.gpu,) if args.gpus is None else args.gpus,
             args.all_stages,
+            not args.skip_semantic_judge,
         )
     elif args.command == "asr":
         asr(settings, args.repeat, args.retry_failed)
     elif args.command == "judge":
-        judge(settings, args.repeat, args.retry_failed)
+        judge(
+            settings,
+            args.repeat,
+            args.retry_failed,
+            should_run_semantic_judge=not args.skip_semantic_judge,
+        )
     elif args.command == "aggregate":
         aggregate(settings)
     elif args.command == "serve-model":

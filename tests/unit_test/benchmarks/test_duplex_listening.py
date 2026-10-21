@@ -278,6 +278,38 @@ def test_transcribe_writes_each_spoken_reply_its_parakeet_text(
     assert len(transcribed) == 4
 
 
+def test_a_reply_too_short_to_hold_a_word_is_not_transcribed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parakeet raised on a reply cut 12 ms in, failing the whole listening phase."""
+    nemo = tmp_path / "parakeet.nemo"
+    nemo.write_bytes(b"checkpoint")
+    transcribed = []
+
+    class FakeParakeet:
+        def transcribe(self, paths: list[str]) -> list[types.SimpleNamespace]:
+            transcribed.extend(paths)
+            return [types.SimpleNamespace(text="heard") for _ in paths]
+
+    durations_s = (0.012, listening_replies.MIN_TRANSCRIBED_DURATION_S)
+    monkeypatch.setattr(
+        listening_replies,
+        "extract_replies",
+        lambda manifests, out_dir: [
+            {"wav": f"{index}.wav", "duration_s": duration_s}
+            for index, duration_s in enumerate(durations_s)
+        ],
+    )
+    monkeypatch.setattr(
+        listening_replies, "load_nemo_model", lambda path, device: FakeParakeet()
+    )
+    out = tmp_path / "listening"
+    transcribe_replies([], out, nemo, file_sha256(nemo), "cpu")
+    replies = json.loads((out / REPLIES_FILE).read_text())["replies"]
+    assert [reply["asr_text"] for reply in replies] == [None, "heard"]
+    assert [Path(path).name for path in transcribed] == ["1.wav"]
+
+
 def test_leave_one_out_similarity_compares_each_reply_with_the_others() -> None:
     similarities = leave_one_out_similarity(
         torch.tensor([[2.0, 0.0], [1.0, 0.0], [0.0, 3.0]])

@@ -19,7 +19,6 @@ from benchmarks.duplex.fdb.common import (
     FDB_SOURCE_REVISION,
     FDB_SOURCE_URL,
     JUDGE_MODEL_ID,
-    MODEL_ID,
     PARAKEET_FILENAME,
     PARAKEET_REPO_ID,
     PARAKEET_REVISION,
@@ -75,6 +74,20 @@ V10_DATASET_DRIVE_FILE_IDS = {
     "synthetic_user_interruption": "1I36wGbPtZObjqI_1h11Rb2s1ulerb65a",
     "icc_backchannel": "1HttNZbi0bYHe7a-CO_9vg_z7hMM8a5h0",
 }
+# note (jeffro): qwen-asr pins a transformers release of its own, so the
+# cascade's forced-alignment worker runs from a venv apart from the server's.
+# this need double check.
+ALIGNER_PACKAGES = [
+    "qwen-asr==0.0.6",
+    "fastapi==0.156.4",
+    "uvicorn==0.54.0",
+    "httpx==0.28.1",
+    "msgpack==1.2.3",
+    "msgspec==0.22.0",
+    "numpy==2.5.4",
+    "pydantic==2.14.1",
+    "websockets==17.3",
+]
 SERVING_DISTRIBUTION = "sglang-omni"
 MODEL_EXTRA = "minicpm-o"
 
@@ -284,12 +297,53 @@ def setup_parakeet(settings: Settings) -> None:
         pass
 
 
-def setup_models(settings: Settings) -> None:
-    log(f"== [7/9] Model under test at {settings.model_path}")
-    if not (settings.model_path / "config.json").is_file():
-        snapshot_download(
-            MODEL_ID, revision=settings.model_revision, local_dir=settings.model_path
+def setup_aligner_venv(settings: Settings) -> None:
+    log(f"   forced-alignment worker venv at {settings.aligner_python.parent.parent}")
+    if not settings.aligner_python.is_file():
+        subprocess.run(
+            [
+                "uv",
+                "venv",
+                "--python",
+                SCORING_PYTHON_VERSION,
+                str(settings.aligner_python.parent.parent),
+            ],
+            check=True,
         )
+    else:
+        pass
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--quiet",
+            "--python",
+            str(settings.aligner_python),
+            *ALIGNER_PACKAGES,
+        ],
+        check=True,
+    )
+
+
+def setup_models(settings: Settings) -> None:
+    engine = settings.engine
+    if engine.launch_config is None:
+        log(f"== [7/9] Model under test at {settings.model_path}")
+        if not (settings.model_path / "config.json").is_file():
+            snapshot_download(
+                engine.model_id,
+                revision=settings.model_revision,
+                local_dir=settings.model_path,
+            )
+        else:
+            pass
+    else:
+        log(f"== [7/9] Models of {engine.name} in the Hugging Face cache")
+        for model_id in engine.hf_model_ids:
+            snapshot_download(model_id)
+    if engine.needs_aligner:
+        setup_aligner_venv(settings)
     else:
         pass
     log(f"== [8/9] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")

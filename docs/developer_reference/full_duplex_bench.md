@@ -87,6 +87,8 @@ python -m benchmarks.duplex.fdb setup
 
 `JUDGE=gpt` needs `OPENAI_API_KEY`. With `JUDGE=qwen` the labels and ratings are not the paper's, but the judge is local and pinned, so runs with the same settings stay comparable with each other. The semantic judge sends six control cases (`benchmarks/duplex/semantic/`) together with its first grading batches and keeps the grades only if all 18 control axis statuses match `control-expected.json`; otherwise it discards them and stops. The controls check the rubric, not the judge's accuracy.
 
+`--skip-semantic-judge` on `judge`, or on `generate` with `--all-stages`, leaves the semantic judge out because it is the slowest judge phase, ~5 minutes for 20 pairs on one H100.
+
 A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.
 
 ## Run the benchmark

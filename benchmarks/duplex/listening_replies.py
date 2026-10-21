@@ -28,6 +28,10 @@ from benchmarks.duplex.v15_audio import write_json
 
 REPLY_SAMPLE_RATE = 16000
 REPLIES_FILE = "replies.json"
+# note (jeffro): Parakeet raises on a 198-sample reply read from its wav, cut
+# 12 ms after it started; no word fits in 0.1 s, so a shorter reply is heard as
+# saying nothing.
+MIN_TRANSCRIBED_DURATION_S = 0.1
 
 
 def scored_variants(manifests: list[Path]) -> list[dict[str, JsonValue]]:
@@ -205,14 +209,20 @@ def transcribe_replies(
     device: str,
 ) -> None:
     """Cut the replies and write replies.json with each reply's Parakeet text;
-    a reply without audio has no text."""
+    a reply without audio, or shorter than MIN_TRANSCRIBED_DURATION_S, has no
+    text."""
     if file_sha256(nemo) != nemo_sha256:
         raise SystemExit(f"{nemo} does not match its pinned SHA-256")
     else:
         pass
     out_dir.mkdir(parents=True, exist_ok=True)
     records = extract_replies(manifests, out_dir)
-    spoken = [record for record in records if record["wav"] is not None]
+    spoken = [
+        record
+        for record in records
+        if record["wav"] is not None
+        and record["duration_s"] >= MIN_TRANSCRIBED_DURATION_S
+    ]
     model = load_nemo_model(nemo, device)
     hypotheses = (
         model.transcribe([str(out_dir / record["wav"]) for record in spoken])

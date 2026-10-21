@@ -15,9 +15,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from benchmarks.duplex.fdb.common import (
-    ENGINE_LABEL,
-    MODEL_ID,
-    RECORD_PROFILE,
+    ENGINE_FILE,
     REPO_ROOT,
     V10_DIR,
     Settings,
@@ -40,7 +38,6 @@ from benchmarks.duplex.fdb.selection import (
 from benchmarks.duplex.fdb.servers import model_server
 from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
-from sglang_omni.models.minicpm_o.native_config import DEFAULT_MAX_SESSIONS
 
 PROGRESS_INTERVAL_S = 60
 
@@ -56,13 +53,25 @@ def record_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    engine = settings.engine
+    turn_detection_arguments = (
+        []
+        if engine.turn_detection is None
+        else ["--turn-detection", engine.turn_detection]
+    )
+    revision_arguments = (
+        []
+        if settings.model_revision is None
+        else ["--model-revision", settings.model_revision]
+    )
     return [
         sys.executable,
         "-m",
         module,
         "record",
         "--profile",
-        RECORD_PROFILE,
+        engine.record_profile,
+        *turn_detection_arguments,
         "--dataset-root",
         str(dataset),
         "--dataset-revision",
@@ -70,9 +79,8 @@ def record_command(
         "--url",
         settings.realtime_url,
         "--model",
-        MODEL_ID,
-        "--model-revision",
-        settings.model_revision,
+        engine.model_id,
+        *revision_arguments,
         "--server-revision",
         server_revision,
         "--timeout",
@@ -183,9 +191,9 @@ def export_reference_audio(
         "benchmarks.eval.benchmark_duplex_reference",
         "export",
         "--engine",
-        ENGINE_LABEL,
+        settings.engine.name,
         "--trace-format",
-        "realtime-pcm16-v1",
+        settings.engine.trace_format.value,
         "--dataset-root",
         str(settings.dataset),
         "--out",
@@ -214,6 +222,8 @@ def export_v10_reference(
         str(settings.dataset_v10),
         "--out",
         str(v10_dir / "reference"),
+        "--trace-format",
+        settings.engine.trace_format.value,
     ]
     for shard_dir in shard_dirs:
         command += ["--run", str(shard_dir)]
@@ -232,16 +242,21 @@ def generate(
     gpus: tuple[str, ...],
 ) -> None:
     replicas = [settings.on_gpu(gpu) for gpu in gpus]
-    # note (wenyao): model_server_command uses the default session capacity.
-    if num_shards < len(gpus):
+    max_sessions = settings.engine.max_sessions
+    if settings.engine.server_gpu_count > 1 and len(gpus) > 1:
+        raise SystemExit(
+            f"ERROR: ENGINE={settings.engine.name} runs one server on every visible "
+            "GPU; leave out --gpus and raise --num-shards for parallel sessions."
+        )
+    elif num_shards < len(gpus):
         raise SystemExit(
             f"ERROR: --num-shards {num_shards} leaves model servers idle; "
             f"use at least one shard per GPU in --gpus ({len(gpus)})."
         )
-    elif math.ceil(num_shards / len(gpus)) > DEFAULT_MAX_SESSIONS:
+    elif math.ceil(num_shards / len(gpus)) > max_sessions:
         raise SystemExit(
             f"ERROR: --num-shards {num_shards} over {len(gpus)} GPU(s) exceeds the "
-            f"model server's max_sessions {DEFAULT_MAX_SESSIONS}; it rejects extra "
+            f"model server's max_sessions {max_sessions}; it rejects extra "
             "connections with HTTP 503."
         )
     elif "CUDA_VISIBLE_DEVICES" in os.environ and not set(gpus) <= set(
@@ -295,6 +310,7 @@ def generate(
         [v10_record_command(replica) for replica in replicas] if v10_sample_ids else []
     )
     (repeat_dir / "logs").mkdir(parents=True, exist_ok=True)
+    (settings.run_root / ENGINE_FILE).write_text(f"{settings.engine.name}\n")
     (repeat_dir / "sample-ids.txt").write_text(ids_text(sample_ids))
     if sample_ids:
         log(f"== Selected {len(sample_ids)} v1.5 pairs: {describe(sample_ids)}")

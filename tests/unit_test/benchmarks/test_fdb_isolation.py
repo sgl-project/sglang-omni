@@ -12,24 +12,26 @@ from typer.testing import CliRunner
 from benchmarks.duplex.fdb.common import (
     DEFAULT_JUDGE_PORT,
     DEFAULT_SERVER_PORT,
+    ENGINE_FILE,
     JOB_PORT_STRIDE,
     NCCL_PORT_END,
     load_settings,
 )
+from benchmarks.duplex.fdb.engines import ENGINES
 from benchmarks.duplex.fdb.generate import generate
 from benchmarks.duplex.fdb.selection import SampleSelection
-from benchmarks.duplex.fdb.servers import model_server_command
+from benchmarks.duplex.fdb.servers import model_server_command, model_server_gpus
 from sglang_omni.cli import app
+from sglang_omni.config.session_audio import AudioSessionPipelineConfig
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
-from sglang_omni.models.minicpm_o.native_config import (
-    DEFAULT_MAX_SESSIONS,
-    MiniCPMODuplexPipelineConfig,
-)
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexPipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 
 
 @pytest.fixture
 def clean_job_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("CUDA_VISIBLE_DEVICES", "GPU", "SERVER_PORT", "JUDGE_PORT"):
+    for name in ("CUDA_VISIBLE_DEVICES", "GPU", "SERVER_PORT", "JUDGE_PORT", "ENGINE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -103,12 +105,12 @@ def test_generate_refuses_more_shards_than_the_server_admits(
     # note (luojiaxuan): every refusal comes before a directory or server exists.
     for num_shards, gpus, message in (
         (
-            DEFAULT_MAX_SESSIONS + 1,
+            ENGINES["minicpmo"].max_sessions + 1,
             ("0",),
             "over 1 GPU\\(s\\) exceeds the model server's max_sessions",
         ),
         (
-            2 * DEFAULT_MAX_SESSIONS + 1,
+            2 * ENGINES["minicpmo"].max_sessions + 1,
             ("0", "1"),
             "over 2 GPU\\(s\\) exceeds the model server's max_sessions",
         ),
@@ -183,3 +185,68 @@ def test_model_server_command_launches_the_duplex_pipeline(
 
     assert result.exit_code == 0, result.output
     assert type(launch_server.call_args.args[0]) is MiniCPMODuplexPipelineConfig
+    assert (
+        launch_server.call_args.args[0].max_sessions == ENGINES["minicpmo"].max_sessions
+    )
+
+
+@pytest.mark.parametrize(
+    "engine_name,config_cls",
+    [
+        ("qwen3-omni", Qwen3OmniSessionPipelineConfig),
+        ("cascade", StreamingCascadePipelineConfig),
+    ],
+)
+def test_model_server_command_launches_the_engine_launch_config(
+    clean_job_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    engine_name: str,
+    config_cls: type[AudioSessionPipelineConfig],
+) -> None:
+    """Each turn-based engine's launch config loads as its session pipeline."""
+    monkeypatch.setenv("ENGINE", engine_name)
+    launch_server = Mock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launch_server)
+    server_command = model_server_command(load_settings("isolation"))
+
+    result = CliRunner().invoke(app, server_command[server_command.index("serve") :])
+
+    assert result.exit_code == 0, result.output
+    assert type(launch_server.call_args.args[0]) is config_cls
+
+
+def test_a_multi_gpu_engine_runs_one_server_on_every_visible_gpu(
+    clean_job_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("FDB_WORK", str(tmp_path / "fdb"))
+    monkeypatch.setenv("ENGINE", "cascade")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    settings = load_settings("isolation")
+    assert model_server_gpus(settings) == "0,1"
+    with pytest.raises(SystemExit, match="leave out --gpus"):
+        generate(
+            settings,
+            1,
+            SampleSelection(per_subset=1),
+            SampleSelection(per_subset=0),
+            2,
+            ("0", "1"),
+        )
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    with pytest.raises(SystemExit, match="exactly that many"):
+        model_server_gpus(load_settings("isolation"))
+    assert not (tmp_path / "fdb").exists()
+
+
+def test_later_steps_take_the_engine_the_run_recorded(
+    clean_job_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A step run without ENGINE scores the recorded engine; a different ENGINE stops it."""
+    monkeypatch.setenv("FDB_WORK", str(tmp_path / "fdb"))
+    run_root = tmp_path / "fdb" / "runs" / "isolation"
+    run_root.mkdir(parents=True)
+    (run_root / ENGINE_FILE).write_text("cascade\n")
+    assert load_settings("isolation").engine.name == "cascade"
+    monkeypatch.setenv("ENGINE", "minicpmo")
+    with pytest.raises(SystemExit, match="recorded with ENGINE=cascade"):
+        load_settings("isolation")

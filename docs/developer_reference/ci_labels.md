@@ -20,6 +20,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
 | Omni CI: MPS | H100 | Two Higgs-TTS or MOSS-TTS workers sharing one H100 through CUDA MPS, with the TTS quality assertions | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
+| Omni CI: Duplex | H100 | Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS CustomVoice). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline | `run-full-duplex`, `run-turn-based`, `run-cascaded` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Intel CPU unit tests | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
 | Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
@@ -41,9 +42,9 @@ These workflows run on GitHub-hosted runners for every pull request, drafts incl
 
 ## The Omni CI workflow
 
-Omni CI runs PR Test and the four H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
+Omni CI runs PR Test and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
 
-PR Test → ASR → TTS → MPS → Omni
+PR Test → ASR → TTS → MPS → Omni → full duplex → turn based → cascaded
 
 Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. With `run-omni-ci` alone, Omni starts as soon as PR Test finishes, and with `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. Each stage waits for the previous one to finish, and a stage that fails does not stop the stages after it. A failed setup job blocks every stage.
 
@@ -131,6 +132,18 @@ The stage label is `run-omni-ci`. A model label does not name the stage. Combine
 | `run-qwen3-omni-30b-a3b-instruct` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | Yes |
 | `run-minicpm-o-4.5` | `openbmb/MiniCPM-o-4_5` | Yes |
 
+### Duplex
+
+Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, the first samples of every v1.5 category and v1.0 subset, then scores it with the [runbook](full_duplex_bench.md): Parakeet transcripts, the official timing, unified v1.0 metrics, listening quality, and the Qwen3.8-27B behavior and semantic judges. The three strategies behave differently by design, so each job gates only regressions from its own baseline, calibrated on H100.
+
+| Stage label | Job | System |
+| --- | --- | --- |
+| `run-full-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
+| `run-turn-based` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
+| `run-cascaded` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS CustomVoice with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-customvoice`) |
+
+The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
+
 ## Hardware workflows
 
 Each hardware stage is its own workflow, with a gate job that waits for lint and resolves the labels. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
@@ -172,6 +185,9 @@ The stage label is `run-mac-ci`.
 | `run-tts-ci` | TTS in Omni CI |
 | `run-mps-ci` | MPS in Omni CI |
 | `run-omni-ci` | Omni in Omni CI |
+| `run-full-duplex` | Duplex full duplex in Omni CI |
+| `run-turn-based` | Duplex turn based in Omni CI |
+| `run-cascaded` | Duplex cascaded in Omni CI |
 | `run-intel-cpu-ci` | CPU CI |
 | `run-intel-xpu-ci` | XPU CI |
 | `run-mac-ci` | Voxt Mac CI |
@@ -226,7 +242,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more sho
 /tag-and-rerun-ci mps-higgs
 ```
 
-Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. `lint` adds `run-lint-only`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. `higgs` and `moss` add `run-tts-ci` plus `run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5`. `mps-higgs` and `mps-moss` add `run-mps-ci` plus that same model label. `qwen3-tts` adds `run-tts-ci` plus `run-qwen3-tts-12hz-1.7b-base`. A short model target adds its stage label and its model label. The model label itself never includes the stage name.
+Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `full-duplex`, `turn-based`, `cascaded`, `intel-cpu`, `intel-xpu` and `mac`. `lint` adds `run-lint-only`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. `higgs` and `moss` add `run-tts-ci` plus `run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5`. `mps-higgs` and `mps-moss` add `run-mps-ci` plus that same model label. `qwen3-tts` adds `run-tts-ci` plus `run-qwen3-tts-12hz-1.7b-base`. A short model target adds its stage label and its model label. The model label itself never includes the stage name.
 
 Use `/tag-and-rerun-full-ci` to add `run-all-ci` and select all stages. It also accepts short model targets, for example `/tag-and-rerun-full-ci qwen3-tts qwen3-asr qwen3-omni`. `higgs` or `mps-higgs` selects Higgs for every selected stage that accepts it, TTS and MPS included. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci` or `run-all-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
 

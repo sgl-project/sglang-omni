@@ -1,0 +1,191 @@
+name: Duplex CI
+
+on:
+  workflow_call:
+    inputs:
+      run_full_duplex:
+        description: Run the native full-duplex strategy (MiniCPM-o 4.5).
+        type: boolean
+        required: false
+        default: false
+      run_turn_based:
+        description: Run the turn-based strategy (Qwen3-Omni with server VAD).
+        type: boolean
+        required: false
+        default: false
+      run_cascaded:
+        description: Run the cascaded strategy (Qwen3-ASR, Qwen3.8-27B, Qwen3-TTS).
+        type: boolean
+        required: false
+        default: false
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  PYTORCH_ALLOC_CONF: expandable_segments:True
+
+# Invoked by omni-ci.yaml. Each job runs a fixed Full-Duplex-Bench v1.0 and v1.5
+# selection on one interaction strategy, judges it with Qwen3.8-27B and gates the
+# result on that strategy's own calibrated baseline. The jobs share the PR home's
+# FDB assets, so they run one after another; a failed or skipped job does not
+# skip the next.
+# DAG: full-duplex -> turn-based -> cascaded
+
+jobs:
+  full-duplex:
+    name: Full-Duplex-Bench - full duplex (MiniCPM-o)
+    if: inputs.run_full_duplex
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 45
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run Full-Duplex-Bench
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_fdb_ci.py -v -s -x
+        env:
+          FDB_CI_STRATEGY: full-duplex
+          HF_ENDPOINT: https://huggingface.co
+          OMNI_CI_MAX_ATTEMPTS: "1"
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Full-Duplex-Bench full duplex
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
+          artifact-path-globs: |
+            */RESULTS.md
+          artifact-upload-name: fdb-full-duplex-results
+          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-minicpmo/RESULTS.md
+
+  turn-based:
+    name: Full-Duplex-Bench - turn based (Qwen3-Omni)
+    needs: full-duplex
+    if: always() && !cancelled() && inputs.run_turn_based
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 45
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run Full-Duplex-Bench
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_fdb_ci.py -v -s -x
+        env:
+          FDB_CI_STRATEGY: turn-based
+          HF_ENDPOINT: https://huggingface.co
+          OMNI_CI_MAX_ATTEMPTS: "1"
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Full-Duplex-Bench turn based
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
+          artifact-path-globs: |
+            */RESULTS.md
+          artifact-upload-name: fdb-turn-based-results
+          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-qwen3-omni/RESULTS.md
+
+  cascaded:
+    name: Full-Duplex-Bench - cascaded (Qwen3.8-27B)
+    needs: [full-duplex, turn-based]
+    if: always() && !cancelled() && inputs.run_cascaded
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 45
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run Full-Duplex-Bench
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_fdb_ci.py -v -s -x
+        env:
+          FDB_CI_STRATEGY: cascaded
+          HF_ENDPOINT: https://huggingface.co
+          OMNI_CI_MAX_ATTEMPTS: "1"
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Full-Duplex-Bench cascaded
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
+          artifact-path-globs: |
+            */RESULTS.md
+          artifact-upload-name: fdb-cascaded-results
+          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-cascade/RESULTS.md

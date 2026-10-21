@@ -88,6 +88,27 @@ CI_STAGES: tuple[CiStage, ...] = (
         random_presets=("qwen3-omni", "minicpmo"),
     ),
     CiStage(
+        name="full_duplex",
+        label="run-full-duplex",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+    ),
+    CiStage(
+        name="turn_based",
+        label="run-turn-based",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+    ),
+    CiStage(
+        name="cascaded",
+        label="run-cascaded",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+    ),
+    CiStage(
         name="intel_cpu",
         label="run-intel-cpu-ci",
         workflow="CPU CI",
