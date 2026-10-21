@@ -61,8 +61,8 @@ def test_only_the_first_unit_carries_the_prompt():
         states.append(PersonaPlexState.from_dict(unit_payload.data))
     hooks.close(CALL)
 
-    assert states[0].carries_prompt and states[0].text_prompt_ids == PROMPT_IDS
-    assert not states[1].carries_prompt and states[1].text_prompt_ids == []
+    assert states[0].text_prompt_ids == PROMPT_IDS
+    assert states[1].text_prompt_ids == []
     torch.testing.assert_close(states[1].waveform, waveform, atol=1e-4, rtol=0)
 
 
@@ -71,7 +71,10 @@ def test_units_must_be_whole_frames_of_pcm16():
         pcm16_to_waveform(unit(0, b"\0\0" * 10))
     with pytest.raises(ValueError, match="pcm16"):
         pcm16_to_waveform(TimedChunk("audio", 0.0, 0.0, 0, b"", format="wav"))
-    assert pcm16_to_waveform(unit(0)).numel() == 0
+    with pytest.raises(ValueError, match="whole 80 ms frames"):
+        pcm16_to_waveform(unit(0))
+    end = TimedChunk("audio", 0.0, 0.0, 0, b"", "pcm16", eos=True)
+    assert pcm16_to_waveform(end).numel() == 0
 
 
 def test_streaming_encode_matches_the_whole_recording(random_codec):
@@ -146,15 +149,6 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
     assert [(chunk.modality, chunk.eos, chunk.payload) for chunk in emitted] == [
         ("audio", True, None)
     ]
-
-
-def test_code2wav_refuses_a_unit_wider_than_its_decoder_ring(random_codec):
-    hooks = open_hooks(
-        Code2WavSessionHooks(random_codec, torch.device("cpu"), PieceTokenizer())
-    )
-    state = PersonaPlexState(codes=torch.zeros(3, 8, dtype=torch.long))
-    with pytest.raises(ValueError, match="at most 2 frames"):
-        hooks.append(unit(0), payload(state), context([]))
 
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):

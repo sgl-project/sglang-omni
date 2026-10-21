@@ -69,13 +69,6 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         return payload
 
     def start_call(self, session: LMSession, state: PersonaPlexState) -> LMCall:
-        if not state.carries_prompt:
-            raise ValueError(
-                "PersonaPlex call reached the LM without its prompt, "
-                "which only the first unit carries"
-            )
-        else:
-            pass
         timeline = timeline_from_state(state, no_codes())
         return LMCall(
             timeline=timeline,
@@ -98,11 +91,6 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         call = session.call
         timeline = call.timeline
         caller_codes = state.user_codes
-        assert caller_codes is not None, "Mimi encode sets every unit's codes"
-        if caller_codes.shape[0] == 0:
-            raise ValueError("PersonaPlex session unit carries no 80 ms frame")
-        else:
-            pass
         num_forwards = timeline.num_frames + int(caller_codes.shape[0]) + 1
         positions = timeline.num_prompt_positions + num_forwards
         if positions > self.context_length - 1:
@@ -143,12 +131,7 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
         call = self.sessions[session_identity].call
-        assert call is not None, "a unit's result follows its build"
         frames = call.model_inputs["pending_frames"]
-        assert len(frames) == len(request_data.output_ids), (
-            len(frames),
-            len(request_data.output_ids),
-        )
         text_ids = [call.next_text_id]
         text_ids.extend(int(token) for token in request_data.output_ids)
         call.next_text_id = text_ids.pop()

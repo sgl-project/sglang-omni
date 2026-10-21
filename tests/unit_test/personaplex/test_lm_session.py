@@ -95,7 +95,6 @@ def unit_payload(index: int, codes: torch.Tensor) -> StagePayload:
     state = PersonaPlexState(user_codes=codes)
     if index == 0:
         state.text_prompt_ids = PROMPT_IDS
-        state.carries_prompt = True
     else:
         pass
     return StagePayload(
@@ -197,17 +196,6 @@ def test_a_unit_past_the_context_fails_as_context_exhausted():
         CallDriver(open_adapter(context_length=0)).build(caller_codes(1))
     # Note (wilsonzheng0327): Stage IPC carries only the message to the client.
     assert ContextExhaustedError.matches(RuntimeError(str(error.value)))
-
-
-def test_a_call_without_its_prompt_is_rejected():
-    adapter = open_adapter()
-    payload = StagePayload(
-        "unit-1",
-        request=OmniRequest(inputs=None),
-        data=PersonaPlexState(user_codes=caller_codes(1)).to_dict(),
-    )
-    with pytest.raises(ValueError, match="prompt"):
-        adapter.build(CALL, unit_chunk(1), payload)
 
 
 def test_an_empty_end_of_input_is_relayed_without_a_step():

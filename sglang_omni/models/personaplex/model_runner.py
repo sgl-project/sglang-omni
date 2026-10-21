@@ -325,7 +325,6 @@ class PersonaPlexModelRunner(ModelRunner):
         num_origin = len(req.origin_input_ids)
         start = req.prefix_len
         end = num_origin + len(req.output_ids)
-        assert start < end, (start, end)
         pieces = []
         if start < num_prompt:
             pieces.append(self.prefill_rows(data)[start:])

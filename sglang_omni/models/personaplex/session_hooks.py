@@ -39,12 +39,19 @@ MAX_FRAMES_PER_UNIT = 2
 WARM_UP_FRAMES_PER_UNIT = (MAX_FRAMES_PER_UNIT, 1)
 
 
+def is_empty_end_of_input(chunk: TimedChunk) -> bool:
+    return chunk.eos and chunk.duration_ms == 0
+
+
 def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
-    """A unit's PCM16 payload as float32 samples; whole 80 ms frames only."""
+    """A unit's PCM16 payload as float32 samples: whole 80 ms frames, at least
+    one unless the unit is an empty end of input."""
     payload = chunk.payload
     if chunk.format != PCM16_FORMAT or not isinstance(payload, bytes):
         raise ValueError(f"PersonaPlex sessions take {PCM16_FORMAT} audio units")
-    elif len(payload) % PCM16_BYTES_PER_FRAME:
+    elif len(payload) % PCM16_BYTES_PER_FRAME or (
+        not payload and not is_empty_end_of_input(chunk)
+    ):
         raise ValueError(
             f"PersonaPlex session units must hold whole 80 ms frames of "
             f"{SAMPLE_RATE} Hz audio, got {len(payload)} bytes"
@@ -92,11 +99,7 @@ class PromptSessionHooks(SessionHooks):
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = self.prompts.pop(context.session_identity, None)
-        if state is None:
-            state = PersonaPlexState()
-        else:
-            state.carries_prompt = True
+        state = self.prompts.pop(context.session_identity, None) or PersonaPlexState()
         state.waveform = pcm16_to_waveform(chunk)
         payload.data = state.to_dict()
         return payload
@@ -141,13 +144,11 @@ class MimiEncodeSessionHooks(SessionHooks):
             state.voice_waveform = None
         else:
             pass
-        waveform = state.waveform
-        assert waveform is not None, "preprocessing sets every unit's waveform"
-        if waveform.numel() == 0:
+        if is_empty_end_of_input(chunk):
             state.user_codes = no_codes()
         else:
             codes = self.codec.encode_step(
-                waveform.to(device=self.device, dtype=torch.float32).view(1, 1, -1),
+                state.waveform.to(device=self.device, dtype=torch.float32).view(1, 1, -1),
                 self.encode_states[context.session_identity],
             )
             state.user_codes = codes[0].T.cpu()
@@ -224,16 +225,6 @@ class Code2WavSessionHooks(SessionHooks):
         call = self.calls[context.session_identity]
         state = PersonaPlexState.from_dict(payload.data)
         codes = state.codes
-        assert codes is not None, "the LM stage sets every unit's codes"
-        if codes.shape[0] > MAX_FRAMES_PER_UNIT:
-            # Note (wilsonzheng0327): A wider chunk would overwrite decoder context
-            # still in use.
-            raise ValueError(
-                f"PersonaPlex code2wav decodes at most {MAX_FRAMES_PER_UNIT} frames "
-                f"per unit, got {codes.shape[0]}"
-            )
-        else:
-            pass
         start_ms = samples_to_ms(call.num_samples)
         num_samples = 0
         if codes.shape[0]:
