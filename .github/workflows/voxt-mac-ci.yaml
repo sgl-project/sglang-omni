@@ -273,6 +273,7 @@ jobs:
             -only-testing:VoxtTests/LocalAPIComposePromptTests \
             -only-testing:VoxtTests/LocalAPIConnectorLinkTests \
             -only-testing:VoxtTests/LocalAPIContractTests \
+            -only-testing:VoxtTests/LocalAPICorrectionTests \
             -only-testing:VoxtTests/LocalAPIDictationPipelineTests \
             -only-testing:VoxtTests/LocalAPIHTTPTests \
             -only-testing:VoxtTests/LocalAPIModelStatusTests \

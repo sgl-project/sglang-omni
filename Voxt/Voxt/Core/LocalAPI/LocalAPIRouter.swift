@@ -32,6 +32,7 @@ nonisolated enum LocalAPIRoute: Equatable, Sendable {
     case composePrompts
     case dictation(LocalAPIDictationRequest)
     case compose(LocalAPIComposeRequest)
+    case correction(LocalAPICorrectionRequest)
     case reject(LocalAPIHTTPResponse)
 }
 
@@ -119,6 +120,36 @@ nonisolated struct LocalAPIRouter: Sendable {
                 options: body.options,
                 language: language
             ))
+        case "/v1/corrections":
+            guard request.method == "POST" else { return .reject(.error(status: 405, "Use POST.")) }
+            let mediaType = request.header("content-type")?
+                .split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            guard mediaType == "application/json" else {
+                return .reject(.error(status: 415, "Send application/json."))
+            }
+            let object: Any
+            do {
+                object = try JSONSerialization.jsonObject(with: request.body)
+            } catch {
+                return .reject(.error(status: 400, "The corrections request is not valid JSON."))
+            }
+            guard let fields = object as? [String: Any] else {
+                return .reject(.error(status: 400, "The corrections request is not valid JSON."))
+            }
+            guard let original = fields["original"] as? String, let edited = fields["edited"] as? String else {
+                return .reject(.error(status: 400, "original and edited must be strings."))
+            }
+            guard !original.isEmpty, !edited.isEmpty else {
+                return .reject(.error(status: 400, "The original and edited text must not be empty."))
+            }
+            guard original.count <= 2_000, edited.count <= 2_000 else {
+                return .reject(.error(status: 400, "Use at most 2000 characters for each passage."))
+            }
+            guard original != edited else {
+                return .reject(.error(status: 400, "The original and edited text are the same."))
+            }
+            return .correction(LocalAPICorrectionRequest(original: original, edited: edited))
         default:
             return .reject(.error(status: 404, "Unknown path."))
         }

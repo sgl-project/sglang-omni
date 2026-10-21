@@ -85,6 +85,9 @@ nonisolated enum LocalAPIRequestHandler {
         dictate: @escaping @MainActor @Sendable (LocalAPIDictationRequest) async -> LocalAPIHTTPResponse,
         compose: @escaping @MainActor @Sendable (LocalAPIComposeRequest) async -> LocalAPIHTTPResponse = { _ in
             .error(status: 503, "No text model is available for this operation.")
+        },
+        correct: @escaping @MainActor @Sendable (LocalAPICorrectionRequest) async -> LocalAPIHTTPResponse = { _ in
+            .error(status: 503, "No text model is available for this operation.")
         }
     ) -> LocalAPIServer.Handler {
         { request in
@@ -93,7 +96,7 @@ nonisolated enum LocalAPIRequestHandler {
             // reach a cloud model, so the request is refused before anything runs.
             if request.header("x-voxt-model-policy") == "local-only" {
                 switch route {
-                case .dictation, .compose:
+                case .dictation, .compose, .correction:
                     let locations = await modelLocations()
                     guard locations.transcription == .local, locations.text == .local else {
                         let cloud = locations.transcription == .remote || locations.text == .remote
@@ -117,6 +120,7 @@ nonisolated enum LocalAPIRequestHandler {
                         "dictations",
                         "compose",
                         "compose/prompts",
+                        "corrections",
                     ],
                     audio: .init(
                         contentTypes: LocalAPIRouter.audioExtensions.keys.sorted(),
@@ -133,6 +137,8 @@ nonisolated enum LocalAPIRequestHandler {
                 return await dictate(dictation)
             case let .compose(composeRequest):
                 return await compose(composeRequest)
+            case let .correction(correction):
+                return await correct(correction)
             }
         }
     }

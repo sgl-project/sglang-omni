@@ -404,4 +404,117 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
         XCTAssertEqual(response.status, 503)
         XCTAssertTrue(transcribedFiles.isEmpty)
     }
+
+    // MARK: Corrections
+
+    private func correctionRequest(original: String, edited: String) -> LocalAPICorrectionRequest {
+        LocalAPICorrectionRequest(original: original, edited: edited)
+    }
+
+    func testCorrectionReturnsTheValidatedPairAndWritesNoHistory() async throws {
+        var prompts: [String] = []
+        let pipeline = makePipeline()
+        pipeline.correctHandler = { _, instruction in
+            prompts.append(instruction)
+            return #"{"correction":{"original":"星浪","replacement":"星朗"}}"#
+        }
+
+        let response = await pipeline.runCorrection(correctionRequest(original: "请用星浪处理。", edited: "请用星朗处理。"))
+
+        XCTAssertEqual(response.status, 200)
+        let body = try json(response)
+        let correction = try XCTUnwrap(body["correction"] as? [String: String])
+        XCTAssertEqual(correction["original"], "星浪")
+        XCTAssertEqual(correction["replacement"], "星朗")
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertTrue(prompts[0].contains("请用星浪处理。"))
+        XCTAssertTrue(prompts[0].contains("星朗"))
+        XCTAssertTrue(recorded.isEmpty)
+        XCTAssertTrue(transcribedFiles.isEmpty)
+        XCTAssertTrue(enhancedInputs.isEmpty)
+    }
+
+    func testIgnorableCorrectionSkipsTheModelAndReturnsNull() async throws {
+        let pipeline = makePipeline()
+        pipeline.correctHandler = { _, _ in
+            XCTFail("an append, deletion, number, punctuation, or rewrite must not call the model")
+            return #"{"correction":{"original":"Voxt","replacement":"Voice"}}"#
+        }
+        let samples = [
+            ("Use Voxt.", "Use Voxt. Thanks!"),
+            ("Use Voxt today.", "Use today."),
+            ("Use Voxt.", "Use Voxt!"),
+            ("Pay $50.", "Pay $60."),
+            ("Use 50 today.", "Use 60 today."),
+            ("See Alice about the invoice", "See Bob about the bill"),
+        ]
+        for sample in samples {
+            let response = await pipeline.runCorrection(correctionRequest(original: sample.0, edited: sample.1))
+            XCTAssertEqual(response.status, 200, sample.0)
+            XCTAssertTrue(try json(response)["correction"] is NSNull, sample.0)
+        }
+        XCTAssertTrue(recorded.isEmpty)
+    }
+
+    func testLetterInsertAndDeleteInsideAWordCallTheModel() async throws {
+        let pipeline = makePipeline()
+        pipeline.correctHandler = { request, _ in
+            if request.original == "Use oxt." {
+                return #"{"correction":{"original":"oxt","replacement":"Voxt"}}"#
+            }
+            return #"{"correction":{"original":"Vooxt","replacement":"Voxt"}}"#
+        }
+        let inserted = await pipeline.runCorrection(correctionRequest(original: "Use oxt.", edited: "Use Voxt."))
+        let deleted = await pipeline.runCorrection(correctionRequest(original: "Use Vooxt.", edited: "Use Voxt."))
+        XCTAssertEqual(inserted.status, 200)
+        XCTAssertEqual(deleted.status, 200)
+        let insertedPair = try XCTUnwrap(try json(inserted)["correction"] as? [String: String])
+        let deletedPair = try XCTUnwrap(try json(deleted)["correction"] as? [String: String])
+        XCTAssertEqual(insertedPair["original"], "oxt")
+        XCTAssertEqual(insertedPair["replacement"], "Voxt")
+        XCTAssertEqual(deletedPair["original"], "Vooxt")
+        XCTAssertEqual(deletedPair["replacement"], "Voxt")
+        XCTAssertTrue(recorded.isEmpty)
+        XCTAssertTrue(transcribedFiles.isEmpty)
+    }
+
+    func testModelNullAndInvalidOutput() async throws {
+        let pipeline = makePipeline()
+        pipeline.correctHandler = { _, _ in #"{"correction":null}"# }
+        let absent = await pipeline.runCorrection(correctionRequest(original: "Use Voice today.", edited: "Use Voxt today."))
+        XCTAssertEqual(absent.status, 200)
+        XCTAssertTrue(try json(absent)["correction"] is NSNull)
+
+        pipeline.correctHandler = { _, _ in "not json" }
+        let invalid = await pipeline.runCorrection(correctionRequest(original: "Use Voice today.", edited: "Use Voxt today."))
+        XCTAssertEqual(invalid.status, 503)
+        XCTAssertFalse((try json(invalid)["error"] as? String ?? "").isEmpty)
+
+        pipeline.correctHandler = { _, _ in #"{"correction":{"original":"浪","replacement":"朗"}}"# }
+        let fragment = await pipeline.runCorrection(correctionRequest(original: "请用星浪处理。", edited: "请用星朗处理。"))
+        XCTAssertEqual(fragment.status, 503)
+        XCTAssertTrue(recorded.isEmpty)
+        XCTAssertTrue(transcribedFiles.isEmpty)
+    }
+
+    func testCorrectionSharesTheBusyGuard() async throws {
+        let busy = makePipeline(busyReason: "Voxt is recording on the Mac.")
+        busy.correctHandler = { _, _ in #"{"correction":null}"# }
+        let blocked = await busy.runCorrection(correctionRequest(original: "Use Voice today.", edited: "Use Voxt today."))
+        XCTAssertEqual(blocked.status, 503)
+        XCTAssertEqual(try json(blocked)["error"] as? String, "Voxt is recording on the Mac.")
+
+        let pipeline = makePipeline()
+        pipeline.correctHandler = { _, _ in
+            try await Task.sleep(for: .milliseconds(200))
+            return #"{"correction":{"original":"星浪","replacement":"星朗"}}"#
+        }
+        async let first = pipeline.runCorrection(correctionRequest(original: "请用星浪处理。", edited: "请用星朗处理。"))
+        try await Task.sleep(for: .milliseconds(40))
+        let second = await pipeline.runCompose(makeComposeRequest())
+        let firstResponse = await first
+        XCTAssertEqual(second.status, 503)
+        XCTAssertEqual(firstResponse.status, 200)
+        XCTAssertTrue(recorded.isEmpty)
+    }
 }
