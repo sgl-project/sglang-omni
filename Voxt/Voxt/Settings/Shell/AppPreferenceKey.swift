@@ -38,6 +38,7 @@ enum AppPreferenceKey {
     static let useHfMirror = "useHfMirror"
     nonisolated static let localAPIServerEnabled = "localAPIServerEnabled"
     nonisolated static let localAPIServerPort = "localAPIServerPort"
+    nonisolated static let localAPIConnectorAlwaysAllowed = "localAPIConnectorAlwaysAllowed"
     static let modelDownloadSourceSelections = "modelDownloadSourceSelections"
     static let hiddenModelVisibilityIDs = "hiddenModelVisibilityIDs"
     nonisolated static let hotkeyInputType = "hotkeyInputType"

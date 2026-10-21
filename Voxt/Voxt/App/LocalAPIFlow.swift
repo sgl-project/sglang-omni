@@ -3,6 +3,7 @@
 // user's selected ASR model, enhancement and dictionary. The result is returned to the caller and
 // saved to history; nothing is pasted on the Mac.
 
+import AppKit
 import Foundation
 
 extension AppDelegate {
@@ -71,6 +72,7 @@ extension AppDelegate {
                 VoxtLog.info("Local API server listening on 127.0.0.1:\(bound)")
                 guard let self, self.localAPIServer === server else { return }
                 self.localAPIServerStatus = .listening(port: Int(bound))
+                self.startLocalAPIConnectorLink(port: Int(bound))
             } catch {
                 VoxtLog.warning("Local API server failed to start: \(error.localizedDescription)")
                 guard let self, self.localAPIServer === server else { return }
@@ -82,12 +84,57 @@ extension AppDelegate {
     }
 
     func stopLocalAPIServer() {
+        localAPIConnectorLink?.stop()
+        localAPIConnectorLink = nil
         localAPIServer?.stop()
         localAPIServer = nil
         localAPIServerPort = nil
         if let localAPIActivity {
             ProcessInfo.processInfo.endActivity(localAPIActivity)
             self.localAPIActivity = nil
+        }
+    }
+
+    /// Lets Voxt Connector, signed by Voxt's own team, fetch the port and access token after one
+    /// "Allow". Ad-hoc and unsigned builds can't prove their identity, so the link does not start
+    /// and the Connector asks the user to enter both by hand.
+    private func startLocalAPIConnectorLink(port: Int) {
+        localAPIConnectorLink?.stop()
+        localAPIConnectorLink = nil
+        guard let team = LocalAPIConnectorLink.ownTeamIdentifier() else {
+            VoxtLog.info("Connector link not started: this Voxt build has no signing team.")
+            return
+        }
+        let rememberedKey = AppPreferenceKey.localAPIConnectorAlwaysAllowed
+        let link = LocalAPIConnectorLink(
+            team: team,
+            isRemembered: { UserDefaults.standard.bool(forKey: rememberedKey) },
+            remember: { UserDefaults.standard.set(true, forKey: rememberedKey) },
+            ask: { await Self.askToAllowConnector() },
+            // Called off the main thread: the port is fixed while this listener runs.
+            credentials: { (port, LocalAPISettings.token()) }
+        )
+        do {
+            try link.start()
+            localAPIConnectorLink = link
+        } catch {
+            VoxtLog.warning("Connector link did not start: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private static func askToAllowConnector() async -> LocalAPIConnectorLink.Decision {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = AppLocalization.localizedString("Allow Voxt Connector to use Voxt?")
+        alert.informativeText = AppLocalization.localizedString("It will forward dictations from your paired iPhone to Voxt on this Mac.")
+        alert.addButton(withTitle: AppLocalization.localizedString("Always Allow"))
+        alert.addButton(withTitle: AppLocalization.localizedString("Allow Once"))
+        alert.addButton(withTitle: AppLocalization.localizedString("Don't Allow"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .allowAlways
+        case .alertSecondButtonReturn: return .allowOnce
+        default: return .deny
         }
     }
 

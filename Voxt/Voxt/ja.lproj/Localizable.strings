@@ -1859,6 +1859,11 @@
 "No text model is available. Choose one in Voxt Settings > Transcription." = "使えるテキストモデルがありません。Voxt 設定 > 文字起こし で選んでください。";
 "The selected text model is configured to skip enhancement." = "選択中のテキストモデルは補正をスキップする設定です。";
 "The selected text model cannot run this operation." = "選択中のテキストモデルではこの操作を実行できません。";
+"Allow Voxt Connector to use Voxt?" = "Voxt Connector に Voxt の使用を許可しますか？";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "ペアリングした iPhone の音声入力を、この Mac の Voxt に転送します。";
+"Always Allow" = "常に許可";
+"Allow Once" = "今回のみ許可";
+"Don't Allow" = "許可しない";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "句読点と段落の流れを整えます。例：話し言葉の間を読みやすい文にします。";

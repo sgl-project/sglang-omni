@@ -23,7 +23,11 @@ curl -H "Authorization: Bearer $VOXT_TOKEN" -H "Content-Type: audio/wav" \
 
 Voxt binds `127.0.0.1` only, on port 47910 by default (change it in the same card). Other computers and phones cannot connect directly. To use it from another device, put your own tunnel in front of it, for example `tailscale serve --https=47911 http://127.0.0.1:47910`. Use a different public port: macOS refuses Voxt's bind when the tunnel already holds the same port.
 
-Every request needs `Authorization: Bearer <token>`. **Regenerate** issues a new token and disconnects existing clients.
+Every request needs `Authorization: Bearer <token>`.
+
+Voxt Connector, the menu bar app that carries dictations from Voxt Mobile on an iPhone, does not need the token copied by hand. When it is signed by the same team as Voxt, it asks for the port and token over a Unix socket at the top of Voxt's sandbox container, `~/Library/Containers/com.voxt.Voxt/Data/connector.sock` (`~/Library/Application Support/Voxt/connector.sock` for an unsandboxed build), and Voxt asks you once: **Always Allow**, **Allow Once** or **Don't Allow**. Voxt checks the Connector's code signature (Voxt's own team, the bundle ID `com.voxt.VoxtConnector` or the one in `VoxtConnectorBundleIdentifier` of Voxt's Info.plist, and the hardened runtime) before it answers; an ad-hoc or unsigned Voxt does not open the socket.
+
+In the App Sandbox (the release build), macOS lets Voxt inspect another process's code only when that code is somewhere the sandbox may read, which for an app is `/Applications`. So **install Voxt Connector in /Applications**. Anywhere else the look-up is refused, Voxt rejects the Connector, and the Connector shows its manual entry: copy the port and token from this card. Voxt checks both the Connector's running code and its bundle on disk, so a bundle changed after signing is refused too. After **Always Allow**, a Connector that passes these checks gets the token without a prompt.
 
 ## Endpoints
 

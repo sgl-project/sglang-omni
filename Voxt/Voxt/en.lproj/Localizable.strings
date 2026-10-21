@@ -1906,6 +1906,11 @@
 "No text model is available. Choose one in Voxt Settings > Transcription." = "No text model is available. Choose one in Voxt Settings > Transcription.";
 "The selected text model is configured to skip enhancement." = "The selected text model is configured to skip enhancement.";
 "The selected text model cannot run this operation." = "The selected text model cannot run this operation.";
+"Allow Voxt Connector to use Voxt?" = "Allow Voxt Connector to use Voxt?";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "It will forward dictations from your paired iPhone to Voxt on this Mac.";
+"Always Allow" = "Always Allow";
+"Allow Once" = "Allow Once";
+"Don't Allow" = "Don't Allow";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences.";
