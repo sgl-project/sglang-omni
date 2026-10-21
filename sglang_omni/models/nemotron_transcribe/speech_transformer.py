@@ -299,7 +299,7 @@ class SpeechTransformerEncoder(nn.Module):
 
     def compile_layers(
         self,
-        mode: EncoderCompileMode = "max-autotune-no-cudagraphs",
+        mode: EncoderCompileMode = "default",
         cuda_graphs: bool = False,
         dynamic: bool = False,
     ) -> None:

@@ -93,7 +93,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 stream_emit_interval_s=0.05,
                 compile_perception=False,
                 perception_cuda_graphs=False,
-                perception_compile_mode="max-autotune-no-cudagraphs",
+                perception_compile_mode="default",
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,

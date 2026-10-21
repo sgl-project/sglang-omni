@@ -89,7 +89,7 @@ sgl-omni serve \
   --asr.factory.request_build_max_workers 16 \
   --asr.factory.request_build_max_pending 256 \
   --asr.factory.compile_perception true \
-  --asr.factory.perception_compile_mode max-autotune-no-cudagraphs \
+  --asr.factory.perception_compile_mode default \
   --asr.factory.perception_cuda_graphs true
 ```
 
@@ -97,8 +97,9 @@ The first requests compile kernels and capture encoder shapes. Exclude this
 warmup from throughput measurements. Single-request serving uses static
 encoder compilation; concurrent serving uses dynamic batch shapes. Explicit
 encoder graphs use private pools and cache at most four shapes per encoder.
-Additional shapes run without capturing more graphs. `max-autotune-no-cudagraphs`
-keeps graph ownership outside Inductor; `default` reduces compilation work.
+Additional shapes run without capturing more graphs. `default` is the pipeline
+default and skips Inductor's kernel search. `max-autotune-no-cudagraphs` times
+candidates on the serving GPU and keeps graph ownership outside Inductor.
 
 For c=1, set both decoder limits to `1`. For long recordings, start with the
 default encoder batch cap rather than the short-clip profile's cap of `32`.
