@@ -15,6 +15,9 @@ from sglang_omni.pipeline.umm import (
     UMMPipelineConfig,
 )
 
+# note (Yixiao Zeng): in our tests, English, Chinese or Japanese decisions with text and prompt at their character limits took at most 14422 tokens.
+MAX_DECISION_TOKENS = 16384
+
 
 class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
     """Interleaved understanding and generation over native SGLang stages.
@@ -72,6 +75,7 @@ class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
             ),
             allow_child_processes=True,
             factory=FactoryArgs(stage_name="reasoner"),
+            env={"SGLANG_MAX_NEW_TOKENS_LIMIT": str(MAX_DECISION_TOKENS)},
             gpu=1,
             next="orchestrator",
         ),
