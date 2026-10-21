@@ -22,7 +22,6 @@ class StreamingState:
     cache_compressed: bool = False
     silence_embedding: torch.Tensor | None = None
     silence_frames: torch.Tensor | None = None
-    speaker_permutation: torch.Tensor | None = None
 
 
 class SortformerModules(nn.Module):
@@ -51,9 +50,7 @@ class SortformerModules(nn.Module):
     ) -> None:
         super().__init__()
         self.speaker_count = speaker_count
-        self.n_spk = speaker_count
         self.fc_d_model = fc_d_model
-        self.hidden_size = tf_d_model
         self.upsample_factor = upsample_factor
         self.spkcache_len = spkcache_len
         self.fifo_len = fifo_len
@@ -144,26 +141,13 @@ class SortformerModules(nn.Module):
         predictions: torch.Tensor,
         left_frames: int,
         right_frames: int,
-    ) -> tuple[StreamingState, torch.Tensor]:
-        """Fold one pre-encoded chunk into the cache and return its core predictions."""
-        batch, _, _ = chunk.shape
+    ) -> StreamingState:
+        """Fold one pre-encoded chunk into the cache."""
         cache_frames = state.speaker_cache.shape[1]
         queue_frames = state.recent_embeddings.shape[1]
         core_frames = chunk.shape[1] - left_frames - right_frames
         if core_frames < 0:
             raise ValueError("streaming chunk is shorter than its context")
-        else:
-            pass
-        if state.speaker_permutation is not None:
-            inverse = torch.stack(
-                [
-                    torch.argsort(state.speaker_permutation[index])
-                    for index in range(batch)
-                ]
-            )
-            predictions = torch.stack(
-                [predictions[index, :, inverse[index]] for index in range(batch)]
-            )
         else:
             pass
         state.recent_predictions = predictions[
@@ -221,12 +205,11 @@ class SortformerModules(nn.Module):
                 state.speaker_cache = compressed
                 state.speaker_cache_predictions = compressed_predictions
                 state.cache_compressed = True
-                state.speaker_permutation = None
             else:
                 pass
         else:
             pass
-        return state, core_predictions
+        return state
 
     def silence_profile(
         self,
