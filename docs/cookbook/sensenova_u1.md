@@ -307,30 +307,3 @@ are checked before generation. The controller still requires
 `timeout_s` under `orchestrator.factory`. The retained-byte limit reserves a
 conservative inline PNG budget before generation, so a request can be rejected
 before its actual encoded image size is known.
-
-### Validation Status
-
-CPU tests exercise the real adapter and controller, output ordering,
-input/output budgets, deadlines, cleanup after late results, media integrity,
-and configuration construction. The CPU/Gloo regression covers T2I,
-multi-output, UMM routing/output, TP configuration and cancellation, Cache-DiT,
-and sampling.
-A full SGLang run on an RTX 4090 host (Python 3.12, torch 2.13.0, SGLang
-0.5.21) produced 225 passed, 1 failed, and 43 subtests passed. The one failure
-is the bfloat16 case of `test_native_tp`; it also reproduces at the pre-change
-commit `cd4b310fa`, so it is not introduced by the UMM migration. HTTP tests cover both Images endpoints and
-preservation of 400/503 rejection statuses. Their local CPU run loads the real
-SGLang utility module without the GPU-dependent package initializer; this does
-not validate a complete installed service.
-
-The Gloo suite covers TP collectives and asymmetric cancellation followed by a
-successful request on the same process group. It does not validate NCCL/HCCL
-cancellation during model inference.
-
-GPU/NPU launch, baseline image comparison, batching throughput, TP/DP inference,
-Cache-DiT, offload, and business acceptance remain unexecuted for this UMM path.
-The existing pipeline's hardware results do not establish these properties for
-the new default configuration. Compare against commit `706053fa0` before
-production use, using the conditions and coverage listed above. A runnable
-checklist is in the
-[Phase 3 validation checklist](../design/sensenova_phase3_checklist.md).
