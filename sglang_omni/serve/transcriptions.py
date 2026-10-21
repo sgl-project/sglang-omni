@@ -309,6 +309,7 @@ async def transcribe_planned_upload(
             architectures=getattr(app.state, "architectures", None),
             duration_s=duration_s,
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
+            finish_reason=result.finish_reason,
         )
     else:
         pass

@@ -234,6 +234,7 @@ def make_scheduler_adapters(
                 "language": data.language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
+                "finish_reason": data.finish_reason,
                 "usage": {
                     "engine_time_s": engine_time_s,
                     "prompt_tokens": len(data.prompt_token_ids or []),

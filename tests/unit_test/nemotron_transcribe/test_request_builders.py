@@ -153,11 +153,13 @@ def test_result_strips_eos_and_preserves_usage() -> None:
     )
     request = build_request(make_payload({"language": "en"}))
     request.output_ids = [7, 8, EOS_TOKEN_ID]
+    request.finish_reason = "length"
     result = adapt_result(request)
     assert result.request_id == "nemotron-test"
     assert result.data["text"] == "Hello world"
     assert result.data["language"] == "en"
     assert result.data["duration_s"] == 1.0
+    assert result.data["finish_reason"] == "length"
     assert result.data["usage"]["completion_tokens"] == 2
     assert result.data["usage"]["prompt_tokens"] == 15
 
