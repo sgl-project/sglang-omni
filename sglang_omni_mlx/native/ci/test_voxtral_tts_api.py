@@ -268,6 +268,18 @@ def test_voxtral_disconnect_stops_a_generation_it_has_not_answered(
     wait_until_idle(voxtral_server)
 
 
+def test_voxtral_half_closed_client_counts_as_gone(voxtral_server: Server) -> None:
+    """uvicorn closes a connection whose client shuts down its sending side, so
+    CUDA cancels that request and sends nothing; this server must match it."""
+    with send_speech_request(voxtral_server, {"input": PASSAGE}) as client:
+        client.shutdown(socket.SHUT_WR)
+        received = b""
+        while chunk := client.recv(65536):
+            received += chunk
+        assert received == b""
+    wait_until_idle(voxtral_server)
+
+
 def test_voxtral_refuses_requests_beyond_its_queue(voxtral_server: Server) -> None:
     with (
         open_speech_stream(voxtral_server, LONG_SENTENCE) as running,

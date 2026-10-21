@@ -289,6 +289,9 @@ int ClientSocket(const mg_connection *connection) {
 
 // Whether the client of client_socket closed it: a client waiting for its
 // answer sends nothing more, so its socket reads as ended or fails only then.
+// Note (Minyi Tang): a client that only shuts down its sending side also reads
+// as ended and is treated as gone, as uvicorn treats it for the CUDA server.
+// TCP tells the two apart only once something is written to the socket.
 bool ClientLeft(int client_socket) {
   if (client_socket < 0) {
     return false;
