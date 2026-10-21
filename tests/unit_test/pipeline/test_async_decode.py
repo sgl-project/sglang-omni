@@ -117,7 +117,7 @@ def patch_event(ready: bool):
 
 
 def test_launch_event_comes_from_the_runners_device_module():
-    """execute_launch must build the event on the runner's own device backend.
+    """execute_launch's completion event must come from the runner's own device backend.
 
     Guards against a regression to a hardcoded backend (e.g. torch.cuda.Event or
     torch.cpu.Event): a fixed-backend call would not construct the patched class.
@@ -130,16 +130,7 @@ def test_launch_event_comes_from_the_runners_device_module():
     accel = torch.device(current_platform.device_type)
     runner = StubRunner()
     runner.device = accel
-    bridge = SGLangExecutionBridge(
-        device=accel,
-        worker=types.SimpleNamespace(model_runner=runner),
-        spec_algorithm=types.SimpleNamespace(is_none=lambda: True),
-        future_map=None,
-    )
     fake_bridge = FakeExecutionBridge(accel)
-    bridge.forward_context = fake_bridge.forward_context
-    bridge.publish_next_tokens = fake_bridge.publish_next_tokens
-    runner.execution_bridge = bridge
 
     seen = []
     real_event = torch.get_device_module(accel).Event
@@ -150,6 +141,15 @@ def test_launch_event_comes_from_the_runners_device_module():
             return super().__new__(cls)
 
     with mock.patch.object(torch.get_device_module(accel), "Event", RecordingEvent):
+        bridge = SGLangExecutionBridge(
+            device=accel,
+            worker=types.SimpleNamespace(model_runner=runner),
+            spec_algorithm=types.SimpleNamespace(is_none=lambda: True),
+            future_map=None,
+        )
+        bridge.forward_context = fake_bridge.forward_context
+        bridge.publish_next_tokens = fake_bridge.publish_next_tokens
+        runner.execution_bridge = bridge
         pending = runner.execute_launch(make_sched_output(1))
 
     assert seen, "no event built from the runner's device module"
