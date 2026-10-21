@@ -29,6 +29,10 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     mm_embedding_cache_size_bytes: int | None = Field(default=None, ge=0)
     chunked_prefill_size: int | None = Field(default=None, ge=1)
     encoder_max_batch_size: int | None = Field(default=None, ge=1)
+    enable_pre_lm_encoder: bool | None = None
+    pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
+    pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
+    pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
     stream_emit_interval_s: float | None = Field(default=None, ge=0)
     compile_perception: bool | None = None
     perception_cuda_graphs: bool | None = None
@@ -80,6 +84,10 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 mm_embedding_cache_size_bytes=0,
                 chunked_prefill_size=4096,
                 encoder_max_batch_size=8,
+                enable_pre_lm_encoder=True,
+                pre_lm_cache_max_entries=128,
+                pre_lm_cache_size_bytes=2 * 1024**3,
+                pre_lm_max_batch_wait_ms=0,
                 request_build_max_workers=8,
                 request_build_max_pending=64,
                 stream_emit_interval_s=0.05,

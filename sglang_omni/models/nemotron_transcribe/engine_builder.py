@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from sglang.kernels.ops.mamba.triton_ops import (
@@ -19,6 +21,10 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from sglang_omni.models.nemotron_transcribe.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     EncoderCompileMode,
+)
+from sglang_omni.models.nemotron_transcribe.encoder_service import (
+    NemotronTranscribePreLMEncoderService,
+    build_cache_namespace,
 )
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     MODEL_ARCH_OVERRIDE,
@@ -45,6 +51,8 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+logger = logging.getLogger(__name__)
 
 
 def create_checkpoint_shim(checkpoint_directory: Path) -> Path:
@@ -74,6 +82,10 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         mm_embedding_cache_size_bytes: int,
         chunked_prefill_size: int,
         encoder_max_batch_size: int,
+        enable_pre_lm_encoder: bool,
+        pre_lm_cache_max_entries: int,
+        pre_lm_cache_size_bytes: int,
+        pre_lm_max_batch_wait_ms: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
@@ -85,6 +97,26 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
         else:
             pass
+        if pre_lm_cache_max_entries < 1:
+            raise ValueError(
+                "pre_lm_cache_max_entries must be >= 1, got "
+                f"{pre_lm_cache_max_entries}"
+            )
+        else:
+            pass
+        if pre_lm_cache_size_bytes < 1:
+            raise ValueError(
+                f"pre_lm_cache_size_bytes must be >= 1, got {pre_lm_cache_size_bytes}"
+            )
+        else:
+            pass
+        if pre_lm_max_batch_wait_ms < 0:
+            raise ValueError(
+                "pre_lm_max_batch_wait_ms must be >= 0, got "
+                f"{pre_lm_max_batch_wait_ms}"
+            )
+        else:
+            pass
         self.max_new_tokens = max_new_tokens
         self.context_length = context_length
         self.max_audio_seconds = max_audio_seconds
@@ -92,6 +124,10 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.chunked_prefill_size = chunked_prefill_size
         self.encoder_max_batch_size = encoder_max_batch_size
+        self.enable_pre_lm_encoder = bool(enable_pre_lm_encoder)
+        self.pre_lm_cache_max_entries = int(pre_lm_cache_max_entries)
+        self.pre_lm_cache_size_bytes = int(pre_lm_cache_size_bytes)
+        self.pre_lm_max_batch_wait_ms = int(pre_lm_max_batch_wait_ms)
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
         self.stream_emit_interval_s = stream_emit_interval_s
@@ -100,6 +136,8 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.perception_compile_mode = perception_compile_mode
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
+        self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
+        self.should_wait_for_encode_fn: Callable[[], bool] | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
@@ -170,6 +208,42 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         else:
             pass
 
+    def setup_runtime_resources(
+        self,
+        model: NemotronTranscribeForConditionalGeneration,
+        server_args: ServerArgs,
+    ) -> None:
+        """Start perception encode after decoder graphs and encoder compile."""
+        del server_args
+        if not self.enable_pre_lm_encoder:
+            return
+        else:
+            pass
+        self.audio_encoder_service = NemotronTranscribePreLMEncoderService(
+            model,
+            cache_namespace=build_cache_namespace(
+                model, model_path=self.checkpoint_dir
+            ),
+            cache_max_entries=self.pre_lm_cache_max_entries,
+            cache_max_bytes=self.pre_lm_cache_size_bytes,
+            max_batch_size=self.encoder_max_batch_size,
+            max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
+        )
+        logger.info(
+            "Nemotron Transcribe pre-LM encoder enabled (max_batch=%d, "
+            "cache entries=%d, cache bytes=%d, batch wait=%dms)",
+            self.encoder_max_batch_size,
+            self.pre_lm_cache_max_entries,
+            self.pre_lm_cache_size_bytes,
+            self.pre_lm_max_batch_wait_ms,
+        )
+
+    def should_wait_for_encode(self) -> bool:
+        if self.should_wait_for_encode_fn is None:
+            return False
+        else:
+            return self.should_wait_for_encode_fn()
+
     def make_adapters(
         self,
         model: NemotronTranscribeForConditionalGeneration,
@@ -184,6 +258,8 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             eos_token_id=self.hf_config.eos_token_id,
             max_audio_seconds=self.max_audio_seconds,
             vocab_size=self.hf_config.vocab_size,
+            audio_encoder_service=self.audio_encoder_service,
+            should_wait_for_encode=self.should_wait_for_encode,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[NemotronTranscribeRequestData]:
@@ -197,3 +273,21 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }
+
+    def post_scheduler_setup(self, scheduler: object, model_runner: object) -> None:
+        del model_runner
+        self.should_wait_for_encode_fn = scheduler.request_build_queue_fits_workers
+
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
+        if self.audio_encoder_service is None:
+            return {}
+        else:
+            pass
+        return {"shutdown_callback": self.audio_encoder_service.close}
+
+    def cleanup_build_failure(self) -> None:
+        if self.audio_encoder_service is not None:
+            self.audio_encoder_service.close()
+            self.audio_encoder_service = None
+        else:
+            pass
