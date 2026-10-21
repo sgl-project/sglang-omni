@@ -1903,6 +1903,9 @@
 "Voxt is recording on the Mac. Try again in a moment." = "Voxt is recording on the Mac. Try again in a moment.";
 "Voxt is recording a meeting on the Mac." = "Voxt is recording a meeting on the Mac.";
 "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription.";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "No text model is available. Choose one in Voxt Settings > Transcription.";
+"The selected text model is configured to skip enhancement." = "The selected text model is configured to skip enhancement.";
+"The selected text model cannot run this operation." = "The selected text model cannot run this operation.";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences.";

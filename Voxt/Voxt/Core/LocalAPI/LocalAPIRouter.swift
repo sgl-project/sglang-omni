@@ -11,10 +11,27 @@ nonisolated struct LocalAPIDictationRequest: Equatable, Sendable {
     var language: ASRLanguageSelection = .userSettings
 }
 
+nonisolated struct LocalAPIComposeRequest: Equatable, Sendable {
+    var audio: Data
+    var fileExtension: String
+    var options: LocalAPIComposeOptions
+    var language: ASRLanguageSelection = .userSettings
+}
+
+private struct LocalAPIComposeRequestBody: Decodable {
+    var audio: String
+    var contentType: String
+    var options: LocalAPIComposeOptions
+    var language: String? = nil
+}
+
 nonisolated enum LocalAPIRoute: Equatable, Sendable {
     case health
     case capabilities
+    /// The built-in compose instructions, for a client's prompt editor.
+    case composePrompts
     case dictation(LocalAPIDictationRequest)
+    case compose(LocalAPIComposeRequest)
     case reject(LocalAPIHTTPResponse)
 }
 
@@ -63,6 +80,43 @@ nonisolated struct LocalAPIRouter: Sendable {
                 audio: request.body,
                 fileExtension: fileExtension,
                 enhance: request.query["enhance"] != "0",
+                language: language
+            ))
+        case "/v1/compose/prompts":
+            guard request.method == "GET" else { return .reject(.error(status: 405, "Use GET.")) }
+            return .composePrompts
+        case "/v1/compose":
+            guard request.method == "POST" else { return .reject(.error(status: 405, "Use POST.")) }
+            let mediaType = request.header("content-type")?
+                .split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            guard mediaType == "application/json" else {
+                return .reject(.error(status: 415, "Send application/json."))
+            }
+            let body: LocalAPIComposeRequestBody
+            do {
+                body = try JSONDecoder().decode(LocalAPIComposeRequestBody.self, from: request.body)
+            } catch let LocalAPIComposeDecoding.styleExamples(message) {
+                return .reject(.error(status: 400, message))
+            } catch {
+                return .reject(.error(status: 400, "The compose request is not valid JSON."))
+            }
+            guard let audio = Data(base64Encoded: body.audio), !audio.isEmpty else {
+                return .reject(.error(status: 400, "The request has no audio."))
+            }
+            guard let fileExtension = Self.audioExtensions[body.contentType.lowercased()] else {
+                return .reject(.error(status: 415, "Send audio/wav or audio/mp4."))
+            }
+            if let reason = body.options.validationError() {
+                return .reject(.error(status: 400, reason))
+            }
+            guard let language = Self.languageSelection(body.language) else {
+                return .reject(.error(status: 400, "Set language to auto or a language name such as English."))
+            }
+            return .compose(LocalAPIComposeRequest(
+                audio: audio,
+                fileExtension: fileExtension,
+                options: body.options,
                 language: language
             ))
         default:

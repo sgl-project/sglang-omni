@@ -1856,6 +1856,9 @@
 "Voxt is recording on the Mac. Try again in a moment." = "Mac で Voxt が録音中です。少し待ってから再試行してください。";
 "Voxt is recording a meeting on the Mac." = "Mac で Voxt が会議を録音中です。";
 "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple 音声認識は録音済みの音声を文字起こしできません。Voxt 設定 > 文字起こし でローカルまたはリモートのモデルを選んでください。";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "使えるテキストモデルがありません。Voxt 設定 > 文字起こし で選んでください。";
+"The selected text model is configured to skip enhancement." = "選択中のテキストモデルは補正をスキップする設定です。";
+"The selected text model cannot run this operation." = "選択中のテキストモデルではこの操作を実行できません。";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "句読点と段落の流れを整えます。例：話し言葉の間を読みやすい文にします。";

@@ -42,6 +42,10 @@ extension AppDelegate {
                 self?.recordLocalAPIHistory(outcome)
             }
         )
+        pipeline.composeHandler = { [weak self] text, options in
+            guard let self else { throw CancellationError() }
+            return try await self.composeLocalAPITranscript(text, options: options)
+        }
         let router = LocalAPIRouter(token: LocalAPISettings.token(), maxBodyBytes: LocalAPISettings.maxBodyBytes)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let handler = LocalAPIRequestHandler.make(
@@ -52,6 +56,9 @@ extension AppDelegate {
             },
             dictate: { dictation in
                 await pipeline.run(dictation)
+            },
+            compose: { composeRequest in
+                await pipeline.runCompose(composeRequest)
             }
         )
         let server = LocalAPIServer(port: UInt16(port), maxBodyBytes: LocalAPISettings.maxBodyBytes, handler: handler)
@@ -110,6 +117,39 @@ extension AppDelegate {
         // The Mac's frontmost app says nothing about where the caller will use the text, so App
         // Branch prompts are skipped and the global transcription prompt is used.
         return try await enhanceTextForCurrentMode(text, sessionID: nil, usesAppBranch: false)
+    }
+
+    /// The selected text model as the compose prompt sees it: whether it can run at all.
+    func localAPITextModel() -> LocalAPIComposePrompt.TextModel {
+        switch enhancementMode {
+        case .off:
+            return .disabled
+        case .customLLM:
+            return .customLLM(ready: resolvedTranscriptionEnhancementLocalRepo().map { repo in
+                customLLMManager.canAttemptInference(repo: repo)
+            } ?? false)
+        case .remoteLLM:
+            let context = resolvedRemoteLLMContext(forTranslation: false)
+            return .remoteLLM(configured: RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
+                provider: context.provider,
+                stored: remoteLLMConfigurations
+            ))
+        case .appleIntelligence:
+            return .appleIntelligence
+        }
+    }
+
+    /// Translate, edit, write and dictate with options reuse the selected text model with a
+    /// mode-specific prompt for this one request; the user's settings are read, never changed.
+    /// Unlike a plain dictation this path fails closed: without a working model it throws
+    /// instead of returning raw speech as if the operation had succeeded.
+    private func composeLocalAPITranscript(_ text: String, options: LocalAPIComposeOptions) async throws -> String {
+        if let reason = LocalAPIComposePrompt.unavailabilityReason(for: localAPITextModel()) {
+            throw LocalAPIError(message: AppLocalization.localizedString(reason))
+        }
+        return try await LocalAPIComposePrompt.compose(rawTranscription: text, options: options) { instruction in
+            try await self.composeTextStrictly(text, instruction: instruction)
+        }
     }
 
     private func finalizeLocalAPIText(_ text: String) -> LocalAPIFinalText {
@@ -182,9 +222,4 @@ enum LocalAPIServerStatus: Equatable {
     case starting
     case listening(port: Int)
     case failed(String)
-}
-
-struct LocalAPIError: LocalizedError {
-    var message: String
-    var errorDescription: String? { message }
 }

@@ -43,7 +43,10 @@ nonisolated enum LocalAPIRequestHandler {
         router: LocalAPIRouter,
         version: String,
         modelStatus: @escaping @MainActor @Sendable () -> LocalAPIModelStatus,
-        dictate: @escaping @MainActor @Sendable (LocalAPIDictationRequest) async -> LocalAPIHTTPResponse
+        dictate: @escaping @MainActor @Sendable (LocalAPIDictationRequest) async -> LocalAPIHTTPResponse,
+        compose: @escaping @MainActor @Sendable (LocalAPIComposeRequest) async -> LocalAPIHTTPResponse = { _ in
+            .error(status: 503, "No text model is available for this operation.")
+        }
     ) -> LocalAPIServer.Handler {
         { request in
             switch router.route(request) {
@@ -55,17 +58,27 @@ nonisolated enum LocalAPIRequestHandler {
                     api: .init(major: 1, minor: 0),
                     app: "Voxt",
                     version: version,
-                    endpoints: ["health", "capabilities", "dictations"],
+                    endpoints: [
+                        "health",
+                        "capabilities",
+                        "dictations",
+                        "compose",
+                        "compose/prompts",
+                    ],
                     audio: .init(
                         contentTypes: LocalAPIRouter.audioExtensions.keys.sorted(),
                         maxBodyBytes: router.maxBodyBytes
                     ),
                     models: models
                 ))
+            case .composePrompts:
+                return .json(status: 200, ["prompts": LocalAPIComposePrompt.builtInPrompts()])
             case let .reject(response):
                 return response
             case let .dictation(dictation):
                 return await dictate(dictation)
+            case let .compose(composeRequest):
+                return await compose(composeRequest)
             }
         }
     }

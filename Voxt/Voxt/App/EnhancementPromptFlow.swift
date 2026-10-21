@@ -43,7 +43,8 @@ extension AppDelegate {
     func resolvedEnhancementPrompt(
         rawTranscription: String,
         glossarySelectionPolicy: DictionaryGlossarySelectionPolicy? = nil,
-        usesAppBranch: Bool = true
+        usesAppBranch: Bool = true,
+        instructionOverride: String? = nil
     ) -> EnhancementPromptResolution {
         let groups = loadAppBranchGroups()
         let urlsByID = loadAppBranchURLsByID()
@@ -62,12 +63,15 @@ extension AppDelegate {
 
         let resolution = EnhancementPromptResolver.resolve(
             .init(
-                globalPrompt: resolvedGlobalEnhancementPrompt(),
+                globalPrompt: instructionOverride ?? resolvedGlobalEnhancementPrompt(),
                 rawTranscription: rawTranscription,
                 userMainLanguagePromptValue: userMainLanguagePromptValue,
                 userOtherLanguagesPromptValue: userOtherMainLanguagesPromptValue,
                 dictionaryGlossary: glossary,
                 appEnhancementEnabled: appEnhancementEnabled && usesAppBranch,
+                // A compose instruction speaks for the client's request; the Mac's language
+                // preferences must not leak into it.
+                appendsLanguagePreservationRules: instructionOverride == nil,
                 groups: groups,
                 urlsByID: urlsByID,
                 frontmostBundleID: frontmostBundleID,
