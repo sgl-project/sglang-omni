@@ -11,6 +11,10 @@ from sglang_omni.models.nemotron_transcribe.mel_features import (
     normalize_per_feature,
 )
 from sglang_omni.models.nemotron_transcribe.parallel_expert import ParallelExpertEncoder
+from sglang_omni.models.nemotron_transcribe.perception import (
+    AudioPerception,
+    MelPreprocessor,
+)
 from sglang_omni.models.nemotron_transcribe.sortformer import SortformerModules
 from sglang_omni.models.nemotron_transcribe.sortformer_diarizer import (
     SortformerDiarizer,
@@ -61,6 +65,71 @@ def test_normalization_ignores_padding_and_preserves_finite_silence() -> None:
 def test_single_frame_normalization_has_a_clear_error() -> None:
     with pytest.raises(ValueError, match="more than one frame"):
         normalize_per_feature(torch.ones(1, 2, 3), torch.tensor([1]))
+
+
+def test_frontend_stays_fp32_when_perception_encoder_uses_bfloat16() -> None:
+    asr = SpeechTransformerEncoder(
+        feat_in=4,
+        d_model=16,
+        n_heads=2,
+        n_layers=1,
+        subsampling_factor=2,
+        drop_rate=0.0,
+    )
+    diarization_encoder = SpeechTransformerEncoder(
+        feat_in=4,
+        d_model=8,
+        n_heads=2,
+        n_layers=1,
+        subsampling_factor=2,
+        drop_rate=0.0,
+    )
+    diarizer = SortformerDiarizer(
+        diarization_encoder,
+        SortformerModules(
+            speaker_count=2,
+            fc_d_model=8,
+            tf_d_model=4,
+            dropout_rate=0.0,
+            upsample_factor=2,
+            spkcache_len=4,
+            fifo_len=2,
+            chunk_len=4,
+            spkcache_update_period=4,
+            spkcache_sil_frames_per_spk=1,
+            pred_score_threshold=0.25,
+            max_index=99999,
+            scores_boost_latest=0.05,
+            sil_threshold=0.2,
+            strong_boost_rate=0.75,
+            weak_boost_rate=1.5,
+            min_pos_scores_rate=0.5,
+            use_learnable_sil_emb=False,
+        ),
+        high_resolution=True,
+        output_subsampling_factor=2,
+    )
+    perception = AudioPerception(
+        MelPreprocessor(LogMelFrontend(features=4)),
+        ParallelExpertEncoder(
+            asr,
+            diarizer,
+            asr_normalize="per_feature",
+            diar_normalize=None,
+            speaker_feature_mode="thresholded",
+            speaker_activity_threshold=0.5,
+            speaker_kernel_scale=1.0,
+        ),
+        output_width=16,
+    )
+
+    perception.encoder.to(torch.bfloat16)
+    perception.proj.to(torch.bfloat16)
+    mel, _ = perception.preprocessor(torch.zeros(1, 16000), torch.tensor([16000]))
+
+    assert mel.dtype == torch.float32
+    assert perception.encoder.asr_encoder.pre_encode.proj.weight.dtype == torch.bfloat16
+    assert perception.proj.weight.dtype == torch.bfloat16
 
 
 def complex_rotary_reference(

@@ -166,7 +166,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             checkpoint_to_language_model_weights(language_model_weights())
         )
 
-        self.perception = self.perception.to(PERCEPTION_DTYPE)
         incompatible = self.perception.load_state_dict(perception_weights, strict=False)
         missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
         unexpected = [
@@ -179,6 +178,11 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             )
         else:
             pass
+        # Keep waveform preprocessing and per-feature normalization in fp32,
+        # matching the NeMo reference path. The encoder and projection still
+        # run in the serving dtype after normalization.
+        self.perception.encoder.to(PERCEPTION_DTYPE)
+        self.perception.proj.to(PERCEPTION_DTYPE)
         self.perception.eval()
         logger.info(f"Loaded {len(perception_weights)} perception tensors")
 
