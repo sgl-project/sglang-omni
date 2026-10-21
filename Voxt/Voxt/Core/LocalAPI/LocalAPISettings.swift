@@ -17,6 +17,16 @@ nonisolated enum LocalAPISettings {
         return (1024...65534).contains(stored) ? stored : defaultPort
     }
 
+    /// Text-history exchange with a paired Voxt Mobile. Missing means off.
+    static func isHistorySyncEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: AppPreferenceKey.historySyncEnabled)
+    }
+
+    /// The History preference itself, not the recording getter. Missing means on.
+    static func isHistoryRecordingEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: AppPreferenceKey.historyEnabled) as? Bool ?? true
+    }
+
     /// Debug builds read the token from this variable so automated end-to-end tests know it.
     static let tokenEnvironmentKey = "VOXT_LOCAL_API_TOKEN"
 

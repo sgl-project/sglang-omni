@@ -31,6 +31,7 @@ nonisolated enum LocalAPIRoute: Equatable, Sendable {
     /// The built-in compose instructions, for a client's prompt editor.
     case composePrompts
     case dictation(LocalAPIDictationRequest)
+    case historySync(HistorySyncRequest)
     case compose(LocalAPIComposeRequest)
     case correction(LocalAPICorrectionRequest)
     case reject(LocalAPIHTTPResponse)
@@ -83,6 +84,20 @@ nonisolated struct LocalAPIRouter: Sendable {
                 enhance: request.query["enhance"] != "0",
                 language: language
             ))
+        case "/v1/history/sync":
+            guard request.method == "POST" else { return .reject(.error(status: 405, "Use POST.")) }
+            let mediaType = request.header("content-type")?
+                .split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            guard mediaType == "application/json" else {
+                return .reject(.error(status: 415, "Send application/json."))
+            }
+            switch HistorySyncRequest.parse(request.body) {
+            case let .success(parsed):
+                return .historySync(parsed)
+            case let .failure(message):
+                return .reject(.error(status: 400, message))
+            }
         case "/v1/compose/prompts":
             guard request.method == "GET" else { return .reject(.error(status: 405, "Use GET.")) }
             return .composePrompts

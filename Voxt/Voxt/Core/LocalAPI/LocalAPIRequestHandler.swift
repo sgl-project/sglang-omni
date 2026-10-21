@@ -82,6 +82,9 @@ nonisolated enum LocalAPIRequestHandler {
         version: String,
         modelStatus: @escaping @MainActor @Sendable () -> LocalAPIModelStatus,
         modelLocations: @escaping @MainActor @Sendable () -> LocalAPIModelLocations = { .unknown },
+        sync: @escaping @Sendable (HistorySyncRequest) -> LocalAPIHTTPResponse = { _ in
+            .error(status: 403, "History sync is turned off.")
+        },
         dictate: @escaping @MainActor @Sendable (LocalAPIDictationRequest) async -> LocalAPIHTTPResponse,
         compose: @escaping @MainActor @Sendable (LocalAPIComposeRequest) async -> LocalAPIHTTPResponse = { _ in
             .error(status: 503, "No text model is available for this operation.")
@@ -118,6 +121,7 @@ nonisolated enum LocalAPIRequestHandler {
                         "health",
                         "capabilities",
                         "dictations",
+                        "history/sync",
                         "compose",
                         "compose/prompts",
                         "corrections",
@@ -129,6 +133,8 @@ nonisolated enum LocalAPIRequestHandler {
                     models: models,
                     locations: await modelLocations()
                 ))
+            case let .historySync(request):
+                return sync(request)
             case .composePrompts:
                 return .json(status: 200, ["prompts": LocalAPIComposePrompt.builtInPrompts()])
             case let .reject(response):

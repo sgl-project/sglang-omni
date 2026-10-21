@@ -15,6 +15,7 @@ private func localizedKey(_ key: String) -> LocalizedStringKey {
 struct LocalAPISettingsCard: View {
     @AppStorage(AppPreferenceKey.localAPIServerEnabled) private var isEnabled = false
     @AppStorage(AppPreferenceKey.localAPIServerPort) private var port = LocalAPISettings.defaultPort
+    @AppStorage(AppPreferenceKey.historySyncEnabled) private var historySyncEnabled = false
     @State private var portText = ""
     @State private var token = ""
     @State private var status: LocalAPIServerStatus = .off
@@ -28,6 +29,12 @@ struct LocalAPISettingsCard: View {
             )
 
             if isEnabled {
+                GeneralToggleRow(
+                    title: localizedKey("Sync history with Voxt Mobile"),
+                    description: localizedKey("Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac."),
+                    isOn: $historySyncEnabled
+                )
+
                 Text(statusText)
                     .font(.caption)
                     .foregroundStyle(statusIsError ? .red : .secondary)

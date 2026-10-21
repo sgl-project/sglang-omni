@@ -1864,6 +1864,8 @@
 "Always Allow" = "常に許可";
 "Allow Once" = "今回のみ許可";
 "Don't Allow" = "許可しない";
+"Sync history with Voxt Mobile" = "Voxt Mobile と履歴を同期";
+"Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac." = "これと履歴の両方がオンのとき、ペアリングしたスマートフォンとテキスト履歴を交換します。音声と会議の文字起こしはこの Mac に残ります。";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "句読点と段落の流れを整えます。例：話し言葉の間を読みやすい文にします。";

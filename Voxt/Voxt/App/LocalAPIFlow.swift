@@ -65,6 +65,13 @@ extension AppDelegate {
             modelLocations: { [weak self] in
                 self?.localAPIModelLocations() ?? .unknown
             },
+            sync: { request in
+                HistorySyncService(
+                    repository: HistoryRepository(),
+                    syncEnabled: LocalAPISettings.isHistorySyncEnabled(),
+                    historyEnabled: LocalAPISettings.isHistoryRecordingEnabled()
+                ).httpResponse(for: request)
+            },
             dictate: { dictation in
                 await pipeline.run(dictation)
             },

@@ -267,6 +267,7 @@ jobs:
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
             -only-testing:VoxtTests/EnhancementLanguageGuardTests \
             -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
+            -only-testing:VoxtTests/HistorySyncTests \
             -only-testing:VoxtTests/HotkeyManagerTests \
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
