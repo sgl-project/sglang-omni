@@ -18,6 +18,7 @@ import torch
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 
 
 def sched_req(**data_kwargs: object) -> SimpleNamespace:
@@ -92,6 +93,38 @@ def test_before_prefill_attaches_projected_embeds_to_the_sidecar() -> None:
     # The batch's own embeds field stays untouched: a batch carrying it is
     # refused by prefill-graph admission.
     assert forward_batch.input_embeds is None
+
+
+def test_native_session_rows_follow_the_batch_span_not_the_request() -> None:
+    """A native session unit's decode tail mixed into a prefill batch takes its one-token
+    batch span from the spans, not the window from the request's last prefill."""
+    span_rows = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    tail_request = SimpleNamespace(
+        prefix_len=100,
+        extend_len=4,
+        extend_end=104,
+        get_fill_ids=lambda: list(range(104)),
+    )
+    request = sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=None,
+        session_embedding_spans=[
+            EmbeddingSpan(start=101, end=104, input_embeds=span_rows)
+        ],
+        req=tail_request,
+    )
+    runner = make_runner()
+    runner.model.get_input_embeddings = lambda: (
+        lambda token_ids: token_ids.to(torch.float32)[:, None].repeat(1, 4)
+    )
+    forward_batch = make_forward_batch(1, rows=[(103, 1)])
+
+    runner.before_prefill(forward_batch, schedule_batch=None, requests=[request])
+
+    payload = get_omni_prefill_inputs(forward_batch)
+    assert payload is not None
+    assert torch.equal(payload.input_embeds, span_rows[2:3])
+    assert (tail_request.prefix_len, tail_request.extend_end) == (100, 104)
 
 
 def test_before_prefill_preserves_unprojected_tensor_embeds() -> None:
