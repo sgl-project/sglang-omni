@@ -79,11 +79,11 @@ def speak(server: Server, body: dict) -> tuple[int, dict[str, str], bytes]:
     return response.status, dict(response.getheaders()), response.read()
 
 
-def open_speech_stream(
-    server: Server, text: str, receive_buffer_bytes: int | None = None
+def send_speech_request(
+    server: Server, body: dict, receive_buffer_bytes: int | None = None
 ) -> socket.socket:
-    """Sends a streamed speech request; returns once its 200 headers arrive."""
-    body = json.dumps({"input": text, "response_format": "pcm", "stream": True})
+    """Sends a speech request on a socket of its own, without reading the answer."""
+    encoded_body = json.dumps(body)
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # The receive buffer is sized before connecting, so the window follows it.
     if receive_buffer_bytes is not None:
@@ -95,7 +95,19 @@ def open_speech_stream(
     client.sendall(
         b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
         b"Content-Type: application/json\r\n"
-        + f"Content-Length: {len(body)}\r\n\r\n{body}".encode()
+        + f"Content-Length: {len(encoded_body)}\r\n\r\n{encoded_body}".encode()
+    )
+    return client
+
+
+def open_speech_stream(
+    server: Server, text: str, receive_buffer_bytes: int | None = None
+) -> socket.socket:
+    """Sends a streamed speech request; returns once its 200 headers arrive."""
+    client = send_speech_request(
+        server,
+        {"input": text, "response_format": "pcm", "stream": True},
+        receive_buffer_bytes,
     )
     received = b""
     while b"\r\n\r\n" not in received:
@@ -241,8 +253,18 @@ def test_voxtral_disconnect_stops_its_generation(voxtral_server: Server) -> None
     with open_speech_stream(voxtral_server, LONG_SENTENCE) as client:
         assert client.recv(65536)
         assert request_states(voxtral_server) == {"running": 1}
-    # Note (Minyi Tang): the second write of audio after the close fails, and
-    # a write comes every 25 frames, so generation stops within two chunks.
+    wait_until_idle(voxtral_server)
+
+
+def test_voxtral_disconnect_stops_a_generation_it_has_not_answered(
+    voxtral_server: Server,
+) -> None:
+    """A WAV request kept generating after its client disconnected."""
+    with send_speech_request(voxtral_server, {"input": PASSAGE}):
+        started_at = time.monotonic()
+        while request_states(voxtral_server) != {"running": 1}:
+            assert time.monotonic() - started_at < CANCEL_SECONDS
+            time.sleep(0.05)
     wait_until_idle(voxtral_server)
 
 
@@ -261,7 +283,7 @@ def test_voxtral_refuses_requests_beyond_its_queue(voxtral_server: Server) -> No
             503,
             {"detail": "The request queue is full."},
         )
-    # The queued request starts once the running one stops, then stops too.
+    # Each close cancels its request, whether it runs or waits in the queue.
     wait_until_idle(voxtral_server, 2 * CANCEL_SECONDS)
 
 

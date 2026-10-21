@@ -14,13 +14,20 @@
 // stream (pcm only), max_new_tokens (audio frames, 12.5 a second) and speed
 // (1 only). One request runs at a time and N more (2 by default) may wait; the
 // rest get 503. A request not done S seconds (600 by default) after it
-// arrives is cancelled, with 504 or an early end to its stream.
+// arrives is cancelled, with 504 or an early end to its stream, and so is a
+// request whose client disconnects.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -48,6 +55,10 @@ constexpr size_t kMaxInputCharacters = 4096;
 constexpr int kMaxAudioFrames = 4096;
 constexpr int kRequestIdHexDigits = 32;
 constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
+// As often as the CUDA server checks whether a speech client disconnected.
+constexpr auto kClientPollInterval = std::chrono::milliseconds(50);
+// The status civetweb logs for a request whose client left before its answer.
+constexpr int kClientLeftStatus = 499;
 // Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
 // (validate_voxtral_speech_params), each counted as given by the same rule:
 // sampling fields when not null, text fields when not null or "", and the
@@ -240,6 +251,54 @@ std::string NewRequestId() {
   return id;
 }
 
+// The socket civetweb accepted for connection's client, found by the client's
+// address and port since civetweb does not expose it, or -1.
+int ClientSocket(const mg_connection *connection) {
+  const mg_request_info *request_info = mg_get_request_info(connection);
+  // Note (Minyi Tang): a process out of descriptors cannot list them, and the
+  // request is then served without watching its client.
+  std::error_code listing_error;
+  for (const auto &entry :
+       std::filesystem::directory_iterator("/dev/fd", listing_error)) {
+    const int file_descriptor = std::stoi(entry.path().filename().string());
+    sockaddr_storage peer{};
+    socklen_t peer_size = sizeof(peer);
+    char address[INET6_ADDRSTRLEN] = "";
+    int port = -1;
+    if (getpeername(file_descriptor, reinterpret_cast<sockaddr *>(&peer),
+                    &peer_size) != 0) {
+      continue;
+    } else if (peer.ss_family == AF_INET) {
+      const auto *ipv4 = reinterpret_cast<const sockaddr_in *>(&peer);
+      inet_ntop(AF_INET, &ipv4->sin_addr, address, sizeof(address));
+      port = ntohs(ipv4->sin_port);
+    } else if (peer.ss_family == AF_INET6) {
+      const auto *ipv6 = reinterpret_cast<const sockaddr_in6 *>(&peer);
+      inet_ntop(AF_INET6, &ipv6->sin6_addr, address, sizeof(address));
+      port = ntohs(ipv6->sin6_port);
+    } else {
+    }
+    if (port == request_info->remote_port &&
+        request_info->remote_addr == std::string(address)) {
+      return file_descriptor;
+    } else {
+    }
+  }
+  return -1;
+}
+
+// Whether the client of client_socket closed it: a client waiting for its
+// answer sends nothing more, so its socket reads as ended or fails only then.
+bool ClientLeft(int client_socket) {
+  if (client_socket < 0) {
+    return false;
+  } else {
+  }
+  char byte = 0;
+  const ssize_t peeked = recv(client_socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+  return peeked == 0 || (peeked < 0 && errno != EAGAIN && errno != EINTR);
+}
+
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
@@ -368,22 +427,33 @@ private:
     } else {
     }
 
+    const int client_socket = ClientSocket(connection);
     std::vector<float> samples;
     bool timed_out = false;
+    bool client_left = false;
     std::unique_lock<std::mutex> lock(channel->mutex);
     while (true) {
-      if (!channel->ready.wait_until(lock, deadline, [&] {
-            return !channel->chunks.empty() || channel->done;
-          })) {
-        timed_out = true;
-        break;
-      } else if (channel->chunks.empty()) {
+      const bool has_audio_or_end = channel->ready.wait_until(
+          lock,
+          std::min(deadline,
+                   std::chrono::steady_clock::now() + kClientPollInterval),
+          [&] { return !channel->chunks.empty() || channel->done; });
+      if (has_audio_or_end && channel->chunks.empty()) {
         break;
       } else if (std::chrono::steady_clock::now() >= deadline) {
         // Note (Minyi Tang): a write that blocked past the deadline leaves
         // audio waiting, which wait_until hands back without waiting.
         timed_out = true;
         break;
+      } else if (!has_audio_or_end) {
+        // Note (Minyi Tang): the client is watched while its request waits in
+        // the queue too, and a request cancelled there never starts.
+        client_left = ClientLeft(client_socket);
+        if (client_left) {
+          break;
+        } else {
+          continue;
+        }
       } else {
       }
       std::vector<float> chunk = std::move(channel->chunks.front());
@@ -403,6 +473,13 @@ private:
       lock.lock();
     }
     lock.unlock();
+    if (client_left) {
+      // Note (Minyi Tang): nothing is read from the channel, which the
+      // generation may still be writing.
+      cancel->store(true);
+      return kClientLeftStatus;
+    } else {
+    }
     // Note (Minyi Tang): the generation stops at the deadline itself, and may
     // report that before this thread's wait reaches the deadline.
     if (!timed_out && channel->error &&
