@@ -20,7 +20,7 @@ omits accelerator-only packages.
 - A CPU build of SGLang from the matching upstream release.
 - Standard audio runtime libraries such as `ffmpeg` and `libsndfile`.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
 ```bash
 # Clone the SGLang-omni repository
@@ -37,7 +37,7 @@ docker run -it --shm-size 32g --ipc host --network host sglang-omni:cpu
 The image installs upstream SGLang with its CPU pyproject, then installs `sglang-omni`
 with `pyproject_cpu.toml`. It sets `SGLANG_USE_CPU_ENGINE=1` for the runtime.
 
-## 🛠️ Option B: Manual install
+## Option B: Manual install
 
 Create and activate an environment first:
 
