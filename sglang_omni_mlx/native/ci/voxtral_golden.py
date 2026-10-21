@@ -103,22 +103,22 @@ def check(
         for case_id, outputs in reference.items()
     }
     identical = sum(found is None for found in differences.values())
-    failures = []
+    # Every chip checks only cases with a reference, so a case without one fails.
+    missing = [
+        f"`{case_id}` has no golden output"
+        for case_id in golden["cases"]
+        if case_id not in reference
+    ]
     if not reference:
-        failures.append("the golden file has no cases")
+        failures = ["the golden file has no cases"]
     elif device in devices:
-        failures += [
-            f"`{case_id}` has no golden output"
-            for case_id in golden["cases"]
-            if case_id not in reference
-        ]
-        failures += [
+        failures = missing + [
             f"`{case_id}` {found}"
             for case_id, found in differences.items()
             if found is not None
         ]
     else:
-        failures += [
+        failures = missing + [
             f"`{case_id}` has other prompt ids than {reference_device}'s"
             for case_id, outputs in reference.items()
             if results.get(case_id, {}).get("prompt_ids") != outputs["prompt_ids"]

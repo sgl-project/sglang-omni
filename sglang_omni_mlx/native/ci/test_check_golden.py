@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import check_golden
+import pytest
 import voxtral_golden
 
 CLIP = {
@@ -104,11 +105,11 @@ def test_another_chip_is_held_to_voxtral_prompt_ids() -> None:
     assert failures == ["`en` has other prompt ids than Apple M5's"]
 
 
-def test_a_voxtral_case_without_golden_outputs_fails() -> None:
+@pytest.mark.parametrize("device", ["Apple M5", "Apple M4 Pro"])
+def test_a_voxtral_case_without_golden_outputs_fails(device: str) -> None:
     results = {"en": SPEECH, "fr": SPEECH, "de": SPEECH}
-    failures = voxtral_golden.check(
-        speech_golden(("en", "fr", "de")), "Apple M5", results
-    )[1]
+    golden = speech_golden(("en", "fr", "de"))
+    failures = voxtral_golden.check(golden, device, results)[1]
     assert failures == ["`de` has no golden output"]
     empty = {**speech_golden(), "devices": {}}
     assert voxtral_golden.check(empty, "Apple M5", results)[1] == [

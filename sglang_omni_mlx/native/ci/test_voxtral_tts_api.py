@@ -305,6 +305,16 @@ def test_voxtral_accepts_any_model_without_a_chosen_name(
     assert status == 200
 
 
+def test_voxtral_trims_and_lowercases_its_response_format(
+    voxtral_server: Server,
+) -> None:
+    status, headers, _ = speak(
+        voxtral_server,
+        {"input": "hi", "response_format": "\u3000PCM\u00a0", "max_new_tokens": 1},
+    )
+    assert (status, headers["Content-Type"]) == (200, "audio/pcm")
+
+
 def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
     named_server = Server(
         "voxtral_tts_server",
@@ -342,6 +352,7 @@ def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
         ({"input": "hi", "model": 5}, "model must be a string"),
         ({"input": "hi", "voice": "nobody"}, "Unknown voice 'nobody'. "),
         ({"input": "hi", "response_format": "mp3"}, "response_format must be one of"),
+        ({"input": "hi", "response_format": "p c m"}, "response_format must be one of"),
         ({"input": "hi", "stream": True}, "stream=true requires response_format='pcm'"),
         ({"input": "hi", "max_new_tokens": 0}, "max_new_tokens must be greater than 0"),
         ({"input": "hi", "speed": 2.0}, "speed must be 1.0 on this model"),

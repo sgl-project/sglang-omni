@@ -183,12 +183,11 @@ SpeechRequest ParseRequest(const Json &body,
     throw std::invalid_argument("response_format must be a string");
   } else {
   }
-  for (const char character : response_format.get<std::string>()) {
-    if (!std::isspace(static_cast<unsigned char>(character))) {
-      request.response_format.push_back(static_cast<char>(
-          std::tolower(static_cast<unsigned char>(character))));
-    } else {
-    }
+  // Note (Minyi Tang): as CUDA's response_format.strip().lower().
+  for (const char character :
+       qwen3_asr::StripUnicodeWhitespace(response_format.get<std::string>())) {
+    request.response_format.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
   }
   if (request.response_format != "pcm" && request.response_format != "wav") {
     throw std::invalid_argument("response_format must be one of: pcm, wav");
