@@ -21,6 +21,7 @@ from sglang_omni.models.nemotron_transcribe.request_builders import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
 class FakeTokenizer:
@@ -118,8 +119,9 @@ def test_prompt_requires_one_audio_marker(token_ids: list[int]) -> None:
     tokenizer = FakeTokenizer()
     tokenizer.prompt_token_ids = token_ids
     build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="exactly one") as raised:
         build_request(make_payload())
+    assert generation_error_status_code(raised.value) == 400
 
 
 def test_audio_duration_limit_is_enforced_before_scheduling() -> None:
@@ -140,8 +142,9 @@ def test_audio_too_short_for_normalization_is_rejected(
     build_request, _ = make_scheduler_adapters(
         tokenizer=FakeTokenizer(), max_new_tokens=32
     )
-    with pytest.raises(ValueError, match="two valid mel frames"):
+    with pytest.raises(ValueError, match="two valid mel frames") as raised:
         build_request(make_payload())
+    assert generation_error_status_code(raised.value) == 400
 
 
 def test_result_strips_eos_and_preserves_usage() -> None:
