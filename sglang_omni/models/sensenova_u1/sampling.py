@@ -21,8 +21,10 @@ def resolve_generation_parameters(
     elif not isinstance(stage_parameters, dict):
         raise ValueError("stage_params must be a mapping")
     else:
-        generate_parameters = stage_parameters.get("generate", {})
-    if not isinstance(generate_parameters, dict):
+        generate_parameters = stage_parameters.get("generate")
+    if generate_parameters is None:
+        return resolved_parameters
+    elif not isinstance(generate_parameters, dict):
         raise ValueError("stage_params.generate must be a mapping")
     else:
         resolved_parameters.update(generate_parameters)

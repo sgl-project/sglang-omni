@@ -91,12 +91,23 @@ class TestSenseNovaSampling(unittest.TestCase):
         for parameters in (
             {"stage_params": "invalid"},
             {"stage_params": {"generate": "invalid"}},
+            {"stage_params": {"generate": []}},
+            {"stage_params": {"generate": False}},
             {"stage_params": {"generate": {"num_inference_steps": -1}}},
         ):
             for sampling_type in (SenseNovaU1Sampling, SenseNovaU1ImageEditSampling):
                 with self.subTest(parameters=parameters, sampling_type=sampling_type):
                     with self.assertRaises(ValueError):
                         sampling_type.from_params(parameters)
+
+    def test_null_generate_overrides_preserve_top_level_options(self) -> None:
+        """A null stage entry must behave like an omitted entry, not fail validation."""
+        for sampling_type in (SenseNovaU1Sampling, SenseNovaU1ImageEditSampling):
+            with self.subTest(sampling_type=sampling_type):
+                options = sampling_type.from_params(
+                    {"width": 512, "stage_params": {"generate": None}}
+                )
+                self.assertEqual(options.width, 512)
 
 
 if __name__ == "__main__":

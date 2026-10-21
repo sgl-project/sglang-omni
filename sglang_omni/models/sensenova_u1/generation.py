@@ -309,9 +309,21 @@ def generate_image_edit(
             raise
         else:
             torch.get_device_module(device).empty_cache()
+        memory_advice = "reduce references or output size"
+        if options.do_resize:
+            memory_advice += ", or lower input_max_pixels"
+        else:
+            pass
+        if device.type == "cuda":
+            memory_advice += (
+                ", or lower generate.factory.dit_layerwise_resident_layers "
+                "with layerwise offload enabled"
+            )
+        else:
+            pass
         raise ValueError(
             f"{REFERENCE_MEMORY_ERROR_PREFIX}{len(references)} reference images exceeds {device.type.upper()} memory; "
-            "reduce references or lower input_max_pixels"
+            f"{memory_advice}"
         ) from error
     else:
         pass

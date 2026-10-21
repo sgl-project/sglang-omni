@@ -192,8 +192,12 @@ not disable admission limits or output-size selection. These options do not
 replace `size`, which controls the generated image dimensions when provided.
 
 I2I accelerator memory errors identify the CUDA or NPU backend and suggest
-reducing references or `input_max_pixels`. A CPU memory error remains a server
-failure rather than being reported as a reference-image accelerator error.
+reducing references or output size. Lowering `input_max_pixels` only helps
+when `do_resize=true`; CUDA requests can also lower
+`generate.factory.dit_layerwise_resident_layers` with layerwise offload enabled.
+A CPU memory error remains a server failure rather than being reported as a
+reference-image accelerator error. Empty or invalid boolean form values are
+rejected rather than treated as omitted fields.
 
 On Ascend, the condition, image-condition, and unconditional I2I branches each
 prepare their own prefix length. This enables the BNSD FIA cache when the
@@ -275,6 +279,8 @@ These bounds do not represent total accelerator memory.
 For `/generate`, overrides in `stage_params.generate` are applied consistently
 to admission, request cost, batching, TP validation, and model execution.
 Overrides cannot bypass the model's step, image-count, or pixel limits.
+A null `stage_params.generate` entry behaves like an omitted entry; strings
+and lists are rejected.
 
 Cancellation is cooperative at model checkpoints. TP ranks decide together
 before leaving a sequence of collectives. One cancelled member of a fused batch

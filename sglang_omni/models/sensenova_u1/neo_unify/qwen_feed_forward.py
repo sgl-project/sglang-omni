@@ -3,6 +3,7 @@
 import torch
 import torch._dynamo
 import torch.nn.functional as F
+from sglang.kernels.fused_op import KernelBackend
 from sglang.srt.layers.layernorm import RMSNorm
 from torch import nn
 from transformers import Qwen3Config
@@ -18,14 +19,16 @@ from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
 class SenseNovaRMSNorm(RMSNorm):
     """Use shared device dispatch while keeping CPU inputs on native kernels."""
 
-    def forward_cuda(
+    def forward(
         self,
         x: torch.Tensor,
         residual: torch.Tensor | None = None,
         post_residual_addition: torch.Tensor | None = None,
         quant_linear: nn.Module | None = None,
+        *,
+        backend: KernelBackend | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        if not x.is_cuda:
+        if x.device.type == "cpu":
             return self.forward_native(
                 x,
                 residual,
@@ -33,58 +36,13 @@ class SenseNovaRMSNorm(RMSNorm):
                 quant_linear,
             )
         else:
-            return super().forward_cuda(
+            return super().forward(
                 x,
                 residual,
                 post_residual_addition,
                 quant_linear,
+                backend=backend,
             )
-
-    def forward_npu(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor | None = None,
-        post_residual_addition: torch.Tensor | None = None,
-        quant_linear: nn.Module | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        if x.device.type != "npu":
-            return self.forward_native(
-                x,
-                residual,
-                post_residual_addition,
-                quant_linear,
-            )
-        else:
-            pass
-        return super().forward_npu(
-            x,
-            residual,
-            post_residual_addition,
-            quant_linear,
-        )
-
-    def forward_aiter(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor | None = None,
-        post_residual_addition: torch.Tensor | None = None,
-        quant_linear: nn.Module | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        if not x.is_cuda:
-            return self.forward_native(
-                x,
-                residual,
-                post_residual_addition,
-                quant_linear,
-            )
-        else:
-            pass
-        return super().forward_aiter(
-            x,
-            residual,
-            post_residual_addition,
-            quant_linear,
-        )
 
 
 def make_qwen3_rms_norm(hidden_size: int, eps: float) -> RMSNorm:

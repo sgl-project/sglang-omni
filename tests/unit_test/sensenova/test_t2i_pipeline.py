@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Literal
-from unittest.mock import Mock, create_autospec
+from unittest.mock import Mock, create_autospec, patch
 
 import pytest
 import torch
@@ -31,7 +31,13 @@ from sglang_omni.models.sensenova_u1.generation import (
     generate_images,
     text_to_image_options,
 )
+from sglang_omni.models.sensenova_u1.image_processing import (
+    prepare_reference_images,
+    resolve_edit_output_size,
+    resolve_reference_output_size,
+)
 from sglang_omni.models.sensenova_u1.images_api import register_images_api
+from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1ImageEditSampling
 from sglang_omni.models.sensenova_u1.stages import (
     image_generation_batch_key,
     image_generation_request_cost,
@@ -665,23 +671,27 @@ def test_image_edit_api_uses_sglang_defaults_when_omitted():
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize("boolean_name", ["do_resize", "enable_cache_dit"])
 @pytest.mark.parametrize(
-    "pixel_budget, resize, expected_resize, expected_status",
+    "pixel_budget, boolean_text, expected_boolean, expected_status",
     [
         (262144, "false", False, 200),
         (262144, "true", True, 200),
         (None, "false", False, 200),
         (262143, "true", True, 400),
         (262144, "invalid", False, 400),
+        (262144, "", False, 400),
+        (262144, " ", False, 400),
     ],
 )
-def test_image_edit_api_forwards_resize_controls(
+def test_image_edit_api_forwards_boolean_controls(
+    boolean_name: Literal["do_resize", "enable_cache_dit"],
     pixel_budget: int | None,
-    resize: str,
-    expected_resize: bool,
+    boolean_text: str,
+    expected_boolean: bool,
     expected_status: int,
 ) -> None:
-    """The Images endpoint silently ignored reference resize controls."""
+    """Explicit empty boolean fields must not silently use model defaults."""
 
     class ResizeClient:
         calls: int = 0
@@ -690,7 +700,7 @@ def test_image_edit_api_forwards_resize_controls(
             self, request: GenerateRequest, request_id: str
         ) -> AsyncIterator[GenerateChunk]:
             self.calls += 1
-            assert request.extra_params["do_resize"] is expected_resize
+            assert request.extra_params[boolean_name] is expected_boolean
             assert request.extra_params.get("input_max_pixels") == pixel_budget
             yield umm_image_chunk(request_id, [encoded])
 
@@ -703,7 +713,7 @@ def test_image_edit_api_forwards_resize_controls(
             backend, model_name="sensenova", image_api_registrar=register_images_api
         )
     )
-    parameters = {"prompt": "edit this", "do_resize": resize}
+    parameters = {"prompt": "edit this", boolean_name: boolean_text}
     if pixel_budget is not None:
         parameters["input_max_pixels"] = str(pixel_budget)
     else:
@@ -717,9 +727,11 @@ def test_image_edit_api_forwards_resize_controls(
     assert backend.calls == (1 if expected_status == 200 else 0)
 
 
+@pytest.mark.parametrize("do_resize", [False, True])
 @pytest.mark.parametrize("device_type", ["cuda", "npu", "cpu"])
 def test_image_edit_oom_uses_model_device_backend(
     device_type: Literal["cuda", "npu", "cpu"],
+    do_resize: bool,
     tokenizer: PreTrainedTokenizerBase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -743,7 +755,13 @@ def test_image_edit_oom_uses_model_device_backend(
                 "prompt": "edit this",
                 "image_b64": base64.b64encode(reference.getvalue()).decode("ascii"),
             },
-            {"width": 32, "height": 32, "size_explicit": True, "do_resize": False},
+            {
+                "width": 32,
+                "height": 32,
+                "size_explicit": True,
+                "do_resize": do_resize,
+                "input_max_pixels": 512 * 512,
+            },
         ),
         None,
     )
@@ -751,7 +769,7 @@ def test_image_edit_oom_uses_model_device_backend(
     error_message = (
         "device exhausted" if device_type == "cpu" else f"{device_type.upper()} memory"
     )
-    with pytest.raises(error_type, match=error_message):
+    with pytest.raises(error_type, match=error_message) as raised:
         generate_image(payload, model, tokenizer)
     if device_type == "cpu":
         get_device_module.assert_not_called()
@@ -759,6 +777,11 @@ def test_image_edit_oom_uses_model_device_backend(
     else:
         get_device_module.assert_called_once_with(model.device)
         backend.empty_cache.assert_called_once_with()
+        assert "output size" in str(raised.value)
+        assert ("input_max_pixels" in str(raised.value)) is do_resize
+        assert ("dit_layerwise_resident_layers" in str(raised.value)) is (
+            device_type == "cuda"
+        )
 
 
 def test_multi_output_failure_cleans_cache_controller(
@@ -777,6 +800,7 @@ def test_multi_output_failure_cleans_cache_controller(
     cleanup.assert_called_once_with(model)
 
 
+@pytest.mark.parametrize("size_explicit", [False, True])
 @pytest.mark.parametrize(
     "guidance_scale, img_cfg_scale, branch_count",
     [(1.0, 1.0, 1), (4.0, 4.0, 2), (0.5, 1.0, 2)],
@@ -786,6 +810,7 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
     guidance_scale: float,
     img_cfg_scale: float,
     branch_count: int,
+    size_explicit: bool,
 ) -> None:
     """I2I cost and TP validation used options different from model execution."""
     reference = io.BytesIO()
@@ -801,7 +826,7 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
             {
                 "width": 64,
                 "height": 32,
-                "size_explicit": True,
+                "size_explicit": size_explicit,
                 "do_resize": False,
                 "stage_params": {
                     "generate": {
@@ -818,19 +843,71 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
     )
     model = Mock()
     model.sensenova_cache_dit.enabled_by_default = True
-    model.it2i_generate.return_value = torch.zeros((1, 3, 64, 96))
-    assert image_generation_request_cost(payload) == 96 * 64 * 4 * branch_count
+    output_width_pixels, output_height_pixels = (96, 64) if size_explicit else (96, 96)
+    model.it2i_generate.return_value = torch.zeros(
+        (1, 3, output_height_pixels, output_width_pixels)
+    )
+    assert image_generation_request_cost(payload) == (
+        output_width_pixels * output_height_pixels * 4 * branch_count
+    )
     validate_generation_request(payload, model)
     assert model.sensenova_cache_dit.validate_request.call_args.kwargs["steps"] == 4
     result = generate_image(payload, model, tokenizer)
     assert model.it2i_generate.call_args.kwargs["num_steps"] == 4
-    assert model.it2i_generate.call_args.kwargs["image_size"] == (96, 64)
+    assert model.it2i_generate.call_args.kwargs["image_size"] == (
+        output_width_pixels,
+        output_height_pixels,
+    )
     assert model.it2i_generate.call_args.kwargs["cfg_scale"] == guidance_scale
     assert model.it2i_generate.call_args.kwargs["img_cfg_scale"] == img_cfg_scale
     assert Image.open(io.BytesIO(base64.b64decode(result.data["image_b64"]))).size == (
-        96,
-        64,
+        output_width_pixels,
+        output_height_pixels,
     )
+
+
+@pytest.mark.parametrize("reference_count", [1, 3])
+@pytest.mark.parametrize("do_resize", [False, True])
+@pytest.mark.parametrize("reference_size_pixels", [(64, 32), (77, 39)])
+def test_i2i_validation_and_cost_do_not_resize_references(
+    reference_count: int,
+    do_resize: bool,
+    reference_size_pixels: tuple[int, int],
+) -> None:
+    """Dimension-only checks must match generation without repeating pixel preprocessing."""
+    image_buffer = io.BytesIO()
+    Image.new("RGB", reference_size_pixels).save(image_buffer, format="PNG")
+    references = [
+        base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    ] * reference_count
+    parameters = {"width": 96, "height": 64, "do_resize": do_resize}
+    options = SenseNovaU1ImageEditSampling.from_params(parameters)
+    prepared_references = prepare_reference_images(references, options)
+    output_width_pixels, output_height_pixels = resolve_edit_output_size(
+        prepared_references[0].size, options
+    )
+    payload = StagePayload(
+        "edit",
+        OmniRequest(
+            {"task": "image_edit", "prompt": "edit", "image_b64": references},
+            parameters,
+        ),
+        None,
+    )
+    model = Mock()
+    model.sensenova_cache_dit.enabled_by_default = False
+    with patch.object(
+        Image.Image, "resize", autospec=True, side_effect=Image.Image.resize
+    ) as resize:
+        assert resolve_reference_output_size(references, options) == (
+            output_width_pixels,
+            output_height_pixels,
+        )
+        validate_generation_request(payload, model)
+        assert image_generation_request_cost(payload) == (
+            output_width_pixels * output_height_pixels * options.num_inference_steps * 2
+        )
+    resize.assert_not_called()
 
 
 def test_image_edit_api_accepts_multiple_reference_images():

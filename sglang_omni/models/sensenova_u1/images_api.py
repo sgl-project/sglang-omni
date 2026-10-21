@@ -209,14 +209,16 @@ def register_image_edits(app: FastAPI) -> None:
             else:
                 pass
             params = {"n": 1, "size_explicit": size is not None}
+            submitted_form = await request.form()
             for name, boolean_text in (
                 ("enable_cache_dit", enable_cache_dit),
                 ("do_resize", do_resize),
             ):
-                if not boolean_text:
+                if boolean_text is None and name not in submitted_form:
                     continue
                 else:
-                    normalized_boolean_text = boolean_text.strip().lower()
+                    pass
+                normalized_boolean_text = (boolean_text or "").strip().lower()
                 if normalized_boolean_text in ("true", "1", "yes", "on"):
                     params[name] = True
                 elif normalized_boolean_text in ("false", "0", "no", "off"):

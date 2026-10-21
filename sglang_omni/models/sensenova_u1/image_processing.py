@@ -142,6 +142,38 @@ def resolve_edit_output_size(
     return width, height
 
 
+def resolve_reference_output_size(
+    encoded_references: str | list[str] | None, options: SenseNovaU1ImageEditSampling
+) -> tuple[int, int]:
+    """Resolve edit dimensions from the first reference header without pixel preprocessing."""
+    references = (
+        encoded_references
+        if isinstance(encoded_references, list)
+        else [encoded_references]
+    )
+    if not references or any(
+        not isinstance(encoded_image, str) or not encoded_image
+        for encoded_image in references
+    ):
+        raise ValueError("SenseNova-U1 requires at least one reference image")
+    else:
+        pass
+    try:
+        image_bytes = base64.b64decode(references[0], validate=True)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            reference_size_pixels = reference_image_size(
+                image.width, image.height, len(references), options
+            )
+    except (
+        binascii.Error,
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+    ) as error:
+        raise ValueError("SenseNova-U1 received an invalid reference image") from error
+    return resolve_edit_output_size(reference_size_pixels, options)
+
+
 def encode_image(
     payload: StagePayload, images: torch.Tensor, width: int, height: int
 ) -> StagePayload:
