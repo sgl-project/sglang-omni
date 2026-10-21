@@ -43,8 +43,9 @@ final class LocalAPIDictationPipeline {
     let isReadableAudio: (URL) -> Bool
     /// Audio file → normalized transcript, using the engine selected in Voxt.
     let transcribe: (URL, ASRLanguageSelection) async throws -> String
-    /// Transcript → cleaned-up text, using Voxt's transcription enhancement settings.
-    let enhance: (String) async throws -> String
+    /// Transcript → cleaned-up text, using Voxt's transcription enhancement settings; nil when no
+    /// text model ran.
+    let enhance: (String) async throws -> String?
     /// Applies dictionary corrections to the final text.
     let finalize: (String) -> LocalAPIFinalText
     let record: (LocalAPIDictationOutcome) -> Void
@@ -59,7 +60,7 @@ final class LocalAPIDictationPipeline {
         busyReason: @escaping () -> String?,
         isReadableAudio: @escaping (URL) -> Bool = LocalAPIDictationPipeline.isReadableAudioFile,
         transcribe: @escaping (URL, ASRLanguageSelection) async throws -> String,
-        enhance: @escaping (String) async throws -> String,
+        enhance: @escaping (String) async throws -> String?,
         finalize: @escaping (String) -> LocalAPIFinalText,
         record: @escaping (LocalAPIDictationOutcome) -> Void
     ) {
@@ -119,8 +120,8 @@ final class LocalAPIDictationPipeline {
         if request.enhance {
             let enhancementStart = Date()
             do {
-                let enhanced = try await enhance(rawText).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !enhanced.isEmpty {
+                if let enhanced = try await enhance(rawText)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !enhanced.isEmpty {
                     text = enhanced
                     usedEnhancement = true
                 }
