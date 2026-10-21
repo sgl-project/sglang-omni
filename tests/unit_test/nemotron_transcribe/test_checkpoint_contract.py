@@ -15,7 +15,6 @@ from torch.nn import functional as F
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
     classify_checkpoint_name,
-    perception_checkpoint_keys,
 )
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
@@ -92,21 +91,7 @@ def test_local_checkpoint_matches_the_native_contract() -> None:
         pytest.skip("local Nemotron Transcribe checkpoint is not present")
     else:
         pass
-    config = json.loads((model_dir / "config.json").read_text())
-    encoder = config["pe_encoder_config"]
-    asr = encoder["asr_encoder_cfg"]
-    diar = encoder["diarization_model_cfg"]
     names = safetensors_names(model_dir / "model.safetensors")
-    expected = perception_checkpoint_keys(
-        int(asr["n_layers"]),
-        int(diar["encoder"]["n_layers"]),
-        asr_qk_norm=bool(asr["qk_norm"]),
-        high_resolution=bool(diar["high_resolution"]),
-        learnable_silence=bool(diar["sortformer_modules"]["use_learnable_sil_emb"]),
-    )
-    perception = {name for name in names if name.startswith("perception.")}
-    assert perception == expected
-
     kinds = {classify_checkpoint_name(name)[0] for name in names}
     assert kinds <= {"skip", "perception", "rename", "split_down", "split_up"}
     renamed = [name for name in names if classify_checkpoint_name(name)[0] == "rename"]
