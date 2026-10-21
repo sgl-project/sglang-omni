@@ -31,6 +31,8 @@ def test_pipeline_is_one_whole_file_asr_stage() -> None:
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.stages[0].terminal is True
     assert config.stages[0].factory.max_new_tokens == 16384
+    assert config.stages[0].factory.enable_pre_lm_encoder is True
+    assert config.stages[0].factory.pre_lm_max_batch_wait_ms == 0
 
 
 def test_architecture_registers_with_the_model_registry() -> None:
@@ -63,6 +65,8 @@ def test_factory_signature_accepts_the_typed_pipeline_defaults() -> None:
     "field,value",
     [
         ("encoder_max_batch_size", 0),
+        ("pre_lm_cache_max_entries", 0),
+        ("pre_lm_max_batch_wait_ms", -1),
         ("chunked_prefill_size", 0),
         ("max_audio_seconds", -1),
         ("mm_embedding_cache_size_bytes", -1),

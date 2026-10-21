@@ -84,6 +84,69 @@ def test_encoder_compilation_uses_resolved_decoder_concurrency(
     assert model.encoder_max_batch_size == 8
 
 
+def test_pre_lm_encoder_starts_after_model_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: dict[str, object] = {}
+
+    class Service:
+        def __init__(self, model: object, **kwargs: object) -> None:
+            created["model"] = model
+            created["kwargs"] = kwargs
+
+        def close(self) -> None:
+            created["closed"] = True
+
+    monkeypatch.setattr(
+        engine_builder, "NemotronTranscribePreLMEncoderService", Service
+    )
+    monkeypatch.setattr(
+        engine_builder,
+        "build_cache_namespace",
+        lambda model, *, model_path: f"{model_path}:ns",
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "checkpoint"
+    model = SimpleNamespace()
+    builder.setup_runtime_resources(model, SimpleNamespace())
+    assert created["model"] is model
+    assert created["kwargs"] == {
+        "cache_namespace": "checkpoint:ns",
+        "cache_max_entries": 128,
+        "cache_max_bytes": 2 * 1024**3,
+        "max_batch_size": 8,
+        "max_batch_wait_ms": 0,
+    }
+    builder.cleanup_build_failure()
+    assert created["closed"] is True
+    assert builder.audio_encoder_service is None
+
+
+def test_disabled_pre_lm_encoder_does_not_start_a_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("encoder service must stay stopped")
+
+    monkeypatch.setattr(engine_builder, "NemotronTranscribePreLMEncoderService", fail)
+    builder = make_builder()
+    builder.enable_pre_lm_encoder = False
+    builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
+    assert builder.audio_encoder_service is None
+
+
+def test_pre_lm_batch_wait_must_be_nonnegative() -> None:
+    configuration = NemotronTranscribePipelineConfig(model_path="unused")
+    parameters = configuration.stages[0].factory.model_dump(exclude_none=True)
+    parameters.pop("dtype")
+    parameters.update(
+        compile_perception=False,
+        perception_cuda_graphs=False,
+        mem_fraction_static=None,
+        pre_lm_max_batch_wait_ms=-1,
+    )
+    with pytest.raises(ValueError, match="pre_lm_max_batch_wait_ms"):
+        NemotronTranscribeEngineBuilder(**parameters)
+
+
 @pytest.mark.parametrize("decoder_slots", [None, 1, 16])
 def test_engine_defaults_merge_with_operator_concurrency(
     decoder_slots: int | None,

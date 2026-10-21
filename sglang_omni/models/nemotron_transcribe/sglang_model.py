@@ -138,6 +138,9 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
+        # Admitted requests already carry precomputed perception embeddings, so
+        # this routine scatters them. get_audio_feature runs only when the
+        # pre-LM encoder service is disabled.
         return general_mm_embed_routine(
             input_ids=input_ids,
             forward_batch=forward_batch,

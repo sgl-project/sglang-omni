@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request and response contracts without checkpoint tensors."""
 
+import concurrent.futures
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from transformers import BatchEncoding
 
 import sglang_omni.preprocessing.transcription as transcription
@@ -18,6 +20,7 @@ from sglang_omni.models.nemotron_transcribe.request_builders import (
     make_stream_output_builder,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import DeferredAdmission
 
 
 class FakeTokenizer:
@@ -83,6 +86,8 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     assert request.input_ids.numel() == 15
     assert request.req.origin_input_ids[1:14] == [audio.pad_value] * 13
     assert request.audio_duration_s == 1.0
+    assert audio.feature is not None
+    assert audio.num_audio_tokens == 13
     assert tokenizer.messages == [
         {"role": "user", "content": f"<|audio|>\n{DEFAULT_PROMPT}"}
     ]
@@ -175,3 +180,86 @@ def test_streamed_text_matches_final_response() -> None:
         "".join(message.data["text"] for message in messages)
         == adapt_result(request).data["text"]
     )
+
+
+class RecordingEncoder:
+    def __init__(self, embedding: torch.Tensor | None = None) -> None:
+        self.embedding = embedding
+        self.lookup: tuple[str, int] | None = None
+        self.encoded: object | None = None
+        self.waited = False
+
+    def lookup_cached_embedding(
+        self, audio_fingerprint: str, expected_tokens: int
+    ) -> torch.Tensor | None:
+        self.lookup = (audio_fingerprint, expected_tokens)
+        return self.embedding
+
+    def attach_embedding(self, item: object, embedding: torch.Tensor) -> None:
+        item.precomputed_embeddings = embedding
+        item.feature = None
+
+    def encode_item(self, item: object) -> None:
+        self.waited = True
+        self.encoded = item.feature
+        item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
+        item.feature = None
+
+    def submit_item(self, item: object) -> concurrent.futures.Future[torch.Tensor]:
+        self.encoded = item.feature
+        item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
+        item.feature = None
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        future.set_result(item.precomputed_embeddings)
+        return future
+
+
+def test_cached_embedding_is_attached_before_admission() -> None:
+    encoder = RecordingEncoder(torch.ones((13, 4)))
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        audio_encoder_service=encoder,
+    )
+    request = build_request(make_payload())
+    audio = request.req.multimodal_inputs.mm_items[0]
+    assert encoder.lookup == (request.req.extra_key, 13)
+    assert audio.feature is None
+    assert audio.precomputed_embeddings is encoder.embedding
+    assert encoder.encoded is None
+
+
+def test_cache_miss_defers_admission_until_encode_finishes() -> None:
+    encoder = RecordingEncoder()
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        audio_encoder_service=encoder,
+    )
+    result = build_request(make_payload())
+    assert isinstance(result, DeferredAdmission)
+    assert result.ready.done()
+    assert encoder.encoded is not None
+    assert result.value.req.multimodal_inputs.mm_items[0].feature is None
+    assert result.value.req.multimodal_inputs.mm_items[0].precomputed_embeddings.shape == (
+        13,
+        4,
+    )
+
+
+def test_cache_miss_waits_in_the_builder_when_the_pool_has_room() -> None:
+    encoder = RecordingEncoder()
+
+    def submit_item(item: object) -> concurrent.futures.Future[torch.Tensor]:
+        raise AssertionError("the builder should wait on encode_item")
+
+    encoder.submit_item = submit_item
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        audio_encoder_service=encoder,
+        should_wait_for_encode=lambda: True,
+    )
+    request = build_request(make_payload())
+    assert encoder.waited is True
+    assert request.req.multimodal_inputs.mm_items[0].feature is None

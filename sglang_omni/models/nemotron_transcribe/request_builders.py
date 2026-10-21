@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,6 +18,9 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.nemotron_transcribe.encoder_service import (
+    NemotronTranscribePreLMEncoderService,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     AUDIO_TOKEN_ID,
     EOS_TOKEN_ID,
@@ -29,7 +33,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
 )
-from sglang_omni.scheduling.types import StreamOutputBuilder
+from sglang_omni.scheduling.types import DeferredAdmission, StreamOutputBuilder
 
 SAMPLE_RATE = 16000
 AUDIO_TOKEN = "<|audio|>"
@@ -50,7 +54,11 @@ class NemotronTranscribeRequestData(SGLangARRequestData):
 
 
 class RequestBuilder(Protocol):
-    def __call__(self, payload: StagePayload) -> NemotronTranscribeRequestData: ...
+    def __call__(
+        self, payload: StagePayload
+    ) -> NemotronTranscribeRequestData | DeferredAdmission[
+        NemotronTranscribeRequestData
+    ]: ...
 
 
 class ResultAdapter(Protocol):
@@ -92,13 +100,19 @@ def make_scheduler_adapters(
     eos_token_id: int = EOS_TOKEN_ID,
     max_audio_seconds: float | None = None,
     vocab_size: int = AUDIO_TOKEN_ID,
+    audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None,
+    should_wait_for_encode: Callable[[], bool] | None = None,
 ) -> tuple[
     RequestBuilder,
     ResultAdapter,
 ]:
     stop_ids = {int(eos_token_id)}
 
-    def request_builder(payload: StagePayload) -> NemotronTranscribeRequestData:
+    def request_builder(
+        payload: StagePayload,
+    ) -> NemotronTranscribeRequestData | DeferredAdmission[
+        NemotronTranscribeRequestData
+    ]:
         params = payload.request.params or {}
         prepared = prepare_audio(
             payload,
@@ -113,6 +127,13 @@ def make_scheduler_adapters(
             )
         else:
             n_audio = num_audio_tokens(waveform.numel(), audio_token_estimator)
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                prepared.fingerprint, n_audio
+            )
+        else:
+            pass
 
         instruction = str(params.get("prompt") or DEFAULT_PROMPT)
         prompt_ids = render_prompt_ids(
@@ -129,8 +150,11 @@ def make_scheduler_adapters(
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
             hash=prepared.fingerprint_int,
-            feature=waveform,
-            model_specific_data={"num_audio_tokens": n_audio},
+            feature=None if cached_embedding is not None else waveform,
+            model_specific_data={
+                "num_audio_tokens": n_audio,
+                "audio_fingerprint": prepared.fingerprint,
+            },
         )
         audio_item.set_pad_value()
         input_ids = (
@@ -162,7 +186,11 @@ def make_scheduler_adapters(
         )
         req.multimodal_inputs = mm_inputs
 
-        return NemotronTranscribeRequestData(
+        if audio_encoder_service is not None and cached_embedding is not None:
+            audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
+        req_data = NemotronTranscribeRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
             req=req,
             prompt_token_ids=input_ids,
@@ -172,6 +200,22 @@ def make_scheduler_adapters(
             language=params.get("language"),
             engine_start_s=time.perf_counter(),
             stage_payload=payload,
+        )
+        if audio_encoder_service is None or cached_embedding is not None:
+            return req_data
+        else:
+            pass
+        # Encode finishes before admission. When the build pool still has a
+        # free worker, wait here so a failed encode keeps its timeout. Otherwise
+        # return the future and let other builds overlap this perception run.
+        if should_wait_for_encode is not None and should_wait_for_encode():
+            audio_encoder_service.encode_item(audio_item)
+            return req_data
+        else:
+            pass
+        return DeferredAdmission(
+            value=req_data,
+            ready=audio_encoder_service.submit_item(audio_item),
         )
 
     def result_adapter(data: NemotronTranscribeRequestData) -> StagePayload:
