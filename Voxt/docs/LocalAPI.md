@@ -60,8 +60,11 @@ Every compose mode needs a working text model; without one the request fails wit
 {"api":{"major":1,"minor":0},"app":"Voxt","version":"1.15.0",
  "endpoints":["health","capabilities","dictations","compose","compose/prompts"],
  "audio":{"contentTypes":["audio/aac","audio/m4a","audio/mp4","audio/mpeg","audio/wav","audio/wave","audio/x-caf","audio/x-m4a","audio/x-wav"],"maxBodyBytes":26214400},
- "models":{"transcription":"ready","text":"off"}}
+ "models":{"transcription":"ready","text":"off"},
+ "locations":{"transcription":"local","text":"local"}}
 ```
+
+`locations` says where the selected models run: `local`, `remote` (a cloud provider) or `unknown` (Apple Speech without on-device recognition, or anything Voxt cannot vouch for). A client that must keep audio and text on the Mac sends `X-Voxt-Model-Policy: local-only` with a dictation or compose request; Voxt then answers 403 unless both are `local`.
 
 Model states are `ready`, `missing` (selected but not downloaded or not configured), `off` (no text model) and `unsupported` (Apple Speech cannot transcribe recorded files).
 
@@ -75,6 +78,7 @@ Errors return `{"error": "…"}`.
 | --- | --- |
 | 400 | Empty body, audio that cannot be read, or a `language` that is not `auto` or a language name |
 | 401 | Missing or wrong token |
+| 403 | `X-Voxt-Model-Policy: local-only`, and a selected model is not local |
 | 404 / 405 | Unknown path or wrong method |
 | 411 | Chunked request body; send `Content-Length` |
 | 413 | Body larger than 25 MB |

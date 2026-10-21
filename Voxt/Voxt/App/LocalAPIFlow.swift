@@ -55,6 +55,14 @@ extension AppDelegate {
             modelStatus: { [weak self] in
                 self?.localAPIModelStatus() ?? LocalAPIModelStatus(transcription: .missing, text: .missing)
             },
+            modelLocations: { [weak self] in
+                guard let self else { return .unknown }
+                let speech = ASRHintSettingsStore.resolvedSettings(
+                    for: .dictation, rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.asrHintSettings))
+                return .resolve(transcriptionEngine: self.transcriptionEngine.rawValue,
+                                enhancementMode: self.enhancementMode.rawValue,
+                                appleSpeechOnDevice: speech.prefersOnDeviceRecognition)
+            },
             dictate: { dictation in
                 await pipeline.run(dictation)
             },
