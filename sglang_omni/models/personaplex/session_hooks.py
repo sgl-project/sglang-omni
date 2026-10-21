@@ -4,39 +4,38 @@ first unit, the streaming Mimi encoder and the streaming Mimi decoder."""
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 import torch
-from sentencepiece import SentencePieceProcessor
 
 from sglang_omni.models.personaplex.architecture import (
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
     SILENCE_CODES,
-    TEXT_MARKER_IDS,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
-    MimiDecodeState,
-    MimiEncodeState,
-)
+from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiEncodeState
+from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import PCM16, PCM16_BYTES_PER_SAMPLE
-from sglang_omni.scheduling.session import SessionContext, SessionHooks
+from sglang_omni.proto.streams import AUDIO, PCM16, PCM16_BYTES_PER_SAMPLE
+from sglang_omni.scheduling.session import (
+    BatchedSessionHooks,
+    SessionAppend,
+    SessionContext,
+    SessionHooks,
+)
 from sglang_omni.serve.realtime.types import samples_to_ms
 
 PCM16_SCALE = 32768.0
 PCM16_BYTES_PER_FRAME = SAMPLES_PER_FRAME * PCM16_BYTES_PER_SAMPLE
-WORD_BOUNDARY = "▁"
 # Note (wilsonzheng0327): A session's first unit returns two agent frames, the
 # prompt's last among them, and every later unit one.
-MAX_FRAMES_PER_UNIT = 2
-WARM_UP_FRAMES_PER_UNIT = (MAX_FRAMES_PER_UNIT, 1)
+FRAMES_PER_UNIT = (2, 1)
 
 
 def is_empty_end_of_input(chunk: TimedChunk) -> bool:
@@ -154,121 +153,77 @@ class MimiEncodeHooks(SessionHooks):
 
 @dataclass(kw_only=True)
 class Code2WavState:
-    decode_state: MimiDecodeState
+    slot_index: int
     num_samples: int = 0
-    has_spoken: bool = False
 
 
-class Code2WavHooks(SessionHooks):
-    """Decodes each unit's agent frames and emits the audio and spoken words."""
+class Code2WavHooks(BatchedSessionHooks):
+    """Decodes the ready sessions' agent frames on their decode slots, one batch per
+    frame count, and emits each unit's audio with the words spoken in it."""
 
-    def __init__(
-        self,
-        codec: MimiCodec,
-        device: torch.device,
-        tokenizer: SentencePieceProcessor,
-    ) -> None:
-        self.codec = codec
-        self.device = device
-        self.tokenizer = tokenizer
+    def __init__(self, decode_slots: MimiDecodeSlots) -> None:
+        self.decode_slots = decode_slots
         self.states: dict[SessionIdentity, Code2WavState] = {}
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
-        """Decode silence as a session's units arrive, on a throwaway state, so the
+        """Decode silence as a session's units arrive, on a slot freed again, so the
         codec's first use on the serving thread happens before the first session."""
-        decode_state = self.codec.init_decode_state(
-            batch_size=1, max_chunk_frames=MAX_FRAMES_PER_UNIT
+        slot_index = self.decode_slots.acquire()
+        silence = torch.tensor(
+            SILENCE_CODES, dtype=torch.long, device=self.decode_slots.codec.device
         )
-        silence = torch.tensor(SILENCE_CODES, dtype=torch.long, device=self.device)
-        for num_frames in WARM_UP_FRAMES_PER_UNIT:
-            self.codec.decode_step(silence.repeat(num_frames, 1).T[None], decode_state)
+        for num_frames in FRAMES_PER_UNIT:
+            self.decode_slots.decode_step(
+                silence.repeat(num_frames, 1).T[None], [slot_index]
+            )
+        self.decode_slots.release(slot_index)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        # Note (Junnan Li): The stage opens at most as many sessions as it has slots.
         self.states[session_identity] = Code2WavState(
-            decode_state=self.codec.init_decode_state(
-                batch_size=1, max_chunk_frames=MAX_FRAMES_PER_UNIT
-            )
+            slot_index=self.decode_slots.acquire()
         )
 
-    def spoken_words(self, session: Code2WavState, text_ids: list[int]) -> str:
-        """Word pieces as they are spoken, frame markers dropped."""
-        # Note (wilsonzheng0327): Piece by piece, since decoding a growing id list
-        # could rewrite text already sent.
-        pieces = []
-        for token in text_ids:
-            if token in TEXT_MARKER_IDS:
-                continue
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        units = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
+        pcm = [b""] * len(appends)
+        rows_by_width: dict[int, list[int]] = defaultdict(list)
+        for index, unit in enumerate(units):
+            if unit.codes.shape[0]:
+                rows_by_width[unit.codes.shape[0]].append(index)
             else:
                 pass
-            piece = self.tokenizer.id_to_piece(token).replace(WORD_BOUNDARY, " ")
-            if not session.has_spoken:
-                piece = piece.lstrip(" ")
-                session.has_spoken = bool(piece)
-            else:
-                pass
-            pieces.append(piece)
-        return "".join(pieces)
-
-    @torch.inference_mode()
-    def append(
-        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
-    ) -> StagePayload:
-        session = self.states[context.session_identity]
-        state = PersonaPlexState.from_dict(payload.data)
-        codes = state.codes
-        start_ms = samples_to_ms(session.num_samples, SAMPLE_RATE)
-        num_samples = 0
-        if codes.shape[0]:
-            waveform = self.codec.decode_step(
-                codes.to(device=self.device, dtype=torch.long).T[None],
-                session.decode_state,
-            )[0, 0]
-            num_samples = int(waveform.shape[-1])
-            context.emit(
-                TimedChunk(
-                    "audio",
-                    start_ms,
-                    samples_to_ms(num_samples, SAMPLE_RATE),
-                    chunk.seq,
-                    waveform_to_pcm16(waveform),
-                    format=PCM16,
-                )
+        for indices in rows_by_width.values():
+            codes_BKF = torch.stack([units[index].codes.T for index in indices])
+            waveform = self.decode_slots.decode_step(
+                codes_BKF.to(device=self.decode_slots.codec.device),
+                [
+                    self.states[appends[index].context.session_identity].slot_index
+                    for index in indices
+                ],
             )
-        else:
-            pass
-        words = self.spoken_words(session, state.text_ids)
-        if words:
-            context.emit(
+            for row, index in enumerate(indices):
+                pcm[index] = waveform_to_pcm16(waveform[row, 0])
+        for append, unit, unit_pcm in zip(appends, units, pcm, strict=True):
+            session = self.states[append.context.session_identity]
+            num_samples = len(unit_pcm) // PCM16_BYTES_PER_SAMPLE
+            append.context.emit(
                 TimedChunk(
-                    "text",
-                    start_ms,
-                    samples_to_ms(num_samples, SAMPLE_RATE),
-                    chunk.seq,
-                    {"text": words},
-                )
-            )
-        else:
-            pass
-        session.num_samples += num_samples
-        if chunk.eos:
-            context.emit(
-                TimedChunk(
-                    "audio",
+                    AUDIO,
                     samples_to_ms(session.num_samples, SAMPLE_RATE),
-                    0.0,
-                    chunk.seq,
-                    None,
-                    eos=True,
+                    samples_to_ms(num_samples, SAMPLE_RATE),
+                    append.chunk.seq,
+                    {"text": unit.text, "pcm": unit_pcm},
+                    eos=append.chunk.eos,
                 )
             )
-        else:
-            pass
-        payload.data = {}
-        return payload
+            session.num_samples += num_samples
+            append.payload.data = {}
+        return [append.payload for append in appends]
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.states.pop(session_identity)
+        self.decode_slots.release(self.states.pop(session_identity).slot_index)
 
 
 __all__ = [

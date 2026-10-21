@@ -9,9 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sentencepiece import SentencePieceProcessor
 from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
     LMInputs,
@@ -28,6 +30,8 @@ from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
+WORD_BOUNDARY = "▁"
+
 
 @dataclass(kw_only=True)
 class LMHistory:
@@ -38,6 +42,7 @@ class LMHistory:
     timeline: Timeline
     model_inputs: LMInputs
     next_text_id: int
+    has_spoken: bool = False
 
 
 @dataclass(kw_only=True)
@@ -47,9 +52,16 @@ class LMSessionState:
 
 
 class PersonaPlexSessionAdapter(ARSessionAdapter):
-    def __init__(self, *, vocab_size: int, context_length: int) -> None:
+    def __init__(
+        self,
+        *,
+        vocab_size: int,
+        context_length: int,
+        tokenizer: SentencePieceProcessor,
+    ) -> None:
         self.vocab_size = vocab_size
         self.context_length = context_length
+        self.tokenizer = tokenizer
         self.states: dict[SessionIdentity, LMSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -78,6 +90,25 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
             model_inputs=new_model_inputs(timeline, session.sampling),
             next_text_id=int(timeline.prefill_tokens[-1, 0]),
         )
+
+    def spoken_words(self, history: LMHistory, text_ids: list[int]) -> str:
+        """Word pieces as they are spoken, frame markers dropped."""
+        # Note (wilsonzheng0327): Piece by piece, since decoding a growing id list
+        # could rewrite text already sent.
+        pieces = []
+        for token in text_ids:
+            if token in TEXT_MARKER_IDS:
+                continue
+            else:
+                pass
+            piece = self.tokenizer.id_to_piece(token).replace(WORD_BOUNDARY, " ")
+            if not history.has_spoken:
+                piece = piece.lstrip(" ")
+                history.has_spoken = bool(piece)
+            else:
+                pass
+            pieces.append(piece)
+        return "".join(pieces)
 
     def build(
         self,
@@ -142,7 +173,9 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         frames.clear()
         history.model_inputs["frames"].clear()
         payload = request_data.stage_payload
-        payload.data = PersonaPlexState(codes=codes, text_ids=text_ids).to_dict()
+        payload.data = PersonaPlexState(
+            codes=codes, text=self.spoken_words(history, text_ids)
+        ).to_dict()
         return payload
 
 

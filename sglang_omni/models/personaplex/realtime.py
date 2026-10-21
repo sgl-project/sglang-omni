@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import uuid
-
 from sglang_omni.client.client import Client
 from sglang_omni.models.personaplex.architecture import SAMPLE_RATE, SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.config import PersonaPlexSessionPipelineConfig
@@ -47,47 +45,55 @@ class PersonaPlexOutputConverter:
     words it speaks as it speaks them, finished when the caller's input ends."""
 
     def __init__(self) -> None:
-        self.response_id = f"resp_{uuid.uuid4().hex}"
-        self.item_id = f"item_{uuid.uuid4().hex}"
+        self.response_id: str | None = None
+        self.item_id: str | None = None
         self.text = ""
-        self.is_started = False
-        self.is_finished = False
+        self.audio = False
 
     def __call__(self, output: OutputChunk) -> list[OutputEvent]:
+        value = output.payload
         events: list[OutputEvent] = []
-        payload = output.payload
-        if self.is_finished:
-            return events
-        elif output.modality == "audio" and isinstance(payload, bytes) and payload:
-            events.append(AudioDelta(self.response_id, self.item_id, payload))
-        elif output.modality == "text" and isinstance(payload, dict):
-            text = payload["text"]
-            assert isinstance(text, str), type(text)
-            self.text += text
-            events.append(TextDelta(self.response_id, self.item_id, text))
+        if value["text"] or value["pcm"]:
+            if self.response_id is None:
+                session_identity = output.session_identity
+                self.response_id = (
+                    f"{session_identity.id}-o{session_identity.open_index}"
+                )
+                self.item_id = self.response_id + "-message"
+                events.append(ResponseStarted(self.response_id))
+            else:
+                pass
+            if value["text"]:
+                self.text += value["text"]
+                events.append(TextDelta(self.response_id, self.item_id, value["text"]))
+            else:
+                pass
+            if value["pcm"]:
+                self.audio = True
+                events.append(AudioDelta(self.response_id, self.item_id, value["pcm"]))
+            else:
+                pass
         else:
             pass
-        if events and not self.is_started:
-            events.insert(0, ResponseStarted(self.response_id))
-            self.is_started = True
-        else:
-            pass
-        if output.eos and self.is_started:
-            self.is_finished = True
-            events.extend(
-                (
-                    TextFinished(self.response_id, self.item_id, self.text),
-                    AudioFinished(self.response_id, self.item_id),
-                    ResponseFinished(
-                        self.response_id,
-                        self.item_id,
-                        self.text,
-                        True,
-                        "completed",
-                        "input_audio_ended",
-                    ),
+        if output.eos and self.response_id is not None:
+            events.append(TextFinished(self.response_id, self.item_id, self.text))
+            if self.audio:
+                events.append(AudioFinished(self.response_id, self.item_id))
+            else:
+                pass
+            events.append(
+                ResponseFinished(
+                    self.response_id,
+                    self.item_id,
+                    self.text,
+                    self.audio,
+                    "completed",
+                    "input_audio_ended",
                 )
             )
+            self.response_id = None
+            self.text = ""
+            self.audio = False
         else:
             pass
         return events

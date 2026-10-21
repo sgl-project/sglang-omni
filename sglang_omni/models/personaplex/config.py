@@ -210,7 +210,7 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     )
     is_realtime_only: ClassVar[bool] = True
     # Note (wilsonzheng0327): The offline LM and code2wav factory fields have no
-    # realtime counterpart.
+    # session counterpart.
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         LM_STAGE: EngineStageConfig
     }

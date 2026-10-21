@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
     Code2WavHooks,
@@ -18,7 +19,7 @@ from sglang_omni.models.personaplex.session_hooks import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.scheduling.session import SessionContext
+from sglang_omni.scheduling.session import SessionAppend, SessionContext
 
 CALL = SessionIdentity("call")
 PROMPT_IDS = [11, 12, 13]
@@ -105,55 +106,90 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     assert torch.equal(torch.cat(streamed), whole)
 
 
-class PieceTokenizer:
-    def id_to_piece(self, token: int) -> str:
-        return {100: "▁hello", 101: "▁there", 102: "!"}[token]
-
-
-def test_code2wav_streams_audio_and_the_words_spoken(random_codec):
-    frames = 3
-    codes = torch.randint(0, 2048, (frames, 8))
-    whole = random_codec.decode(codes.T[None])[0, 0]
-    hooks = open_hooks(
-        Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
+    return MimiDecodeSlots(
+        codec,
+        num_slots=num_slots,
+        max_batch_size=num_slots,
+        max_graph_frames=0,
+        max_chunk_frames=2,
     )
-    emitted: list[TimedChunk] = []
-    # Note (wilsonzheng0327): 3 is PAD and 0 is EPAD, frame markers never spoken.
-    text_ids = [[3, 100], [0, 101], [102]]
-    for index in range(frames):
-        state = PersonaPlexState(
-            codes=codes[index : index + 1], text_ids=text_ids[index]
-        )
-        hooks.append(
-            unit(index, eos=index == frames - 1), payload(state), context(emitted)
-        )
-    hooks.close(CALL)
 
-    audio = [chunk for chunk in emitted if chunk.modality == "audio" and not chunk.eos]
-    streamed = np.frombuffer(b"".join(chunk.payload for chunk in audio), dtype="<i2")
-    expected = np.frombuffer(waveform_to_pcm16(whole), dtype="<i2")
-    assert np.abs(streamed.astype(np.int32) - expected).max() <= 1
-    assert [chunk.t_start_ms for chunk in audio] == [0.0, 80.0, 160.0]
-    words = [chunk.payload["text"] for chunk in emitted if chunk.modality == "text"]
-    assert "".join(words) == "hello there!"
-    assert emitted[-1].eos and emitted[-1].t_start_ms == 240.0
+
+def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_codec):
+    sessions = [SessionIdentity("a"), SessionIdentity("b")]
+    frames_per_unit = {sessions[0]: [2, 1, 1], sessions[1]: [1, 1, 2]}
+    codes = {session: torch.randint(0, 2048, (4, 8)) for session in sessions}
+    hooks = Code2WavHooks(decode_slots(random_codec, 2))
+    emitted: dict[SessionIdentity, list[TimedChunk]] = {}
+    for session in sessions:
+        hooks.open(session, OmniRequest(inputs=None))
+        emitted[session] = []
+    starts = dict.fromkeys(sessions, 0)
+    for index in range(3):
+        appends = []
+        for session in sessions:
+            count = frames_per_unit[session][index]
+            start = starts[session]
+            starts[session] += count
+            state = PersonaPlexState(
+                codes=codes[session][start : start + count], text=f"w{index} "
+            )
+            appends.append(
+                SessionAppend(
+                    chunk=unit(index, eos=index == 2),
+                    payload=payload(state),
+                    context=SessionContext(
+                        session_identity=session,
+                        cancelled=threading.Event(),
+                        emit=emitted[session].append,
+                    ),
+                )
+            )
+        hooks.append_batch(appends)
+    for session in sessions:
+        hooks.close(session)
+
+    for session in sessions:
+        chunks = emitted[session]
+        whole = random_codec.decode(codes[session].T[None])[0, 0]
+        streamed = np.frombuffer(
+            b"".join(chunk.payload["pcm"] for chunk in chunks), dtype="<i2"
+        )
+        expected = np.frombuffer(waveform_to_pcm16(whole), dtype="<i2")
+        assert np.abs(streamed.astype(np.int32) - expected).max() <= 1
+        assert [chunk.payload["text"] for chunk in chunks] == ["w0 ", "w1 ", "w2 "]
+        assert [chunk.eos for chunk in chunks] == [False, False, True]
+        widths = [80.0 * count for count in frames_per_unit[session]]
+        assert [chunk.t_start_ms for chunk in chunks] == [
+            0.0,
+            widths[0],
+            sum(widths[:2]),
+        ]
 
 
 def test_an_empty_end_of_input_emits_only_the_end(random_codec):
-    hooks = open_hooks(
-        Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
-    )
+    hooks = open_hooks(Code2WavHooks(decode_slots(random_codec, 1)))
     emitted: list[TimedChunk] = []
     state = PersonaPlexState(codes=torch.zeros(0, 8, dtype=torch.long))
-    hooks.append(unit(0, eos=True), payload(state), context(emitted))
-    assert [(chunk.modality, chunk.eos, chunk.payload) for chunk in emitted] == [
-        ("audio", True, None)
+    hooks.append_batch(
+        [
+            SessionAppend(
+                chunk=unit(0, eos=True),
+                payload=payload(state),
+                context=context(emitted),
+            )
+        ]
+    )
+    assert [(chunk.eos, chunk.payload) for chunk in emitted] == [
+        (True, {"text": "", "pcm": b""})
     ]
 
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
     encode = MimiEncodeHooks(random_codec, torch.device("cpu"))
-    decode = Code2WavHooks(random_codec, torch.device("cpu"), PieceTokenizer())
+    decode = Code2WavHooks(decode_slots(random_codec, 1))
     encode.warm_up_serving_thread()
     decode.warm_up_serving_thread()
     assert encode.states == {} and decode.states == {}
+    assert decode.decode_slots.active_slot_count == 0

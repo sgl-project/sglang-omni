@@ -180,12 +180,13 @@ def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
     built = {}
 
     class Builder:
-        def __init__(self, *, context_length, enable_async_decode):
+        def __init__(self, *, tokenizer, context_length, enable_async_decode):
             built["enable_async_decode"] = enable_async_decode
 
         def build(self, model_path, **kwargs):
             pass
 
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "PersonaPlexSessionEngineBuilder", Builder)
     stages.create_session_lm_executor(str(tmp_path))
     assert built["enable_async_decode"] is False
@@ -202,6 +203,8 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
 
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "load_codec", load_codec)
+    decode_slots = Mock()
+    monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
     prompt = stages.create_session_preprocessing_executor(
         str(tmp_path), max_open_sessions=3
     )
@@ -212,6 +215,7 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     for scheduler in [prompt, *codecs]:
         assert scheduler.max_open_sessions == 3
     assert all(scheduler.max_concurrency == 1 for scheduler in codecs)
+    assert decode_slots.call_args.kwargs["num_slots"] == 3
     assert loaded_modes == ["encode", "decode"]
 
 
@@ -260,9 +264,13 @@ def resolve_session_config(
 
 def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
+    decode_slots = Mock()
+    monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     config = resolve_session_config(
         str(tmp_path),
         mimi_encode={"factory": {"max_concurrency": 2}},
+        code2wav={"factory": {"max_graph_frames": 0}},
         lm={"engine": {"max_running_requests": 8}},
     )
     stage = config.stage_named("mimi_encode")
@@ -270,6 +278,9 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
         **resolve_stage_factory_args(stage, config)
     )
     assert encode.max_concurrency == 2
+    stage = config.stage_named("code2wav")
+    stages.create_session_code2wav_executor(**resolve_stage_factory_args(stage, config))
+    assert decode_slots.call_args.kwargs["max_graph_frames"] == 0
     lm_args = resolve_stage_factory_args(config.stage_named("lm"), config)
     assert lm_args["server_args_overrides"]["max_running_requests"] == 8
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 import torch
+from sentencepiece import SentencePieceProcessor
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
@@ -182,7 +183,19 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
 class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
     """The LM of full-duplex sessions: one SGLang streaming session each."""
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+    def __init__(
+        self,
+        *,
+        tokenizer: SentencePieceProcessor,
+        enable_async_decode: bool,
+        context_length: int | None = None,
+    ) -> None:
+        super().__init__(
+            enable_async_decode=enable_async_decode, context_length=context_length
+        )
+        self.tokenizer = tokenizer
+
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             **super().generation_defaults(dtype=dtype),
             "enable_streaming_session": True,
@@ -192,6 +205,8 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
         return {
             "session_adapter": PersonaPlexSessionAdapter(
-                vocab_size=TEXT_CARD, context_length=self.context_length
+                vocab_size=TEXT_CARD,
+                context_length=self.context_length,
+                tokenizer=self.tokenizer,
             )
         }

@@ -44,6 +44,7 @@ from sglang_omni.models.personaplex.prompts import (
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
 from sglang_omni.models.personaplex.session_hooks import (
+    FRAMES_PER_UNIT,
     Code2WavHooks,
     MimiEncodeHooks,
     PreprocessingHooks,
@@ -268,6 +269,7 @@ def create_session_lm_executor(
 ) -> OmniScheduler[SGLangARRequestData]:
     server_args_overrides = {**overrides, **(server_args_overrides or {})}
     builder = PersonaPlexSessionEngineBuilder(
+        tokenizer=load_text_tokenizer(resolve_model_path(model_path)),
         context_length=server_args_overrides.get("context_length", context_length),
         # Note (Junnan Li): A unit decodes one or two frames, so async
         # lookahead past it would only be discarded.
@@ -347,15 +349,23 @@ def create_session_code2wav_executor(
     model_path: str,
     *,
     max_open_sessions: int,
+    max_graph_frames: int = max(FRAMES_PER_UNIT),
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
-    tokenizer = load_text_tokenizer(resolve_model_path(model_path))
+    """Every open session holds a decode slot, and one step decodes every ready
+    session whose unit has as many frames, with device graphs for units of up to
+    max_graph_frames frames (0 turns the graphs off)."""
+    codec, _ = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
+    decode_slots = MimiDecodeSlots(
+        codec,
+        num_slots=max_open_sessions,
+        max_batch_size=max_open_sessions,
+        max_graph_frames=max_graph_frames,
+        max_chunk_frames=max(FRAMES_PER_UNIT),
+    )
     return SessionScheduler(
-        Code2WavHooks(codec, device, tokenizer),
-        max_open_sessions=max_open_sessions,
-        max_concurrency=1,
+        Code2WavHooks(decode_slots), max_open_sessions=max_open_sessions
     )
 
 

@@ -44,30 +44,50 @@ CALL = SessionIdentity("call")
 UNIT_BYTES = SAMPLES_PER_FRAME * 2
 
 
-def output(modality: str, payload: ChunkPayload, *, eos: bool = False) -> OutputChunk:
-    return OutputChunk(CALL, 0, 0, modality, 0.0, 80.0, payload, eos=eos)
+def output(
+    text: str = "", pcm: bytes = b"", *, eos: bool = False, open_index: int = 1
+) -> OutputChunk:
+    return OutputChunk(
+        SessionIdentity("call", open_index),
+        0,
+        0,
+        "audio",
+        0.0,
+        80.0,
+        {"text": text, "pcm": pcm},
+        eos=eos,
+    )
 
 
-def test_the_call_is_one_response_until_the_caller_stops():
+def test_a_session_is_one_response_until_the_caller_stops():
     converter = PersonaPlexOutputConverter()
-    first = converter(output("audio", b"\x01\x00"))
+    first = converter(output(pcm=b"\x01\x00"))
     assert [type(event) for event in first] == [ResponseStarted, AudioDelta]
-    assert [type(event) for event in converter(output("text", {"text": "hi"}))] == [
-        TextDelta
-    ]
-    last = converter(output("audio", None, eos=True))
+    assert [type(event) for event in converter(output("hi"))] == [TextDelta]
+    last = converter(output("!", eos=True))
     assert [type(event) for event in last] == [
+        TextDelta,
         TextFinished,
         AudioFinished,
         ResponseFinished,
     ]
-    assert last[0].text == last[2].text == "hi"
+    assert last[1].text == last[3].text == "hi!"
+    assert last[3].has_audio
     assert len({event.response_id for event in first + last}) == 1
-    assert converter(output("audio", b"\x01\x00")) == []
+
+    reopened = converter(output("again", open_index=2, eos=True))
+    assert [type(event) for event in reopened] == [
+        ResponseStarted,
+        TextDelta,
+        TextFinished,
+        ResponseFinished,
+    ]
+    assert reopened[0].response_id != first[0].response_id
+    assert not reopened[-1].has_audio
 
 
-def test_a_call_that_ends_before_any_output_opens_no_response():
-    assert PersonaPlexOutputConverter()(output("audio", None, eos=True)) == []
+def test_a_session_that_ends_before_any_output_opens_no_response():
+    assert PersonaPlexOutputConverter()(output(eos=True)) == []
 
 
 def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls():
@@ -158,14 +178,10 @@ class ScriptedPipeline:
     ) -> int:
         self.appended.append(chunk)
         if chunk.payload:
-            self.put(chunk, "audio", b"\1\0" * SAMPLES_PER_FRAME)
-            self.put(chunk, "text", {"text": f"w{chunk.seq} "})
+            unit = {"text": f"w{chunk.seq} ", "pcm": b"\1\0" * SAMPLES_PER_FRAME}
         else:
-            pass
-        if chunk.eos:
-            self.put(chunk, "audio", None, eos=True)
-        else:
-            pass
+            unit = {"text": "", "pcm": b""}
+        self.put(chunk, "audio", unit, eos=chunk.eos)
         self.put(chunk, "audio", None, kind="input_done")
         return chunk.seq
 

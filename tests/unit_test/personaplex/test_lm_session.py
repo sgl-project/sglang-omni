@@ -8,6 +8,7 @@ import torch
 
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
@@ -85,8 +86,15 @@ def run_offline(num_frames: int, tokens: list[int]):
     return inputs, frames, text_ids, model.depformer.calls
 
 
+class PieceTokenizer:
+    def id_to_piece(self, token: int) -> str:
+        return f"▁t{token}"
+
+
 def open_adapter(context_length: int = CONTEXT_LENGTH) -> PersonaPlexSessionAdapter:
-    adapter = PersonaPlexSessionAdapter(vocab_size=32000, context_length=context_length)
+    adapter = PersonaPlexSessionAdapter(
+        vocab_size=32000, context_length=context_length, tokenizer=PieceTokenizer()
+    )
     adapter.open(CALL, OmniRequest(inputs=None))
     return adapter
 
@@ -152,17 +160,17 @@ def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int])
 
     driver = CallDriver(open_adapter())
     codes = caller_codes(num_caller_frames + 1)
-    inputs, frames, text_ids = [], [], []
+    inputs, frames, text = [], [], ""
     frame, token = 0, 0
     for index, count in enumerate(frames_per_unit):
         num_tokens = count + 1 if index == 0 else count
         unit_inputs, state = driver.unit(
             codes[frame : frame + count], tokens[token : token + num_tokens]
         )
-        assert state.codes.shape[0] == num_tokens == len(state.text_ids)
+        assert state.codes.shape[0] == num_tokens
         inputs.extend(unit_inputs)
         frames.append(state.codes)
-        text_ids.extend(state.text_ids)
+        text += state.text
         frame += count
         token += num_tokens
 
@@ -170,7 +178,12 @@ def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int])
     for rows, offline_rows in zip(inputs, offline_inputs, strict=True):
         assert torch.equal(rows, offline_rows)
     assert torch.equal(torch.cat(frames), offline_frames)
-    assert text_ids == offline_text
+    pieces = [
+        PieceTokenizer().id_to_piece(token).replace("▁", " ")
+        for token in offline_text
+        if token not in TEXT_MARKER_IDS
+    ]
+    assert text == "".join(pieces).lstrip(" ")
     for call, offline_call in zip(
         driver.runner.model.depformer.calls, offline_calls, strict=True
     ):
@@ -202,10 +215,10 @@ def test_an_empty_end_of_input_is_relayed_without_a_step():
     payload = StagePayload("end", request=OmniRequest(inputs=None), data={})
     relayed = open_adapter().finish_input(CALL, payload)
     state = PersonaPlexState.from_dict(relayed.data)
-    assert state.codes.shape == (0, 8) and state.text_ids == []
+    assert state.codes.shape == (0, 8) and state.text == ""
 
 
 def test_close_after_a_failed_open_is_a_no_op():
-    adapter = PersonaPlexSessionAdapter(vocab_size=32000, context_length=4096)
-    adapter.close(CALL)
-    assert adapter.states == {}
+    PersonaPlexSessionAdapter(
+        vocab_size=32000, context_length=CONTEXT_LENGTH, tokenizer=PieceTokenizer()
+    ).close(CALL)
