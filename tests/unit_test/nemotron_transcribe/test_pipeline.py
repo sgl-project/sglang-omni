@@ -59,6 +59,7 @@ def test_factory_signature_accepts_the_typed_pipeline_defaults() -> None:
     assert typed_kwargs["server_args_overrides"]["enable_torch_compile"] is False
     assert typed_kwargs["compile_perception"] is False
     assert typed_kwargs["perception_cuda_graphs"] is False
+    assert typed_kwargs["perception_compile_mode"] == "default"
 
 
 @pytest.mark.parametrize(
