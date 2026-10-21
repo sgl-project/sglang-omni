@@ -121,6 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     var localAPISettingsObserver: NSObjectProtocol?
     var localAPIActivity: NSObjectProtocol?
+    var localAPIConnectorLink: LocalAPIConnectorLink?
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
     let ggufTranslationModelManager: GGUFTranslationModelManager

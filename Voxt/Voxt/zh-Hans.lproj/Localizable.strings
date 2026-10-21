@@ -1906,6 +1906,11 @@
 "No text model is available. Choose one in Voxt Settings > Transcription." = "没有可用的文本模型。请在 Voxt 设置 > 转写 中选择一个。";
 "The selected text model is configured to skip enhancement." = "所选文本模型设置为跳过增强。";
 "The selected text model cannot run this operation." = "所选文本模型无法执行此操作。";
+"Allow Voxt Connector to use Voxt?" = "允许 Voxt Connector 使用 Voxt？";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "它会把已配对 iPhone 上的听写转交给这台 Mac 上的 Voxt。";
+"Always Allow" = "始终允许";
+"Allow Once" = "允许一次";
+"Don't Allow" = "不允许";
 
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "补全标点和段落节奏。例如：口语停顿会整理成可读句子。";
