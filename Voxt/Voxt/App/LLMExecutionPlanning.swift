@@ -470,7 +470,8 @@ extension AppDelegate {
             contextBlocks: segmentedBlocks,
             conversationHistory: plan.conversationHistory,
             previousResponseID: plan.previousResponseID,
-            responseFormat: plan.responseFormat
+            responseFormat: plan.responseFormat,
+            inputNote: plan.inputNote
         )
     }
 

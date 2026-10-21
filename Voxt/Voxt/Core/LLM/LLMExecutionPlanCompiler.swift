@@ -17,7 +17,7 @@ enum LLMExecutionPlanCompiler {
             return LLMCompiledRequest(
                 taskLabel: plan.taskLabel,
                 instructions: joinInstructionSections(contextInstructions),
-                prompt: plan.promptContent,
+                prompt: [plan.promptContent, plan.inputNote].compactMap { $0 }.joined(separator: "\n\n"),
                 debugInput: debugInput(for: plan.task),
                 fallbackText: plan.fallbackText,
                 inputCharacterCount: plan.primaryInputCharacterCount,
@@ -32,7 +32,7 @@ enum LLMExecutionPlanCompiler {
             return LLMCompiledRequest(
                 taskLabel: plan.taskLabel,
                 instructions: joinInstructionSections(promptSections),
-                prompt: requestPrompt(for: plan.task),
+                prompt: requestPrompt(for: plan.task, inputNote: plan.inputNote),
                 debugInput: debugInput(for: plan.task),
                 fallbackText: plan.fallbackText,
                 inputCharacterCount: plan.primaryInputCharacterCount,
@@ -44,15 +44,16 @@ enum LLMExecutionPlanCompiler {
         }
     }
 
-    private static func requestPrompt(for task: LLMExecutionTaskPayload) -> String {
+    private static func requestPrompt(for task: LLMExecutionTaskPayload, inputNote: String?) -> String {
         switch task {
         case .enhancement(let rawText):
-            return """
-            Process this ASR transcription according to the system instructions.
-            Return only the final processed text.
-            Input:
-            \(rawText)
-            """
+            return [
+                "Process this ASR transcription according to the system instructions.",
+                "Return only the final processed text.",
+                inputNote,
+                "Input:",
+                rawText
+            ].compactMap { $0 }.joined(separator: "\n")
 
         case .translation(let sourceText, _):
             return """
