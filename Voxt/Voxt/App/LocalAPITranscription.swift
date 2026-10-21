@@ -66,7 +66,20 @@ extension AppDelegate {
         }
     }
 
+    /// Where the models of the next request run. A request first copies the feature settings onto
+    /// the engine and text-model keys, so this does too; read before that, a key left from an earlier
+    /// session reported a text model the request then did not have.
+    func localAPIModelLocations() -> LocalAPIModelLocations {
+        prepareLegacySettingsForSession(outputMode: .transcription)
+        let speech = ASRHintSettingsStore.resolvedSettings(
+            for: .dictation, rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.asrHintSettings))
+        return .resolve(transcriptionEngine: transcriptionEngine.rawValue,
+                        enhancementMode: enhancementMode.rawValue,
+                        appleSpeechOnDevice: speech.prefersOnDeviceRecognition)
+    }
+
     func localAPIModelStatus() -> LocalAPIModelStatus {
+        prepareLegacySettingsForSession(outputMode: .transcription)
         let transcription: LocalAPIModelReadiness
         switch transcriptionEngine {
         case .dictation:

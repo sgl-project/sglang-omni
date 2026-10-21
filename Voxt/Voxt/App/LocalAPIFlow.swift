@@ -33,7 +33,7 @@ extension AppDelegate {
                 return try await self.transcribeLocalAPIAudio(at: url, language: language)
             },
             enhance: { [weak self] text in
-                guard let self else { return text }
+                guard let self else { return nil }
                 return try await self.enhanceLocalAPITranscript(text)
             },
             finalize: { [weak self] text in
@@ -56,12 +56,7 @@ extension AppDelegate {
                 self?.localAPIModelStatus() ?? LocalAPIModelStatus(transcription: .missing, text: .missing)
             },
             modelLocations: { [weak self] in
-                guard let self else { return .unknown }
-                let speech = ASRHintSettingsStore.resolvedSettings(
-                    for: .dictation, rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.asrHintSettings))
-                return .resolve(transcriptionEngine: self.transcriptionEngine.rawValue,
-                                enhancementMode: self.enhancementMode.rawValue,
-                                appleSpeechOnDevice: speech.prefersOnDeviceRecognition)
+                self?.localAPIModelLocations() ?? .unknown
             },
             dictate: { dictation in
                 await pipeline.run(dictation)
@@ -156,15 +151,16 @@ extension AppDelegate {
         return nil
     }
 
-    private func enhanceLocalAPITranscript(_ text: String) async throws -> String {
+    /// nil when no text model runs, so the response does not claim an enhancement.
+    private func enhanceLocalAPITranscript(_ text: String) async throws -> String? {
         switch enhancementMode {
         case .off:
-            return text
+            return nil
         case .customLLM:
             guard let repo = resolvedTranscriptionEnhancementLocalRepo(),
                   customLLMManager.canAttemptInference(repo: repo) else {
                 VoxtLog.asrWarning("Local API: custom LLM selected but not installed. Returning raw transcription.")
-                return text
+                return nil
             }
         case .appleIntelligence, .remoteLLM:
             break

@@ -29,7 +29,7 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
     private func makePipeline(
         busyReason: String? = nil,
         transcript: Result<String, Error> = .success("嗯 那个 明天下午三点开会"),
-        enhanced: Result<String, Error> = .success("明天下午三点开会。"),
+        enhanced: Result<String?, Error> = .success("明天下午三点开会。"),
         transcribeDelay: Duration = .zero,
         checksAudioWithAVFoundation: Bool = false
     ) -> LocalAPIDictationPipeline {
@@ -71,6 +71,19 @@ final class LocalAPIDictationPipelineTests: XCTestCase {
         _ = await pipeline.run(request)
         _ = await pipeline.run(chinese)
         XCTAssertEqual(transcribedLanguages, [.userSettings, .request("Chinese")])
+    }
+
+    func testNoTextModelMeansNotEnhanced() async throws {
+        // A Mac whose text model is off returned the transcript as "enhanced" in 3 ms.
+        let pipeline = makePipeline(enhanced: .success(nil))
+
+        let response = await pipeline.run(request)
+
+        XCTAssertEqual(response.status, 200)
+        let body = try json(response)
+        XCTAssertEqual(body["enhanced"] as? Bool, false)
+        XCTAssertEqual(body["text"] as? String, "嗯 那个 明天下午三点开会议")
+        XCTAssertEqual(recorded.first?.usedEnhancement, false)
     }
 
     func testSuccessfulDictationTranscribesEnhancesFinalizesAndRecords() async throws {
