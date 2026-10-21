@@ -102,6 +102,18 @@ Json FieldOr(const Json &body, const char *name, Json fallback) {
   }
 }
 
+// body's field, null included, or fallback when it is missing.
+// Note (Minyi Tang): CUDA's CreateSpeechRequest takes null as the default only
+// for the fields it types as optional, and rejects it for the rest.
+Json PresentFieldOr(const Json &body, const char *name, Json fallback) {
+  const auto found = body.find(name);
+  if (found == body.end()) {
+    return fallback;
+  } else {
+    return *found;
+  }
+}
+
 // Throws naming every unsupported field body gives, in sorted order.
 void RejectUnsupportedFields(const Json &body) {
   std::vector<std::string> given;
@@ -173,8 +185,10 @@ SpeechRequest ParseRequest(const Json &body,
     throw std::invalid_argument("model must be a string");
   } else {
   }
-  const Json voice =
-      FieldOr(body, "voice", FieldOr(body, "speaker", Json("default")));
+  // Note (Minyi Tang): as CUDA's AliasChoices("voice", "speaker"), voice wins
+  // whenever it is given, even as null.
+  const Json voice = PresentFieldOr(
+      body, "voice", PresentFieldOr(body, "speaker", Json("default")));
   if (!voice.is_string()) {
     throw std::invalid_argument("voice must be a string");
   } else {
@@ -192,7 +206,8 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
 
-  const Json response_format = FieldOr(body, "response_format", Json("wav"));
+  const Json response_format =
+      PresentFieldOr(body, "response_format", Json("wav"));
   if (!response_format.is_string()) {
     throw std::invalid_argument("response_format must be a string");
   } else {
@@ -208,13 +223,13 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
 
-  const Json stream = FieldOr(body, "stream", Json(false));
+  const Json stream = PresentFieldOr(body, "stream", Json(false));
   if (!stream.is_boolean()) {
     throw std::invalid_argument("stream must be a boolean");
   } else {
   }
   request.stream = stream.get<bool>();
-  if (FieldOr(body, "stream_format", Json("audio")) != "audio") {
+  if (PresentFieldOr(body, "stream_format", Json("audio")) != "audio") {
     throw std::invalid_argument("stream_format must be audio");
   } else {
   }
@@ -223,7 +238,7 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
 
-  const Json speed = FieldOr(body, "speed", Json(1.0));
+  const Json speed = PresentFieldOr(body, "speed", Json(1.0));
   if (!speed.is_number() || speed.get<double>() != 1.0) {
     throw std::invalid_argument("speed must be 1.0 on this model");
   } else {

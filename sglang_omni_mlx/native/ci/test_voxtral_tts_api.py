@@ -404,6 +404,16 @@ def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
         ({"input": "hi", "stream": True}, "stream=true requires response_format='pcm'"),
         ({"input": "hi", "max_new_tokens": 0}, "max_new_tokens must be greater than 0"),
         ({"input": "hi", "speed": 2.0}, "speed must be 1.0 on this model"),
+        ({"input": "hi", "voice": None}, "voice must be a string"),
+        ({"input": "hi", "speaker": None}, "voice must be a string"),
+        (
+            {"input": "hi", "voice": None, "speaker": "casual_male"},
+            "voice must be a string",
+        ),
+        ({"input": "hi", "response_format": None}, "response_format must be a string"),
+        ({"input": "hi", "stream": None}, "stream must be a boolean"),
+        ({"input": "hi", "stream_format": None}, "stream_format must be audio"),
+        ({"input": "hi", "speed": None}, "speed must be 1.0 on this model"),
         (
             {"input": "hi", "seed": 1, "language": "en", "ref_text": ""},
             "Voxtral TTS does not support these /v1/audio/speech fields: "
