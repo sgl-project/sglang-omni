@@ -6,10 +6,10 @@ file; scripts/check_cookbook_order.py does not need to change.
 
   * If the #1081 roadmap changes (sgl-project/sglang-omni#1081): update
     ROADMAP_ORDER to the new **Focus -> Supporting** order.
-  * If Hugging Face download counts change: run
-    `python3 scripts/check_cookbook_order.py --refresh-downloads`, which
-    re-queries the HF API, rewrites DOWNLOADS_DESC, and prints the new expected
-    order. Then update docs/index.rst if the rank changed.
+  * If Hugging Face download counts change: re-query the HF API by hand
+    (https://huggingface.co/api/models/{repo}), update DOWNLOADS_DESC below
+    (keep it in descending order), and update docs/index.rst if the rank
+    changed.
   * New model: add the page to ROADMAP_ORDER (roadmap model, at its #1081
     position) or to HF_REPO + DOWNLOADS_DESC (non-roadmap model, with its HF
     download count), then place the docs/index.rst entry where the count
@@ -34,8 +34,10 @@ ROADMAP_ORDER = [
 ]
 
 # Hugging Face download counts for every non-roadmap cookbook entry, in
-# descending order. Refresh with:
-#   python3 scripts/check_cookbook_order.py --refresh-downloads
+# descending order. Maintain by hand: re-query
+#   https://huggingface.co/api/models/{repo}
+# for the affected models and adjust the counts (and docs/index.rst) if the
+# rank changed.
 DOWNLOADS_DESC = {
     # Hugging Face download counts (descending), queried 2026-10-19.
     "cookbook/qwen3_asr.md": 1_186_346,
@@ -58,8 +60,9 @@ DOWNLOADS_DESC = {
     "cookbook/ming3_tts.md": 20,
 }
 
-# Cookbook page -> Hugging Face repo id, used by --refresh-downloads. For a
-# new non-roadmap model, add the page here so the refresh can find its count.
+# Cookbook page -> Hugging Face repo id, used to look up download counts at
+# https://huggingface.co/api/models/{repo}. For a new non-roadmap model, add
+# the page here and its count to DOWNLOADS_DESC.
 HF_REPO = {
     "cookbook/qwen3_asr.md": "Qwen/Qwen3-ASR-1.7B",
     "cookbook/fun_asr.md": "FunAudioLLM/Fun-ASR-Nano-2512-hf",
@@ -81,5 +84,5 @@ HF_REPO = {
     "cookbook/ming3_asr.md": "inclusionAI/Ming-3.0-asr-tiny",
 }
 
-# When DOWNLOADS_DESC was last refreshed (kept in sync by --refresh-downloads).
+# When DOWNLOADS_DESC was last checked against the HF API (maintained by hand).
 DOWNLOADS_QUERIED_AT = "2026-10"

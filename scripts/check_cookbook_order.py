@@ -16,9 +16,9 @@ All rules live in scripts/cookbook_order_data.py, so a roadmap change or a
 download-count change never requires touching this file's logic:
 
   * Roadmap changed in #1081: update ROADMAP_ORDER there.
-  * Download counts moved: run `--refresh-downloads` (local, queries the HF
-    API and rewrites DOWNLOADS_DESC), then update docs/index.rst if ranks
-    changed.
+  * Download counts moved: update DOWNLOADS_DESC by hand (re-query
+    https://huggingface.co/api/models/{repo} for the affected models), then
+    update docs/index.rst if ranks changed.
   * New model: add it to ROADMAP_ORDER (roadmap model) or HF_REPO +
     DOWNLOADS_DESC (non-roadmap model). An unregistered cookbook entry fails
     with a message pointing at exactly what to update.
@@ -238,91 +238,6 @@ def print_expected() -> int:
     return 0
 
 
-def _format_counts_block(counts: dict[str, int]) -> str:
-    lines = ["DOWNLOADS_DESC = {"]
-    for page in sorted(counts, key=counts.get, reverse=True):
-        lines.append(f'    "{page}": {counts[page]:_},')
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def refresh_downloads() -> int:
-    """Query the HF API for every HF_REPO entry and rewrite DOWNLOADS_DESC.
-
-    Local maintenance command; CI never runs it (lint must stay deterministic
-    and offline). Reports value changes and the new expected order.
-    """
-    import json
-    import urllib.error
-    import urllib.request
-    from datetime import date
-
-    new_counts: dict[str, int] = {}
-    failures: list[str] = []
-    for page, repo in sorted(HF_REPO.items()):
-        url = f"https://huggingface.co/api/models/{repo}"
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "sglang-omni-cookbook-lint"}
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.load(resp)
-            new_counts[page] = int(data.get("downloads", 0))
-            print(f"  {page}: {DOWNLOADS_DESC.get(page, 0):,} -> {new_counts[page]:,}")
-        except (
-            urllib.error.URLError,
-            urllib.error.HTTPError,
-            ValueError,
-            KeyError,
-        ) as exc:
-            failures.append(f"{page} ({repo}): {exc}")
-    if not new_counts:
-        print("refresh failed for every repo; data file unchanged", file=sys.stderr)
-        return 1
-
-    old_order = sorted(DOWNLOADS_DESC, key=DOWNLOADS_DESC.get, reverse=True)
-    new_order = sorted(new_counts, key=new_counts.get, reverse=True)
-    moved = [
-        (i, page, old_order[i], new_order[i])
-        for i, page in enumerate(new_order)
-        if i < len(old_order) and page != old_order[i]
-    ]
-    if moved:
-        print("rank changes vs current table:")
-        for index, page, old_page, new_page in moved:
-            print(f"  position {index + 1}: was '{old_page}', now '{new_page}'")
-    else:
-        print("no rank changes vs current table")
-
-    text = DATA_FILE.read_text(encoding="utf-8")
-    text = re.sub(
-        r"DOWNLOADS_DESC = \{.*?\n\}",
-        _format_counts_block(new_counts),
-        text,
-        count=1,
-        flags=re.S,
-    )
-    queried_at = date.today().strftime("%Y-%m")
-    text = re.sub(
-        r'DOWNLOADS_QUERIED_AT = "[0-9]{4}-[0-9]{2}"',
-        f'DOWNLOADS_QUERIED_AT = "{queried_at}"',
-        text,
-        count=1,
-    )
-    DATA_FILE.write_text(text, encoding="utf-8")
-    print(f"wrote {repo_relative(DATA_FILE)} (queried {queried_at})")
-
-    for failure in failures:
-        print(f"  skipped: {failure}", file=sys.stderr)
-    if failures:
-        print(
-            f"{len(failures)} repo(s) failed; their previous counts were dropped. "
-            "Re-run --refresh-downloads after fixing connectivity.",
-            file=sys.stderr,
-        )
-    return 0 if not failures else 1
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -334,17 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the expected cookbook order (roadmap part, then downloads part "
         "sorted by HF downloads) and exit without checking",
     )
-    parser.add_argument(
-        "--refresh-downloads",
-        action="store_true",
-        help="Local maintenance: query the HF API, rewrite DOWNLOADS_DESC in "
-        "scripts/cookbook_order_data.py, and report rank changes. Never run in CI.",
-    )
     args = parser.parse_args(argv)
     if args.print_expected:
         return print_expected()
-    if args.refresh_downloads:
-        return refresh_downloads()
     targets = resolve_targets(args.paths)
     violations: list[Violation] = []
     for path in targets:
