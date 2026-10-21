@@ -265,6 +265,7 @@ jobs:
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
+            -only-testing:VoxtTests/EnhancementLanguageGuardTests \
             -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
             -only-testing:VoxtTests/HotkeyManagerTests \
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \

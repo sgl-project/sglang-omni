@@ -59,6 +59,19 @@ final class LLMExecutionPlanCompilerTests: XCTestCase {
         XCTAssertFalse(compiled.instructions.contains("Raw transcription"))
     }
 
+    func testEnhancementInputNoteSitsJustBeforeTheInput() {
+        var noted = plan(task: .enhancement(rawText: "raw transcript"), prompt: "Clean up the transcript.")
+        noted.inputNote = "The input is spoken Chinese."
+        XCTAssertContains(
+            LLMExecutionPlanCompiler.compile(noted).prompt,
+            "Return only the final processed text.\nThe input is spoken Chinese.\nInput:\nraw transcript"
+        )
+        XCTAssertContains(
+            LLMExecutionPlanCompiler.compile(plan(task: .enhancement(rawText: "raw transcript"), prompt: "Clean up the transcript.")).prompt,
+            "Return only the final processed text.\nInput:\nraw transcript"
+        )
+    }
+
     func testSystemPromptCompilationIncludesMetadata() {
         let compiled = LLMExecutionPlanCompiler.compile(plan(
             task: .enhancement(rawText: "raw transcript"),

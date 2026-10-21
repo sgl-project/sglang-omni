@@ -52,6 +52,8 @@ struct LLMExecutionPlan: Equatable {
     let conversationHistory: [RewriteConversationPromptTurn]
     let previousResponseID: String?
     let responseFormat: RemoteLLMRuntimeClient.OpenAICompatibleResponseFormat?
+    /// A line the enhancement request carries right before the input.
+    var inputNote: String? = nil
 
     var promptCharacterCount: Int {
         promptContent.count

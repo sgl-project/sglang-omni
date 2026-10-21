@@ -189,7 +189,16 @@ extension AppDelegate {
         ) else {
             return text
         }
-        let enhanced = try await executeLLMExecutionPlan(plan)
+        let enhanced = try await EnhancementLanguageGuard.keepingInputLanguage(
+            input: text,
+            output: executeLLMExecutionPlan(plan),
+            retry: {
+                var retryPlan = plan
+                retryPlan.inputNote = EnhancementLanguageGuard.retryInstruction(for: text)
+                return try await executeLLMExecutionPlan(retryPlan)
+            },
+            log: { VoxtLog.asrWarning($0) }
+        )
         let guarded = TaskLLMStrategyResolver.applyTruncationGuard(
             outputText: enhanced,
             originalText: text,
