@@ -25,10 +25,12 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_weight,
 )
 
-# note (ratish): cuDNN runs the spectrum's n_fft + 2 channels on slow engines; zero
-# padded to a multiple of eight, or of four, they take its fast ones.
+# note (ratish): cuDNN's TF32 tensor-core engines take channel counts in multiples of
+# four; the spectrum's n_fft + 2 channels are zero padded to a multiple of eight.
 CHANNEL_ALIGNMENT = 8
-# note (ratish): CosyVoice's decode runs its last leaky relu at torch's default slope.
+
+# note (ratish): CosyVoice's decode calls leaky_relu with no slope before conv_post,
+# so torch's default applies there, not the stages' lrelu_slope.
 CONV_POST_LEAKY_RELU_SLOPE = 0.01
 
 
