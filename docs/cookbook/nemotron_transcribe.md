@@ -26,16 +26,22 @@ sgl-omni serve \
 ```
 
 The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples
-to mono 16 kHz, and keeps each upload as one decoder request. The encoder
-processes the recording in checkpoint-defined windows with left and right
-context; the default checkpoint uses 40-second core windows.
+to mono 16 kHz, and keeps each upload as one decoder request. Measured
+transcripts are the short clips in [Short-clip validation](#short-clip-validation):
+4.352 s and 5.855 s. A one-hour recording can repeat sentences until the
+16384-token response budget. The HTTP status stays 200. `json` and
+`verbose_json` then include `"finish_reason": "length"`. `text`, `srt`, and
+`vtt` set `X-Finish-Reason: length`. A stream puts the same reason on
+`transcript.text.done`. The encoder processes the recording in
+checkpoint-defined windows with left and right context; the default checkpoint
+uses 40-second core windows.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `--asr.engine.max_running_requests` | `64` | Maximum concurrent decoder requests |
 | `--asr.factory.encoder_max_batch_size` | `8` | Maximum waveforms per encoder invocation |
 | `--asr.factory.context_length` | `73728` | Decoder context budget in tokens |
-| `--asr.factory.max_new_tokens` | `16384` | Default response token budget |
+| `--asr.factory.max_new_tokens` | `16384` | Response token budget; `length` means the transcript stopped there |
 | `--asr.factory.chunked_prefill_size` | `4096` | Decoder prefill chunk in tokens |
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
@@ -142,9 +148,9 @@ results for this checkpoint are not included in the short-clip validation.
 
 On 2026-10-15, the compiled profile above ran on one H100 80 GB with BF16,
 PyTorch 2.13.0+cu130, SGLang 0.5.21, Transformers 5.12.1, and FlashInfer 0.6.18.
-The validation image included SGLang's native ungated ReLU2 MoE patch at
-`a670f4f4b7f20cdbb50cbabc6c851a51b5d48974`. Decoder compilation was disabled.
-Both client concurrency levels used the same 16-slot server.
+Decoder compilation was disabled, so the pinned SGLang 0.5.21 release is
+sufficient for this launch. Both client concurrency levels used the same
+16-slot server.
 
 | Client concurrency | Median RTFx | RTFx range | Median p50 | Median p90 |
 | --- | --- | --- | --- | --- |
