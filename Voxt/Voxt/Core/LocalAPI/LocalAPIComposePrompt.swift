@@ -30,6 +30,14 @@ nonisolated enum LocalAPIComposePrompt {
     /// A mixed transcript needs at least two Han characters and four Latin letters.
     /// Below that, a single initial or symbol is too little evidence for a retry.
     /// Count loss, not language dominance: a short Chinese span inside English matters.
+    /// The model follows a line next to the transcript more than one at the top of the prompt.
+    static func withSection(_ section: String, beforeTranscriptIn prompt: String) -> String {
+        guard let transcript = prompt.range(of: EnhancementPromptResolver.rawTranscriptionTemplateVariable),
+              let boundary = prompt.range(of: "\n\n", options: .backwards, range: prompt.startIndex..<transcript.lowerBound)
+        else { return prompt + "\n\n" + section }
+        return prompt.replacingCharacters(in: boundary, with: "\n\n" + section + "\n\n")
+    }
+
     static func losesMixedDictationContent(_ output: String, rawText: String) -> Bool {
         func counts(_ text: String) -> (han: Int, latinLetters: Int, latinWords: Int) {
             let han = text.unicodeScalars.filter { scalar in
@@ -225,7 +233,22 @@ nonisolated enum LocalAPIComposePrompt {
         guard let initialPrompt = instruction(for: options, rawTranscription: rawTranscription) else {
             throw LocalAPIError(message: "This operation has no compose prompt.")
         }
-        let first = try await generate(initialPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
+        var first = try await generate(initialPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
+        if options.mode == .dictate, EnhancementLanguageGuard.languageFlipped(input: rawTranscription, output: first) {
+            let kept = try await EnhancementLanguageGuard.keepingInputLanguage(
+                input: rawTranscription,
+                output: first,
+                retry: {
+                    try await generate(withSection(
+                        EnhancementLanguageGuard.retryInstruction(for: rawTranscription),
+                        beforeTranscriptIn: initialPrompt
+                    )).trimmingCharacters(in: .whitespacesAndNewlines)
+                },
+                log: { VoxtLog.warning("Local API dictate: \($0)") }
+            )
+            if kept == rawTranscription { return rawTranscription }
+            first = kept
+        }
         if options.mode == .dictate, leaksContext(first, rawTranscription: rawTranscription, options: options) {
             VoxtLog.warning("Local API dictate output repeated the cursor context; retrying once.")
             guard let retryPrompt = instruction(for: options, rawTranscription: rawTranscription, retryingContextLeak: true) else {
