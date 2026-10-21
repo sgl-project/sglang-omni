@@ -12,7 +12,6 @@ name: Voxt Mac CI
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "Voxt/**"
