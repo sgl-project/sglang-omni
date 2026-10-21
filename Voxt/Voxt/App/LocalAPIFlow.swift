@@ -47,6 +47,13 @@ extension AppDelegate {
             guard let self else { throw CancellationError() }
             return try await self.composeLocalAPITranscript(text, options: options)
         }
+        pipeline.correctHandler = { [weak self] request, instruction in
+            guard let self else { throw CancellationError() }
+            if let reason = LocalAPIComposePrompt.unavailabilityReason(for: self.localAPITextModel()) {
+                throw LocalAPIError(message: AppLocalization.localizedString(reason))
+            }
+            return try await self.composeTextStrictly(request.original, instruction: instruction)
+        }
         let router = LocalAPIRouter(token: LocalAPISettings.token(), maxBodyBytes: LocalAPISettings.maxBodyBytes)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let handler = LocalAPIRequestHandler.make(
@@ -63,6 +70,9 @@ extension AppDelegate {
             },
             compose: { composeRequest in
                 await pipeline.runCompose(composeRequest)
+            },
+            correct: { correction in
+                await pipeline.runCorrection(correction)
             }
         )
         let server = LocalAPIServer(port: UInt16(port), maxBodyBytes: LocalAPISettings.maxBodyBytes, handler: handler)

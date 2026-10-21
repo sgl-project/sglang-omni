@@ -23,7 +23,8 @@
     "capabilities",
     "dictations",
     "compose",
-    "compose/prompts"
+    "compose/prompts",
+    "corrections"
   ],
   "locations" : {
     "text" : "local",

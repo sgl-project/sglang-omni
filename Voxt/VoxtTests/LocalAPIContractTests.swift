@@ -35,6 +35,7 @@ final class LocalAPIContractTests: XCTestCase {
             transcribe: { _, _ in transcript }, enhance: { _ in "Tomorrow at three, we meet in room four." },
             finalize: { LocalAPIFinalText(text: $0) }, record: { _ in })
         pipeline.composeHandler = composed
+        pipeline.correctHandler = { _, _ in #"{"correction":{"original":"Nova","replacement":"Novo"}}"# }
         return pipeline
     }
 
@@ -47,7 +48,8 @@ final class LocalAPIContractTests: XCTestCase {
             modelStatus: { LocalAPIModelStatus(transcription: .ready, text: .ready) },
             modelLocations: { locations },
             dictate: { await pipeline.run($0) },
-            compose: { await pipeline.runCompose($0) })
+            compose: { await pipeline.runCompose($0) },
+            correct: { await pipeline.runCorrection($0) })
     }
 
     private func request(_ method: String, _ path: String, contentType: String? = nil, body: Data = Data(),
@@ -162,5 +164,12 @@ final class LocalAPIContractTests: XCTestCase {
             errors[name] = ["status": response.status, "body": try JSONSerialization.jsonObject(with: response.body)]
         }
         try check(errors, against: "errors.json")
+    }
+
+    func testCorrection() async throws {
+        let body = try Data(contentsOf: Self.contract.appendingPathComponent("correction-request.json"))
+        let response = await handler()(request("POST", "/v1/corrections", contentType: "application/json", body: body))
+        XCTAssertEqual(response.status, 200)
+        try check(response, against: "correction-response.json")
     }
 }

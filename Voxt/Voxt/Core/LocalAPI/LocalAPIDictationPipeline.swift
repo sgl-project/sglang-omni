@@ -52,6 +52,9 @@ final class LocalAPIDictationPipeline {
     /// Raw transcript → mode-specific result (cleanup, translate, edit, write), using the
     /// same selected text model through a strict path that never returns raw speech.
     var composeHandler: ((String, LocalAPIComposeOptions) async throws -> String)?
+    /// Original passage + correction instruction → the selected text model's raw output.
+    /// Corrections do not transcribe audio and do not write history.
+    var correctHandler: ((LocalAPICorrectionRequest, String) async throws -> String)?
 
     private var isRunning = false
 
@@ -222,6 +225,57 @@ final class LocalAPIDictationPipeline {
             transcriptionSeconds: transcriptionSeconds,
             enhancementSeconds: enhancementSeconds
         )
+    }
+
+    /// Handles POST /v1/corrections. Shares the busy and in-flight guard with dictation
+    /// and compose, then returns one validated word pair or null. Nothing is recorded.
+    func runCorrection(_ request: LocalAPICorrectionRequest) async -> LocalAPIHTTPResponse {
+        if let reason = busyReason() {
+            return .error(status: 503, reason)
+        }
+        guard !isRunning else {
+            return .error(status: 503, "Voxt is still working on the previous dictation.")
+        }
+        isRunning = true
+        defer { isRunning = false }
+
+        if LocalAPICorrection.isIgnorable(original: request.original, edited: request.edited) {
+            return .json(status: 200, LocalAPICorrectionResponse(correction: nil))
+        }
+        guard let correctHandler else {
+            return .error(status: 503, "No text model is available for this operation.")
+        }
+        let instruction = LocalAPICorrectionPrompt.instruction(original: request.original, edited: request.edited)
+        let output: String
+        do {
+            output = try await correctHandler(request, instruction)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            VoxtLog.warning("Local API correction failed: \(error.localizedDescription)")
+            return .error(status: 503, error.localizedDescription)
+        }
+        guard !output.isEmpty else {
+            return .error(status: 503, "The text model returned nothing.")
+        }
+        do {
+            let pair = try LocalAPICorrection.interpret(
+                modelOutput: output,
+                original: request.original,
+                edited: request.edited
+            )
+            return .json(status: 200, LocalAPICorrectionResponse(correction: pair))
+        } catch let failure as LocalAPICorrectionFailure {
+            let message: String
+            switch failure {
+            case .invalidJSON:
+                message = "The text model did not return valid correction JSON."
+            case .mismatch:
+                message = "The text model returned a correction that does not match the edit."
+            }
+            return .error(status: 503, message)
+        } catch {
+            return .error(status: 503, error.localizedDescription)
+        }
     }
 
     private func finish(

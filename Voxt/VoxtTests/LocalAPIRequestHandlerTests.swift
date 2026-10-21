@@ -90,6 +90,7 @@ final class LocalAPIRequestHandlerTests: XCTestCase {
             "dictations",
             "compose",
             "compose/prompts",
+            "corrections",
         ])
         let audio = try XCTUnwrap(body["audio"] as? [String: Any])
         XCTAssertEqual(audio["maxBodyBytes"] as? Int, 4_096)

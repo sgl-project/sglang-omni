@@ -274,4 +274,51 @@ final class LocalAPIRouterTests: XCTestCase {
         XCTAssertEqual(chinese.language, .request("Chinese"))
         XCTAssertEqual(status(try language("en\"; x")), 400)
     }
+
+    // MARK: Corrections
+
+    private func correctionRequest(
+        original: Any = "请用星浪处理。",
+        edited: Any = "请用星朗处理。",
+        method: String = "POST",
+        contentType: String? = "application/json",
+        raw: Data? = nil
+    ) -> LocalAPIHTTPRequest {
+        let body = raw ?? (try! JSONSerialization.data(withJSONObject: ["original": original, "edited": edited]))
+        return request(method, "/v1/corrections", contentType: contentType, body: body)
+    }
+
+    func testCorrectionRoutesAValidPair() throws {
+        guard case let .correction(correction) = router.route(correctionRequest()) else {
+            return XCTFail("expected .correction")
+        }
+        XCTAssertEqual(correction.original, "请用星浪处理。")
+        XCTAssertEqual(correction.edited, "请用星朗处理。")
+    }
+
+    func testCorrectionAcceptsExactly2000Characters() {
+        let original = String(repeating: "字", count: 2_000)
+        let edited = String(repeating: "文", count: 2_000)
+        guard case .correction = router.route(correctionRequest(original: original, edited: edited)) else {
+            return XCTFail("2000 characters must pass")
+        }
+    }
+
+    func testCorrectionRejectsMethodContentTypeAndJSON() {
+        XCTAssertEqual(status(router.route(correctionRequest(method: "GET"))), 405)
+        XCTAssertEqual(status(router.route(request("POST", "/v1/corrections", token: nil, contentType: "application/json", body: Data("{}".utf8)))), 401)
+        XCTAssertEqual(status(router.route(correctionRequest(contentType: "text/plain"))), 415)
+        XCTAssertEqual(status(router.route(correctionRequest(contentType: nil))), 415)
+        XCTAssertEqual(status(router.route(correctionRequest(raw: Data("not json".utf8)))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(raw: Data("[]".utf8)))), 400)
+    }
+
+    func testCorrectionRejectsWrongTypesIdenticalAndOversize() {
+        XCTAssertEqual(status(router.route(correctionRequest(original: 3, edited: "星朗"))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(original: "星浪", edited: ["星朗"]))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(original: "", edited: "星朗"))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(original: "星浪", edited: "星浪"))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(original: String(repeating: "字", count: 2_001), edited: "星朗"))), 400)
+        XCTAssertEqual(status(router.route(correctionRequest(original: "星浪", edited: String(repeating: "字", count: 2_001)))), 400)
+    }
 }

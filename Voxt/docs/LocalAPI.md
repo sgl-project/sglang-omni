@@ -38,6 +38,7 @@ In the App Sandbox (the release build), macOS lets Voxt inspect another process'
 | `POST /v1/dictations` | Body: audio bytes. `Content-Type`: `audio/wav`, `audio/x-m4a`, `audio/mp4`, `audio/aac`, `audio/mpeg` or `audio/x-caf`. Add `?enhance=0` to skip the text model, and `?language=auto` (detect) or `?language=English` (a language name) to override your language settings for this recording. Returns `id`, `text`, `rawText`, `enhanced`, `asrMs`, `enhanceMs` |
 
 | `POST /v1/compose` | JSON body: `audio` (base64), `contentType` (one of the audio types above), optional `language` (as for dictations) and `options`. Runs the selected text model with an instruction for `options.mode`. Returns the dictation fields plus `mode`, and `status: "not_applied"` with the unchanged selection when an edit could not be applied |
+| `POST /v1/corrections` | JSON body `{"original": "…", "edited": "…"}`, each 1 to 2,000 characters and different. When the user fixed one misheard word or name in a dictated passage, returns `{"correction": {"original": "…", "replacement": "…"}}` (a pair that is in both passages), otherwise `{"correction": null}`. Uses the selected text model; nothing is stored, and the caller decides whether to add the pair to its dictionary |
 | `GET /v1/compose/prompts` | `{"prompts": {"dictate": "…", "translate": "…", "edit": "…", "write": "…"}}`: the built-in instruction of each mode |
 
 `options` of a compose request:
