@@ -9,6 +9,7 @@ import pytest
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS as QWEN3_OMNI_PORTS
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -85,6 +86,22 @@ def unit(index, *, eos=False, samples=UNIT_SAMPLES):
 
 async def settle():
     await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_runtime_limits_raise_pipeline_idle_backup_before_open() -> None:
+    """A long runtime idle window must not expire at the shorter pipeline timeout."""
+    harness = Harness(limits=SessionLimits(idle_timeout_s=1, max_output_chunks=7))
+    harness.bridge.set_limits(RuntimeLimits(idle_timeout_s=300, cleanup_timeout_s=10))
+    try:
+        await harness.open()
+        session_limits = harness.client.opened[0][1]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == 640
+        assert session_limits.operation_timeout_s == 30
+        assert session_limits.max_output_chunks == 7
+    finally:
+        await harness.bridge.close()
 
 
 @pytest.mark.asyncio

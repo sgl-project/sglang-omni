@@ -35,6 +35,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from types import FrameType
 from typing import TypedDict
 
@@ -61,6 +62,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.types import RuntimeLimits
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.serve.services import ServiceProcesses
 from sglang_omni.serve.stage_routes import (
@@ -608,6 +610,8 @@ async def run_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    realtime_admission_timeout_s: float | None = None,
+    realtime_idle_timeout_s: float | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -618,6 +622,26 @@ async def run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     export_media_policy(allowed_local_media_path, allowed_media_domains)
+    deployment_factory = type(pipeline_config).realtime_deployment_factory
+    realtime_timeout_overrides_seconds = {
+        timeout_name: timeout_seconds
+        for timeout_name, timeout_seconds in (
+            ("session_update_timeout_s", realtime_admission_timeout_s),
+            ("idle_timeout_s", realtime_idle_timeout_s),
+        )
+        if timeout_seconds is not None
+    }
+    # note (Haiyang Luo): Validate overrides before starting any pipeline process.
+    RuntimeLimits(**realtime_timeout_overrides_seconds)
+    if realtime_timeout_overrides_seconds and (
+        not enable_realtime or deployment_factory is None
+    ):
+        raise ValueError(
+            "Realtime timeout overrides require --enable-realtime and a pipeline "
+            "with a shared duplex realtime deployment"
+        )
+    else:
+        pass
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
     export_server_port(port)
@@ -666,11 +690,17 @@ async def run_server(
                 ] * num_replicas
             cl_kwargs = client_kwargs or {}
             client = Client(coordinator, **cl_kwargs)
-            deployment_factory = type(pipeline_config).realtime_deployment_factory
             if enable_realtime and deployment_factory is not None:
                 realtime_deployment: RealtimeDeployment | None = import_string(
                     deployment_factory
                 )(client, pipeline_config)
+                realtime_deployment = replace(
+                    realtime_deployment,
+                    limits=replace(
+                        realtime_deployment.limits,
+                        **realtime_timeout_overrides_seconds,
+                    ),
+                )
             else:
                 realtime_deployment = None
             app = create_app(
@@ -838,6 +868,8 @@ def launch_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    realtime_admission_timeout_s: float | None = None,
+    realtime_idle_timeout_s: float | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -856,6 +888,8 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
+        realtime_admission_timeout_s: Set the admission timeout for shared sessions, in seconds. To keep the deployment limit, use None.
+        realtime_idle_timeout_s: Set the idle timeout for shared sessions, in seconds. To keep the deployment limit, use None.
         allowed_local_media_path: Directory that local media references in TTS
             requests must resolve inside. ``file://`` references are disabled
             when omitted; bare local paths remain allowed by default but are
@@ -885,6 +919,8 @@ def launch_server(
             log_level=log_level,
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
+            realtime_admission_timeout_s=realtime_admission_timeout_s,
+            realtime_idle_timeout_s=realtime_idle_timeout_s,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

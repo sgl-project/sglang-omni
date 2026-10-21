@@ -19,6 +19,7 @@ from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLIENT_CLOSED,
     CLOSE_REASON_DISCONNECT,
+    CLOSE_REASON_IDLE_TIMEOUT,
     CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
 )
 from sglang_omni.serve.realtime.control import ControlEvent, Failure
@@ -38,7 +39,11 @@ logger = logging.getLogger(__name__)
 
 MAX_CLOSE_REASON_BYTES = 123
 POLICY_CLOSE_REASONS = frozenset(
-    {CLOSE_REASON_SESSION_UPDATE_TIMEOUT, ContextExhaustedError.CODE}
+    {
+        CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+        CLOSE_REASON_IDLE_TIMEOUT,
+        ContextExhaustedError.CODE,
+    }
 )
 
 
@@ -53,7 +58,7 @@ class SharedRealtimeSession:
         self.session_id = runtime.session_id
 
     async def run(self) -> None:
-        self.runtime.notify_created()
+        self.runtime.start()
         reader = asyncio.create_task(self.read())
         sender = asyncio.create_task(self.send())
         is_disconnected = False

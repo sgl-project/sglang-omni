@@ -45,6 +45,7 @@ class RuntimeLimits:
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
     session_update_timeout_s: float = 60
+    idle_timeout_s: float = 300
 
     def __post_init__(self) -> None:
         if any(
