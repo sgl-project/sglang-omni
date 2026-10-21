@@ -108,11 +108,11 @@ def test_native_session_rows_follow_the_batch_span_not_the_request() -> None:
     request = sched_req(
         input_embeds_are_projected=True,
         prefill_input_embeds=None,
-        session_embedding_spans=[
-            EmbeddingSpan(start=101, end=104, input_embeds=span_rows)
-        ],
         req=tail_request,
     )
+    request.data.session_embedding_spans = [
+        EmbeddingSpan(start=101, end=104, input_embeds=span_rows)
+    ]
     runner = make_runner()
     runner.model.get_input_embeddings = lambda: (
         lambda token_ids: token_ids.to(torch.float32)[:, None].repeat(1, 4)
