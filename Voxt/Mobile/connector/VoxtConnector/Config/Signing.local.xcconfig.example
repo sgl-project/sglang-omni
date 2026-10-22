@@ -1,0 +1,3 @@
+// Copy to Signing.local.xcconfig (not committed). A build that already has users keeps the ID
+// they installed: macOS keys the Connector's settings and login item by it.
+VOXT_CONNECTOR_BUNDLE_ID = com.example.VoxtConnector
