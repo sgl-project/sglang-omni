@@ -6,18 +6,25 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
+import logging
 import math
+import os
 import re
 import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
 from typing import TypedDict
 
 import mlx.core as mx
 from omegaconf import DictConfig, OmegaConf
+
+logger = logging.getLogger(__name__)
 
 WEIGHT_PREFIXES = ("ema_model.", "module.", "model.", "net.")
 CONDITIONER_PREFIXES = ("thinker.model.", "thinker.audio_tower.")
@@ -443,6 +450,84 @@ def verify_reuse(
         }
 
 
+def remove_temporary(path: Path) -> None:
+    try:
+        if path.is_symlink():
+            return
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning(f"Could not remove temporary artifact {path}: {error}")
+
+
+@contextmanager
+def preparation_output(output: Path) -> Iterator[None]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        output.parent / f".prepare-{output.name}.lock",
+        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(descriptor, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"Artifact preparation is already running: {output}"
+            ) from error
+        if output.is_symlink() or (output.exists() and not output.is_dir()):
+            raise ValueError(
+                f"Expected an artifact directory, not a file or symlink: {output}"
+            )
+        else:
+            pass
+        siblings = list(output.parent.iterdir())
+        previous = [
+            path
+            for path in siblings
+            if re.fullmatch(
+                rf"\.{re.escape(output.name)}\.previous-[a-z0-9_]{{8}}", path.name
+            )
+            and not path.is_symlink()
+            and path.is_dir()
+        ]
+        if not output.exists() and len(previous) > 1:
+            raise RuntimeError(
+                f"Multiple artifact backups require manual recovery: {previous}"
+            )
+        elif previous and not output.exists():
+            previous[0].rename(output)
+        else:
+            pass
+        for path in siblings:
+            match = re.fullmatch(
+                rf"\.{re.escape(output.name)}\.(?P<kind>prepare-|manifest-)?[a-z0-9_]{{8}}",
+                path.name,
+            )
+            if not match or path.is_symlink():
+                continue
+            elif match["kind"] == "manifest-" and path.is_file():
+                remove_temporary(path)
+            elif path.is_dir() and (
+                match["kind"] == "prepare-"
+                or (
+                    (path / "config.json").is_file()
+                    and all(
+                        (path / component).is_dir()
+                        for component in ("dit", "vae", "conditioner")
+                    )
+                )
+            ):
+                remove_temporary(path)
+            else:
+                pass
+        yield
+        for path in previous:
+            remove_temporary(path)
+
+
 def prepare(
     auk_directory: Path,
     conditioner_directory: Path,
@@ -452,13 +537,29 @@ def prepare(
     *,
     reuse: bool = False,
 ) -> None:
+    with preparation_output(output):
+        _prepare_locked(
+            auk_directory,
+            conditioner_directory,
+            output,
+            auk_revision,
+            conditioner_revision,
+            reuse=reuse,
+        )
+
+
+def _prepare_locked(
+    auk_directory: Path,
+    conditioner_directory: Path,
+    output: Path,
+    auk_revision: str | None,
+    conditioner_revision: str | None,
+    *,
+    reuse: bool,
+) -> None:
     required_mlx_version = pinned_mlx_version()
     if (output.exists() or output.is_symlink()) and not reuse:
         raise FileExistsError(f"Refusing to overwrite existing output {output}")
-    elif output.is_symlink() or (output.exists() and not output.is_dir()):
-        raise ValueError(
-            f"Expected an artifact directory, not a file or symlink: {output}"
-        )
     elif version("mlx") != required_mlx_version:
         raise RuntimeError(
             f"AuK artifact preparation requires mlx=={required_mlx_version}; found {version('mlx')}"
@@ -572,17 +673,16 @@ def prepare(
                     write_json(manifest_path, manifest)
                     manifest_path.replace(output / "manifest.json")
                 finally:
-                    manifest_path.unlink(missing_ok=True)
+                    remove_temporary(manifest_path)
             else:
                 pass
             return
     else:
         pass
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f".{output.name}.", dir=output.parent
-    ) as temporary:
-        directory = Path(temporary)
+    directory = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.prepare-", dir=output.parent)
+    )
+    try:
         for component in ("dit", "vae", "conditioner"):
             (directory / component).mkdir()
         write_json(directory / "config.json", runtime_config)
@@ -620,11 +720,14 @@ def prepare(
                 previous.rename(output)
                 raise
             else:
-                shutil.rmtree(previous)
+                remove_temporary(previous)
         elif output.exists() or output.is_symlink():
             raise FileExistsError(f"Output was created during preparation: {output}")
         else:
             directory.rename(output)
+
+    finally:
+        remove_temporary(directory)
 
 
 def main() -> None:
