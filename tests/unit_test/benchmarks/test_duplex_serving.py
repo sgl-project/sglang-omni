@@ -34,6 +34,7 @@ def record_session(
     reply_audio_s: list[float] | None = None,
     reply_created_s: float | None = None,
     is_legacy: bool = False,
+    is_rejected_once: bool = False,
 ) -> Path:
     """Write a paced 80 ms session whose unit k completes at unit_done_s[k].
 
@@ -81,6 +82,17 @@ def record_session(
             },
         }
 
+    if is_rejected_once:
+        add(START_S - 0.2, "send", "session.update")
+        add(
+            START_S - 0.1,
+            "receive",
+            "error",
+            sglang={"fatal": False},
+            error={"code": "admission_rejected", "event_id": "event_0"},
+        )
+    else:
+        pass
     add(START_S + input_s, "send", "sglang.input_audio.end")
     for unit, done_s in enumerate(unit_done_s):
         add(
@@ -124,6 +136,7 @@ def record_run(
     admission_denials: int = 0,
     profile: str = PROFILE,
     reply_audio_s: list[float] | None = None,
+    is_rejected_once: bool = False,
 ) -> Path:
     """Write a complete recording whose sessions are (status, unit_done_s) pairs."""
     samples = []
@@ -134,6 +147,7 @@ def record_run(
             unit_done_s,
             reply_audio_s=reply_audio_s,
             is_legacy=profile == TURN_BASED_PROFILE,
+            is_rejected_once=is_rejected_once,
         )
         samples.append(
             {"variants": {"input": {"directory": directory, "status": status}}}
@@ -275,6 +289,17 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
         "no failed sessions",
         "unit miss rate at most 1%",
     ]
+
+
+def test_level_reports_admission_rejections_apart_from_failures(tmp_path: Path) -> None:
+    level = summarize_level(
+        record_run(tmp_path / "run", 1, [("pass", ON_TIME)], is_rejected_once=True),
+        PLAYBACK_RESERVE_S,
+    )
+
+    assert level["sessions_failed"] == 0
+    assert level["admission_rejections"] == 1
+    assert level["unmet_targets"] == ["no admission rejections"]
 
 
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:

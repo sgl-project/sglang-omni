@@ -13,7 +13,12 @@ import numpy as np
 from pydantic import JsonValue
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, SEND_RECEIPTS_FILE
-from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
+from benchmarks.duplex.oracle_models import (
+    ADMISSION_REJECTED_CODE,
+    MediaTime,
+    TraceRecord,
+    WireEvent,
+)
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
@@ -226,6 +231,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         if variant_state["status"] in FAILED_STATUSES
     )
     trace_spans_s: list[tuple[float, float]] = []
+    admission_rejections = 0
     for variant_state in attempted:
         variant_dir = run_dir / variant_state["directory"]
         trace_lines = (variant_dir / "continuous.jsonl").read_text().splitlines()
@@ -238,6 +244,15 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             )
         else:
             pass
+        rejection_records = [
+            json.loads(line) for line in trace_lines if ADMISSION_REJECTED_CODE in line
+        ]
+        admission_rejections += any(
+            record["direction"] == "receive"
+            and (WireEvent.model_validate(record["event"]).error or {}).get("code")
+            == ADMISSION_REJECTED_CODE
+            for record in rejection_records
+        )
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
     sessions_failed = sum(
@@ -289,6 +304,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
         "admission_denials": load["variants_with_admission_denials"],
+        "admission_rejections": admission_rejections,
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
         "units_missed": units_missed,
@@ -317,6 +333,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             for target, is_unmet in (
                 ("no failed sessions", sessions_failed > 0),
                 ("no admission denials", load["variants_with_admission_denials"] > 0),
+                ("no admission rejections", admission_rejections > 0),
                 ("no input pacing violations", load["input_pacing_violations"] > 0),
                 pacing_target,
             )

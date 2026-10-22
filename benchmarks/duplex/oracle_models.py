@@ -10,6 +10,8 @@ from benchmarks.duplex.profiles import Protocol
 
 Identifier = Annotated[str, Field(min_length=1)]
 Nonnegative = Annotated[float, Field(ge=0)]
+# note (Yucheng Hu): The server answers a session.update it cannot admit with this non-fatal code and keeps the session open for another update.
+ADMISSION_REJECTED_CODE = "admission_rejected"
 
 
 class TraceRecord(BaseModel):

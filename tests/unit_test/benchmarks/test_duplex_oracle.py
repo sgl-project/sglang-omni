@@ -516,6 +516,72 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert "missing audio input" in result["violations"]
 
 
+def rejection(fatal: bool, **error: JsonValue) -> dict[str, JsonValue]:
+    return {
+        "direction": "receive",
+        "time_s": 100.008,
+        "event": {
+            "type": "error",
+            "event_id": "rejection",
+            "sglang": {"fatal": fatal},
+            "error": {
+                "type": "invalid_request_error",
+                "code": "admission_rejected",
+                "message": "The request queue is full.",
+                "event_id": "rejected",
+                "param": None,
+                **error,
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("record", "violation"),
+    [
+        (rejection(False), None),
+        (rejection(True), "code=admission_rejected fatal=True"),
+        (rejection(False, code="fixture_failure"), "code=fixture_failure"),
+        (rejection(False, event_id="missing"), "code=admission_rejected fatal=False"),
+    ],
+)
+def test_only_a_nonfatal_rejection_of_a_session_update_is_an_admission_retry(
+    record: dict[str, JsonValue], violation: str | None
+) -> None:
+    trace = trace_fixture()
+    trace[1:1] = [
+        {
+            "direction": "send",
+            "time_s": 100.004,
+            "event": {
+                "type": "session.update",
+                "event_id": "rejected",
+                "session": {"output_modalities": ["audio"]},
+            },
+        },
+        record,
+    ]
+    result = evaluate_trace(trace)
+    if violation is None:
+        assert result["status"] == "pass", result
+        assert result["metrics"]["admission_rejections"] == 1
+    else:
+        assert result["status"] == "fail"
+        assert any(violation in item for item in result["violations"])
+        assert result["metrics"]["admission_rejections"] == 0
+
+
+def test_rejection_after_session_updated_fails() -> None:
+    trace = trace_fixture()
+    late = rejection(False, event_id="configure")
+    late["time_s"] = 100.05
+    trace.insert(3, late)
+    result = evaluate_trace(trace)
+    assert result["status"] == "fail"
+    assert any("code=admission_rejected" in item for item in result["violations"])
+    assert result["metrics"]["admission_rejections"] == 0
+
+
 @pytest.mark.parametrize(
     ("status", "reason", "violation"),
     [

@@ -14,7 +14,7 @@ from typing import Literal, TypedDict
 import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from benchmarks.duplex.oracle_models import turn_detection_type
+from benchmarks.duplex.oracle_models import ADMISSION_REJECTED_CODE, turn_detection_type
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 SAMPLE_RATE = 16000
@@ -188,6 +188,7 @@ async def run_session(
                 seen: dict[str, asyncio.Event] = {}
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
+                rejected = asyncio.Event()
                 fatal = False
 
                 async def send(
@@ -239,6 +240,7 @@ async def run_session(
                     waiters = (
                         asyncio.create_task(receipt.wait()),
                         asyncio.create_task(aborted.wait()),
+                        asyncio.create_task(rejected.wait()),
                     )
                     try:
                         await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
@@ -272,12 +274,24 @@ async def run_session(
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if event_type == "error":
-                            # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
-                            fatal = fatal or bool(
+                            error = event.get("error")
+                            is_fatal = bool(
                                 isinstance(extension, dict) and extension.get("fatal")
                             )
-                            aborted.set()
+                            if (
+                                not is_fatal
+                                and isinstance(error, dict)
+                                and error.get("code") == ADMISSION_REJECTED_CODE
+                                and not seen.get(
+                                    "session.updated", asyncio.Event()
+                                ).is_set()
+                            ):
+                                rejected.set()
+                            else:
+                                # note (wenyao): Close waits for adapter teardown.
+                                fatal = fatal or is_fatal
+                                aborted.set()
                         else:
                             pass
                     if not seen.get("session.closed", asyncio.Event()).is_set():
@@ -291,7 +305,24 @@ async def run_session(
                         await send("session.update", session=configure)
                     else:
                         pass
-                    if await settle("session.updated"):
+                    admitted = await settle("session.updated")
+                    admission_attempts = 1
+                    while (
+                        not admitted
+                        and rejected.is_set()
+                        and admission_attempts <= ADMISSION_RETRIES
+                    ):
+                        admission_attempts += 1
+                        rejected.clear()
+                        await asyncio.sleep(ADMISSION_BACKOFF_S)
+                        await send("session.update", session=configure)
+                        admitted = await settle("session.updated")
+                    is_admission_exhausted = not admitted and rejected.is_set()
+                    if is_admission_exhausted:
+                        aborted.set()
+                    else:
+                        pass
+                    if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad
                         # when no Smart Turn model is loaded, so the echo is the only
                         # evidence of which detector ran.
@@ -373,6 +404,12 @@ async def run_session(
                     else:
                         pass
                     await closed.wait()
+                    if is_admission_exhausted:
+                        raise RuntimeError(
+                            f"admission rejected {admission_attempts} times"
+                        )
+                    else:
+                        pass
 
                 receiver = asyncio.create_task(receive())
                 driver = asyncio.create_task(drive())
