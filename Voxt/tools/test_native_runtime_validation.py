@@ -208,9 +208,12 @@ elif command == 'codesign':
         sys.exit(23 if mode == 'verify' else 0)
     elif '--display' in arguments:
         if '--extract-certificates' in arguments:
+            sys.exit(1)  # real codesign takes the prefix only as --extract-certificates=PREFIX
+        elif any(argument.startswith('--extract-certificates=') for argument in arguments):
             if mode == 'extract':
                 sys.exit(41)
-            prefix = arguments[arguments.index('--extract-certificates') + 1]
+            prefix = next(argument for argument in arguments if argument.startswith('--extract-certificates='))
+            prefix = prefix.split('=', 1)[1]
             Path(prefix + '0').write_bytes(b'wrong certificate' if mode == 'certificate' else b'synthetic certificate')
         elif '--entitlements' in arguments:
             entitlements = plistlib.loads((app / 'signed-entitlements.plist').read_bytes())
@@ -330,7 +333,7 @@ class SignedPackagingShellTests(unittest.TestCase):
         self.assertEqual(entitlements["com.apple.developer.team-identifier"], "TEAM123456")
         commands = self.commands()
         self.assertTrue(any(command[:2] == ["codesign", "--verify"] for command in commands))
-        extraction = next(index for index, command in enumerate(commands) if "--extract-certificates" in command)
+        extraction = next(index for index, command in enumerate(commands) if any(argument.startswith("--extract-certificates=") for argument in command))
         archive = next(index for index, command in enumerate(commands) if command[:2] == ["ditto", "-c"])
         self.assertLess(extraction, archive)
         self.assertTrue(any(command[0] == "productbuild" for command in commands))

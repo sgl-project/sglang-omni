@@ -186,8 +186,8 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix="voxt-signing-certificate-") as directory:
             certificate_prefix = Path(directory) / "certificate"
             subprocess.run(
-                ["codesign", "--display", "--extract-certificates",
-                 str(certificate_prefix), str(arguments.signed_app)],
+                ["codesign", "--display", f"--extract-certificates={certificate_prefix}",
+                 str(arguments.signed_app)],
                 check=True, capture_output=True,
             )
             if Path(f"{certificate_prefix}0").read_bytes() not in certificate_list(
