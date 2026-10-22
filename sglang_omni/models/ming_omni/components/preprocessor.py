@@ -374,7 +374,7 @@ class MingPreprocessor:
                 # load_video_path resizes with BICUBIC + antialias and returns
                 # a float tensor; BICUBIC can overshoot outside [0, 255] and
                 # to(uint8) wraps rather than saturates. Clamp before casting.
-                arr = t.detach().cpu().clamp_(0, 255).to(torch.uint8).numpy()
+                arr = t.detach().cpu().clamp(0, 255).to(torch.uint8).numpy()
             else:
                 arr = np.clip(np.asarray(t), 0, 255).astype(np.uint8)
             # (T, C, H, W) -> (T, H, W, C)
