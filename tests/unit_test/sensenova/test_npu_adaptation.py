@@ -12,20 +12,22 @@ from sglang.srt.layers.layernorm import RMSNorm
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.sensenova_u1 import stages
+from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import flash_or_sdpa
 from sglang_omni.models.sensenova_u1.neo_unify.configuration_neo_chat import (
     NEOLLMConfig,
 )
+from sglang_omni.models.sensenova_u1.neo_unify.flash_cache import (
+    copy_right_aligned_prefix_bnsd,
+    prepare_i2i_flash_kv_cache,
+)
 from sglang_omni.models.sensenova_u1.neo_unify.modeling_neo_chat import (
     NEOChatModel,
-    _copy_right_aligned_prefix_bnsd,
-    _prepare_i2i_flash_kv_cache,
     prepare_flash_kv_cache,
     randn_with_seed,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
     Qwen3Attention,
     Qwen3MLP,
-    _flash_or_sdpa,
     create_block_causal_mask,
     make_qwen3_rms_norm,
     npu_fia_available,
@@ -45,7 +47,7 @@ def test_right_aligns_bnsd_prefix_for_npu_fia():
     )
     destination = torch.zeros(2, 1, 8, 1, dtype=source.dtype)
 
-    _copy_right_aligned_prefix_bnsd(destination, source, [2, 5])
+    copy_right_aligned_prefix_bnsd(destination, source, [2, 5])
 
     assert destination[:, 0, :5, 0].tolist() == [
         [0, 0, 0, 1, 2],
@@ -64,7 +66,7 @@ def test_prepares_each_i2i_prefix_length_for_attention(prefix_length):
         layer_idx=0,
     )
 
-    _prepare_i2i_flash_kv_cache(cache, current_len=3, batch_size=batch_size)
+    prepare_i2i_flash_kv_cache(cache, current_len=3, batch_size=batch_size)
 
     layer = cache.layers[0]
     assert layer.flash_cache_layout == "BSND"
@@ -208,7 +210,7 @@ def test_compacts_variable_length_kv_before_attention():
     q = torch.randn(2, 3, 4, 8, generator=generator)
     k = torch.randn(2, 8, 2, 8, generator=generator)
     v = torch.randn(2, 8, 2, 8, generator=generator)
-    actual = _flash_or_sdpa(q, k, v, actual_seq_lengths_kv=[5, 8])
+    actual = flash_or_sdpa(q, k, v, actual_seq_lengths_kv=[5, 8])
 
     expected_short = sdpa_attn_func(
         q[:1],

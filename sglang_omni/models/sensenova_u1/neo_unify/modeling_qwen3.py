@@ -25,10 +25,6 @@ from sglang_omni.models.sensenova_u1.cache_dit import (
     decoder_layers,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
-    _ATTN_BACKEND as _ATTN_BACKEND,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import HAS_FLASH_ATTN
-from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
     create_block_causal_mask as create_block_causal_mask,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
@@ -37,7 +33,6 @@ from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
     flash_attn_func as flash_attn_func,
 )
-from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import flash_or_sdpa
 from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
     get_attn_backend as get_attn_backend,
 )
@@ -84,10 +79,6 @@ from sglang_omni.models.sensenova_u1.neo_unify.qwen_feed_forward import (
     make_qwen3_rms_norm as make_qwen3_rms_norm,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
-    SENSENOVA_NPU_FUSED_ROPE_ENV,
-    SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
     SENSENOVA_NPU_ROTARY_MUL_DISABLED as SENSENOVA_NPU_ROTARY_MUL_DISABLED,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
@@ -103,15 +94,7 @@ from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
     apply_rotary_pos_emb as apply_rotary_pos_emb,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
-    can_use_sensenova_npu_fused_rope,
-    compute_default_rope_parameters,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
     rotate_half as rotate_half,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.rotary_embeddings import (
-    sensenova_npu_fused_rope_enabled,
-    sensenova_npu_rotary_mul,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.transformers_compat import (
     causal_mask_kwargs as causal_mask_kwargs,
@@ -122,17 +105,6 @@ from sglang_omni.models.sensenova_u1.neo_unify.transformers_compat import (
 from sglang_omni.models.sensenova_u1.neo_unify.transformers_compat import (
     tied_weights_keys as tied_weights_keys,
 )
-
-# note (Codex): Preserve legacy module exports for existing callers.
-_HAS_FLASH_ATTN = HAS_FLASH_ATTN
-_flash_or_sdpa = flash_or_sdpa
-_SENSENOVA_NPU_FUSED_ROPE_ENV = SENSENOVA_NPU_FUSED_ROPE_ENV
-_SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL = SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL
-_can_use_sensenova_npu_fused_rope = can_use_sensenova_npu_fused_rope
-_compute_default_rope_parameters = compute_default_rope_parameters
-_sensenova_npu_fused_rope_enabled = sensenova_npu_fused_rope_enabled
-_sensenova_npu_rotary_mul = sensenova_npu_rotary_mul
-
 
 # Modified for SGLang; see this directory's README.md for upstream source.
 

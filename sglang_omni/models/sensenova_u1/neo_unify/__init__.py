@@ -47,21 +47,10 @@ __all__ = [
 ]
 
 
-_REGISTERED = False
-
-
 def register() -> None:
     """Register NEO-Unify types with transformers.Auto*."""
-    global _REGISTERED
-    if _REGISTERED:
-        return
-    else:
-        pass
-
     AutoConfig.register("neo_vision", NEOVisionConfig, exist_ok=True)
     AutoConfig.register("neo_chat", NEOChatConfig, exist_ok=True)
 
     AutoModel.register(NEOVisionConfig, NEOVisionModel, exist_ok=True)
     AutoModel.register(NEOChatConfig, NEOChatModel, exist_ok=True)
-
-    _REGISTERED = True

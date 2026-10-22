@@ -67,10 +67,8 @@ class SenseNovaUMMAdapter:
         return UMMStep(phase="generate", request=request)
 
     def advance(self, context: UMMContext, phase: str, result: object) -> UMMStep:
-        if phase != "generate":
-            raise ValueError(f"Unexpected SenseNova phase: {phase}")
-        else:
-            generation = SenseNovaImageResult.model_validate(result)
+        """Complete the request; start dispatches only the generate phase."""
+        generation = SenseNovaImageResult.model_validate(result)
         images = generation.images_b64
         if images is None:
             images = [generation.image_b64] if generation.image_b64 is not None else []
@@ -90,12 +88,8 @@ class SenseNovaUMMAdapter:
         )
 
     def usage(self, context: UMMContext) -> int:
-        execution = self.executions.get(context.execution_id)
-        return (
-            execution.retained_bytes + execution.reserved_output_bytes
-            if execution is not None
-            else 0
-        )
+        execution = self.executions[context.execution_id]
+        return execution.retained_bytes + execution.reserved_output_bytes
 
     def close(self, context: UMMContext, reason: CloseReason) -> None:
         self.executions.pop(context.execution_id, None)

@@ -1,2 +1,0 @@
-config_cls: SenseNovaU1UMMPipelineConfig
-model_path: sensenova/SenseNova-U1.5-8B-MoT

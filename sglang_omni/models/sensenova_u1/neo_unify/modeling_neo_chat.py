@@ -21,13 +21,7 @@ from sglang_omni.models.sensenova_u1.neo_unify.flash_cache import (
     clear_flash_kv_cache as clear_flash_kv_cache,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.flash_cache import (
-    copy_right_aligned_prefix_bnsd as _copy_right_aligned_prefix_bnsd,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.flash_cache import (
     prepare_flash_kv_cache as prepare_flash_kv_cache,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.flash_cache import (
-    prepare_i2i_flash_kv_cache as _prepare_i2i_flash_kv_cache,
 )
 from sglang_omni.models.sensenova_u1.neo_unify.flow_matching import (
     FlowMatchingHead,
@@ -278,14 +272,12 @@ class NEOChatModel(PreTrainedModel):
             return self.fm_modules["vision_model_mot_gen"](
                 pixel_values=pixel_values,
                 output_hidden_states=False,
-                return_dict=True,
                 grid_hw=grid_hw,
             ).last_hidden_state
         else:
             return self.vision_model(
                 pixel_values=pixel_values,
                 output_hidden_states=False,
-                return_dict=True,
                 grid_hw=grid_hw,
             ).last_hidden_state
 
@@ -390,12 +382,10 @@ __all__ = [
     "_SenseNovaPreallocatedLayer",
     "_SenseNovaStageTimer",
     "_USE_SRT_KV_TRANSFER",
-    "_copy_right_aligned_prefix_bnsd",
     "_dump_native_prefix_kv",
     "load_srt_prefix_kv",
     "_merge_srt_prefix_caches",
     "preallocate_think_cache",
-    "_prepare_i2i_flash_kv_cache",
     "randn_with_seed",
     "_token_ids_sha256",
     "build_abs_positions_from_grid_hw",

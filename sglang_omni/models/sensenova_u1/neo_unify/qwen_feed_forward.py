@@ -117,7 +117,3 @@ class Qwen3MLP(nn.Module):
             pass
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
-
-
-# note (Codex): Preserve existing import and serialized class lookup names.
-_SenseNovaRMSNorm = SenseNovaRMSNorm

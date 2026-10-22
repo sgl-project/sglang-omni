@@ -303,7 +303,10 @@ With the model dependencies installed and `MODEL_PATH` pointing to the
 checkpoint, launch the default configuration:
 
 ```bash
-python -m sglang_omni.cli serve   --config examples/configs/sensenova_u1_umm.yaml   --model-path "$MODEL_PATH"   --generate.gpu 0   --port 8000
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" \
+  --generate.gpu 0 \
+  --port 8000
 ```
 
 The Images generation and edit requests above use the same response contract.

@@ -271,12 +271,3 @@ RopeTable = tuple[torch.Tensor, torch.Tensor]
 
 
 PositionEmbeddings = tuple[RopeTable, RopeTable, RopeTable]
-
-
-# note (Codex): Preserve existing import and serialized class lookup names.
-_SENSENOVA_NPU_FUSED_ROPE_ENV = SENSENOVA_NPU_FUSED_ROPE_ENV
-_SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL = SENSENOVA_NPU_FUSED_ROPE_ROTARY_MUL
-_can_use_sensenova_npu_fused_rope = can_use_sensenova_npu_fused_rope
-_compute_default_rope_parameters = compute_default_rope_parameters
-_sensenova_npu_fused_rope_enabled = sensenova_npu_fused_rope_enabled
-_sensenova_npu_rotary_mul = sensenova_npu_rotary_mul

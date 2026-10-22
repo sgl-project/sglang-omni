@@ -136,15 +136,7 @@ def register_image_generations(app: FastAPI) -> None:
             chunk = await image_result_with_disconnect_watch(
                 request, app.state.client, generate_request, request_id
             )
-            encoded_outputs = umm_images(chunk)
-            if len(encoded_outputs) != image_request.n:
-                raise RuntimeError(
-                    f"SenseNova-U1 expected {image_request.n} images, "
-                    f"got {len(encoded_outputs)}"
-                )
-            else:
-                pass
-            return build_image_response(encoded_outputs)
+            return build_image_response(umm_images(chunk))
         except Exception as exc:
             logger.exception(f"Image generation failed for request {request_id}")
             raise HTTPException(
@@ -296,12 +288,7 @@ def register_image_edits(app: FastAPI) -> None:
                 chunk = await image_result_with_disconnect_watch(
                     request, app.state.client, generate_request, request_id
                 )
-                images = umm_images(chunk)
-                if len(images) != 1:
-                    raise RuntimeError("SenseNova-U1 generated no image")
-                else:
-                    pass
-                encoded_outputs.extend(images)
+                encoded_outputs.extend(umm_images(chunk))
         except Exception as exc:
             logger.exception(f"Image edit failed for request {parent_request_id}")
             raise HTTPException(

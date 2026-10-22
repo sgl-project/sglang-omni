@@ -231,17 +231,13 @@ class NEOVisionModel(PreTrainedModel):
         self,
         pixel_values: torch.FloatTensor | None = None,
         output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         pixel_embeds: torch.FloatTensor | None = None,
         grid_hw: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor] | BaseModelOutputWithPooling:
+    ) -> BaseModelOutputWithPooling:
         output_hidden_states = (
             output_hidden_states
             if output_hidden_states is not None
             else self.config.output_hidden_states
-        )
-        return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
         )
 
         if pixel_values is None and pixel_embeds is None:

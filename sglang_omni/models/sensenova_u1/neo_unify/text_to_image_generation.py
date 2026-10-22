@@ -138,9 +138,7 @@ def t2i_generate(
             uncondition_prefix_lengths,
         ) = self.build_t2i_text_inputs(tokenizer, query_uncondition)
     else:
-        input_ids_uncondition = indexes_uncondition = (
-            attention_mask_uncondition_prefix
-        ) = None
+        input_ids_uncondition = indexes_uncondition = None
         uncondition_prefix_lengths = None
 
     token_h = image_size[1] // (self.patch_size * merge_size)

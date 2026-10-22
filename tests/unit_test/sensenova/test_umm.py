@@ -2,7 +2,6 @@
 """SenseNova phase, output, and Images API contracts on the real controller."""
 
 from dataclasses import replace
-from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -13,7 +12,6 @@ from pydantic import JsonValue
 from sglang_omni.client.client import Client
 from sglang_omni.client.image_media import InlineImage
 from sglang_omni.client.types import UMMGenerateChunk
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
@@ -24,10 +22,10 @@ from sglang_omni.models.sensenova_u1.cancellation import (
     SenseNovaCancelledError,
     generation_checkpoint,
 )
+from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
 from sglang_omni.models.sensenova_u1.image_processing import prepare_reference_images
 from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1ImageEditSampling
 from sglang_omni.models.sensenova_u1.umm import SenseNovaUMMAdapter
-from sglang_omni.models.sensenova_u1.umm_config import SenseNovaU1UMMPipelineConfig
 from sglang_omni.pipeline.umm import (
     UMMController,
     UMMRequestError,
@@ -165,14 +163,14 @@ def test_image_placeholder_count_is_checked_at_admission(
 
 
 def test_umm_config_retains_tp_constraints() -> None:
-    configuration = SenseNovaU1UMMPipelineConfig(model_path="unused")
+    configuration = SenseNovaU1PipelineConfig(model_path="unused")
     assert configuration.resolved_entry_stage == "orchestrator"
     assert configuration.stage_named("generate").next == "orchestrator"
     assert configuration.stage_named("output").terminal
     configuration.stage_named("generate").tp_size = 3
     configuration.stage_named("generate").gpu = [0, 1, 2]
     with pytest.raises(ValueError, match="tp_size"):
-        SenseNovaU1UMMPipelineConfig.model_validate(configuration.model_dump())
+        SenseNovaU1PipelineConfig.model_validate(configuration.model_dump())
 
 
 @pytest.mark.parametrize(
@@ -329,12 +327,8 @@ def test_inline_media_rejects_tampered_content(
         media.encoded_image()
 
 
-def test_loaded_configuration_constructs_controller_and_dispatches() -> None:
-    config_path = (
-        Path(__file__).resolve().parents[3] / "examples/configs/sensenova_u1_umm.yaml"
-    )
-    configuration = ConfigManager.from_file(str(config_path)).config
-    assert isinstance(configuration, SenseNovaU1UMMPipelineConfig)
+def test_default_configuration_constructs_controller_and_dispatches() -> None:
+    configuration = SenseNovaU1PipelineConfig(model_path="unused")
     stage = configuration.stage_named("orchestrator")
     arguments = {
         **resolve_stage_factory_kwargs(stage, configuration),
@@ -352,13 +346,13 @@ def test_loaded_configuration_constructs_controller_and_dispatches() -> None:
 def test_config_rejects_insufficient_bounds_and_disabled_cancellation(
     violation: Literal["outputs", "cancellation"]
 ) -> None:
-    configuration = SenseNovaU1UMMPipelineConfig(model_path="unused")
+    configuration = SenseNovaU1PipelineConfig(model_path="unused")
     if violation == "outputs":
         configuration.stage_named("orchestrator").factory.max_outputs = 1
     else:
         configuration.stage_named("generate").factory.cooperative_cancellation = False
     with pytest.raises(ValueError):
-        SenseNovaU1UMMPipelineConfig.model_validate(configuration.model_dump())
+        SenseNovaU1PipelineConfig.model_validate(configuration.model_dump())
 
 
 @pytest.mark.parametrize(

@@ -113,7 +113,7 @@ class TestCacheDitLifecycle(unittest.TestCase):
             enabled_by_default=True, default_params={"residual_diff_threshold": 0.1}
         )
         self.backend: SimpleNamespace = SimpleNamespace(
-            BlockAdapter=Mock(side_effect=lambda **kw: SimpleNamespace(**kw)),
+            BlockAdapter=Mock(side_effect=SimpleNamespace),
             DBCacheConfig=Mock(
                 side_effect=lambda **kw: SimpleNamespace(
                     **{"Fn_compute_blocks": 8, "Bn_compute_blocks": 0, **kw}

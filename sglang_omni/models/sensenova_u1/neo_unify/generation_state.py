@@ -88,7 +88,7 @@ class GenerationState(Protocol):
     ) -> torch.Tensor: ...
 
     def unpatchify(
-        sle,
+        self,
         x: torch.Tensor,
         patch_size: int,
         h: int | None = None,

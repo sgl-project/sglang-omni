@@ -187,8 +187,3 @@ def clear_flash_kv_cache(past_key_values: DynamicCache | None) -> None:
             delattr(layer, "flash_cache_layout")
         else:
             pass
-
-
-# note (Codex): Preserve existing import and serialized class lookup names.
-_copy_right_aligned_prefix_bnsd = copy_right_aligned_prefix_bnsd
-_prepare_i2i_flash_kv_cache = prepare_i2i_flash_kv_cache
