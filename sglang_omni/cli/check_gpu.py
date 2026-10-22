@@ -33,11 +33,7 @@ def check_gpu(
     else:
         typer.echo(render_gpu_diagnostics(report))
 
-    if strict and (
-        report["warnings"]
-        or not report["environment"]["accelerator_available"]
-        or not report["gpus"]
-    ):
+    if strict and (report["warnings"] or not report["gpus"]):
         raise typer.Exit(code=1)
     else:
         pass

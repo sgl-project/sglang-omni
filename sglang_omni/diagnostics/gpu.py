@@ -74,7 +74,6 @@ class GpuEnvironmentInfo(NvmlSystemInfo):
     pytorch_version: str | None
     pytorch_cuda_build: str | None
     cuda_available: bool
-    accelerator_available: bool
     logical_device_count: int
 
 
@@ -518,7 +517,19 @@ def collect_gpu_diagnostics(
     visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
 
-    if current_platform.is_cuda_alike():
+    # Only these have a device module to enumerate. Anything else, including the
+    # base platform SGLang falls back to when no card is visible, stays on NVML,
+    # which can still report the driver of a CUDA host torch cannot use.
+    if current_platform.is_xpu() or current_platform.is_npu():
+        warnings: list[str] = []
+        devices, driver_version = accelerator_logical_devices(
+            torch, device_type, visible_devices, warnings
+        )
+        system: NvmlSystemInfo = {
+            "driver_version": driver_version,
+            "cuda_driver_api_version": None,
+        }
+    else:
         pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
         inventory, system, warnings = nvml_inventory(pynvml)
         try:
@@ -528,18 +539,6 @@ def collect_gpu_diagnostics(
                 shutdown_nvml(pynvml)
             else:
                 pass
-    elif current_platform.is_cpu():
-        # torch.cpu answers is_available and device_count, so enumerating it
-        # would invent a device that has no properties and no memory.
-        warnings = []
-        devices = []
-        system = {"driver_version": None, "cuda_driver_api_version": None}
-    else:
-        warnings = []
-        devices, driver_version = accelerator_logical_devices(
-            torch, device_type, visible_devices, warnings
-        )
-        system = {"driver_version": driver_version, "cuda_driver_api_version": None}
 
     backends = backend_inventory()
     warnings.extend(
@@ -561,7 +560,6 @@ def collect_gpu_diagnostics(
                 getattr(torch, "version", None), "cuda", None
             ),
             "cuda_available": bool(torch.cuda.is_available()),
-            "accelerator_available": bool(devices),
             "logical_device_count": len(devices),
         },
         "gpus": devices,
@@ -597,7 +595,7 @@ def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
         "GPUs:",
     ]
     if not report["gpus"]:
-        lines.append(f"  No {device_type} devices are visible to PyTorch.")
+        lines.append("  No GPUs are visible to PyTorch.")
     else:
         pass
     for device in report["gpus"]:
