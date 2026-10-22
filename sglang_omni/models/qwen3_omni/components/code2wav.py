@@ -24,7 +24,7 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavTransformerLayer,
     Qwen3OmniMoeCode2WavTransformerModel,
     Qwen3OmniMoeConvNeXtBlock,
-    SnakeBeta,
+    Qwen3OmniMoeSnakeBeta,
 )
 
 from sglang_omni.models.qwen3_omni.components.codec_state_pool import (
@@ -44,6 +44,7 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_conv_transpose1d,
     channels_last_weight,
 )
+from sglang_omni.utils.merged_projections import merge_projection_weights
 from sglang_omni.utils.snake_beta import FusedSnakeBeta
 
 
@@ -55,7 +56,7 @@ def causal_conv(
     assert conv.stride == (1,), "code2wav causal convs are stride 1"
     length = hidden_states.shape[1]
     padded = F.pad(hidden_states, (0, 0, module.padding, (-length) % conv.dilation[0]))
-    return channels_last_conv1d(padded, conv, conv.weight, length)
+    return channels_last_conv1d(padded, conv, conv.weight, conv.bias, length)
 
 
 def causal_transconv(
@@ -75,7 +76,7 @@ def channels_last_block(
         return causal_conv(module, hidden_states)
     elif isinstance(module, Qwen3OmniMoeCausalTransConvNet):
         return causal_transconv(module, hidden_states)
-    elif isinstance(module, (SnakeBeta, FusedSnakeBeta)):
+    elif isinstance(module, (Qwen3OmniMoeSnakeBeta, FusedSnakeBeta)):
         return module(hidden_states.transpose(1, 2)).transpose(1, 2)
     elif isinstance(module, Qwen3OmniMoeConvNeXtBlock):
         # note (ratish): the depthwise conv stays on PyTorch's own (B, C, L) kernel,
@@ -129,22 +130,7 @@ class FusedCode2WavTransformer(torch.nn.Module):
             torch.cat((angles.cos(), angles.sin()), dim=-1) * rotary.attention_scaling,
             persistent=False,
         )
-        # note (ratish): q, k, v and gate, up become views of one matrix each, so the
-        # fused GEMMs read the loaded weights without a second copy.
-        for layer in transformer.layers:
-            attention, mlp = layer.self_attn, layer.mlp
-            projections = (attention.q_proj, attention.k_proj, attention.v_proj)
-            attention.qkv_weight = torch.cat([p.weight.data for p in projections])
-            start = 0
-            for projection in projections:
-                rows = projection.weight.shape[0]
-                projection.weight.data = attention.qkv_weight[start : start + rows]
-                start += rows
-            mlp.gate_up_weight = torch.cat(
-                (mlp.gate_proj.weight.data, mlp.up_proj.weight.data)
-            )
-            mlp.gate_proj.weight.data = mlp.gate_up_weight[: mlp.intermediate_size]
-            mlp.up_proj.weight.data = mlp.gate_up_weight[mlp.intermediate_size :]
+        merge_projection_weights(transformer.layers)
 
     def forward(self, inputs_embeds: torch.Tensor) -> BaseModelOutputWithPast:
         batch_size, length, hidden_size = inputs_embeds.shape

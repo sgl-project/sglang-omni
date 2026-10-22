@@ -2,6 +2,18 @@ import XCTest
 @testable import Voxt
 
 final class RemoteLLMRuntimeClientEndpointsTests: XCTestCase {
+    func testExplicitOpenAIAPIFormatRoutesBaseAndOppositeProtocolURLs() {
+        let client = RemoteLLMRuntimeClient()
+        for host in ["https://api.openai.com", "https://inference.example"] {
+            for suffix in ["", "/v1", "/v1/", "/v1/models", "/v1/responses", "/v1/responses/", "/v1/chat/completions", "/v1/chat/completions/"] {
+                XCTAssertEqual(client.resolvedLLMEndpoint(provider: .openAI, endpoint: host + suffix, model: "model", apiFormat: .chatCompletions), host + "/v1/chat/completions")
+                XCTAssertEqual(client.resolvedLLMEndpoint(provider: .openAI, endpoint: host + suffix, model: "model", apiFormat: .responses), host + "/v1/responses")
+            }
+        }
+        XCTAssertEqual(client.resolvedLLMEndpoint(provider: .openAI, endpoint: "https://inference.example/v1/chat/completions?region=east", model: "custom"), "https://inference.example/v1/chat/completions?region=east")
+        XCTAssertEqual(client.resolvedLLMEndpoint(provider: .openAI, endpoint: "https://inference.example/proxy%2Ftenant/v1/chat/completions?region=east", model: "custom", apiFormat: .responses), "https://inference.example/proxy%2Ftenant/v1/responses?region=east")
+        XCTAssertEqual(client.resolvedLLMEndpoint(provider: .openAI, endpoint: "https://inference.example/v1?region=east", model: "custom", apiFormat: .chatCompletions), "https://inference.example/v1/chat/completions?region=east")
+    }
     func testResolvedLLMEndpointNormalizesAliyunResponsesEndpoints() {
         let client = RemoteLLMRuntimeClient()
 

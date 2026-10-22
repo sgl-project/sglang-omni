@@ -44,7 +44,9 @@ Shared model loading uses `Core/Models/SharedModelLoadCoordinator<Value>`: curre
 
 LLM requests are text-only. Automatic foreground-window text/structure capture, screenshots, image attachment models and debug capture have been removed. App identity snapshots still support App Branch, dictionary scope and delivery targeting; selected-text operations are retained. Some text-generation checkpoints still require MLXVLM's loading factory.
 
-Global hotkeys and shortcut recording use Accessibility-backed modifying event taps (with local recording fallback), not Input Monitoring/HID listeners. Recording mute changes the current output device's writable mute property and restores only owned changes; it also mutes Voxt sounds. It does not create an audio tap. Meeting system audio still uses a public Core Audio process tap and requests access when capture starts, without private TCC preflight. Screen Recording is no longer requested. See the [implementation and pending macOS validation](ContextEnhancementRemovalImplementation.zh-CN.md).
+Global hotkeys and shortcut recording use modifying event taps without raw HID listeners. Accessibility permits an installation attempt, but the newly installed tap must retain every requested event type before it is used. Some sandboxed configurations also need effective Input Monitoring authorization; a nonnil tap or an enabled permission switch alone does not prove keyboard delivery. Partial or unverifiable taps are rejected with permission diagnostics, and shortcut recording keeps its local fallback. There is no explicit Input Monitoring permission request.
+
+Recording mute changes the current output device's writable mute property and restores only owned changes; it also mutes Voxt sounds. It does not create an audio tap. Meeting system audio still uses a public Core Audio process tap and requests access when capture starts, without private TCC preflight. Screen Recording is no longer requested. See the [implementation and pending macOS validation](ContextEnhancementRemovalImplementation.zh-CN.md).
 
 ## Current limitations and maintenance rules
 

@@ -319,11 +319,7 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     scheduler_output = SchedulerOutput(
         requests=[text_request, audio_request, default_request],
         batch_data=SimpleNamespace(
-            reqs=[
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-            ]
+            reqs=[SimpleNamespace(), SimpleNamespace(), SimpleNamespace()]
         ),
     )
 

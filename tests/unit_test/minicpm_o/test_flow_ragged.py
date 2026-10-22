@@ -139,12 +139,15 @@ def warmed_caches(
     ],
 )
 def test_ragged_chunks_match_each_stream_alone(
+    monkeypatch: pytest.MonkeyPatch,
     device: str,
     is_channels_last: bool,
     lengths: tuple[int, ...],
     is_last_chunk: list[bool],
     warmup_chunks: list[int],
 ) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     flow = tiny_flow()
     if is_channels_last:
         for block in flow.decoder.estimator.blocks:

@@ -81,6 +81,8 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args: Any) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.model_config = SimpleNamespace(is_multimodal=False)
@@ -382,6 +384,8 @@ def build_minimal_tts_builder_harness(monkeypatch):
         pass
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args: Any) -> None:
             self.model_runner = SimpleNamespace(
                 model=FakeModel(), server_args=server_args
@@ -517,6 +521,7 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             events.append("init_cuda_graphs")
 
     model_worker = SimpleNamespace(
+        speculative_worker=None,
         model_runner=FakeSGLangRunner(),
         model_config=SimpleNamespace(is_multimodal=False),
         enable_prefill_input_embeds=False,

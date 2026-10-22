@@ -54,15 +54,20 @@ nonisolated enum AccessibilityPermissionManager {
 nonisolated enum EventListeningPermissionManager {
     struct Status {
         let accessibilityGranted: Bool
+        let inputMonitoringGranted: Bool
 
         var description: String {
             let accessibility = accessibilityGranted ? "on" : "off"
-            return "permissions: accessibility=\(accessibility)"
+            let inputMonitoring = inputMonitoringGranted ? "on" : "off"
+            return "permissions: accessibility=\(accessibility), inputMonitoring=\(inputMonitoring)"
         }
     }
 
     static func status() -> Status {
-        Status(accessibilityGranted: AccessibilityPermissionManager.isTrusted())
+        Status(
+            accessibilityGranted: AccessibilityPermissionManager.isTrusted(),
+            inputMonitoringGranted: CGPreflightListenEventAccess()
+        )
     }
 }
 

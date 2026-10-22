@@ -53,6 +53,7 @@ def snapshot(tmp_path: Path) -> Path:
         "auto_map": {"AutoConfig": "configuration_minicpmo.MiniCPMOConfig"},
         "attention_bias": False,
         "hidden_size": 64,
+        "vocab_size": 128,
         "num_attention_heads": 8,
         "num_key_value_heads": 8,
         "head_dim": 8,
@@ -295,22 +296,36 @@ def test_duplex_engine_memory_follows_max_sessions(
         assert "max_total_tokens" not in talker
 
 
+@pytest.mark.parametrize(
+    ("overrides", "element_bytes"),
+    [
+        ({}, 2),
+        ({"dtype": "float32"}, 4),
+        ({"dtype": "float"}, 4),
+        ({"dtype": "half"}, 2),
+        ({"dtype": "auto"}, 2),
+        ({"kv_cache_dtype": "fp8_e4m3"}, 1),
+    ],
+)
 def test_thinker_kv_pool_holds_the_derived_tokens_within_its_card_share(
-    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+    snapshot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, JsonValue],
+    element_bytes: int,
 ) -> None:
     monkeypatch.setattr(
         MiniCPMOThinkerEngineBuilder,
         "build",
         lambda self, *args, **kwargs: consume_stage_kv_cache_bytes(),
     )
-    # note (Junnan Li): The snapshot thinker has 1 layer of 8 KV heads of width 8 in bfloat16.
-    kv_cache_bytes = 1000 * 2 * 1 * 8 * 8 * 2
+    kv_cache_bytes = 1000 * 2 * 1 * 8 * 8 * element_bytes
     assert (
         native_stages.create_thinker_scheduler(
             str(snapshot),
             device="cpu",
             kv_cache_tokens=1000,
             total_gpu_memory_fraction=0.4,
+            server_args_overrides=overrides,
         )
         == kv_cache_bytes
     )
@@ -330,6 +345,7 @@ def test_thinker_kv_pool_holds_the_derived_tokens_within_its_card_share(
             device="cpu",
             kv_cache_tokens=1000,
             total_gpu_memory_fraction=0.4,
+            server_args_overrides=overrides,
         )
 
 
@@ -465,8 +481,9 @@ def test_variant_session_requires_enable_realtime(
     launch_server.assert_not_called()
 
 
+@pytest.mark.parametrize("use_cli", [False, True])
 def test_duplex_speech_settings_reach_the_vocoder(
-    tmp_path: Path, stub_stage_models: None
+    tmp_path: Path, stub_stage_models: None, use_cli: bool
 ) -> None:
     reference_path = tmp_path / "reference.wav"
     reference_path.write_bytes(b"reference")
@@ -476,7 +493,19 @@ def test_duplex_speech_settings_reach_the_vocoder(
         "speech:\n  dtype: float16\n  enable_dit_torch_compile: true\n"
         "  enable_hift_torch_compile: true\n  n_timesteps: 6\n"
     )
-    config = ConfigManager.from_file(str(config_path)).config
+    manager = ConfigManager.from_file(str(config_path))
+    if use_cli:
+        manager.config = MiniCPMODuplexPipelineConfig(model_path="unused")
+        config = manager.merge_config(
+            {
+                "speech.dtype": "float16",
+                "speech.enable_dit_torch_compile": "true",
+                "speech.enable_hift_torch_compile": "true",
+                "speech.n_timesteps": "6",
+            }
+        )
+    else:
+        config = manager.config
     native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
     native_stages.create_speech_scheduler(
         config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
@@ -491,3 +520,17 @@ def test_duplex_speech_settings_reach_the_vocoder(
     )
     runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
     assert runtime_kwargs["max_open_sessions"] == config.max_sessions
+
+
+def test_duplex_speech_decodes_five_flow_steps_by_default(
+    tmp_path: Path, stub_stage_models: None
+) -> None:
+    """A deployment without speech settings streams with the reference demo's five flow steps."""
+    reference_path = tmp_path / "reference.wav"
+    reference_path.write_bytes(b"reference")
+    config = MiniCPMODuplexPipelineConfig(model_path="unused")
+    native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
+    native_stages.create_speech_scheduler(
+        config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
+    )
+    assert native_stages.MiniCPMOCode2Wav.call_args.kwargs["n_timesteps"] == 5

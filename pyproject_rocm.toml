@@ -9,7 +9,7 @@ description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",
@@ -22,7 +22,7 @@ dependencies = [
     # Torch, torchvision, torchaudio, SGLang, AITER, Triton, FlashInfer,
     # NIXL, and the ROCm runtime are inherited from the SGLang base image.
     "accelerate>=0.27.0",
-    "transformers==5.12.1",
+    "transformers==5.19.0",
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",

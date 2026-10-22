@@ -324,12 +324,23 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     ) -> None:
         """Prepare request embeddings; schedule_batch follows the runner interface."""
         parts: list[torch.Tensor] = []
-        for sched_req in requests:
+        # note (ratish): a row's prefix and extend length live on the batch; a decode
+        # tail mixed into a prefill batch keeps Req.prefix_len at its last prefill.
+        for sched_req, prefix_len, extend_len in zip(
+            requests,
+            forward_batch.extend_prefix_lens_cpu,
+            forward_batch.extend_seq_lens_cpu,
+            strict=True,
+        ):
             data = sched_req.data
             if isinstance(data, TalkerUnitRequestData):
                 parts.append(
                     session_prefill_rows(
-                        data, self.model.emb_code, self.model.emb_code.weight.device
+                        data,
+                        self.model.emb_code,
+                        self.model.emb_code.weight.device,
+                        prefix_len=prefix_len,
+                        extend_len=extend_len,
                     )
                 )
                 continue
@@ -343,8 +354,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             else:
                 pass
             req = data.req
-            prefix_len = len(req.prefix_indices)
-            end = prefix_len + int(req.extend_range.length)
+            end = prefix_len + extend_len
             prompt_len = int(tensor.shape[0])
             if prefix_len < prompt_len:
                 parts.append(tensor[prefix_len : min(end, prompt_len)])

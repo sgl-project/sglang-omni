@@ -5,6 +5,8 @@ import asyncio
 import base64
 import json
 import logging
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -635,7 +637,9 @@ class ContentStreamingVAD(StreamingVAD):
 async def test_frame_vad_reports_the_same_boundaries_as_streaming_vad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(vad_module, "load_silero_vad", lambda onnx: None)
+    monkeypatch.setitem(
+        sys.modules, "silero_vad", SimpleNamespace(load_silero_vad=lambda onnx: None)
+    )
     reference = ContentStreamingVAD(VADConfig())
     session, websocket = vad_session(monkeypatch)
     audio = (

@@ -100,7 +100,7 @@ extension AppDelegate {
     var currentRewriteResponsesConversationContextKey: String? {
         guard rewriteModelProvider == .remoteLLM else { return nil }
         let context = resolvedRemoteLLMContext(forRewrite: true)
-        guard context.provider.usesResponsesAPI else { return nil }
+        guard context.configuration.usesResponsesAPI(for: context.provider) else { return nil }
         return [
             context.provider.rawValue,
             context.configuration.endpoint,
@@ -223,7 +223,7 @@ extension AppDelegate {
             !trimmedConversationHistory.isEmpty ||
             !(previousConversationResponseID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
         let shouldUseProviderManagedConversation =
-            (remoteContext?.provider.usesResponsesAPI ?? false) &&
+            (remoteContext.map { $0.configuration.usesResponsesAPI(for: $0.provider) } ?? false) &&
             directAnswerMode &&
             !structuredAnswerOutput &&
             hasProviderConversationState

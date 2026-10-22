@@ -524,8 +524,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         for sched_req in requests:
             data: CosyVoice3SGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             prompt_embeds = data.prompt_input_embeds
             if prompt_embeds is None:
                 raise RuntimeError(

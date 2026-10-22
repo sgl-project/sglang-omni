@@ -142,6 +142,27 @@ extension RemoteLLMRuntimeClient {
             settings: settings,
             model: configuration.model
         )
+        if provider == .openAI {
+            if settings.maxOutputTokens == nil { payload.removeValue(forKey: "max_tokens") }
+            if settings.temperature == nil { payload.removeValue(forKey: "temperature") }
+            if settings.topP == nil { payload.removeValue(forKey: "top_p") }
+            if let verbosity = OpenAITextVerbosity.apiValue(
+                selection: configuration.openAITextVerbosity,
+                model: configuration.model
+            ) {
+                payload["verbosity"] = verbosity
+            }
+            if settings.thinking.mode == .effort,
+               let effort = settings.thinking.effort?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !effort.isEmpty,
+               configuration.usesCustomOpenAIEndpoint || OpenAIReasoningEffort.apiValue(selection: effort, model: configuration.model) != nil {
+                payload["reasoning_effort"] = effort
+            }
+            if OpenAIReasoningEffort.supportedCases(forModel: configuration.model).count > 1,
+               let maxTokens = payload.removeValue(forKey: "max_tokens") {
+                payload["max_completion_tokens"] = maxTokens
+            }
+        }
         try applyCommonExtraBody(
             to: &payload,
             settings: settings,

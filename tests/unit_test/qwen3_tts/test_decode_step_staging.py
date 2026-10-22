@@ -34,6 +34,8 @@ def make_runner(code_predictor_forward, device: torch.device) -> Qwen3TTSModelRu
     runner.has_pending_code_step = False
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     runner.model = SimpleNamespace(
         config=SimpleNamespace(codec_eos_token_id=EOS),
         code_predictor_forward=code_predictor_forward,

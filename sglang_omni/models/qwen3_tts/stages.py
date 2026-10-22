@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 
@@ -24,9 +24,11 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     move_conv_padding_to_host,
 )
 from sglang_omni.models.qwen3_tts.request_builders import (
+    Qwen3TTSReferenceEncoderStats,
     Qwen3TTSSGLangRequestData,
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
+    qwen3_tts_reference_encoder_stats,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
@@ -34,14 +36,21 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
+    UnsupportedAdminData,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.proto.admin import ADMIN_MODEL_INFO
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.hf import use_text_rope
 from sglang_omni.utils.json import JsonValue
+
+if current_platform.is_npu():
+    import torch_npu
+else:
+    torch_npu = None
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSTokenizer
@@ -188,6 +197,79 @@ def load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, JsonValue
     return data if isinstance(data, dict) else {}
 
 
+class Qwen3TTSPreprocessingModelInfo(TypedDict):
+    reference_encoders: Qwen3TTSReferenceEncoderStats | None
+
+
+class Qwen3TTSPreprocessingAdminResult(TypedDict):
+    success: bool
+    message: str
+    data: Qwen3TTSPreprocessingModelInfo | UnsupportedAdminData
+
+
+class Qwen3TTSPreprocessingScheduler(
+    ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
+    """Preprocessing that reports the graph coverage of the reference encoders it runs."""
+
+    def admin(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> Qwen3TTSPreprocessingAdminResult:
+        """Report the reference encoders for model_info; skip every other action."""
+        # note (Haoling Pu): payload is part of the stage admin contract.
+        if action == ADMIN_MODEL_INFO:
+            return {
+                "success": True,
+                "message": "ok",
+                "data": {"reference_encoders": qwen3_tts_reference_encoder_stats()},
+            }
+        else:
+            return {
+                "success": True,
+                "message": f"unsupported admin action: {action}",
+                "data": {"skipped": True, "unsupported": True},
+            }
+
+    def log_reference_encoder_coverage(self) -> None:
+        """Log the reference lengths the encoders replay graphs for."""
+        encoder_stats = qwen3_tts_reference_encoder_stats()
+        if encoder_stats is None:
+            return
+        else:
+            pass
+        coverage: list[str] = []
+        # note (Haoling Pu): the codec runner is never built without an encode
+        # stream, with graphs disabled, or on a platform that cannot capture it;
+        # a built runner is off when it has no backend or its capture failed.
+        for name, unit, absent, stats in (
+            ("codec", "codec frames", "off (not built)", encoder_stats["codec"]),
+            ("speaker", "mel frames", "not loaded", encoder_stats["speaker"]),
+        ):
+            if stats is None:
+                coverage.append(f"{name} {absent}")
+            elif stats["enabled"]:
+                coverage.append(
+                    f"{name} {len(stats['captured'])} graphs up to "
+                    f"{max(stats['captured'])} {unit}"
+                )
+            else:
+                coverage.append(
+                    f"{name} off ({stats['disable_reason'] or 'not captured'})"
+                )
+        summary = ", ".join(coverage)
+        logger.info(
+            f"Qwen3-TTS reference encoder CUDA graphs: {summary}; "
+            "longer references and encoders without graphs run eagerly"
+        )
+
+    def warm_up_serving_thread(self) -> None:
+        # note (Haoling Pu): a process builds all of its stages before starting
+        # any, so encoders the engine stage loaded already exist here, and the
+        # stage reports ready only after this returns.
+        super().warm_up_serving_thread()
+        self.log_reference_encoder_coverage()
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -198,7 +280,7 @@ def create_preprocessing_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
-) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
+) -> Qwen3TTSPreprocessingScheduler:
     if load_frontend:
         load_standalone_preprocessing_context(
             model_path,
@@ -213,7 +295,7 @@ def create_preprocessing_executor(
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
-    return ThreadedSimpleScheduler(
+    return Qwen3TTSPreprocessingScheduler(
         functools.partial(
             preprocess_qwen3_tts_payload,
             default_stream_codec_output=stream_codec_output,
@@ -359,7 +441,9 @@ def create_vocoder_executor(
     else:
         pass
     if incremental_codec_compile is None:
-        incremental_codec_compile = enable_stateful_codec_decoder
+        incremental_codec_compile = (
+            enable_stateful_codec_decoder and torch.device(device).type != "npu"
+        )
     else:
         pass
     tokenizer = load_qwen3_tts_tokenizer(
@@ -433,6 +517,17 @@ def create_vocoder_executor(
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
     # from colocated stages.
-    scheduler.warmup_now()
+    if torch.device(device).type == "npu":
+        # note (cocoa): Internal-format convolutions use aclop, which cannot be captured.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        torch.npu.config.allow_internal_format = False
+        try:
+            scheduler.warmup_now()
+        finally:
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
+    else:
+        scheduler.warmup_now()
     scheduler.log_cuda_graph_coverage(running_stream_count)
     return scheduler

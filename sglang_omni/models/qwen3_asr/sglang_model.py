@@ -23,6 +23,7 @@ from sglang.srt.models.qwen3 import Qwen3Attention, Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.qwen3_asr.encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.hf import use_text_rope
 
@@ -163,7 +164,11 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             return
         else:
             pass
-        runner = Qwen3ASREncoderLayerStackGraphRunner(
+        if device.type == "npu":
+            runner_cls = Qwen3ASREncoderNpuGraphRunner
+        else:
+            runner_cls = Qwen3ASREncoderLayerStackGraphRunner
+        runner = runner_cls(
             self.audio_tower,
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
             max_batch_size=max_batch_size,

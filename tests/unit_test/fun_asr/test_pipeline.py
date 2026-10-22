@@ -90,7 +90,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         lambda *args, **kwargs: tokenizer,
     )
     monkeypatch.setattr(
-        fun_asr_builder.AutoFeatureExtractor,
+        fun_asr_builder.FunAsrNanoFeatureExtractor,
         "from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(nb_max_frames=500),
     )
