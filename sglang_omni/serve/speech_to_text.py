@@ -27,6 +27,7 @@ from sglang_omni.client import (
 )
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
+    DiarizationTimestamp,
     SglExt,
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
@@ -41,6 +42,7 @@ from sglang_omni.serve.streaming import (
     ClosableStreamingResponse,
     close_async_iterator_if_supported,
 )
+from sglang_omni.serve.subtitle_cues import segments_from_word_timestamps
 from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
@@ -493,11 +495,19 @@ def assemble_speech_to_text_response(
     if normalized_response_format in {"verbose_json", *SEGMENT_RESPONSE_FORMATS}:
         if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
             try:
-                response = adapter.build_timestamped_response(
-                    text=raw_text,
-                    language=language,
-                    audio_duration_s=duration_s,
-                )
+                if transcription is not None:
+                    response = TranscriptionVerboseResponse(
+                        language=language,
+                        duration=round(max(float(duration_s), 0.0), 2),
+                        text=text,
+                        segments=segments_from_word_timestamps(transcription),
+                    )
+                else:
+                    response = adapter.build_timestamped_response(
+                        text=raw_text,
+                        language=language,
+                        audio_duration_s=duration_s,
+                    )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
@@ -555,6 +565,22 @@ def attach_word_timestamps(
         response.word_timestamp_alignment = {
             str(key): str(value) for key, value in alignment.items()
         }
+    else:
+        pass
+    if not isinstance(response, TranscriptionVerboseResponse):
+        return
+    else:
+        pass
+    diarization = transcription.get("diarization_timestamps")
+    frame_seconds = transcription.get("diarization_frame_seconds")
+    if isinstance(diarization, list):
+        response.diarization_timestamps = [
+            DiarizationTimestamp.model_validate(segment) for segment in diarization
+        ]
+    else:
+        pass
+    if isinstance(frame_seconds, (int, float)):
+        response.diarization_frame_seconds = float(frame_seconds)
     else:
         pass
 

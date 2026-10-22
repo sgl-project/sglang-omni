@@ -114,8 +114,21 @@ def register_transcriptions(app: FastAPI) -> None:
 
         response_format = form.response_format.strip().lower()
         segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
+        adapter = speech_to_text.resolve_speech_to_text_adapter(
+            getattr(app.state, "architectures", None)
+        )
+        request_word_timestamps = bool(form.word_timestamps) or (
+            adapter.supports_word_timestamps and segment_timestamps
+        )
         timestamp_language = None
-        if form.word_timestamps:
+        if form.word_timestamps and not adapter.supports_word_timestamps:
+            raise HTTPException(
+                status_code=400,
+                detail="word_timestamps is not supported for this model",
+            )
+        else:
+            pass
+        if request_word_timestamps:
             if form.stream:
                 raise HTTPException(
                     status_code=400,
@@ -127,25 +140,26 @@ def register_transcriptions(app: FastAPI) -> None:
             if timestamp_language is None:
                 raise HTTPException(
                     status_code=400,
-                    detail="word_timestamps supports only English audio",
+                    detail="word timestamps support only English audio",
                 )
             else:
                 pass
-            if response_format != "verbose_json":
+            if response_format not in {
+                "verbose_json",
+                *speech_to_text.SEGMENT_RESPONSE_FORMATS,
+            }:
                 raise HTTPException(
                     status_code=400,
-                    detail="word_timestamps requires response_format verbose_json",
+                    detail=(
+                        "word_timestamps requires response_format "
+                        "verbose_json, srt, or vtt"
+                    ),
                 )
             else:
                 pass
         else:
             pass
-        if (
-            segment_timestamps
-            and not speech_to_text.resolve_speech_to_text_adapter(
-                getattr(app.state, "architectures", None)
-            ).supports_segment_timestamps
-        ):
+        if segment_timestamps and not adapter.supports_segment_timestamps:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -256,6 +270,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 request_id=request_id,
                 segment_timestamps=segment_timestamps,
                 timestamp_language=timestamp_language,
+                word_timestamps=request_word_timestamps,
             )
         finally:
             if admitted:
@@ -295,6 +310,7 @@ async def transcribe_planned_upload(
     request_id: str,
     segment_timestamps: bool,
     timestamp_language: str | None = None,
+    word_timestamps: bool = False,
 ) -> Response:
     """The non-stream path after planning: one request, or one per chunk."""
     client: Client = app.state.client
@@ -316,7 +332,7 @@ async def transcribe_planned_upload(
         )
     else:
         pass
-    if form.word_timestamps and plan is not None:
+    if word_timestamps and plan is not None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -339,7 +355,7 @@ async def transcribe_planned_upload(
             repetition_penalty=form.repetition_penalty,
             max_new_tokens=form.max_new_tokens,
             seed=form.seed,
-            word_timestamps=form.word_timestamps,
+            word_timestamps=word_timestamps,
             segment_timestamps=segment_timestamps,
         )
         result = await speech_to_text.complete_speech_to_text_request(

@@ -692,6 +692,17 @@ class TranscriptionWord(BaseModel):
     word: str
     start: float
     end: float
+    speaker: str | None = None
+    speaker_slot: int | None = None
+    speaker_confidence: float | None = None
+
+
+class DiarizationTimestamp(BaseModel):
+    """One post-processed Sortformer segment. Times are seconds."""
+
+    speaker: int
+    start: float
+    end: float
 
 
 class TranscriptionResponse(BaseModel):
@@ -724,6 +735,8 @@ class TranscriptionVerboseResponse(BaseModel):
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     words: list[TranscriptionWord] | None = None
     word_timestamp_alignment: dict[str, str] | None = None
+    diarization_timestamps: list[DiarizationTimestamp] | None = None
+    diarization_frame_seconds: float | None = None
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
     sglext: SglExt | None = None
