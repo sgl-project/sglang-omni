@@ -113,7 +113,7 @@ def scheduled(request, output_ids=(), prefix_len: int = 0) -> SimpleNamespace:
     return SimpleNamespace(
         origin_input_ids=list(request.data.req.origin_input_ids),
         output_ids=list(output_ids),
-        prefix_indices=range(prefix_len),
+        prefix_len=prefix_len,
     )
 
 
@@ -121,7 +121,7 @@ def prefill(runner, request, req) -> torch.Tensor:
     extend_len = len(req.origin_input_ids) + len(req.output_ids)
     forward_batch = SimpleNamespace(
         replace_embeds=None,
-        input_ids=torch.zeros(extend_len - len(req.prefix_indices)),
+        input_ids=torch.zeros(extend_len - req.prefix_len),
     )
     runner.before_prefill(forward_batch, SimpleNamespace(reqs=[req]), [request])
     return get_omni_prefill_inputs(forward_batch).input_embeds

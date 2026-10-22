@@ -32,7 +32,7 @@ def scheduled_req(origin: list[int], output: list[int], prefix_len: int):
     return SimpleNamespace(
         origin_input_ids=list(origin),
         output_ids=list(output),
-        prefix_indices=range(prefix_len),
+        prefix_len=prefix_len,
     )
 
 

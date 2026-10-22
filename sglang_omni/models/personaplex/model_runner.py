@@ -323,7 +323,7 @@ class PersonaPlexModelRunner(ModelRunner):
         timeline = self.request_timeline(data)
         num_prompt = timeline.num_prompt_positions
         num_origin = len(req.origin_input_ids)
-        start = len(req.prefix_indices)
+        start = req.prefix_len
         end = num_origin + len(req.output_ids)
         assert start < end, (start, end)
         pieces = []
