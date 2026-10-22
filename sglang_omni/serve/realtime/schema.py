@@ -82,7 +82,6 @@ class SamplingConfig(TypedDict, total=False):
     min_p: Annotated[float, Field(ge=0, le=1)]
     audio_temperature: Annotated[float, Field(ge=0, le=2)]
     audio_top_k: Annotated[int, Field(ge=-1)]
-    seed: int
     max_new_tokens: Annotated[int, Field(ge=1)]
     seed: Annotated[int, Field(ge=0)]
 
