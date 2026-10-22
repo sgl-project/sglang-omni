@@ -1,0 +1,16 @@
+# Each signer's team and IDs; copy the .example beside each file.
+ios/Config/Signing.local.xcconfig
+connector/VoxtConnector/Config/Signing.local.xcconfig
+# Built by tools/build-tailcat-native.sh.
+ios/VoxtTailcat/Artifacts/
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcresult
+# The repository ignores these types; here they are test audio, dictionaries, license notices and pins.
+!testdata/*.wav
+!*.txt
+!Package.resolved
+# Evidence runs keep their results/ folder (the repository ignores results/ elsewhere).
+!docs/evidence/**/results/

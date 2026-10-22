@@ -1,0 +1,7 @@
+Voxt Mobile (Voxt/Mobile/)
+
+Licensed under Apache-2.0, as the rest of this repository.
+
+The Tailcat tailnet nodes in tailcat/native and tailcat/host build against Go modules
+downloaded at build time, among them github.com/tailscale/tailcat (BSD-3-Clause). Each
+module keeps the license it ships with.

@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Voxt 會錄製你的語音並傳送到你的 Mac，將其轉換為文字。";
+"NSCameraUsageDescription" = "Voxt 會掃描你的 Mac 上顯示的配對碼。";
+"NSLocalNetworkUsageDescription" = "Voxt 會在此 Wi-Fi 上尋找你 Mac 上的 Voxt Connector，這樣不必掃描 QR 也能配對。";

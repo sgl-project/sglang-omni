@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Voxt records your voice and sends it to your Mac to turn it into text.";
+"NSCameraUsageDescription" = "Voxt scans the pairing code shown on your Mac.";
+"NSLocalNetworkUsageDescription" = "Voxt looks for Voxt Connector on your Mac over this Wi-Fi so you can pair without the QR.";
