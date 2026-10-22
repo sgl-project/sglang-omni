@@ -7,10 +7,13 @@ import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
+from sglang_omni.platforms import load_platform_class
+from sglang_omni.platforms.cpu import CPUOmniPlatform
 
 
 class FakeCuda:
@@ -56,11 +59,11 @@ class FakePlatform:
     def __init__(self, device_type: str) -> None:
         self.device_type = device_type
 
-    def is_cuda_alike(self) -> bool:
-        return self.device_type == "cuda"
+    def is_xpu(self) -> bool:
+        return self.device_type == "xpu"
 
-    def is_cpu(self) -> bool:
-        return self.device_type == "cpu"
+    def is_npu(self) -> bool:
+        return self.device_type == "npu"
 
 
 def pin_platform(monkeypatch, device_type: str) -> None:
@@ -379,7 +382,6 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     environment = report["environment"]
     assert environment["device_type"] == "xpu"
     assert environment["visible_devices_variable"] == "ZE_AFFINITY_MASK"
-    assert environment["accelerator_available"] is True
     assert environment["cuda_available"] is False
     assert environment["logical_device_count"] == 2
     assert environment["driver_version"] == "1.15.38646+6"
@@ -388,25 +390,55 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     ] * 2
     assert [gpu["free_memory_bytes"] for gpu in report["gpus"]] == [20 * 1024**3] * 2
     assert report["warnings"] == []
-    assert "No xpu devices" not in gpu_diagnostics.render_gpu_diagnostics(report)
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "logical 1 -> physical 1" in rendered
+    assert "name=Intel(R) Arc(TM) Pro B60 Graphics" in rendered
 
 
-def test_a_cpu_platform_reports_no_devices_rather_than_inventing_one(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "platform",
+    [
+        pytest.param(
+            load_platform_class("sglang.srt.platforms.interface.SRTPlatform")(),
+            id="no-device-fallback",
+        ),
+        pytest.param(CPUOmniPlatform(), id="cpu"),
+    ],
+)
+def test_a_platform_without_a_device_module_keeps_the_nvml_report(
+    monkeypatch, platform
 ) -> None:
-    """torch.cpu answers is_available and device_count, so enumerating it the
-    way an accelerator is enumerated would invent a device with no properties.
+    """With no card visible, SGLang falls back to its base platform, whose
+    device_type is "cpu" while is_cpu() is False. On a CUDA host whose driver is
+    too old for torch, NVML is still the only source of the driver version, and
+    enumerating torch.cpu instead would list a device that does not exist.
     """
+    fake_nvml = FakeNVML()
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: None)
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
-    pin_platform(monkeypatch, "cpu")
+    monkeypatch.setattr(gpu_diagnostics, "current_platform", platform)
+
+    def no_device_module(device_type: str) -> None:
+        pytest.fail(f"enumerated the {device_type!r} device module")
+
+    torch_without_cuda = SimpleNamespace(
+        __version__="2.11.0+cu130",
+        version=SimpleNamespace(cuda="13.0"),
+        cuda=SimpleNamespace(is_available=lambda: False),
+        get_device_module=no_device_module,
+    )
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
-        env={}, torch_module=FakeXpuTorch([0, 1])
+        env={}, torch_module=torch_without_cuda, pynvml_module=fake_nvml
     )
 
     assert report["gpus"] == []
-    assert report["environment"]["accelerator_available"] is False
-    assert report["warnings"] == []
+    assert report["environment"]["driver_version"] == "610.43.02"
+    assert report["environment"]["visible_devices_variable"] == "CUDA_VISIBLE_DEVICES"
+    assert fake_nvml.shutdown_called is True
+    assert "No GPUs are visible to PyTorch." in (
+        gpu_diagnostics.render_gpu_diagnostics(report)
+    )
 
 
 def test_an_affinity_mask_maps_to_physical_cards_in_ascending_order(
@@ -451,7 +483,6 @@ def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     report = {
         "schema_version": 2,
         "environment": {
-            "accelerator_available": True,
             "logical_device_count": 1,
         },
         "gpus": [{"logical_index": 0}],
@@ -475,7 +506,6 @@ def test_check_gpu_strict_fails_without_a_visible_accelerator(monkeypatch) -> No
     report = {
         "schema_version": 2,
         "environment": {
-            "accelerator_available": False,
             "logical_device_count": 0,
         },
         "gpus": [],
@@ -492,6 +522,32 @@ def test_check_gpu_strict_fails_without_a_visible_accelerator(monkeypatch) -> No
 
     assert result.exit_code == 1
     assert json.loads(result.stdout) == report
+
+
+def test_check_gpu_strict_passes_with_gpus_and_no_cuda(monkeypatch) -> None:
+    """An Intel host has no CUDA but does list its cards, so strict must not key
+    off cuda_available, which is what made a healthy XPU host exit 1.
+    """
+    check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
+    report = {
+        "schema_version": 2,
+        "environment": {
+            "cuda_available": False,
+            "logical_device_count": 1,
+        },
+        "gpus": [{"logical_index": 0}],
+        "backends": [],
+        "warnings": [],
+    }
+    monkeypatch.setattr(
+        check_gpu_module,
+        "collect_gpu_diagnostics",
+        lambda: report,
+    )
+
+    result = CliRunner().invoke(app, ["check-gpu", "--json", "--strict"])
+
+    assert result.exit_code == 0
 
 
 def test_check_gpu_does_not_load_serving_entrypoints_in_subprocess() -> None:
