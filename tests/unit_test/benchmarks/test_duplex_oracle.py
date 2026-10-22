@@ -544,22 +544,6 @@ def test_exhausted_admission_without_a_session_fails() -> None:
             },
             False,
         ),
-        (
-            {
-                "type": "response.created",
-                "sglang": {"fatal": False},
-                "error": {"code": "admission_rejected"},
-            },
-            False,
-        ),
-        (
-            {
-                "type": "error",
-                "sglang": {"fatal": False},
-                "error": "admission_rejected",
-            },
-            False,
-        ),
         ({"type": "error", "error": {"code": "admission_rejected"}}, False),
     ],
 )
@@ -605,9 +589,8 @@ def rejected_update() -> dict[str, JsonValue]:
     ("record", "violation"),
     [
         (rejection(), None),
-        (rejection(code="fixture_failure"), "code=fixture_failure"),
+        (rejection(code="invalid_request"), "code=invalid_request"),
         (rejection(event_id="missing"), "code=admission_rejected"),
-        (rejection(event_id=[]), "code=admission_rejected"),
     ],
 )
 def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(

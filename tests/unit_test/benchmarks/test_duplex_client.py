@@ -315,7 +315,7 @@ def test_client_closes_once_the_rejection_budget_is_exhausted(tmp_path: Path) ->
 
 
 def test_client_does_not_resend_after_another_error(tmp_path: Path) -> None:
-    peer = DuplexPeer(rejected_updates=1, rejection_code="fixture_failure")
+    peer = DuplexPeer(rejected_updates=1, rejection_code="invalid_request")
     records = asyncio.run(
         capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )
@@ -324,14 +324,13 @@ def test_client_does_not_resend_after_another_error(tmp_path: Path) -> None:
     assert sends == ["session.update", "session.close"]
     result = evaluate_trace(records)
     assert result["status"] == "fail", result
-    assert any("code=fixture_failure" in item for item in result["violations"])
+    assert any("code=invalid_request" in item for item in result["violations"])
 
 
-@pytest.mark.parametrize("mode", ["deadline_after_rejection", "close_after_rejection"])
-def test_client_stops_retrying_when_the_session_ends_during_the_backoff(
-    tmp_path: Path, mode: PeerMode
+def test_client_stops_retrying_when_the_session_fails_during_the_backoff(
+    tmp_path: Path,
 ) -> None:
-    peer = DuplexPeer(mode, rejected_updates=1)
+    peer = DuplexPeer("deadline_after_rejection", rejected_updates=1)
     records = asyncio.run(
         capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
     )

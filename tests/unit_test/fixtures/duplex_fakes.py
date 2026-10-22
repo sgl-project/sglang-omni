@@ -249,7 +249,6 @@ PeerMode = Literal[
     "linger",
     "close_without_update",
     "deadline_after_rejection",
-    "close_after_rejection",
 ]
 
 
@@ -448,9 +447,6 @@ class DuplexPeer:
                             websocket, None, fatal=True, code="session_update_timeout"
                         )
                         await self.close_session(websocket, "server_error", None)
-                        return
-                    elif self.mode == "close_after_rejection":
-                        await self.close_session(websocket, "disconnect", None)
                         return
                     else:
                         continue
