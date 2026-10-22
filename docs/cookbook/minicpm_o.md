@@ -11,6 +11,8 @@
 
 Follow [Installation](../get_started/installation.md), then run from the repository root.
 
+For Intel GPUs, follow the [MiniCPM-o XPU recipe](../get_started/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+
 Chat with speech output:
 
 ```bash
