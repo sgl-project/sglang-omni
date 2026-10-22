@@ -106,6 +106,10 @@ add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
+add_executable(asr_service_probe EXCLUDE_FROM_ALL ci/asr_service_probe.cpp)
+target_link_libraries(asr_service_probe PRIVATE asr_service)
+target_compile_options(asr_service_probe PRIVATE -Wall -Wextra)
+
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
 target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)

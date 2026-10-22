@@ -135,17 +135,21 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Set up the CI Python
+        id: ci-python
         run: |
           uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
       - name: Provision checkpoints and corpus
+        id: asr-checkpoints
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
 
       - name: Build the runtime
+        id: native-build
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/cmake" --build "$VOXT_CI_ROOT/runtime-build/cmake" --target asr_service_probe
 
       - name: AuK checkpoint preparation tests
         run: |
@@ -164,8 +168,10 @@ jobs:
           exit $status
 
       - name: Server API tests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          NATIVE_SERVICE_PROBE: ${{ env.VOXT_CI_ROOT }}/runtime-build/cmake/asr_service_probe
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
@@ -174,12 +180,14 @@ jobs:
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
       - name: Provision the other models' checkpoints
-        if: ${{ always() && steps.native-disk.outputs.ready == 'true' }}
+        id: model-checkpoints
+        if: ${{ !cancelled() && steps.native-disk.outputs.ready == 'true' && steps.ci-python.outcome == 'success' && steps.native-build.outcome == 'success' }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data"
 
       - name: Prepare AuK native checkpoints
-        if: ${{ always() && steps.native-disk.outputs.ready == 'true' }}
+        id: auk-checkpoints
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
         run: |
           preparation_python="$VOXT_CI_ROOT/runtime-build/venv/bin/python"
           pins=sglang_omni_mlx/native/ci/model_pins.json
@@ -194,10 +202,23 @@ jobs:
           done
 
       - name: Other models' golden outputs on the frozen corpus
-        if: ${{ always() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
+        env:
+          AUK_CHECKPOINTS_READY: ${{ steps.auk-checkpoints.outcome == 'success' }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
+            case "$golden" in
+              */auk.json|*/auk-flash.json)
+                if [ "$AUK_CHECKPOINTS_READY" != true ]; then
+                  echo "::error::Skipping $golden because AuK checkpoint preparation did not succeed."
+                  result=1
+                  continue
+                else
+                  :
+                fi
+                ;;
+            esac
             "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
               --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
               --outputs "$RUNNER_TEMP/golden-outputs" || result=1
@@ -213,7 +234,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Other model servers' API tests
-        if: ${{ always() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
@@ -221,7 +242,7 @@ jobs:
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
 
       - name: AuK server API tests
-        if: ${{ always() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.auk-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           AUK_MODEL_DIRECTORY: ${{ env.VOXT_CI_ROOT }}/data/native_models/tencent_AuK-Flash

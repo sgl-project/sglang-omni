@@ -9,6 +9,7 @@ from pathlib import Path
 
 import auk_golden
 import check_golden
+import check_model_golden
 import pytest
 
 CLIP = {
@@ -206,3 +207,51 @@ def test_auk_native_failure_and_invalid_requests_cannot_pass(
     auk_manifest["cases"][0]["seconds"] = 0
     with pytest.raises(ValueError, match="Invalid AuK golden request"):
         auk_golden.check(auk_manifest, auk_runtime, tmp_path, "Test chip", None, None)
+
+
+@pytest.mark.parametrize("golden_filename", ["auk.json", "auk-flash.json"])
+def test_auk_cli_dispatch_records_and_checks_waveforms(
+    tmp_path: Path,
+    auk_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    golden_filename: str,
+) -> None:
+    """AuK golden requests must not enter the ASR transcription or scoring path."""
+    manifest = json.loads(
+        (Path(__file__).parent / "model_golden" / golden_filename).read_text()
+    )
+    manifest["devices"] = {}
+    golden_path = tmp_path / golden_filename
+    golden_path.write_text(json.dumps(manifest))
+    output_directory = tmp_path / "outputs"
+    arguments = [
+        "check_model_golden",
+        "--runtime-bin",
+        str(auk_runtime),
+        "--data-root",
+        str(tmp_path),
+        "--golden",
+        str(golden_path),
+        "--outputs",
+        str(output_directory),
+    ]
+    monkeypatch.setattr(check_golden, "chip", lambda: "Test chip")
+    monkeypatch.setattr(sys, "argv", arguments + ["--write"])
+    with pytest.raises(SystemExit) as recorded:
+        check_golden.run(check_model_golden.transcribe_with_tool)
+    assert recorded.value.code == 0
+    exported = json.loads((output_directory / golden_filename).read_text())
+    written = json.loads(golden_path.read_text())
+    assert written["devices"]["Test chip"]["clips"] == exported["clips"]
+    assert set(exported["clips"]) == {case["id"] for case in manifest["cases"]}
+    assert exported["metrics"] == {}
+
+    monkeypatch.setattr(sys, "argv", arguments)
+    with pytest.raises(SystemExit) as identical:
+        check_golden.run(check_model_golden.transcribe_with_tool)
+    assert identical.value.code == 0
+    written["devices"]["Test chip"]["clips"]["en_text"]["sha256"] = "f" * 64
+    golden_path.write_text(json.dumps(written))
+    with pytest.raises(SystemExit) as changed:
+        check_golden.run(check_model_golden.transcribe_with_tool)
+    assert changed.value.code == 1

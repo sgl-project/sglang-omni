@@ -23,6 +23,7 @@ from websockets.sync.client import connect
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
+SERVICE_PROBE = os.environ.get("NATIVE_SERVICE_PROBE")
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
@@ -48,6 +49,7 @@ class Server:
         binary: str = "qwen3_asr_server",
         model_kind: str = "qwen3_asr",
         directory: Path | None = None,
+        flags: tuple[str, ...] = (),
     ) -> None:
         self.process = subprocess.Popen(
             [
@@ -57,6 +59,7 @@ class Server:
                 model_kind,
                 "--model-directory",
                 str(directory or model_directory()),
+                *flags,
             ],  # fmt: skip
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -140,6 +143,47 @@ def test_ready_event_names_a_loopback_endpoint(server: Server) -> None:
     assert json.loads(body)["data"] == [
         {"id": server.ready["model_name"], "object": "model"}
     ]
+
+
+@pytest.mark.skipif(not SERVICE_PROBE, reason="set NATIVE_SERVICE_PROBE")
+@pytest.mark.parametrize(
+    ("flags", "chosen_name"),
+    [
+        ((), None),
+        (("--model-name", "client-model"), "client-model"),
+        (("--model-name", ""), None),
+        (("--model-name", "first", "--model-name", "last"), "last"),
+        (("--model-name", "first", "--model-name", ""), None),
+        (("--model-name", "voxt-service_probe-user"), "voxt-service_probe-user"),
+    ],
+)
+def test_service_receives_model_name_before_registering_handlers(
+    flags: tuple[str, ...], chosen_name: str | None, tmp_path: Path
+) -> None:
+    """The shared lifecycle lost the chosen-name flag before ASR handlers registered."""
+    running = Server(SERVICE_PROBE, "service_probe", tmp_path, flags)
+    try:
+        assert running.ready["event"] == "ready"
+        model_name = running.ready["model_name"]
+        if chosen_name is None:
+            assert model_name.startswith("voxt-service_probe-")
+        else:
+            assert model_name == chosen_name
+        status, body = running.request("GET", "/v1/models")
+        assert status == 200
+        assert json.loads(body)["data"] == [{"id": model_name, "object": "model"}]
+        status, body = running.request("GET", "/service-name")
+        assert (status, json.loads(body)) == (
+            200,
+            {
+                "model_name": model_name,
+                "has_chosen_model_name": chosen_name is not None,
+            },
+        )
+        assert running.request("GET", "/health")[0] == 200
+        assert running.request("POST", "/v1/audio/transcriptions")[0] == 404
+    finally:
+        running.stop()
 
 
 def test_voxt_final_request_streams_text_and_generation_metadata(

@@ -231,6 +231,11 @@ public:
         [&]() { model_ = load(directory); });
   }
 
+  void SetModelName(const std::string &model_name,
+                    bool has_chosen_model_name) override {
+    model_->set_model_name(model_name, has_chosen_model_name);
+  }
+
   void Register(mg_context *context, const std::string &model_name) override {
     state_ = {worker_.get(), model_.get(), model_name};
     if (model_->Transcribes()) {

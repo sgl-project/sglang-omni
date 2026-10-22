@@ -63,6 +63,7 @@ struct Arguments {
   const ServedKind *kind = nullptr;
   std::string model_path;
   std::string model_name;
+  bool has_chosen_model_name = false;
   std::string host = "127.0.0.1";
   int port = 0;
   bool supervised = false;
@@ -155,6 +156,7 @@ Arguments ParseArguments(int argc, char **argv,
     kind.check_flags();
   } else {
   }
+  arguments.has_chosen_model_name = !arguments.model_name.empty();
   if (arguments.model_name.empty()) {
     arguments.model_name = "voxt-" + kind.model_kind + "-" + RandomHex(12);
   } else {
@@ -298,6 +300,7 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
       arguments.host + ":" + std::to_string(server_port.port);
   mg_set_request_handler(context, "/health$", HandleHealth, &state);
   mg_set_request_handler(context, "/v1/models$", HandleModels, &state);
+  service->SetModelName(arguments.model_name, arguments.has_chosen_model_name);
   service->Register(context, arguments.model_name);
   const double startup_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
