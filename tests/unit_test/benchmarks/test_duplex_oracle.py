@@ -536,6 +536,18 @@ def rejection(fatal: bool, **error: JsonValue) -> dict[str, JsonValue]:
     }
 
 
+def rejected_update() -> dict[str, JsonValue]:
+    return {
+        "direction": "send",
+        "time_s": 100.004,
+        "event": {
+            "type": "session.update",
+            "event_id": "rejected",
+            "session": {"output_modalities": ["audio"]},
+        },
+    }
+
+
 @pytest.mark.parametrize(
     ("record", "violation"),
     [
@@ -549,18 +561,7 @@ def test_only_a_nonfatal_rejection_of_a_session_update_is_an_admission_retry(
     record: dict[str, JsonValue], violation: str | None
 ) -> None:
     trace = trace_fixture()
-    trace[1:1] = [
-        {
-            "direction": "send",
-            "time_s": 100.004,
-            "event": {
-                "type": "session.update",
-                "event_id": "rejected",
-                "session": {"output_modalities": ["audio"]},
-            },
-        },
-        record,
-    ]
+    trace[1:1] = [rejected_update(), record]
     result = evaluate_trace(trace)
     if violation is None:
         assert result["status"] == "pass", result
@@ -569,6 +570,18 @@ def test_only_a_nonfatal_rejection_of_a_session_update_is_an_admission_retry(
         assert result["status"] == "fail"
         assert any(violation in item for item in result["violations"])
         assert result["metrics"]["admission_rejections"] == 0
+
+
+def test_session_updated_cannot_acknowledge_the_rejected_update() -> None:
+    """A rejected session.update stayed a valid acknowledgment target, so a server that acknowledged it instead of the re-sent update passed."""
+    trace = trace_fixture()
+    trace[1:1] = [rejected_update(), rejection(False)]
+    find_event(trace, "session.updated")["client_event_id"] = "rejected"
+    result = evaluate_trace(trace)
+    assert result["status"] == "fail"
+    assert (
+        "session.updated: missing matching prior client event" in result["violations"]
+    )
 
 
 def test_rejection_after_session_updated_fails() -> None:

@@ -599,8 +599,9 @@ def evaluate_trace(
                     and rejected_command.event.type == "session.update"
                 ):
                     admission_rejections += 1
-                    # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update.
+                    # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
                     counts["send", "session.update"] -= 1
+                    sent_commands.pop(rejected_command.event.event_id)
                 else:
                     violations.append(
                         f"server error: code={error.get('code')} "
