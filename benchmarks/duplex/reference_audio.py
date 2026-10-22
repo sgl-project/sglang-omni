@@ -317,7 +317,7 @@ def analyze_variant(
                     reasons.append("session.closed at or before window end")
                 else:
                     pass
-            elif is_admission_rejection(event):
+            elif is_admission_rejection(event) and first_append_s is None:
                 anomalies.append(
                     {
                         "elapsed_s": at(time_s),

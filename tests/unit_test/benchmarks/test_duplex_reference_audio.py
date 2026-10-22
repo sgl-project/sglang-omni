@@ -174,24 +174,40 @@ class WindowEligibility(AudioFixture):
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
 
-    def test_admission_rejection_before_input_keeps_the_window(self) -> None:
+    def test_only_a_nonfatal_admission_rejection_before_input_keeps_the_window(
+        self,
+    ) -> None:
         """A session the recorder admitted on a re-sent session.update used to lose its window to the earlier admission_rejected."""
-        rejection = {
-            "direction": "receive",
-            "time_s": TRACE_ORIGIN_S - 0.02,
-            "event": {
-                "type": "error",
-                "sglang": {"fatal": False},
-                "error": {"code": "admission_rejected", "message": "queue full"},
-            },
-        }
-        record, _, _ = self.analyze(
-            self.pcm, json.dumps(rejection) + "\n" + make_session_trace(self.pcm)
-        )
-        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-        self.assertIn(
-            "admission_rejected", json.dumps(record["lifecycle"]["protocol_anomalies"])
-        )
+        for offset_s, is_fatal, is_valid in (
+            (-0.02, False, True),
+            (-0.02, True, False),
+            (0.2, False, False),
+        ):
+            rejection = {
+                "direction": "receive",
+                "time_s": TRACE_ORIGIN_S + offset_s,
+                "event": {
+                    "type": "error",
+                    "sglang": {"fatal": is_fatal},
+                    "error": {"code": "admission_rejected", "message": "queue full"},
+                },
+            }
+            trace = "".join(
+                sorted(
+                    make_session_trace(self.pcm).splitlines(keepends=True)
+                    + [json.dumps(rejection) + "\n"],
+                    key=lambda line: json.loads(line)["time_s"],
+                )
+            )
+            record, _, _ = self.analyze(self.pcm, trace)
+            self.assertEqual(
+                record["window"]["valid"], is_valid, record["window"]["reasons"]
+            )
+            self.assertEqual(
+                "admission_rejected"
+                in json.dumps(record["lifecycle"]["protocol_anomalies"]),
+                is_valid,
+            )
 
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(

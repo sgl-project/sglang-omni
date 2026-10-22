@@ -298,11 +298,14 @@ async def run_session(
                     admitted = await settle("session.updated")
                     admission_attempts = 1
                     while rejected.is_set() and admission_attempts <= ADMISSION_RETRIES:
-                        admission_attempts += 1
                         rejected.clear()
-                        await asyncio.sleep(ADMISSION_BACKOFF_S)
-                        await send("session.update", session=configure)
-                        admitted = await settle("session.updated")
+                        # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.
+                        try:
+                            await asyncio.wait_for(aborted.wait(), ADMISSION_BACKOFF_S)
+                        except asyncio.TimeoutError:
+                            admission_attempts += 1
+                            await send("session.update", session=configure)
+                            admitted = await settle("session.updated")
                     is_admission_exhausted = rejected.is_set()
                     if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad

@@ -554,6 +554,7 @@ def rejected_update() -> dict[str, JsonValue]:
         (rejection(), None),
         (rejection(code="fixture_failure"), "code=fixture_failure"),
         (rejection(event_id="missing"), "code=admission_rejected"),
+        (rejection(event_id=[]), "code=admission_rejected"),
     ],
 )
 def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(

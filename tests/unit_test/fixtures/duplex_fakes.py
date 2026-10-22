@@ -250,6 +250,7 @@ PeerMode = Literal[
     "nonfinite",
     "linger",
     "close_without_update",
+    "deadline_after_rejection",
 ]
 
 
@@ -322,7 +323,7 @@ class DuplexPeer:
     async def emit_error(
         self,
         websocket: ServerConnection,
-        event_id: str,
+        event_id: str | None,
         *,
         fatal: bool,
         code: str = "fixture_failure",
@@ -443,7 +444,14 @@ class DuplexPeer:
                         fatal=False,
                         code=self.rejection_code,
                     )
-                    continue
+                    if self.mode == "deadline_after_rejection":
+                        await self.emit_error(
+                            websocket, None, fatal=True, code="session_update_timeout"
+                        )
+                        await self.close_session(websocket, "server_error", None)
+                        return
+                    else:
+                        continue
                 elif any(sent["type"] == "error" for sent in self.sent):
                     await asyncio.sleep(READMISSION_DELAY_S)
                 else:

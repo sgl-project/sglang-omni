@@ -327,6 +327,22 @@ def test_client_does_not_resend_after_another_error(tmp_path: Path) -> None:
     assert any("code=fixture_failure" in item for item in result["violations"])
 
 
+def test_client_stops_retrying_when_the_session_fails_during_the_backoff(
+    tmp_path: Path,
+) -> None:
+    """When the server's session_update_timeout failed the session right after a rejection, the recorder still re-sent session.update or recorded a stalled driver."""
+    peer = DuplexPeer("deadline_after_rejection", rejected_updates=1)
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update"]
+    assert not [r for r in records if r["direction"] == "error"]
+    assert records[-1]["event"]["type"] == "session.closed"
+    assert evaluate_trace(records)["status"] == "fail"
+
+
 def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:
     peer = DuplexPeer("timeout")
     started_s = time.perf_counter()
