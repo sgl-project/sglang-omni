@@ -514,7 +514,10 @@ def collect_gpu_diagnostics(
         device_type, DEFAULT_VISIBLE_DEVICES_VARIABLE
     )
     visible_value = source_env.get(visible_variable)
-    visible_devices = parse_cuda_visible_devices(visible_value)
+    # An unset mask must parse as "no mask": None would make the parser read the
+    # process's CUDA_VISIBLE_DEVICES, which says nothing about another vendor's
+    # cards and would relabel them.
+    visible_devices = parse_cuda_visible_devices(visible_value or "")
     torch = torch_module or importlib.import_module("torch")
 
     # Only these have a device module to enumerate. Anything else, including the
