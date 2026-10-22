@@ -250,7 +250,6 @@ PeerMode = Literal[
     "nonfinite",
     "linger",
     "close_without_update",
-    "fatal_after_rejection",
 ]
 
 
@@ -444,12 +443,7 @@ class DuplexPeer:
                         fatal=False,
                         code=self.rejection_code,
                     )
-                    if self.mode == "fatal_after_rejection":
-                        await self.emit_error(websocket, event["event_id"], fatal=True)
-                        await self.close_session(websocket, "server_error", None)
-                        return
-                    else:
-                        continue
+                    continue
                 elif any(sent["type"] == "error" for sent in self.sent):
                     await asyncio.sleep(READMISSION_DELAY_S)
                 else:

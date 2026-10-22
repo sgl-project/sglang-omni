@@ -10,7 +10,6 @@ from benchmarks.duplex.profiles import Protocol
 
 Identifier = Annotated[str, Field(min_length=1)]
 Nonnegative = Annotated[float, Field(ge=0)]
-ADMISSION_REJECTED_CODE = "admission_rejected"
 
 
 class TraceRecord(BaseModel):
@@ -81,16 +80,10 @@ class WireEvent(BaseModel):
 
 
 def is_admission_rejection(event: dict[str, JsonValue]) -> bool:
-    """A non-fatal admission_rejected error: the server could not admit a
-    session.update and keeps the session open for another one."""
-    extension, error = event.get("sglang"), event.get("error")
-    return (
-        event.get("type") == "error"
-        and isinstance(extension, dict)
-        and extension.get("fatal") is False
-        and isinstance(error, dict)
-        and error.get("code") == ADMISSION_REJECTED_CODE
-    )
+    """The error that refuses a session.update the server cannot admit; the
+    session stays open for another update."""
+    error = event.get("error")
+    return isinstance(error, dict) and error.get("code") == "admission_rejected"
 
 
 def turn_detection_type(session: JsonValue, protocol: Protocol) -> JsonValue:

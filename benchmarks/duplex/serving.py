@@ -14,7 +14,6 @@ from pydantic import JsonValue
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, SEND_RECEIPTS_FILE
 from benchmarks.duplex.oracle_models import (
-    ADMISSION_REJECTED_CODE,
     MediaTime,
     TraceRecord,
     WireEvent,
@@ -245,12 +244,8 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             )
         else:
             pass
-        rejection_records = [
-            json.loads(line) for line in trace_lines if ADMISSION_REJECTED_CODE in line
-        ]
         sessions_rejected += any(
-            record["direction"] == "receive" and is_admission_rejection(record["event"])
-            for record in rejection_records
+            is_admission_rejection(json.loads(line)["event"]) for line in trace_lines
         )
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]

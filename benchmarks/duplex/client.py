@@ -273,12 +273,7 @@ async def run_session(
                             ) from exc
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
-                        if (
-                            is_admission_rejection(event)
-                            and not seen.get(
-                                "session.updated", asyncio.Event()
-                            ).is_set()
-                        ):
+                        if is_admission_rejection(event):
                             rejected.set()
                         elif event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
@@ -302,19 +297,13 @@ async def run_session(
                         pass
                     admitted = await settle("session.updated")
                     admission_attempts = 1
-                    while (
-                        not admitted
-                        and rejected.is_set()
-                        and admission_attempts <= ADMISSION_RETRIES
-                    ):
+                    while rejected.is_set() and admission_attempts <= ADMISSION_RETRIES:
+                        admission_attempts += 1
                         rejected.clear()
-                        try:
-                            await asyncio.wait_for(aborted.wait(), ADMISSION_BACKOFF_S)
-                        except asyncio.TimeoutError:
-                            admission_attempts += 1
-                            await send("session.update", session=configure)
-                            admitted = await settle("session.updated")
-                    is_admission_exhausted = not admitted and rejected.is_set()
+                        await asyncio.sleep(ADMISSION_BACKOFF_S)
+                        await send("session.update", session=configure)
+                        admitted = await settle("session.updated")
+                    is_admission_exhausted = rejected.is_set()
                     if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad
                         # when no Smart Turn model is loaded, so the echo is the only

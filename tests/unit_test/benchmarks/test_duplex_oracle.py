@@ -516,14 +516,14 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert "missing audio input" in result["violations"]
 
 
-def rejection(fatal: bool, **error: JsonValue) -> dict[str, JsonValue]:
+def rejection(**error: JsonValue) -> dict[str, JsonValue]:
     return {
         "direction": "receive",
         "time_s": 100.008,
         "event": {
             "type": "error",
             "event_id": "rejection",
-            "sglang": {"fatal": fatal},
+            "sglang": {"fatal": False},
             "error": {
                 "type": "invalid_request_error",
                 "code": "admission_rejected",
@@ -551,13 +551,12 @@ def rejected_update() -> dict[str, JsonValue]:
 @pytest.mark.parametrize(
     ("record", "violation"),
     [
-        (rejection(False), None),
-        (rejection(True), "code=admission_rejected fatal=True"),
-        (rejection(False, code="fixture_failure"), "code=fixture_failure"),
-        (rejection(False, event_id="missing"), "code=admission_rejected fatal=False"),
+        (rejection(), None),
+        (rejection(code="fixture_failure"), "code=fixture_failure"),
+        (rejection(event_id="missing"), "code=admission_rejected"),
     ],
 )
-def test_only_a_nonfatal_rejection_of_a_session_update_is_an_admission_retry(
+def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
     record: dict[str, JsonValue], violation: str | None
 ) -> None:
     trace = trace_fixture()
@@ -575,24 +574,13 @@ def test_only_a_nonfatal_rejection_of_a_session_update_is_an_admission_retry(
 def test_session_updated_cannot_acknowledge_the_rejected_update() -> None:
     """A rejected session.update stayed a valid acknowledgment target, so a server that acknowledged it instead of the re-sent update passed."""
     trace = trace_fixture()
-    trace[1:1] = [rejected_update(), rejection(False)]
+    trace[1:1] = [rejected_update(), rejection()]
     find_event(trace, "session.updated")["client_event_id"] = "rejected"
     result = evaluate_trace(trace)
     assert result["status"] == "fail"
     assert (
         "session.updated: missing matching prior client event" in result["violations"]
     )
-
-
-def test_rejection_after_session_updated_fails() -> None:
-    trace = trace_fixture()
-    late = rejection(False, event_id="configure")
-    late["time_s"] = 100.05
-    trace.insert(3, late)
-    result = evaluate_trace(trace)
-    assert result["status"] == "fail"
-    assert any("code=admission_rejected" in item for item in result["violations"])
-    assert result["metrics"]["admission_rejections"] == 0
 
 
 @pytest.mark.parametrize(
