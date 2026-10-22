@@ -1,0 +1,24 @@
+suite,unit,round,attempt,archived_at,status,reason,duration_s,pytest_rc,foreign_peak_cores,original_archive_sha256
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,1,01,2026-10-22T05:40:08Z,discarded,"cpuset_contention (peak 4.84 cores, mean 1.00 over 17 windows)",97.61,-2,4.841880043958919,602eb4060bf0023ead1d859a4cc54a378eb77e0cfac46cff573abdf66981bd45
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,2,01,2026-10-22T05:45:52Z,failed,crashed (server startup failure),153.88,-1,1.7414502937907967,7fe32e07d32b6b0b61e47220d33046561458c9c2e84a2c42b10d176e6b911415
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,3,01,2026-10-22T05:49:52Z,discarded,"cpuset_contention (peak 4.66 cores, mean 1.21 over 11 windows)",67.09,-2,4.659685960850533,dafa6833573d02398d21411d7e8716f3e3463682bb9f3d77fcae7d46eb270320
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,3,02,2026-10-22T05:51:41Z,discarded,"cpuset_contention (peak 6.05 cores, mean 0.85 over 16 windows)",92.57,-2,6.045352390806149,7731af786884e4e3c22c87b79f6f06c1a08b72bc52f7de3b108360e6c7f89522
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,4,01,2026-10-22T06:06:32Z,discarded,"cpuset_contention (peak 19.05 cores, mean 1.82 over 25 windows)",140.05,-2,19.04789436314188,cd6d3bb3fbe1a2d63871051e33fbb4cb740dcdc5e4db4f2ab9d3a137455f2817
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,4,02,2026-10-22T06:21:31Z,discarded,"cpuset_contention (peak 2.69 cores, mean 1.28 over 25 windows)",138.37,-2,2.6905921746056616,03ab834a2069c16a2d505902ddf2df073f6635b984a9aacec1e76149669ff493
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,4,03,2026-10-22T06:37:41Z,failed,crashed (server startup failure),153.21,-1,0.29388547846424545,7dc6a6948034ed95e3cf62f9d59e8a1f92f8d1dc738ef20762e164b88d98d6ae
+omni,test_qwen3_omni_mmmu_ci__qwen3-omni,5,01,2026-10-22T06:43:17Z,failed,crashed (server startup failure),153.05,-1,0.24590397091120003,2e00fea9e7816bfecc4bfcc117a7b81b997f4c19b386808f1e3b6bfea1c717c8
+omni,test_qwen3_omni_mmmu_talker_ci__minicpmo,4,01,2026-10-22T07:18:23Z,discarded,"cpuset_contention (peak 2.99 cores, mean 0.43 over 22 windows)",122.74,-2,2.9853452457587584,3cdc4b5373762e1a6ab7057e79da8ad2c4780aa909be6c6712f0d218b5600403
+omni,test_qwen3_omni_mmmu_talker_ci__minicpmo,4,02,2026-10-22T07:19:57Z,discarded,"cpuset_contention (peak 2.79 cores, mean 1.20 over 13 windows)",77.56,-2,2.790942081027482,a6dd7effdb0d7a5584ea546bc748dc4736242efac5990e22e702410deeb3df61
+omni,test_qwen3_omni_mmsu_talker_ci__qwen3-omni,2,01,2026-10-22T07:59:15Z,discarded,"cpuset_contention (peak 4.17 cores, mean 1.87 over 7 windows)",41.69,-2,4.166369718836021,7d3fcfec1f9eeff36d7bb2dbd9ff5451c2ca1d7d381bc634c561eea994002b8d
+omni,test_qwen3_omni_mmsu_talker_ci__qwen3-omni,2,02,2026-10-22T08:00:33Z,discarded,"cpuset_contention (peak 2.72 cores, mean 1.27 over 11 windows)",62.0,-2,2.7171387915260654,980900178bc4918fd736ff5f0ca45b6aa6f3357e892455890da79fc9ec033143
+omni,test_qwen3_omni_mmsu_talker_ci__qwen3-omni,5,01,2026-10-22T08:31:01Z,failed,crashed (server startup failure),174.55,-1,1.2916085953487448,9221311b316bc2ae032f70347f876d2ff4a07a45d8a6c1283758425b2f3f6fe6
+omni,test_qwen3_omni_videoamme_talker_tp2_ci__minicpmo,4,01,2026-10-22T18:01:33Z,,,,,,06050eb99e65008d26920b0b1aeed37c93b86982a9c981e4a7fac4b826a6cc79
+tts,test_tts_ci__cosyvoice3,3,01,2026-10-22T00:27:39Z,failed,crashed (Address already in use),87.3,-1,0.37387298966897764,b14779007f868def012031463da3e6771cecec69b40fd01a20a772fd195c5db3
+tts,test_tts_ci__moss,1,01,2026-10-21T23:17:47Z,,,,,,1911f8694b4b85356feb12fc058e9b1f017775c239fbdc46c919aeb4c6f9528c
+tts,test_tts_ci__moss,2,01,2026-10-21T23:24:38Z,,,,,,01eb13aef8fd3edb20e0a4eff3aac072b824121d9dcda3f12f827a1efa11f212
+tts,test_tts_ci__moss,3,01,2026-10-21T23:31:04Z,,,,,,d196993ef118d786456b5a04806c6fe719681297851e9a083746b03b780abbb0
+tts,test_tts_ci__moss,4,01,2026-10-21T23:37:29Z,,,,,,47e6d4366f82b30b99bddd7411f4337afc0b832c8d5c1f737f093bd6a821bc82
+tts,test_tts_ci__moss,5,01,2026-10-21T23:43:55Z,,,,,,b84da7e2d12bce39604d3e6c9aacccda91b942235c78e8d8085b980c6a477a2f
+tts,test_tts_ci__qwen3-tts-custom-voice,2,01,2026-10-21T23:50:20Z,,,,,,58132322001460dd3fb743caf85ed3138ba762fdb63a9a0ccde2743bda5bef8b
+tts,test_tts_serving_ci,1,01,2026-10-22T02:21:03Z,,,,,,30969ddfe2e90cd62875dd0c68577397986f8652c8b30175fe9826a22d9eafe6
+tts,test_tts_serving_ci,2,01,2026-10-22T02:32:43Z,,,,,,6addbf96502f87e10562e8940c834fd083778a72931c48c7da30c400a24f00b5
