@@ -2,8 +2,11 @@
 #include "common/tts_service.h"
 
 #include <iostream>
+#include <limits>
 #include <typeinfo>
 
+#include "common/audio.h"
+#include "common/http.h"
 #include "mlx/mlx.h"
 
 namespace tts_service {
@@ -120,6 +123,97 @@ void SynthesisWorker::Stop() {
     }
   }
   wake_.notify_all();
+}
+
+void AudioResponse::WritePcm(std::string_view pcm, int sample_rate,
+                             int channels) {
+  const bool streaming = format_ == AudioFormat::StreamingPcm;
+  if (sample_rate <= 0 || channels <= 0 ||
+      pcm.size() % (sizeof(int16_t) * static_cast<size_t>(channels)) != 0) {
+    throw std::invalid_argument("invalid PCM16 audio metadata or frame size");
+  } else if (headers_sent_ && (!streaming || sample_rate != sample_rate_ ||
+                               channels != channels_)) {
+    throw std::logic_error("audio response format changed after headers");
+  } else if (streaming &&
+             pcm.size() > std::numeric_limits<unsigned int>::max()) {
+    throw std::length_error("PCM chunk is too large");
+  } else if (streaming && pcm.empty()) {
+    return;
+  } else {
+  }
+  std::string encoded;
+  std::string_view body = pcm;
+  const char *content_type = "audio/pcm";
+  if (format_ == AudioFormat::Wav || format_ == AudioFormat::JsonWav) {
+    encoded = qwen3_asr::EncodeWavPcm16(pcm, sample_rate, channels);
+    content_type = "audio/wav";
+    if (format_ == AudioFormat::JsonWav) {
+      std::string base64(4 * ((encoded.size() + 2) / 3) + 1, '\0');
+      size_t length = base64.size();
+      mg_base64_encode(reinterpret_cast<const unsigned char *>(encoded.data()),
+                       encoded.size(), base64.data(), &length);
+      base64.resize(length - 1);
+      encoded = omni_server::Json(
+                    {{"audio",
+                      {{"data", base64},
+                       {"format", "wav"},
+                       {"sample_rate", sample_rate}}},
+                     {"meta_info", {{"finish_reason", {{"type", "stop"}}}}}})
+                    .dump();
+      content_type = "application/json";
+    } else {
+    }
+    body = encoded;
+  } else {
+  }
+  if (!headers_sent_) {
+    const std::string framing =
+        streaming ? "Transfer-Encoding: chunked\r\n"
+                  : "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    sample_rate_ = sample_rate;
+    channels_ = channels;
+    // Note (Adrian Wei): Header writes may fail after sending a prefix.
+    headers_sent_ = true;
+    if (mg_printf(connection_,
+                  "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n%s"
+                  "Connection: close\r\nX-Sample-Rate: %d\r\n"
+                  "X-Channels: %d\r\nX-Bit-Depth: 16\r\n\r\n",
+                  content_type, framing.c_str(), sample_rate, channels) <= 0) {
+      throw std::runtime_error("failed to write speech headers");
+    } else {
+    }
+  } else {
+  }
+  if (streaming) {
+    if (mg_send_chunk(connection_, body.data(),
+                      static_cast<unsigned int>(body.size())) < 0) {
+      throw std::runtime_error("failed to write speech chunk");
+    } else {
+    }
+  } else if (mg_write(connection_, body.data(), body.size()) !=
+             static_cast<int64_t>(body.size())) {
+    throw std::runtime_error("failed to write speech audio");
+  } else {
+  }
+}
+
+int AudioResponse::Finish() {
+  if (!headers_sent_) {
+    return Error(500, "Synthesis produced no audio");
+  } else if (format_ == AudioFormat::StreamingPcm &&
+             mg_send_chunk(connection_, "", 0) < 0) {
+    throw std::runtime_error("failed to finish speech stream");
+  } else {
+    return 200;
+  }
+}
+
+int AudioResponse::Error(int status, const std::string &detail) {
+  if (headers_sent_) {
+    return 200;
+  } else {
+    return omni_server::WriteJson(connection_, status, {{"detail", detail}});
+  }
 }
 
 } // namespace tts_service

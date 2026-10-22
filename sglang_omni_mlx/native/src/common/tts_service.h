@@ -7,14 +7,17 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <typeinfo>
 #include <utility>
 #include <variant>
 
@@ -100,6 +103,53 @@ private:
   std::shared_ptr<Task> job_;
   bool stopping_ = false;
   std::thread thread_;
+};
+
+enum class AudioFormat { Wav, Pcm, JsonWav, StreamingPcm };
+
+class AudioResponse {
+public:
+  AudioResponse(mg_connection *connection, AudioFormat format)
+      : connection_(connection), format_(format) {}
+
+  void WritePcm(std::string_view pcm, int sample_rate, int channels);
+
+  template <typename Result, typename Respond>
+  int SubmitAndRespond(SynthesisWorker &worker,
+                       const std::shared_ptr<SynthesisWorker::Job<Result>> &job,
+                       Respond &&respond,
+                       const std::string &busy_detail = "TTS service is busy") {
+    const auto admission = worker.Submit(job);
+    if (admission == SynthesisWorker::Admission::Stopping) {
+      return Error(503, "TTS service is stopping");
+    } else if (admission == SynthesisWorker::Admission::Busy) {
+      return Error(429, busy_detail);
+    } else {
+    }
+    try {
+      if constexpr (std::is_void_v<Result>) {
+        SynthesisWorker::Wait(connection_, job);
+        respond();
+      } else {
+        respond(SynthesisWorker::Wait(connection_, job));
+      }
+      return Finish();
+    } catch (const SynthesisCancelled &) {
+      return Error(503, "Synthesis cancelled");
+    } catch (const std::exception &error) {
+      std::cerr << "synthesis failed: " << typeid(error).name() << "\n";
+      return Error(500, "Synthesis failed");
+    }
+  }
+
+private:
+  int Error(int status, const std::string &detail);
+  int Finish();
+  mg_connection *connection_;
+  AudioFormat format_;
+  bool headers_sent_ = false;
+  int sample_rate_ = 0;
+  int channels_ = 0;
 };
 
 } // namespace tts_service
