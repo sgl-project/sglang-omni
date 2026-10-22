@@ -14,6 +14,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from sglang_omni.client import Client, ClientError, GenerateRequest
 from sglang_omni.config import ResolvedAudioChunking
+from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
+    choose_tagged_transcript,
+    decide_tagged_retry,
+)
 from sglang_omni.models.nemotron_transcribe.word_timestamps import (
     english_timestamp_language,
 )
@@ -365,6 +369,23 @@ async def transcribe_planned_upload(
             request_id=request_id,
             error_log_message="Error transcribing audio for request %s",
         )
+        if decide_tagged_retry(form.prompt, result.text):
+            retry = await speech_to_text.complete_speech_to_text_request(
+                request,
+                client,
+                gen_req,
+                request_id=f"{request_id}-tag-retry",
+                error_log_message="Error retrying tagged transcription for request %s",
+            )
+            if (
+                "<spk:" in (retry.text or "")
+                and choose_tagged_transcript(result.text, retry.text) == retry.text
+            ):
+                result = retry
+            else:
+                pass
+        else:
+            pass
         return speech_to_text.assemble_speech_to_text_response(
             text=result.text,
             response_format=form.response_format,

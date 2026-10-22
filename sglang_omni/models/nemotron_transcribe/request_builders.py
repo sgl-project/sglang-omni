@@ -27,6 +27,12 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     num_audio_frames,
     num_audio_tokens,
 )
+from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
+    activity_rows,
+    attribute_speakers,
+    diarization_segments,
+    strip_speaker_tags,
+)
 from sglang_omni.models.nemotron_transcribe.word_timestamps import align_transcript
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
@@ -116,7 +122,37 @@ def timestamp_transcription(
         evidence = None
     else:
         pass
-    return align_transcript(text, evidence)
+    prompt = ""
+    if data.stage_payload is not None and data.stage_payload.request is not None:
+        params = data.stage_payload.request.params or {}
+        prompt = str(params.get("prompt") or "")
+    else:
+        pass
+    align_text = strip_speaker_tags(text) if "<spk:" in text else text
+    transcription = align_transcript(align_text, evidence)
+    rows = activity_rows(evidence)
+    frame_seconds = 0.0
+    if evidence is not None and isinstance(
+        evidence.get("speaker_frame_seconds"), (int, float)
+    ):
+        frame_seconds = float(evidence["speaker_frame_seconds"])
+    else:
+        pass
+    if rows is not None and frame_seconds > 0:
+        transcription["diarization_timestamps"] = diarization_segments(
+            rows, frame_seconds, float(data.audio_duration_s)
+        )
+        transcription["diarization_frame_seconds"] = frame_seconds
+    else:
+        pass
+    words = transcription.get("words")
+    if isinstance(words, list):
+        transcription["words"] = attribute_speakers(
+            words, text, prompt, rows, frame_seconds
+        )
+    else:
+        pass
+    return transcription
 
 
 def make_scheduler_adapters(

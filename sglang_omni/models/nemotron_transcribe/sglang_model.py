@@ -186,18 +186,8 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             return
         else:
             pass
-        head = self.ctc_head
-        if (
-            asr_state is None
-            or activity is None
-            or asr_frames < 1
-            or head is None
-            or not head.usable
-        ):
-            reason = (
-                "no_speech_evidence" if asr_frames < 1 else "ctc_evidence_unavailable"
-            )
-            specific["timestamp_evidence"] = {"failure_reason": reason}
+        if asr_state is None or activity is None or asr_frames < 1:
+            specific["timestamp_evidence"] = {"failure_reason": "no_speech_evidence"}
             return
         else:
             pass
@@ -210,9 +200,22 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         if activity.shape[0] == asr_state.shape[-1]:
             activity_frames = frames
         else:
-            ratio = activity.shape[0] / float(asr_state.shape[-1])
+            ratio = activity.shape[0] / float(max(asr_state.shape[-1], 1))
             activity_frames = max(1, int(round(frames * ratio)))
         activity_frames = min(activity_frames, int(activity.shape[0]))
+        evidence: dict[str, object] = {
+            "speaker_activity": activity[:activity_frames]
+            .detach()
+            .to(device="cpu", dtype=torch.float32),
+            "speaker_frame_seconds": float(self.speaker_frame_seconds()),
+        }
+        head = self.ctc_head
+        if head is None or not head.usable:
+            evidence["failure_reason"] = "ctc_evidence_unavailable"
+            specific["timestamp_evidence"] = evidence
+            return
+        else:
+            pass
         parameter = next(head.parameters())
         if parameter.device != asr_state.device:
             head.to(device=asr_state.device)
@@ -220,16 +223,17 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             pass
         with torch.inference_mode():
             log_probs = head(asr_state[:, :frames].unsqueeze(0).float())
-        specific["timestamp_evidence"] = {
-            "log_probs": log_probs[0].detach().to(device="cpu", dtype=torch.float32),
-            "blank_id": int(head.blank_id),
-            "frame_seconds": float(self.ctc_frame_seconds()),
-            "tokenizer_proto": head.tokenizer_proto,
-            "speaker_activity": activity[:activity_frames]
-            .detach()
-            .to(device="cpu", dtype=torch.float32),
-            "speaker_frame_seconds": float(self.speaker_frame_seconds()),
-        }
+        evidence.update(
+            {
+                "log_probs": log_probs[0]
+                .detach()
+                .to(device="cpu", dtype=torch.float32),
+                "blank_id": int(head.blank_id),
+                "frame_seconds": float(self.ctc_frame_seconds()),
+                "tokenizer_proto": head.tokenizer_proto,
+            }
+        )
+        specific["timestamp_evidence"] = evidence
 
     def forward(
         self,
