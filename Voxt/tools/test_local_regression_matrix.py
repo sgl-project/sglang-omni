@@ -347,6 +347,7 @@ class ReleaseWorkflowArgumentsTests(unittest.TestCase):
         self.assertIn("environment: voxt-release", workflow)
         self.assertIn("SPARKLE_SHA256:", workflow)
         self.assertIn("sign_update --verify", workflow)
+        self.assertIn("hehehai/homebrew-tap", workflow)
         self.assertFalse((ROOT.parent / ".github/workflows/voxt-mac-notarized-release.yaml").exists())
 
 if __name__ == "__main__":

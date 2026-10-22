@@ -108,7 +108,8 @@ to `main`, and pushing a `voxt-vX.Y.Z` tag that matches `MARKETING_VERSION`:
 3. Publishing runs `Voxt Appcast`, which signs the ZIP with the Sparkle key,
    uploads the ZIP and DMG to the Voxt update service, and makes the version the
    latest entry of the stable appcast, so installed copies offer it as an update.
-   The in-app notes use every language of the changelog entry. A manual run with
+   The in-app notes use every language of the changelog entry. It then points
+   the Homebrew cask in `hehehai/homebrew-tap` at the release. A manual run with
    a tag republishes that release.
 
 Both workflows read these secrets from the `voxt-release` environment, which
@@ -126,6 +127,7 @@ only `voxt-v*` tags and `main` may use:
 - `SPARKLE_PRIVATE_KEY`: Sparkle EdDSA private key matching `SUPublicEDKey`.
 - `VOXT_UPDATE_API_BASE`: base URL of the Voxt update service.
 - `VOXT_RELEASE_API_KEY`: API key of the Voxt update service.
+- `HOMEBREW_TAP_TOKEN`: token that can push to `hehehai/homebrew-tap`.
 
 On a Mac, the certificates and the profile can be encoded for a secret with:
 
