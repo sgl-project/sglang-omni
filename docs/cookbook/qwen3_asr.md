@@ -6,7 +6,9 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
+or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
+then download the model:
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
@@ -17,7 +19,9 @@ MODEL_PATH="$(
 )"
 ```
 
-### Apple Silicon (Torch MPS)
+<a id="apple-silicon-torch-mps"></a>
+
+### Apple Silicon
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
 PyTorch with the MPS backend. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
@@ -43,7 +47,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.21 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.22 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import pickle
 import threading
@@ -16,6 +15,7 @@ import pytest
 from sglang_omni.admission import QueueFullError
 from sglang_omni.comm.data_ref import DataRef
 from sglang_omni.config.schema import FactoryArgs
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.umm import (
@@ -661,18 +661,18 @@ def real_stages(controller, relay, *, reasoner_script, generator_script):
     class Bridge(RecordingStageControlPlane):
         async def send_to_stage(self, target, endpoint, msg):
             await super().send_to_stage(target, endpoint, msg)
-            raw = json.loads(json.dumps(msg.to_dict()))
-            if isinstance(msg, DataAckMessage):
-                stages[target].comm.ack_transfer(DataAckMessage.from_dict(raw))
+            received_message = deserialize_message(serialize_message(msg))
+            if isinstance(received_message, DataAckMessage):
+                stages[target].comm.ack_transfer(received_message)
                 return
             else:
-                pass
-            ready = DataReadyMessage.from_dict(raw)
-            ref = DataRef.from_dict(ready.data_ref)
-            header = pickle.loads(base64.b64decode(ref.header))
+                assert isinstance(received_message, DataReadyMessage)
+            ref = DataRef.from_dict(received_message.data_ref)
+            assert ref.header is not None
+            header = pickle.loads(ref.header)
             token = header.request.metadata.get(CONTINUATION_METADATA_KEY)
             crossed.append((msg.from_stage, target, isinstance(token, Continuation)))
-            await stages[target].on_data_ready(ready)
+            await stages[target].on_data_ready(received_message)
 
     names = ("orchestrator", "output", "reasoner", "generator")
     endpoints = {name: "inproc://" + name for name in names}

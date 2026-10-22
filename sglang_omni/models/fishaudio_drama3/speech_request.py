@@ -18,6 +18,7 @@ from sglang_omni.models.fishaudio_drama3.prompt import (
     with_speaker_tag,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
+    MAXIMUM_TOP_K,
     MINIMUM_PROMPT_ROWS,
     REQUEST_ERROR_PREFIX,
     Drama3GenerationInput,
@@ -32,7 +33,9 @@ from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_TOP_P = 0.9
-DEFAULT_TOP_K = 30
+# note (SunskyXH): no top-k cap on the main token by default; a cap of 30 there
+# lets a stream fall silent after its first phrase.
+DEFAULT_TOP_K = MAXIMUM_TOP_K
 # Lowered speech fields the model cannot honor; a value other than None was given.
 UNSUPPORTED_TTS_PARAMS = (
     "language",

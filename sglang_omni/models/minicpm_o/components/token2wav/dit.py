@@ -311,7 +311,11 @@ class CausalConvBlock(nn.Module):
                 .contiguous()
             )
         output = channels_last_conv1d(
-            context, convolution, convolution.weight, hidden_states.shape[1]
+            context,
+            convolution,
+            convolution.weight,
+            convolution.bias,
+            hidden_states.shape[1],
         )
         return output, next_state
 

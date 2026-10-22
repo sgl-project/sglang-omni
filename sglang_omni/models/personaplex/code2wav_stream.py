@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
@@ -82,6 +83,15 @@ class PersonaPlexCode2WavScheduler(StreamingVocoderBase[StreamState, int]):
             max_batch_size=decode_slots.max_batch_size,
         )
         self.decode_slots = decode_slots
+        self.decode_stream: torch.cuda.Stream | None = None
+        if decode_slots.codec.device.type == "cuda":
+            self.decode_stream = torch.cuda.Stream(device=decode_slots.codec.device)
+            # Note (edwardzh): Fence initialization once; later LM launches must not delay audio.
+            self.decode_stream.wait_stream(
+                torch.cuda.current_stream(decode_slots.codec.device)
+            )
+        else:
+            pass
         self.chunk_ramp_frames = tuple(chunk_ramp_frames)
         assert max(self.chunk_ramp_frames) <= decode_slots.max_chunk_frames
         self.next_ready_order = 0
@@ -89,6 +99,12 @@ class PersonaPlexCode2WavScheduler(StreamingVocoderBase[StreamState, int]):
         self.can_batch_stream_chunks = True
         # note (nightdecode): One decode batch may need several transport frames per row.
         self.stream_chunk_batch_max = self.max_batch_size * max(self.chunk_ramp_frames)
+
+    def decode_context(self) -> AbstractContextManager[None]:
+        if self.decode_stream is None:
+            return nullcontext()
+        else:
+            return torch.cuda.stream(self.decode_stream)
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         # Note (wilsonzheng0327): The LM streams every frame it produces, so a reply
@@ -126,12 +142,13 @@ class PersonaPlexCode2WavScheduler(StreamingVocoderBase[StreamState, int]):
             ),
             key=lambda state: state.ready_order,
         )
-        for state in waiting:
-            state.slot_index = self.decode_slots.acquire()
-            if state.slot_index is None:
-                break
-            else:
-                pass
+        with self.decode_context():
+            for state in waiting:
+                state.slot_index = self.decode_slots.acquire()
+                if state.slot_index is None:
+                    break
+                else:
+                    pass
 
     def release_decode_slot(self, state: StreamState) -> None:
         if state.slot_index is not None:
@@ -147,6 +164,12 @@ class PersonaPlexCode2WavScheduler(StreamingVocoderBase[StreamState, int]):
     def ingest_stream_item(
         self, request_id: str, item: StreamItem
     ) -> StreamState | None:
+        if isinstance(item.data, torch.Tensor):
+            assert (
+                item.data.device.type == "cpu"
+            ), "PersonaPlex stream codes must be on CPU"
+        else:
+            pass
         # note (nightdecode): The base class requires a bool stream flag; a chunk
         # without one keeps its audio, as a non-streaming client's would.
         return super().ingest_stream_item(
@@ -295,12 +318,14 @@ class PersonaPlexCode2WavScheduler(StreamingVocoderBase[StreamState, int]):
                     pass
                 remaining_frames -= take_frames
             code_rows.append(torch.cat(parts).T)
-        batched_codes = torch.stack(code_rows).to(self.decode_slots.codec.device)
-        host_waveforms = (
-            self.decode_slots.decode_step(batched_codes, slot_indices)[:, 0]
-            .float()
-            .cpu()
-        )
+        # Note (edwardzh): Waveform collection must not wait for queued LM forwards.
+        with self.decode_context():
+            batched_codes = torch.stack(code_rows).to(self.decode_slots.codec.device)
+            host_waveforms = (
+                self.decode_slots.decode_step(batched_codes, slot_indices)[:, 0]
+                .float()
+                .cpu()
+            )
         self.ingested_frames_to_decode = max(
             0, self.ingested_frames_to_decode - len(participants) * chunk_frames
         )

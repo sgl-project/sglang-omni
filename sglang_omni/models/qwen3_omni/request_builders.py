@@ -16,6 +16,7 @@ from transformers import PreTrainedTokenizerBase
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
+    NO_SPEECH,
     EncoderInputs,
     Qwen3OmniPipelineState,
     StreamState,
@@ -241,7 +242,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={},
+        data={NO_SPEECH: True} if NO_SPEECH in payload.data else {},
     )
 
 

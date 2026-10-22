@@ -39,9 +39,11 @@ def test_builder_writes_backbone_config_and_links_only_lm_weights(
 ) -> None:
     source = write_checkpoint(tmp_path / "checkpoint")
     builder = (
-        PersonaPlexEngineBuilder()
+        PersonaPlexEngineBuilder(enable_async_decode=False)
         if context_length is None
-        else PersonaPlexEngineBuilder(context_length=context_length)
+        else PersonaPlexEngineBuilder(
+            enable_async_decode=False, context_length=context_length
+        )
     )
     expected_context = (
         DEFAULT_CONTEXT_LENGTH if context_length is None else context_length
@@ -76,7 +78,9 @@ def test_shim_requires_the_lm_weights(tmp_path):
 @pytest.mark.parametrize("is_cuda", [True, False])
 def test_generation_defaults_keep_the_runner_assumptions(monkeypatch, is_cuda):
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
-    defaults = PersonaPlexEngineBuilder().generation_defaults(dtype="bfloat16")
+    defaults = PersonaPlexEngineBuilder(enable_async_decode=False).generation_defaults(
+        dtype="bfloat16"
+    )
     assert defaults["max_running_requests"] == 1
     assert defaults["chunked_prefill_size"] == -1
     assert defaults["disable_overlap_schedule"] is True
@@ -132,7 +136,9 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
         resolved_configuration,
     )
     monkeypatch.setattr(f"{module}.override_server_args", record_override)
-    PersonaPlexEngineBuilder().customize_server_args(raw_server_args)
+    PersonaPlexEngineBuilder(enable_async_decode=False).customize_server_args(
+        raw_server_args
+    )
     if is_cuda_host and device == "cuda" and page_size == 1 and disable_radix_cache:
         assert declarations == []
     else:

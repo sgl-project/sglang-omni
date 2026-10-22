@@ -79,6 +79,7 @@ def load_torch_state(path: str | Path, *, device: torch.device) -> dict[str, obj
         str(path),
         map_location=device,
         weights_only=True,
+        mmap=True,
     )
     if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
         state = state["state_dict"]

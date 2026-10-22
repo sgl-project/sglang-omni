@@ -2375,3 +2375,7 @@
 "Open Notes from the main window" = "Open Notes from the main window";
 "Try Later" = "Try Later";
 "Less" = "Less";
+
+"API Format" = "API Format";
+
+"Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";

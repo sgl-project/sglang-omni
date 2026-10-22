@@ -169,10 +169,15 @@ def vision_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
         num_position_embeddings=64,
         deepstack_visual_indexes=(0, 1),
     )
+    previous_dtype = torch.get_default_dtype()
     with torch.device("cpu"), torch.random.fork_rng(devices=[]):
         torch.manual_seed(734)
-        encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
-    return encoder.eval().to(torch.bfloat16)
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
+        finally:
+            torch.set_default_dtype(previous_dtype)
+    return encoder.eval()
 
 
 @pytest.mark.parametrize(

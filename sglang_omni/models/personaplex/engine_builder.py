@@ -82,10 +82,12 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     def __init__(
         self,
         *,
+        enable_async_decode: bool,
         max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length: int | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.enable_async_decode = enable_async_decode
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -168,4 +170,9 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         return build, apply_lm_result
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[SGLangARRequestData]:
-        return {"stream_output_builder": lm_stream_output_builder}
+        return {
+            "stream_output_builder": lm_stream_output_builder,
+            "async_decode_resolve_before_prefill": True,
+            "enable_async_decode": self.enable_async_decode
+            and current_platform.is_cuda(),
+        }

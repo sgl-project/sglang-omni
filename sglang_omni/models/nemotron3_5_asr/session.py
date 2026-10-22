@@ -11,6 +11,7 @@ from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.streaming import AppendResult
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import RUNNING_TEXT, TEXT
 from sglang_omni.scheduling.session import (
     SessionContext,
     SessionHooks,
@@ -38,11 +39,11 @@ class NemotronSessionHooks(SessionHooks):
             elif result.text or result.is_final:
                 context.emit(
                     TimedChunk(
-                        modality="text",
+                        modality=TEXT,
                         t_start_ms=chunk.t_start_ms,
                         duration_ms=chunk.duration_ms,
                         seq=chunk.seq,
-                        format="text",
+                        format=RUNNING_TEXT,
                         eos=result.is_final,
                         payload={
                             "text": result.text,

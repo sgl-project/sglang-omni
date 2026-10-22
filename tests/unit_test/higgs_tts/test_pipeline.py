@@ -154,7 +154,8 @@ def test_higgs_prefill_embeddings_follow_radix_prefix_position() -> None:
         data=SimpleNamespace(
             req=SimpleNamespace(
                 origin_input_ids=origin_input_ids,
-                extend_range=SimpleNamespace(start=2, length=2),
+                prefix_len=2,
+                extend_len=2,
             ),
             reference_codes_delayed=[[10, 11], [20, 21], [30, 31]],
         )

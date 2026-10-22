@@ -5,24 +5,21 @@ import asyncio
 import base64
 import json
 import logging
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio import vad as vad_module
+from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEvent
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
-from sglang_omni.serve.realtime import vad as vad_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
-)
-from sglang_omni.serve.realtime.vad import (
-    StatelessVAD,
-    StreamingVAD,
-    VADConfig,
-    VADEvent,
 )
 
 
@@ -640,7 +637,9 @@ class ContentStreamingVAD(StreamingVAD):
 async def test_frame_vad_reports_the_same_boundaries_as_streaming_vad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(vad_module, "load_silero_vad", lambda onnx: None)
+    monkeypatch.setitem(
+        sys.modules, "silero_vad", SimpleNamespace(load_silero_vad=lambda onnx: None)
+    )
     reference = ContentStreamingVAD(VADConfig())
     session, websocket = vad_session(monkeypatch)
     audio = (

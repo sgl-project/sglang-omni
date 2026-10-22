@@ -93,7 +93,7 @@ def slot_causal_conv(
     length = frames.shape[1]
     padded = with_history(frames, slot_decode, state_key, module.padding)
     padded = F.pad(padded, (0, 0, 0, (-length) % conv.dilation[0]))
-    return channels_last_conv1d(padded, conv, conv.weight, length)
+    return channels_last_conv1d(padded, conv, conv.weight, conv.bias, length)
 
 
 def slot_causal_transconv(

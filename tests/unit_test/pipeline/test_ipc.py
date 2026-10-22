@@ -400,6 +400,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             logical_process_plan=None,
             max_in_flight=None,
             max_total_backlog_bytes: int | None = None,
+            session_route=None,
+            session_graph=None,
+            max_output_lead_ms=None,
         ) -> None:
             del (
                 abort_endpoint,
@@ -409,6 +412,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 replica_topology,
                 logical_process_plan,
                 max_in_flight,
+                session_route,
+                session_graph,
+                max_output_lead_ms,
             )
             self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(

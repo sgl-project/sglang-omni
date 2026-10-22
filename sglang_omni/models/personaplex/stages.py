@@ -183,6 +183,7 @@ def create_mimi_encode_executor(
 def create_lm_executor(
     model_path: str,
     *,
+    enable_async_decode: bool,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -197,6 +198,7 @@ def create_lm_executor(
     builder = PersonaPlexEngineBuilder(
         max_running_requests=DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length=context_length,
+        enable_async_decode=enable_async_decode,
     )
     return builder.build(
         model_path,

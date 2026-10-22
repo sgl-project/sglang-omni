@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains
+dependencies so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains
 in place:
 
 ```bash
@@ -24,7 +24,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 
 `--no-deps` is required on **both** lines, for two different reasons.
 
-`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.12.1.
+`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.19.0.
 And resolving `sox` normally pulls `numpy` past the ceiling `numba==0.65.1`
 imposes (numba requires `numpy<=2.4`); the upgraded `numpy` then breaks
 `librosa`, so `import qwen_tts` fails with `Numba needs NumPy 2.4 or less`
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.21
+applies before importing `qwen_tts`. The pinned Transformers 5.19 / SGLang 0.5.22
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -81,12 +81,14 @@ sgl-omni serve \
 
 ### Ascend NPU baseline
 
-The NPU configurations use SGLang's `ascend` attention backend for the Talker
-and PyTorch SDPA for both Speech Tokenizer instances. Talker graph capture
-(`cuda_graph`), private Talker compile, and asynchronous vocoder decode stay
-disabled. The 0.6B Base
-configuration has been validated with 16 concurrent requests; the other
-configurations retain a conservative single-request baseline.
+All four NPU examples enable Talker graphs, asynchronous vocoder decoding, and
+incremental codec graphs. Custom NPU configurations use synchronous decoding
+by default.
+
+Graph capture and replay have been validated on Ascend 910 with SGLang 0.5.21,
+PyTorch 2.10.0, and torch_npu 2.10.0. The 0.6B Base configuration has been
+validated with 16 concurrent requests; the other examples keep
+`max_running_requests: 1`.
 
 ```bash
 # 0.6B Base
@@ -98,6 +100,11 @@ sgl-omni serve \
 
 Use `qwen3_tts_1_7b_npu.yaml`, `qwen3_tts_0_6b_customvoice_npu.yaml`, or
 `qwen3_tts_1_7b_voicedesign_npu.yaml` for the other supported checkpoints.
+
+To disable graph capture, pass `--tts_engine.engine.disable_cuda_graph true`
+for the Talker and `--vocoder.factory.incremental_codec_cuda_graph false` for
+the vocoder. Use `--vocoder.factory.async_decode false` for synchronous decoding.
+
 The 0.6B and 1.7B files intentionally have separate `mem_fraction_static`
 starting values. Calibrate configurations that retain the single-request
 baseline on the target NPU before increasing `max_running_requests` or any
@@ -513,8 +520,9 @@ process, and that times the engine replicas when the vocoder runs in its own
 process, since requests bind to its replicas round-robin. Raise
 `--vocoder.factory.codec_state_slots` together with `max_running_requests`.
 
-Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
-in on Intel GPUs, follow the
+Intel XPU, CPU and Apple MPS decode synchronously by default. For NPU defaults
+and configuration, see [Ascend NPU baseline](#ascend-npu-baseline).
+To opt in on Intel GPUs, follow the
 [Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
 Each follow-up batch sorts the stateful decoder's cohorts, and the rows within

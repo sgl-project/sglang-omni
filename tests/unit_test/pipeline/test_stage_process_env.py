@@ -63,6 +63,37 @@ def worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
     )
 
 
+@pytest.mark.parametrize(
+    "parent_preload",
+    [None, "", "/lib/profiler.so", "/lib/profiler.so /lib/allocator.so"],
+)
+def test_spawn_env_merges_preload_and_restores_parent(
+    monkeypatch: pytest.MonkeyPatch, parent_preload: str | None
+) -> None:
+    monkeypatch.delenv("LD_PRELOAD", raising=False)
+    if parent_preload is not None:
+        monkeypatch.setenv("LD_PRELOAD", parent_preload)
+    else:
+        pass
+    spec = worker_spec(
+        *[
+            StageLaunchConfig(
+                stage_name=stage_name,
+                env_defaults={"LD_PRELOAD": "/lib/allocator.so"},
+            )
+            for stage_name in ("ar", "acoustic")
+        ]
+    )
+    with patched_spawn_env(spec):
+        expected = "/lib/allocator.so"
+        if parent_preload:
+            expected += ":/lib/profiler.so"
+        else:
+            pass
+        assert os.environ["LD_PRELOAD"] == expected
+    assert os.environ.get("LD_PRELOAD") == parent_preload
+
+
 @pytest.mark.parametrize("parent_threads", [None, "4"])
 def test_spawn_env_applies_cpu_plan_and_respects_parent(
     monkeypatch: pytest.MonkeyPatch, parent_threads: str | None

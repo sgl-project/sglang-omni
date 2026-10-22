@@ -60,7 +60,7 @@ from sglang_omni.proto import (
     SubmitMessage,
 )
 from sglang_omni.proto.request import RoutedPayloads
-from sglang_omni.proto.session import find_session_operation
+from sglang_omni.proto.session import SessionOperation, find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
@@ -263,8 +263,10 @@ class Stage:
         # Start scheduler in dedicated thread
         if self.scheduler is not None:
             serving_thread_ready = threading.Event()
+            warmup_error: Exception | None = None
 
             def _run_scheduler() -> None:
+                nonlocal warmup_error
                 try:
                     try:
                         # Active-stage binding so ``emit(stage=None)`` from
@@ -285,6 +287,9 @@ class Stage:
                         else:
                             pass
                         self.scheduler.warm_up_serving_thread()
+                    except Exception as exc:
+                        warmup_error = exc
+                        raise
                     finally:
                         serving_thread_ready.set()
                     self.scheduler.start()
@@ -307,6 +312,10 @@ class Stage:
             )
             self.scheduler_thread.start()
             await asyncio.to_thread(serving_thread_ready.wait)
+            if warmup_error is not None:
+                raise warmup_error
+            else:
+                pass
         else:
             pass
         if self.http_socket_path is not None:
@@ -1161,6 +1170,21 @@ class Stage:
             return
         else:
             pass
+        session_operation = find_session_operation(payload.request.metadata)
+        if session_operation is not None:
+            # Note (Junnan Li): A preempted append dies here as the control arrives: its result here and anything it sends here later are dropped.
+            for preempted_request_id in session_operation.preempted_request_ids:
+                self.on_abort(preempted_request_id)
+        else:
+            pass
+        if (
+            session_operation is not None
+            and session_operation.operation == "append"
+            and self.owns_external_io
+        ):
+            await self.forward_session_append(request_id, payload, session_operation)
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1180,6 +1204,30 @@ class Stage:
             enqueue(msg)
         else:
             self.scheduler.inbox.put(msg)
+
+    async def forward_session_append(
+        self,
+        request_id: str,
+        payload: StagePayload,
+        session_operation: SessionOperation,
+    ) -> None:
+        """A session unit's payload reaches an owner this stage streams to before the stream; the stream is this stage's whole output to it."""
+        owners = session_operation.stages
+        if self.name not in owners:
+            return
+        else:
+            index = owners.index(self.name)
+        if index + 1 < len(owners) and owners[index + 1] in self.stream_targets:
+            # Note (Junnan Li): Nothing of this request has streamed yet, so the payload cannot overtake a chunk and may go the local way.
+            await self.send_to_stage(
+                request_id,
+                owners[index + 1],
+                payload,
+                allow_local_object=True,
+                stream_targets_for_request=set(),
+            )
+        else:
+            pass
 
     async def on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
@@ -1672,21 +1720,30 @@ class Stage:
             return
         else:
             pass
-        if session_operation is not None:
+        actual = self.get_next(request_id, result)
+        is_forwarded_at_admission = False
+        if session_operation is None:
+            pass
+        else:
             owners = session_operation.stages
-            if self.name not in owners or self.stream_targets:
+            if self.name in owners:
+                index = owners.index(self.name)
+            else:
+                await self.send_failure(
+                    request_id, "session route must use fixed, linear payload edges"
+                )
+                return
+            if index + 1 < len(owners):
+                expected = self.logical_source(owners[index + 1])
+            else:
+                expected = None
+            if any(target != expected for target in self.stream_targets):
                 await self.send_failure(
                     request_id, "session route must use fixed, linear payload edges"
                 )
                 return
             else:
                 pass
-            index = owners.index(self.name)
-            if index + 1 < len(owners):
-                expected = self.logical_source(owners[index + 1])
-            else:
-                expected = None
-            actual = self.get_next(request_id, result)
             if isinstance(actual, list) and len(actual) == 1:
                 actual_target = actual[0]
             else:
@@ -1697,16 +1754,10 @@ class Stage:
                 )
                 return
             else:
-                pass
-        else:
-            pass
+                is_forwarded_at_admission = expected in self.stream_targets
         if on_submitted is not None:
             # Claim before any stream completion, so a refused result sends none.
-            next_stages = (
-                self.get_next(request_id, result)
-                if session_operation is None
-                else actual
-            )
+            next_stages = actual
             if not self.result_owner.claim_result(result, terminal=next_stages is None):
                 return
             else:
@@ -1735,14 +1786,12 @@ class Stage:
                 is_done=True,
             )
 
-        if on_submitted is None:
-            next_stages = (
-                self.get_next(request_id, result)
-                if session_operation is None
-                else actual
-            )
+        if is_forwarded_at_admission:
+            self.clear_request_state(request_id)
+            return
         else:
             pass
+        next_stages = actual
         routes_to_self = False
         keeps_state = False
         if next_stages is None:

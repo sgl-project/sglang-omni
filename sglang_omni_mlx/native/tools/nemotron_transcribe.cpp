@@ -15,8 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "nemotron_transcriber.h"
+#include "common/audio.h"
+#include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"
 
 int main(int argc, char **argv) {

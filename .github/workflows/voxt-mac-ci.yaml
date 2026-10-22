@@ -12,7 +12,6 @@ name: Voxt Mac CI
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "Voxt/**"
@@ -253,7 +252,7 @@ jobs:
             -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/voxt-build.log" 2>&1 \
             || { tail -100 "$RUNNER_TEMP/voxt-build.log"; exit 1; }
 
-      - name: Omni unit tests
+      - name: Omni, API, and hotkey unit tests
         run: |
           xctestrun="$(find "$RUNNER_TEMP/voxt-derived/Build/Products" -maxdepth 1 -name 'Voxt_*.xctestrun' -print -quit)"
           xcodebuild test-without-building -xctestrun "$xctestrun" -destination platform=macOS \
@@ -265,4 +264,9 @@ jobs:
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
-            -only-testing:VoxtTests/MLXNativeLiveRuntimeTests
+            -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
+            -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
+            -only-testing:VoxtTests/HotkeyManagerTests \
+            -only-testing:VoxtTests/RecordingSessionLifecycleTests \
+            -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
+            -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests

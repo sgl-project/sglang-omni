@@ -28,11 +28,17 @@ def merge_config(
     return merged_config
 
 
-def admission_fields(config: SessionConfiguration) -> SessionConfiguration:
+def admission_fields(
+    config: SessionConfiguration, *, hot_instructions: bool
+) -> SessionConfiguration:
     """Fields fixed once the session is OPEN; everything else may be hot-updated."""
     admission_config = copy.deepcopy(config)
     admission_config.pop("output_modalities", None)
     admission_config.get("audio", {}).get("input", {}).pop("turn_detection", None)
+    if hot_instructions:
+        admission_config.pop("instructions", None)
+    else:
+        pass
     return admission_config
 
 
@@ -60,7 +66,10 @@ class SessionNegotiation:
             raise ProtocolError(
                 "invalid_request", "invalid session configuration", location
             ) from exc
-        if state == "OPEN" and admission_fields(candidate) != admission_fields(current):
+        hot_instructions = self.capabilities.supports_instruction_updates
+        if state == "OPEN" and admission_fields(
+            candidate, hot_instructions=hot_instructions
+        ) != admission_fields(current, hot_instructions=hot_instructions):
             raise ProtocolError("invalid_state", "session field is frozen")
         elif (
             "instructions" in candidate
@@ -83,7 +92,7 @@ class SessionNegotiation:
             modality
             for modality in requested_modalities
             if modality in self.capabilities.output_modalities
-        ][:1]
+        ][: self.capabilities.max_granted_modalities]
         if not granted_modalities:
             raise ProtocolError("invalid_request", "no supported output combination")
         else:
@@ -115,9 +124,21 @@ class SessionNegotiation:
                 )
             else:
                 pass
-        if audio.get("input", {}).get("turn_detection") is not None:
+        turn_detection = audio.get("input", {}).get("turn_detection")
+        if turn_detection is None:
+            pass
+        elif not any(self.capabilities.turn_control):
             raise ProtocolError(
                 "not_applicable", "VAD is only available for turn-based sessions"
+            )
+        elif (
+            turn_detection.get("type", "server_vad")
+            not in self.capabilities.turn_control
+        ):
+            raise ProtocolError(
+                "not_applicable",
+                "turn detection type is unavailable",
+                "session.audio.input.turn_detection.type",
             )
         else:
             pass

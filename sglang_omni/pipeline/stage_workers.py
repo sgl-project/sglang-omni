@@ -9,6 +9,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
@@ -257,6 +258,13 @@ def patched_spawn_env(
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
+            if key == "LD_PRELOAD":
+                libraries = re.split(r"[:\s]+", f"{value}:{os.environ.get(key, '')}")
+                value = ":".join(
+                    dict.fromkeys(library for library in libraries if library)
+                )
+            else:
+                pass
             existing = env_default_updates.get(key)
             if existing is not None and existing != value:
                 raise AssertionError(
@@ -265,7 +273,7 @@ def patched_spawn_env(
                 )
             else:
                 pass
-            if key not in os.environ:
+            if key == "LD_PRELOAD" or key not in os.environ:
                 env_default_updates[key] = value
             else:
                 pass
@@ -1106,7 +1114,6 @@ def construct_stage(
         stage.stream_queue = StreamQueue()
     else:
         pass
-
     return stage
 
 

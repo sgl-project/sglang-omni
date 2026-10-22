@@ -491,6 +491,8 @@ to its path (file or containing directory). The server never downloads it and
 verifies its SHA-256 on load. If the model is missing or invalid, the
 endpoint still works — semantic requests just fall back to `server_vad`.
 
+On the Session graph (`examples/qwen3_omni/session_h200.yaml`), `semantic_vad` is a node: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session` and publish `turn_detection: [session]` in place of `vad: [session]`; the stage loads the model from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy. See [Turn detection node](../developer_reference/full_duplex_interactive_model.md#turn-detection-node).
+
 Text arrives in `response.text.delta` events; spoken output arrives as
 base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
 `response.audio.done` and `response.done`.

@@ -28,6 +28,13 @@ class RecordingAudioTower(nn.Module):
         return SimpleNamespace(last_hidden_state=input_features)
 
 
+class AudioFeatureModel(Qwen3ASRForConditionalGeneration):
+    def __init__(self, audio_tower: RecordingAudioTower) -> None:
+        nn.Module.__init__(self)
+        self.audio_tower = audio_tower
+        self.encoder_graph_runner = None
+
+
 @pytest.mark.parametrize("use_mrope_positions", [True, False])
 def test_forward_uses_available_mrope_positions(
     monkeypatch: pytest.MonkeyPatch,
@@ -172,7 +179,7 @@ def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:
 
 def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
     tower = RecordingAudioTower()
-    model = SimpleNamespace(encoder_graph_runner=None, audio_tower=tower)
+    model = AudioFeatureModel(tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]]),
@@ -192,9 +199,7 @@ def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
 
 
 def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
-    model = SimpleNamespace(
-        encoder_graph_runner=None, audio_tower=RecordingAudioTower()
-    )
+    model = AudioFeatureModel(RecordingAudioTower())
     items = [
         SimpleNamespace(
             feature=torch.ones((1, 2, 4)),
@@ -210,7 +215,7 @@ def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_get_audio_feature_normalizes_cpu_masks_for_cuda_features() -> None:
     tower = RecordingAudioTower().cuda()
-    model = SimpleNamespace(encoder_graph_runner=None, audio_tower=tower)
+    model = AudioFeatureModel(tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]], device="cuda"),

@@ -131,7 +131,6 @@ with TestClient(app) as client:
         {"image_h": 31},
         {"image_w": 33},
         {"mode": "interleaved"},
-        {"mode": "thinking"},
         {"decode_mode": "unknown"},
         {"decode_mode": "normal", "decoder_steps": 1},
     ],
@@ -153,13 +152,19 @@ def test_image_input_without_generation_config_remains_chat(
     assert "image_generation" not in coordinator.requests[0].metadata
 
 
-@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize(
+    "editing,mode",
+    [(False, "normal"), (False, "thinking"), (True, "normal"), (True, "thinking")],
+)
 def test_native_image_routes_preserve_generation_controls(
-    api: tuple[TestClient, RecordingCoordinator], editing: bool
+    api: tuple[TestClient, RecordingCoordinator],
+    editing: bool,
+    mode: Literal["normal", "thinking"],
 ) -> None:
     client, coordinator = api
     fields = {
         "prompt": "Make it red",
+        "mode": mode,
         "seed": 0,
         "guidance_scale": 4.0,
         "num_inference_steps": 8,
@@ -177,13 +182,21 @@ def test_native_image_routes_preserve_generation_controls(
         response = client.post(
             "/v1/images/generations", json={**fields, "size": "1024x768"}
         )
+    if editing and mode == "thinking":
+        assert response.status_code == 400, response.text
+        assert not coordinator.requests
+        return
     assert response.status_code == 200, response.text
     assert response.json()["data"][0]["b64_json"] == "cG5n"
+    usage = response.json()["usage"]
+    assert (usage["prompt_tokens"], usage["completion_tokens"]) == (3, 2)
+    assert usage["total_tokens"] == 5
     request = coordinator.requests[0]
     assert request.metadata["output_modalities"] == ["image"]
     assert request.params["stream"] is False
     assert "choices" not in response.json()
     options = request.metadata["image_generation"]
+    assert options["mode"] == mode
     assert options["seed"] == 0
     assert options["cfg_scale"] == 4.0
     assert options["decoder_steps"] == 8

@@ -41,8 +41,7 @@ class RuntimeLimits:
     max_input_bytes: int = (
         MAX_BUFFERED_INPUT_S * DEFAULT_SAMPLE_RATE_HZ * PCM16_BYTES_PER_SAMPLE
     )
-    max_output_bytes: int = 4 * 1024 * 1024
-    max_output_events: int = 256
+    max_output_bytes: int = 32 * 1024 * 1024
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
     session_update_timeout_s: float = 60
@@ -62,6 +61,8 @@ class Capabilities:
     input_sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ
     output_sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ
     output_modalities: tuple[str, ...] = ("text",)
+    max_granted_modalities: int = 1
+    turn_control: tuple[str | None, ...] = (None,)
     native_unit_ms: int = 20
     tail_policy: TailPolicy = "flush"
     partial_style: PartialStyle = "append_only"
@@ -69,12 +70,15 @@ class Capabilities:
     max_image_bytes: int = 512 * 1024
     sampling_parameters: tuple[str, ...] = ()
     supports_reference_audio: bool = False
+    supports_instruction_updates: bool = False
+    supports_truncate: bool = False
+    supports_client_commit: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
 
     def __post_init__(self) -> None:
-        if self.interaction != "native":
+        if self.interaction not in get_args(Interaction):
             raise ValueError("unsupported interaction")
         elif (
             self.input_sample_rate_hz <= 0
@@ -95,6 +99,8 @@ class Capabilities:
             or set(self.output_modalities) - SUPPORTED_OUTPUT_MODALITIES
         ):
             raise ValueError("unsupported output modalities")
+        elif self.max_granted_modalities < 1 or not self.turn_control:
+            raise ValueError("a grant needs one modality and one turn control")
         else:
             pass
 
@@ -113,8 +119,8 @@ class Capabilities:
             interaction=self.interaction,
             native_full_duplex=self.interaction == "native",
             proactive_output=False,
-            turn_control=[None],
-            client_commit=False,
+            turn_control=list(self.turn_control),
+            client_commit=self.supports_client_commit,
             input_modalities=list(self.input_modalities),
             output_modalities=list(self.output_modalities),
             input_audio_format=dict(type="audio/pcm", rate=self.input_sample_rate_hz),
@@ -124,7 +130,7 @@ class Capabilities:
             microturn_ms="variable",
             tail_policy=self.tail_policy,
             supports_server_interrupt=False,
-            supports_truncate=False,
+            supports_truncate=self.supports_truncate,
             supports_resume=False,
             partial_style=self.partial_style,
             pressure_policy="reject",
@@ -195,6 +201,20 @@ class InteractionAdapter:
 
     async def clear(self) -> int:
         return 0
+
+    async def cancel(self) -> None:
+        raise ProtocolError("not_supported", "this session does not cancel responses")
+
+    async def truncate(self, audio_end_ms: float) -> None:
+        raise ProtocolError("not_supported", "this session does not truncate responses")
+
+    async def commit(self) -> None:
+        raise ProtocolError(
+            "not_supported", "this session does not take client commits"
+        )
+
+    async def update(self, config: SessionConfiguration) -> None:
+        """A hot update of an OPEN session; admission fields never change here."""
 
     async def close(self) -> None:
         raise NotImplementedError

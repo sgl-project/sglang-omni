@@ -41,7 +41,6 @@ name: CPU CI
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -157,7 +156,7 @@ jobs:
           echo "Tested commit SHA: ${TEST_SHA}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
@@ -167,7 +166,7 @@ jobs:
         run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
 
   cpu-ci:
-    name: cpu-ci (unit_test/cpu)
+    name: intel-cpu-ci (unit_test/cpu)
     needs: [check-changes, preflight]
     if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' && needs.preflight.outputs.run_intel_cpu == 'true' }}
     runs-on: [self-hosted, intel-omni-spr]

@@ -6,7 +6,7 @@ binaries on MLX, with no Python runtime. Voxt starts and owns the selected
 server. Other models keep their Swift backend.
 
 To add or change a model here, read the
-[MLX path policy and contribution requirements](../../docs/developer_reference/mlx.md)
+[MLX path policy and contribution requirements](../../docs/mlx/index.md)
 first.
 
 | Checkpoint | Runtime | Voxt behavior kept |

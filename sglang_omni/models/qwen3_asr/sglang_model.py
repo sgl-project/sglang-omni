@@ -23,6 +23,7 @@ from sglang.srt.models.qwen3 import Qwen3Attention, Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.qwen3_asr.encoder_npu_graph import Qwen3ASREncoderNpuGraphRunner
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.hf import use_text_rope
 
@@ -31,6 +32,8 @@ from .encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
     build_buckets,
     eager_preamble,
+    plan_mel_chunks,
+    planned_preamble,
     window_lens_from_token_counts,
 )
 
@@ -161,7 +164,11 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             return
         else:
             pass
-        runner = Qwen3ASREncoderLayerStackGraphRunner(
+        if device.type == "npu":
+            runner_cls = Qwen3ASREncoderNpuGraphRunner
+        else:
+            runner_cls = Qwen3ASREncoderLayerStackGraphRunner
+        runner = runner_cls(
             self.audio_tower,
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
             max_batch_size=max_batch_size,
@@ -175,6 +182,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
 
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         device = next(self.audio_tower.parameters()).device
+
+        planned = self.planned_audio_feature(items, device)
+        if planned is not None:
+            return planned
+        else:
+            pass
 
         features = [item.feature for item in items]
         masks = [getattr(item, "feature_attention_mask", None) for item in items]
@@ -249,12 +262,16 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 window_lens = window_lens_from_token_counts(
                     token_counts, tokens_per_window=runner.tokens_per_window
                 )
-                hidden = eager_preamble(
-                    self.audio_tower, input_features, audio_feature_lengths
-                )
-                graphed = runner.run(hidden, window_lens)
-                if graphed is not None:
-                    return graphed.unsqueeze(0)
+                graph_plan = runner.plan(sum(window_lens), len(window_lens))
+                if graph_plan is not None and graph_plan[0] not in runner.failed:
+                    hidden = eager_preamble(
+                        self.audio_tower, input_features, audio_feature_lengths
+                    )
+                    graphed = runner.run(hidden, window_lens)
+                    if graphed is not None:
+                        return graphed.unsqueeze(0)
+                    else:
+                        pass
                 else:
                     pass
             else:
@@ -267,6 +284,75 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             feature_lens=audio_feature_lengths,
         )
         return audio_outputs.last_hidden_state
+
+    def planned_audio_feature(
+        self, items: List[MultimodalDataItem], device: torch.device
+    ) -> torch.Tensor | None:
+        """Graph-runner encode whose layout is planned on the host.
+
+        Every mel length is known before the batch reaches the device, so the
+        chunking, valid-frame selection and window plan need no device
+        round trip; returns None to keep the general path for anything else.
+        """
+        runner = self.encoder_graph_runner
+        if runner is None or not items:
+            return None
+        else:
+            pass
+        frame_counts: list[int] = []
+        token_counts: list[int] = []
+        for item in items:
+            feature = item.feature
+            mask = getattr(item, "feature_attention_mask", None)
+            token_count = (item.model_specific_data or {}).get("num_audio_tokens")
+            if (
+                not isinstance(feature, torch.Tensor)
+                or feature.device.type != "cpu"
+                or feature.dim() != 3
+                or feature.shape[0] != 1
+                or feature.shape[1] != 128
+                or not isinstance(mask, torch.Tensor)
+                or mask.device.type != "cpu"
+                or mask.shape != (1, feature.shape[-1])
+                or token_count is None
+            ):
+                return None
+            else:
+                pass
+            frame_count = int(mask.sum())
+            # The general path selects masked frames; only a valid prefix
+            # maps onto the host chunk plan.
+            if frame_count <= 0 or not bool(mask[0, :frame_count].all()):
+                return None
+            else:
+                pass
+            frame_counts.append(frame_count)
+            token_counts.append(int(token_count))
+        tower = self.audio_tower
+        plan = plan_mel_chunks(
+            [item.feature for item in items],
+            frame_counts,
+            chunk_width=tower.n_window * 2,
+            dtype=tower.dtype,
+        )
+        if sum(plan.token_lengths) != sum(token_counts):
+            return None
+        else:
+            pass
+        window_lens = window_lens_from_token_counts(
+            token_counts, tokens_per_window=runner.tokens_per_window
+        )
+        graph_plan = runner.plan(sum(window_lens), len(window_lens))
+        if graph_plan is None or graph_plan[0] in runner.failed:
+            return None
+        else:
+            pass
+        hidden = planned_preamble(tower, plan, device)
+        graphed = runner.run(hidden, window_lens)
+        if graphed is None:
+            return None
+        else:
+            return graphed.unsqueeze(0)
 
     def forward(
         self,

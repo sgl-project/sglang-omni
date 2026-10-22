@@ -14,7 +14,11 @@ import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
 from sglang_omni.models.registry import resolve_variant
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.utils.imports import import_string
 
 MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
@@ -28,6 +32,20 @@ CPU_ONLY_GPU_PLACED = {
 }
 
 
+def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    profiles = {
+        Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
+        StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
+    }
+    if config_cls in profiles:
+        profile = MODELS_DIR.parent.parent / profiles[config_cls]
+        return ConfigManager.from_file(str(profile)).config.model_copy(
+            update={"model_path": "unused"}
+        )
+    else:
+        return config_cls(model_path="unused")
+
+
 def iter_stages():
     for config_path in sorted(MODELS_DIR.glob("*/config.py")):
         model = config_path.parent.name
@@ -38,7 +56,7 @@ def iter_stages():
         topologies.update(getattr(module, "Variants", None) or {})
         for label, variant in topologies.items():
             config_cls = resolve_variant(variant)
-            for stage in config_cls(model_path="unused").stages:
+            for stage in pipeline_config(config_cls).stages:
                 yield model, label, stage
 
 
@@ -49,7 +67,7 @@ def pipeline_wiring(model: str, label: str, stage_name: str) -> Mapping[str, obj
         if label == "default"
         else resolve_variant(module.Variants[label])
     )
-    return config_cls(model_path="unused").stage_factory_kwargs(stage_name)
+    return pipeline_config(config_cls).stage_factory_kwargs(stage_name)
 
 
 # note (lennox): only device/gpu_id are asserted on below, but a non-literal
@@ -597,7 +615,7 @@ def config_with_one_replicated_process(config_cls, model):
     from sglang_omni.config.schema import ProcessConfig
     from sglang_omni.config.topology import stage_process_name
 
-    config = config_cls(model_path="unused")
+    config = pipeline_config(config_cls)
     by_process: dict[str, list] = {}
     for stage in config.stages:
         by_process.setdefault(stage_process_name(stage), []).append(stage)

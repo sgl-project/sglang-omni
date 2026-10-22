@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
     from sglang_omni.models.dots_tts.model_runner import DotsFlowLaunchBuf
+    from sglang_omni.models.personaplex.model_runner import PersonaPlexFrameBatch
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
             torch.cuda.Event | torch.xpu.Event,
         ]
         | DotsFlowLaunchBuf
+        | PersonaPlexFrameBatch
         | None
     )
 else:
@@ -180,6 +182,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.async_query_miss: int = 0
         self.token_id_host_bufs: list[torch.Tensor] | None = None
         self.token_id_host_slot: int = 0
+        self.token_id_events: list[torch.cuda.Event] = []
+        self.token_id_event_slot: int = 0
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
@@ -196,7 +200,7 @@ class ModelRunner(Generic[RequestDataInput]):
         n = ids.shape[0]
         buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
-        event = torch.cuda.Event()
+        event = self.next_token_id_event()
         event.record()
         result._host_token_ids = buf[
             :n
@@ -213,6 +217,17 @@ class ModelRunner(Generic[RequestDataInput]):
             like.dtype,
             realloc_on_grow=True,
         )
+
+    def next_token_id_event(self) -> torch.cuda.Event:
+        # note (ratish): a new event is created at its first record, which waits while
+        # another thread of the process is inside the CUDA runtime; two, as the buffers.
+        if not self.token_id_events:
+            self.token_id_events = [torch.cuda.Event() for _ in range(2)]
+        else:
+            pass
+        event = self.token_id_events[self.token_id_event_slot]
+        self.token_id_event_slot ^= 1
+        return event
 
     def pinned_pingpong(
         self,

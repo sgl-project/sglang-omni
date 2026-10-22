@@ -727,3 +727,30 @@ class TestVariant:
         assert result.exit_code == 2
         assert "--enable-realtime" in output_of(result)
         launch_server.assert_not_called()
+
+
+@pytest.mark.parametrize("gpu_in_file", [False, True])
+def test_replica_devices_accept_stage_gpu_from_file_or_cli(
+    runner, tmp_path, base_config, stage, gpu_in_file
+):
+    """Stage GPU overrides must reach replica expansion rather than fail at parsing."""
+    process = base_config.stage_named(stage).process
+    data = {
+        "config_cls": base_config.config_cls,
+        "model_path": "dummy",
+        "processes": {process: {"replica_devices": [1]}},
+    }
+    if gpu_in_file:
+        data["stages"] = {stage: {"gpu": 3}}
+        arguments = []
+    else:
+        arguments = [(f"{stage}.gpu", "3")]
+    path = tmp_path / "replicas.yaml"
+    path.write_text(yaml.safe_dump(data))
+    merged = ConfigManager.from_file(str(path)).merge_config(arguments)
+    assert merged.stage_named(stage).gpu == 3
+    assert merged.processes[process].replica_devices == [1]
+    flags = [] if gpu_in_file else [f"--{stage}.gpu", "3"]
+    for command in [["resolve"], ["explain", f"stages.{stage}.gpu"]]:
+        result = runner.invoke(config_app, [*command, "--config", str(path), *flags])
+        assert result.exit_code == 0, output_of(result)

@@ -218,6 +218,31 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
     ]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_pack_flow_inputs_uploads_without_a_host_wait() -> None:
+    items = [
+        make_input([0, 8, 0], prompt_token=[4], prompt_value=0.5),
+        make_input([0], prompt_token=[5, 6, 7], prompt_value=1.5),
+    ]
+    reference = pack_flow_inputs(FakeFlow(), items)
+    flow = FakeFlow().cuda()
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        packed = pack_flow_inputs(flow, items)
+    finally:
+        torch.cuda.set_sync_debug_mode(sync_debug_mode)
+    assert torch.equal(packed.token.cpu(), reference.token)
+    assert torch.equal(packed.token_mask.cpu(), reference.token_mask)
+    assert torch.equal(
+        packed.combined_token_lengths_tensor.cpu(),
+        reference.combined_token_lengths_tensor,
+    )
+    assert torch.equal(packed.prompt_feat.cpu(), reference.prompt_feat)
+    assert torch.equal(packed.embedding.cpu(), reference.embedding)
+
+
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
     packed = pack_flow_inputs(
         FakeFlow(),
@@ -255,6 +280,25 @@ def test_flow_batch_builds_variable_length_mel_masks_and_conditions() -> None:
     assert torch.count_nonzero(cond[0]) == 0
     torch.testing.assert_close(cond[1, :, :4], torch.full((4, 4), 7.0))
     assert torch.count_nonzero(cond[1, :, 4:]) == 0
+
+
+@pytest.mark.parametrize("is_buffered_packed", [False, True])
+def test_buffered_flow_takes_the_packed_solve_only_on_the_packed_route(
+    is_buffered_packed: bool,
+) -> None:
+    flow = FakeFlow(max_frames=128)
+    packed_flow = make_packed(flow)
+    packed_flow.is_buffered_packed = is_buffered_packed
+    items = [
+        make_input([1], prompt_token=[2], prompt_value=0.5),
+        make_input([3, 4], prompt_token=[5, 6], prompt_value=1.5),
+    ]
+
+    mels = packed_flow.inference(items)
+
+    assert [tuple(mel.shape) for mel in mels] == [(1, 4, 2), (1, 4, 4)]
+    assert bool(flow.packed_estimator.calls) is is_buffered_packed
+    assert bool(flow.decoder.estimator.calls) is not is_buffered_packed
 
 
 def test_flow_batch_cfg_uses_two_times_request_batch() -> None:

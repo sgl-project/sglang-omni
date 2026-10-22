@@ -41,7 +41,7 @@ ACTIVATION_ENV = "SGLANG_OMNI_NATIVE_CANCELLATION_DIR"
 ARMED_MARKER = ".sglang-omni-armed"
 CANCELLED_MARKER = ".sglang-omni-cancelled"
 
-# Hook targets, pinned to SGLang 0.5.21.
+# Hook targets in the pinned release.
 STAGE_CALL_TARGET = (
     "sglang.multimodal_gen.runtime.pipelines_core.stages.base.PipelineStage.__call__"
 )

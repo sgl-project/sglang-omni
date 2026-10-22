@@ -542,6 +542,8 @@ def test_acoustic_scheduler_rejects_malformed_hidden_before_decode() -> None:
 
 
 class FakeAcousticDecoder:
+    serial_offload = False
+
     def __init__(self) -> None:
         self.hidden_shape: tuple[int, ...] | None = None
 

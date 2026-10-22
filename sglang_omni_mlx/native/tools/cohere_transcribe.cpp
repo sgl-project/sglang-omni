@@ -16,11 +16,11 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "cohere_transcriber.h"
-#include "form.h"
+#include "cohere/cohere_transcriber.h"
+#include "common/audio.h"
+#include "common/form.h"
 #include "nlohmann/json.hpp"
-#include "speech_segments.h"
+#include "silero_vad/speech_segments.h"
 
 int main(int argc, char **argv) {
   std::string model_path;

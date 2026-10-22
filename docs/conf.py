@@ -86,7 +86,9 @@ master_doc = "index"
 
 language = "en"
 
-exclude_patterns = ["build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["build", "Thumbs.db", ".DS_Store", "developer_reference/mlx.md"]
+
+html_additional_pages = {"developer_reference/mlx": "mlx_redirect.html"}
 
 pygments_style = "sphinx"
 
