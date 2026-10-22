@@ -108,14 +108,14 @@ class MiniCPMODuplexVision(BaseModel):
 
 
 class MiniCPMODuplexSpeech(BaseModel):
-    """Vocoder settings of the speech stage; the defaults are the checkpoint's own duplex loop."""
+    """Vocoder settings of the speech stage; the defaults follow the reference demo's streaming decode."""
 
     model_config = ConfigDict(extra="forbid")
 
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
     enable_dit_torch_compile: bool = False
     enable_hift_torch_compile: bool = False
-    n_timesteps: int = Field(default=10, ge=1)
+    n_timesteps: int = Field(default=5, ge=1)
 
 
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()

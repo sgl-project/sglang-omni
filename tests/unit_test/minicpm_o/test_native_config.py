@@ -520,3 +520,17 @@ def test_duplex_speech_settings_reach_the_vocoder(
     )
     runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
     assert runtime_kwargs["max_open_sessions"] == config.max_sessions
+
+
+def test_duplex_speech_decodes_five_flow_steps_by_default(
+    tmp_path: Path, stub_stage_models: None
+) -> None:
+    """A deployment without speech settings streams with the reference demo's five flow steps."""
+    reference_path = tmp_path / "reference.wav"
+    reference_path.write_bytes(b"reference")
+    config = MiniCPMODuplexPipelineConfig(model_path="unused")
+    native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
+    native_stages.create_speech_scheduler(
+        config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
+    )
+    assert native_stages.MiniCPMOCode2Wav.call_args.kwargs["n_timesteps"] == 5

@@ -93,7 +93,7 @@ and quitting stops it.
 
     It also needs `VOXT_ASR_BACKEND=omni`, `VOXT_OMNI_RUNTIME`, `VOXT_MODEL_STORAGE_ROOT` and `VOXT_LIFECYCLE_CLIPS`.
   - `OmniPhase1BenchmarkTests`: the measurement against the original backend. See its header for the `VOXT_BENCH_*` variables.
-  - `OmniVoiceActivityIntegrationTests` and `OmniSpeakerDiarizationIntegrationTests` run Voxt's Silero detectors and Sortformer engine against the server and MLXAudioVAD in the same process. See their headers for the variables.
+  - `OmniVoiceActivityIntegrationTests` and `OmniSpeakerDiarizationIntegrationTests` compare Native results with explicitly supplied, independently captured legacy references (`VOXT_VAD_REFERENCE_JSON` / `VOXT_SORTFORMER_REFERENCE`). Model/configuration/sample identity and profile metadata are checked; no in-process Audio library remains. Missing references skip parity, not certify it. See their headers.
 
 Pass environment variables to an `xcodebuild test-without-building` run through
 the `.xctestrun` file.

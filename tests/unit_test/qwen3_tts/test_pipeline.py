@@ -8640,6 +8640,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False

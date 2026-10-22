@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -224,6 +224,9 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
+    async_decode_mode: Literal["all", "nonstream"] | None = None,
 ) -> OmniScheduler[MossTTSSGLangRequestData]:
     overrides = dict(server_args_overrides or {})
     # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so
@@ -241,7 +244,12 @@ def create_sglang_tts_engine_executor(
         )
     else:
         pass
-    return MossTtsEngineBuilder(total_gpu_memory_fraction=engine_fraction).build(
+    return MossTtsEngineBuilder(
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+        async_decode_mode=async_decode_mode,
+        total_gpu_memory_fraction=engine_fraction,
+    ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,
@@ -267,6 +275,7 @@ def create_vocoder_executor(
     coalesce_floor_frames: int = 4,
     stream_slots: int = 32,
     vocoder_cuda_graph: bool | None = None,
+    segment_graph_max_frames: int = 0,
     compute_dtype: str | torch.dtype | None = "bfloat16",
     attention_backend: str = "auto",
 ) -> MossStreamingVocoderScheduler:
@@ -297,6 +306,7 @@ def create_vocoder_executor(
         compute_dtype=resolved_compute_dtype,
         max_segment_batch_size=max_batch_size,
     )
+    use_vocoder_cuda_graph = resolve_vocoder_cuda_graph(vocoder_cuda_graph)
     scheduler = MossStreamingVocoderScheduler(
         vocoder,
         stream_chunk_frames=stream_chunk_frames,
@@ -305,7 +315,11 @@ def create_vocoder_executor(
         stream_slots=stream_slots,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
-        vocoder_cuda_graph=resolve_vocoder_cuda_graph(vocoder_cuda_graph),
+        vocoder_cuda_graph=use_vocoder_cuda_graph,
     )
     scheduler.warmup_now()
+    if use_vocoder_cuda_graph:
+        vocoder.capture_segment_graphs(segment_graph_max_frames)
+    else:
+        pass
     return scheduler

@@ -538,6 +538,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             SimpleNamespace(
                 model_runner=model_runner,
                 model_config=SimpleNamespace(is_multimodal=False),
+                speculative_worker=None,
                 enable_prefill_input_embeds=bool(
                     kwargs.get("enable_prefill_input_embeds")
                 ),

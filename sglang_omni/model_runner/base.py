@@ -155,6 +155,9 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # True when the model's own speculative verify applies repetition_penalty exactly.
+    speculative_verifies_repetition_penalty: bool = False
+
     def __init__(
         self,
         tp_worker: ModelWorker,
@@ -456,10 +459,10 @@ class ModelRunner(Generic[RequestDataInput]):
         )
 
     def execute_launch(self, scheduler_output: SchedulerOutput) -> "PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, call
+        """Enqueue a decode or supported whole-prompt prefill step, call
         ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
-        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
+        publication. Does NOT wait on the GPU. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
         forward, and ``event.query()`` proves the launched step's GPU work is
@@ -483,7 +486,6 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
             forward_batch, schedule_batch, is_prefill = built
-            assert not is_prefill, "async lookahead launch is decode-only"
             batch_result = self.prepare_and_forward(
                 forward_batch,
                 schedule_batch,
@@ -491,6 +493,15 @@ class ModelRunner(Generic[RequestDataInput]):
                 is_prefill,
                 is_lookahead=True,
             )
+            if is_prefill:
+                self.post_prefill(
+                    batch_result,
+                    forward_batch,
+                    schedule_batch,
+                    scheduler_output.requests,
+                )
+            else:
+                pass
             launch_buf = self.post_decode_launch(
                 batch_result, forward_batch, scheduler_output.requests
             )
@@ -671,6 +682,16 @@ class ModelRunner(Generic[RequestDataInput]):
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Hook for the tokens one speculative step committed for a request.
+
+        Speculative decoding bypasses execute, so a runner collecting outputs in
+        post_decode collects them here; they end at the stop, before the result.
+        """
+        return None
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.

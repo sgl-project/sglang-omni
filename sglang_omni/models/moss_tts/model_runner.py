@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
@@ -49,10 +50,22 @@ _UINT64_MASK = (1 << 64) - 1
 _INT64_SEED_MASK = (1 << 63) - 1
 
 
+@dataclass(kw_only=True)
+class MossDelayLaunchBuffer:
+    """One launched lookahead step: pinned host rows plus the per-request delay
+    state and launch counter before the step, to restore if it is dropped."""
+
+    host_rows: torch.Tensor
+    delay_states_before: list[torch.Tensor]
+    sampling_steps_before: list[int]
+    feedback_embeds: torch.Tensor
+
+
 class MossTTSModelRunner(ModelRunner):
     """Samples MOSS-TTS text/audio channels and maintains delay-pattern state."""
 
     model: MossTTSDelaySGLangModel
+    pending_skip_request_ids: frozenset[str] = frozenset()
 
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
@@ -60,6 +73,11 @@ class MossTTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self.pending_rows: torch.Tensor | None = None
         self.pending_embeds: torch.Tensor | None = None
+        self.async_decode_mode: Literal["all", "nonstream"] = "all"
+        self.pending_skip_request_ids = frozenset()
+        self.sampling_metadata_host_bufs: list[torch.Tensor] = []
+        self.sampling_metadata_slot = 0
+        self.sampling_metadata_events: list[torch.cuda.Event | None] = [None, None]
 
     def custom_prefill_forward(
         self,
@@ -109,6 +127,133 @@ class MossTTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         self.collect_moss_step(result, forward_batch, schedule_batch, requests)
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        """Use lookahead only when a default-profile sampling graph covers the batch."""
+        datas: list[MossTTSSGLangRequestData] = [req.omni_data for req in batch.reqs]
+        if not datas:
+            return False
+        else:
+            pass
+        if self.async_decode_mode == "nonstream":
+            # note (Zhuofeng Li): streaming first audio must not wait behind lookahead work.
+            for request_data in datas:
+                payload = request_data.stage_payload
+                request = payload.request if payload is not None else None
+                parameters = request.params if request is not None else None
+                if isinstance(parameters, dict) and bool(
+                    parameters.get("stream", False)
+                ):
+                    return False
+                else:
+                    pass
+        else:
+            pass
+        if self.launch_is_audio(datas):
+            return self.can_use_sampling_cuda_graph(datas, is_audio=True)
+        else:
+            return self.can_use_mixed_sampling_cuda_graph(datas, is_audio=False)
+
+    def launch_is_audio(self, datas: list[MossTTSSGLangRequestData]) -> bool:
+        """Predict the forced audio_end boundary from the resolved delay countdown."""
+        config = self.model.config
+        n_vq = int(config.n_vq)
+        delay_slot = int(config.audio_assistant_delay_slot_token_id)
+        audio_start = int(config.audio_start_token_id)
+        for data in datas:
+            for step in range(data.audio_end_scanned_rows, len(data.output_rows)):
+                text_token_id = int(data.output_rows[step][0])
+                if text_token_id == audio_start:
+                    data.audio_end_step = None
+                elif text_token_id == delay_slot and data.audio_end_step is None:
+                    data.audio_end_step = step + n_vq
+                else:
+                    pass
+            data.audio_end_scanned_rows = len(data.output_rows)
+        return all(
+            data.is_audio
+            and (
+                data.audio_end_step is None
+                or self.lookahead_position(data) <= data.audio_end_step
+            )
+            for data in datas
+        )
+
+    @staticmethod
+    def lookahead_position(data: MossTTSSGLangRequestData) -> int:
+        """Sampling position of the next launch; generation_steps lags one
+        step behind while a lookahead step is unresolved."""
+        return max(int(data.sampling_steps), int(data.generation_steps))
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> MossDelayLaunchBuffer:
+        """Sample on the graph, stage the rows to pinned host memory, and feed
+        the next launch without waiting for this step's resolve."""
+        datas: list[MossTTSSGLangRequestData] = [
+            sched_req.data for sched_req in requests
+        ]
+        is_audio = self.launch_is_audio(datas)
+        channel_logits = self.channel_logits_from_result(
+            result, forward_batch, is_audio=is_audio
+        )
+        device = channel_logits[0].device
+        delay_states_before = [self.delay_state_tensor(data, device) for data in datas]
+        sampling_steps_before = [int(data.sampling_steps) for data in datas]
+        positions = [self.lookahead_position(data) for data in datas]
+        for data, position in zip(datas, positions):
+            data.sampling_steps = position + 1
+        rows = self.sample_rows_graphed(
+            channel_logits,
+            datas,
+            positions,
+            full_text_vocabulary=not is_audio,
+        )
+        result.next_token_ids = rows[:, 0].contiguous()
+        embeds = self.model.prepare_multi_modal_inputs(rows)
+        for index, data in enumerate(datas):
+            data.pending_feedback_queue.append(embeds[index])
+        host_rows = self.next_host_staging(tuple(rows.shape), rows.dtype)
+        host_rows[: rows.shape[0]].copy_(rows, non_blocking=True)
+        return MossDelayLaunchBuffer(
+            host_rows=host_rows[: rows.shape[0]],
+            delay_states_before=delay_states_before,
+            sampling_steps_before=sampling_steps_before,
+            feedback_embeds=embeds,
+        )
+
+    def post_decode_resolve(
+        self,
+        launch_buf: MossDelayLaunchBuffer,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Hand the launched rows to finalize. A finished request drops its
+        row; a retracted one also returns to its state before the step, so its
+        re-prefill resumes from the committed rows."""
+        del forward_batch, schedule_batch
+        # note (Zhuofeng Li): output rows must outlive the reused staging buffer.
+        host_rows = launch_buf.host_rows.clone()
+        result.next_token_ids = host_rows[:, 0]
+        self.pending_rows = host_rows
+        self.pending_embeds = None
+        skipped_request_ids: set[str] = set()
+        for index, sched_req in enumerate(requests):
+            data: MossTTSSGLangRequestData = sched_req.data
+            if self.req_is_retracted(data.req):
+                data.delay_state = launch_buf.delay_states_before[index]
+                data.sampling_steps = launch_buf.sampling_steps_before[index]
+                skipped_request_ids.add(sched_req.request_id)
+            elif data.req.finished():
+                skipped_request_ids.add(sched_req.request_id)
+            else:
+                pass
+        self.pending_skip_request_ids = frozenset(skipped_request_ids)
 
     def build_prefill_input_embeds(
         self,
@@ -239,7 +384,18 @@ class MossTTSModelRunner(ModelRunner):
             pass
 
         if self.can_use_sampling_cuda_graph(datas, is_audio=is_audio):
-            rows = self.sample_rows_graphed(channel_logits, datas)
+            rows = self.sample_rows_graphed(
+                channel_logits,
+                datas,
+                [int(data.generation_steps) for data in datas],
+            )
+        elif self.can_use_mixed_sampling_cuda_graph(datas, is_audio=is_audio):
+            rows = self.sample_rows_graphed(
+                channel_logits,
+                datas,
+                [int(data.generation_steps) for data in datas],
+                full_text_vocabulary=True,
+            )
         else:
             rows = self.sample_rows(
                 channel_logits,
@@ -283,10 +439,32 @@ class MossTTSModelRunner(ModelRunner):
         available = getattr(self.model, "sampling_graph_available", None)
         return bool(callable(available) and available(batch_size))
 
+    def can_use_mixed_sampling_cuda_graph(
+        self,
+        datas: list[MossTTSSGLangRequestData],
+        *,
+        is_audio: bool,
+    ) -> bool:
+        """Full-text-vocabulary graph for default-profile batches that are not
+        all-audio: prefill steps and the step after audio_end."""
+        if is_audio or not datas:
+            return False
+        else:
+            pass
+        available = getattr(self.model, "mixed_sampling_graph_available", None)
+        if not callable(available) or not available(len(datas)):
+            return False
+        else:
+            pass
+        return all(self.model.is_sampling_cuda_graph_compatible(data) for data in datas)
+
     def sample_rows_graphed(
         self,
         channel_logits: list[torch.Tensor],
         datas: list[MossTTSSGLangRequestData],
+        sampling_positions: list[int],
+        *,
+        full_text_vocabulary: bool = False,
     ) -> torch.Tensor:
         device = channel_logits[0].device
         batch_size = len(datas)
@@ -294,15 +472,10 @@ class MossTTSModelRunner(ModelRunner):
         delay_state = torch.stack(
             [self.delay_state_tensor(data, device) for data in datas], dim=0
         )
-        seeds = torch.tensor(
+        seeds, generation_steps = self.sampling_metadata(
             [int(data.sampling_seed) for data in datas],
-            dtype=torch.long,
-            device=device,
-        )
-        generation_steps = torch.tensor(
-            [int(data.generation_steps) for data in datas],
-            dtype=torch.long,
-            device=device,
+            sampling_positions,
+            device,
         )
         audio_logits = getattr(channel_logits, "fused_audio", None)
         if audio_logits is None:
@@ -318,7 +491,12 @@ class MossTTSModelRunner(ModelRunner):
             )
         else:
             pass
-        sampled = self.model.sample_delay_graphed(
+        sample_graphed = (
+            self.model.sample_mixed_graphed
+            if full_text_vocabulary
+            else self.model.sample_delay_graphed
+        )
+        sampled = sample_graphed(
             channel_logits[0].to(torch.float32),
             audio_logits,
             DelayGraphBatch(
@@ -332,6 +510,37 @@ class MossTTSModelRunner(ModelRunner):
         for index, data in enumerate(datas):
             data.delay_state = next_state[index]
         return rows
+
+    def sampling_metadata(
+        self,
+        seeds: list[int],
+        positions: list[int],
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Upload seeds and positions without a pageable copy blocking the forward."""
+        values = torch.tensor([seeds, positions], dtype=torch.long).t()
+        if device.type != "cuda":
+            metadata = values.to(device=device)
+        else:
+            host = self.pinned_pingpong(
+                "sampling_metadata_host_bufs",
+                "sampling_metadata_slot",
+                tuple(values.shape),
+                torch.long,
+                realloc_on_grow=True,
+            )
+            slot = self.sampling_metadata_slot ^ 1
+            event = self.sampling_metadata_events[slot]
+            if event is not None:
+                event.synchronize()
+            else:
+                event = torch.cuda.Event()
+                self.sampling_metadata_events[slot] = event
+            rows = int(values.shape[0])
+            host[:rows].copy_(values)
+            metadata = host[:rows].to(device=device, non_blocking=True)
+            event.record(torch.cuda.current_stream(device))
+        return metadata[:, 0], metadata[:, 1]
 
     def channel_logits_from_result(
         self,
@@ -911,9 +1120,11 @@ class MossTTSModelRunner(ModelRunner):
         del result
         rows = self.pending_rows
         embeds = self.pending_embeds
+        skipped_request_ids = self.pending_skip_request_ids
         self.pending_rows = None
         self.pending_embeds = None
-        if rows is None or embeds is None:
+        self.pending_skip_request_ids = frozenset()
+        if rows is None:
             return
         else:
             pass
@@ -921,7 +1132,14 @@ class MossTTSModelRunner(ModelRunner):
         eos_id = int(self.model.config.im_end_token_id)
         audio_start_id = int(self.model.config.audio_start_token_id)
         audio_end_id = int(self.model.config.audio_end_token_id)
+        # Note (rsi): one host copy per step replaces a device clone per row; the
+        # rows feed host bookkeeping and stream chunks, which then ship inline.
+        host_rows = rows.to(device="cpu")
         for row_idx, sched_req in enumerate(scheduler_output.requests):
+            if sched_req.request_id in skipped_request_ids:
+                continue
+            else:
+                pass
             req_output = outputs[sched_req.request_id]
             if req_output.data is None:
                 continue
@@ -938,7 +1156,8 @@ class MossTTSModelRunner(ModelRunner):
                 continue
             else:
                 pass
-            sched_req.data.output_rows.append(rows[row_idx].detach().clone())
-            sched_req.data.pending_feedback_queue.append(
-                embeds[row_idx].detach().clone()
-            )
+            sched_req.data.output_rows.append(host_rows[row_idx])
+            if embeds is not None:
+                sched_req.data.pending_feedback_queue.append(embeds[row_idx])
+            else:
+                pass

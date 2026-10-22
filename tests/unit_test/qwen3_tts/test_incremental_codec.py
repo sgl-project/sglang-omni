@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import random
 
@@ -11,7 +12,11 @@ import torch.nn.functional as F
 from torch import nn
 
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
+from sglang_omni.models.qwen3_tts.compat import (
+    apply_qwen_tts_transformers_compatibility_patches,
+)
 from sglang_omni.models.qwen3_tts.incremental_codec import (
+    FusedIncrementalTransformer,
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
     channels_last_causal_conv1d,
@@ -433,6 +438,101 @@ def test_incremental_transformer_matches_whole_across_window(
     assert all(
         item.shape[-2] == transformer.window_size - 1
         for item in state.transformer_keys.values()
+    )
+
+
+def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
+    return float((actual.float() - expected).norm() / expected.norm())
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_fused_transformer_tracks_fp32_as_closely_as_the_plain_step() -> None:
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+
+    torch.manual_seed(5)
+    config = Qwen3TTSTokenizerV2DecoderConfig(
+        hidden_size=512,
+        latent_dim=1024,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        head_dim=64,
+        intermediate_size=1024,
+        num_hidden_layers=2,
+        max_position_embeddings=64,
+    )
+    reference = Qwen3TTSTokenizerV2DecoderTransformerModel(config).cuda().eval()
+    with torch.no_grad():
+        for layer in reference.layers:
+            layer.self_attn_layer_scale.scale.uniform_(0.3, 0.7)
+            layer.mlp_layer_scale.scale.uniform_(0.3, 0.7)
+            layer.input_layernorm.weight.uniform_(0.5, 1.5)
+            layer.post_attention_layernorm.weight.uniform_(0.5, 1.5)
+        reference.norm.weight.uniform_(0.5, 1.5)
+    plain = copy.deepcopy(reference).bfloat16()
+    fused = FusedIncrementalTransformer(copy.deepcopy(reference).bfloat16())
+    starts = torch.tensor([0, 23, 150], device="cuda")
+    states = {
+        name: Qwen3TTSIncrementalCodecState(frame_positions=starts.clone())
+        for name in ("reference", "plain", "fused")
+    }
+    steps = [(5, None), (64, None), (1, None), (17, torch.tensor([17, 14, 9]))]
+    with torch.no_grad():
+        for width, valid_frames in steps:
+            inputs = torch.randn(3, width, 1024, device="cuda")
+            valid = None if valid_frames is None else valid_frames.cuda()
+            expected = incremental_transformer(
+                reference, inputs, states["reference"], valid
+            )
+            outputs = {
+                "plain": incremental_transformer(
+                    plain, inputs.bfloat16(), states["plain"], valid
+                ),
+                "fused": fused(inputs.bfloat16(), states["fused"], valid),
+            }
+            assert relative_error(outputs["fused"], expected) <= 1.1 * relative_error(
+                outputs["plain"], expected
+            )
+            for truths, plains, fuseds in (
+                (
+                    states["reference"].transformer_keys,
+                    states["plain"].transformer_keys,
+                    states["fused"].transformer_keys,
+                ),
+                (
+                    states["reference"].transformer_values,
+                    states["plain"].transformer_values,
+                    states["fused"].transformer_values,
+                ),
+            ):
+                for layer_index, truth in truths.items():
+                    assert fuseds[layer_index].shape == truth.shape
+                    assert relative_error(
+                        fuseds[layer_index], truth
+                    ) <= 1.1 * relative_error(plains[layer_index], truth)
+            for state in states.values():
+                state.advance(width)
+
+    compiled = torch.compile(fused.__call__, dynamic=False, fullgraph=True)
+    states = {
+        name: Qwen3TTSIncrementalCodecState(frame_positions=starts.clone())
+        for name in ("reference", "plain", "compiled")
+    }
+    inputs = torch.randn(3, 8, 1024, device="cuda")
+    with torch.no_grad():
+        expected = incremental_transformer(reference, inputs, states["reference"])
+        plain_output = incremental_transformer(
+            plain, inputs.bfloat16(), states["plain"]
+        )
+        compiled_output = compiled(inputs.bfloat16(), states["compiled"])
+    assert relative_error(compiled_output, expected) <= 1.1 * relative_error(
+        plain_output, expected
     )
 
 

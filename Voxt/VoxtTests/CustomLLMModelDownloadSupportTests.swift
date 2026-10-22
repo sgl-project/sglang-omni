@@ -1,6 +1,7 @@
 // CustomLLMModelDownloadSupportTests.swift
 // Provides Custom LLMModel Download Support Tests for Voxt test coverage.
 
+import HuggingFace
 import XCTest
 @testable import Voxt
 
@@ -547,6 +548,219 @@ final class CustomLLMModelDownloadSupportTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Range"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: partURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecarURL.path))
+    }
+
+    @MainActor
+    func testDownloadAttemptReusesCompleteFilesAndPreservesTransferDescriptorAndProgressOrder() async throws {
+        let directory = try TemporaryDirectory()
+        try Data("ok".utf8).write(to: directory.url.appendingPathComponent("config.json"))
+        try FileManager.default.createDirectory(at: directory.url.appendingPathComponent("weights"), withIntermediateDirectories: true)
+        try Data("no".utf8).write(to: directory.url.appendingPathComponent("weights/model file.safetensors"))
+        let context = makeAttemptContext(entries: [
+            .init(path: "config.json", size: 2),
+            .init(path: "weights/model file.safetensors", size: 3)
+        ], totalBytes: 5)
+        var updates: [String] = []
+        var transferCount = 0
+        let result = try await CustomLLMModelDownloadAttempt.run(
+            context: context,
+            baseURL: URL(string: "https://hf-mirror.com")!,
+            directory: directory.url,
+            userAgent: "VoxtTests",
+            bearerToken: "test-token",
+            transfer: { descriptor, progress in
+                transferCount += 1
+                XCTAssertEqual(descriptor.sourceURL.absoluteString, "https://hf-mirror.com/test/repo/resolve/main/weights/model%20file.safetensors?download=true")
+                XCTAssertEqual(descriptor.destinationURL, directory.url.appendingPathComponent("weights/model file.safetensors"))
+                XCTAssertEqual(descriptor.relativePath, "weights/model file.safetensors")
+                XCTAssertEqual(descriptor.expectedSize, 3)
+                XCTAssertEqual(descriptor.userAgent, "VoxtTests")
+                XCTAssertEqual(descriptor.bearerToken, "test-token")
+                XCTAssertTrue(descriptor.disableProxy)
+                XCTAssertEqual(updates.last, "started:2:1")
+                try Data("abc".utf8).write(to: descriptor.destinationURL)
+                progress.completedUnitCount = 3
+            },
+            onProgress: { event in
+                switch event {
+                case .updated(let fraction, let completedBytes, let totalBytes, let currentFile, let completedFiles, let totalFiles):
+                    XCTAssertEqual(totalBytes, 5)
+                    XCTAssertEqual(totalFiles, 2)
+                    XCTAssertEqual(fraction, Double(completedBytes) / 5)
+                    updates.append("\(currentFile ?? "done"):\(completedBytes):\(completedFiles)")
+                case .transferStarted(_, let expectedFileBytes, let completedBytes, _, _, let completedFiles, _):
+                    XCTAssertEqual(expectedFileBytes, 3)
+                    updates.append("started:\(completedBytes):\(completedFiles)")
+                case .transferFinished:
+                    updates.append("finished")
+                }
+            }
+        )
+        XCTAssertEqual(result, directory.url)
+        XCTAssertEqual(transferCount, 1)
+        XCTAssertEqual(updates, ["config.json:0:0", "done:2:1", "weights/model file.safetensors:2:1", "started:2:1", "finished", "done:5:2"])
+        XCTAssertEqual(try Data(contentsOf: result.appendingPathComponent("weights/model file.safetensors")), Data("abc".utf8))
+    }
+
+    @MainActor
+    func testDownloadAttemptRetainsUnknownAndOneByteSizePolicyAndClampsDisplayBytes() async throws {
+        let directory = try TemporaryDirectory()
+        let context = makeAttemptContext(entries: [
+            .init(path: "unknown.json", size: nil), .init(path: "single.json", size: 1)
+        ], totalBytes: 1)
+        var transferredPaths: [String] = []
+        var completedFileCounts: [Int] = []
+        _ = try await CustomLLMModelDownloadAttempt.run(
+            context: context, baseURL: URL(string: "https://example.com")!,
+            directory: directory.url, userAgent: "VoxtTests", bearerToken: nil,
+            transfer: { descriptor, progress in
+                transferredPaths.append(descriptor.relativePath)
+                XCTAssertNil(descriptor.expectedSize)
+                XCTAssertNil(descriptor.bearerToken)
+                XCTAssertFalse(descriptor.disableProxy)
+                XCTAssertEqual(progress.totalUnitCount, 1)
+                progress.completedUnitCount = 10
+            },
+            onProgress: { event in
+                if case .updated(let fraction, let completedBytes, _, let currentFile, let completedFiles, _) = event, currentFile == nil {
+                    XCTAssertEqual(fraction, 1)
+                    XCTAssertEqual(completedBytes, 1)
+                    completedFileCounts.append(completedFiles)
+                }
+            }
+        )
+        XCTAssertEqual(transferredPaths, ["unknown.json", "single.json"])
+        XCTAssertEqual(completedFileCounts, [1, 2])
+    }
+
+    @MainActor
+    func testDownloadAttemptPropagatesFailureWithoutFinishingProgressOrStartingNextFile() async throws {
+        let directory = try TemporaryDirectory()
+        let context = makeAttemptContext(entries: [
+            .init(path: "first.json", size: 2), .init(path: "next.json", size: 2)
+        ], totalBytes: 4)
+        var startedCount = 0
+        var finishedCount = 0
+        var transferCount = 0
+        do {
+            _ = try await CustomLLMModelDownloadAttempt.run(
+                context: context, baseURL: URL(string: "https://example.com")!,
+                directory: directory.url, userAgent: "VoxtTests", bearerToken: nil,
+                transfer: { _, _ in
+                    transferCount += 1
+                    throw URLError(.notConnectedToInternet)
+                },
+                onProgress: { event in
+                    switch event {
+                    case .transferStarted: startedCount += 1
+                    case .transferFinished: finishedCount += 1
+                    case .updated: break
+                    }
+                }
+            )
+            XCTFail("Expected transport failure")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .notConnectedToInternet)
+        }
+        XCTAssertEqual(transferCount, 1)
+        XCTAssertEqual(startedCount, 1)
+        XCTAssertEqual(finishedCount, 0)
+    }
+
+    @MainActor
+    func testDownloadAttemptPropagatesTransferCancellationWithoutCompletionEvents() async throws {
+        let directory = try TemporaryDirectory()
+        var eventCount = 0
+        do {
+            _ = try await CustomLLMModelDownloadAttempt.run(
+                context: makeAttemptContext(entries: [.init(path: "config.json", size: 2)], totalBytes: 2),
+                baseURL: URL(string: "https://example.com")!, directory: directory.url,
+                userAgent: "VoxtTests", bearerToken: nil,
+                transfer: { _, _ in throw CancellationError() },
+                onProgress: { _ in eventCount += 1 }
+            )
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            XCTAssertEqual(eventCount, 2)
+        }
+    }
+
+    @MainActor
+    func testDownloadAttemptCancellationReachesSuspendedTransferWithoutCompletingItEarly() async throws {
+        let directory = try TemporaryDirectory()
+        let barrier = ManualTaskBarrier()
+        let context = makeAttemptContext(entries: [.init(path: "config.json", size: 2)], totalBytes: 2)
+        var eventCount = 0
+        let task = Task { @MainActor in
+            try await CustomLLMModelDownloadAttempt.run(
+                context: context, baseURL: URL(string: "https://example.com")!,
+                directory: directory.url, userAgent: "VoxtTests", bearerToken: nil,
+                transfer: { _, _ in
+                    await barrier.wait()
+                    try Task.checkCancellation()
+                },
+                onProgress: { _ in eventCount += 1 }
+            )
+        }
+        await barrier.waitUntilEntered()
+        task.cancel()
+        XCTAssertEqual(eventCount, 2)
+        barrier.release()
+        do {
+            _ = try await task.value
+            XCTFail("Expected suspended transfer cancellation")
+        } catch is CancellationError {
+            XCTAssertEqual(eventCount, 2)
+        }
+    }
+
+    @MainActor
+    func testDownloadAttemptChecksCancellationBeforeCreatingDestination() async throws {
+        let directory = try TemporaryDirectory()
+        let destination = directory.url.appendingPathComponent("not-created")
+        let context = makeAttemptContext(entries: [.init(path: "config.json", size: 2)], totalBytes: 2)
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await CustomLLMModelDownloadAttempt.run(
+                context: context, baseURL: URL(string: "https://example.com")!,
+                directory: destination, userAgent: "VoxtTests", bearerToken: nil,
+                transfer: { _, _ in XCTFail("Cancelled attempt must not transfer") },
+                onProgress: { _ in XCTFail("Cancelled attempt must not publish progress") }
+            )
+        }
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        }
+    }
+
+    @MainActor
+    func testDownloadAttemptRejectsEscapingPathBeforeTransferRegistration() async throws {
+        let directory = try TemporaryDirectory()
+        var eventCount = 0
+        do {
+            _ = try await CustomLLMModelDownloadAttempt.run(
+                context: makeAttemptContext(entries: [.init(path: "../outside.json", size: 2)], totalBytes: 2),
+                baseURL: URL(string: "https://example.com")!, directory: directory.url,
+                userAgent: "VoxtTests", bearerToken: nil,
+                transfer: { _, _ in XCTFail("Invalid path must not transfer") },
+                onProgress: { _ in eventCount += 1 }
+            )
+            XCTFail("Expected invalid path")
+        } catch let error as NSError {
+            XCTAssertEqual(error.domain, "Voxt.CustomLLM")
+            XCTAssertEqual(error.code, 1002)
+        }
+        XCTAssertEqual(eventCount, 1)
+    }
+
+    @MainActor
+    private func makeAttemptContext(
+        entries: [MLXModelDownloadSupport.ModelFileEntry], totalBytes: Int64
+    ) -> CustomLLMModelDownloadSupport.DownloadContext {
+        .init(repoID: Repo.ID(rawValue: "test/repo")!, entries: entries, totalBytes: totalBytes)
     }
 
     func testPurgePartialArtifactsRemovesPartAndSidecar() throws {

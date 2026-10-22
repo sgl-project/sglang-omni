@@ -20,8 +20,9 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         XCTAssertEqual(environment, ["PATH": "/usr/bin", "HOME": "/Users/someone"])
     }
 
-    func testLaunchSettingsNeedTheOmniBackendAndARuntimePath() {
-        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server"]))
+    func testLaunchSettingsUseExplicitRuntimePathForDevelopment() {
+#if arch(arm64)
+        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "swift"]))
         XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "omni"]))
         XCTAssertNil(OmniASRBackend.LaunchSettings(environment: ["VOXT_ASR_BACKEND": "omni", "VOXT_OMNI_RUNTIME": ""]))
         let settings = OmniASRBackend.LaunchSettings(environment: [
@@ -29,6 +30,44 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             "VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server",
         ])
         XCTAssertEqual(settings?.runtimeExecutable, URL(fileURLWithPath: "/opt/qwen3_asr_server"))
+#else
+        XCTAssertNil(OmniASRBackend.LaunchSettings(environment: [
+            "VOXT_OMNI_RUNTIME": "/opt/qwen3_asr_server",
+        ]))
+#endif
+    }
+
+    func testLaunchSettingsFindTheBundledRuntime() throws {
+        let bundleDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voxt-omni-bundle-\(UUID().uuidString).bundle", isDirectory: true)
+        let runtimeDirectory = bundleDirectory
+            .appendingPathComponent("Contents/Resources/OmniRuntime/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundleDirectory) }
+
+        let bundleInfo = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.voxt.test.omni</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>
+        """
+        let bundleInfoDirectory = bundleDirectory.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundleInfoDirectory, withIntermediateDirectories: true)
+        try bundleInfo.write(
+            to: bundleInfoDirectory.appendingPathComponent("Info.plist"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtimeExecutable = runtimeDirectory.appendingPathComponent("qwen3_asr_server")
+        try Data().write(to: runtimeExecutable)
+
+        let bundle = try XCTUnwrap(Bundle(url: bundleDirectory))
+        let settings = OmniASRBackend.LaunchSettings(environment: [:], bundle: bundle)
+
+#if arch(arm64)
+        XCTAssertEqual(settings?.runtimeExecutable, runtimeExecutable)
+#else
+        XCTAssertNil(settings)
+#endif
     }
 
     func testEachKindRunsItsOwnServerBesideTheQwenRuntime() {
@@ -73,8 +112,43 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/SenseVoiceSmall"], .senseVoice)
     }
 
-    /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;
-    /// other sizes and quantizations keep the Swift backend.
+    func testOmniModelRoutingIdentifiesOnlyNativeRuntimeCheckpoints() {
+        for model in MLXModelCatalog.availableModels {
+            XCTAssertEqual(OmniASRBackend.usesOmniRuntime(for: model.id), OmniASRBackend.isAppleSilicon, model.id)
+            XCTAssertNotNil(OmniASRBackend.nativeModelKind(for: model.id), model.id)
+            XCTAssertNil(OmniASRBackend.unavailability(for: model.id, isAppleSilicon: true), model.id)
+            XCTAssertEqual(OmniASRBackend.unavailability(for: model.id, isAppleSilicon: false), .unsupportedPlatform, model.id)
+        }
+        XCTAssertFalse(OmniASRBackend.usesOmniRuntime(for: "unknown/model"))
+    }
+
+    func testNativeAvailabilityRejectsUnsupportedCheckpointsWithoutFamilyInference() {
+        for repo in [
+            "unknown/Qwen3-ASR-0.6B-8bit",
+            "mlx-community/Qwen3-ASR-1.7B-3bit",
+            "unknown/model",
+        ] {
+            XCTAssertEqual(OmniASRBackend.unavailability(for: repo, isAppleSilicon: true), .unsupportedModel)
+            XCTAssertNil(OmniASRBackend.nativeModelKind(for: repo))
+            XCTAssertFalse(OmniASRBackend.usesOmniRuntime(for: repo))
+        }
+        for repo in OmniASRBackend.modelKindsByRepo.keys {
+            XCTAssertNil(OmniASRBackend.unavailability(for: repo, isAppleSilicon: true))
+            XCTAssertEqual(OmniASRBackend.unavailability(for: repo, isAppleSilicon: false), .unsupportedPlatform)
+        }
+    }
+
+    func testNativeAvailabilityCanonicalizesLegacyAliases() {
+        XCTAssertEqual(OmniASRBackend.nativeModelKind(for: "mlx-community/whisper-base-mlx"), .whisper)
+        for repo in ["mlx-community/Parakeet-0.6B", "mlx-community/parakeet-tdt-0.6b-v2"] {
+            XCTAssertEqual(OmniASRBackend.nativeModelKind(for: repo), .parakeet)
+            XCTAssertNil(OmniASRBackend.unavailability(for: repo, isAppleSilicon: true))
+            XCTAssertEqual(OmniASRBackend.unavailability(for: repo, isAppleSilicon: false), .unsupportedPlatform)
+            XCTAssertEqual(OmniASRBackend.usesOmniRuntime(for: repo), OmniASRBackend.isAppleSilicon)
+        }
+    }
+
+    /// Only the checkpoints validated against the native runtime are eligible.
     func testQwen3ASRCheckpointsWithGoldenOutputsRunOnTheNativeRuntime() {
         XCTAssertEqual(OmniASRBackend.modelKindsByRepo.filter { $0.value == .qwen3ASR }, [
             "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
@@ -85,7 +159,7 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
 
     /// The runtime binary is started directly in supervised mode, not through Python.
     func testLaunchRunsTheRuntimeInSupervisedMode() async throws {
-        let scratch = FileManager.default.temporaryDirectory
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
             .appendingPathComponent("voxt-omni-launch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -120,7 +194,7 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             .dropLast()
             .map(String.init)
         XCTAssertEqual(commandLine, [
-            runtimeExecutable.path,
+            runtimeExecutable.resolvingSymlinksInPath().path,
             "--supervised",
             "--model-kind", "qwen3_asr",
             "--model-directory", modelDirectory.path,

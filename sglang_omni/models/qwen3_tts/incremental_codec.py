@@ -9,13 +9,18 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
+from sglang.kernels.ops.activation import silu_and_mul
+from sglang.kernels.ops.attention.rope import apply_rope_inplace
+from sglang.kernels.ops.layernorm import rmsnorm
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.channels_last_conv import (
     channels_last_conv1d,
     channels_last_conv_transpose1d,
     channels_last_weight,
     is_channels_last_conv_device,
 )
+from sglang_omni.utils.merged_projections import merge_projection_weights
 
 if TYPE_CHECKING:
     from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
@@ -25,6 +30,7 @@ if TYPE_CHECKING:
         Qwen3TTSTokenizerV2Decoder,
         Qwen3TTSTokenizerV2DecoderAttention,
         Qwen3TTSTokenizerV2DecoderDecoderResidualUnit,
+        Qwen3TTSTokenizerV2DecoderRMSNorm,
         Qwen3TTSTokenizerV2DecoderTransformerModel,
     )
 else:
@@ -391,6 +397,50 @@ def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
     return hidden_states.reshape(batch, heads * groups, length, head_dim)
 
 
+def attention_positions(
+    state: Qwen3TTSIncrementalCodecState,
+    batch_size: int,
+    fresh_frames: int,
+    device: torch.device,
+) -> tuple[int, torch.Tensor, torch.Tensor]:
+    """The retained K/V length, then each row's absolute key positions, retained keys
+    first, and query positions."""
+    frame_positions = state.row_frame_positions(batch_size, device)
+    # Note (Qihao Liu): the retained buffer is right-aligned: slot j of a buffer
+    # of length P holds absolute position frame_position - P + j. Deriving P
+    # from the buffer rather than from transformer_context_length keeps this
+    # correct when an arena hands over a full-width buffer that a cold stream
+    # has not filled.
+    prior_key = state.transformer_keys.get(0)
+    prior_length = 0 if prior_key is None else int(prior_key.shape[-2])
+    key_offsets = torch.arange(
+        -prior_length, fresh_frames, device=device, dtype=torch.long
+    )
+    query_offsets = torch.arange(fresh_frames, device=device, dtype=torch.long)
+    key_positions = frame_positions.unsqueeze(1) + key_offsets.unsqueeze(0)
+    query_positions = frame_positions.unsqueeze(1) + query_offsets.unsqueeze(0)
+    return prior_length, key_positions, query_positions
+
+
+def allowed_keys(
+    key_positions: torch.Tensor, query_positions: torch.Tensor, sliding_window: int
+) -> torch.Tensor:
+    """(batch, queries, keys): whether each query attends each key."""
+    keys_by_row = key_positions.unsqueeze(1)
+    queries_by_row = query_positions.unsqueeze(2)
+    allowed = keys_by_row <= queries_by_row
+    if sliding_window > 0:
+        allowed &= keys_by_row > (queries_by_row - sliding_window)
+    else:
+        pass
+    # Note (Qihao Liu): a right-aligned K/V buffer that a stream has not filled
+    # yet holds zeros whose nominal absolute position is negative. Those slots
+    # would otherwise satisfy both tests above for an early query, so mask them
+    # explicitly. This is what lets a cold and a warm stream share one cohort.
+    allowed &= (key_positions >= 0).unsqueeze(1)
+    return allowed
+
+
 def incremental_attention(
     attention: "Qwen3TTSTokenizerV2DecoderAttention",
     hidden_states: torch.Tensor,
@@ -440,19 +490,9 @@ def incremental_attention(
     scores = torch.matmul(query, repeated_key.transpose(2, 3)) * float(
         attention.scaling
     )
-    keys_by_row = key_positions.unsqueeze(1)
-    queries_by_row = query_positions.unsqueeze(2)
-    allowed = keys_by_row <= queries_by_row
-    sliding_window = int(attention.sliding_window)
-    if sliding_window > 0:
-        allowed &= keys_by_row > (queries_by_row - sliding_window)
-    else:
-        pass
-    # Note (Qihao Liu): a right-aligned K/V buffer that a stream has not filled
-    # yet holds zeros whose nominal absolute position is negative. Those slots
-    # would otherwise satisfy both tests above for an early query, so mask them
-    # explicitly. This is what lets a cold and a warm stream share one cohort.
-    allowed &= (key_positions >= 0).unsqueeze(1)
+    allowed = allowed_keys(
+        key_positions, query_positions, int(attention.sliding_window)
+    )
     scores = scores.masked_fill(
         ~allowed.unsqueeze(1),
         torch.finfo(scores.dtype).min,
@@ -477,6 +517,19 @@ def frames_ending_at(
     return sequence.gather(dim, index.view(shape).expand(expanded))
 
 
+def retained_frames(
+    sequence: torch.Tensor, retained_end: torch.Tensor | None, retained_context: int
+) -> torch.Tensor:
+    """A layer's keys or values kept for the next decode: the last retained_context
+    frames, ending at each row's retained_end when given."""
+    if retained_end is not None:
+        return frames_ending_at(sequence, retained_end, retained_context, -2)
+    elif retained_context:
+        return sequence[..., -retained_context:, :].clone()
+    else:
+        return sequence[..., :0, :].clone()
+
+
 def incremental_transformer(
     transformer: "Qwen3TTSTokenizerV2DecoderTransformerModel",
     hidden_states: torch.Tensor,
@@ -486,27 +539,16 @@ def incremental_transformer(
     hidden_states = transformer.input_proj(hidden_states)
     batch_size = int(hidden_states.shape[0])
     fresh_frames = int(hidden_states.shape[1])
-    device = hidden_states.device
-    frame_positions = state.row_frame_positions(batch_size, device)
-    # Note (Qihao Liu): the retained buffer is right-aligned: slot j of a buffer
-    # of length P holds absolute position frame_position - P + j. Deriving P
-    # from the buffer rather than from transformer_context_length keeps this
-    # correct when an arena hands over a full-width buffer that a cold stream
-    # has not filled.
-    prior_key = state.transformer_keys.get(0)
-    prior_length = 0 if prior_key is None else int(prior_key.shape[-2])
-    key_offsets = torch.arange(
-        -prior_length, fresh_frames, device=device, dtype=torch.long
+    prior_length, key_positions, query_positions = attention_positions(
+        state, batch_size, fresh_frames, hidden_states.device
     )
-    query_offsets = torch.arange(fresh_frames, device=device, dtype=torch.long)
-    key_positions = frame_positions.unsqueeze(1) + key_offsets.unsqueeze(0)
-    query_positions = frame_positions.unsqueeze(1) + query_offsets.unsqueeze(0)
     position_embeddings = transformer.rotary_emb(hidden_states, query_positions)
 
     next_keys: dict[int, torch.Tensor] = {}
     next_values: dict[int, torch.Tensor] = {}
     window_size = int(transformer.window_size)
     retained_context = max(0, window_size - 1)
+    retained_end = None if valid_frames is None else prior_length + valid_frames
     for layer_index, layer in enumerate(transformer.layers):
         residual = hidden_states
         normalized = layer.input_layernorm(hidden_states)
@@ -524,29 +566,157 @@ def incremental_transformer(
         hidden_states = layer.post_attention_layernorm(hidden_states)
         hidden_states = layer.mlp(hidden_states)
         hidden_states = residual + layer.mlp_layer_scale(hidden_states)
-        if valid_frames is not None:
-            retained_end = prior_length + valid_frames
-            next_keys[layer_index] = frames_ending_at(
-                key, retained_end, retained_context, -2
-            )
-            next_values[layer_index] = frames_ending_at(
-                value, retained_end, retained_context, -2
-            )
-        else:
-            next_keys[layer_index] = (
-                key[..., -retained_context:, :].clone()
-                if retained_context
-                else key[..., :0, :].clone()
-            )
-            next_values[layer_index] = (
-                value[..., -retained_context:, :].clone()
-                if retained_context
-                else value[..., :0, :].clone()
-            )
+        next_keys[layer_index] = retained_frames(key, retained_end, retained_context)
+        next_values[layer_index] = retained_frames(
+            value, retained_end, retained_context
+        )
 
     state.transformer_keys = next_keys
     state.transformer_values = next_values
     return transformer.output_proj(transformer.norm(hidden_states))
+
+
+class FusedIncrementalTransformer:
+    """incremental_transformer with one qkv and one gate-up GEMM per layer, and RMSNorm, rotary,
+    SwiGLU and LayerScale plus residual one kernel each."""
+
+    def __init__(
+        self, transformer: "Qwen3TTSTokenizerV2DecoderTransformerModel"
+    ) -> None:
+        rotary = transformer.rotary_emb
+        assert (
+            not transformer.config.attention_bias
+        ), "the decoder attention has no bias"
+        assert transformer.config.hidden_act == "silu", "the decoder MLP is SwiGLU"
+        assert rotary.rope_type == "default", "cos and sin come from inv_freq"
+        assert transformer.window_size > 1, "the decoder retains a sliding window"
+        self.transformer = transformer
+        self.inverse_frequencies = rotary.inv_freq.float()
+        self.attention_scaling = float(rotary.attention_scaling)
+        assert all(
+            isinstance(layer.self_attn.q_norm, torch.nn.Identity)
+            and isinstance(layer.self_attn.k_norm, torch.nn.Identity)
+            for layer in transformer.layers
+        ), "the decoder attention has no q or k norm"
+        merge_projection_weights(transformer.layers)
+
+    @staticmethod
+    def normalize(
+        hidden_states: torch.Tensor, norm: "Qwen3TTSTokenizerV2DecoderRMSNorm"
+    ) -> torch.Tensor:
+        # note (ratish): Dynamo cannot trace the fused kernel's dispatch,
+        # so the precompiled shapes trace the same norm in torch ops.
+        if torch.compiler.is_dynamo_compiling():
+            normalized = hidden_states.float()
+            normalized = normalized * torch.rsqrt(
+                normalized.pow(2).mean(dim=-1, keepdim=True) + norm.variance_epsilon
+            )
+            return (normalized * norm.weight).to(hidden_states.dtype)
+        else:
+            return rmsnorm(hidden_states, norm.weight, norm.variance_epsilon)
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+        valid_frames: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        transformer = self.transformer
+        hidden_states = transformer.input_proj(hidden_states)
+        batch_size = int(hidden_states.shape[0])
+        fresh_frames = int(hidden_states.shape[1])
+        hidden_size = int(hidden_states.shape[2])
+        rows = batch_size * fresh_frames
+        device = hidden_states.device
+        prior_length, key_positions, query_positions = attention_positions(
+            state, batch_size, fresh_frames, device
+        )
+        attention_mask = allowed_keys(
+            key_positions, query_positions, int(transformer.window_size)
+        ).unsqueeze(1)
+        # note (ratish): one cos/sin row per query, from its absolute frame position,
+        # which a stream's reference prefix can carry past max_position_embeddings.
+        angles = query_positions.reshape(rows, 1).float() * self.inverse_frequencies
+        cos_sin = torch.cat((angles.cos(), angles.sin()), dim=-1) * (
+            self.attention_scaling
+        )
+        rotary_rows = torch.arange(rows, device=device)
+        hidden_states = hidden_states.reshape(rows, hidden_size)
+        next_keys: dict[int, torch.Tensor] = {}
+        next_values: dict[int, torch.Tensor] = {}
+        retained_context = int(transformer.window_size) - 1
+        retained_end = None if valid_frames is None else prior_length + valid_frames
+        for layer_index, layer in enumerate(transformer.layers):
+            attention = layer.self_attn
+            head_dim = int(attention.head_dim)
+            residual = hidden_states
+            normalized = self.normalize(hidden_states, layer.input_layernorm)
+            query, key, value = F.linear(normalized, attention.qkv_weight).split(
+                [
+                    attention.q_proj.out_features,
+                    attention.k_proj.out_features,
+                    attention.v_proj.out_features,
+                ],
+                dim=-1,
+            )
+            query = query.view(rows, -1, head_dim)
+            key = key.view(rows, -1, head_dim)
+            apply_rope_inplace(query, key, cos_sin, rotary_rows, is_neox=True)
+            key = key.view(batch_size, fresh_frames, -1, head_dim).transpose(1, 2)
+            value = value.view(batch_size, fresh_frames, -1, head_dim).transpose(1, 2)
+            prior_key = state.transformer_keys.get(layer_index)
+            prior_value = state.transformer_values.get(layer_index)
+            if (prior_key is None) != (prior_value is None):
+                raise RuntimeError(
+                    f"incomplete transformer state for layer {layer_index}"
+                )
+            elif prior_key is not None:
+                key = torch.cat((prior_key, key), dim=-2)
+                value = torch.cat((prior_value, value), dim=-2)
+            else:
+                pass
+            attended = F.scaled_dot_product_attention(
+                query.view(batch_size, fresh_frames, -1, head_dim).transpose(1, 2),
+                key,
+                value,
+                attn_mask=attention_mask,
+                scale=float(attention.scaling),
+                enable_gqa=int(attention.num_key_value_groups) > 1,
+            )
+            hidden_states = torch.addcmul(
+                residual,
+                layer.self_attn_layer_scale.scale,
+                F.linear(
+                    attended.transpose(1, 2).reshape(rows, -1), attention.o_proj.weight
+                ),
+            )
+            residual = hidden_states
+            normalized = self.normalize(hidden_states, layer.post_attention_layernorm)
+            gate_up = F.linear(normalized, layer.mlp.gate_up_weight)
+            # note (ratish): torch ops under Dynamo, as in normalize.
+            if torch.compiler.is_dynamo_compiling():
+                gate, up = gate_up.chunk(2, dim=-1)
+                activated = F.silu(gate) * up
+            else:
+                activated = silu_and_mul(gate_up)
+            hidden_states = torch.addcmul(
+                residual,
+                layer.mlp_layer_scale.scale,
+                F.linear(activated, layer.mlp.down_proj.weight),
+            )
+            next_keys[layer_index] = retained_frames(
+                key, retained_end, retained_context
+            )
+            next_values[layer_index] = retained_frames(
+                value, retained_end, retained_context
+            )
+
+        state.transformer_keys = next_keys
+        state.transformer_values = next_values
+        hidden_states = self.normalize(hidden_states, transformer.norm)
+        return transformer.output_proj(
+            hidden_states.view(batch_size, fresh_frames, hidden_size)
+        )
 
 
 def incremental_convnext(
@@ -718,6 +888,17 @@ class Qwen3TTSIncrementalDecoder:
                     )
         else:
             self.channels_last_weights = None
+        transformer_weight = decoder.pre_transformer.input_proj.weight
+        if (
+            current_platform.is_cuda()
+            and transformer_weight.device.type == "cuda"
+            and transformer_weight.dtype in (torch.bfloat16, torch.float16)
+        ):
+            self.fused_transformer: FusedIncrementalTransformer | None = (
+                FusedIncrementalTransformer(decoder.pre_transformer)
+            )
+        else:
+            self.fused_transformer = None
         self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
@@ -1004,17 +1185,21 @@ class Qwen3TTSIncrementalDecoder:
             )
         else:
             pass
-        if is_channels_last:
-            return incremental_transformer(
-                self.decoder.pre_transformer, hidden_states, state, valid_frames
+        transformer_inputs = (
+            hidden_states if is_channels_last else hidden_states.transpose(1, 2)
+        )
+        if self.fused_transformer is not None:
+            transformer_outputs = self.fused_transformer(
+                transformer_inputs, state, valid_frames
             )
         else:
-            return incremental_transformer(
-                self.decoder.pre_transformer,
-                hidden_states.transpose(1, 2),
-                state,
-                valid_frames,
-            ).permute(0, 2, 1)
+            transformer_outputs = incremental_transformer(
+                self.decoder.pre_transformer, transformer_inputs, state, valid_frames
+            )
+        if is_channels_last:
+            return transformer_outputs
+        else:
+            return transformer_outputs.permute(0, 2, 1)
 
     def conv_stack_tensors(
         self, hidden_states: torch.Tensor, state: Qwen3TTSIncrementalCodecState

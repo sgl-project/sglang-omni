@@ -658,6 +658,8 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
