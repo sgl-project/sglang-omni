@@ -39,18 +39,37 @@ from pathlib import Path
 
 from cookbook_order_data import DOWNLOADS_DESC, ROADMAP_ORDER
 
+# Paths are resolved against the repository root so every reported location is
+# a repo-relative path, which stays stable and clickable in CI logs regardless
+# of where the runner checks out the repo.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET = REPO_ROOT / "docs" / "index.rst"
 
+# Fast membership lookups used throughout the checks. ROADMAP_ORDER keeps the
+# fixed positional order; DOWNLOADS_DESC keeps the per-model download counts.
+# Models in one set never belong to the other.
 ROADMAP_SET = frozenset(ROADMAP_ORDER)
 DOWNLOAD_SET = frozenset(DOWNLOADS_DESC)
 
+# A toctree entry is either a bare path ("   cookbook/x.md") or a Sphinx
+# explicit-title form ("   Display Name <cookbook/x.md>"). Both are accepted;
+# group(1) always captures the target cookbook path, so the two forms are
+# handled identically from here on. This matters because a contributor can
+# otherwise bypass the checks by hiding a duplicate/unknown model behind an
+# explicit title.
 _ENTRY_RE = re.compile(r"^   (cookbook/[a-z0-9_.-]+\.md)$")
 _EXPLICIT_TITLE_RE = re.compile(r"^   .+ <(cookbook/[a-z0-9_.-]+\.md)>$")
 
 
 @dataclass(frozen=True)
 class Violation:
+    """One cookbook-order problem found in a checked file.
+
+    Carries the source location (path + line + column) and a human-readable
+    description so the reported message can point the contributor at the
+    exact line to fix.
+    """
+
     path: Path
     lineno: int
     col: int
@@ -59,6 +78,7 @@ class Violation:
 
 
 def repo_relative(path: Path) -> str:
+    """Render a path relative to the repo root for user-facing messages."""
     resolved = path.resolve()
     try:
         return resolved.relative_to(REPO_ROOT).as_posix()
@@ -67,6 +87,7 @@ def repo_relative(path: Path) -> str:
 
 
 def resolve_targets(raw_paths: list[str]) -> list[Path]:
+    """Resolve CLI paths; check docs/index.rst when nothing is passed."""
     if not raw_paths:
         return [DEFAULT_TARGET]
     else:
@@ -74,43 +95,57 @@ def resolve_targets(raw_paths: list[str]) -> list[Path]:
 
 
 def extract_cookbook_entries(source: str) -> tuple[list[str], dict[str, int]]:
-    """Return (entries, lineno_by_entry) for the Cookbook toctree block."""
+    """Return (entries, lineno_by_entry) for the Cookbook toctree block.
+
+    Walks the reStructuredText source and isolates the toctree whose caption is
+    "Cookbook": once that block is entered, every non-blank line that matches a
+    cookbook entry (bare path or explicit title) is collected; the first
+    non-blank line that matches neither terminates the block. The line number
+    of each entry is kept so violations can point at the exact source line.
+    """
     lines = source.splitlines()
     entries: list[str] = []
     lineno_by_entry: dict[str, int] = {}
     in_cookbook = False
     for lineno, line in enumerate(lines, start=1):
+        # A new ".. toctree::" directive ends any previous block.
         if line.startswith(".. toctree::"):
             in_cookbook = False
             continue
+        # Enter the Cookbook block only when its caption is seen.
         if line.strip() == ":caption: Cookbook":
             in_cookbook = True
             continue
         if not in_cookbook:
             continue
+        # Skip blank lines inside the block; they do not terminate it.
         if not line.strip():
             continue
+        # Bare path or explicit-title form -> keep the entry and its line.
         match = _ENTRY_RE.match(line) or _EXPLICIT_TITLE_RE.match(line)
         if match:
             entry = match.group(1)
             entries.append(entry)
             lineno_by_entry[entry] = lineno
         else:
+            # First non-entry line closes the Cookbook block.
             break
     return entries, lineno_by_entry
 
 
 def check_source(path: Path, source: str) -> list[Violation]:
+    """Validate one file's Cookbook block against the data file."""
     violations: list[Violation] = []
     entries, lineno_by_entry = extract_cookbook_entries(source)
 
+    # If the block is absent (or empty), nothing else can be checked.
     if not entries:
         violations.append(
             Violation(path, 1, 1, "cookbook-order", "Cookbook toctree block not found")
         )
         return violations
 
-    # Duplicates.
+    # 1. Duplicates: the same cookbook file listed more than once.
     seen: set[str] = set()
     for entry in entries:
         if entry in seen:
@@ -123,7 +158,8 @@ def check_source(path: Path, source: str) -> list[Violation]:
         else:
             seen.add(entry)
 
-    # Unknown entries.
+    # 2. Unknown entries: cookbook pages that are not registered in the data
+    #    file. The message tells the contributor exactly where to register.
     expected_set = ROADMAP_SET | DOWNLOAD_SET
     actual_set = set(entries)
     for entry in sorted(actual_set - expected_set):
@@ -140,7 +176,9 @@ def check_source(path: Path, source: str) -> list[Violation]:
             )
         )
 
-    # Roadmap models must stay inside the roadmap part.
+    # 3. Roadmap models must stay inside the roadmap part (the first N
+    #    entries); a roadmap model moved into the downloads part is invalid
+    #    even if the overall sequence is otherwise correct.
     for index, entry in enumerate(entries):
         if entry in ROADMAP_SET and index >= len(ROADMAP_ORDER):
             lineno = lineno_by_entry.get(entry, 1)
@@ -155,7 +193,7 @@ def check_source(path: Path, source: str) -> list[Violation]:
                 )
             )
 
-    # Missing entries.
+    # 4. Missing entries: registered models that are absent from the toctree.
     for entry in sorted(expected_set - actual_set):
         violations.append(
             Violation(
@@ -167,7 +205,8 @@ def check_source(path: Path, source: str) -> list[Violation]:
             )
         )
 
-    # Roadmap part: exact positional match.
+    # 5. Roadmap part: exact positional match against ROADMAP_ORDER. Report
+    #    only the first mismatch to keep the message actionable.
     roadmap_part = entries[: len(ROADMAP_ORDER)]
     for index, (actual, expected) in enumerate(zip(roadmap_part, ROADMAP_ORDER)):
         if actual != expected:
@@ -183,10 +222,13 @@ def check_source(path: Path, source: str) -> list[Violation]:
             )
             break
 
-    # Downloads part: descending-order constraint instead of a fixed sequence,
-    # so a new model just has to be inserted where its download count implies.
+    # 6. Downloads part: only the descending-count constraint is enforced, not
+    #    a fixed sequence. This lets a new model be inserted at whatever rank
+    #    its download count implies, without pinning an explicit order here.
     downloads_part = entries[len(ROADMAP_ORDER) :]
     for index, (first, second) in enumerate(zip(downloads_part, downloads_part[1:])):
+        # Entries not in DOWNLOADS_DESC were already reported as unknown above;
+        # skip them here to avoid noise and never fabricate a count.
         if first not in DOWNLOADS_DESC or second not in DOWNLOADS_DESC:
             continue
         first_count = DOWNLOADS_DESC[first]
@@ -208,11 +250,17 @@ def check_source(path: Path, source: str) -> list[Violation]:
 
 
 def check_file(path: Path) -> list[Violation]:
+    """Read a file and run all checks against it."""
     source = path.read_text(encoding="utf-8")
     return check_source(path, source)
 
 
 def report_violations(violations: list[Violation]) -> int:
+    """Print the violations (or OK) and return the exit code for CI.
+
+    0 means the order matches; 1 means at least one violation, which makes the
+    pre-commit hook and any CI step fail.
+    """
     if not violations:
         print(
             f"OK: cookbook order matches PR #2876 "
@@ -230,6 +278,10 @@ def report_violations(violations: list[Violation]) -> int:
 
 
 def print_expected() -> int:
+    """Print the expected cookbook order (roadmap, then downloads by count).
+
+    Useful for maintainers and for generating docs/index.rst programmatically.
+    """
     downloads_sorted = sorted(
         DOWNLOADS_DESC, key=DOWNLOADS_DESC.__getitem__, reverse=True
     )
@@ -239,6 +291,7 @@ def print_expected() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point: parse arguments, check the targets, exit with the result."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "paths", nargs="*", help="Files to check (defaults to docs/index.rst)"
@@ -255,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     targets = resolve_targets(args.paths)
     violations: list[Violation] = []
     for path in targets:
+        # A missing target is a violation, not a skip: silently reporting
+        # success without checking anything would defeat the lint.
         if not path.is_file():
             violations.append(Violation(path, 1, 1, "cookbook-order", "file not found"))
         else:
