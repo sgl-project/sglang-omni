@@ -289,6 +289,8 @@ class ReleaseWorkflowArgumentsTests(unittest.TestCase):
         self.assertIn('tags: ["voxt-v*"]', workflow)
         self.assertIn("--draft --verify-tag --latest", workflow)
         self.assertIn("TODO: describe this release before publishing.", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn("### What's Changed", workflow)
         block = re.search(r"      - name: Package\n.*?        run: \|\n(.*?)\n      - name:", workflow, re.S)
         self.assertIsNotNone(block)
         shell_source = "set -u\n" + textwrap.dedent(block[1])

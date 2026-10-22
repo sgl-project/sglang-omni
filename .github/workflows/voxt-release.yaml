@@ -27,11 +27,15 @@ jobs:
     environment: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && 'voxt-release' || '' }}
     permissions:
       contents: write
+      pull-requests: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The draft lists the pull requests since the previous voxt-v tag.
+          fetch-depth: 0
 
       - name: Resolve the version
         run: |
@@ -194,19 +198,58 @@ jobs:
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/release-notes.md"
-          # The maintainer replaces the TODO line in the draft; Voxt Appcast refuses to publish it.
+          todo="TODO: describe this release before publishing."
+          # Pull requests that touched Voxt or its runtime since the previous voxt-v tag on this history.
+          previous="$(git tag --list 'voxt-v*' --sort=-v:refname --merged HEAD | grep -vxF "$GITHUB_REF_NAME" | head -1 || true)"
+          pulls=""
+          if [[ -n "$previous" ]]; then
+            while IFS= read -r subject; do
+              if [[ "$subject" =~ ^(.*)\ \(#([0-9]+)\)$ ]]; then
+                author="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${BASH_REMATCH[2]}" --jq .user.login)"
+                pulls+="- ${BASH_REMATCH[1]} by @$author in https://github.com/$GITHUB_REPOSITORY/pull/${BASH_REMATCH[2]}"$'\n'
+              else
+                :
+              fi
+            done < <(git log --format=%s "$previous..HEAD" -- Voxt sglang_omni_mlx/native)
+          else
+            :
+          fi
+          if [[ -z "$pulls" ]]; then
+            pulls="- $todo"$'\n'
+          else
+            :
+          fi
+          mlx_version="$(awk -F'==' '$1 == "mlx" {print $2}' sglang_omni_mlx/native/scripts/build-tools.lock)"
+          # The maintainer replaces every TODO line; Voxt Appcast refuses notes that still hold one.
           cat > "$notes" <<NOTES
-          ### Changed
-
-          - TODO: describe this release before publishing.
+          $todo
 
           ### Requirements
 
-          - macOS 15 or later. Local models need Apple Silicon; on an Intel Mac, use a remote speech recognition provider.
+          - macOS 15 or later.
+          - Local models need Apple Silicon. On an Intel Mac, Voxt installs and works with a remote speech recognition provider.
 
+          ### Install
+
+          - Open Voxt-$VERSION.dmg and drag Voxt to Applications, or run Voxt-$VERSION.pkg.
+          - Upgrading from an earlier Voxt: install over it, or let the app's update check install it; settings, history, permissions and downloaded models carry over.
+          - New Homebrew installs (brew install --cask voxt) get this version.
+
+          ### Changed
+
+          - $todo
+
+          ### Fixed
+
+          - $todo
+
+          ### What's Changed
+
+          ${pulls}
           ### Build
 
-          - Built from $GITHUB_SHA. Signed with Developer ID and notarized by Apple; SHA-256 checksums are attached.
+          - Built from $GITHUB_SHA by the Voxt Release workflow, with the runtime from sglang_omni_mlx/native built against MLX $mlx_version (macOS 15 wheels).
+          - Signed with Developer ID and notarized by Apple. SHA-256 checksums are attached.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
