@@ -159,7 +159,7 @@ class NativeHTTPPackagingTests(unittest.TestCase):
         workflow = (ROOT.parent / ".github/workflows/voxt-mac-ci.yaml").read_text()
         self.assertIn("swift test --package-path Voxt/Packages/OmniModelArtifacts", workflow)
         self.assertNotRegex(workflow, r"OmniXPC|OmniInference|OmniCore")
-        self.assertIn("vars.VOXT_ENABLE_MAC_CI == 'true'", workflow)
+        self.assertNotIn("VOXT_ENABLE_MAC_CI", workflow)
         self.assertIn("vars.VOXT_ENABLE_CI_PACKAGE == 'true'", workflow)
 
     def test_packaging_shell_and_embedded_python_parse(self) -> None:

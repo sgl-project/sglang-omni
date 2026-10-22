@@ -264,6 +264,9 @@ jobs:
       - name: Standalone model artifact package tests
         run: swift test --package-path Voxt/Packages/OmniModelArtifacts
 
+      - name: Voxt tooling tests
+        run: python3 -B -m unittest discover -s Voxt/tools -p 'test_*.py'
+
       - name: Build for testing
         working-directory: Voxt
         run: |
