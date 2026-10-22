@@ -192,6 +192,7 @@ def analyze_variant(
     }
     first_audio_s = last_audio_s = None
     live_after_t = False
+    admitted = False
     interrupts_on_speech = None
     barge_in_cuts = 0
     created_responses, response_terminals = set(), {}
@@ -308,6 +309,10 @@ def analyze_variant(
                 live_after_t = True
             else:
                 pass
+            if kind == "session.updated":
+                admitted = True
+            else:
+                pass
             if capture.declares_output_rate:
                 out_rate = capture.output_rate
             elif kind == "session.closed":
@@ -317,11 +322,11 @@ def analyze_variant(
                     reasons.append("session.closed at or before window end")
                 else:
                     pass
-            elif is_admission_rejection(event) and first_append_s is None:
+            elif is_admission_rejection(event) and not admitted:
                 anomalies.append(
                     {
                         "elapsed_s": at(time_s),
-                        "message": f"admission rejected before input: {event['error']}",
+                        "message": f"admission rejected before session.updated: {event['error']}",
                     }
                 )
             elif kind == "error":

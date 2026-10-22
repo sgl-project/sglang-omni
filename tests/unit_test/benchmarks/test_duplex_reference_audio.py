@@ -174,14 +174,14 @@ class WindowEligibility(AudioFixture):
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
 
-    def test_only_a_nonfatal_admission_rejection_before_input_keeps_the_window(
+    def test_only_a_nonfatal_admission_rejection_before_admission_keeps_the_window(
         self,
     ) -> None:
         """A session the recorder admitted on a re-sent session.update used to lose its window to the earlier admission_rejected."""
         for offset_s, is_fatal, is_valid in (
             (-0.02, False, True),
             (-0.02, True, False),
-            (0.2, False, False),
+            (-0.005, False, False),
         ):
             rejection = {
                 "direction": "receive",

@@ -80,11 +80,11 @@ class WireEvent(BaseModel):
 
 
 def is_admission_rejection(event: dict[str, JsonValue]) -> bool:
-    """A non-fatal admission_rejected error: the server could not admit a
-    session.update and keeps the session open for another one."""
+    """A non-fatal admission_rejected error: the server could not admit a session.update and keeps the session open for another one."""
     extension, error = event.get("sglang"), event.get("error")
     return (
-        isinstance(error, dict)
+        event.get("type") == "error"
+        and isinstance(error, dict)
         and error.get("code") == "admission_rejected"
         and isinstance(extension, dict)
         and extension.get("fatal") is False

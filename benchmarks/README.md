@@ -527,7 +527,7 @@ retried up to three times before any input is sent; that is admission behavior,
 not concurrency support. Likewise, a `session.update` that the server answers
 with a non-fatal `admission_rejected` is sent again on the same socket up to
 three times, and the oracle counts each rejection in `admission_rejections`
-instead of failing the case.
+instead of as a violation.
 
 Declared limits, also written into `manifest.config`: explicit response
 cancellation, automatic speech interruption, concurrent native sessions, session
@@ -596,15 +596,15 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
 Connections above the server's `max_sessions` may receive HTTP 503, and a
 pipeline whose stages cap their sessions answers `session.update` with a
 non-fatal `admission_rejected` instead; a session fails if admission retries
-are exhausted. Latencies recorded under load are not
-comparable to N=1, and `run.json` gains a `load`
-block (p50/p90/max initial delay, pacing violations, admission diagnostics).
+are exhausted. Latencies recorded under load are not comparable to N=1, and
+`run.json` gains a `load` block (p50/p90/max initial delay, pacing violations,
+admission diagnostics).
 `load.input_pacing_violations` counts variants with measured out-of-tolerance
 appends; a session that sends no appends is excluded. The
 `load.variants_with_admission_denials` count includes each variant with recorded
 HTTP 503 admission denials once, even if a retry succeeds and the variant passes.
-Rejected `session.update`s are not in `load`; each case's `admission_rejections`
-metric counts them.
+Rejected `session.update`s are not in `load`; each case's
+`admission_rejections` metric counts them.
 Final outcomes remain in `summary.variants` and `load.variants_passed`.
 
 Pin the server and model revisions separately. Sending 80 ms transport packets
@@ -649,8 +649,9 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
 
 `record --concurrency N` processes up to N variants at once, including
 post-processing. Connections above the server's capacity are retried on HTTP
-503 or a rejected `session.update`. Latencies recorded under load are not comparable to N=1, and `run.json` gains a
-`load` block with the same metric definitions as the v1.5 recorder above.
+503 or a rejected `session.update`. Latencies recorded under load are not
+comparable to N=1, and `run.json` gains a `load` block with the same metric
+definitions as the v1.5 recorder above.
 
 Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
 pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers

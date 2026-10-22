@@ -237,8 +237,6 @@ SAMPLES_PER_FRAME = 1764
 TAIL_HOLDBACK_SAMPLES = 256
 # Note (wenyao): Adapter teardown can delay close beyond the observation window.
 FATAL_CLOSE_DELAY_S = POST_CLOSE_SECONDS * 3
-# note (Yucheng Hu): A late readmission fails a client that does not wait for the answer to each re-sent session.update.
-READMISSION_DELAY_S = 0.05
 PeerMode = Literal[
     "healthy",
     "server_error",
@@ -251,6 +249,7 @@ PeerMode = Literal[
     "linger",
     "close_without_update",
     "deadline_after_rejection",
+    "close_after_rejection",
 ]
 
 
@@ -450,10 +449,11 @@ class DuplexPeer:
                         )
                         await self.close_session(websocket, "server_error", None)
                         return
+                    elif self.mode == "close_after_rejection":
+                        await self.close_session(websocket, "disconnect", None)
+                        return
                     else:
                         continue
-                elif any(sent["type"] == "error" for sent in self.sent):
-                    await asyncio.sleep(READMISSION_DELAY_S)
                 else:
                     pass
                 if self.mode == "close_without_update":
