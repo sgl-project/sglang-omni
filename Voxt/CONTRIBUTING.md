@@ -95,8 +95,11 @@ PKG and staple their tickets.
 
 ### Releases
 
-A maintainer releases Voxt by raising `MARKETING_VERSION` on `main` and pushing
-a `voxt-vX.Y.Z` tag that matches it:
+A maintainer releases Voxt by pushing a `voxt-vX.Y.Z` tag on `main`. The tag
+sets the version and the build number, and must be newer than every existing
+`voxt-v` tag, because installed copies only update to a higher build.
+`MARKETING_VERSION` in the project is what local builds use; it does not need
+to change for a release.
 
 1. `Voxt Release` builds the runtime and the universal app on GitHub's macOS
    runner, signs and notarizes them as above, and uploads the ZIP, DMG, PKG and
