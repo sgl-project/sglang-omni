@@ -17,7 +17,7 @@ from sglang_omni.models.sensenova_u1.neo_unify.attention_backend import (
 
 
 class SenseNovaRMSNorm(RMSNorm):
-    """Use shared device dispatch while keeping CPU inputs on native kernels."""
+    """Use shared device dispatch while keeping CPU inputs on CPU kernels."""
 
     def forward(
         self,
@@ -29,7 +29,7 @@ class SenseNovaRMSNorm(RMSNorm):
         backend: KernelBackend | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if x.device.type == "cpu":
-            return self.forward_native(
+            return self.forward_cpu(
                 x,
                 residual,
                 post_residual_addition,

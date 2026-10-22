@@ -32,6 +32,7 @@ from sglang_omni.models.sensenova_u1.generation import (
     text_to_image_options,
 )
 from sglang_omni.models.sensenova_u1.image_processing import (
+    decode_reference_images,
     prepare_reference_images,
     resolve_edit_output_size,
     resolve_reference_output_size,
@@ -45,6 +46,8 @@ from sglang_omni.models.sensenova_u1.stages import (
 )
 from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.serve.openai_api import create_app, image_result_with_disconnect_watch
 from sglang_omni.utils.imports import import_string
 
@@ -847,9 +850,9 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
     model.it2i_generate.return_value = torch.zeros(
         (1, 3, output_height_pixels, output_width_pixels)
     )
-    assert image_generation_request_cost(payload) == (
-        output_width_pixels * output_height_pixels * 4 * branch_count
-    )
+    with patch.object(Image, "open", wraps=Image.open) as open_image:
+        assert image_generation_request_cost(payload) == 96 * 64 * 4 * branch_count
+    open_image.assert_not_called()
     validate_generation_request(payload, model)
     assert model.sensenova_cache_dit.validate_request.call_args.kwargs["steps"] == 4
     result = generate_image(payload, model, tokenizer)
@@ -869,7 +872,7 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
 @pytest.mark.parametrize("reference_count", [1, 3])
 @pytest.mark.parametrize("do_resize", [False, True])
 @pytest.mark.parametrize("reference_size_pixels", [(64, 32), (77, 39)])
-def test_i2i_validation_and_cost_do_not_resize_references(
+def test_i2i_validation_does_not_preprocess_reference_pixels(
     reference_count: int,
     do_resize: bool,
     reference_size_pixels: tuple[int, int],
@@ -896,18 +899,114 @@ def test_i2i_validation_and_cost_do_not_resize_references(
     )
     model = Mock()
     model.sensenova_cache_dit.enabled_by_default = False
-    with patch.object(
-        Image.Image, "resize", autospec=True, side_effect=Image.Image.resize
-    ) as resize:
+    with (
+        patch.object(
+            Image.Image, "load", autospec=True, side_effect=Image.Image.load
+        ) as load,
+        patch.object(
+            Image.Image, "resize", autospec=True, side_effect=Image.Image.resize
+        ) as resize,
+    ):
         assert resolve_reference_output_size(references, options) == (
             output_width_pixels,
             output_height_pixels,
         )
         validate_generation_request(payload, model)
-        assert image_generation_request_cost(payload) == (
-            output_width_pixels * output_height_pixels * options.num_inference_steps * 2
-        )
+    load.assert_not_called()
     resize.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, "later_reference", "aspect_ratio"])
+def test_reference_headers_are_closed(
+    failure: Literal["later_reference", "aspect_ratio"] | None,
+) -> None:
+    """Header validation must close every opened reference on success or failure."""
+    image_buffer = io.BytesIO()
+    reference_size_pixels = (32, 7000) if failure == "aspect_ratio" else (64, 32)
+    Image.new("RGB", reference_size_pixels).save(image_buffer, format="PNG")
+    encoded_reference = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    references = [
+        encoded_reference,
+        "invalid" if failure == "later_reference" else encoded_reference,
+    ]
+    options = SenseNovaU1ImageEditSampling.from_params(
+        {"width": 96, "height": 64, "input_max_pixels": 262144}
+    )
+    with patch.object(
+        Image.Image, "close", autospec=True, side_effect=Image.Image.close
+    ) as close_image:
+        if failure is None:
+            assert resolve_reference_output_size(references, options) == (96, 32)
+        else:
+            error_message = (
+                "invalid reference image"
+                if failure == "later_reference"
+                else "aspect ratio"
+            )
+            with pytest.raises(ValueError, match=error_message):
+                resolve_reference_output_size(references, options)
+    assert close_image.call_count == (1 if failure == "later_reference" else 2)
+    assert all(call.args[0].fp is None for call in close_image.call_args_list)
+
+
+def test_reference_pixel_decode_failure_closes_open_images() -> None:
+    """A truncated reference must close both earlier images and its own header."""
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 32)).save(image_buffer, format="PNG")
+    encoded_reference = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    truncated_reference = base64.b64encode(image_buffer.getvalue()[:45]).decode("ascii")
+    with patch.object(
+        Image.Image, "close", autospec=True, side_effect=Image.Image.close
+    ) as close_image:
+        with pytest.raises(ValueError, match="invalid reference image"):
+            decode_reference_images([encoded_reference, truncated_reference])
+    assert close_image.call_count == 2
+    assert all(call.args[0].fp is None for call in close_image.call_args_list)
+
+
+@pytest.mark.parametrize("references", [None, [], "", "invalid", ["invalid"]])
+def test_reference_parsing_rejects_invalid_inputs(
+    references: str | list[str] | None,
+) -> None:
+    """Header checks and pixel decoding must both reject malformed references."""
+    options = SenseNovaU1ImageEditSampling.from_params({})
+    with pytest.raises(ValueError):
+        decode_reference_images(references)
+    with pytest.raises(ValueError):
+        resolve_reference_output_size(references, options)
+
+
+def test_image_edits_stay_single_item_without_decoding_cost() -> None:
+    """I2I costs must not decode references that cannot affect batch admission."""
+    scheduler = SimpleScheduler(
+        Mock(),
+        batch_compute_fn=Mock(),
+        max_batch_size=2,
+        max_batch_cost=1,
+        batch_key_fn=image_generation_batch_key,
+        request_cost_fn=image_generation_request_cost,
+    )
+    messages = [
+        IncomingMessage(
+            request_id=request_id,
+            type="new_request",
+            data=StagePayload(
+                request_id,
+                OmniRequest(
+                    {"task": "image_edit", "prompt": "edit", "image_b64": "unused"},
+                    {"width": 96, "height": 64},
+                ),
+                None,
+            ),
+        )
+        for request_id in ("first", "second")
+    ]
+    scheduler.inbox.put(messages[1])
+    with patch.object(Image, "open", wraps=Image.open) as open_image:
+        assert scheduler.collect_batch(messages[0]) == [messages[0]]
+        assert scheduler.next_message() is messages[1]
+        assert scheduler.collect_batch(messages[1]) == [messages[1]]
+    open_image.assert_not_called()
 
 
 def test_image_edit_api_accepts_multiple_reference_images():

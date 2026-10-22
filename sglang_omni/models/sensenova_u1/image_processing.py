@@ -73,7 +73,9 @@ def reference_image_size(
     return resized_width, resized_height
 
 
-def decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:
+def decode_reference_images(
+    value: str | list[str] | None, *, load_pixels: bool = True
+) -> list[Image.Image]:
     values = value if isinstance(value, list) else [value]
     if not values or any(
         not isinstance(encoded_image, str) or not encoded_image
@@ -83,21 +85,24 @@ def decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:
     else:
         pass
     images: list[Image.Image] = []
-    for encoded_image in values:
-        try:
+    try:
+        for encoded_image in values:
             image_bytes = base64.b64decode(encoded_image, validate=True)
             image = Image.open(io.BytesIO(image_bytes))
-            image.load()
-        except (
-            binascii.Error,
-            OSError,
-            ValueError,
-            Image.DecompressionBombError,
-        ) as exc:
-            raise ValueError(
-                "SenseNova-U1 received an invalid reference image"
-            ) from exc
-        images.append(image)
+            images.append(image)
+            if load_pixels:
+                image.load()
+            else:
+                pass
+    except (
+        binascii.Error,
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+    ) as exc:
+        for image in images:
+            image.close()
+        raise ValueError("SenseNova-U1 received an invalid reference image") from exc
     return images
 
 
@@ -145,33 +150,16 @@ def resolve_edit_output_size(
 def resolve_reference_output_size(
     encoded_references: str | list[str] | None, options: SenseNovaU1ImageEditSampling
 ) -> tuple[int, int]:
-    """Resolve edit dimensions from the first reference header without pixel preprocessing."""
-    references = (
-        encoded_references
-        if isinstance(encoded_references, list)
-        else [encoded_references]
-    )
-    if not references or any(
-        not isinstance(encoded_image, str) or not encoded_image
-        for encoded_image in references
-    ):
-        raise ValueError("SenseNova-U1 requires at least one reference image")
-    else:
-        pass
+    """Resolve edit dimensions from reference headers without pixel preprocessing."""
+    references = decode_reference_images(encoded_references, load_pixels=False)
     try:
-        image_bytes = base64.b64decode(references[0], validate=True)
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            reference_size_pixels = reference_image_size(
-                image.width, image.height, len(references), options
-            )
-    except (
-        binascii.Error,
-        OSError,
-        ValueError,
-        Image.DecompressionBombError,
-    ) as error:
-        raise ValueError("SenseNova-U1 received an invalid reference image") from error
-    return resolve_edit_output_size(reference_size_pixels, options)
+        reference_size_pixels = reference_image_size(
+            references[0].width, references[0].height, len(references), options
+        )
+        return resolve_edit_output_size(reference_size_pixels, options)
+    finally:
+        for image in references:
+            image.close()
 
 
 def encode_image(

@@ -80,19 +80,19 @@ def image_generation_request_cost(payload: StagePayload) -> int:
     inputs = payload.request.inputs
     if isinstance(inputs, dict) and inputs.get("task") == "image_edit":
         options = SenseNovaU1ImageEditSampling.from_params(payload.request.params)
-        width_pixels, height_pixels = resolve_reference_output_size(
-            inputs.get("image_b64"), options
-        )
         branches = image_guidance_branch_count(
             options.guidance_scale, options.img_cfg_scale
         )
     else:
         options = text_to_image_options(payload)
-        width_pixels, height_pixels = options.width, options.height
         branches = 1 + int(options.guidance_scale > 1)
     outputs = options.n if isinstance(options, SenseNovaU1Sampling) else 1
     return (
-        outputs * width_pixels * height_pixels * options.num_inference_steps * branches
+        outputs
+        * options.width
+        * options.height
+        * options.num_inference_steps
+        * branches
     )
 
 

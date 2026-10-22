@@ -286,7 +286,7 @@ def test_shared_rmsnorm_uses_framework_dispatch():
 @pytest.mark.parametrize(
     "backend_method", ["forward_cuda", "forward_npu", "forward_aiter", "forward_hip"]
 )
-def test_shared_rmsnorm_cpu_input_uses_native(
+def test_shared_rmsnorm_cpu_input_uses_cpu_path(
     monkeypatch: pytest.MonkeyPatch,
     dtype: torch.dtype,
     hidden_size: int,
@@ -295,7 +295,7 @@ def test_shared_rmsnorm_cpu_input_uses_native(
         "forward_cuda", "forward_npu", "forward_aiter", "forward_hip"
     ],
 ) -> None:
-    """CPU inputs must not reach any selected accelerator RMSNorm kernel."""
+    """CPU inputs must reach the CPU RMSNorm path, not the selected accelerator kernel."""
     norm = make_qwen3_rms_norm(hidden_size, eps=1e-6).to(dtype)
     hidden_states = torch.randn(2, 3, hidden_size * 2, dtype=dtype)[..., hidden_size:]
     if has_residual:
@@ -315,10 +315,16 @@ def test_shared_rmsnorm_cpu_input_uses_native(
         )
     )
 
-    actual = norm(hidden_states, residual, post_residual_addition)
+    with patch.object(
+        RMSNorm, "forward_cpu", autospec=True, side_effect=RMSNorm.forward_cpu
+    ) as cpu_forward:
+        actual = norm(hidden_states, residual, post_residual_addition)
 
     torch.testing.assert_close(actual, expected)
     accelerator_forward.assert_not_called()
+    cpu_forward.assert_called_once_with(
+        norm, hidden_states, residual, post_residual_addition, None
+    )
 
 
 @pytest.mark.parametrize("backend", [None, KernelBackend.TORCH])

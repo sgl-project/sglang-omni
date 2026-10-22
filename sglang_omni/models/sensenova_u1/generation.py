@@ -322,8 +322,8 @@ def generate_image_edit(
         else:
             pass
         raise ValueError(
-            f"{REFERENCE_MEMORY_ERROR_PREFIX}{len(references)} reference images exceeds {device.type.upper()} memory; "
-            f"{memory_advice}"
+            f"{REFERENCE_MEMORY_ERROR_PREFIX}{len(references)} reference images exceeds "
+            f"{device.type.upper()} memory; {memory_advice}"
         ) from error
     else:
         pass
