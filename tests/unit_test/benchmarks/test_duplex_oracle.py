@@ -7,6 +7,7 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.oracle_models import is_admission_rejection
 from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
@@ -514,6 +515,58 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert result["status"] == "fail"
     assert any("admission denied after 3 attempts" in i for i in result["violations"])
     assert "missing audio input" in result["violations"]
+
+
+@pytest.mark.parametrize(
+    ("event", "is_rejection"),
+    [
+        (
+            {
+                "type": "error",
+                "sglang": {"fatal": False},
+                "error": {"code": "admission_rejected"},
+            },
+            True,
+        ),
+        (
+            {
+                "type": "error",
+                "sglang": {"fatal": True},
+                "error": {"code": "admission_rejected"},
+            },
+            False,
+        ),
+        (
+            {
+                "type": "error",
+                "sglang": {"fatal": False},
+                "error": {"code": "invalid_request"},
+            },
+            False,
+        ),
+        (
+            {
+                "type": "response.created",
+                "sglang": {"fatal": False},
+                "error": {"code": "admission_rejected"},
+            },
+            False,
+        ),
+        (
+            {
+                "type": "error",
+                "sglang": {"fatal": False},
+                "error": "admission_rejected",
+            },
+            False,
+        ),
+        ({"type": "error", "error": {"code": "admission_rejected"}}, False),
+    ],
+)
+def test_only_a_nonfatal_admission_rejected_error_is_an_admission_rejection(
+    event: dict[str, JsonValue], is_rejection: bool
+) -> None:
+    assert is_admission_rejection(event) is is_rejection
 
 
 def rejection(**error: JsonValue) -> dict[str, JsonValue]:

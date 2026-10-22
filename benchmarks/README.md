@@ -522,12 +522,12 @@ time.
 
 A case that is healthy but did not exercise its scenario grades
 `not_exercised`, never `pass`: continuous duplex requires input sent between
-observed output audio packets. A second concurrent connection is refused with HTTP 503 and
-retried up to three times before any input is sent; that is admission behavior,
-not concurrency support. Likewise, a `session.update` that the server answers
-with a non-fatal `admission_rejected` is sent again on the same socket up to
-three times, and the oracle counts each rejection in `admission_rejections`
-instead of as a violation.
+observed output audio packets. A second concurrent connection is refused with
+HTTP 503, or its `session.update` is answered with a non-fatal
+`admission_rejected`, and the recorder retries either up to `ADMISSION_RETRIES`
+times (`benchmarks/duplex/client.py`) before any input is sent; the oracle
+counts each rejection in `admission_rejections` instead of as a violation. That
+is admission behavior, not concurrency support.
 
 Declared limits, also written into `manifest.config`: explicit response
 cancellation, automatic speech interruption, concurrent native sessions, session
