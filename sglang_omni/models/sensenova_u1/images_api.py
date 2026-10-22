@@ -19,6 +19,7 @@ from sglang_omni.models.sensenova_u1.admission import REFERENCE_MEMORY_ERROR_PRE
 from sglang_omni.models.sensenova_u1.sampling import (
     SenseNovaU1ImageEditSampling,
     SenseNovaU1Sampling,
+    validate_seed_range,
 )
 from sglang_omni.serve.openai_api import (
     image_result_with_disconnect_watch,
@@ -251,6 +252,7 @@ def register_image_edits(app: FastAPI) -> None:
                 else:
                     pass
             edit_sampling = SenseNovaU1ImageEditSampling.from_params(params)
+            validate_seed_range(edit_sampling.seed, n)
             params.update(
                 width=edit_sampling.width,
                 height=edit_sampling.height,

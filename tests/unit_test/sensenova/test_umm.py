@@ -110,6 +110,60 @@ def test_invalid_request_never_dispatches(
     assert not controller.adapter.executions
 
 
+@pytest.mark.parametrize("is_image_edit", [False, True])
+def test_seed_overflow_never_dispatches(
+    controller: UMMController, encoded_image: str, is_image_edit: bool
+) -> None:
+    """An out-of-range seed reached TP compute and stopped the generation stage."""
+    inputs = (
+        {"task": "image_edit", "prompt": "edit", "image_b64": encoded_image}
+        if is_image_edit
+        else "prompt"
+    )
+    with pytest.raises(UMMRequestError, match="seed"):
+        controller.transition(
+            StagePayload("request", OmniRequest(inputs, {"seed": 2**64}), None)
+        )
+    assert not controller.contexts
+    assert not controller.adapter.executions
+    assert controller.outbox.empty()
+
+
+@pytest.mark.parametrize(
+    "reference_count, placeholder_count",
+    [(1, 0), (1, 1), (1, 2), (2, 1), (2, 2), (2, 3)],
+)
+def test_image_placeholder_count_is_checked_at_admission(
+    controller: UMMController,
+    encoded_image: str,
+    reference_count: int,
+    placeholder_count: int,
+) -> None:
+    """More image placeholders than references triggered a model assertion after dispatch."""
+    request = OmniRequest(
+        {
+            "task": "image_edit",
+            "prompt": "<image>" * placeholder_count + " edit",
+            "image_b64": (
+                encoded_image
+                if reference_count == 1
+                else [encoded_image] * reference_count
+            ),
+        }
+    )
+    if placeholder_count > reference_count:
+        with pytest.raises(UMMRequestError, match="placeholders"):
+            controller.transition(StagePayload("request", request, None))
+        assert controller.outbox.empty()
+    else:
+        phase = controller.transition(StagePayload("request", request, None))
+        assert phase is not None
+        phase.data = {"modality": "image", "image_b64": encoded_image}
+        assert controller.transition(phase) is not None
+    assert not controller.contexts
+    assert not controller.adapter.executions
+
+
 def test_umm_config_retains_tp_constraints() -> None:
     configuration = SenseNovaU1UMMPipelineConfig(model_path="unused")
     assert configuration.resolved_entry_stage == "orchestrator"

@@ -82,6 +82,12 @@ def validate_admission(
             )
         else:
             pass
+        if inputs["prompt"].count("<image>") > len(references):
+            raise ValueError(
+                "SenseNova-U1 image edit prompt has more <image> placeholders than reference images"
+            )
+        else:
+            pass
         reference_pixels = 0
         resized_reference_pixels = 0
         for reference_index, reference in enumerate(references):

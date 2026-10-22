@@ -73,9 +73,7 @@ def reference_image_size(
     return resized_width, resized_height
 
 
-def decode_reference_images(
-    value: str | list[str] | None, *, load_pixels: bool = True
-) -> list[Image.Image]:
+def decode_reference_images(value: str | list[str] | None) -> list[Image.Image]:
     values = value if isinstance(value, list) else [value]
     if not values or any(
         not isinstance(encoded_image, str) or not encoded_image
@@ -90,10 +88,7 @@ def decode_reference_images(
             image_bytes = base64.b64decode(encoded_image, validate=True)
             image = Image.open(io.BytesIO(image_bytes))
             images.append(image)
-            if load_pixels:
-                image.load()
-            else:
-                pass
+            image.load()
     except (
         binascii.Error,
         OSError,
@@ -150,8 +145,8 @@ def resolve_edit_output_size(
 def resolve_reference_output_size(
     encoded_references: str | list[str] | None, options: SenseNovaU1ImageEditSampling
 ) -> tuple[int, int]:
-    """Resolve edit dimensions from reference headers without pixel preprocessing."""
-    references = decode_reference_images(encoded_references, load_pixels=False)
+    """Validate reference pixels and resolve dimensions without resizing images."""
+    references = decode_reference_images(encoded_references)
     try:
         reference_size_pixels = reference_image_size(
             references[0].width, references[0].height, len(references), options

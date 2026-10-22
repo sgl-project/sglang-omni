@@ -57,6 +57,42 @@ class TestSenseNovaSampling(unittest.TestCase):
     def test_multiple_t2i_outputs(self):
         self.assertEqual(SenseNovaU1Sampling.from_params({"n": 4}).n, 4)
 
+    def test_seed_range_reserves_every_output(self) -> None:
+        """A seed accepted by sampling overflowed the RNG after TP dispatch."""
+        for parameters in (
+            {"seed": 2**64 - 1},
+            {"seed": 2**64 - 10, "n": 10},
+        ):
+            with self.subTest(parameters=parameters):
+                self.assertEqual(
+                    SenseNovaU1Sampling.from_params(parameters).seed, parameters["seed"]
+                )
+        for parameters in (
+            {"seed": 2**64},
+            {"seed": 2**64 - 1, "n": 2},
+            {"seed": 2**64 - 9, "n": 10},
+            {"seed": 2**64 - 1, "stage_params": {"generate": {"n": 2}}},
+            {"stage_params": {"generate": {"seed": 2**64}}},
+        ):
+            with (
+                self.subTest(parameters=parameters),
+                self.assertRaisesRegex(ValueError, "seed"),
+            ):
+                SenseNovaU1Sampling.from_params(parameters)
+        for parameters in (
+            {"seed": 2**64},
+            {"stage_params": {"generate": {"seed": 2**64}}},
+        ):
+            with (
+                self.subTest(parameters=parameters),
+                self.assertRaisesRegex(ValueError, "seed"),
+            ):
+                SenseNovaU1ImageEditSampling.from_params(parameters)
+        self.assertEqual(
+            SenseNovaU1ImageEditSampling.from_params({"seed": 2**64 - 1}).seed,
+            2**64 - 1,
+        )
+
     def test_image_edit_rejects_invalid_options(self):
         for params in (
             {"img_cfg_scale": float("inf")},

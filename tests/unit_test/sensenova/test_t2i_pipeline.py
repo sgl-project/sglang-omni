@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Literal
-from unittest.mock import Mock, create_autospec, patch
+from unittest.mock import AsyncMock, Mock, create_autospec, patch
 
 import pytest
 import torch
@@ -44,12 +44,23 @@ from sglang_omni.models.sensenova_u1.stages import (
     image_generation_request_cost,
     validate_generation_request,
 )
+from sglang_omni.models.sensenova_u1.tensor_parallel import (
+    SenseNovaTensorParallelScheduler,
+)
+from sglang_omni.models.sensenova_u1.tensor_parallel_scheduler import (
+    TensorParallelScheduler,
+)
 from sglang_omni.pipeline.replicas import expand_replica_stages
+from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.serve.openai_api import create_app, image_result_with_disconnect_watch
 from sglang_omni.utils.imports import import_string
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeRelay,
+    RecordingStageControlPlane,
+)
 
 
 def umm_image_chunk(request_id: str, encoded_images: list[str]) -> UMMGenerateChunk:
@@ -872,12 +883,12 @@ def test_i2i_stage_overrides_match_cost_and_tp_validation(
 @pytest.mark.parametrize("reference_count", [1, 3])
 @pytest.mark.parametrize("do_resize", [False, True])
 @pytest.mark.parametrize("reference_size_pixels", [(64, 32), (77, 39)])
-def test_i2i_validation_does_not_preprocess_reference_pixels(
+def test_i2i_validation_decodes_references_without_resizing(
     reference_count: int,
     do_resize: bool,
     reference_size_pixels: tuple[int, int],
 ) -> None:
-    """Dimension-only checks must match generation without repeating pixel preprocessing."""
+    """Validation must decode pixels but leave resizing to model preprocessing."""
     image_buffer = io.BytesIO()
     Image.new("RGB", reference_size_pixels).save(image_buffer, format="PNG")
     references = [
@@ -912,15 +923,169 @@ def test_i2i_validation_does_not_preprocess_reference_pixels(
             output_height_pixels,
         )
         validate_generation_request(payload, model)
-    load.assert_not_called()
+    load.assert_called()
     resize.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_reference_index", [0, 1])
+@pytest.mark.parametrize("image_format", ["JPEG", "PNG"])
+@pytest.mark.parametrize(
+    "scheduler_class", [TensorParallelScheduler, SenseNovaTensorParallelScheduler]
+)
+async def test_truncated_image_is_rejected_before_tp_fanout(
+    tokenizer: PreTrainedTokenizerBase,
+    invalid_reference_index: int,
+    image_format: Literal["JPEG", "PNG"],
+    scheduler_class: type[TensorParallelScheduler],
+) -> None:
+    """A truncated reference killed TP execution instead of failing its request."""
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 32), (80, 100, 130)).save(image_buffer, format=image_format)
+    image_bytes = image_buffer.getvalue()
+    truncated_image_bytes = (
+        image_bytes[:-2] if image_format == "JPEG" else image_bytes[:45]
+    )
+    with Image.open(io.BytesIO(truncated_image_bytes)) as image:
+        if image_format == "JPEG":
+            image.verify()
+        else:
+            pass
+    reference = base64.b64encode(image_bytes).decode("ascii")
+    references = [reference, reference]
+    references[invalid_reference_index] = base64.b64encode(
+        truncated_image_bytes
+    ).decode("ascii")
+    invalid = StagePayload(
+        "invalid",
+        OmniRequest(
+            {"task": "image_edit", "prompt": "edit", "image_b64": references},
+            {"width": 64, "height": 32, "size_explicit": True, "do_resize": False},
+        ),
+        None,
+    )
+    valid = StagePayload(
+        "valid",
+        OmniRequest(
+            {"task": "image_edit", "prompt": "edit", "image_b64": reference},
+            invalid.request.params,
+        ),
+        None,
+    )
+    model = Mock()
+    model.sensenova_cache_dit.enabled_by_default = False
+    model.it2i_generate.return_value = torch.zeros(1, 3, 32, 64)
+    scheduler = scheduler_class(
+        lambda payload: generate_image(payload, model, tokenizer),
+        validate_request=lambda payload: validate_generation_request(payload, model),
+    )
+    fanout = Mock()
+    leader = Stage(
+        name="generate",
+        role="leader",
+        get_next=lambda request_id, output: None,
+        gpu_id=None,
+        endpoints={},
+        control_plane=RecordingStageControlPlane(),
+        relay=FakeRelay(),
+        scheduler=scheduler,
+        tp_fanout=fanout,
+    )
+    leader.send_failure = AsyncMock()
+
+    await leader.execute(invalid)
+    leader.send_failure.assert_awaited_once_with(
+        "invalid", "SenseNova-U1 received an invalid reference image"
+    )
+    fanout.fanout_work.assert_not_called()
+    assert scheduler.inbox.empty()
+    model.it2i_generate.assert_not_called()
+
+    await leader.execute(valid)
+    fanout.fanout_work.assert_called_once_with(valid)
+    scheduler.run_single(scheduler.inbox.get_nowait(), asyncio.get_running_loop())
+    result = scheduler.outbox.get_nowait()
+    assert result.type == "result"
+    assert result.request_id == "valid"
+    assert scheduler.compute_error is None
+    model.it2i_generate.assert_called_once()
+    with Image.open(
+        io.BytesIO(base64.b64decode(result.data.data["image_b64"]))
+    ) as image:
+        assert image.size == (64, 32)
+
+
+def test_invalid_edit_seed_is_rejected_before_tp_execution(
+    tokenizer: PreTrainedTokenizerBase,
+) -> None:
+    """An invalid seed must fail validation before TP ranks execute model work."""
+    reference = io.BytesIO()
+    Image.new("RGB", (32, 32)).save(reference, format="PNG")
+    payload = StagePayload(
+        "invalid",
+        OmniRequest(
+            {
+                "task": "image_edit",
+                "prompt": "edit",
+                "image_b64": base64.b64encode(reference.getvalue()).decode("ascii"),
+            },
+            {"seed": 2**64, "do_resize": False},
+        ),
+        None,
+    )
+    model = Mock()
+    model.sensenova_cache_dit.enabled_by_default = False
+    with pytest.raises(ValueError, match="seed"):
+        validate_generation_request(payload, model)
+    with pytest.raises(ValueError, match="seed"):
+        generate_image(payload, model, tokenizer)
+    model.it2i_generate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "seed, image_count, expected_status",
+    [(2**64 - 1, 1, 200), (2**64 - 2, 2, 200), (2**64 - 1, 2, 400), (2**64, 1, 400)],
+)
+def test_image_edit_api_validates_all_output_seeds(
+    seed: int, image_count: int, expected_status: int
+) -> None:
+    """The edits loop accepted a base seed whose later outputs overflowed the RNG."""
+    reference = io.BytesIO()
+    Image.new("RGB", (32, 32)).save(reference, format="PNG")
+    encoded = base64.b64encode(reference.getvalue()).decode("ascii")
+
+    class SeedClient:
+        def __init__(self) -> None:
+            self.seeds: list[int] = []
+
+        async def generate(
+            self, request: GenerateRequest, request_id: str
+        ) -> AsyncIterator[GenerateChunk]:
+            self.seeds.append(request.extra_params["seed"])
+            yield umm_image_chunk(request_id, [encoded])
+
+    backend = SeedClient()
+    client = TestClient(
+        create_app(
+            backend, model_name="sensenova", image_api_registrar=register_images_api
+        )
+    )
+    response = client.post(
+        "/v1/images/edits",
+        files={"image": ("reference.png", reference.getvalue(), "image/png")},
+        data={"prompt": "edit", "seed": str(seed), "n": str(image_count)},
+    )
+    assert response.status_code == expected_status
+    assert backend.seeds == (
+        [seed + index for index in range(image_count)] if expected_status == 200 else []
+    )
+
+
 @pytest.mark.parametrize("failure", [None, "later_reference", "aspect_ratio"])
-def test_reference_headers_are_closed(
+def test_reference_images_are_closed_after_validation(
     failure: Literal["later_reference", "aspect_ratio"] | None,
 ) -> None:
-    """Header validation must close every opened reference on success or failure."""
+    """Validation must close every decoded reference on success or failure."""
     image_buffer = io.BytesIO()
     reference_size_pixels = (32, 7000) if failure == "aspect_ratio" else (64, 32)
     Image.new("RGB", reference_size_pixels).save(image_buffer, format="PNG")
@@ -968,7 +1133,7 @@ def test_reference_pixel_decode_failure_closes_open_images() -> None:
 def test_reference_parsing_rejects_invalid_inputs(
     references: str | list[str] | None,
 ) -> None:
-    """Header checks and pixel decoding must both reject malformed references."""
+    """Validation and generation must both reject malformed references."""
     options = SenseNovaU1ImageEditSampling.from_params({})
     with pytest.raises(ValueError):
         decode_reference_images(references)

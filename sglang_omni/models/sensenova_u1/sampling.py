@@ -9,6 +9,16 @@ from dataclasses import dataclass
 
 from pydantic import JsonValue
 
+MAX_GENERATION_SEED = 2**64 - 1
+
+
+def validate_seed_range(seed: int, image_count: int) -> None:
+    """Every generated seed must fit the random number generator's uint64 range."""
+    if seed + image_count - 1 > MAX_GENERATION_SEED:
+        raise ValueError(f"seed + n - 1 must not exceed {MAX_GENERATION_SEED}")
+    else:
+        pass
+
 
 def resolve_generation_parameters(
     parameters: dict[str, JsonValue],
@@ -50,9 +60,11 @@ class SenseNovaU1Sampling:
             raise ValueError("SenseNova-U1 n must be an integer between 1 and 10")
         else:
             pass
+        values = validated_values(cls, {**params, "n": 1}, ("guidance_scale",))
+        validate_seed_range(values["seed"], n)
         enable_cache_dit, cache_dit_params = cache_dit_values(params)
         return cls(
-            **validated_values(cls, {**params, "n": 1}, ("guidance_scale",)),
+            **values,
             n=n,
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
@@ -96,6 +108,7 @@ class SenseNovaU1ImageEditSampling:
         else:
             pass
         values = validated_values(cls, params, ("guidance_scale", "img_cfg_scale"))
+        validate_seed_range(values["seed"], 1)
         cache_options = dict(params)
         if (
             image_guidance_branch_count(

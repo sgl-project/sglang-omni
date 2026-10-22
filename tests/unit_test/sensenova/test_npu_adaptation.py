@@ -4,6 +4,7 @@ from typing import Literal
 from unittest.mock import Mock, patch
 
 import pytest
+import sglang.srt.layers.layernorm as layernorm_module
 import torch
 import torch.nn.functional as F
 from sglang.kernels.fused_op import KernelBackend
@@ -280,24 +281,29 @@ def test_shared_rmsnorm_uses_framework_dispatch():
     )
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("hidden_size", [32, 4])
+@pytest.mark.parametrize("ndim", [3, 4])
 @pytest.mark.parametrize("has_residual", [False, True])
 @pytest.mark.parametrize(
     "backend_method", ["forward_cuda", "forward_npu", "forward_aiter", "forward_hip"]
 )
-def test_shared_rmsnorm_cpu_input_uses_cpu_path(
+def test_shared_rmsnorm_cpu_input_uses_native_path_on_amx(
     monkeypatch: pytest.MonkeyPatch,
     dtype: torch.dtype,
     hidden_size: int,
+    ndim: int,
     has_residual: bool,
     backend_method: Literal[
         "forward_cuda", "forward_npu", "forward_aiter", "forward_hip"
     ],
 ) -> None:
-    """CPU inputs must reach the CPU RMSNorm path, not the selected accelerator kernel."""
+    """AMX dispatch rejected FP32 and the model's 4D query/key norm inputs."""
     norm = make_qwen3_rms_norm(hidden_size, eps=1e-6).to(dtype)
-    hidden_states = torch.randn(2, 3, hidden_size * 2, dtype=dtype)[..., hidden_size:]
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.5, 1.5, hidden_size, dtype=dtype))
+    shape = (2, 3, hidden_size * 2) if ndim == 3 else (2, 3, 2, hidden_size * 2)
+    hidden_states = torch.randn(shape, dtype=dtype)[..., hidden_size:]
     if has_residual:
         residual = torch.randn_like(hidden_states)
         post_residual_addition = torch.randn_like(hidden_states)
@@ -309,22 +315,25 @@ def test_shared_rmsnorm_cpu_input_uses_cpu_path(
         side_effect=AssertionError("Accelerator RMSNorm must not receive CPU inputs")
     )
     monkeypatch.setattr(RMSNorm, backend_method, accelerator_forward)
+    monkeypatch.setattr(layernorm_module, "_is_cpu_amx_available", True)
+    cpu_kernel = Mock(
+        side_effect=AssertionError("AMX RMSNorm must not receive these CPU inputs")
+    )
+    monkeypatch.setattr(torch.ops.sgl_kernel, "rmsnorm_cpu", cpu_kernel, raising=False)
+    monkeypatch.setattr(
+        torch.ops.sgl_kernel, "fused_add_rmsnorm_cpu", cpu_kernel, raising=False
+    )
     norm._forward_method = (
         getattr(  # noqa: leading-underscore -- SGLang CustomOp dispatch field
             norm, backend_method
         )
     )
 
-    with patch.object(
-        RMSNorm, "forward_cpu", autospec=True, side_effect=RMSNorm.forward_cpu
-    ) as cpu_forward:
-        actual = norm(hidden_states, residual, post_residual_addition)
+    actual = norm(hidden_states, residual, post_residual_addition)
 
     torch.testing.assert_close(actual, expected)
     accelerator_forward.assert_not_called()
-    cpu_forward.assert_called_once_with(
-        norm, hidden_states, residual, post_residual_addition, None
-    )
+    cpu_kernel.assert_not_called()
 
 
 @pytest.mark.parametrize("backend", [None, KernelBackend.TORCH])
@@ -359,23 +368,36 @@ def test_shared_rmsnorm_non_cpu_preserves_framework_dispatch(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_shared_rmsnorm_cuda_input_preserves_framework_kernel(
+@pytest.mark.parametrize("ndim", [3, 4])
+def test_shared_rmsnorm_accelerator_input_preserves_framework_kernel(
     dtype: torch.dtype,
+    ndim: int,
 ) -> None:
-    """CUDA inputs retain the shared optimized RMSNorm implementation."""
-    norm = make_qwen3_rms_norm(32, eps=1e-6).to(device="cuda", dtype=dtype)
-    hidden_states = torch.randn(2, 3, 32, device="cuda", dtype=dtype)
+    """The CPU guard must retain CUDA/NPU dispatch for the model's 3D and 4D norms."""
+    device_type = model_platform.device_type
+    if device_type not in ("cuda", "npu"):
+        pytest.skip("requires CUDA or NPU")
+    else:
+        pass
+    norm = make_qwen3_rms_norm(32, eps=1e-6).to(device=device_type, dtype=dtype)
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.5, 1.5, 32, device=device_type, dtype=dtype))
+    shape = (2, 3, 64) if ndim == 3 else (2, 3, 2, 64)
+    hidden_states = torch.randn(shape, device=device_type, dtype=dtype)[..., 32:]
     expected = norm.forward_native(hidden_states)
+    backend_method = "forward_cuda" if device_type == "cuda" else "forward_npu"
 
     with patch.object(
-        RMSNorm, "forward_cuda", autospec=True, side_effect=RMSNorm.forward_cuda
-    ) as cuda_forward:
+        RMSNorm,
+        backend_method,
+        autospec=True,
+        side_effect=getattr(RMSNorm, backend_method),
+    ) as accelerator_forward:
         actual = norm(hidden_states)
 
     torch.testing.assert_close(actual, expected)
-    cuda_forward.assert_called_once_with(norm, hidden_states, None, None, None)
+    accelerator_forward.assert_called_once_with(norm, hidden_states, None, None, None)
 
 
 @torch.no_grad()
