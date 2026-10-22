@@ -316,6 +316,8 @@ class StreamingPerception:
             )
             for layer in layers
         ]
+        self.cached_frame_count = torch.empty((), device=self.device, dtype=torch.long)
+        self.key_positions_K = torch.arange(self.max_keys, device=self.device)
         self.reset()
 
     def state_buffers(self) -> list[torch.Tensor]:
@@ -326,13 +328,13 @@ class StreamingPerception:
             *self.key_caches,
             *self.value_caches,
             *self.conv_caches,
+            self.cached_frame_count,
         ]
 
     @torch.inference_mode()
     def reset(self) -> None:
         for buffer in self.state_buffers():
             buffer.zero_()
-        self.cached_frame_count: int = 0
         self.flushed: bool = False
 
     @torch.inference_mode()
@@ -393,7 +395,7 @@ class StreamingPerception:
                 layer.norm_feed_forward2(hidden_11D)
             )
             hidden_11D = layer.norm_out(hidden_11D)
-        self.cached_frame_count = min(self.cached_frame_count + 1, self.max_keys)
+        self.cached_frame_count.add_(1).clamp_(max=self.max_keys)
         return self.perception.proj(hidden_11D)[0]
 
     def subsample(self, mel_1TM: torch.Tensor) -> torch.Tensor:
@@ -429,26 +431,22 @@ class StreamingPerception:
         value_HS = rearrange(
             attention.linear_v(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
         )
-        keys_KHS = torch.cat(
-            (self.key_caches[index][: self.cached_frame_count], key_HS[None])
-        )[-self.max_keys :]
-        values_KHS = torch.cat(
-            (self.value_caches[index][: self.cached_frame_count], value_HS[None])
-        )[-self.max_keys :]
-        num_keys = keys_KHS.shape[0]
-        self.key_caches[index][:num_keys].copy_(keys_KHS)
-        self.value_caches[index][:num_keys].copy_(values_KHS)
+        keys_KHS = torch.cat((self.key_caches[index], key_HS[None]))[1:]
+        values_KHS = torch.cat((self.value_caches[index], value_HS[None]))[1:]
+        self.key_caches[index].copy_(keys_KHS)
+        self.value_caches[index].copy_(values_KHS)
         content_KH = einsum(
             query_HS + attention.pos_bias_u, keys_KHS, "h s, k h s -> k h"
         )
         position_KH = einsum(
             query_HS + attention.pos_bias_v,
-            self.posproj_LPHS[index][self.max_keys - num_keys :],
+            self.posproj_LPHS[index],
             "h s, k h s -> k h",
         )
-        weights_KH = ((content_KH + position_KH) / math.sqrt(self.head_size)).softmax(
-            dim=0
-        )
+        num_keys = (self.cached_frame_count + 1).clamp(max=self.max_keys)
+        is_padding_K1 = (self.key_positions_K < self.max_keys - num_keys)[:, None]
+        scores_KH = (content_KH + position_KH) / math.sqrt(self.head_size)
+        weights_KH = scores_KH.masked_fill(is_padding_K1, float("-inf")).softmax(dim=0)
         attended_HS = einsum(weights_KH, values_KHS, "k h, k h s -> h s")
         return attention.linear_out(rearrange(attended_HS, "h s -> 1 1 (h s)"))
 
@@ -477,7 +475,7 @@ class GraphPerception(StreamingPerception):
     def push(self, samples: torch.Tensor) -> torch.Tensor:
         assert not self.flushed
         assert samples.shape == (SAMPLES_PER_FRAME,)
-        if self.device.type != "cuda" or self.cached_frame_count < self.max_keys:
+        if self.device.type != "cuda":
             return super().push(samples)
         else:
             pass

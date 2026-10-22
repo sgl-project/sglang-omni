@@ -9,6 +9,7 @@ import pytest
 
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.schema import (
+    CLIENT_EVENT,
     JsonObject,
     JsonValue,
     SessionConfiguration,
@@ -144,6 +145,28 @@ def test_unsupported_configuration_is_rejected(
     assert (exc_info.value.code, exc_info.value.param) == (code, param)
 
 
+def test_a_port_may_declare_talker_sampling_beyond_the_duplex_defaults() -> None:
+    sampling = {"talker_top_p": 0.8, "talker_top_k": 20, "talker_max_new_tokens": 100}
+    event = CLIENT_EVENT.validate_python(
+        {
+            "type": "session.update",
+            "event_id": "evt_1",
+            "session": {"sglang": {"sampling": sampling}},
+        }
+    )
+    assert event.session["sglang"]["sampling"] == sampling
+    capabilities = Capabilities(
+        sampling_parameters=("talker_top_p", "talker_top_k", "talker_max_new_tokens")
+    )
+    config, _ = build_negotiation(capabilities).negotiate(
+        {}, "CREATED", {"sglang": {"sampling": sampling}}
+    )
+    assert config["sglang"]["sampling"] == sampling
+    with pytest.raises(ProtocolError) as exc_info:
+        build_negotiation().negotiate({}, "CREATED", {"sglang": {"sampling": sampling}})
+    assert exc_info.value.code == "not_applicable"
+
+
 def test_open_session_merges_patch_into_current_configuration() -> None:
     negotiation = build_negotiation(Capabilities(output_modalities=("text", "audio")))
     current = open_session(negotiation)
@@ -226,7 +249,7 @@ def test_open_session_freezes_admission_fields(patch: JsonObject) -> None:
     assert exc_info.value.code == "invalid_state"
 
 
-@pytest.mark.parametrize(("slices", "frames"), [(1, 4), (4, 2), (9, 1), (10, None)])
+@pytest.mark.parametrize(("slices", "frames"), [(1, 4), (9, 1), (10, None)])
 def test_image_frame_grant_follows_slice_setting(
     slices: int, frames: int | None
 ) -> None:

@@ -1,4 +1,4 @@
-# 🚀 Installation — MUSA
+# Installation — MUSA
 
 This document describes how to install SGLang-Omni on Moore Threads GPUs.
 
@@ -10,25 +10,25 @@ environment first, then install SGLang-Omni as an overlay.
 Install the Moore Threads driver and MUSA runtime on the host first. For the
 base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
-Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.21`.
+Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.22`.
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git sglang-omni
 omni_root="$(cd sglang-omni && pwd)"
-git clone --branch v0.5.21 --single-branch \
+git clone --branch v0.5.22 --single-branch \
   https://github.com/sgl-project/sglang.git "${omni_root}/../sglang"
 cd "${omni_root}/../sglang"
 docker build -f docker/musa.Dockerfile \
-  -t sglang:v0.5.21-musa520-s5000 .
+  -t sglang:v0.5.22-musa520-s5000 .
 cd "${omni_root}"
 docker build -f docker/musa.Dockerfile \
-  --build-arg SGLANG_MUSA_IMAGE=sglang:v0.5.21-musa520-s5000 \
+  --build-arg SGLANG_MUSA_IMAGE=sglang:v0.5.22-musa520-s5000 \
   -t sglang-omni:main-musa520-s5000 .
 ```
 
-The base image is built from the immutable `v0.5.21` release tag, which
+The base image is built from the immutable `v0.5.22` release tag, which
 includes `docker/musa.Dockerfile`.
 
 Run the image with MUSA devices exposed by the host runtime. If `mthreads` is
@@ -47,14 +47,14 @@ docker run -it --rm \
   sglang-omni:main-musa520-s5000
 ```
 
-## 🛠️ Option B: Install from Source
+## Option B: Install from Source
 
-Start from an environment where SGLang `v0.5.21` has been installed with MUSA
+Start from an environment where SGLang `v0.5.22` has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than
 `main`:
 
 ```bash
-git clone --depth 1 --branch v0.5.21 \
+git clone --depth 1 --branch v0.5.22 \
   https://github.com/sgl-project/sglang.git sglang
 ```
 

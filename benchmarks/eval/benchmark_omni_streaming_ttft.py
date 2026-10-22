@@ -187,6 +187,10 @@ async def _measure_one(
                 evt = json.loads(body)
             except json.JSONDecodeError:
                 continue
+            if evt.get("error") is not None:
+                raise RuntimeError(f"stream failed: {evt['error']}")
+            else:
+                pass
             for choice in evt.get("choices", []):
                 delta = choice.get("delta") or {}
                 audio = delta.get("audio")

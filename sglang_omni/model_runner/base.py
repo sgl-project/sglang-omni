@@ -8,11 +8,13 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias
 
 import torch
+from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
@@ -33,7 +35,6 @@ from sglang_omni.scheduling.types import (
 )
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
     from sglang_omni.models.dots_tts.model_runner import DotsFlowLaunchBuf
+    from sglang_omni.models.personaplex.model_runner import PersonaPlexFrameBatch
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
@@ -59,6 +61,7 @@ if TYPE_CHECKING:
             torch.cuda.Event | torch.xpu.Event,
         ]
         | DotsFlowLaunchBuf
+        | PersonaPlexFrameBatch
         | None
     )
 else:
@@ -152,9 +155,12 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # True when the model's own speculative verify applies repetition_penalty exactly.
+    speculative_verifies_repetition_penalty: bool = False
+
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
         self.tp_worker = tp_worker
@@ -176,6 +182,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.async_query_miss: int = 0
         self.token_id_host_bufs: list[torch.Tensor] | None = None
         self.token_id_host_slot: int = 0
+        self.token_id_events: list[torch.cuda.Event] = []
+        self.token_id_event_slot: int = 0
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
@@ -192,7 +200,7 @@ class ModelRunner(Generic[RequestDataInput]):
         n = ids.shape[0]
         buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
-        event = torch.cuda.Event()
+        event = self.next_token_id_event()
         event.record()
         result._host_token_ids = buf[
             :n
@@ -209,6 +217,17 @@ class ModelRunner(Generic[RequestDataInput]):
             like.dtype,
             realloc_on_grow=True,
         )
+
+    def next_token_id_event(self) -> torch.cuda.Event:
+        # note (ratish): a new event is created at its first record, which waits while
+        # another thread of the process is inside the CUDA runtime; two, as the buffers.
+        if not self.token_id_events:
+            self.token_id_events = [torch.cuda.Event() for _ in range(2)]
+        else:
+            pass
+        event = self.token_id_events[self.token_id_event_slot]
+        self.token_id_event_slot ^= 1
+        return event
 
     def pinned_pingpong(
         self,
@@ -440,10 +459,10 @@ class ModelRunner(Generic[RequestDataInput]):
         )
 
     def execute_launch(self, scheduler_output: SchedulerOutput) -> "PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, call
+        """Enqueue a decode or supported whole-prompt prefill step, call
         ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
-        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
+        publication. Does NOT wait on the GPU. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
         forward, and ``event.query()`` proves the launched step's GPU work is
@@ -467,7 +486,6 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
             forward_batch, schedule_batch, is_prefill = built
-            assert not is_prefill, "async lookahead launch is decode-only"
             batch_result = self.prepare_and_forward(
                 forward_batch,
                 schedule_batch,
@@ -475,6 +493,15 @@ class ModelRunner(Generic[RequestDataInput]):
                 is_prefill,
                 is_lookahead=True,
             )
+            if is_prefill:
+                self.post_prefill(
+                    batch_result,
+                    forward_batch,
+                    schedule_batch,
+                    scheduler_output.requests,
+                )
+            else:
+                pass
             launch_buf = self.post_decode_launch(
                 batch_result, forward_batch, scheduler_output.requests
             )
@@ -655,6 +682,16 @@ class ModelRunner(Generic[RequestDataInput]):
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Hook for the tokens one speculative step committed for a request.
+
+        Speculative decoding bypasses execute, so a runner collecting outputs in
+        post_decode collects them here; they end at the stop, before the result.
+        """
+        return None
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
@@ -902,6 +939,10 @@ class ModelRunner(Generic[RequestDataInput]):
     ) -> None:
         """Called after output tokens are materialized into RequestOutput."""
 
+    def model_info(self) -> Mapping[str, object]:
+        """Model-specific entries the model_info admin action adds to the worker's."""
+        return {}
+
     def on_request_finished(self, request_id: str, req_data: RequestDataInput) -> None:
         """Drain per-request state on any non-abort finish.
 
@@ -1043,7 +1084,7 @@ class ModelRunner(Generic[RequestDataInput]):
     ) -> None:
         """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
         ``multinomial_with_seed``. No-op when no request set a seed, or when a
-        subclass already installed its own (e.g. Qwen3-TTS).
+        subclass already installed its own.
 
         Runs once per decode step. User-provided seeds are resolved once and
         cached back onto ``sampling_params.sampling_seed``. In a mixed
@@ -1075,8 +1116,10 @@ class ModelRunner(Generic[RequestDataInput]):
                 pass
             row_seeds.append(seed)
         sampling_info.sampling_seed = torch.tensor(
-            row_seeds, dtype=torch.long, device=sampling_info.device
-        )
+            row_seeds,
+            dtype=torch.long,
+            pin_memory=is_pin_memory_available(sampling_info.device),
+        ).to(sampling_info.device, non_blocking=True)
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:
@@ -1084,20 +1127,6 @@ class ModelRunner(Generic[RequestDataInput]):
             raise ValueError(
                 "SGLang seeded sampling does not support min_p yet; set min_p=0 "
                 "or omit request seed"
-            )
-        else:
-            pass
-        need_top_p_sampling = sampling_info.need_top_p_sampling
-        need_top_k_sampling = sampling_info.need_top_k_sampling
-        if not (need_top_p_sampling or need_top_k_sampling):
-            return
-        else:
-            pass
-        if current_sglang_sampling_backend() == "flashinfer":
-            raise ValueError(
-                "SGLang flashinfer sampling backend does not support request seed "
-                "with top_p/top_k filtering; configure sampling_backend='pytorch' "
-                "or avoid top_p/top_k with seed"
             )
         else:
             pass

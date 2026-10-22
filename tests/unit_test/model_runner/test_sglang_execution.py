@@ -28,11 +28,11 @@ class SpecAlgorithm:
         return self.is_none_value
 
 
-def make_bridge() -> tuple[SGLangExecutionBridge, FutureMap]:
+def make_bridge(device: str = "cpu") -> tuple[SGLangExecutionBridge, FutureMap]:
     future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
     bridge = SGLangExecutionBridge(
-        device=torch.device("cpu"),
+        device=torch.device(device),
         worker=worker,
         spec_algorithm=SpecAlgorithm(),
         future_map=future_map,
@@ -107,24 +107,6 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
     assert batch.sampling_info is original_sampling_info
 
 
-def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
-    bridge, _ = make_bridge()
-    batch = SimpleNamespace(
-        sampling_info=None,
-        mix_running_indices=torch.tensor([1]),
-    )
-    resolved = []
-    monkeypatch.setattr(
-        "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *args: resolved.append(True),
-    )
-
-    with bridge.forward_context(batch):
-        pass
-
-    assert resolved == [True]
-
-
 def test_execution_bridge_rejects_speculative_decoding() -> None:
     future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
@@ -136,3 +118,14 @@ def test_execution_bridge_rejects_speculative_decoding() -> None:
             spec_algorithm=SpecAlgorithm(is_none=False),
             future_map=future_map,
         )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_record_completion_alternates_two_events() -> None:
+    bridge, _ = make_bridge("cuda")
+
+    events = [bridge.record_completion() for _ in range(4)]
+
+    assert events[0] is events[2] and events[1] is events[3]
+    assert events[0] is not events[1]

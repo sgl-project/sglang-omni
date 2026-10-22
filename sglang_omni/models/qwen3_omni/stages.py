@@ -12,7 +12,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 import torch.nn.functional as F
@@ -1197,16 +1197,17 @@ def create_sglang_thinker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 8192,
+    max_seq_len: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    execution_mode: Literal["request", "session"] = "request",
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -1226,6 +1227,12 @@ def create_sglang_thinker_executor_from_config(
     # the streaming-SST thinker path benefits out of the box; either key can be
     # overridden via server_args_overrides (set enable_mixed_chunk=False to opt
     # out). Note: mixed-chunk only engages when chunked_prefill_size > 0.
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.is_cuda():
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -1234,10 +1241,14 @@ def create_sglang_thinker_executor_from_config(
         enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
-        sampling_backend="pytorch",
+        sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size
-    from sglang_omni.platforms import current_platform
+    if execution_mode == "session":
+        overrides["enable_streaming_session"] = True
+    else:
+        pass
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
@@ -1318,6 +1329,7 @@ def create_sglang_thinker_executor_from_config(
         server_args,
         gpu_id,
         speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
@@ -1361,7 +1373,8 @@ def create_talker_ar_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 4096,
+    max_seq_len: int | None = None,
+    max_running_requests: int,
     server_args_overrides: Mapping[str, object] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
@@ -1374,6 +1387,7 @@ def create_talker_ar_executor_from_config(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
+    execution_mode: Literal["request", "session"] = "request",
 ) -> QwenTalkerScheduler:
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1397,7 +1411,7 @@ def create_talker_ar_executor_from_config(
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
-        max_running_requests=32,
+        max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         # note (zhaochenyang20): the native rotary path under torch compile rejects fused_set_kv_buffer_arg.
@@ -1416,6 +1430,10 @@ def create_talker_ar_executor_from_config(
     else:
         pass
     overrides["tp_size"] = tp_size
+    if execution_mode == "session":
+        overrides["enable_streaming_session"] = True
+    else:
+        pass
     apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",
@@ -1450,6 +1468,7 @@ def create_talker_ar_executor_from_config(
         gpu_id,
         weight_prefix=weight_prefix,
         speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
         feedback_enabled=feedback_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,

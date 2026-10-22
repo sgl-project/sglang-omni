@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 
 class TokenUsageDict(TypedDict):
@@ -22,6 +22,26 @@ class UsageInfoDict(TokenUsageDict, total=False):
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
 # did not say how generation ended.
 UNKNOWN_FINISH_REASON = "unknown"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiarizationSegment:
+    """One speaker's active interval, in seconds from the recording start."""
+
+    start: float
+    end: float
+    speaker: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiarizationResult:
+    """Standalone speaker activity, with overlapping intervals permitted."""
+
+    duration: float
+    segments: list[DiarizationSegment]
+
+
+DiarizationOperation = Literal["open", "append", "finish", "close", "reset"]
 
 
 @dataclass
@@ -74,27 +94,32 @@ class UsageInfo:
 class SamplingParams:
     """Sampling configuration."""
 
-    temperature: float = 1.0
-    top_p: float = 1.0
-    top_k: int = -1
-    min_p: float = 0.0
-    repetition_penalty: float = 1.0
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
     stop: list[str] = field(default_factory=list)
     stop_token_ids: list[int] = field(default_factory=list)
     seed: int | None = None
     max_new_tokens: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        # note (ratish): a field the caller left unset stays out, so the stage
+        # request builder applies its own model default.
+        values: dict[str, object] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k,
             "min_p": self.min_p,
             "repetition_penalty": self.repetition_penalty,
-            "stop": list(self.stop),
-            "stop_token_ids": list(self.stop_token_ids),
             "seed": self.seed,
             "max_new_tokens": self.max_new_tokens,
+        }
+        return {
+            **{name: value for name, value in values.items() if value is not None},
+            "stop": list(self.stop),
+            "stop_token_ids": list(self.stop_token_ids),
         }
 
 
@@ -164,7 +189,10 @@ class GenerateChunk:
     modality: str = "text"
     language: str | None = None
     audio_data: object = None
+    media: list[dict[str, object]] | None = None
     sample_rate: int | None = None
+    diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG from the terminal result
 
     @property
     def reported_finish_reason(self) -> str:
@@ -191,8 +219,82 @@ class GenerateChunk:
             "modality": self.modality,
             "language": self.language,
             "audio_data": self.audio_data,
+            "media": self.media,
             "sample_rate": self.sample_rate,
+            "image": self.image,
         }
+
+
+@dataclass(frozen=True)
+class UMMSegment:
+    """One accepted output of an interleaved (UMM) request, in order.
+
+    data is None only in the final result of a streamed request, which already
+    delivered each segment with its data.
+    """
+
+    execution_id: str
+    segment_index: int
+    kind: str
+    data: object = None
+
+    @classmethod
+    def from_dict(cls, value: object) -> UMMSegment:
+        fields = {"type", "execution_id", "segment_index", "kind", "data"}
+        if (
+            not isinstance(value, dict)
+            or value.get("type") != "segment"
+            or not set(value) <= fields
+            or not isinstance(value.get("execution_id"), str)
+            or type(value.get("segment_index")) is not int
+            or value["segment_index"] < 0
+            or not isinstance(value.get("kind"), str)
+        ):
+            raise ValueError(f"Invalid UMM segment {value!r:.200}")
+        else:
+            return cls(
+                value["execution_id"],
+                value["segment_index"],
+                value["kind"],
+                value.get("data"),
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "type": "segment",
+            "execution_id": self.execution_id,
+            "segment_index": self.segment_index,
+            "kind": self.kind,
+        }
+        if self.data is not None:
+            result["data"] = self.data
+        else:
+            pass
+        return result
+
+
+@dataclass
+class UMMGenerateChunk(GenerateChunk):
+    """A chunk of an interleaved (UMM) request.
+
+    A streamed chunk carries one segment. The final chunk lists every segment,
+    and its text joins the text segments that carry data.
+    """
+
+    segment: UMMSegment | None = None
+    segments: list[UMMSegment] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        result = super().to_dict()
+        if self.segment is not None:
+            result["segment"] = self.segment.to_dict()
+        else:
+            pass
+        if self.segments is not None:
+            result["segments"] = [segment.to_dict() for segment in self.segments]
+        else:
+            pass
+        return result
 
 
 class AbortLevel(Enum):
@@ -232,12 +334,18 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    # Saved media of a generation stage. Delivered files belong to the
+    # caller. The server removes them only when it drops the completion
+    # before any caller receives it.
+    media: list[dict[str, object]] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
     language: str | None = None
+    diarization: DiarizationResult | None = None
+    image: str | None = None  # base64-encoded PNG
 
 
 @dataclass
@@ -251,6 +359,24 @@ class CompletionStreamChunk:
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     stage_name: str | None = None
+
+
+@dataclass
+class UMMCompletionResult(CompletionResult):
+    """Result of an interleaved (UMM) request.
+
+    text joins the text segments, and segments keeps every accepted output in
+    order with its data.
+    """
+
+    segments: list[UMMSegment] = field(default_factory=list)
+
+
+@dataclass
+class UMMCompletionStreamChunk(CompletionStreamChunk):
+    """A streamed chunk of an interleaved (UMM) request with its segment."""
+
+    segment: UMMSegment | None = None
 
 
 @dataclass

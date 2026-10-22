@@ -159,6 +159,15 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
                 pass
         return defaults
 
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if "context_length" in overrides:
+            self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
+
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        self.context_length = int(server_args.context_length)
+
     def setup_model_resources(
         self,
         model: ArkasrForConditionalGeneration,

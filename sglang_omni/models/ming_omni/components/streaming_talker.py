@@ -30,12 +30,10 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 if TYPE_CHECKING:
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
     from sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker import (
         MingOmniTalker,
     )
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 else:
     pass
 
@@ -106,6 +104,9 @@ class MingStreamingTalkerScheduler:
         self.states_lock = threading.Lock()
 
     # ------------------------------------------------------------------ lifecycle
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         if self.talker is None:
@@ -512,9 +513,7 @@ class MingStreamingTalkerScheduler:
         from transformers import AutoTokenizer
 
         from sglang_omni.models.ming_omni.talker import MingOmniTalker, SpkembExtractor
-        from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-            AudioVAE,
-        )
+        from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 
         t_start = time.perf_counter()
         talker_dir = str(Path(self.model_path) / "talker")

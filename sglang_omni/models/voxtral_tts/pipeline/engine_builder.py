@@ -16,11 +16,15 @@ from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
 from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 else:
@@ -79,9 +83,20 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
             device,
         )
 
+    def post_cuda_graph_setup(
+        self, model: VoxtralSGLangTTSModel, server_args: ServerArgs
+    ) -> None:
+        # Note (Jiaxin Deng): eager, the 7-step flow-matching loop is launch bound
+        # (~10 ms per decode step at any batch size); replay takes ~3.6 ms on H200.
+        batch_sizes = get_decode_cuda_graph_bs(server_args)
+        if batch_sizes:
+            model.init_acoustic_graphs(list(batch_sizes))
+        else:
+            pass
+
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> VoxtralTTSModelRunner:
         model_runner_mod = importlib.import_module(
@@ -89,6 +104,9 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
         )
 
         return model_runner_mod.VoxtralTTSModelRunner(model_worker, output_proc)
+
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[VoxtralSGLangRequestData]:
+        return {"stream_output_builder": request_builders.VoxtralStreamOutput()}
 
     def make_adapters(self, model: VoxtralSGLangTTSModel | None) -> tuple[
         Callable[[StagePayload], VoxtralSGLangRequestData],

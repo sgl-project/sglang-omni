@@ -43,6 +43,7 @@ class RunConfig:
     # note (luojiaxuan): seeds the Poisson inter-arrival draws so every run
     # offers the same arrival sequence; None draws a fresh sequence per run.
     arrival_seed: int | None = None
+    trust_env: bool = False
 
     @property
     def effective_warmup(self) -> int:
@@ -73,14 +74,10 @@ class BenchmarkRunner:
         after_send: AfterSendFn | None = None,
     ) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
-        # note (guozhihao): Closed-loop runs are bounded by max_concurrency.
-        # Open-loop (max_concurrency=0) must not inherit aiohttp's default
-        # 100-conn cap, or sustained overshoot silently queues on the client.
-        connector = (
-            aiohttp.TCPConnector(limit=0) if not self.config.max_concurrency else None
-        )
+        # note (Zhang Yiyang): The semaphore bounds concurrency; the HTTP pool must not impose another cap.
+        connector = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector
+            timeout=timeout, connector=connector, trust_env=self.config.trust_env
         ) as session:
             if self.config.effective_warmup > 0:
                 await self._warmup(session, samples, send_fn)

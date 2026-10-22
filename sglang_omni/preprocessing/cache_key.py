@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -292,3 +293,51 @@ def compute_media_cache_key(items: object, *, prefix: str) -> str | None:
         parts.append(part)
 
     return f"{prefix}:{hash_joined(parts)}"
+
+
+# note (ratish): two polynomial lanes modulo the Mersenne prime 2**31 - 1 over the 16-bit
+# words of a row; a word times a weight stays below 2**47, so a row sums exactly in int64.
+PROMPT_ROW_KEY_MODULUS = 2**31 - 1
+PROMPT_ROW_KEY_BASES = (1_000_000_007, 998_244_353)
+PROMPT_ROW_KEY_MAX_WORDS = 2**16
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromptRowCacheKeys:
+    """Radix-cache token ids of prompt rows of one width, computed on the rows' device.
+
+    Equal rows get equal ids; rows that differ in one 16-bit word never share an id.
+    """
+
+    word_weights: torch.Tensor
+
+    @classmethod
+    def for_rows(cls, *, row_bytes: int, device: torch.device) -> PromptRowCacheKeys:
+        """Each base's powers modulo the prime, one per 16-bit word of a row."""
+        words_per_row = row_bytes // 2
+        assert row_bytes % 2 == 0 and 0 < words_per_row <= PROMPT_ROW_KEY_MAX_WORDS
+        return cls(
+            word_weights=torch.tensor(
+                [
+                    [
+                        pow(base, word, PROMPT_ROW_KEY_MODULUS)
+                        for word in range(words_per_row)
+                    ]
+                    for base in PROMPT_ROW_KEY_BASES
+                ],
+                dtype=torch.int64,
+                device=device,
+            )
+        )
+
+    def key_ids(self, rows: torch.Tensor) -> list[int]:
+        """One id in [0, 2**63) per row of rows (rows, width)."""
+        assert rows.ndim == 2
+        words = rows.detach().contiguous().view(torch.int16)
+        assert words.shape[1] == self.word_weights.shape[1]
+        lanes = (
+            (words.to(torch.int64).bitwise_and(0xFFFF).unsqueeze(1) * self.word_weights)
+            .sum(dim=2)
+            .remainder(PROMPT_ROW_KEY_MODULUS)
+        )
+        return ((lanes[:, 0] << 31) | lanes[:, 1]).tolist()

@@ -11,7 +11,6 @@ from sglang_omni.proto import StagePayload
 
 TOKEN_HOP_LEN = 25
 PRE_LOOKAHEAD_LEN = 3
-TOKEN_MEL_RATIO = 2
 STREAM_SCALE_FACTOR = 2
 TOKEN_MAX_HOP_LEN = TOKEN_HOP_LEN * 4
 
@@ -124,7 +123,7 @@ def pad_flow_prompt_to_hop(
     prompt_feat: torch.Tensor,
     *,
     hop_len: int = TOKEN_HOP_LEN,
-    token_mel_ratio: int = TOKEN_MEL_RATIO,
+    token_mel_ratio: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pad prompt token/feat up to the next hop multiple.
 
@@ -155,7 +154,7 @@ def pad_flow_prompt_to_hop(
         token_fill = prompt_token[:, -1:].repeat(1, pad)
     else:
         token_fill = torch.zeros(prompt_token.shape[0], pad, dtype=prompt_token.dtype)
-    feat_pad = pad * int(token_mel_ratio)
+    feat_pad = pad * token_mel_ratio
     if prompt_feat.shape[1] > 0:
         feat_fill = prompt_feat[:, -1:, :].repeat(1, feat_pad, 1)
     else:

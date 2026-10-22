@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Protocol
 import torch
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
     from sglang.srt.managers.overlap_utils import FutureMap
     from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -73,7 +72,7 @@ class SGLangExecutionBridge:
         self,
         *,
         device: torch.device,
-        worker: "ModelWorker | MlxTpModelWorker",
+        worker: "ModelWorker",
         spec_algorithm: SpeculativeAlgorithm,
         future_map: "FutureMap",
     ) -> None:
@@ -91,6 +90,12 @@ class SGLangExecutionBridge:
         self.device_module = torch.get_device_module(device)
         self.future_map = future_map
         self.relay_payload_type = RelayPayload
+        # note (ratish): launch first scheduling holds two steps in flight, the one just
+        # launched and the one before it, so two events serve every launch.
+        self.completion_events: list[torch.cuda.Event | torch.xpu.Event] = [
+            self.device_module.Event() for _ in range(2)
+        ]
+        self.completion_event_slot: int = 0
 
     @contextlib.contextmanager
     def forward_context(
@@ -147,6 +152,7 @@ class SGLangExecutionBridge:
 
     def record_completion(self):
         """Record completion of the current launch on its producing stream."""
-        event = self.device_module.Event()
+        event = self.completion_events[self.completion_event_slot]
+        self.completion_event_slot ^= 1
         event.record()
         return event

@@ -30,6 +30,10 @@ from sglang_omni.models.qwen3_omni.hf_config import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -37,11 +41,11 @@ from sglang_omni.sampling.seed import (
 )
 from sglang_omni.utils.predictor_layers import (
     add_rmsnorm_rounded,
+    codebook_step,
     resolve_fused_predictor_layers,
     supports_exact_add_rmsnorm,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     AuxHiddenStateList,
     MergedColumnParallelLinear,
@@ -52,7 +56,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     residual_batch,
-    should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
@@ -285,8 +288,8 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
     Inherits from Thinker's MoE for routed experts (topk, experts, gate).
     Adds shared expert with gated output.
 
-    All-reduce is unified: both routed and shared expert outputs stay as
-    per-rank partial sums until combined, then a single all-reduce is applied.
+    Routed and shared expert outputs stay per-rank partial sums until
+    combined; the layer's FFN boundary completes the sum.
     """
 
     def __init__(
@@ -323,8 +326,6 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
@@ -346,18 +347,7 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         topk_output = self.topk(linear_hidden_states, router_logits)
         routed_output = self.experts(linear_hidden_states, topk_output)
 
-        # --- Combine then unified all-reduce ---
         final_hidden_states = routed_output + shared_output
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        else:
-            pass
-
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
@@ -412,6 +402,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 alt_stream=alt_stream,
             ),
             prefix=add_prefix("layers", prefix),
+            stage_facts=lambda idx: Qwen3OmniMoeTalkerDecoderLayer.stage_facts(
+                config, idx
+            ),
         )
         self.start_layer = 0
         self.end_layer = config.num_hidden_layers
@@ -487,11 +480,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 ),
             )
 
-        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
-        if hidden_states.shape[0] != 0:
-            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
 
         if aux_hidden_states:
             return hidden_states, aux_hidden_states
@@ -596,7 +587,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         forward_batch: ForwardBatch,
     ):
         """
-        Forward through the code predictor (matches vLLM-Omni's mtp_block pattern).
+        Forward through the code predictor (MTP block).
 
         Args:
             inputs_embeds: [batch, seq_len, hidden_size] or [total_tokens, hidden_size]
@@ -933,7 +924,7 @@ class Qwen3OmniTalker(nn.Module):
         self.repetition_penalties = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.suppress_mask = torch.zeros(
@@ -945,12 +936,12 @@ class Qwen3OmniTalker(nn.Module):
         self.sampling_temperatures = torch.ones(
             max_batch_size,
             1,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ps = torch.ones(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_top_ks = torch.full(
@@ -961,7 +952,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         self.sampling_min_ps = torch.zeros(
             max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
+            dtype=torch.float32,
             device=device,
         )
         self.sampling_seeds = torch.zeros(
@@ -1365,7 +1356,7 @@ class Qwen3OmniTalker(nn.Module):
         pruned_states = hidden_states[last_index]
         next_token_logits, _ = self.codec_head(pruned_states)
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=pruned_states,
         )
 
@@ -1375,8 +1366,10 @@ class Qwen3OmniTalker(nn.Module):
     ) -> LogitsProcessorOutput:
         """Compute codec logits directly for decode/CUDA-graph capture."""
         next_token_logits, _ = self.codec_head(hidden_states)
+        # note (ratish): sglang's sampler divides and softmaxes in the logits' own dtype.
+        # The reference samples from fp32 logits, as sglang's logits processor returns them.
         return LogitsProcessorOutput(
-            next_token_logits=next_token_logits,
+            next_token_logits=next_token_logits.float(),
             hidden_states=hidden_states,
         )
 
@@ -1386,9 +1379,7 @@ class Qwen3OmniTalker(nn.Module):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         batch_size = logits.shape[0]
-        logits = logits.clone()
-
-        penalties = self.repetition_penalties[:batch_size].to(dtype=logits.dtype)
+        penalties = self.repetition_penalties[:batch_size]
         penalized_logits = torch.where(
             logits > 0, logits / penalties, logits * penalties
         )
@@ -1708,13 +1699,26 @@ class Qwen3OmniTalker(nn.Module):
 
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self.sample_code_predictor_token(logits)
-                pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
-
-                new_embed = self.code_predictor.model.codec_embedding[layer_idx](
-                    next_code
-                ).to(dtype=predictor_input.dtype)
-                pos_summed.add_(new_embed[:, 0, :])
+                codebook_embedding = self.code_predictor.model.codec_embedding[
+                    layer_idx
+                ]
+                # note (ratish): the codebook step runs where the fused layers do, on CUDA
+                # with Triton; the checkpoint's bf16 tables are 2048 by 1024, the
+                # power-of-two widths it needs.
+                if self.predictor_fused_layers is not None:
+                    new_embed = codebook_step(
+                        logits[:, -1, :],
+                        codebook_embedding.weight,
+                        pos_codes[:, layer_idx + 1],
+                        pos_summed,
+                    )
+                else:
+                    next_code = self.sample_code_predictor_token(logits)
+                    pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
+                    new_embed = codebook_embedding(next_code).to(
+                        dtype=predictor_input.dtype
+                    )
+                    pos_summed.add_(new_embed[:, 0, :])
                 if layer_idx < num_groups - 2:
                     last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_embed,
@@ -1912,6 +1916,17 @@ class Qwen3OmniTalker(nn.Module):
             talker_hidden=talker_hidden,
         )
         return result_codes, summed_embeddings
+
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty a request's first sample would compile, on the
+        float32 logits it receives."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.model.codec_embedding.weight.device,
+                vocab_size=self.config.text_config.vocab_size,
+                penalized_logits_dtype=torch.float32,
+            )
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         """Load weights from HuggingFace checkpoint."""

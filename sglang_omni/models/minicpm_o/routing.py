@@ -179,7 +179,7 @@ def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
         thinker_out={
             "output_ids": list(thinker_out.get("output_ids") or []),
             "extra_model_outputs": {
-                "hidden_states_seq": extra.get("hidden_states_seq") or [],
+                "hidden_states_seq": extra.get("hidden_states_seq", []),
             },
         },
     )
@@ -232,6 +232,10 @@ def project_preprocessing_to_encoder(
     encoder_inputs = (
         {stage_name: dict(stage_inputs)} if isinstance(stage_inputs, dict) else {}
     )
+    if stage_name == IMAGE_STAGE and isinstance(stage_inputs, dict):
+        encoder_inputs[stage_name]["pixel_values"] = list(stage_inputs["pixel_values"])
+    else:
+        pass
     projected = MiniCPMOPipelineState(encoder_inputs=encoder_inputs)
     return payload_with_state(payload, projected)
 

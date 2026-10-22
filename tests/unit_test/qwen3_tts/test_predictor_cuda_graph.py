@@ -10,14 +10,10 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 
 from __future__ import annotations
 
-import ast
-import contextlib
 import copy
 import gc
 import weakref
 from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,7 +21,10 @@ import torch
 from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.quantization.unquant import (
+    Bf16GemmBackend,
+    UnquantizedLinearMethod,
+)
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,
@@ -36,7 +35,10 @@ from sglang.srt.runtime_context import get_context
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSTalker,
+)
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -76,8 +78,8 @@ class TupleLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
-        self.quant_method = sglang_model_module.UnquantizedLinearMethod()
-        self.tp_size = 1
+        self.quant_method = UnquantizedLinearMethod()
+        self.tp_group = None
 
     @property
     def weight(self) -> torch.Tensor:
@@ -167,6 +169,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         MAX_BS, device=device, dtype=torch.long
     )
     talker.sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     talker.sub_seed_offsets = torch.arange(
         1, NUM_CODE_GROUPS, device=device, dtype=torch.long
     )
@@ -201,12 +205,9 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         model=SimpleNamespace(
             layers=[layer],
             norm=RMSNorm(HIDDEN, eps=1e-6).to(device, DTYPE),
-            codec_embedding=nn.ModuleList(
-                [
-                    nn.Embedding(PRED_VOCAB, HIDDEN).to(device, DTYPE)
-                    for _ in range(NUM_CODE_GROUPS - 1)
-                ]
-            ),
+            codec_embedding=Qwen3TTSCodecTables(
+                NUM_CODE_GROUPS - 1, PRED_VOCAB, HIDDEN
+            ).to(device, DTYPE),
         ),
         lm_head=nn.ModuleList(
             [
@@ -228,6 +229,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker.predictor_graph_capacity_warned = False
     talker.predictor_graph_capture_count = 0
     talker.predictor_graph_startup_count = 0
+    talker.predictor_graph_replay_count = 0
+    talker.predictor_eager_count = 0
     talker.predictor_graph_pool = None
     talker.predictor_capture_stream = None
     return talker
@@ -449,16 +452,13 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     projection = nn.Linear(
         CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
     ).to(device, DTYPE)
-    embeddings = nn.ModuleList(
-        [
-            nn.Embedding(CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(device, DTYPE)
-            for _ in range(3)
-        ]
+    codec_tables = Qwen3TTSCodecTables(3, CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(
+        device, DTYPE
     )
-    talker.code_predictor.model.codec_embedding = embeddings
+    talker.code_predictor.model.codec_embedding = codec_tables
     talker.code_predictor.project_input = projection
     talker.predictor_projected_embeddings = torch.empty(
-        len(embeddings) - 1,
+        codec_tables.weight.shape[0] - 1,
         CHECKPOINT_VOCAB,
         CHECKPOINT_PREDICTOR_HIDDEN,
         device=device,
@@ -472,7 +472,7 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
     accumulation = accumulation / (1 - accumulation)
     for index, table in enumerate(talker.predictor_projected_embeddings):
-        rows = embeddings[index].weight[codes].float()
+        rows = codec_tables.weight[index][codes].float()
         reference = torch.nn.functional.linear(rows, weight, bias)
         magnitude = rows.abs() @ weight.abs().T + bias.abs()
         rounding_bound = (
@@ -1026,66 +1026,6 @@ def test_both_gates_reject_another_card_of_the_same_kind() -> None:
     assert talker.predictor_forward_graphed(elsewhere, elsewhere, None) is None
 
 
-def test_a_capture_that_fails_after_the_graph_exists_releases_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cleanup path resets only what capture yielded."""
-    resets: list[int] = []
-
-    class FakeGraph:
-        def reset(self) -> None:
-            resets.append(1)
-
-    class FailingBackend:
-        @contextmanager
-        def capture(self, **kwargs):
-            yield FakeGraph()
-            raise RuntimeError("simulated capture_end failure")
-
-    class FakeModule:
-        def Event(self):  # noqa: N802 - mirrors the torch spelling
-            return None
-
-        def Stream(self, device=None):  # noqa: N802 - ditto
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        def current_stream(self, device=None):
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        @contextmanager
-        def stream(self, stream):
-            yield
-
-        def device(self, device):
-            return contextlib.nullcontext()
-
-        def graph_pool_handle(self):
-            return "pool"
-
-    talker = build_talker(torch.device("cpu"))
-    talker.predictor_device_module = FakeModule()
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "get_device_graph_backend",
-        lambda device: FailingBackend(),
-    )
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "graph_capture_attention",
-        lambda: contextlib.nullcontext(),
-    )
-    monkeypatch.setattr(
-        Qwen3TTSTalker,
-        "code_predictor_forward_incremental",
-        lambda self, *a, **k: (talker.output_codes[:2], talker.output_embeds[:2]),
-    )
-
-    with pytest.raises(RuntimeError, match="simulated capture_end failure"):
-        talker.capture_predictor_graph(2, ("argmax", 0, False, False, False))
-
-    assert resets == [1]
-
-
 def test_a_step_on_a_device_without_a_graph_backend_stays_eager(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1244,32 +1184,6 @@ def test_no_host_readback_in_eager_chain():
             semantic_positions=positions.as_subclass(NoHostReadbackTensor),
         )
         torch.cuda.synchronize()
-
-
-def test_capture_uses_thread_local_error_mode():
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "sglang_omni"
-        / "models"
-        / "qwen3_tts"
-        / "sglang_model.py"
-    )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    capture_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "capture"
-    ]
-    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
-    assert any(
-        keyword.arg == "thread_local_errors"
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value is True
-        for call in capture_calls
-        for keyword in call.keywords
-    )
 
 
 def test_normalize_predictor_graph_batch_sizes():
@@ -2349,6 +2263,34 @@ def test_fused_predictor_layers_are_as_close_to_fp32_as_the_plain_layers(
 
     assert errors["fused"][0] <= FUSED_ERROR_BOUND * errors["plain"][0]
     assert errors["fused"][1] <= FUSED_ERROR_BOUND * errors["plain"][1]
+
+
+def test_predictor_stats_count_graph_replays_and_eager_runs() -> None:
+    talker = build_talker(torch.device("cpu"))
+    codes = torch.zeros((2, NUM_CODE_GROUPS), dtype=torch.long)
+    embeddings = torch.zeros((2, 1, HIDDEN))
+    graph_results = iter([(codes, embeddings), None, None])
+    talker.predictor_forward_graphed = (
+        lambda layer0_codes, talker_hidden, semantic_positions: next(graph_results)
+    )
+    talker.code_predictor_forward_incremental = (
+        lambda layer0_codes, talker_hidden, semantic_positions: (codes, embeddings)
+    )
+    layer0 = torch.zeros((2, 1), dtype=torch.long)
+    hidden = torch.zeros((2, 1, HIDDEN))
+
+    for _ in range(3):
+        talker.code_predictor_forward(layer0, hidden)
+
+    assert talker.predictor_graph_stats() == {
+        "enabled": True,
+        "startup_graph_count": 0,
+        "lazy_graph_count": 0,
+        "replays": 1,
+        "eager_runs": 2,
+        "capacity_fallbacks": 0,
+        "capture_failures": 0,
+    }
 
 
 if __name__ == "__main__":

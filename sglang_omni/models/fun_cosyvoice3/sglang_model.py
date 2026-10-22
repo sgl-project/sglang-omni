@@ -12,8 +12,15 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
+from sglang.srt.runtime_context import get_exec
 from torch import nn
 from transformers import Qwen2Config
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
@@ -92,9 +99,31 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         else:
             pass
 
-        logits = self.llm_decoder(hidden_states)
+        if current_platform.is_cuda():
+            # note (ratish): the sampler applies the temperature and the softmax in place
+            # in the logits' dtype, so the head writes float32 logits.
+            logits = torch.mm(
+                hidden_states, self.llm_decoder.weight.T, out_dtype=torch.float32
+            )
+        else:
+            logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
             next_token_logits=logits, hidden_states=hidden_states
+        )
+
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty every default request applies, on the float32
+        logits forward writes, and load FlashInfer's sampling module when it draws the
+        unseeded requests."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.llm_decoder.weight.device,
+                vocab_size=TOTAL_VOCAB_SIZE,
+                penalized_logits_dtype=torch.float32,
+                should_load_flashinfer_sampling=(
+                    get_exec().kernel.sampling_backend == "flashinfer"
+                ),
+            )
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
