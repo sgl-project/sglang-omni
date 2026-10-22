@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import check_golden
+import voxtral_tts_golden
 
 CLIP = {
     "text": "hello",
@@ -72,3 +73,41 @@ def test_a_pending_baseline_reports_no_delta() -> None:
     lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
     assert failures == []
     assert "| wer_en | pending | 3.00% | n/a |" in lines
+
+
+def voxtral_golden() -> voxtral_tts_golden.VoxtralGolden:
+    output = {"frames": [[4, 7], [1, 2]], "finish_reason": "stop"}
+    return {
+        "model": "mistralai/Voxtral-4B-TTS-2603",
+        "reference": "Python MLX reference",
+        "cases": {
+            "hello": {
+                "text": "Hello.",
+                "voice": "cheerful_female",
+                "seed": 1234,
+                "max_new_tokens": 16,
+            }
+        },
+        "reference_outputs": {"hello": output},
+    }
+
+
+def test_voxtral_tts_requires_identical_frames_and_finish_reason() -> None:
+    expected = {"frames": [[4, 7], [1, 2]], "finish_reason": "stop"}
+    lines, failures = voxtral_tts_golden.check(voxtral_golden(), {"hello": expected})
+    assert failures == []
+    assert "- Acoustic token outputs identical: 1/1" in lines
+
+
+def test_voxtral_tts_reports_frame_and_finish_reason_mismatches() -> None:
+    actual = {"frames": [[4, 7], [1, 3]], "finish_reason": "length"}
+    failures = voxtral_tts_golden.check(voxtral_golden(), {"hello": actual})[1]
+    assert failures == ["`hello` token frames or finish reason differ"]
+
+
+def test_voxtral_tts_requires_reference_outputs() -> None:
+    golden = voxtral_golden()
+    golden["reference_outputs"] = {}
+    lines, failures = voxtral_tts_golden.check(golden, {})
+    assert failures == ["the golden file has no reference token outputs"]
+    assert "- Acoustic token outputs identical: 0/0" in lines

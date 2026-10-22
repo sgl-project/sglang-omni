@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Native MLX runtime for Voxt (Qwen3-ASR, Silero VAD): one binary, no Python.
+# Native MLX runtime for Voxt (Qwen3-ASR, Silero VAD, Voxtral TTS): C++ only.
 cmake_minimum_required(VERSION 3.24)
 project(sglang_omni_mlx_native LANGUAGES C CXX)
 
@@ -87,8 +87,40 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp src/common/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_server STATIC
+  src/common/http.cpp
+  src/common/supervisor.cpp
+  src/common/synthesis.cpp
+  src/common/tts_service.cpp)
+target_include_directories(omni_server PUBLIC src)
+target_link_libraries(omni_server PUBLIC common civetweb-c-library)
+target_compile_options(omni_server PRIVATE -Wall -Wextra)
+
+add_library(voxtral_tts STATIC
+  src/voxtral_tts/audio_tokenizer.cpp
+  src/voxtral_tts/config.cpp
+  src/voxtral_tts/model.cpp
+  src/voxtral_tts/speech_tokenizer.cpp)
+target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
+target_compile_options(voxtral_tts PRIVATE -Wall -Wextra)
+add_executable(voxtral_tts_encode tools/voxtral_tts_encode.cpp)
+target_link_libraries(voxtral_tts_encode PRIVATE voxtral_tts)
+add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
+target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts omni_server)
+add_executable(voxtral_tts_generate tools/voxtral_tts_generate.cpp)
+target_link_libraries(voxtral_tts_generate PRIVATE voxtral_tts)
+add_executable(voxtral_tts_convert_voices tools/convert_voxtral_voice_embeddings.cpp)
+target_link_libraries(voxtral_tts_convert_voices PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(voxtral_tts_convert_voices PRIVATE -Wall -Wextra)
+set_target_properties(voxtral_tts_encode voxtral_tts_server voxtral_tts_generate
+  voxtral_tts_convert_voices PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS voxtral_tts_encode voxtral_tts_server voxtral_tts_generate
+  voxtral_tts_convert_voices RUNTIME DESTINATION bin)
+
+add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC qwen3_asr omni_server)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp

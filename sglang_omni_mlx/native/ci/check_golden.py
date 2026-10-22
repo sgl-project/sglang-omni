@@ -23,6 +23,7 @@ TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]
 
 import sortformer_golden
 import vad_golden
+import voxtral_tts_golden
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
@@ -260,6 +261,40 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(
             *sortformer_golden.check(golden, arguments.runtime_bin, arguments.data_root)
         )
+    elif golden.get("kind") == "voxtral_tts":
+        generated_token_outputs = voxtral_tts_golden.generate(
+            golden,
+            arguments.runtime_bin,
+            model_directory(arguments.data_root, golden["model"]),
+        )
+        device = chip()
+        if arguments.outputs:
+            arguments.outputs.mkdir(parents=True, exist_ok=True)
+            (arguments.outputs / arguments.golden.name).write_text(
+                json.dumps(
+                    {
+                        "model": golden["model"],
+                        "device": device,
+                        "clips": generated_token_outputs,
+                    },
+                    ensure_ascii=False,
+                    indent=1,
+                )
+                + "\n"
+            )
+        else:
+            pass
+        if arguments.write:
+            golden["devices"][device] = {"clips": generated_token_outputs}
+            write_golden(arguments.golden, golden)
+            print(
+                f"wrote {len(generated_token_outputs)} clips for {device} "
+                f"to {arguments.golden}"
+            )
+            return
+        else:
+            pass
+        report(*voxtral_tts_golden.check(golden, generated_token_outputs))
     else:
         pass
     results = transcribe_corpus(

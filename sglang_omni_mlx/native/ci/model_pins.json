@@ -100,5 +100,33 @@
       "config.json": "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5",
       "model.safetensors": "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a"
     }
+  },
+  "mistralai/Voxtral-4B-TTS-2603": {
+    "revision": "b81be46c3777f88621676791b512bb01dc1cb970",
+    "files": {
+      "consolidated.safetensors": "66c4fd998db10e1a6d9cc5baa10e6264bf10701ec22ccdc0822c7dcc45dbe55b",
+      "params.json": "f6408ee76dea8da16ce40ac66729d59406019ea71cdb9d656709a38d2e58691e",
+      "tekken.json": "587989c9f56676b35e7d16d6fc61461301e402d908392a8ce16f0349f61b56d7",
+      "voice_embedding/ar_male.pt": "f44603f6433cbb4b2abc7f496a382632171118557a175cb385df168a0dc20464",
+      "voice_embedding/casual_female.pt": "780637984644064ee22e60b3152e0cd43fa64b2dcd39d9cab6cd2c62f2ce0342",
+      "voice_embedding/casual_male.pt": "7a056c9156ad0058e9d1368363bf3a25a9fcd8fe53e211ffac97de0bbffb3504",
+      "voice_embedding/cheerful_female.pt": "75fe69c8fcb5a0883a3d0bc1215b28f28cc0586aff5732eeebd2b254e8288253",
+      "voice_embedding/de_female.pt": "282fc191fda496de2ebf2c809acb44056dde6fbe2f1cb99e85e67985bc6f6619",
+      "voice_embedding/de_male.pt": "bd75d9fd3ffb9df0481668ce8781287a58f552e2388c5bbc0efdd4ebff0421bf",
+      "voice_embedding/es_female.pt": "90e01ad34f231cc881987c3b1c0728853fd9b904e52c296a07c71a132949d8a6",
+      "voice_embedding/es_male.pt": "ec116d8f4a102291bae3d9156d7c3222d9e1056020bf5894a7504bfc09640fdf",
+      "voice_embedding/fr_female.pt": "82628d963670f919aa302f9c8a7336c745418a145934edb211810b07d9c8b852",
+      "voice_embedding/fr_male.pt": "73395073472be3fb586b487705ac4ebf35f99db664f56400137e8bfcfe4cd8a8",
+      "voice_embedding/hi_female.pt": "aa7718cdd6f65735226bcc701379fdec64f36d0207ca79fc4c61b445ca7bde82",
+      "voice_embedding/hi_male.pt": "c3cde36ab9a336f67fd33b46435cdf645cff9e10117f13bcbcb67b44b80a11b0",
+      "voice_embedding/it_female.pt": "29e1714bdb3ce0726e590ce1862fbe953c168ba51a05bc7daa8cb35cddc312b4",
+      "voice_embedding/it_male.pt": "b98ba2253e2a0b872e20d33d29cab32263cc81062c01e3f5a8696de89e6f47b1",
+      "voice_embedding/neutral_female.pt": "2a03f4008614da7b1505a360a6b0d58d94dd72b0b0f49bf216e39de5eb733c61",
+      "voice_embedding/neutral_male.pt": "439df812990e6e4bcc6010ca12f12df90916e862bc1e1b56036d6433b892834e",
+      "voice_embedding/nl_female.pt": "b1bad34c22e0563f05c1f13c1db96680778c297aea6a5c0bb202950648b796b6",
+      "voice_embedding/nl_male.pt": "43fd2de89dc08503f37ae3107273eeb3f2a6195d705ff58d2228b3b5642ff7de",
+      "voice_embedding/pt_female.pt": "82f1006b2cd69118cba67085daa1795d9dab90b9bc70e1392e77f82cb616c9ce",
+      "voice_embedding/pt_male.pt": "7b30dca6c5d16c7b10a1c09c53e971c1bb1fab65692d7244876fbdc4ad52ba18"
+    }
   }
 }

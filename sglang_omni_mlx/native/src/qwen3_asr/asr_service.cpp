@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/asr_service.h"
 
-#include <signal.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <iostream>
-#include <mutex>
-#include <random>
 #include <stdexcept>
 #include <thread>
 #include <typeinfo>
@@ -19,6 +16,7 @@
 #include "civetweb.h"
 #include "common/audio.h"
 #include "common/http.h"
+#include "common/supervisor.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/worker.h"
 
@@ -28,8 +26,13 @@ namespace {
 
 namespace mx = mlx::core;
 using omni_server::BadRequest;
+using omni_server::EmitControlEvent;
 using omni_server::Json;
+using omni_server::RandomHex;
 using omni_server::ReadBody;
+using omni_server::StopSignal;
+using omni_server::WaitForTerminationSignal;
+using omni_server::WatchShutdownCommands;
 using omni_server::WriteJson;
 using qwen3_asr::CancelFlag;
 using qwen3_asr::TranscriptionResult;
@@ -40,26 +43,7 @@ constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
 struct ServerState {
   TranscriptionWorker *worker = nullptr;
   const ServedModel *model = nullptr;
-  std::string model_name;
 };
-
-int HandleHealth(mg_connection *connection, void *data) {
-  const auto *state = static_cast<ServerState *>(data);
-  Json states = Json::object();
-  for (const auto &[name, count] : state->model->RequestStates(*state->worker))
-    states[name] = count;
-  return WriteJson(
-      connection, 200,
-      {{"status", "healthy"}, {"running", true}, {"request_states", states}});
-}
-
-int HandleModels(mg_connection *connection, void *data) {
-  const auto *state = static_cast<ServerState *>(data);
-  return WriteJson(connection, 200,
-                   {{"object", "list"},
-                    {"data", Json::array({{{"id", state->model_name},
-                                           {"object", "model"}}})}});
-}
 
 // Speaker segments, for models that produce them.
 void AddSegments(Json &body, const TranscriptionResult &result) {
@@ -248,21 +232,6 @@ void SocketClosed(const mg_connection *connection, void *) {
   }
 }
 
-std::string RandomHex(int length) {
-  std::mt19937_64 generator{std::random_device{}()};
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  for (int i = 0; i < length; ++i)
-    text.push_back(kHex[generator() % 16]);
-  return text;
-}
-
-void Emit(const Json &event) {
-  static std::mutex emit_mutex;
-  std::lock_guard<std::mutex> lock(emit_mutex);
-  std::cout << event.dump() << std::endl;
-}
-
 struct Arguments {
   const ServedKind *kind = nullptr;
   std::string model_path;
@@ -366,32 +335,6 @@ Arguments ParseArguments(int argc, char **argv,
   return arguments;
 }
 
-class StopSignal {
-public:
-  void Set(const std::string &reason) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (reason_.empty()) {
-      reason_ = reason;
-    } else {
-    }
-    stopped_.notify_all();
-  }
-  std::string Wait() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    stopped_.wait(lock, [&] { return !reason_.empty(); });
-    return reason_;
-  }
-  std::string Reason() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return reason_;
-  }
-
-private:
-  std::mutex mutex_;
-  std::condition_variable stopped_;
-  std::string reason_;
-};
-
 } // namespace
 
 std::optional<std::string> TextField(const FormFields &form,
@@ -449,14 +392,8 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
 
 int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   const auto started = std::chrono::steady_clock::now();
-  // Note (Jiaxin Deng): stop signals go to one waiting thread, not to
-  // whichever thread happens to run.
-  sigset_t stop_signals;
-  sigemptyset(&stop_signals);
-  for (const int signal_number : {SIGTERM, SIGINT, SIGHUP, SIGQUIT})
-    sigaddset(&stop_signals, signal_number);
-  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
-  signal(SIGPIPE, SIG_IGN);
+  omni_server::BlockTerminationSignals();
+  omni_server::IgnoreBrokenPipe();
 
   Arguments arguments;
   try {
@@ -466,27 +403,9 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
     return 2;
   }
   StopSignal stop;
-  std::thread([&stop, stop_signals]() {
-    int signal_number = 0;
-    sigwait(&stop_signals, &signal_number);
-    stop.Set("signal");
-  }).detach();
+  std::thread(WaitForTerminationSignal, std::ref(stop)).detach();
   if (arguments.supervised) {
-    std::thread([&stop]() {
-      std::string line;
-      while (std::getline(std::cin, line)) {
-        try {
-          if (nlohmann::json::parse(line).value("command", "") == "shutdown") {
-            stop.Set("shutdown");
-            return;
-          } else {
-          }
-        } catch (const nlohmann::json::exception &) {
-          // Note (Jiaxin Deng): malformed control lines are ignored.
-        }
-      }
-      stop.Set("closed");
-    }).detach();
+    std::thread(WatchShutdownCommands, std::ref(stop)).detach();
   } else {
   }
 
@@ -500,8 +419,9 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
       loaded.store(true);
     } catch (const std::exception &error) {
       if (arguments.supervised) {
-        Emit({{"event", "failed"},
-              {"reason", std::string("model load failed: ") + error.what()}});
+        EmitControlEvent(
+            {{"event", "failed"},
+             {"reason", std::string("model load failed: ") + error.what()}});
       } else {
         std::cerr << "model load failed: " << error.what() << "\n";
       }
@@ -514,7 +434,7 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
     const std::string reason = stop.Reason();
     if (!reason.empty()) {
       if (reason == "shutdown") {
-        Emit({{"event", "stopped"}});
+        EmitControlEvent({{"event", "stopped"}});
       } else {
       }
       std::_Exit(0);
@@ -524,39 +444,28 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   }
   loader.join();
 
-  ServerState state{worker.get(), model.get(), arguments.model_name};
-  mg_init_library(0);
-  const std::string listening =
-      arguments.host + ":" + std::to_string(arguments.port);
-  // Note (Jiaxin Deng): each open WebSocket keeps a civetweb worker thread
-  // and Voxt opens a VAD stream per stream ID: allow far more than it uses.
-  const char *options[] = {"listening_ports",
-                           listening.c_str(),
-                           "num_threads",
-                           "64",
-                           "request_timeout_ms",
-                           "3600000",
-                           "websocket_timeout_ms",
-                           "3600000",
-                           nullptr};
-  mg_callbacks callbacks{};
-  mg_context *context = mg_start(&callbacks, &state, options);
-  if (context == nullptr) {
+  ServerState state{worker.get(), model.get()};
+  omni_server::InfoRoutes info_routes(arguments.model_name, [&state]() {
+    return state.model->RequestStates(*state.worker);
+  });
+  const omni_server::HttpServer http_server =
+      omni_server::StartHttpServer(arguments.host, arguments.port);
+  if (http_server.context == nullptr) {
+    const std::string listening =
+        arguments.host + ":" + std::to_string(arguments.port);
     if (arguments.supervised) {
-      Emit({{"event", "failed"}, {"reason", "cannot listen on " + listening}});
+      EmitControlEvent(
+          {{"event", "failed"}, {"reason", "cannot listen on " + listening}});
     } else {
       std::cerr << "cannot listen on " << listening << "\n";
     }
     return 1;
   } else {
   }
-  // Note (Jiaxin Deng): port 0 lets the system pick a free port at bind time.
-  mg_server_port server_port{};
-  mg_get_server_ports(context, 1, &server_port);
+  mg_context *context = http_server.context;
   const std::string endpoint =
-      arguments.host + ":" + std::to_string(server_port.port);
-  mg_set_request_handler(context, "/health$", HandleHealth, &state);
-  mg_set_request_handler(context, "/v1/models$", HandleModels, &state);
+      arguments.host + ":" + std::to_string(http_server.port);
+  info_routes.Register(context);
   if (model->Transcribes()) {
     mg_set_request_handler(context, "/v1/audio/transcriptions$",
                            HandleTranscriptions, &state);
@@ -567,12 +476,13 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
           .count();
   if (arguments.supervised) {
-    Emit({{"event", "ready"},
-          {"host", arguments.host},
-          {"port", server_port.port},
-          {"model_name", arguments.model_name},
-          {"server_pid", static_cast<int>(getpid())},
-          {"startup_s", std::round(startup_seconds * 1000) / 1000}});
+    EmitControlEvent(
+        {{"event", "ready"},
+         {"host", arguments.host},
+         {"port", http_server.port},
+         {"model_name", arguments.model_name},
+         {"server_pid", static_cast<int>(getpid())},
+         {"startup_s", std::round(startup_seconds * 1000) / 1000}});
   } else {
     std::cerr << "serving " << arguments.model_name << " on " << endpoint
               << " after " << startup_seconds << " s\n";
@@ -583,7 +493,7 @@ int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   // its 2 s poll quantum, and the owner has no use for the open responses.
   worker->CancelAll();
   if (reason == "shutdown") {
-    Emit({{"event", "stopped"}});
+    EmitControlEvent({{"event", "stopped"}});
   } else {
   }
   std::_Exit(0);

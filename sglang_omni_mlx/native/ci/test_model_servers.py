@@ -3,6 +3,7 @@
 the real models.
 
     NATIVE_RUNTIME_BIN=<dir with the servers> CI_DATA_ROOT=<provisioned root> \
+        VOXTRAL_MODEL_PATH=<Voxtral checkpoint> \
         python -m pytest sglang_omni_mlx/native/ci/test_model_servers.py
 """
 
@@ -12,6 +13,9 @@ import base64
 import http.client
 import io
 import json
+import os
+import random
+import socket
 import struct
 import subprocess
 import time
@@ -55,6 +59,7 @@ MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
+VOXTRAL_MODEL_PATH = os.environ.get("VOXTRAL_MODEL_PATH")
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
 SENSEVOICE_VAD_FIELDS = {
     "vad_threshold": "0.5",
@@ -75,11 +80,207 @@ class ModelServer(Server):
         )
 
 
+class VoxtralServer:
+    def __init__(self, model_path: str) -> None:
+        requested_port = random.randrange(20000, 60000)
+        self.process = subprocess.Popen(
+            [
+                str(Path(RUNTIME_BIN) / "voxtral_tts_server"),
+                "--model-path",
+                model_path,
+                "--port",
+                str(requested_port),
+                "--supervised",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self.ready = json.loads(self.process.stdout.readline())
+        assert self.ready["event"] == "ready", self.ready
+        self.port = self.ready.get("port")
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        return response.status, response.read()
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.stdin.write('{"command": "shutdown"}\n')
+            self.process.stdin.flush()
+            self.process.wait(timeout=10)
+        else:
+            pass
+
+
 @pytest.fixture(scope="module")
 def whisper_server() -> Iterator[ModelServer]:
     running = ModelServer("whisper_server", "whisper", WHISPER_REPO)
     yield running
     running.stop()
+
+
+@pytest.fixture(scope="module")
+def voxtral_server() -> Iterator[VoxtralServer]:
+    if not VOXTRAL_MODEL_PATH:
+        pytest.skip("set VOXTRAL_MODEL_PATH to run native Voxtral TTS tests")
+    else:
+        pass
+    subprocess.run(
+        [str(Path(RUNTIME_BIN) / "voxtral_tts_convert_voices"), VOXTRAL_MODEL_PATH],
+        check=True,
+    )
+    running = VoxtralServer(VOXTRAL_MODEL_PATH)
+    yield running
+    running.stop()
+
+
+def speak(server: VoxtralServer, **fields: object) -> tuple[int, bytes]:
+    return server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps(fields).encode(),
+        {"Content-Type": "application/json"},
+    )
+
+
+def test_voxtral_request_returns_a_wav(voxtral_server: VoxtralServer) -> None:
+    status, response = speak(voxtral_server, input="Hello there.")
+    assert status == 200
+    with wave.open(io.BytesIO(response), "rb") as audio:
+        assert audio.getnchannels() == 1
+        assert audio.getsampwidth() == 2
+        assert audio.getframerate() > 0
+        assert audio.getnframes() > 0
+
+
+def test_voxtral_same_seed_gives_the_same_audio(
+    voxtral_server: VoxtralServer,
+) -> None:
+    first_status, first_audio = speak(
+        voxtral_server, input="Hello there.", seed=1234, max_new_tokens=128
+    )
+    second_status, second_audio = speak(
+        voxtral_server, input="Hello there.", seed=1234, max_new_tokens=128
+    )
+    assert first_status == second_status == 200
+    assert first_audio == second_audio
+
+
+def test_voxtral_plain_request_gets_no_processing_heartbeat(
+    voxtral_server: VoxtralServer,
+) -> None:
+    status, response = speak(voxtral_server, input="Hello there.")
+    assert status == 200
+    assert response.startswith(b"RIFF")
+
+
+def test_voxtral_disconnected_request_stops_its_decode(
+    voxtral_server: VoxtralServer,
+) -> None:
+    request_body = json.dumps(
+        {
+            "input": "Hello there.",
+            "voice": "cheerful_female",
+            "seed": 1234,
+            "max_new_tokens": 4096,
+            "heartbeat": True,
+        }
+    ).encode()
+    connection = socket.create_connection(
+        ("127.0.0.1", voxtral_server.port), timeout=30
+    )
+    connection.sendall(
+        b"POST /v1/audio/speech HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{voxtral_server.port}\r\n".encode()
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(request_body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + request_body
+    )
+    response_header = bytearray()
+    while not response_header.endswith(b"\r\n\r\n"):
+        received_byte = connection.recv(1)
+        assert received_byte, "Voxtral server closed before sending a heartbeat"
+        response_header.extend(received_byte)
+    assert response_header.startswith(b"HTTP/1.1 102 Processing")
+    assert json.loads(voxtral_server.request("GET", "/health")[1])[
+        "request_states"
+    ] == {"running": 1}
+    disconnected_at = time.monotonic()
+    connection.close()
+    while (
+        json.loads(voxtral_server.request("GET", "/health")[1])["request_states"] != {}
+    ):
+        assert (
+            time.monotonic() - disconnected_at < 2.0
+        ), "Voxtral decoding kept running after its client disconnected"
+        time.sleep(0.05)
+
+
+def test_voxtral_rejects_max_new_tokens_that_overflow_int(
+    voxtral_server: VoxtralServer,
+) -> None:
+    body = json.dumps({"input": "Hello.", "max_new_tokens": 2**32 + 1}).encode()
+    status, response = voxtral_server.request(
+        "POST",
+        "/v1/audio/speech",
+        body,
+        {"Content-Type": "application/json"},
+    )
+    assert status == 400
+    assert (
+        json.loads(response)["detail"]
+        == "max_new_tokens is outside the supported range"
+    )
+
+
+def test_voxtral_requires_boolean_heartbeat(voxtral_server: VoxtralServer) -> None:
+    body = json.dumps({"input": "Hello.", "heartbeat": "true"}).encode()
+    status, response = voxtral_server.request(
+        "POST",
+        "/v1/audio/speech",
+        body,
+        {"Content-Type": "application/json"},
+    )
+    assert status == 400
+    assert json.loads(response)["detail"] == "heartbeat must be a boolean"
+
+
+def test_voxtral_shutdown_reports_stopped(
+    voxtral_server: VoxtralServer,
+) -> None:
+    voxtral_server.process.stdin.write('{"command": "shutdown"}\n')
+    voxtral_server.process.stdin.flush()
+    assert json.loads(voxtral_server.process.stdout.readline()) == {"event": "stopped"}
+    assert voxtral_server.process.wait(timeout=10) == 0
+
+
+def test_voxtral_rejects_another_model_kind() -> None:
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "voxtral_tts_server"),
+            "--supervised",
+            "--model-kind",
+            "qwen3_asr",
+            "--model-path",
+            "x",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 2
+    assert completed.stdout == ""
 
 
 def test_whisper_ready_event_names_a_loopback_endpoint(

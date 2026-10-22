@@ -2,6 +2,7 @@
 #include "common/http.h"
 
 #include <cstring>
+#include <utility>
 
 namespace omni_server {
 
@@ -19,7 +20,11 @@ int WriteJson(mg_connection *connection, int status, const Json &body) {
   WriteResponse(connection, status,
                 status == 200   ? "OK"
                 : status == 400 ? "Bad Request"
+                : status == 404 ? "Not Found"
                 : status == 405 ? "Method Not Allowed"
+                : status == 429 ? "Too Many Requests"
+                : status == 503 ? "Service Unavailable"
+                : status == 504 ? "Gateway Timeout"
                                 : "Internal Server Error",
                 "application/json", body.dump());
   return status;
@@ -42,6 +47,59 @@ std::string ReadBody(mg_connection *connection) {
 bool IsPost(mg_connection *connection) {
   return std::strcmp(mg_get_request_info(connection)->request_method, "POST") ==
          0;
+}
+
+HttpServer StartHttpServer(const std::string &host, int requested_port) {
+  mg_init_library(0);
+  const std::string listening = host + ":" + std::to_string(requested_port);
+  const char *options[] = {"listening_ports",
+                           listening.c_str(),
+                           "num_threads",
+                           "64",
+                           "request_timeout_ms",
+                           "3600000",
+                           "websocket_timeout_ms",
+                           "3600000",
+                           nullptr};
+  mg_callbacks callbacks{};
+  mg_context *context = mg_start(&callbacks, nullptr, options);
+  if (context == nullptr) {
+    return {nullptr, 0};
+  } else {
+  }
+  mg_server_port server_port{};
+  mg_get_server_ports(context, 1, &server_port);
+  return {context, server_port.port};
+}
+
+InfoRoutes::InfoRoutes(
+    std::string model_name,
+    std::function<std::map<std::string, int>()> request_states)
+    : model_name_(std::move(model_name)),
+      request_states_(std::move(request_states)) {}
+
+int InfoRoutes::HandleHealth(mg_connection *connection, void *data) {
+  const auto *routes = static_cast<const InfoRoutes *>(data);
+  Json states = Json::object();
+  for (const auto &[name, count] : routes->request_states_()) {
+    states[name] = count;
+  }
+  return WriteJson(
+      connection, 200,
+      {{"status", "healthy"}, {"running", true}, {"request_states", states}});
+}
+
+int InfoRoutes::HandleModels(mg_connection *connection, void *data) {
+  const auto *routes = static_cast<const InfoRoutes *>(data);
+  return WriteJson(connection, 200,
+                   {{"object", "list"},
+                    {"data", Json::array({{{"id", routes->model_name_},
+                                           {"object", "model"}}})}});
+}
+
+void InfoRoutes::Register(mg_context *context) {
+  mg_set_request_handler(context, "/health$", HandleHealth, this);
+  mg_set_request_handler(context, "/v1/models$", HandleModels, this);
 }
 
 std::optional<std::string>

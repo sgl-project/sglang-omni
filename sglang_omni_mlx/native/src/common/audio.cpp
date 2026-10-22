@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -165,6 +166,58 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+std::string EncodeWav(const std::vector<float> &samples, int sample_rate_hz) {
+  if (sample_rate_hz <= 0) {
+    throw std::invalid_argument("WAV sample rate must be positive");
+  } else {
+  }
+  if (samples.size() >
+          (std::numeric_limits<uint32_t>::max() - 36) / sizeof(int16_t) ||
+      static_cast<uint64_t>(sample_rate_hz) * sizeof(int16_t) >
+          std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("WAV output is too large");
+  } else {
+  }
+  const size_t pcm_byte_count = samples.size() * sizeof(int16_t);
+  const auto append_u16 = [](std::string &bytes, uint16_t value) {
+    bytes.push_back(static_cast<char>(value & 0xff));
+    bytes.push_back(static_cast<char>((value >> 8) & 0xff));
+  };
+  const auto append_u32 = [](std::string &bytes, uint32_t value) {
+    for (int byte_index = 0; byte_index < 4; ++byte_index) {
+      bytes.push_back(static_cast<char>((value >> (8 * byte_index)) & 0xff));
+    }
+  };
+  std::string wav_bytes;
+  wav_bytes.reserve(44 + pcm_byte_count);
+  wav_bytes.append("RIFF", 4);
+  append_u32(wav_bytes, static_cast<uint32_t>(36 + pcm_byte_count));
+  wav_bytes.append("WAVEfmt ", 8);
+  append_u32(wav_bytes, 16);
+  append_u16(wav_bytes, kWavFormatPcm);
+  append_u16(wav_bytes, 1);
+  append_u32(wav_bytes, static_cast<uint32_t>(sample_rate_hz));
+  append_u32(wav_bytes,
+             static_cast<uint32_t>(static_cast<uint64_t>(sample_rate_hz) *
+                                   sizeof(int16_t)));
+  append_u16(wav_bytes, sizeof(int16_t));
+  append_u16(wav_bytes, 16);
+  wav_bytes.append("data", 4);
+  append_u32(wav_bytes, static_cast<uint32_t>(pcm_byte_count));
+  for (const float sample : samples) {
+    if (!std::isfinite(sample)) {
+      throw std::invalid_argument("WAV output samples must be finite");
+    } else {
+    }
+    const float scaled_sample = std::nearbyint(sample * kPcm16FullScale);
+    const float clipped_sample =
+        std::clamp(scaled_sample, -kPcm16FullScale, kPcm16FullScale - 1.0f);
+    append_u16(wav_bytes,
+               static_cast<uint16_t>(static_cast<int16_t>(clipped_sample)));
+  }
+  return wav_bytes;
 }
 
 const std::vector<float> &MelFilterBank(int mel_bin_count) {

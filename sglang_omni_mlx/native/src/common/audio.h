@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Qwen3-ASR audio front end: WAV decoding, log-mel and audio token counts.
+// Shared WAV input/output and Qwen3-ASR audio front-end operations.
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -26,6 +27,8 @@ enum class AudioLayout { kReference, kVoxtSwift };
 // 16 kHz mono PCM16 or float32 WAV to float32 samples; throws
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes);
+// Normalized mono samples to a 16-bit PCM WAV at the requested sample rate.
+std::string EncodeWav(const std::vector<float> &samples, int sample_rate_hz);
 
 // Slaney-scale, Slaney-normalized filters [frequency_bins, mel_bins], built in
 // float32 in the same order as Voxt's Swift front end.
