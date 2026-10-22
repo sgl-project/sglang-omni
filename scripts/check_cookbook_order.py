@@ -46,6 +46,7 @@ ROADMAP_SET = frozenset(ROADMAP_ORDER)
 DOWNLOAD_SET = frozenset(DOWNLOADS_DESC)
 
 _ENTRY_RE = re.compile(r"^   (cookbook/[a-z0-9_.-]+\.md)$")
+_EXPLICIT_TITLE_RE = re.compile(r"^   .+ <(cookbook/[a-z0-9_.-]+\.md)>$")
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ def extract_cookbook_entries(source: str) -> tuple[list[str], dict[str, int]]:
             continue
         if not line.strip():
             continue
-        match = _ENTRY_RE.match(line)
+        match = _ENTRY_RE.match(line) or _EXPLICIT_TITLE_RE.match(line)
         if match:
             entry = match.group(1)
             entries.append(entry)
@@ -199,7 +200,7 @@ def check_source(path: Path, source: str) -> list[Violation]:
                     1,
                     "cookbook-order",
                     f"downloads not in descending order at downloads position {index + 1}: "
-                    f"'{first}' ({first_count:,}) must come before '{second}' ({second_count:,})",
+                    f"'{first}' ({first_count:,}) must come after '{second}' ({second_count:,})",
                 )
             )
             break
@@ -255,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     violations: list[Violation] = []
     for path in targets:
         if not path.is_file():
-            print(f"{path}: not a file; skipped", file=sys.stderr)
+            violations.append(Violation(path, 1, 1, "cookbook-order", "file not found"))
         else:
             violations.extend(check_file(path))
     return report_violations(violations)
