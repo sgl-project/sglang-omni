@@ -139,6 +139,7 @@ def register_translations(app: FastAPI) -> None:
             prompt=form.prompt,
             temperature=form.temperature,
             max_new_tokens=form.max_new_tokens,
+            seed=form.seed,
             stream=form.stream,
             task="translate",
             segment_timestamps=segment_timestamps,

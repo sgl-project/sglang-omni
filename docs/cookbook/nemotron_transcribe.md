@@ -61,7 +61,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=text
 ```
 
-Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
+Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. `seed` is an optional non-negative integer. Temperature 0 stays greedy, so the seed does not change that transcript. A temperature above 0 uses the seed as the decoder sampling seed. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
 
 ## Compile the encoder
 

@@ -64,6 +64,7 @@ class SpeechToTextForm:
     temperature: float | None
     repetition_penalty: float | None
     max_new_tokens: int | None
+    seed: int | None
     stream: bool
     return_spec_tokens_details: bool
 
@@ -77,6 +78,7 @@ async def parse_speech_to_text_form(
     temperature: float | None = Form(default=None),
     repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
+    seed: int | None = Form(default=None, ge=0),
     stream: bool = Form(default=False),
     return_spec_tokens_details: bool = Form(default=False),
 ) -> SpeechToTextForm:
@@ -89,6 +91,7 @@ async def parse_speech_to_text_form(
         temperature=temperature,
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
+        seed=seed,
         stream=stream,
         return_spec_tokens_details=return_spec_tokens_details,
     )
@@ -153,6 +156,7 @@ def build_speech_to_text_generate_request(
     temperature: float | None,
     repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
+    seed: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
     detect_language: bool = False,
@@ -182,6 +186,7 @@ def build_speech_to_text_generate_request(
         temperature=temperature if temperature is not None else 0.0,
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
+        seed=seed,
     )
 
     return GenerateRequest(

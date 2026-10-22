@@ -94,6 +94,23 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+def test_non_negative_seed_reaches_the_decoder_sampler() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"seed": 7, "temperature": 0.4}))
+    assert request.req.sampling_params.sampling_seed == 7
+
+
+def test_negative_seed_is_rejected() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    with pytest.raises(ValueError, match="non-negative") as raised:
+        build_request(make_payload({"seed": -1}))
+    assert generation_error_status_code(raised.value) == 400
+
+
 def test_request_overrides_prompt_and_generation_budget() -> None:
     tokenizer = FakeTokenizer()
     build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)

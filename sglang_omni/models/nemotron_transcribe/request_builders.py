@@ -166,11 +166,26 @@ def make_scheduler_adapters(
 
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         temperature = float(params.get("temperature") or 0.0)
+        seed = params.get("seed")
+        sampling_kwargs: dict[str, object] = {}
+        if seed is not None:
+            seed_value = int(seed)
+            if seed_value < 0:
+                raise ValueError(
+                    "Nemotron Transcribe seed must be a non-negative integer"
+                )
+            else:
+                pass
+            # SGLang draws from sampling_seed. Temperature 0 stays greedy.
+            sampling_kwargs["sampling_seed"] = seed_value
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             top_p=float(params.get("top_p") or 1.0),
             stop_token_ids=[int(eos_token_id)],
+            **sampling_kwargs,
         )
         sampling_params.normalize(tokenizer=None)
 
