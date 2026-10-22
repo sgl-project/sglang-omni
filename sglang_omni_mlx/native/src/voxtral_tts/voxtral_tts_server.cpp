@@ -62,16 +62,25 @@ constexpr int kClientLeftStatus = 499;
 // The most one disconnect check reads of what a client sent after its request,
 // so a client that keeps sending cannot hold the check.
 constexpr size_t kMaxUnreadBytesPerCheck = 64 * 1024;
+// A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
+struct CollectionField {
+  const char *name;
+  Json::value_t type;
+  const char *type_description;
+};
 // Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
 // (validate_voxtral_speech_params), each counted as given by the same rule:
-// sampling fields when not null, text fields when not null or "", and the
-// rest when not empty.
+// sampling fields when not null, text fields when not null or "", and
+// collections when not empty. CUDA's request model first rejects a collection
+// of another type, even an empty one.
 constexpr std::array<const char *, 5> kUnsupportedSamplingFields = {
     "repetition_penalty", "seed", "temperature", "top_k", "top_p"};
 constexpr std::array<const char *, 5> kUnsupportedTextFields = {
     "instructions", "language", "ref_audio", "ref_text", "task_type"};
-constexpr std::array<const char *, 2> kUnsupportedCollectionFields = {
-    "references", "stage_params"};
+constexpr std::array<CollectionField, 2> kUnsupportedCollectionFields = {{
+    {"references", Json::value_t::array, "a list"},
+    {"stage_params", Json::value_t::object, "an object"},
+}};
 
 struct SpeechRequest {
   std::vector<int> prompt_ids;
@@ -130,11 +139,13 @@ void RejectUnsupportedFields(const Json &body) {
     } else {
     }
   }
-  for (const char *field : kUnsupportedCollectionFields) {
-    const Json value = FieldOr(body, field, Json());
-    if (!value.is_null() && !value.empty() && value != "" && value != false &&
-        value != 0) {
-      given.push_back(field);
+  for (const CollectionField &field : kUnsupportedCollectionFields) {
+    const Json value = FieldOr(body, field.name, Json());
+    if (!value.is_null() && value.type() != field.type) {
+      throw std::invalid_argument(std::string(field.name) + " must be " +
+                                  field.type_description);
+    } else if (!value.is_null() && !value.empty()) {
+      given.push_back(field.name);
     } else {
     }
   }

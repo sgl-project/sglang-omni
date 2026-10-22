@@ -353,6 +353,24 @@ def test_voxtral_accepts_any_model_without_a_chosen_name(
     assert status == 200
 
 
+def test_voxtral_ignores_unsupported_fields_left_empty(
+    voxtral_server: Server,
+) -> None:
+    status, _, _ = speak(
+        voxtral_server,
+        {
+            "input": "hi",
+            "response_format": "pcm",
+            "max_new_tokens": 1,
+            "seed": None,
+            "language": "",
+            "references": [],
+            "stage_params": {},
+        },
+    )
+    assert status == 200
+
+
 def test_voxtral_trims_and_lowercases_its_response_format(
     voxtral_server: Server,
 ) -> None:
@@ -414,6 +432,9 @@ def test_voxtral_rejects_another_model_than_its_chosen_name() -> None:
         ({"input": "hi", "stream": None}, "stream must be a boolean"),
         ({"input": "hi", "stream_format": None}, "stream_format must be audio"),
         ({"input": "hi", "speed": None}, "speed must be 1.0 on this model"),
+        ({"input": "hi", "references": False}, "references must be a list"),
+        ({"input": "hi", "references": {}}, "references must be a list"),
+        ({"input": "hi", "stage_params": []}, "stage_params must be an object"),
         (
             {"input": "hi", "seed": 1, "language": "en", "ref_text": ""},
             "Voxtral TTS does not support these /v1/audio/speech fields: "
