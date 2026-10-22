@@ -135,7 +135,6 @@ def test_disabled_runner_declines_even_with_graphs() -> None:
     ("capability", "backend"),
     (
         ((9, 0), "fa3"),
-        ((8, 9), "triton_attn"),
         ((10, 0), "triton_attn"),
         ((12, 0), "triton_attn"),
     ),

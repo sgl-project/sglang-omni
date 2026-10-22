@@ -21,7 +21,7 @@ description = "Multi-stage pipeline framework for omni models (Ascend NPU build)
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # --- Core framework (device-agnostic) ----------------------------------
     "pyzmq>=25.0.0",

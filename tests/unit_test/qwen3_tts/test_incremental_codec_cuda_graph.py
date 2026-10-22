@@ -180,7 +180,9 @@ def stub_device_runtime(
         SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
     )
     monkeypatch.setattr(
-        incremental_codec_cuda_graph, "supports_device_streams", lambda device: True
+        incremental_codec_cuda_graph,
+        "has_device_streams",
+        lambda device: True,
     )
     monkeypatch.setattr(
         incremental_codec_cuda_graph, "device_guard", lambda device: DeviceContext()
@@ -260,23 +262,6 @@ def test_split_frames_by_width_takes_the_largest_width_first(
     total: int, widths: tuple[int, ...], expected: tuple[int, ...] | None
 ) -> None:
     assert split_frames_by_width(total, widths) == expected
-
-
-def test_incremental_codec_graph_accepts_the_window_mode() -> None:
-    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
-        SimpleNamespace(),
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        num_quantizers=2,
-        mode="window",
-        fresh_frames=(8, 2, 4),
-        enabled=False,
-        arena=FakeArena(),
-        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
-    )
-
-    assert runner.stats()["binding"]["mode"] == "window"
-    assert runner.stats()["graph_contract"]["fresh_frames"] == [2, 4, 8]
 
 
 def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None:
@@ -392,7 +377,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
 def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     captures: list[str] = []
 
-    def graph_holder(name: str):
+    def graph_holder(name: str) -> SimpleNamespace:
         return SimpleNamespace(capture=lambda: captures.append(name))
 
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
@@ -405,6 +390,7 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     scheduler.initial_window_decode_graphs = graph_holder("window")
     scheduler.initial_tail_decode_graphs = graph_holder("tail")
     scheduler.followup_incremental_graph_holders = (graph_holder("warm"),)
+    scheduler.full_decode_graphs = graph_holder("full-decode")
 
     scheduler.warmup_now()
 
@@ -415,6 +401,7 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
         "cold",
         "window",
         "tail",
+        "full-decode",
     ]
 
 

@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import torch
 from sglang.srt.managers.io_struct import (
     CloseSessionReqInput,
     OpenSessionReqInput,
@@ -21,7 +22,6 @@ from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
     QueueFullError,
 )
-from sglang_omni.profiler.event_recorder import get_active_stage
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SessionIdentity,
@@ -44,12 +44,9 @@ class SessionKV(Protocol):
     holds_kv: bool
 
 
-class SessionSlot(Protocol):
-    kv: SessionKV
-
-
 class SessionTreeCache(Protocol):
-    slots: Mapping[str, SessionSlot]
+    def session_records(self) -> Mapping[str, SessionKV]:
+        pass
 
     def evictable_size(self) -> int:
         pass
@@ -120,6 +117,9 @@ class ARSessionAdapter:
     def close(self, session_identity: SessionIdentity) -> None:
         """Release auxiliary history after streaming session work and KV are released."""
 
+    def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
+        """Handle a control event; an adapter without control semantics lets it pass."""
+
     def prepare_unit(
         self,
         session_identity: SessionIdentity,
@@ -129,11 +129,31 @@ class ARSessionAdapter:
         """Select a fresh model turn or relay a unit that needs no generation."""
         return ARSessionPreparation()
 
+    def complete_without_generation(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> StagePayload:
+        """The result of a unit its model cannot generate for."""
+        return payload
+
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
     ) -> StagePayload | None:
         """Return a relayed EOS payload, or None to use normal generation."""
         return None
+
+    def bind_request(
+        self,
+        session_identity: SessionIdentity,
+        request_data: SGLangARRequestData,
+        unit: "SessionUnit",
+    ) -> None:
+        """Attach model-specific inputs to the native request once retained turns precede the unit's ids."""
+
+    def on_abort(self, session_identity: SessionIdentity, unit: "SessionUnit") -> None:
+        """Take what an aborted unit generated before its native request is dropped."""
 
     def build(
         self,
@@ -175,9 +195,13 @@ class SessionUnit:
     # SGLang Req. create_req builds it from token ids produced from the OmniRequest, joins tokens
     # from earlier turns, and binds it to the streaming session.
     session_request: Req | None = None
+    # Note (Junnan Li): A deferred payload passes through routing again; the unit is prepared once.
+    is_prepared: bool = False
     is_enqueued: bool = False
     # note (Junnan Li): Only completed units commit their spans to retained history.
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
+    native_offset: int = 0
+    prompt_length: int = 0
 
 
 @dataclass(kw_only=True)
@@ -186,6 +210,8 @@ class BridgeSession:
     unit: SessionUnit | None = None
     # note (Junnan Li): KV rebuilds need embeddings from every completed unit.
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
+    # The session's read; an AR stage emits only inside appends, so the close answers it.
+    output_read: StagePayload | None = None
 
 
 class ARSessionBridge:
@@ -206,7 +232,8 @@ class ARSessionBridge:
 
     def apply_operation(
         self, payload: StagePayload, operation: SessionOperation
-    ) -> StagePayload:
+    ) -> list[StagePayload]:
+        """Apply an operation other than append; returns the operations it answers, none for a read the close answers."""
         session_identity = operation.session_identity
         operation_kind = operation.operation
         session = self.sessions.get(session_identity.id)
@@ -226,18 +253,35 @@ class ARSessionBridge:
                 )
                 self.adapter.open(session_identity, payload.request)
                 payload.data = {"opened": True}
+                return [payload]
             else:
                 raise ValueError("streaming session open failed")
         elif operation_kind == "close":
+            payload.data = {"closed": True}
             if session is not None:
-                self.close_session(session)
+                return [*self.close_session(session), payload]
+            else:
+                # note (chenyang): coding style, each if should be closed by else.
+                return [payload]
+        elif session is None:
+            raise ValueError("unknown session open index")
+        elif operation_kind == "read":
+            if session.output_read is not None:
+                raise ValueError("session already has an output reader")
+            else:
+                session.output_read = payload
+                return []
+        elif operation_kind == "control":
+            assert operation.chunk is not None, "control operation carries no event"
+            if operation.should_preempt and session.unit is not None:
+                self.cancel(session.unit.request_id)
             else:
                 pass
-                # note (chenyang): coding style, each if should be closed by else.
-            payload.data = {"closed": True}
+            self.adapter.control(session_identity, operation.chunk)
+            payload.data = {"controlled": True}
+            return [payload]
         else:
             raise ValueError("unknown session operation")
-        return payload
 
     def accept(self, payload: StagePayload, operation: SessionOperation) -> SessionUnit:
         chunk = operation.chunk
@@ -264,6 +308,10 @@ class ARSessionBridge:
                 return session.unit
 
     def prepare_unit(self, unit: SessionUnit, payload: StagePayload) -> bool:
+        if unit.is_prepared:
+            return False
+        else:
+            unit.is_prepared = True
         preparation = self.adapter.prepare_unit(
             unit.session_identity, unit.chunk, payload
         )
@@ -297,7 +345,7 @@ class ARSessionBridge:
         )
         if (
             self.bridge_scheduler.session_controller.get(session_id) is not None
-            or session_id in self.bridge_scheduler.tree_cache.slots
+            or session_id in self.bridge_scheduler.tree_cache.session_records()
         ):
             raise RuntimeError("streaming session close is still pending")
         else:
@@ -313,15 +361,27 @@ class ARSessionBridge:
             adapter_request.rid == payload.request_id
         ), f"session adapter changed request ID: expected {payload.request_id}, got {adapter_request.rid}"
         if (
-            request_data.prefill_input_embeds is not None
-            or request_data.decode_input_embeds
-            or request_data.input_embeds_are_projected
-            or adapter_request.input_embeds is not None
+            adapter_request.input_embeds is not None
             or adapter_request.multimodal_inputs is not None
         ):
             raise ValueError(
-                "history-aware session embedding and multimodal inputs are not supported"
+                "a session unit carries its embeddings as spans, not as input_embeds or multimodal inputs"
             )
+        elif request_data.prefill_input_embeds is not None:
+            prompt = request_data.prefill_input_embeds
+            if request_data.unit_embedding_spans or int(prompt.shape[0]) != len(
+                adapter_request.origin_input_ids
+            ):
+                raise ValueError(
+                    "a projected prompt is the unit's one span and covers all of its ids"
+                )
+            else:
+                request_data.unit_embedding_spans = [
+                    EmbeddingSpan(
+                        start=0, end=int(prompt.shape[0]), input_embeds=prompt
+                    )
+                ]
+                request_data.prefill_input_embeds = None
         else:
             pass
         native_session = self.bridge_scheduler.session_controller.get(
@@ -369,6 +429,8 @@ class ARSessionBridge:
         offset = len(session_request.origin_input_ids) - len(
             adapter_request.origin_input_ids
         )
+        unit.native_offset = offset
+        unit.prompt_length = len(adapter_request.origin_input_ids)
         unit.embedding_spans = [
             EmbeddingSpan(
                 start=span.start + offset,
@@ -393,11 +455,17 @@ class ARSessionBridge:
             adapter_request, "_omni_prompt_cache_key", None
         )  # noqa: leading-underscore
         request_data.req = session_request
-        request_data.stage_payload = payload
+        if request_data.stage_payload is None:
+            request_data.stage_payload = payload
+        else:
+            # Note (Junnan Li): An adapter that rewrote the unit's request keeps its payload; the stream builder reads the params from it.
+            pass
+        self.adapter.bind_request(unit.session_identity, request_data, unit)
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
+            self.adapter.on_abort(unit.session_identity, unit)
             streaming_session = self.bridge_scheduler.session_controller.get(
                 unit.session_identity.id
             )
@@ -459,14 +527,15 @@ class ARSessionBridge:
             session_request is not None
         ), f"session capacity check {request_id} requires a session request"
         cache = self.bridge_scheduler.tree_cache
-        slot = cache.slots.get(unit.session_identity.id)
-        retained_kv_tokens = slot.kv.kv_allocated_len if slot is not None else 0
+        records = cache.session_records()
+        record = records.get(unit.session_identity.id)
+        retained_kv_tokens = record.kv_allocated_len if record is not None else 0
         free_request_slots = self.bridge_scheduler.req_to_token_pool.free_slots
         unallocated_request_count = sum(
             active_append_unit is not unit
             and active_append_unit.session_request is not None
             and not active_append_unit.session_request.kv.holds_kv
-            and active_append_unit.session_identity.id not in cache.slots
+            and active_append_unit.session_identity.id not in records
             for active_append_unit in self.units_by_request_id.values()
         )
         if (
@@ -518,19 +587,19 @@ class ARSessionBridge:
         self, waiting_queue: list[Req], free_request_rows: int
     ) -> int:
         """Count queued units that reuse their slot's row, up to the first request no free row is left for."""
-        slots = self.bridge_scheduler.tree_cache.slots
+        records = self.bridge_scheduler.tree_cache.session_records()
         fresh_request_count = 0
         row_reusing_request_count = 0
         for queued_request in waiting_queue:
             session = queued_request.session
             if session is not None and session.streaming:
-                slot = slots.get(session.session_id)
+                record = records.get(session.session_id)
             else:
-                slot = None
+                record = None
             # note (Junnan Li): An aborted unit does not take its slot's row.
             if (
-                slot is not None
-                and slot.kv.holds_kv
+                record is not None
+                and record.holds_kv
                 and queued_request.to_finish is None
             ):
                 row_reusing_request_count += 1
@@ -549,32 +618,45 @@ class ARSessionBridge:
         should_flush: bool = False,
     ) -> Iterable[OutgoingMessage]:
         unit = self.units_by_request_id[request_id]
-        if get_active_stage() != unit.stages[-1]:
-            return
+        if should_flush:
+            chunks = self.adapter.flush(unit.session_identity, request_data)
         else:
-            if should_flush:
-                chunks = self.adapter.flush(unit.session_identity, request_data)
-            else:
-                assert (
-                    output is not None
-                ), f"session stream {request_id} requires request output"
-                chunks = self.adapter.stream(
-                    unit.session_identity, request_data, output
-                )
-            for chunk in chunks:
-                yield OutgoingMessage(
-                    request_id=request_id,
-                    type="stream",
-                    data=chunk.to_dict(),
-                    metadata={"modality": chunk.modality},
-                )
+            assert (
+                output is not None
+            ), f"session stream {request_id} requires request output"
+            chunks = self.adapter.stream(unit.session_identity, request_data, output)
+        for chunk in chunks:
+            yield OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=chunk.to_dict(),
+                metadata={"modality": chunk.modality},
+            )
 
-    def complete(self, request_id: str) -> None:
+    def complete(
+        self, request_id: str, request_data: SGLangARRequestData | None = None
+    ) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
             session = self.sessions[unit.session_identity.id]
             session.unit = None
             session.embedding_spans.extend(unit.embedding_spans)
+            if (
+                request_data is not None
+                and request_data.input_embeds_are_projected
+                and request_data.decode_input_embeds
+            ):
+                # Note (Junnan Li): A projected talker feeds each generated token back as a computed row, so a KV rebuild needs those rows, not the token embeddings.
+                start = unit.native_offset + unit.prompt_length
+                session.embedding_spans.append(
+                    EmbeddingSpan(
+                        start=start,
+                        end=start + len(request_data.decode_input_embeds),
+                        input_embeds=torch.stack(request_data.decode_input_embeds),
+                    )
+                )
+            else:
+                pass
         else:
             pass
 
@@ -585,10 +667,16 @@ class ARSessionBridge:
             pass
         self.release_streaming_session(session.session_identity.id)
 
-    def close_session(self, session: BridgeSession) -> None:
+    def close_session(self, session: BridgeSession) -> list[StagePayload]:
+        """Release the session; returns its read, answered."""
         self.close_streaming_session(session)
         self.adapter.close(session.session_identity)
         self.sessions.pop(session.session_identity.id)
+        if session.output_read is None:
+            return []
+        else:
+            session.output_read.data = {"closed": True}
+            return [session.output_read]
 
     def close_open_sessions(self) -> None:
         adapter_failures: dict[str, Exception] = {}

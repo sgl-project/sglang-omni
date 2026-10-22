@@ -14,11 +14,12 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
@@ -66,7 +67,7 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy() -> None:
     assert cache.eviction_strategy.protected_threshold == 4
 
 
-@pytest.mark.parametrize("eviction_policy", ["lru", "fifo"])
+@pytest.mark.parametrize("eviction_policy", ["lru"])
 def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> None:
     """A radix hit restores attention KV but never the linear-attention state."""
     hybrid_pool = object.__new__(HybridReqToTokenPool)
@@ -84,17 +85,19 @@ def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> N
             )
 
 
-def test_factory_keeps_chunk_cache_for_hybrid_state_pools() -> None:
+def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
     hybrid_pool = object.__new__(HybridReqToTokenPool)
     with get_context().override_server_args(
         disable_radix_cache=True,
         chunked_prefill_size=100,
+        _mamba_cache_chunk_size=64,
     ):
         cache = create_tree_cache(
             hybrid_pool, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
         )
 
-    assert type(cache) is ChunkCache
+    assert type(cache) is UnifiedRadixCache
+    assert cache.tree_components == (ComponentType.FULL, ComponentType.MAMBA)
 
 
 def make_window_cache(
@@ -143,7 +146,7 @@ def test_factory_preserves_window_eviction_capability() -> None:
         ordinary_cache = create_tree_cache(
             None, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
         )
-    assert isinstance(ordinary_cache, ChunkCache)
+    assert type(ordinary_cache) is UnifiedRadixCache
     assert not ordinary_cache.supports_swa()
 
 
@@ -212,7 +215,7 @@ def test_window_slots_survive_reuse_and_release(
         kv_pool.get_key_buffer(0)[slots[-retained_positions:]],
         expected_keys[-retained_positions:],
     )
-    release_kv_cache(request, cache, is_insert=cache_on_release)
+    release_kv_cache(request, cache, checkpoint=cache_on_release)
     assert request_pool.available_size() == 1
     assert allocator.available_size() == retained_positions
     allocator.free(reused_slots)

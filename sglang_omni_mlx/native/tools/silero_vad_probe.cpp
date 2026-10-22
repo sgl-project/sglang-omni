@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "silero_vad.h"
+#include "silero_vad/silero_vad.h"
 
 namespace {
 

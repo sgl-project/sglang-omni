@@ -261,7 +261,7 @@ def channels_last_causal_conv1d(
         padded = combined
     else:
         padded = F.pad(combined, (0, 0, 0, (-combined.shape[1]) % dilation))
-    output = channels_last_conv1d(padded, conv, weight, length)
+    output = channels_last_conv1d(padded, conv, weight, conv.bias, length)
     if output.shape[1] != length:
         raise RuntimeError(
             f"incremental causal Conv1d changed temporal length for {key}"

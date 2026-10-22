@@ -45,7 +45,6 @@ class CoordinatorAdapter(InteractionAdapter):
         self,
         client: Client,
         *,
-        stages: list[str],
         request_builder: RequestBuilder,
         output_converter: OutputConverter,
         input_sample_rate_hz: int | None = None,
@@ -57,7 +56,6 @@ class CoordinatorAdapter(InteractionAdapter):
         else:
             pass
         self.client = client
-        self.stages = stages
         self.request_builder = request_builder
         self.output_converter = output_converter
         self.input_sample_rate_hz = input_sample_rate_hz
@@ -93,7 +91,6 @@ class CoordinatorAdapter(InteractionAdapter):
         self.output_sink = emit
         self.session_identity = await self.client.open_session(
             self.request_builder(config),
-            stages=self.stages,
             limits=self.limits,
             session_id=session_id,
         )

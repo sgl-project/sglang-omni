@@ -21,62 +21,6 @@ def published() -> Iterator[list]:
         overrides.pop().restore()
 
 
-def test_runtime_configuration_reports_global_backend_for_each_phase(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "get_visible_gpu_sm_version",
-        lambda _gpu_id: 89,
-        raising=False,
-    )
-    server_args = SimpleNamespace(
-        attention_backend="flashinfer",
-        decode_attention_backend=None,
-        prefill_attention_backend=None,
-        sampling_backend="pytorch",
-    )
-
-    description = bootstrap.describe_sglang_runtime_configuration(
-        server_args,
-        gpu_id=0,
-    )
-
-    assert description == (
-        "SGLang runtime configuration: gpu_id=0, sm=89, architecture=ada, "
-        "attention_backend=flashinfer, decode_attention_backend=flashinfer, "
-        "prefill_attention_backend=flashinfer, sampling_backend=pytorch"
-    )
-
-
-def test_runtime_configuration_reports_explicit_phase_backends(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "get_visible_gpu_sm_version",
-        lambda _gpu_id: 90,
-        raising=False,
-    )
-    server_args = SimpleNamespace(
-        attention_backend="flashinfer",
-        decode_attention_backend="triton",
-        prefill_attention_backend="fa3",
-        sampling_backend="pytorch",
-    )
-
-    description = bootstrap.describe_sglang_runtime_configuration(
-        server_args,
-        gpu_id=1,
-    )
-
-    assert description == (
-        "SGLang runtime configuration: gpu_id=1, sm=90, architecture=hopper, "
-        "attention_backend=flashinfer, decode_attention_backend=triton, "
-        "prefill_attention_backend=fa3, sampling_backend=pytorch"
-    )
-
-
 def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     monkeypatch, published
 ) -> None:

@@ -12,6 +12,7 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
+from sglang.srt.runtime_context import get_exec
 from torch import nn
 from transformers import Qwen2Config
 
@@ -112,12 +113,16 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
 
     def precompile_kernels_after_loading(self) -> None:
         """Compile the repetition penalty every default request applies, on the float32
-        logits forward writes."""
+        logits forward writes, and load FlashInfer's sampling module when it draws the
+        unseeded requests."""
         compile_sampler_functions(
             SamplerCompileForms(
                 device=self.llm_decoder.weight.device,
                 vocab_size=TOTAL_VOCAB_SIZE,
                 penalized_logits_dtype=torch.float32,
+                should_load_flashinfer_sampling=(
+                    get_exec().kernel.sampling_backend == "flashinfer"
+                ),
             )
         )
 

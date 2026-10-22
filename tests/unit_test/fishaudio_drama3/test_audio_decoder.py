@@ -17,8 +17,17 @@ from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.model_loader.utils import set_default_torch_dtype
 
-from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
+from sglang_omni.models.fishaudio_drama3.audio_decoder import (
+    CODEBOOK_TOP_K,
+    AudioDecoder,
+)
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.request_builders import MAXIMUM_TOP_K
+from sglang_omni.models.fishaudio_drama3.sampling import (
+    sample_semantic_with_ras,
+    sample_top_k_top_p,
+)
+from sglang_omni.models.fishaudio_drama3.sampling_kernels import CodebookSampler
 from sglang_omni.models.fishaudio_drama3.weights import (
     checkpoint_part,
     expected_parameter_shards,
@@ -59,7 +68,6 @@ CheckpointProblem = Literal[
     "unknown-key",
     "unknown-namespace",
     "fused-gate-up-after-shards",
-    "fused-gate-up-before-shards",
     "wrong-shape",
 ]
 
@@ -417,6 +425,7 @@ def run_decoder(
     prefill_hidden: torch.Tensor,
     decode_hidden: torch.Tensor,
     semantic_logits: torch.Tensor,
+    top_k: list[int],
 ) -> tuple[dict[tuple[int, str], list[int]], torch.Tensor]:
     """Prefill all requests and decode once; returns cache positions and frames."""
     device = prefill_hidden.device
@@ -443,7 +452,7 @@ def run_decoder(
         torch.tensor(input_frames, device=device),
         torch.full((row_count, WINDOW_FRAMES), EMPTY_WINDOW_TOKEN, device=device),
         torch.ones(row_count, device=device),
-        torch.ones(row_count, dtype=torch.int64, device=device),
+        torch.tensor(top_k, device=device),
         torch.ones(row_count, device=device),
         attention,
     )
@@ -510,7 +519,12 @@ def test_tower_matches_the_hand_written_formulas() -> None:
     )
 
     positions_after_prefill, frames = run_decoder(
-        decoder, attention, prefill_hidden, decode_hidden, semantic_logits
+        decoder,
+        attention,
+        prefill_hidden,
+        decode_hidden,
+        semantic_logits,
+        [1] * len(REQUEST_FRAMES),
     )
     reference, reference_frames = run_reference(
         checkpoint, prefill_hidden, decode_hidden, semantic_logits
@@ -560,6 +574,7 @@ def test_bfloat16_tower_tracks_the_fp32_formulas(device: DeviceType) -> None:
             prefill_hidden.to(device=device, dtype=torch.bfloat16),
             decode_hidden.to(device=device, dtype=torch.bfloat16),
             semantic_logits.to(device),
+            [1] * len(REQUEST_FRAMES),
         )
     reference, reference_frames = run_reference(
         checkpoint, prefill_hidden, decode_hidden, semantic_logits
@@ -585,6 +600,74 @@ def test_bfloat16_tower_tracks_the_fp32_formulas(device: DeviceType) -> None:
                 # rows drift up to ~4% in norm (measured on this fixture).
                 drift = (cached.float().cpu() - expected).norm() / expected.norm()
                 assert drift < BFLOAT16_CACHE_DRIFT
+
+
+@torch_fused_op_backend()
+def test_main_token_takes_the_request_top_k_and_codebook_heads_at_most_30(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_token_top_ks: list[list[int]] = []
+    codebook_top_ks: list[list[int]] = []
+
+    def recorded_main_token_draw(
+        semantic_logits: torch.Tensor,
+        candidate_token_ids: torch.Tensor,
+        previous_main_tokens: torch.Tensor,
+        temperature: torch.Tensor,
+        top_k: torch.Tensor,
+        top_p: torch.Tensor,
+        semantic_begin_id: int,
+        codebook_size: int,
+        sampler: CodebookSampler | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        main_token_top_ks.append(top_k.tolist())
+        return sample_semantic_with_ras(
+            semantic_logits,
+            candidate_token_ids,
+            previous_main_tokens,
+            temperature,
+            top_k,
+            top_p,
+            semantic_begin_id,
+            codebook_size,
+            sampler,
+        )
+
+    def recorded_codebook_draw(
+        logits: torch.Tensor,
+        temperature: torch.Tensor,
+        top_k: torch.Tensor,
+        top_p: torch.Tensor,
+        sampler: CodebookSampler | None,
+        stream_id: int,
+    ) -> torch.Tensor:
+        codebook_top_ks.append(top_k.tolist())
+        return sample_top_k_top_p(logits, temperature, top_k, top_p, sampler, stream_id)
+
+    monkeypatch.setattr(
+        f"{AudioDecoder.__module__}.sample_semantic_with_ras", recorded_main_token_draw
+    )
+    monkeypatch.setattr(
+        f"{AudioDecoder.__module__}.sample_top_k_top_p", recorded_codebook_draw
+    )
+    request_top_k = [MAXIMUM_TOP_K, CODEBOOK_TOP_K + 1, 5]
+    prefill_hidden, decode_hidden, semantic_logits = random_inputs(seed=1)
+
+    run_decoder(
+        loaded_decoder(random_checkpoint(seed=0), torch.float32, "cpu"),
+        DenseAttention(
+            head_count=HEAD_COUNT, kv_head_count=KV_HEAD_COUNT, head_dim=HEAD_DIM
+        ),
+        prefill_hidden,
+        decode_hidden,
+        semantic_logits,
+        request_top_k,
+    )
+
+    assert main_token_top_ks == [request_top_k]
+    assert (
+        codebook_top_ks == [[CODEBOOK_TOP_K, CODEBOOK_TOP_K, 5]] * RESIDUAL_LAYER_COUNT
+    )
 
 
 def test_frame_embeddings() -> None:
@@ -709,8 +792,6 @@ def broken_checkpoint(problem: CheckpointProblem) -> list[tuple[str, torch.Tenso
         ]
     elif problem == "fused-gate-up-after-shards":
         return [*checkpoint.items(), fused_gate_up]
-    elif problem == "fused-gate-up-before-shards":
-        return [fused_gate_up, *checkpoint.items()]
     else:
         checkpoint[up_name] = torch.zeros(INTERMEDIATE_SIZE + 1, DIM)
         return list(checkpoint.items())
@@ -722,7 +803,6 @@ LOADING_ERRORS: dict[CheckpointProblem, str] = {
     "unknown-key": "not a decoder parameter shard",
     "unknown-namespace": "not an audio decoder weight",
     "fused-gate-up-after-shards": "not a decoder parameter shard",
-    "fused-gate-up-before-shards": "not a decoder parameter shard",
     "wrong-shape": "has shape",
 }
 

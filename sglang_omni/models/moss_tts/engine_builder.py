@@ -23,7 +23,6 @@ from sglang_omni.scheduling.engine_factory import (
 )
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
@@ -86,7 +85,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -107,7 +106,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MossTTSModelRunner:
         model_runner_mod = importlib.import_module(

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from pathlib import Path
 
@@ -19,7 +20,11 @@ from sglang_omni.serve.realtime.output import (
     ResponseFinished,
     ResponseStarted,
 )
-from sglang_omni.serve.realtime.output_buffer import OutputBuffer
+from sglang_omni.serve.realtime.output_buffer import (
+    ENVELOPE_BYTES,
+    OutputBuffer,
+    envelope_size_bytes,
+)
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import (
@@ -138,30 +143,6 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
     assert [unit.eos for unit in adapter.units] == [False, False, True]
     assert isinstance(drained, Drained)
     assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
-
-
-@pytest.mark.asyncio
-async def test_ready_timestamp_survives_serial_pump_wait(monkeypatch) -> None:
-    ready_observations = iter(
-        (ready_observation(100), ready_observation(200), ready_observation(300))
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "capture_session_unit_ready",
-        lambda: next(ready_observations),
-    )
-    adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    await runtime.append(b"\1" * UNIT_BYTES, 1, None, "client_append_1")
-    await runtime.end("client_end")
-
-    adapter.release.set()
-    await receive_until(runtime, Drained)
-    await runtime.close("client_closed")
-
-    assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [100, 200]
 
 
 @pytest.mark.asyncio
@@ -389,18 +370,22 @@ async def test_update_after_the_deadline_is_rejected_without_admission(
     assert [failure.code for failure in failures] == ["session_update_timeout"]
 
 
+def test_an_audio_delta_is_sized_by_its_base64_audio_and_the_envelope() -> None:
+    pcm = bytes(range(256)) * 7
+    envelope = Envelope(event=AudioDelta("response", "item", pcm))
+    assert envelope_size_bytes(envelope) == len(base64.b64encode(pcm)) + ENVELOPE_BYTES
+
+
 def test_output_budget_counts_outbound_events_only() -> None:
-    buffer = OutputBuffer(RuntimeLimits(max_output_bytes=1024, max_output_events=2))
+    buffer = OutputBuffer(RuntimeLimits(max_output_bytes=3 * ENVELOPE_BYTES))
     unit = Unit(0, 0, bytes(32000), 16000, images=(bytes(512 * 1024),) * 4)
     completed = Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
     buffer.enqueue(completed)
     with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
         buffer.enqueue(Envelope(event=AudioDelta("response", "item", bytes(2048))))
     buffer.enqueue(completed)
+    buffer.enqueue(completed)
     with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
         buffer.enqueue(completed)
-    assert [buffer.dequeue(), buffer.dequeue(), buffer.dequeue()] == [
-        completed,
-        completed,
-        None,
-    ]
+    assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
+    assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]

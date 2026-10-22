@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from array import array
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +10,12 @@ from sglang.srt.managers.schedule_batch import Req, ReqKvInfo, ScheduleBatch
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
-from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.mem_cache.radix_cache import RadixKey
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
-from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
+from sglang.srt.session.streaming_session import SessionSlot
 
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -45,16 +48,15 @@ class AdmissionScheduler:
             enable_memory_saver=False,
         )
         self.token_to_kv_pool_allocator = KVAllocator()
-        self.tree_cache = StreamingSession(
-            RadixCache(
-                CacheInitParams(
-                    disable=False,
-                    req_to_token_pool=self.req_to_token_pool,
-                    token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                    page_size=1,
-                    enable_kv_cache_events=False,
-                    eviction_policy="lru",
-                )
+        self.tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=self.req_to_token_pool,
+                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+                page_size=1,
+                enable_kv_cache_events=False,
+                eviction_policy="lru",
+                tree_components=(ComponentType.FULL,),
             )
         )
         self.session_controller = SessionController(self.tree_cache)
@@ -68,7 +70,7 @@ class AdmissionScheduler:
         assert self.session_bridge.open_streaming_session(session_id)
         if holds_row:
             (row,) = self.req_to_token_pool.alloc_rows(1)
-            self.tree_cache.slots[session_id] = SessionSlot(
+            self.tree_cache.session.slots[session_id] = SessionSlot(
                 kv=ReqKvInfo(
                     req_pool_idx=row,
                     kv_committed_len=RETAINED_TOKEN_COUNT,
@@ -102,7 +104,8 @@ class AdmissionScheduler:
             else:
                 self.tree_cache.match_prefix(
                     MatchPrefixParams(
-                        key=RadixKey(request.origin_input_ids[:-1]), req=request
+                        key=RadixKey(array("q", request.origin_input_ids[:-1])),
+                        req=request,
                     )
                 )
                 admitted_requests.append(request)
@@ -127,7 +130,7 @@ def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() ->
     held_rows: dict[str, int] = {}
     for index in range(session_count):
         scheduler.open_session(f"session-{index}", holds_row=True)
-        held_rows[f"unit-{index}"] = scheduler.tree_cache.slots[
+        held_rows[f"unit-{index}"] = scheduler.tree_cache.session.slots[
             f"session-{index}"
         ].kv.req_pool_idx
     units = [

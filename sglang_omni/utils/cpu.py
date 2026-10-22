@@ -180,6 +180,23 @@ def bounded_intraop_threads(*, worker_count: int, max_threads: int) -> int:
     return min(max(effective_cpu_count() // worker_count, 1), max_threads)
 
 
+# Native multimodal_gen gives each of num_gpus colocated GPU workers
+# min(16, cpu_count // num_gpus) intra-op threads when OMP_NUM_THREADS is
+# unset (gpu_worker._worker_cpu_intra_op_threads in SGLang).
+NATIVE_WORKER_MAX_INTRAOP_THREADS = 16
+
+
+def native_worker_intraop_threads(worker_count: int) -> int:
+    """Intra-op threads for each of a native engine's GPU workers.
+
+    Omni sets OMP_NUM_THREADS in every stage process, which native children
+    inherit as an explicit choice, so their own default no longer applies.
+    """
+    return bounded_intraop_threads(
+        worker_count=worker_count, max_threads=NATIVE_WORKER_MAX_INTRAOP_THREADS
+    )
+
+
 def gpu_local_cpus(logical_gpu_ids: Iterable[int]) -> set[int]:
     """CPUs NVML reports as closest to the given logical GPUs, empty when unknown."""
     pynvml = try_import_pynvml()

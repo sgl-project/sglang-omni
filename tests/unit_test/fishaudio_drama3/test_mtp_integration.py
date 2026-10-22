@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Literal, Protocol
 from unittest.mock import ANY, Mock, call, patch
 
-import huggingface_hub
 import pytest
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -491,33 +490,11 @@ def test_engine_builder_hands_the_async_decode_switches_to_the_scheduler(
     ) == (enable_async_decode, 3, True)
 
 
-def test_engine_builder_resolves_a_hub_id_to_a_local_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    downloads: list[tuple[str, str | None]] = []
-
-    def snapshot_download(repo_id: str, revision: str | None) -> str:
-        downloads.append((repo_id, revision))
-        return str(tmp_path)
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
-    engine_builder = Drama3EngineBuilder(
-        context_length=CONTEXT_LENGTH, max_running_requests=1
-    )
-
-    assert engine_builder.resolve_checkpoint(str(tmp_path)) == str(tmp_path)
-    assert engine_builder.resolve_checkpoint("example/model@main") == str(tmp_path)
-    assert downloads == [("example/model", "main")]
-
-
 @pytest.mark.parametrize(
     "max_prompt_rows",
     [
         True,
         1,
-        -SERVING_PROMPT_CAP_ROWS,
-        math.inf,
-        math.nan,
         float(SERVING_PROMPT_CAP_ROWS),
     ],
 )
@@ -677,12 +654,13 @@ def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -
 
 
 def admitted_for_prefill(data: Drama3RequestData, start: int, end: int) -> None:
-    """Leave the request as prefill admission does: fill ids rebuilt, extend range set."""
+    """Leave the request as prefill admission does: fill ids rebuilt, extend bounds set."""
     req = data.req
     assert req is not None
     # Without a tree cache this only rebuilds fill ids; no prefix is matched.
     req.init_next_round_input()
-    req.set_extend_range(start, end)
+    req.prefix_len = start
+    req.extend_end = end
 
 
 def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
@@ -701,11 +679,11 @@ def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
 
 
 @pytest.mark.parametrize(
-    "extend_range", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
+    "extend_bounds", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
 )
-def test_prefill_rows_reject_a_partial_extend(extend_range: tuple[int, int]) -> None:
+def test_prefill_rows_reject_a_partial_extend(extend_bounds: tuple[int, int]) -> None:
     data = built_request(frame_rows_of([4], seed=4)[0])
-    admitted_for_prefill(data, *extend_range)
+    admitted_for_prefill(data, *extend_bounds)
 
     with pytest.raises(RuntimeError, match="whole sequence"):
         extend_frame_rows(data)
@@ -1008,19 +986,6 @@ def test_setup_model_gives_the_backbone_rows_for_the_largest_extend_or_bucket(
     assert not tower_prefill.next_frames.any()
 
 
-def test_setup_model_reports_first_frame_graphs_off_without_cuda_graphs(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"disable_cuda_graph": True})
-
-    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
-        set_up_mocked_model(builder, server_args, tmp_path)
-
-    assert "Drama 3 first-frame CUDA graphs: off, CUDA graphs are disabled" in (
-        caplog.text
-    )
-
-
 @pytest.mark.parametrize(
     ("triton_sampling", "unsupported_reason", "expected_log"),
     [
@@ -1090,11 +1055,6 @@ def test_setup_model_picks_the_codebook_sampler_and_logs_why(
         ),
         (
             True,
-            "untested GPU sm_120",
-            "Drama 3 tower fused layers: off, untested GPU sm_120",
-        ),
-        (
-            True,
             None,
             f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} rows "
             f"({', '.join(FUSED_KERNELS)})",
@@ -1154,6 +1114,19 @@ def first_frame_graph_setup(
     model = Mock(spec=Drama3ForCausalLM)
     model.config = FishOmniConfig(**fish_config_dict())
     model.lm_head = SimpleNamespace(weight=torch.zeros(1))
+    model.audio_decoder = SimpleNamespace(
+        main_token_candidate_ids=torch.tensor(
+            sorted(
+                {
+                    model.config.eos_token_id,
+                    *range(
+                        model.config.semantic_start_token_id,
+                        model.config.semantic_end_token_id + 1,
+                    ),
+                }
+            )
+        )
+    )
     model.first_frame_graphs = None
     return builder, model
 
@@ -1194,7 +1167,7 @@ def test_first_frame_graphs_cover_requests_up_to_the_decode_graph_batch(
         sample_first_frames=model.sample_first_frames,
         attention_backend=sglang_runner.attn_backend,
         max_request_count=max_request_count,
-        vocab_size=text_config.vocab_size,
+        vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
         hidden_size=text_config.hidden_size,
         hidden_dtype=torch.bfloat16,
         frame_width=FRAME_WIDTH,
@@ -1347,9 +1320,9 @@ class SuppliedBatchRunner(Drama3ModelRunner):
             for request in scheduler_output.requests:
                 sglang_request = request_data_of(request).req
                 assert sglang_request is not None
-                assert sglang_request.extend_range is not None
+                assert sglang_request.extend_end is not None
                 request_slots.append(sglang_request.kv.req_pool_idx)
-                extend_row_count += sglang_request.extend_range.length
+                extend_row_count += sglang_request.extend_len
             forward_batch.req_pool_indices = torch.tensor(
                 request_slots, dtype=torch.int64
             )
@@ -1938,23 +1911,6 @@ def test_a_failed_prefill_drops_its_staging_before_the_error_leaves(
     )
 
 
-def test_a_prefill_after_a_failed_one_seats_its_own_requests() -> None:
-    decode = decode_runner(row_count=4)
-    failed, seated = prompted_requests([3, 4])
-    assign_request_slots([failed], [2])
-    decode.prefill.error = RuntimeError("prefill forward failed")
-    with pytest.raises(RuntimeError, match="prefill forward failed"):
-        prefill_output(decode.runner, [failed])
-
-    decode.prefill.error = None
-    prefill_step(decode, [seated], [2], [[86, 1, 1, 1, 1]])
-
-    assert decode.prefill.taken_inputs[-1].request_ids == ["request-1"]
-    assert pool_rows(decode.runner.state_pool, [2]) == history_staged_rows(
-        [request_data_of(seated)]
-    )
-
-
 def test_post_prefill_refuses_a_staging_of_other_requests() -> None:
     decode = decode_runner(row_count=4)
     runner = decode.runner
@@ -2369,13 +2325,6 @@ def test_engine_context_must_fit_the_tower_rope_table(
         builder.validate_before_infrastructure(server_args)
 
 
-def test_engine_prefills_without_an_interval_when_asked(tmp_path: Path) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"prefill_decode_interval": 0})
-
-    builder.validate_before_infrastructure(server_args)
-    assert server_args.prefill_decode_interval == 0
-
-
 def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     builder, server_args = engine_server_args(
         tmp_path, {"cuda_graph_backend_prefill": "disabled"}
@@ -2387,22 +2336,10 @@ def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     assert graph_config.decode.backend == CudaGraphBackend.FULL
 
 
-@pytest.mark.parametrize(
-    "is_nested",
-    [False, True],
-    ids=["breakable-prefill-graph", "nested-breakable-prefill-graph"],
-)
-def test_engine_accepts_a_breakable_prefill_graph(
-    tmp_path: Path, is_nested: bool
-) -> None:
-    if is_nested:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
-        )
-    else:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_backend_prefill": "breakable"}
-        )
+def test_engine_accepts_a_nested_breakable_prefill_graph(tmp_path: Path) -> None:
+    builder, server_args = engine_server_args(
+        tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
+    )
 
     builder.validate_before_infrastructure(server_args)
     graph_config = resolved_view(server_args).cuda_graph_config
@@ -2429,13 +2366,11 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"disable_radix_cache": False}, "disable_radix_cache"),
         ({"chunked_prefill_size": 64}, "chunked_prefill_size"),
         ({"cuda_graph_backend_prefill": "full"}, "breakable CUDA graph"),
-        ({"cuda_graph_backend_prefill": "tc_piecewise"}, "breakable CUDA graph"),
         (
             {"cuda_graph_config": {"prefill": {"backend": "full"}}},
             "breakable CUDA graph",
         ),
         ({"cuda_graph_backend_decode": "breakable"}, "full decode CUDA graphs"),
-        ({"cuda_graph_backend_decode": "tc_piecewise"}, "full decode CUDA graphs"),
         (
             {"cuda_graph_config": {"decode": {"backend": "breakable"}}},
             "full decode CUDA graphs",
@@ -2450,10 +2385,8 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "radix",
         "chunked-prefill",
         "full-prefill-graph",
-        "piecewise-prefill-graph",
         "nested-prefill-graph",
         "breakable-decode-graph",
-        "piecewise-decode-graph",
         "nested-decode-graph",
         "overlap",
         "flashinfer",

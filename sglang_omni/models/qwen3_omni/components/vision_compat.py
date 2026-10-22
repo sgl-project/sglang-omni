@@ -10,6 +10,7 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from transformers.processing_utils import Unpack
 from transformers.utils.generic import TransformersKwargs, merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
+from transformers.vision_utils import get_vision_cu_seqlens, get_vision_position_ids
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -21,11 +22,10 @@ class VisionRotaryInputs:
 @dataclass(frozen=True, kw_only=True)
 class VisionSequenceMetadata:
     sequence_patch_counts: tuple[int, ...]
-    max_sequence_patch_count: int
 
 
 class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
-    """HF vision encoder with the Transformers 5.6 interpolation arithmetic."""
+    """HF vision encoder with the legacy bilinear position interpolation."""
 
     def prepare_position_embeddings(
         self,
@@ -36,8 +36,9 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
 
     def prepare_attention_metadata(
         self,
-        cumulative_sequence_lengths: torch.Tensor,
+        sequence_patch_counts: tuple[int, ...],
     ) -> dict[str, VisionSequenceMetadata]:
+        """The extra attention keywords every block receives."""
         return {}
 
     def legacy_pos_embed_interpolate(
@@ -128,28 +129,36 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
         grid_thw: torch.Tensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | hf_modeling.BaseModelOutputWithDeepstackFeatures:
-        """Run the HF 5.12.1 encoder with legacy positional interpolation."""
-        # HF 5.12 may pass its device-generated interpolation tensors through
+        """Run the HF encoder with the legacy positional interpolation."""
+        # HF may pass its device-generated interpolation tensors through
         # kwargs. This compatibility path always recomputes the legacy values.
-        kwargs.pop("bilinear_indices", None)
-        kwargs.pop("bilinear_weights", None)
-        position_ids = hf_modeling.get_vision_position_ids(
-            grid_thw, self.spatial_merge_size, kwargs=kwargs
+        kwargs.pop("interp_indices", None)
+        kwargs.pop("interp_weights", None)
+        # note (ratish): every length is derived on the host from the grid; the
+        # device receives one copy of each and is never read back.
+        host_grid_thw = grid_thw.cpu()
+        position_ids = get_vision_position_ids(
+            host_grid_thw, self.spatial_merge_size, kwargs=kwargs
         )
-        cu_seqlens = hf_modeling.get_vision_cu_seqlens(grid_thw, kwargs=kwargs)
-
-        attention_metadata_arguments = self.prepare_attention_metadata(cu_seqlens)
+        host_cu_seqlens = get_vision_cu_seqlens(host_grid_thw, kwargs=kwargs)
+        sequence_patch_counts = tuple(
+            (host_cu_seqlens[1:] - host_cu_seqlens[:-1]).tolist()
+        )
+        max_seqlen = max(sequence_patch_counts)
+        attention_metadata_arguments = self.prepare_attention_metadata(
+            sequence_patch_counts
+        )
+        device = hidden_states.device
+        cu_seqlens = host_cu_seqlens.to(device, non_blocking=True)
+        position_ids = position_ids.to(device, non_blocking=True)
 
         hidden_states = self.patch_embed(hidden_states)
-        pos_embeds = self.legacy_pos_embed_interpolate(grid_thw)
+        pos_embeds = self.legacy_pos_embed_interpolate(host_grid_thw)
         hidden_states = hidden_states + pos_embeds.to(hidden_states.dtype)
-        rotary_pos_emb = self.rotary_pos_emb(position_ids)
+        cos, sin = self.rotary_pos_emb(hidden_states, position_ids)
 
         seq_len, _ = hidden_states.size()
         hidden_states = hidden_states.reshape(seq_len, -1)
-        rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
-        emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
-        cos, sin = emb.cos(), emb.sin()
         position_embeddings = self.prepare_position_embeddings(cos, sin)
 
         deepstack_feature_lists = []
@@ -157,6 +166,7 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
             hidden_states = block(
                 hidden_states,
                 cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
                 position_embeddings=position_embeddings,
                 **attention_metadata_arguments,
                 **kwargs,

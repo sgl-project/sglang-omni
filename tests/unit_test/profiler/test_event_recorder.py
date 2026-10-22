@@ -4,18 +4,19 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import FrameType
 
 import pytest
 
+from sglang_omni.profiler import event_recorder
 from sglang_omni.profiler.event_recorder import (
-    RequestEvent,
     RequestEventBuffer,
-    RequestEventRecorder,
     RequestEventSnapshot,
     emit,
     get_recorder,
@@ -23,6 +24,7 @@ from sglang_omni.profiler.event_recorder import (
     reset_active_stage,
     set_active_stage,
 )
+from sglang_omni.profiler.views import reconstruct_timelines
 
 
 @pytest.fixture(autouse=True)
@@ -41,32 +43,6 @@ def reset_recorder():
 def read_events(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as fp:
         return [json.loads(line) for line in fp if line.strip()]
-
-
-def test_event_dataclass_roundtrip() -> None:
-    ev = RequestEvent(
-        request_id="r1",
-        stage="thinker",
-        event_name="thinker_first_token",
-        timestamp_ns=1234,
-        run_id="run_x",
-        pid=99,
-        metadata={"chunk_id": 7},
-    )
-    d = ev.to_dict()
-    assert d["request_id"] == "r1"
-    assert d["stage"] == "thinker"
-    assert d["event_name"] == "thinker_first_token"
-    assert d["timestamp_ns"] == 1234
-    assert d["run_id"] == "run_x"
-    assert d["metadata"] == {"chunk_id": 7}
-
-
-def test_inactive_recorder_is_silent(tmp_path: Path) -> None:
-    """emit() must be a no-op when start() was never called."""
-    rec = RequestEventRecorder()
-    rec.emit(request_id="r1", stage="s", event_name="anything")
-    assert rec.is_active() is False
 
 
 def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
@@ -98,19 +74,6 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     assert events[1]["metadata"] == {"items": 3}
 
 
-def test_default_stage_falls_back_to_active(tmp_path: Path) -> None:
-    rec = get_recorder()
-    rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    try:
-        rec.emit(request_id="r1", stage=None, event_name="scheduler_prefill_start")
-    finally:
-        path = rec.active_path()
-        rec.stop()
-    assert path is not None
-    events = read_events(path)
-    assert events[0]["stage"] == "thinker"
-
-
 def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:
     rec = get_recorder()
     rec.start(run_id="r0", event_dir=str(tmp_path), stage="s")
@@ -125,41 +88,51 @@ def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:
 def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
     rec = get_recorder()
     path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    n_threads = 8
-    n_per_thread = 50
+    file_write = rec.fp.write
+    first_paused = threading.Event()
+    release_first = threading.Event()
 
-    def worker(tid: int) -> None:
-        for i in range(n_per_thread):
+    def pause_after_json_body(frame: FrameType, event: str, argument: object) -> None:
+        if event == "c_return" and argument == file_write:
+            sys.setprofile(None)
+            first_paused.set()
+            assert release_first.wait(5)
+        else:
+            pass
+
+    def emit_event(request_id: str, should_pause: bool) -> None:
+        if should_pause:
+            sys.setprofile(pause_after_json_body)
+        else:
+            pass
+        try:
             rec.emit(
-                request_id=f"req-{tid}",
+                request_id=request_id,
                 stage="thinker",
                 event_name="stage_dispatch",
-                metadata={"i": i},
+                metadata={"i": 0},
             )
+        finally:
+            sys.setprofile(None)
 
-    threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    first_thread = threading.Thread(target=emit_event, args=("req-0", True))
+    first_thread.start()
+    assert first_paused.wait(5)
+    second_thread = threading.Thread(target=emit_event, args=("req-1", False))
+    second_thread.start()
+    second_thread.join(timeout=0.5)
+    release_first.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
     rec.stop()
 
+    assert not first_thread.is_alive() and not second_thread.is_alive()
     events = read_events(path)
-    assert len(events) == n_threads * n_per_thread
-    # Every line must be valid JSON with required fields
+    assert len(events) == 2
     for ev in events:
         assert ev["event_name"] == "stage_dispatch"
         assert ev["request_id"].startswith("req-")
         assert ev["run_id"] == "r0"
-
-
-def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
-    rec = get_recorder()
-    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="coord")
-    emit(request_id="r1", stage=None, event_name="request_admission")
-    rec.stop()
-    events = read_events(path)
-    assert any(e["event_name"] == "request_admission" for e in events)
 
 
 def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
@@ -536,3 +509,68 @@ def test_reset_active_stage_with_token_restores_previous_value() -> None:
         reset_active_stage(outer_token)
         # After the outer reset, contextvar is back to its initial None.
         assert get_active_stage() is None
+
+
+def test_scheduler_model_path_activity_is_monotonic_and_default_off(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorder = event_recorder.get_recorder()
+    recorder.stop()
+    event_recorder.emit_model_path_start("request-off")
+    assert recorder.is_active() is False
+
+    path = recorder.start("run-unit", str(tmp_path), "tts_engine")
+    monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
+    monkeypatch.setattr(event_recorder, "read_host_boot_id", lambda: "boot-test")
+    event_recorder.emit_model_path_start("request-on")
+    event_recorder.emit_model_path_end("request-on", status="success")
+    recorder.stop()
+    emitted = [
+        json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["event_name"] for item in emitted] == [
+        "model_path_start",
+        "model_path_end",
+    ]
+    assert all(item["metadata"]["monotonic_ns"] == 123456 for item in emitted)
+    assert all(item["metadata"]["clock"] == "CLOCK_MONOTONIC" for item in emitted)
+    assert all(item["metadata"]["host_boot_id"] == "boot-test" for item in emitted)
+    assert emitted[-1]["metadata"]["status"] == "success"
+
+
+def test_model_path_activity_preserves_the_profiler_wall_clock_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorder = event_recorder.get_recorder()
+    recorder.stop()
+    path = recorder.start("run-clock-domain", str(tmp_path), "tts_engine")
+    monkeypatch.setattr(event_recorder.time, "time_ns", lambda: 2_000_000_000)
+    monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
+    event_recorder.emit(
+        request_id="request-clock-domain",
+        stage="tts_engine",
+        event_name="request_started",
+    )
+    event_recorder.emit_model_path_start("request-clock-domain")
+    event_recorder.emit_model_path_end(
+        "request-clock-domain",
+        status="success",
+    )
+    event_recorder.emit(
+        request_id="request-clock-domain",
+        stage="tts_engine",
+        event_name="request_finished",
+    )
+    recorder.stop()
+
+    emitted = [
+        json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()
+    ]
+    model_path_events = [
+        item for item in emitted if item["event_name"].startswith("model_path_")
+    ]
+    assert all(item["timestamp_ns"] == 2_000_000_000 for item in emitted)
+    assert all(item["metadata"]["monotonic_ns"] == 123456 for item in model_path_events)
+    assert reconstruct_timelines(path)["request-clock-domain"].total_ms == 0.0

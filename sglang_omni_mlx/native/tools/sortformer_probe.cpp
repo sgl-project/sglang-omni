@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "sortformer.h"
+#include "sortformer/sortformer.h"
 
 namespace {
 

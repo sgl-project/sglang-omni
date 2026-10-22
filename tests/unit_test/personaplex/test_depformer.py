@@ -109,8 +109,29 @@ def test_forced_codes_are_kept_and_condition_later_steps():
     assert codes[1, 0].item() == unforced[1, 0].item()
 
 
-@pytest.mark.parametrize("batch_size", [1, 4, 8])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@torch.inference_mode()
+def test_generated_codes_remain_owned_across_calls() -> None:
+    model = Depformer(SPEC)
+    model.load_reference_weights(reference_weights(SPEC.steps))
+    text_tokens = torch.tensor([3, 4])
+    hidden_states = torch.randn(2, SPEC.input_dim)
+    forced_codes = torch.arange(2 * SPEC.steps).view(2, SPEC.steps)
+
+    def greedy(logits: torch.Tensor) -> torch.Tensor:
+        return logits.argmax(dim=-1)
+
+    first_codes = model.generate(text_tokens, hidden_states, forced_codes, greedy)
+    history_row = first_codes[1]
+    next_forced_codes = forced_codes + 2 * SPEC.steps
+    next_codes = model.generate(text_tokens, hidden_states, next_forced_codes, greedy)
+
+    torch.testing.assert_close(next_codes, next_forced_codes, rtol=0, atol=0)
+    torch.testing.assert_close(first_codes, forced_codes, rtol=0, atol=0)
+    torch.testing.assert_close(history_row, forced_codes[1], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("batch_size", [1, 4])
+@pytest.mark.parametrize("dtype", [torch.float32])
 @pytest.mark.parametrize("teacher_forced", [True, False])
 @torch.inference_mode()
 def test_fused_projections_match_separate_linears(

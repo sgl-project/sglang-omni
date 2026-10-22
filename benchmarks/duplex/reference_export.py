@@ -115,10 +115,11 @@ def export_runs(
                 profile_rate=profile_rate,
             )
             reasons = record["window"]["reasons"]
-            # note (luojiaxuan): A legacy session that failed its protocol replay can
-            # be silent for protocol reasons, so silence is only valid after a pass.
+            # note (luojiaxuan): A legacy or turn-based session that failed its
+            # protocol replay can be silent for protocol reasons, so silence is only
+            # valid after a pass.
             if (
-                capture_format is TraceFormat.LEGACY_PCM16
+                capture_format is not TraceFormat.PCM16
                 and state["protocol_verdict"] != "pass"
             ):
                 reasons.append(

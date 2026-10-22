@@ -82,7 +82,7 @@ docker run -d --name tts-bench \
     -v $WORK:/work \
     -v $HOME/.cache:/root/.cache \
     --entrypoint sleep \
-    hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df \
+    hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985 \
     infinity
 docker exec -it tts-bench bash
 ```

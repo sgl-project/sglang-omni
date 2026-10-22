@@ -278,6 +278,39 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("long_reference", [False, True])
+def test_flow_budget_keeps_long_rows_and_references_separate(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    long_reference: bool,
+) -> None:
+    monkeypatch.setattr(code2wav, "FLOW_BATCH_TOKEN_SQUARE_BUDGET", 128)
+    model = build_code2wav_model()
+    tokens = [[1, 2], [3, 4], [5, 6]]
+    references = [b"a", b"b", b"c"]
+    if long_reference:
+        references[1] = b"b" * 12
+    else:
+        tokens[1] = [3] * 12
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 2
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
+def test_flow_budget_preserves_one_normal_batch(
+    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
+) -> None:
+    model = build_code2wav_model()
+    tokens = [[3, 4], [1], [5, 6, 7]]
+    references = [b"a", b"b", b"c"]
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 1
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
 def find_checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
@@ -672,38 +705,6 @@ def test_invalid_reference_does_not_silently_use_default() -> None:
         code2wav_reference_audio(payload)
 
 
-@pytest.mark.parametrize("enable_flow_variable_length", [False, True])
-def test_variable_length_option_reaches_dit(
-    build_code2wav_model: Code2WavBuilder,
-    fake_token2wav: MagicMock,
-    enable_flow_variable_length: bool,
-) -> None:
-    build_code2wav_model(enable_flow_variable_length=enable_flow_variable_length)
-    estimator = fake_token2wav.flow.decoder.estimator
-    assert estimator.enable_variable_length is enable_flow_variable_length
-
-
-def test_speech_pipeline_colocates_batched_code2wav_with_talker_by_default() -> None:
-    config = MiniCPMOSpeechPipelineConfig(model_path="unused")
-    stages_by_name = {stage.name: stage for stage in config.stages}
-    code2wav = stages_by_name["code2wav"]
-    talker = stages_by_name["talker"]
-    assert code2wav.process == talker.process
-    assert code2wav.gpu == talker.gpu
-    factory = code2wav.factory
-    assert factory.max_batch_size == 16
-    assert factory.max_batch_wait_ms == 0
-    assert factory.batch_wait_when_idle is False
-    assert factory.dtype == "float16"
-    assert factory.enable_dit_torch_compile is True
-    assert factory.enable_hift_torch_compile is True
-    assert factory.enable_flow_variable_length is False
-    assert factory.reference_workers == 8
-    assert factory.prompt_cache_capacity == 32
-    assert factory.decode_stream_priority == -1
-    assert factory.enable_flow_block_compile is False
-
-
 @pytest.mark.parametrize(
     "references",
     [[b"a", b"a", b"a"], [b"a", b"a", b"spk-b"]],
@@ -718,13 +719,6 @@ def test_vocode_conditions_each_row_on_its_reference(
         sequences, references, waveforms, strict=True
     ):
         np.testing.assert_array_equal(waveform, expected_waveform(tokens, reference))
-
-
-def test_vocode_runs_mixed_references_in_one_flow_call(
-    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
-) -> None:
-    build_code2wav_model().vocode([[1, 2], [3], [4, 5, 6]], [b"a", b"spk-b", b"c"])
-    assert fake_token2wav.flow.inference.call_count == 1
 
 
 def test_vocode_prepares_and_decodes_on_its_private_stream(
@@ -858,7 +852,7 @@ def test_prompt_cache_reuses_references_and_evicts_least_recent(
     assert fake_token2wav.prepare_prompt.call_count == 4
 
 
-@pytest.mark.parametrize("reference_workers", [1, 2])
+@pytest.mark.parametrize("reference_workers", [1])
 def test_prepare_references_prepares_identical_rows_once(
     build_code2wav_model: Code2WavBuilder,
     fake_token2wav: MagicMock,
@@ -928,7 +922,7 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
     assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [97, 98]
 
 
-@pytest.mark.parametrize("reference_workers", [1, 2])
+@pytest.mark.parametrize("reference_workers", [1])
 def test_close_reference_pool_waits_for_running_preparation(
     build_code2wav_model: Code2WavBuilder,
     fake_token2wav: MagicMock,

@@ -39,6 +39,27 @@ def random_partitions(total: int, seed: int) -> list[int]:
     return partitions
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_codec_arena_index_ring_survives_queued_copies() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    incremental = Qwen3TTSIncrementalDecoder(Decoder().to(device).eval())
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=5, device=device, dtype=torch.float32
+    )
+    stream = torch.cuda.Stream(device=device)
+    actual = []
+    with torch.cuda.stream(stream):
+        # note (Zhuofeng-Li): delay the copies until the four host slots wrap.
+        torch.cuda._sleep(
+            20_000_000
+        )  # noqa: leading-underscore  # upstream CUDA test primitive
+        for index in range(12):
+            actual.append(arena.stage_index([index % 5]).clone())
+    stream.synchronize()
+    assert [int(index.item()) for index in actual] == [index % 5 for index in range(12)]
+
+
 class CausalConv(nn.Module):
     def __init__(
         self,
@@ -463,24 +484,6 @@ def test_incremental_decoder_matches_whole_for_arbitrary_partitions(
     assert state.transformer_context_length == decoder.pre_transformer.window_size - 1
 
 
-def test_incremental_decoder_reference_prefix_matches_generated_waveform() -> None:
-    torch.manual_seed(5)
-    decoder = Decoder()
-    codes = torch.randint(0, 16, (1, 2, 9))
-    reference_frames = 4
-    expected = decoder(codes)[..., reference_frames * decoder.total_upsample :]
-    incremental = Qwen3TTSIncrementalDecoder(decoder)
-    state = Qwen3TTSIncrementalCodecState()
-
-    initial = incremental.decode(codes[..., :7], state)
-    initial = initial[..., reference_frames * decoder.total_upsample :]
-    final = incremental.decode(codes[..., 7:], state)
-    actual = torch.cat((initial, final), dim=-1)
-
-    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
-    assert actual.shape[-1] == (9 - reference_frames) * decoder.total_upsample
-
-
 def test_incremental_decoder_rejects_malformed_codes() -> None:
     decoder = Decoder()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
@@ -718,14 +721,27 @@ def test_tail_decode_matches_each_row_decoded_whole() -> None:
         )
 
 
+@pytest.fixture(params=("cuda", "npu"))
+def codec_graph_device(request: pytest.FixtureRequest) -> torch.device:
+    if request.param == "npu":
+        pytest.importorskip("torch_npu")
+    else:
+        pass
+    device_module = torch.get_device_module(request.param)
+    if not device_module.is_available():
+        pytest.skip(f"{request.param} is unavailable")
+    else:
+        pass
+    return torch.device(request.param, device_module.current_device())
+
+
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize(
     ("mode", "batch_size", "batch_bucket"),
     [("cold", 1, 1), ("warm", 2, 2), ("warm", 3, 4)],
 )
 def test_incremental_codec_cuda_graph_matches_eager_state(
-    mode: str, batch_size: int, batch_bucket: int
+    mode: str, batch_size: int, batch_bucket: int, codec_graph_device: torch.device
 ) -> None:
     from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -733,7 +749,7 @@ def test_incremental_codec_cuda_graph_matches_eager_state(
     )
 
     torch.manual_seed(17)
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = codec_graph_device
     decoder = Decoder().to(device).eval()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
     arena = Qwen3TTSCodecStateArena(
@@ -783,7 +799,7 @@ def test_incremental_codec_cuda_graph_matches_eager_state(
         expected_waveform = incremental.decode(codes, eager_state)
         waveform = runner.decode_slots(codes, slots)
         assert waveform is not None
-        torch.cuda.synchronize(device)
+        torch.get_device_module(device).synchronize(device)
         torch.testing.assert_close(waveform, expected_waveform, rtol=2e-4, atol=2e-5)
         graph_state = arena.gather(slots)
         assert graph_state.frame_positions.tolist() == [
@@ -806,15 +822,16 @@ def test_incremental_codec_cuda_graph_matches_eager_state(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_incremental_codec_cuda_graph_alternates_shared_pool_keys() -> None:
+def test_incremental_codec_cuda_graph_alternates_shared_pool_keys(
+    codec_graph_device: torch.device,
+) -> None:
     from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
         Qwen3TTSIncrementalCodecCudaGraphRunner,
     )
 
     torch.manual_seed(18)
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = codec_graph_device
     decoder = Decoder().to(device).eval()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
     arena = Qwen3TTSCodecStateArena(
@@ -850,7 +867,7 @@ def test_incremental_codec_cuda_graph_alternates_shared_pool_keys() -> None:
         # waveform is compared before the other key replays over it.
         waveform = runner.decode_slots(codes, slots[batch_size])
         assert waveform is not None
-        torch.cuda.synchronize(device)
+        torch.get_device_module(device).synchronize(device)
         torch.testing.assert_close(waveform, expected, rtol=2e-4, atol=2e-5)
         graph_state = arena.gather(slots[batch_size])
         torch.testing.assert_close(

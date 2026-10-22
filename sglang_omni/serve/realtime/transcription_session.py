@@ -16,6 +16,12 @@ from fastapi import WebSocket
 from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio.vad import (
+    VAD_FRAME_SAMPLES,
+    StatelessVAD,
+    VADConfig,
+    offsets_to_ms,
+)
 from sglang_omni.client import Client, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime.audio_buffer import (
@@ -45,12 +51,6 @@ from sglang_omni.serve.realtime.events import (
     TurnDetection,
     TurnDetectionType,
     parse_transcription_client_event,
-)
-from sglang_omni.serve.realtime.vad import (
-    VAD_FRAME_SAMPLES,
-    StatelessVAD,
-    VADConfig,
-    offsets_to_ms,
 )
 from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,

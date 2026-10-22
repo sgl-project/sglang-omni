@@ -5,11 +5,12 @@ from dataclasses import dataclass, field
 
 from fastapi import WebSocket
 
+from sglang_omni.audio.semantic_vad import SemanticEOUModel
 from sglang_omni.client import Client
 from sglang_omni.config import RealtimeTranscriptionConfig
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
-from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel
 from sglang_omni.serve.realtime.session import RealtimeSession
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
@@ -28,6 +29,7 @@ class RealtimeDeployment:
     capabilities: Capabilities
     adapter_factory: AdapterFactory
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
+    session_limits: SessionLimits = field(default_factory=SessionLimits)
     max_connections: int = 128
 
     def __post_init__(self) -> None:

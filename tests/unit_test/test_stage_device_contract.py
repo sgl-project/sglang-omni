@@ -14,6 +14,11 @@ import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
+from sglang_omni.models.registry import resolve_variant
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.utils.imports import import_string
 
 MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
@@ -27,6 +32,20 @@ CPU_ONLY_GPU_PLACED = {
 }
 
 
+def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    profiles = {
+        Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
+        StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
+    }
+    if config_cls in profiles:
+        profile = MODELS_DIR.parent.parent / profiles[config_cls]
+        return ConfigManager.from_file(str(profile)).config.model_copy(
+            update={"model_path": "unused"}
+        )
+    else:
+        return config_cls(model_path="unused")
+
+
 def iter_stages():
     for config_path in sorted(MODELS_DIR.glob("*/config.py")):
         model = config_path.parent.name
@@ -35,15 +54,20 @@ def iter_stages():
         if getattr(module, "EntryClass", None) is not None:
             topologies["default"] = module.EntryClass
         topologies.update(getattr(module, "Variants", None) or {})
-        for label, config_cls in topologies.items():
-            for stage in config_cls(model_path="unused").stages:
+        for label, variant in topologies.items():
+            config_cls = resolve_variant(variant)
+            for stage in pipeline_config(config_cls).stages:
                 yield model, label, stage
 
 
 def pipeline_wiring(model: str, label: str, stage_name: str) -> Mapping[str, object]:
     module = importlib.import_module(f"sglang_omni.models.{model}.config")
-    config_cls = module.EntryClass if label == "default" else module.Variants[label]
-    return config_cls(model_path="unused").stage_factory_kwargs(stage_name)
+    config_cls = (
+        module.EntryClass
+        if label == "default"
+        else resolve_variant(module.Variants[label])
+    )
+    return pipeline_config(config_cls).stage_factory_kwargs(stage_name)
 
 
 # note (lennox): only device/gpu_id are asserted on below, but a non-literal
@@ -411,6 +435,11 @@ SELF_BUILT_SERVER_ARGS_FACTORIES = [
     "sglang_omni.models.qwen3_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config",
 ]
+REQUIRED_FACTORY_KWARGS = {
+    "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config": {
+        "max_running_requests": 32
+    },
+}
 
 
 @pytest.mark.parametrize(
@@ -449,13 +478,18 @@ def test_self_built_server_args_carry_the_resolved_device_type(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
 
+    required = REQUIRED_FACTORY_KWARGS.get(factory_path, {})
     with pytest.raises(Stop):
-        factory("unused", device=None, gpu_id=2)
+        factory("unused", device=None, gpu_id=2, **required)
     assert captured["device"] == "cuda"
 
     with pytest.raises(ValueError, match="stage placement"):
         factory(
-            "unused", device=None, gpu_id=2, server_args_overrides={"device": "xpu"}
+            "unused",
+            device=None,
+            gpu_id=2,
+            server_args_overrides={"device": "xpu"},
+            **required,
         )
 
 
@@ -581,7 +615,7 @@ def config_with_one_replicated_process(config_cls, model):
     from sglang_omni.config.schema import ProcessConfig
     from sglang_omni.config.topology import stage_process_name
 
-    config = config_cls(model_path="unused")
+    config = pipeline_config(config_cls)
     by_process: dict[str, list] = {}
     for stage in config.stages:
         by_process.setdefault(stage_process_name(stage), []).append(stage)
@@ -655,7 +689,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         topologies["default"] = module.EntryClass
     topologies.update(getattr(module, "Variants", None) or {})
     config, replicated_stages = config_with_one_replicated_process(
-        topologies[label], model
+        resolve_variant(topologies[label]), model
     )
     if config is None:
         pytest.skip("no tp_size=1 GPU process to replicate")
@@ -670,6 +704,16 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         with pytest.raises(ValueError, match="does not support process replicas"):
             prepare_pipeline_runtime(config)
         return
+    elif any(
+        stage.http_routes for stage in config.stages if stage.name in replicated_stages
+    ):
+        # A stage that serves its own HTTP routes keeps route state in one
+        # instance, so its process refuses replicas.
+        with pytest.raises(ValueError, match="serves http_routes"):
+            prepare_pipeline_runtime(config)
+        return
+    else:
+        pass
 
     prep = prepare_pipeline_runtime(config)
     try:

@@ -25,7 +25,6 @@ from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 else:
@@ -97,7 +96,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> VoxtralTTSModelRunner:
         model_runner_mod = importlib.import_module(

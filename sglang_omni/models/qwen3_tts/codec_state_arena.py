@@ -12,7 +12,8 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -134,7 +135,7 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if supports_device_streams(self.device):
+        if has_device_streams(self.device):
             released = self.device_module.Event()
             released.record(self.device_module.current_stream(self.device))
         else:
@@ -189,7 +190,7 @@ class Qwen3TTSCodecStateArena:
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if not supports_device_streams(self.device):
+        if not has_device_streams(self.device):
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass
@@ -202,9 +203,12 @@ class Qwen3TTSCodecStateArena:
         if ring is None:
             ring = [
                 (
-                    torch.empty(
-                        self._num_slots + 1, dtype=torch.long
-                    ).pin_memory(),  # noqa: leading-underscore
+                    PinnedTransferSlot(
+                        self.device,
+                        torch.long,
+                        initial_capacity=self._num_slots
+                        + 1,  # noqa: leading-underscore
+                    ),
                     torch.empty(
                         self._num_slots + 1,
                         dtype=torch.long,
@@ -219,9 +223,16 @@ class Qwen3TTSCodecStateArena:
             pass
         turn = (getattr(self.staging, f"{name}_turn") + 1) % self.STAGING_RING
         setattr(self.staging, f"{name}_turn", turn)
-        host, device = ring[turn]
-        host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
-        device[:count].copy_(host[:count], non_blocking=True)
+        transfer, device = ring[turn]
+        # note (Zhuofeng-Li): a wrapped host slot may still be supplying its copy.
+        if transfer.recorded:
+            transfer.synchronize()
+        else:
+            pass
+        host = transfer.view(count)
+        host.copy_(torch.as_tensor(list(values), dtype=torch.long))
+        device[:count].copy_(host, non_blocking=True)
+        transfer.record(self.device_module.current_stream(self.device))
         return device[:count]
 
     def stage_index(self, slots: Sequence[int]) -> torch.Tensor:

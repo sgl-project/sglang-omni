@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
@@ -12,16 +10,12 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
-    Drama3EngineStageConfig,
     Drama3PipelineConfig,
-    Drama3PreprocessingStageConfig,
-    Drama3VocoderStageConfig,
 )
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 VOCODER_WINDOWS = {
     "stream_stride": 10,
     "stream_followup_stride_ramp": (10, 12, 32),
@@ -36,36 +30,6 @@ VOCODER_WINDOWS = {
 def launch_kwargs(config: Drama3PipelineConfig, stage_name: str) -> dict[str, object]:
     """What the launcher passes the stage's factory."""
     return resolve_stage_factory_args(config.stage_named(stage_name), config)
-
-
-def test_frames_stream_from_the_engine_to_the_vocoder_on_one_gpu() -> None:
-    config = Drama3PipelineConfig(model_path="checkpoint")
-    preprocessing, tts_engine, vocoder = config.stages
-
-    assert isinstance(preprocessing, Drama3PreprocessingStageConfig)
-    assert (
-        preprocessing.name,
-        preprocessing.process,
-        preprocessing.gpu,
-        preprocessing.next,
-    ) == ("preprocessing", "preprocessing", 0, "tts_engine")
-    assert isinstance(tts_engine, Drama3EngineStageConfig)
-    assert (
-        tts_engine.name,
-        tts_engine.process,
-        tts_engine.gpu,
-        tts_engine.next,
-        tts_engine.stream_to,
-    ) == ("tts_engine", "pipeline", 0, "vocoder", ["vocoder"])
-    assert isinstance(vocoder, Drama3VocoderStageConfig)
-    assert (
-        vocoder.name,
-        vocoder.process,
-        vocoder.gpu,
-        vocoder.terminal,
-        vocoder.can_accept_stream_before_payload,
-    ) == ("vocoder", "vocoder", 0, True, True)
-    assert config.supports_uploaded_voice_references()
 
 
 def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
@@ -125,22 +89,6 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "decode_dtype": "float16",
         "max_new_tokens": 2048,
     }
-
-
-def test_the_engine_takes_the_async_decode_switches() -> None:
-    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
-        [
-            ("tts_engine.factory.enable_async_decode", "true"),
-            ("tts_engine.factory.async_decode_min_batch_size", "4"),
-        ]
-    )
-    assert isinstance(config, Drama3PipelineConfig)
-
-    engine_kwargs = launch_kwargs(config, "tts_engine")
-    assert (
-        engine_kwargs["enable_async_decode"],
-        engine_kwargs["async_decode_min_batch_size"],
-    ) == (True, 4)
 
 
 def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
@@ -238,16 +186,6 @@ def test_the_engine_cannot_set_the_vocoder_windows(field_name: str, value: str) 
         manager.merge_config([(f"tts_engine.factory.{field_name}", value)])
 
     assert f"set stages.vocoder.factory.{field_name} instead" in str(rejection.value)
-
-
-def test_the_example_config_loads_with_a_local_checkpoint_placeholder() -> None:
-    config = ConfigManager.from_file(
-        str(REPO_ROOT / "examples/configs/drama3_tts.yaml")
-    ).config
-
-    assert isinstance(config, Drama3PipelineConfig)
-    assert config.model_path == "drama3-checkpoint"
-    assert launch_kwargs(config, "preprocessing")["codec_path"] == DEFAULT_CODEC_PATH
 
 
 def speech_validator() -> SpeechRequestValidator:

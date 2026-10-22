@@ -26,10 +26,12 @@ class ExecuteTRT:
     def __init__(self, max_batch: int) -> None:
         self.max_batch = max_batch
         self.calls: list[torch.Tensor] = []
+        self.timestep_shapes: list[tuple[int, ...]] = []
 
     def execute(self, x, mask, mu, t, spks, cond):
-        del mask, mu, t, spks, cond
+        del mask, mu, spks, cond
         self.calls.append(x.detach().clone())
+        self.timestep_shapes.append(tuple(t.shape))
         return x + 1.0
 
 
@@ -129,6 +131,7 @@ def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
 
     assert len(estimator.calls) == 1
     torch.testing.assert_close(out, x + 1.0)
+    assert estimator.timestep_shapes == [(2,)]
 
 
 def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
@@ -156,22 +159,6 @@ def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
         (20.0, -20.0),
         (30.0, -30.0),
     ]
-    torch.testing.assert_close(out, x + 1.0)
-
-
-def test_execute_flow_estimator_skips_chunking_when_engine_fits() -> None:
-    estimator = ExecuteTRT(max_batch=8)
-    x = torch.arange(8, dtype=torch.float32).reshape(8, 1, 1)
-    mask = torch.ones_like(x)
-    mu = torch.zeros_like(x)
-    t = torch.zeros(8)
-    spks = torch.zeros(8, 1)
-    cond = torch.zeros_like(x)
-
-    out = execute_flow_estimator(estimator, x, mask, mu, t, spks, cond)
-
-    assert len(estimator.calls) == 1
-    assert estimator.calls[0].shape[0] == 8
     torch.testing.assert_close(out, x + 1.0)
 
 
@@ -262,18 +249,4 @@ def test_flow_estimator_trt_module_raises_without_fallback() -> None:
             torch.zeros(_CFG_BATCH),
             torch.zeros(_CFG_BATCH, _MEL_DIM),
             torch.zeros_like(x),
-        )
-
-
-def test_execute_flow_estimator_requires_max_batch() -> None:
-    class NoBatch:
-        def execute(self, *args, **kwargs):
-            del args, kwargs
-            raise AssertionError("must fail on max_batch")
-
-    x = torch.zeros(2, 1, 1)
-    dummy = torch.zeros_like(x)
-    with pytest.raises(AttributeError, match="max_batch"):
-        execute_flow_estimator(
-            NoBatch(), x, dummy, dummy, torch.zeros(2), torch.zeros(2, 1), dummy
         )

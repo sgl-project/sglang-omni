@@ -81,6 +81,7 @@ class SessionRuntime:
         self.discarded_samples = 0
         self.padding_samples = 0
         self.pending_pcm = bytearray()
+        self.pending_commits = 0
         self.pending_frames: dict[int, list[tuple[float, bytes]]] = {}
         self.ready_observations: dict[int, SessionUnitReadyObservation] | None = None
         self.next_unit_index = 0
@@ -217,7 +218,8 @@ class SessionRuntime:
                 else:
                     pass
             else:
-                pass
+                assert self.adapter is not None
+                await self.adapter.update(candidate)
             self.config, self.granted = candidate, granted
             public_config = {
                 **candidate,
@@ -351,6 +353,34 @@ class SessionRuntime:
                 Cleared(self.capabilities.input_duration_ms(cleared_samples), event_id)
             )
 
+    async def cancel(self) -> None:
+        """Stop the reply in progress; the session answers with its own cancelled response.done."""
+        async with self.command_lock:
+            self.require_open()
+            assert self.adapter is not None
+            await self.adapter.cancel()
+
+    async def truncate(self, audio_end_ms: float) -> None:
+        """Tell the session how much of the cancelled reply the listener heard."""
+        async with self.command_lock:
+            self.require_open()
+            assert self.adapter is not None
+            await self.adapter.truncate(audio_end_ms)
+
+    async def commit(self) -> None:
+        """End the user's turn where the client says it ends, after the audio appended before it."""
+        async with self.command_lock:
+            self.require_open()
+            if not self.granted.get("client_commit"):
+                raise ProtocolError(
+                    "not_applicable", "manual turn commands are not granted"
+                )
+            elif self.is_input_ended:
+                raise ProtocolError("invalid_state", "audio input already ended")
+            else:
+                self.pending_commits += 1
+            self.input_ready.set()
+
     async def end(self, event_id: str) -> None:
         async with self.command_lock:
             self.require_open()
@@ -443,10 +473,20 @@ class SessionRuntime:
                     elif (
                         len(self.pending_pcm) < self.capabilities.native_unit_bytes
                         and not self.is_input_ended
+                        and not self.pending_commits
                     ):
                         continue
+                    elif not self.pending_pcm and self.pending_commits:
+                        self.pending_commits -= 1
+                        unit = None
                     else:
                         unit = self.cut_next_unit()
+                if unit is None:
+                    await self.adapter.commit()
+                    self.input_ready.set()
+                    continue
+                else:
+                    pass
                 self.processing_unit.set(unit)
                 consumption = await self.adapter.process(unit)
                 if isinstance(consumption, tuple):

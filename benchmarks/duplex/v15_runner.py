@@ -24,8 +24,9 @@ from benchmarks.duplex.client import (
     PACKET_MS,
     SAMPLE_RATE,
     TRANSPORT,
+    TURN_BASED_TRANSPORT,
     TurnDetection,
-    legacy_protocol,
+    profile_protocol,
     run_session,
 )
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
@@ -33,6 +34,7 @@ from benchmarks.duplex.v10_dataset import Sample as V10Sample
 from benchmarks.duplex.v15_audio import (
     LEGACY_BARGE_IN_CUT,
     PACING_TOLERANCE_S,
+    TURN_BASED_BARGE_IN_CUT,
     normalize_audio,
     reconstruct_output,
     write_json,
@@ -160,8 +162,8 @@ async def run_samples(
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
 
-    turn_detection and legacy_tail_s configure legacy-protocol sessions; see
-    benchmarks.duplex.client.run_session.
+    turn_detection configures legacy-protocol and turn-based sessions and
+    legacy_tail_s legacy-protocol ones; see benchmarks.duplex.client.run_session.
     """
     if not dataset_revision:
         raise ValueError("dataset_revision must be nonempty")
@@ -175,7 +177,8 @@ async def run_samples(
         raise ValueError("concurrency must be at least 1")
     else:
         pass
-    legacy = legacy_protocol(profile, turn_detection)
+    protocol = profile_protocol(profile, turn_detection)
+    legacy = protocol == "legacy"
     legacy_config = (
         {
             "turn_detection": turn_detection.model_dump(mode="json"),
@@ -183,7 +186,16 @@ async def run_samples(
             "barge_in_cut": LEGACY_BARGE_IN_CUT,
             **LEGACY_TRANSPORT,
         }
-        if turn_detection is not None
+        if legacy
+        else None
+    )
+    turn_based_config = (
+        {
+            "turn_detection": turn_detection.model_dump(mode="json"),
+            "barge_in_cut": TURN_BASED_BARGE_IN_CUT,
+            **TURN_BASED_TRANSPORT,
+        }
+        if protocol == "turn_based"
         else None
     )
     variants = VARIANTS if variants is None else variants
@@ -255,6 +267,7 @@ async def run_samples(
                 "response_cancel": "never sent",
                 "protocol": PROFILES[profile].protocol,
                 "legacy": legacy_config,
+                "turn_based": turn_based_config,
             },
             "samples": [
                 {
@@ -342,6 +355,7 @@ async def run_samples(
                             "dataset_variant": variant,
                             "protocol": PROFILES[profile].protocol,
                             "legacy": legacy_config,
+                            "turn_based": turn_based_config,
                         },
                         "input": {
                             "file": "input.pcm",
@@ -405,7 +419,9 @@ async def run_samples(
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.
                 protocol_report = await asyncio.to_thread(replay_run, variant_dir)
-                write_json(variant_dir / "report.json", protocol_report)
+                await asyncio.to_thread(
+                    write_json, variant_dir / "report.json", protocol_report
+                )
                 (case_report,) = protocol_report["cases"]
                 playout_report = await asyncio.to_thread(
                     reconstruct_output, variant_dir, profile=profile

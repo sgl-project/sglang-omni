@@ -10,6 +10,10 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    NemotronVoiceChatDuplexPipelineConfig,
+    NemotronVoiceChatToolPipelineConfig,
+)
 
 # The ckpt is all saved in float32.
 MODEL_DTYPE = "float32"
@@ -99,3 +103,7 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
 
 
 EntryClass = NemotronVoiceChatPipelineConfig
+Variants = {
+    "duplex": NemotronVoiceChatDuplexPipelineConfig,
+    "tool": NemotronVoiceChatToolPipelineConfig,
+}

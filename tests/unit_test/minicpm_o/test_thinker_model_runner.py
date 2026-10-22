@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
@@ -26,6 +27,10 @@ from sglang_omni.models.minicpm_o.special_tokens import (
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    EmbeddingSpan,
+    SGLangARRequestData,
+)
 
 EOS_TOKEN_IDS = [1, 3]
 VOCAB_SIZE = 128
@@ -491,7 +496,7 @@ def test_one_step_moves_token_ids_to_the_host_exactly_twice(
     states = [session_state(greedy=greedy, temperature=0.7) for _ in range(6)]
     logits = unit_logits(*([{PLAIN_TOKEN_ID: 1.0}] * len(states)))
 
-    runner.sample_next_token_ids(
+    token_ids = runner.sample_next_token_ids(
         SimpleNamespace(next_token_logits=logits),
         None,
         None,
@@ -500,3 +505,49 @@ def test_one_step_moves_token_ids_to_the_host_exactly_twice(
 
     assert transfers == ["tolist", "tolist"]
     assert multinomial_calls == []
+    assert token_ids.tolist() == [PLAIN_TOKEN_ID] * len(states)
+    assert [state.generated_history for state in states] == [[PLAIN_TOKEN_ID]] * len(
+        states
+    )
+
+
+def test_mixed_decode_tail_prefill_rows_follow_the_batch_span() -> None:
+    """A decode tail mixed into a prefill batch embeds its one-token batch span, not the
+    window from its last prefill boundary that the request still records."""
+    runner = object.__new__(DuplexThinkerModelRunner)
+    runner.embed_tokens = torch.nn.Embedding(VOCAB_SIZE, 4)
+    span_rows = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    fresh = SimpleNamespace(
+        data=SGLangARRequestData(
+            req=SimpleNamespace(
+                prefix_len=0, extend_end=3, get_fill_ids=lambda: [5, 6, 9]
+            ),
+        )
+    )
+    tail_request = SimpleNamespace(
+        prefix_len=100,
+        extend_end=104,
+        get_fill_ids=lambda: list(range(104)),
+    )
+    tail = SimpleNamespace(
+        data=SGLangARRequestData(
+            req=tail_request,
+            session_embedding_spans=[
+                EmbeddingSpan(start=101, end=104, input_embeds=span_rows)
+            ],
+        )
+    )
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(4, dtype=torch.long),
+        replace_embeds=None,
+        extend_prefix_lens_cpu=[0, 103],
+        extend_seq_lens_cpu=[3, 1],
+    )
+
+    runner.custom_prefill_forward(forward_batch, SimpleNamespace(), [fresh, tail])
+
+    rows = get_omni_prefill_inputs(forward_batch).input_embeds
+    assert rows.shape[0] == 4
+    assert torch.equal(rows[:3], runner.embed_tokens(torch.tensor([5, 6, 9])))
+    assert torch.equal(rows[3], span_rows[2])
+    assert (tail_request.prefix_len, tail_request.extend_end) == (100, 104)

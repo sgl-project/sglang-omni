@@ -16,10 +16,10 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "form.h"
+#include "common/audio.h"
+#include "common/form.h"
 #include "nlohmann/json.hpp"
-#include "sensevoice_transcriber.h"
+#include "sensevoice/sensevoice_transcriber.h"
 
 int main(int argc, char **argv) {
   std::string model_path;

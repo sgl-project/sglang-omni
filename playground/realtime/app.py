@@ -39,7 +39,11 @@ async def warmup(api_base: str) -> None:
             response.raise_for_status()
             capabilities = await response.json()
         if not capabilities.get("native_full_duplex"):
-            raise RuntimeError("Playground warmup requires native full duplex")
+            logger.info(
+                f"Skipping warmup: {capabilities['interaction']} deployments "
+                "generate through their own services"
+            )
+            return
         else:
             pass
         modes = (
@@ -152,7 +156,7 @@ def load_reference(relative_path: str) -> dict:
     }
 
 
-def create_app(api_base: str) -> web.Application:
+def create_app(api_base: str, model_name: str | None = None) -> web.Application:
     app = web.Application()
 
     async def prepare(application: web.Application) -> None:
@@ -265,6 +269,21 @@ def create_app(api_base: str) -> web.Application:
     app.router.add_get("/orb", index)
     app.router.add_get("/api/presets", list_presets)
     app.router.add_get("/api/presets/{mode}/{preset_id}/audio", preset_audio)
+    if model_name is not None:
+
+        async def deployment_config(request: web.Request) -> web.Response:
+            source = (FRONTEND / "orb" / "config.js").read_text()
+            return web.Response(
+                text=source
+                + "\nwindow.DEMO_MODEL_NAME = "
+                + json.dumps(model_name)
+                + ";\n",
+                content_type="application/javascript",
+            )
+
+        app.router.add_get("/static/orb/config.js", deployment_config)
+    else:
+        pass
     app.router.add_static("/static/", FRONTEND)
     return app
 
@@ -275,5 +294,10 @@ if __name__ == "__main__":
     parser.add_argument("--api-base", default="http://127.0.0.1:8000")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--model-name", default=None)
     args = parser.parse_args()
-    web.run_app(create_app(args.api_base.rstrip("/")), host=args.host, port=args.port)
+    web.run_app(
+        create_app(args.api_base.rstrip("/"), args.model_name),
+        host=args.host,
+        port=args.port,
+    )

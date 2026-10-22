@@ -150,6 +150,7 @@ def running_server(
     log_file: Path,
     health_path: str,
     ready_text: str,
+    env: dict[str, str],
 ) -> Iterator[RunningServer]:
     """Serve on one GPU until the block exits, then stop the server's process group."""
     ensure_port_free(port)
@@ -166,6 +167,7 @@ def running_server(
                 port,
                 timeout=SERVER_READY_TIMEOUT_S,
                 env={
+                    **env,
                     "CUDA_VISIBLE_DEVICES": gpu,
                     # A taken port must fail here. Falling over to a random port
                     # would leave the client talking to the port in the command.
@@ -198,6 +200,7 @@ def model_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
         log_file,
         health_path="/v1/realtime/capabilities",
         ready_text='"native_full_duplex":true',
+        env=settings.cache_env(),
     ) as server:
         yield server
 
@@ -214,6 +217,7 @@ def judge_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
         log_file,
         health_path="/v1/models",
         ready_text=JUDGE_SERVED_MODEL,
+        env=settings.cache_env(),
     ) as server:
         yield server
 
