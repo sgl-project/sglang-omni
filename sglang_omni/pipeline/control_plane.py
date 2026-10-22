@@ -45,7 +45,16 @@ ControlMessage = (
 
 def serialize_message(msg: ControlMessage) -> bytes:
     """Serialize a message to bytes."""
-    return msgpack.packb(msg.to_dict(), use_bin_type=True)
+    message = msg.to_dict()
+    try:
+        return msgpack.packb(message, use_bin_type=True)
+    except OverflowError as exc:
+        if isinstance(msg, SubmitMessage):
+            raise ValueError(
+                "Request integers must fit the MessagePack range [-2**63, 2**64 - 1]"
+            ) from exc
+        else:
+            raise
 
 
 def deserialize_message(data: bytes) -> ControlMessage:
