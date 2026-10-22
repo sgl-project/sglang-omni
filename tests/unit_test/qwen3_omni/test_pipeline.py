@@ -1250,6 +1250,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         hf_config=SimpleNamespace(thinker_config=object()),
     )
     model_worker = SimpleNamespace(
+        speculative_worker=None,
         model_runner=FakeModelRunner(),
         model_config=model_config,
         # Real ModelWorker always carries this; init_sglang_cuda_graphs reads
@@ -1399,6 +1400,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
         hf_config=SimpleNamespace(thinker_config=object()),
     )
     model_worker = SimpleNamespace(
+        speculative_worker=None,
         model_runner=SimpleNamespace(model=model),
         model_config=model_config,
     )

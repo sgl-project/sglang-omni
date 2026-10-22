@@ -465,6 +465,10 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
 
+        if self.retain_prefill_input_embeds:
+            self.retained_prefill_input_embeds = input_embeds
+        else:
+            pass
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
                 input_ids=None,
@@ -473,12 +477,18 @@ class ThinkerModelRunner(ModelRunner):
                 input_embeds=input_embeds,
                 input_deepstack_embeds=ds_input,
             )
+            # A model capturing hidden states for a speculative draft returns them too.
+            if isinstance(hidden_states, tuple):
+                hidden_states, auxiliary_hidden_states = hidden_states
+            else:
+                auxiliary_hidden_states = None
 
             logits_output = outer.logits_processor(
                 forward_batch.input_ids,
                 hidden_states,
                 outer.lm_head,
                 forward_batch,
+                auxiliary_hidden_states,
             )
 
         return GenerationBatchResult(

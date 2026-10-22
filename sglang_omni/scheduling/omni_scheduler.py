@@ -35,6 +35,7 @@ from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import get_dp_tp_group
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.io_struct import AbortReq
+from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
     NextBatchPlan,
@@ -49,13 +50,16 @@ from sglang.srt.managers.scheduler import (
 )
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
+from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
-from sglang.srt.runtime_context import get_model, get_parallel, get_serving
+from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get_spec
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
 
@@ -108,7 +112,9 @@ from sglang_omni.scheduling.types import (
     DeferredAdmission,
     ModelRunnerOutput,
     RequestDataT,
+    RequestOutput,
     SchedulerOutput,
+    SchedulerRequest,
     StreamOutputBuilder,
 )
 
@@ -305,6 +311,7 @@ class OmniScheduler(Generic[RequestDataT]):
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
+    draft_worker: BaseSpecWorker | None = None
 
     def __init__(
         self,
@@ -608,17 +615,30 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         self.current_scheduler_metrics_enabled = False
 
-        # Speculative decoding (disabled)
-        from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
-
-        self.spec_algorithm = SpeculativeAlgorithm.NONE
+        self.draft_worker = tp_worker.speculative_worker
+        if self.draft_worker is None:
+            self.spec_algorithm = SpeculativeAlgorithm.NONE
+        elif session_adapter is not None:
+            raise ValueError("speculative decoding does not support sessions")
+        elif server_args.enable_mixed_chunk:
+            raise ValueError(
+                "speculative decoding verifies whole blocks; disable enable_mixed_chunk"
+            )
+        elif self.enable_overlap or self.enable_async_decode:
+            raise ValueError(
+                "speculative decoding runs the synchronous loop; disable "
+                "enable_overlap and enable_async_decode"
+            )
+        else:
+            self.spec_algorithm = SpeculativeAlgorithm.from_string(
+                get_spec().speculative_algorithm
+            )
         self.future_map = self.spec_algorithm.create_future_map(
             torch.device(self.device),
             self.req_to_token_pool,
             needs_cpu_seq_lens=True,
         )
         self.dllm_config = None
-        self.draft_worker = None
         self.execution_bridge = None
         if model_runner is not None:
             self.bind_model_runner(model_runner)
@@ -715,14 +735,21 @@ class OmniScheduler(Generic[RequestDataT]):
 
         from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 
+        # note (wilsonzheng0327): under speculative decoding the draft worker owns
+        # decode and the runner only serves target prefill, so its bridge stays
+        # on the non-speculative contract.
         bridge = SGLangExecutionBridge(
             device=torch.device(self.device),
             worker=self.tp_worker,
-            spec_algorithm=self.spec_algorithm,
+            spec_algorithm=SpeculativeAlgorithm.NONE,
             future_map=self.future_map,
         )
         model_runner.async_enabled = self.enable_async_decode
         model_runner.bind_execution_bridge(bridge)
+        if self.draft_worker is not None:
+            self.tp_worker.speculative_target_worker.attach_runner(model_runner)
+        else:
+            pass
         # Keep the upstream attribute available to delegated scheduler methods,
         # but make the custom ModelRunner the sole owner of relay.
         self.model_runner = model_runner
@@ -880,7 +907,9 @@ class OmniScheduler(Generic[RequestDataT]):
             metrics_collector=self.metrics_collector,
             metrics_reporter=self.metrics_reporter,
             draft_worker=self.draft_worker,
-            model_worker=self.model_worker,
+            model_worker=(
+                self.model_worker if self.draft_worker is None else self.draft_worker
+            ),
             logprob_result_processor=SchedulerLogprobResultProcessor(
                 model_config=self.model_config
             ),
@@ -1688,10 +1717,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
         else:
             pass
-        kv_error = self.request_kv_capacity_error(req)
-        if kv_error is not None:
-            logger.warning(f"Rejecting request {req_id} before scheduling: {kv_error}")
-            self.emit_request_error(req_id, ValueError(kv_error))
+        admission_error = self.request_kv_capacity_error(
+            req
+        ) or self.speculative_request_error(req, req_data)
+        if admission_error is not None:
+            logger.warning(
+                f"Rejecting request {req_id} before scheduling: {admission_error}"
+            )
+            self.emit_request_error(req_id, ValueError(admission_error))
             self.abort(req_id)
             return
         else:
@@ -1852,10 +1885,22 @@ class OmniScheduler(Generic[RequestDataT]):
     def request_kv_capacity_error(self, req: Req) -> str | None:
         input_len = len(req.origin_input_ids)
         max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
-        required_tokens = input_len + max_new_tokens
+        # note (wilsonzheng0327): each speculative step reserves token slots past
+        # the committed tokens in the request's token row.
+        speculative_reserve_tokens = (
+            0 if self.draft_worker is None else get_alloc_reserve_per_decode()
+        )
+        required_tokens = input_len + max_new_tokens + speculative_reserve_tokens
         kv_capacity = int(self.max_req_len)
         if required_tokens <= kv_capacity:
             return None
+        elif required_tokens - speculative_reserve_tokens <= kv_capacity:
+            return (
+                f"Request needs {required_tokens} tokens, including the "
+                f"{speculative_reserve_tokens}-token speculative decoding reserve, above the "
+                f"{kv_capacity}-token limit (input_tokens={input_len}, "
+                f"max_new_tokens={max_new_tokens}). Lower max_tokens."
+            )
         else:
             pass
 
@@ -1881,6 +1926,43 @@ class OmniScheduler(Generic[RequestDataT]):
             f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
             f"{mem_hint}"
         )
+
+    def speculative_request_error(
+        self, request: Req, request_data: RequestDataT | SGLangARRequestData
+    ) -> str | None:
+        """Name the sampling options the draft worker would not reproduce exactly."""
+        if self.draft_worker is None:
+            return None
+        else:
+            pass
+        sampling_params = request.sampling_params
+        # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
+        # penalty once per verify block; logprobs come from the runner's sampler, which
+        # speculative decode bypasses, and hidden-state results need the per-request
+        # extend lengths run_speculative_batch leaves unset.
+        unsupported_options = [
+            option_name
+            for option_name, is_set in (
+                ("logprobs", request_data.return_logprob),
+                ("return_hidden_states", request.return_hidden_states),
+                ("min_p", sampling_params.min_p > 0.0),
+                ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
+                ("presence_penalty", sampling_params.presence_penalty != 0.0),
+                (
+                    "repetition_penalty",
+                    sampling_params.repetition_penalty != 1.0
+                    and not self.model_runner.speculative_verifies_repetition_penalty,
+                ),
+            )
+            if is_set
+        ]
+        if unsupported_options:
+            return (
+                f"Speculative decoding does not support "
+                f"{', '.join(unsupported_options)}. Unset them for this request."
+            )
+        else:
+            return None
 
     def emit_request_error(self, request_id: str, error: Exception) -> None:
         if not self.is_entry_rank:
@@ -2099,11 +2181,77 @@ class OmniScheduler(Generic[RequestDataT]):
         del pp_proxy_tensors
         self.emit_prefill_start_for_batch(batch)
         self.stamp_batch_launch(batch)
+        if self.draft_worker is not None:
+            result = self.run_speculative_batch(batch)
+            self.emit_prefill_end_for_batch(batch)
+            return result
+        else:
+            pass
         sched_output = self.build_sched_output(batch)
         mr_output = self.model_runner.execute(sched_output)
         self.emit_prefill_end_for_batch(batch)
         self.emit_stream_output(sched_output, mr_output)
         return self.make_batch_result(mr_output)
+
+    def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
+        """Drive the draft worker synchronously, as the scheduler does without overlap.
+
+        Mirrors the synchronous speculative branch of upstream Scheduler.run_batch;
+        diff the two on every SGLang upgrade. Tokens are emitted later by
+        stream_output, once finishing trims them at the stop.
+        """
+        is_prefill = batch.forward_mode.is_extend()
+        if is_prefill:
+            # note (wilsonzheng0327): a re-prefilled request samples its next token
+            # here, and speculative decode never cumulates penalty history.
+            self.model_runner.restore_output_penalty_history(batch)
+        else:
+            pass
+        resolve_forward_inputs(batch, self.future_map)
+        target_worker = self.tp_worker.speculative_target_worker
+        target_worker.verify_requests = [
+            SchedulerRequest(request_id=req.rid, data=req.omni_data)
+            for req in batch.reqs
+        ]
+        try:
+            with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self, batch, overlap=False
+            ):
+                result = self.draft_worker.forward_batch_generation(batch)
+        finally:
+            target_worker.verify_requests = []
+        self.model_runner.after_speculative_step(
+            batch,
+            result,
+            is_prefill=is_prefill,
+            num_draft_tokens=getattr(
+                self.draft_worker,
+                "speculative_num_draft_tokens",
+                get_spec().speculative_num_draft_tokens,
+            ),
+        )
+        batch.spec_info = result.next_draft_input
+        new_sequence_lengths = result.new_seq_lens
+        if (
+            new_sequence_lengths is not None
+            and new_sequence_lengths is not batch.seq_lens
+        ):
+            batch.seq_lens = new_sequence_lengths
+            if batch.seq_lens_cpu is not None:
+                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
+            else:
+                pass
+        else:
+            pass
+        batch.input_ids = None
+        self.update_cache_from_scheduler(batch, result)
+        result.copy_done = torch.get_device_module(self.device).Event()
+        result.copy_to_cpu(
+            return_logprob=batch.return_logprob,
+            return_hidden_states=batch.return_hidden_states,
+        )
+        return result
 
     def build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner
@@ -2357,6 +2505,8 @@ class OmniScheduler(Generic[RequestDataT]):
         Upstream calls this after process_batch_result to send results
         to the detokenizer via ZMQ.  We capture finished requests here
         and put them in the outbox so Stage can route them downstream.
+        Under speculative decoding each request's newly committed tokens are
+        emitted here, ahead of its flush and terminal result.
         """
         for req in reqs:
             if skip_req is not None and req is skip_req:
@@ -2364,6 +2514,33 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
             if not req.finished():
+                if self.draft_worker is not None:
+                    # note (wilsonzheng0327): emission holds the lock abort takes, so an
+                    # abort from the listener thread lands before or after these tokens.
+                    with self.request_admission_lock:
+                        request_data = (
+                            None
+                            if isinstance(req.finished_reason, FINISH_ABORT)
+                            or req.rid in self.aborted_request_ids
+                            or req._omni_terminal_claimed  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                            else req.omni_data
+                        )
+                        if request_data is not None:
+                            try:
+                                self.emit_speculative_tokens(req, request_data)
+                            except Exception as exc:
+                                # note (wilsonzheng0327): fail only this request; it
+                                # finishes next step and is cleaned up as an abort.
+                                logger.exception(
+                                    f"OmniScheduler speculative token emission failed "
+                                    f"for request {req.rid}"
+                                )
+                                req.to_finish = FINISH_ABORT()
+                                self.emit_request_error(req.rid, exc)
+                        else:
+                            pass
+                else:
+                    pass
                 continue
             else:
                 pass
@@ -2417,6 +2594,10 @@ class OmniScheduler(Generic[RequestDataT]):
             result = None
             terminal_error = None
             try:
+                if self.draft_worker is not None:
+                    self.emit_speculative_tokens(req, data)
+                else:
+                    pass
                 # Drain runner stream buffers before the terminal payload; both
                 # use this outbox, so remaining chunks stay ahead of stream done.
                 finished_reason = req.finished_reason
@@ -2430,7 +2611,11 @@ class OmniScheduler(Generic[RequestDataT]):
                     model_runner.on_request_finished(rid, data)
                 else:
                     pass
-                data.output_ids = list(req.output_ids)
+                data.output_ids = list(
+                    req.output_ids
+                    if self.draft_worker is None
+                    else req.output_ids_through_stop
+                )
                 data.weight_version = get_serving().weight_version
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
@@ -2484,6 +2669,40 @@ class OmniScheduler(Generic[RequestDataT]):
                     data=result,
                 )
             )
+
+    def emit_speculative_tokens(
+        self, request: Req, request_data: SGLangARRequestData
+    ) -> None:
+        """Hand a request's newly committed tokens to the runner and stream builder."""
+        request_id = request.rid
+        committed_ids = request.output_ids_through_stop
+        new_token_ids = [
+            int(token_id)
+            for token_id in committed_ids[request_data.emitted_token_count :]
+        ]
+        if not new_token_ids:
+            return
+        else:
+            pass
+        request_data.emitted_token_count = len(committed_ids)
+        request_data.generation_steps += len(new_token_ids)
+        scheduler_request = SchedulerRequest(request_id=request_id, data=request_data)
+        self.model_runner.on_speculative_tokens(scheduler_request, new_token_ids)
+        stream_output_builder = self.stream_output_builder
+        if stream_output_builder is None:
+            return
+        else:
+            pass
+        messages: list[OutgoingMessage] = []
+        for token_id in new_token_ids:
+            messages.extend(
+                stream_output_builder(
+                    request_id,
+                    request_data,
+                    RequestOutput(request_id=request_id, data=token_id),
+                )
+            )
+        self.put_stream_messages(request_id, messages)
 
     def on_stream_chunk(self, request_id: str, chunk: StreamItem) -> None:
         if request_id in self.completed_request_ids:
@@ -2950,6 +3169,11 @@ class OmniScheduler(Generic[RequestDataT]):
             return {
                 "success": False,
                 "message": "close retained sessions before updating weights",
+            }
+        elif self.draft_worker is not None:
+            return {
+                "success": False,
+                "message": "weight updates would leave the speculative draft stale",
             }
         else:
             pass

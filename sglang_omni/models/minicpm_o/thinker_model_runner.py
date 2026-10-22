@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import torch
@@ -72,6 +73,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+        self.hands_hidden_to_talker = output_processor.capture_hidden
+        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -161,6 +164,53 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
                 seq.append(hidden_rows[-1].detach().clone())
 
+    def after_speculative_step(
+        self,
+        batch: ScheduleBatch,
+        result: GenerationBatchResult,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+    ) -> None:
+        """Queue each request's hidden rows for the tokens this step commits.
+
+        A prefill commits one token, generated from the last prompt row. A chain
+        verify commits the leading rows of a request's block, the rows plain decode
+        would have produced; emission trims the block to its committed tokens.
+        """
+        model = self.outer_model
+        if not self.hands_hidden_to_talker or model.speculative_hidden_rows is None:
+            return
+        elif is_prefill:
+            last_rows = torch.tensor(
+                list(accumulate(batch.extend_lens)),
+                device=model.prefill_hidden_rows.device,
+            )
+            rows = model.prefill_hidden_rows[last_rows - 1]
+            for index, req in enumerate(batch.reqs):
+                self.speculative_hidden_queue[req.rid] = rows[index : index + 1]
+        else:
+            block = model.speculative_hidden_rows[
+                : len(batch.reqs) * num_draft_tokens
+            ].clone()
+            for index, req in enumerate(batch.reqs):
+                start = index * num_draft_tokens
+                self.speculative_hidden_queue[req.rid] = block[
+                    start : start + num_draft_tokens
+                ]
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Append the queued rows of the committed tokens, which end at the stop."""
+        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        if hidden is None:
+            return
+        else:
+            pass
+        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        seq.extend(hidden[: len(token_ids)].unbind(0))
+
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
         return {
@@ -173,6 +223,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
+        self.speculative_hidden_queue.pop(request_id, None)
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
@@ -190,4 +241,5 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self.speculative_hidden_queue.pop(request_id, None)
         self.pending_hidden.pop(request_id, None)
