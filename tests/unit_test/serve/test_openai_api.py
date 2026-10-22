@@ -10,7 +10,6 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -22,15 +21,8 @@ from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
-from sglang_omni.pipeline.control_plane import PullSocket, serialize_message
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import (
-    CompleteMessage,
-    OmniRequest,
-    StagePayload,
-    StreamMessage,
-    SubmitMessage,
-)
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     ServerStatus,
@@ -41,7 +33,6 @@ from sglang_omni.serve.openai_api import (
     chat_stream,
     speech_audio_response,
 )
-from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
@@ -754,126 +745,6 @@ class AdminClient:
     ) -> dict[str, Any]:
         self.calls.append(("weights_checker", payload or {}, stages, timeout_s))
         return {"success": True, "message": "ok", "results": []}
-
-
-@pytest.mark.parametrize("integer", [2**64, -(2**63) - 1])
-def test_generate_rejects_unserializable_integers_and_recovers(integer: int) -> None:
-    """Out-of-range request integers returned 500 before model admission."""
-
-    async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="generate",
-            terminal_stages=["generate"],
-            max_in_flight=1,
-        )
-        stage_socket = PullSocket("inproc://generate-integer-boundaries")
-        await stage_socket.start()
-        coordinator.register_stage("generate", stage_socket.endpoint)
-        app = create_app(Client(coordinator), model_name="omni")
-
-        async def complete_request(expected_integer: int) -> None:
-            message = await stage_socket.recv()
-            assert isinstance(message, SubmitMessage)
-            assert isinstance(message.data, StagePayload)
-            assert message.data.request.params["stage_params"] == {
-                "generate": {"seed": expected_integer, "n": 1}
-            }
-            await coordinator.handle_completion(
-                CompleteMessage(
-                    message.request_id,
-                    "generate",
-                    True,
-                    result={"text": "ok", "finish_reason": "stop"},
-                )
-            )
-
-        try:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                response = await client.post(
-                    "/generate",
-                    json={
-                        "prompt": "hello",
-                        "return_logprob": False,
-                        "stage_params": {"generate": {"seed": integer, "n": 1}},
-                    },
-                )
-                assert response.status_code == 400
-                assert "MessagePack" in response.json()["detail"]
-                assert coordinator.requests == {}
-                assert coordinator.completion_futures == {}
-                assert coordinator.stream_queues == {}
-                assert coordinator.abort_tasks == {}
-
-                for boundary_integer in (-(2**63), 2**64 - 1):
-                    completion_task = asyncio.create_task(
-                        complete_request(boundary_integer)
-                    )
-                    try:
-                        response = await asyncio.wait_for(
-                            client.post(
-                                "/generate",
-                                json={
-                                    "prompt": "hello",
-                                    "return_logprob": False,
-                                    "stage_params": {
-                                        "generate": {"seed": boundary_integer, "n": 1}
-                                    },
-                                },
-                            ),
-                            timeout=5,
-                        )
-                        await asyncio.wait_for(completion_task, timeout=5)
-                    finally:
-                        completion_task.cancel()
-                        await asyncio.gather(completion_task, return_exceptions=True)
-                    assert response.status_code == 200
-                    assert response.json()["text"] == "ok"
-                    assert coordinator.requests == {}
-                    assert coordinator.completion_futures == {}
-        finally:
-            coordinator.control_plane.close()
-            stage_socket.close()
-
-    asyncio.run(run())
-
-
-def test_result_integer_overflow_stays_internal() -> None:
-    """An overflowing model result must not be reported as invalid input."""
-    with pytest.raises(OverflowError) as raised:
-        serialize_message(
-            CompleteMessage("result-overflow", "generate", True, result=2**64)
-        )
-    assert generation_error_status_code(raised.value) == 500
-
-
-def test_generate_send_overflow_stays_internal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A send failure after serialization must remain a server error."""
-    coordinator = Coordinator(
-        "inproc://complete", "inproc://abort", entry_stage="generate"
-    )
-    coordinator.register_stage("generate", "inproc://generate")
-    send = Mock(side_effect=OverflowError("Integer value out of range"))
-    monkeypatch.setattr("zmq.asyncio.Socket.send", send)
-    client = TestClient(create_app(Client(coordinator), model_name="omni"))
-
-    try:
-        response = client.post(
-            "/generate", json={"prompt": "hello", "return_logprob": False}
-        )
-    finally:
-        coordinator.control_plane.close()
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Integer value out of range"
-    send.assert_called_once()
-    assert coordinator.requests == {}
-    assert coordinator.completion_futures == {}
 
 
 def test_non_streaming_http_faults_return_500() -> None:

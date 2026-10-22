@@ -82,7 +82,11 @@ def validate_admission(
             )
         else:
             pass
-        if inputs["prompt"].count("<image>") > len(references):
+        if "<IMG_CONTEXT>" in inputs["prompt"]:
+            raise ValueError(
+                "SenseNova-U1 image edit prompt must not contain <IMG_CONTEXT>"
+            )
+        elif inputs["prompt"].count("<image>") > len(references):
             raise ValueError(
                 "SenseNova-U1 image edit prompt has more <image> placeholders than reference images"
             )

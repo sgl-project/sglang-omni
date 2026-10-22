@@ -32,6 +32,7 @@ from sglang_omni.pipeline.umm import (
     create_umm_controller,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 pytest_plugins = ["tests.unit_test.fixtures.sensenova_umm"]
 
@@ -158,6 +159,77 @@ def test_image_placeholder_count_is_checked_at_admission(
         assert phase is not None
         phase.data = {"modality": "image", "image_b64": encoded_image}
         assert controller.transition(phase) is not None
+    assert not controller.contexts
+    assert not controller.adapter.executions
+
+
+@pytest.mark.parametrize("reference_count", [1, 2])
+@pytest.mark.parametrize("prompt", ["edit <IMG_CONTEXT>", "<image> edit <IMG_CONTEXT>"])
+def test_image_context_token_is_rejected_before_dispatch_and_recovers(
+    controller: UMMController,
+    encoded_image: str,
+    reference_count: int,
+    prompt: str,
+) -> None:
+    """A literal image context token reached TP compute and broke grid assignment."""
+    references = [encoded_image] * reference_count
+    request = OmniRequest(
+        {"task": "image_edit", "prompt": prompt, "image_b64": references},
+        {"width": 256, "height": 256},
+    )
+    with pytest.raises(UMMRequestError, match="<IMG_CONTEXT>") as raised:
+        controller.transition(StagePayload("request", request, None))
+    assert generation_error_status_code(raised.value) == 400
+    assert not controller.contexts
+    assert not controller.adapter.executions
+    assert controller.outbox.empty()
+
+    valid_request = replace(
+        request,
+        inputs={
+            "task": "image_edit",
+            "prompt": prompt.replace("<IMG_CONTEXT>", "the color"),
+            "image_b64": references,
+        },
+    )
+    phase = controller.transition(StagePayload("request", valid_request, None))
+    assert phase is not None
+    phase.data = {"modality": "image", "image_b64": encoded_image}
+    assert controller.transition(phase) is not None
+    assert not controller.contexts
+    assert not controller.adapter.executions
+
+
+@pytest.mark.parametrize(
+    "prompt, is_image_edit",
+    [
+        ("edit <img>", True),
+        ("edit </img>", True),
+        ("edit <image>", True),
+        ("edit the color", True),
+        ("draw <IMG_CONTEXT>", False),
+    ],
+)
+def test_image_context_rejection_preserves_other_prompt_inputs(
+    controller: UMMController,
+    encoded_image: str,
+    prompt: str,
+    is_image_edit: bool,
+) -> None:
+    """The I2I context-token guard must not ban other markers or T2I text."""
+    inputs = (
+        {"task": "image_edit", "prompt": prompt, "image_b64": encoded_image}
+        if is_image_edit
+        else prompt
+    )
+    phase = controller.transition(
+        StagePayload(
+            "request", OmniRequest(inputs, {"width": 256, "height": 256}), None
+        )
+    )
+    assert phase is not None
+    phase.data = {"modality": "image", "image_b64": encoded_image}
+    assert controller.transition(phase) is not None
     assert not controller.contexts
     assert not controller.adapter.executions
 
