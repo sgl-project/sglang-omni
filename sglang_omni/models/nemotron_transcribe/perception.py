@@ -47,9 +47,21 @@ class AudioPerception(nn.Module):
         self.proj = nn.Linear(encoder.asr_encoder.d_model, output_width)
 
     def forward(
-        self, input_signal: torch.Tensor, input_signal_length: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        input_signal: torch.Tensor,
+        input_signal_length: torch.Tensor,
+        *,
+        return_evidence: bool = False,
+    ) -> tuple[torch.Tensor, ...]:
         mel, frame_counts = self.preprocessor(input_signal, input_signal_length)
+        if return_evidence:
+            encoded, encoded_counts, asr_encoded, activity = self.encoder(
+                mel, frame_counts, return_evidence=True
+            )
+            embeddings = self.proj(encoded.transpose(1, 2))
+            return embeddings, encoded_counts, asr_encoded, activity
+        else:
+            pass
         encoded, encoded_counts = self.encoder(mel, frame_counts)
         return self.proj(encoded.transpose(1, 2)), encoded_counts
 

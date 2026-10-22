@@ -143,8 +143,10 @@ def test_pre_lm_encoder_starts_after_model_setup(
     )
     builder = make_builder()
     builder.checkpoint_dir = "checkpoint"
-    model = SimpleNamespace()
+    attached: list[str] = []
+    model = SimpleNamespace(attach_ctc_head=attached.append)
     builder.setup_runtime_resources(model, SimpleNamespace())
+    assert attached == ["checkpoint"]
     assert created["model"] is model
     assert created["kwargs"] == {
         "cache_namespace": "checkpoint:ns",
@@ -166,8 +168,13 @@ def test_disabled_pre_lm_encoder_does_not_start_a_service(
 
     monkeypatch.setattr(engine_builder, "NemotronTranscribePreLMEncoderService", fail)
     builder = make_builder()
+    builder.checkpoint_dir = "checkpoint"
     builder.enable_pre_lm_encoder = False
-    builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
+    attached: list[str] = []
+    builder.setup_runtime_resources(
+        SimpleNamespace(attach_ctc_head=attached.append), SimpleNamespace()
+    )
+    assert attached == ["checkpoint"]
     assert builder.audio_encoder_service is None
 
 

@@ -289,3 +289,54 @@ def test_cache_miss_waits_in_the_builder_when_the_pool_has_room() -> None:
     request = build_request(make_payload())
     assert encoder.waited is True
     assert request.req.multimodal_inputs.mm_items[0].feature is None
+
+
+def test_word_timestamps_skip_the_embedding_cache() -> None:
+    encoder = RecordingEncoder(torch.ones((13, 4)))
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        audio_encoder_service=encoder,
+        should_wait_for_encode=lambda: True,
+    )
+    request = build_request(make_payload({"word_timestamps": True}))
+    audio = request.req.multimodal_inputs.mm_items[0]
+    assert audio.model_specific_data["word_timestamps"] is True
+    assert encoder.lookup is None
+    assert audio.feature is None
+    assert encoder.waited is True
+
+
+def test_word_timestamps_are_refused_for_translation() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    with pytest.raises(ValueError, match="only for transcriptions"):
+        build_request(make_payload({"word_timestamps": True, "task": "translate"}))
+
+
+def test_failed_alignment_is_reported_on_the_result() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"word_timestamps": True, "language": "en"}))
+    request.output_ids = [7, 8]
+    audio = request.req.multimodal_inputs.mm_items[0]
+    audio.model_specific_data["timestamp_evidence"] = {
+        "failure_reason": "ctc_evidence_unavailable"
+    }
+    result = adapt_result(request)
+    assert result.data["transcription"]["words"] == []
+    assert result.data["transcription"]["word_timestamp_alignment"] == {
+        "status": "unavailable",
+        "failure_reason": "ctc_evidence_unavailable",
+    }
+
+
+def test_plain_transcription_has_no_timestamp_payload() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    request.output_ids = [7, 8]
+    assert "transcription" not in adapt_result(request).data

@@ -227,6 +227,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
     ) -> None:
         """Start perception encode after decoder graphs and encoder compile."""
         del server_args
+        model.attach_ctc_head(self.checkpoint_dir)
         if not self.enable_pre_lm_encoder:
             return
         else:

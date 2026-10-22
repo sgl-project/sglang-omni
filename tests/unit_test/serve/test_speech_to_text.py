@@ -73,6 +73,35 @@ def test_build_request_leaves_seed_unset_by_default() -> None:
     assert req.sampling.seed is None
 
 
+def test_build_request_passes_word_timestamps() -> None:
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        language="en",
+        prompt=None,
+        temperature=None,
+        word_timestamps=True,
+    )
+
+    assert req.extra_params["word_timestamps"] is True
+
+
+def test_build_request_leaves_word_timestamps_unset_by_default() -> None:
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+    )
+
+    assert "word_timestamps" not in req.extra_params
+
+
 def test_response_format_validation_preserves_endpoint_error_contract() -> None:
     with pytest.raises(HTTPException) as exc_info:
         speech_to_text.validate_speech_to_text_response_format(

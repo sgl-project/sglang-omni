@@ -32,6 +32,8 @@ from sglang_omni.serve.protocol import (
     TranscriptionTextDeltaEvent,
     TranscriptionTextDoneEvent,
     TranscriptionUsage,
+    TranscriptionVerboseResponse,
+    TranscriptionWord,
     build_sglext,
 )
 from sglang_omni.serve.streaming import (
@@ -65,6 +67,7 @@ class SpeechToTextForm:
     repetition_penalty: float | None
     max_new_tokens: int | None
     seed: int | None
+    word_timestamps: bool
     stream: bool
     return_spec_tokens_details: bool
 
@@ -79,6 +82,7 @@ async def parse_speech_to_text_form(
     repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     seed: int | None = Form(default=None, ge=0),
+    word_timestamps: bool = Form(default=False),
     stream: bool = Form(default=False),
     return_spec_tokens_details: bool = Form(default=False),
 ) -> SpeechToTextForm:
@@ -92,6 +96,7 @@ async def parse_speech_to_text_form(
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         seed=seed,
+        word_timestamps=word_timestamps,
         stream=stream,
         return_spec_tokens_details=return_spec_tokens_details,
     )
@@ -157,6 +162,7 @@ def build_speech_to_text_generate_request(
     repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
     seed: int | None = None,
+    word_timestamps: bool = False,
     stream: bool = False,
     task: str = "transcribe",
     detect_language: bool = False,
@@ -179,6 +185,10 @@ def build_speech_to_text_generate_request(
         pass
     if segment_timestamps:
         params["segment_timestamps"] = True
+    else:
+        pass
+    if word_timestamps:
+        params["word_timestamps"] = True
     else:
         pass
     # note (ratish): 0.0 is the transcription API's own default temperature.
@@ -440,6 +450,7 @@ def assemble_speech_to_text_response(
     response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
     finish_reason: str | None = None,
     sglext: SglExt | None = None,
+    transcription: dict[str, object] | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -499,6 +510,7 @@ def assemble_speech_to_text_response(
         response.usage = usage
         response.finish_reason = visible_finish_reason
         response.sglext = sglext
+        attach_word_timestamps(response, transcription)
         if normalized_response_format == "srt":
             return PlainTextResponse(
                 segments_to_srt(response.segments), headers=headers
@@ -522,6 +534,29 @@ def assemble_speech_to_text_response(
         ).model_dump(exclude_none=True),
         headers=headers,
     )
+
+
+def attach_word_timestamps(
+    response: TranscriptionResponse | TranscriptionVerboseResponse,
+    transcription: dict[str, object] | None,
+) -> None:
+    """Copy aligned words onto a json or verbose_json response."""
+    if not transcription:
+        return
+    else:
+        pass
+    words = transcription.get("words")
+    alignment = transcription.get("word_timestamp_alignment")
+    if isinstance(words, list):
+        response.words = [TranscriptionWord.model_validate(word) for word in words]
+    else:
+        pass
+    if isinstance(alignment, dict):
+        response.word_timestamp_alignment = {
+            str(key): str(value) for key, value in alignment.items()
+        }
+    else:
+        pass
 
 
 async def cancel_task_bounded(

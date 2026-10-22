@@ -230,6 +230,7 @@ class Client:
         language: str | None = None
         streamed_segments: list[UMMSegment] | None = None
         image_base64: str | None = None
+        transcription: dict[str, object] | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
@@ -255,6 +256,10 @@ class Client:
                 pass
             if chunk.image is not None:
                 image_base64 = chunk.image
+            else:
+                pass
+            if chunk.transcription is not None:
+                transcription = chunk.transcription
             else:
                 pass
             if chunk.finish_reason is not None:
@@ -338,6 +343,7 @@ class Client:
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
+            transcription=transcription,
         )
         if isinstance(last_chunk, UMMGenerateChunk):
             return UMMCompletionResult(
@@ -847,6 +853,11 @@ class Client:
             language = result.get("language")
             if isinstance(language, str):
                 chunk.language = language
+            else:
+                pass
+            transcription = result.get("transcription")
+            if isinstance(transcription, dict):
+                chunk.transcription = transcription
             else:
                 pass
             Client.set_audio_data(chunk, result)
