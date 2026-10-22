@@ -85,8 +85,8 @@ The current server exposes these main routes:
 | `POST` | `/start_request_profile` | Request-level event recorder only (no torch trace) |
 | `POST` | `/stop_request_profile` | Stops the request-level event recorder |
 
-The profiling routes are mounted by the single-process `launch_server()` path. The
-current multi-process launcher path does not mount them.
+The profiling routes are mounted by the single-process `launch_server()` path.
+The current multi-process launcher path does not mount them.
 
 `/start_profile` accepts:
 
@@ -99,12 +99,12 @@ current multi-process launcher path does not mount them.
 }
 ```
 
-`/stop_profile` and `/stop_request_profile` both accept an optional
-`run_id`. Omitting it is a wildcard: every stage stops whatever profiler
-session is currently active.
+`/stop_profile` and `/stop_request_profile` both accept an optional `run_id`.
+Omitting it is a wildcard:
+every stage stops whatever profiler session is currently active.
 
-Request-level events are emitted as JSON lines under
-`<event_dir>/events_<stage>_<pid>.jsonl`. Use `python -m sglang_omni.profiler
+Request-level events are emitted as JSON lines under `<event_dir>/events_<stage>_<pid>.jsonl`.
+Use `python -m sglang_omni.profiler
 <event_dir>` to derive the timeline / stage / hop reports described in
 `docs/developer_reference/profiler.md`.
 
@@ -151,8 +151,8 @@ It also includes `sglang-omni` extensions such as:
 - stores talker-specific generation overrides in `extra_params`
 - copies `modalities` into `output_modalities`
 
-The route hands that `GenerateRequest` to `Client`. The client then converts it
-to an `OmniRequest` before submitting it to the coordinator.
+The route hands that `GenerateRequest` to `Client`.
+The client then converts it to an `OmniRequest` before submitting it to the coordinator.
 
 ## Response Paths
 
@@ -193,14 +193,9 @@ The speech route reuses the same internal request path rather than introducing a
 - `task="tts"` in metadata
 - TTS-specific parameters stored under `tts_params`
 
-For non-streaming requests, `Client.speech()` collects audio chunks, encodes
-them, and returns raw audio bytes to the HTTP layer.
+For non-streaming requests, `Client.speech()` collects audio chunks, encodes them, and returns raw audio bytes to the HTTP layer.
 
-For `stream=true`, the route emits `audio/pcm` bytes directly. The HTTP response
-headers are derived from the first audio chunk and subsequent chunks must keep
-the same sample rate. TTS chunk-timing knobs such as
-`initial_codec_chunk_frames` are forwarded as request params only when the
-client provides them, including an explicit `0`, so model schedulers can consume
-them without changing Stage, Coordinator, or Relay. When the field is omitted,
-the speech route leaves it unset and each model applies its own streaming
-default.
+For `stream=true`, the route emits `audio/pcm` bytes directly.
+The HTTP response headers are derived from the first audio chunk and subsequent chunks must keep the same sample rate.
+TTS chunk-timing knobs such as `initial_codec_chunk_frames` are forwarded as request params only when the client provides them, including an explicit `0`, so model schedulers can consume them without changing Stage, Coordinator, or Relay.
+When the field is omitted, the speech route leaves it unset and each model applies its own streaming default.

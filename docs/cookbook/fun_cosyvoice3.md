@@ -1,8 +1,9 @@
 # Fun-CosyVoice3
 
 [Fun-CosyVoice3-0.5B](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) is a lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
-It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens), conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
-speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and instruction-based style control. The model produces 24 kHz speech at a rate of 25 Hz token frame rate through the `preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech` endpoint.
+It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens), conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX speech tokenizer.
+It supports zero-shot voice cloning, cross-lingual synthesis, and instruction-based style control.
+The model produces 24 kHz speech at a rate of 25 Hz token frame rate through the `preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 ## Prerequisites
 
@@ -49,9 +50,7 @@ sgl-omni serve \
 
 ## Apple Silicon
 
-On Apple Silicon, install the optional
-Fun-CosyVoice3 extra with the repository installer, then expose Homebrew's
-keg-only FFmpeg libraries to TorchCodec:
+On Apple Silicon, install the optional Fun-CosyVoice3 extra with the repository installer, then expose Homebrew's keg-only FFmpeg libraries to TorchCodec:
 
 ```bash
 brew install sox
@@ -308,9 +307,9 @@ This result is only demonstrative, since we have further optimization after the 
 
 ### Zero-shot Voice Cloning
 
-CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local
-path, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip)
-is optional but recommended for better alignment.
+CosyVoice3 clones a voice from a short reference audio clip.
+`ref_audio` can be a local path, file URL, data URL, or HTTP URL.
+`ref_text` (the transcript of the reference clip) is optional but recommended for better alignment.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -345,8 +344,8 @@ with open("output.wav", "wb") as f:
 
 ### Cross-lingual Synthesis
 
-CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a
-different language than the synthesis text. Omit `ref_text` to enter cross-lingual mode.
+CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a different language than the synthesis text.
+Omit `ref_text` to enter cross-lingual mode.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -393,21 +392,19 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Incremental Flow + HiFT decoding is enabled. Set `stream: true` and use
-`response_format: "pcm"` so the server can emit audio before speech-token
-generation finishes.
+Incremental Flow + HiFT decoding is enabled.
+Set `stream: true` and use `response_format: "pcm"` so the server can emit audio before speech-token generation finishes.
 
-The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
-(`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
-chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
-where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
-multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
-`CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
-one hop per request so a backlogged stream cannot monopolize the GPU.
+The vocoder follows CosyVoice3's causal chunk loop:
+25 speech tokens per hop (`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk).
+The first PCM chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens, where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a multiple of 25.
+Later hops grow 25 → 50 → 100 tokens like the upstream `CosyVoice3Model` (default;
+keep growth on).
+Each scheduler step runs at most one hop per request so a backlogged stream cannot monopolize the GPU.
 Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
 
-Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
-in sync if you change the hop):
+Optional serving knobs (vocoder factory;
+keep `tts_engine.factory.token_hop_len` in sync if you change the hop):
 
 | Factory arg | Default | Notes |
 |---|---|---|
@@ -461,8 +458,8 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --output-dir results/fun_cosyvoice3_en
 ```
 
-Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
-`benchmarks/README.md` for the full workflow.
+Use `--lang zh --no-ref-text` for the Chinese cross-lingual split.
+See `benchmarks/README.md` for the full workflow.
 
 ## Model Architecture
 

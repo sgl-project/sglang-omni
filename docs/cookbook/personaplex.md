@@ -16,9 +16,8 @@ It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voice
 
 Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
 
-The Mimi encoder stage loads only its encoding path, and Code2Wav loads only its
-decoding path. Both retain the codebooks and quantizer projections their path
-needs, reducing the combined FP32 codec weights and buffers by about 302 MiB.
+The Mimi encoder stage loads only its encoding path, and Code2Wav loads only its decoding path.
+Both retain the codebooks and quantizer projections their path needs, reducing the combined FP32 codec weights and buffers by about 302 MiB.
 
 ## Running the offline example
 
@@ -76,13 +75,12 @@ PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with i
 ### Stage sampling
 
 Fields left out of `stage_sampling.lm` keep the PersonaPlex text defaults.
-For example, `{"seed": 7}` keeps temperature 0.7 and top-k 25, while
-`{"temperature": 1.0, "top_k": -1}` samples at temperature 1.0 with no top-k
-filtering. The same holds for `SamplingParams` objects passed to the Python
-client: `SamplingParams(seed=7)` in `stage_sampling.lm` sets only the seed.
+For example, `{"seed": 7}` keeps temperature 0.7 and top-k 25, while `{"temperature": 1.0, "top_k": -1}` samples at temperature 1.0 with no top-k filtering.
+The same holds for `SamplingParams` objects passed to the Python client:
+`SamplingParams(seed=7)` in `stage_sampling.lm` sets only the seed.
 
-Text sampling uses `stage_sampling.lm`, then `stage_params.lm`, then top-level
-request values. Stage sampling also takes precedence for `seed`.
+Text sampling uses `stage_sampling.lm`, then `stage_params.lm`, then top-level request values.
+Stage sampling also takes precedence for `seed`.
 `top_p`, `min_p`, and `repetition_penalty` apply to the text sampler only;
 `audio_temperature` and `audio_top_k` continue to control the audio sampler.
 The fixed caller-frame budget still determines the number of generated frames.

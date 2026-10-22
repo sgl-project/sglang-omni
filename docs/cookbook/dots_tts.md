@@ -36,10 +36,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-`examples/configs/dots_tts.yaml` pins the checkpoint to the snapshot it was
-validated against, so the launch above takes `model_path` from the config.
-`--model-path` overrides that pin, pass it only to serve a different checkpoint
-or revision.
+`examples/configs/dots_tts.yaml` pins the checkpoint to the snapshot it was validated against, so the launch above takes `model_path` from the config.
+`--model-path` overrides that pin, pass it only to serve a different checkpoint or revision.
 
 To serve SOAR instead, swap both the checkpoint and the config:
 
@@ -178,9 +176,9 @@ Top-level fields:
 | `language` | string | `null` | Language tag for the prompt text; `auto` or `auto_detect` detects it from the input |
 | `instructions` | string | `null` | Style instructions; switches the prompt template to `instruction_tts` |
 
-Solver knobs go under `stage_params.latent_engine`. They are **not** top-level fields:
-`CreateSpeechRequest` drops unknown top-level keys, so sending `num_steps` next to
-`input` changes nothing and reports no error.
+Solver knobs go under `stage_params.latent_engine`.
+They are **not** top-level fields:
+`CreateSpeechRequest` drops unknown top-level keys, so sending `num_steps` next to `input` changes nothing and reports no error.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

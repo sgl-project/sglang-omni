@@ -104,3 +104,13 @@ repos:
         language: system
         types: [markdown]
         files: ^docs/
+      # Check only. Docs must not contain emoji, and a line break inside a
+      # natural paragraph may only follow sentence-ending punctuation (no
+      # hard wrap in the middle of a sentence). Text inside fenced code
+      # blocks, table rows, headings, and HTML tags is ignored.
+      - id: doc-style
+        name: document style (no emoji, sentence-per-line breaks)
+        entry: python3 scripts/check_doc_style.py
+        language: system
+        types: [markdown]
+        files: ^docs/

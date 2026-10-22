@@ -6,9 +6,8 @@
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-Fish Audio uses the Descript DAC codec, which is not included in the base
-`sglang-omni` package. From the SGLang-Omni repository root, install its
-model-specific dependencies:
+Fish Audio uses the Descript DAC codec, which is not included in the base `sglang-omni` package.
+From the SGLang-Omni repository root, install its model-specific dependencies:
 
 ```bash
 uv pip install \
@@ -31,15 +30,14 @@ sgl-omni serve \
   --port 8000
 ```
 
-Reference audio encoding runs on GPU 0 in the preprocessing process by default,
-using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU.
-The preprocessing process has a 6 GiB PyTorch allocator limit; this is a memory
-budget, not a reference-duration limit or a reservation of all GPU allocations.
+Reference audio encoding runs on GPU 0 in the preprocessing process by default, using the checkpoint's FP32 codec.
+Tokenization and audio loading remain on CPU.
+The preprocessing process has a 6 GiB PyTorch allocator limit;
+this is a memory budget, not a reference-duration limit or a reservation of all GPU allocations.
 Long references can exceed it and fail encoding.
 
-Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, while
-leaving enough GPU memory for the autoregressive engine and vocoder. To encode
-references on CPU instead, clear both the GPU placement and its budget:
+Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, while leaving enough GPU memory for the autoregressive engine and vocoder.
+To encode references on CPU instead, clear both the GPU placement and its budget:
 
 ```bash
 sgl-omni serve \

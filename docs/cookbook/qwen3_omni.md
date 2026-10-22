@@ -1,9 +1,7 @@
 # Qwen3-Omni
 
-[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is a multi-modal model
-that accepts text, image, audio, and video input and can produce text-only or text + audio output.
-This page covers every supported server configuration — use the generator to get the exact launch
-command for your hardware, then check the tables to confirm your combination is supported.
+[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is a multi-modal model that accepts text, image, audio, and video input and can produce text-only or text + audio output.
+This page covers every supported server configuration — use the generator to get the exact launch command for your hardware, then check the tables to confirm your combination is supported.
 
 ## Prerequisites
 
@@ -32,23 +30,22 @@ Use the selector below to generate the exact launch command for your configurati
 
 ## Compatibility Matrix
 
-Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
-(or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
+Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml` (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
 | Mode | Topology | Thinker TP | Precision | Status |
 |---|---|---|---|---|
-| Thinker-only | — | — | BF16 | ✅ |
-| Thinker-only | — | — | FP8 | ✅ |
-| Thinker-only | — | — | AutoRound INT4 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Colocated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
+| Thinker-only | — | — | BF16 | Yes |
+| Thinker-only | — | — | FP8 | Yes |
+| Thinker-only | — | — | AutoRound INT4 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | BF16 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | FP8 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | BF16 | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | FP8 | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
+| Thinker-Talker | Colocated | TP=1 | BF16 | Yes |
+| Thinker-Talker | Colocated | TP=1 | FP8 | Yes |
+| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
 
 ## Input / Output Modalities
 
@@ -105,12 +102,12 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
 | `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
 
-Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other
-server failures. With `stream=true`, errors detected after the event stream
-starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
-followed by `data: [DONE]`. A full request queue uses `type: "server_error"` and `code: 503`. Other server failures use `type: "server_error"` and
-`code: 500`. The HTTP status remains 200 once streaming has started; clients
-must check for an `error` event, including after partial output.
+Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other server failures.
+With `stream=true`, errors detected after the event stream starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`, followed by `data: [DONE]`.
+A full request queue uses `type: "server_error"` and `code: 503`.
+Other server failures use `type: "server_error"` and `code: 500`.
+The HTTP status remains 200 once streaming has started;
+clients must check for an `error` event, including after partial output.
 
 ### Known Limitations
 

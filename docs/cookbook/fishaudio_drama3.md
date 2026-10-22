@@ -28,8 +28,7 @@ sgl-omni serve \
 
 ## Synthesize Speech
 
-The server supports plain text-to-speech, optionally cloning a voice from reference audio, returned as one response or
-as a stream.
+The server supports plain text-to-speech, optionally cloning a voice from reference audio, returned as one response or as a stream.
 
 Plain TTS:
 
@@ -162,8 +161,10 @@ stages:
     total_reserve_bytes: 9GiB
 ```
 
-The GPU memory the preprocessing stage needs grows with the length of the reference it encodes, and the stage is capped at `total_reserve_bytes` (6 GiB by default, sized for the 60-second limit). When you raise the limit, raise the reserve with it, measured on your GPU; a reference that does not fit the reserve fails with an out-of-memory error in
-the preprocessing stage. The budgets of all stages on the GPU must still fit the card, which the server checks at startup.
+The GPU memory the preprocessing stage needs grows with the length of the reference it encodes, and the stage is capped at `total_reserve_bytes` (6 GiB by default, sized for the 60-second limit).
+When you raise the limit, raise the reserve with it, measured on your GPU;
+a reference that does not fit the reserve fails with an out-of-memory error in the preprocessing stage.
+The budgets of all stages on the GPU must still fit the card, which the server checks at startup.
 
 ### Prompt Length
 
@@ -261,9 +262,7 @@ With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded
 
 ### Non-Streaming Requests
 
-The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, batching requests that
-finish together up to a frame limit it sets at startup from its memory share (`--vocoder.gpu_memory_fraction`, 0.10
-by default) and logs:
+The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, batching requests that finish together up to a frame limit it sets at startup from its memory share (`--vocoder.gpu_memory_fraction`, 0.10 by default) and logs:
 
 ```text
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB

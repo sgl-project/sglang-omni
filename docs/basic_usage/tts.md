@@ -10,12 +10,11 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
-Fish Audio requires its model-specific DAC dependencies. Complete the
-[Fish Audio S2-Pro prerequisites](../cookbook/fishaudio_s2_pro.md#prerequisites)
-before starting the server.
+Fish Audio requires its model-specific DAC dependencies.
+Complete the [Fish Audio S2-Pro prerequisites](../cookbook/fishaudio_s2_pro.md#prerequisites) before starting the server.
 
-Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains in place:
+Qwen3-TTS uses the upstream `qwen-tts` package.
+Install it without dependencies so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -23,14 +22,10 @@ uv pip install --no-deps sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
-`--no-deps` is required on both lines. `qwen-tts` 0.1.1 pins Transformers 4.57.3,
-and letting it install that pin replaces the stack the rest of SGLang-Omni is
-built against; resolving `sox` normally pulls `numpy` past the ceiling
-`numba==0.65.1` imposes, which breaks `librosa` and with it `import qwen_tts`.
-SGLang-Omni shims the API differences between the two Transformers versions in
-`sglang_omni/models/qwen3_tts/compat.py`, so the pinned 5.12 stack is the
-supported configuration — see the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md)
-for details.
+`--no-deps` is required on both lines.
+`qwen-tts` 0.1.1 pins Transformers 4.57.3, and letting it install that pin replaces the stack the rest of SGLang-Omni is built against;
+resolving `sox` normally pulls `numpy` past the ceiling `numba==0.65.1` imposes, which breaks `librosa` and with it `import qwen_tts`.
+SGLang-Omni shims the API differences between the two Transformers versions in `sglang_omni/models/qwen3_tts/compat.py`, so the pinned 5.12 stack is the supported configuration — see the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md) for details.
 
 ## Supported TTS Models
 
@@ -54,13 +49,10 @@ for details.
 
 ## Launch the Server
 
-See [TTS Process Topology](tts_process_topology.md) for model defaults,
-per-stage `process` overrides, and same-GPU memory requirements.
+See [TTS Process Topology](tts_process_topology.md) for model defaults, per-stage `process` overrides, and same-GPU memory requirements.
 
-The reference-audio examples below fetch clips from Hugging Face, so the
-commands include the Hugging Face host and its current download redirect host.
-Omit those flags when your requests use only text, uploaded voices, local/file
-references, or data URLs.
+The reference-audio examples below fetch clips from Hugging Face, so the commands include the Hugging Face host and its current download redirect host.
+Omit those flags when your requests use only text, uploaded voices, local/file references, or data URLs.
 
 ```bash
 sgl-omni serve \
@@ -71,8 +63,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-Batch speech requests accept up to 32 items by default. Use
-`--tts-batch-max-items` to change the server-side request envelope limit:
+Batch speech requests accept up to 32 items by default.
+Use `--tts-batch-max-items` to change the server-side request envelope limit:
 
 ```bash
 sgl-omni serve \
@@ -167,10 +159,10 @@ sgl-omni serve \
 
 `dots.tts-base` uses the same config; pass `--model-path dots-studio/dots.tts-base`.
 
-SOAR and base are flow-matching checkpoints, so they run the single-request solver
-(`max_running_requests=1`) with classifier-free guidance. Continuous batching is
-MeanFlow-only for now. `rednote-hilab/dots.tts-*` is the old org name and redirects to
-`dots-studio/dots.tts-*`; both work as `--model-path`.
+SOAR and base are flow-matching checkpoints, so they run the single-request solver (`max_running_requests=1`) with classifier-free guidance.
+Continuous batching is MeanFlow-only for now.
+`rednote-hilab/dots.tts-*` is the old org name and redirects to `dots-studio/dots.tts-*`;
+both work as `--model-path`.
 
 For Ming-Omni-TTS:
 
@@ -194,8 +186,9 @@ sgl-omni serve \
 
 ## Use Curl
 
-Generate speech from text without any reference audio. This is valid for
-Qwen3-TTS CustomVoice, Voxtral, and S2-Pro. It is not valid for Qwen3-TTS Base.
+Generate speech from text without any reference audio.
+This is valid for Qwen3-TTS CustomVoice, Voxtral, and S2-Pro.
+It is not valid for Qwen3-TTS Base.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -255,8 +248,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     --output output.wav
 ```
 
-dots.tts accepts the same reference fields. The MeanFlow checkpoint is tuned
-for four flow steps:
+dots.tts accepts the same reference fields.
+The MeanFlow checkpoint is tuned for four flow steps:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -297,8 +290,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 2. Streaming
 
-Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
-requires both `"stream": true` and `"response_format": "pcm"`:
+Enable streaming to receive raw PCM audio chunks in real time.
+HTTP streaming requires both `"stream": true` and `"response_format": "pcm"`:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -317,50 +310,43 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
-in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. Set `"stream_format": "sse"` to receive the same PCM as
-Server-Sent Events instead; `sse` streams even when `stream` is omitted. Each
-`speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends
-with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if
-generation fails mid-stream. The sample-rate headers are the same for both
-formats. `usage` reports the model's own token counts, so what `input_tokens`
-covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
-text tokens.
+Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers.
+It does not include in-band JSON events, final usage, or a terminal sentinel.
+Set `"stream_format": "sse"` to receive the same PCM as Server-Sent Events instead;
+`sse` streams even when `stream` is omitted.
+Each `speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if generation fails mid-stream.
+The sample-rate headers are the same for both formats.
+`usage` reports the model's own token counts, so what `input_tokens` covers depends on the model:
+Qwen3-TTS counts reference-audio codec frames, not text tokens.
 
 
-For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
-`GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its
-`finish_reason` and `usage`. This generated speech ID is independent of the
-`X-Request-Id` correlation header. Behind a router, also echo the response's
-`X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
-Only the most recent outcomes are retained; missing outcomes do not establish
-a natural stop or a cap hit.
+For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its `finish_reason` and `usage`.
+This generated speech ID is independent of the `X-Request-Id` correlation header.
+Behind a router, also echo the response's `X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
+Only the most recent outcomes are retained;
+missing outcomes do not establish a natural stop or a cap hit.
 
 The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
-Collection still consumes server resources during generation. Use
-`--no-collect-stream-outcomes` for an instrumentation control, and keep the setting
-identical between performance arms. The setting is saved with the results.
+Collection still consumes server resources during generation.
+Use `--no-collect-stream-outcomes` for an instrumentation control, and keep the setting identical between performance arms.
+The setting is saved with the results.
 Missing reasons remain unknown and are excluded from the observed-reason count;
 a cap hit does not by itself establish poor audio quality.
 
-When the client does not set `initial_codec_chunk_frames`,
-the model selects a continuity-safe first vocoder chunk. Set the field explicitly
-to override that default, or set it to `0` to use the model's steady chunk size
-from the start. Ming-Omni-TTS is the only model that rejects the field: its
-initial and steady cadence are the audio_decode stage's `factory` settings, so a
-request that sets it fails.
+When the client does not set `initial_codec_chunk_frames`, the model selects a continuity-safe first vocoder chunk.
+Set the field explicitly to override that default, or set it to `0` to use the model's steady chunk size from the start.
+Ming-Omni-TTS is the only model that rejects the field:
+its initial and steady cadence are the audio_decode stage's `factory` settings, so a request that sets it fails.
 
 ### Batch Speech
 
-Use `/v1/audio/speech/batch` when one request should synthesize several
-independent utterances. Batch defaults are merged with each item. Item fields
-override the defaults, and each item runs through the normal `/v1/audio/speech`
-path.
+Use `/v1/audio/speech/batch` when one request should synthesize several independent utterances.
+Batch defaults are merged with each item.
+Item fields override the defaults, and each item runs through the normal `/v1/audio/speech` path.
 
 Batch speech does not support streaming, including `stream_format="sse"`.
-It returns a single JSON response containing the completed results. For streaming
-output, use `/v1/audio/speech`.
+It returns a single JSON response containing the completed results.
+For streaming output, use `/v1/audio/speech`.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech/batch \
@@ -381,23 +367,22 @@ curl -X POST http://localhost:8000/v1/audio/speech/batch \
   }'
 ```
 
-The response preserves item order. Successful items contain base64-encoded
-audio bytes and the selected media type. Failed items contain an OpenAI-style
-error object at the item level. Invalid batch envelopes, such as too many
-items, fail the HTTP request.
+The response preserves item order.
+Successful items contain base64-encoded audio bytes and the selected media type.
+Failed items contain an OpenAI-style error object at the item level.
+Invalid batch envelopes, such as too many items, fail the HTTP request.
 
 ### WebSocket Speech Streaming
 
-Use `/v1/audio/speech/stream` for stateful text input over a persistent
-WebSocket. The first message must be `session.config`. Then send `input.text`
-messages. Send `input.commit` to flush the current text segment while keeping
-the WebSocket open, or finish the session with `input.done`. The server
-acknowledges the initial configuration with `session.configured`.
+Use `/v1/audio/speech/stream` for stateful text input over a persistent WebSocket.
+The first message must be `session.config`.
+Then send `input.text` messages.
+Send `input.commit` to flush the current text segment while keeping the WebSocket open, or finish the session with `input.done`.
+The server acknowledges the initial configuration with `session.configured`.
 
-`stream_audio` defaults to `false`. With the default, each completed text
-segment returns one binary audio frame between `audio.start` and `audio.done`.
-For `stream_audio=true`, `response_format` must be `pcm`, and the server sends
-incremental binary PCM frames between `audio.start` and `audio.done`.
+`stream_audio` defaults to `false`.
+With the default, each completed text segment returns one binary audio frame between `audio.start` and `audio.done`.
+For `stream_audio=true`, `response_format` must be `pcm`, and the server sends incremental binary PCM frames between `audio.start` and `audio.done`.
 
 ```python
 import asyncio
@@ -460,26 +445,22 @@ async def main():
 asyncio.run(main())
 ```
 
-Each `input.commit` forces a flush of any remaining buffered text (including text that does not end at the configured sentence
-or clause boundary). After all audio for that segment, the server emits
-`input.committed` with `segment_index`, `segment_sentences`, and cumulative
-`total_sentences`, then accepts more input on the same connection. An empty
-commit is valid: it flushes nothing and reports `segment_sentences: 0`.
-`input.done` performs the same final buffer flush, emits `session.done`, and
-closes the WebSocket.
+Each `input.commit` forces a flush of any remaining buffered text (including text that does not end at the configured sentence or clause boundary).
+After all audio for that segment, the server emits `input.committed` with `segment_index`, `segment_sentences`, and cumulative `total_sentences`, then accepts more input on the same connection.
+An empty commit is valid:
+it flushes nothing and reports `segment_sentences: 0`.
+`input.done` performs the same final buffer flush, emits `session.done`, and closes the WebSocket.
 
-`split_granularity` can be `sentence` or `clause`. Unknown message types and
-malformed JSON return a WebSocket `error` event. Missing or invalid initial
-configuration returns an error and closes the session.
+`split_granularity` can be `sentence` or `clause`.
+Unknown message types and malformed JSON return a WebSocket `error` event.
+Missing or invalid initial configuration returns an error and closes the session.
 
 ### Uploaded Voices
 
-Use `/v1/audio/voices` to register reference clips once and reuse them by name
-in later `/v1/audio/speech` requests. Uploaded samples are stored as
-`.safetensors` files under `SPEAKER_SAMPLES_DIR` and are restored when the
-server restarts. If `SPEAKER_SAMPLES_DIR` is not set, the server uses
-`~/.cache/sglang-omni/speakers`. `SPEAKER_MAX_UPLOADED` limits the number of
-stored voices and defaults to `1000`.
+Use `/v1/audio/voices` to register reference clips once and reuse them by name in later `/v1/audio/speech` requests.
+Uploaded samples are stored as `.safetensors` files under `SPEAKER_SAMPLES_DIR` and are restored when the server restarts.
+If `SPEAKER_SAMPLES_DIR` is not set, the server uses `~/.cache/sglang-omni/speakers`.
+`SPEAKER_MAX_UPLOADED` limits the number of stored voices and defaults to `1000`.
 
 Upload a voice sample:
 
@@ -520,11 +501,11 @@ Delete an uploaded voice:
 curl -X DELETE http://localhost:8000/v1/audio/voices/narrator
 ```
 
-Accepted upload formats are WAV, MP3, FLAC, OGG, AAC, WebM, and MP4. Each file
-must be at most 10 MiB and contain 1-30 seconds of non-silent reference audio.
-Uploading the same `name` overwrites the previous sample. Deleting a voice
-removes the persisted sample. The list response includes API-process
-`cache_stats` for uploaded-voice reference lookup observability.
+Accepted upload formats are WAV, MP3, FLAC, OGG, AAC, WebM, and MP4.
+Each file must be at most 10 MiB and contain 1-30 seconds of non-silent reference audio.
+Uploading the same `name` overwrites the previous sample.
+Deleting a voice removes the persisted sample.
+The list response includes API-process `cache_stats` for uploaded-voice reference lookup observability.
 
 ## Use Python
 
@@ -550,8 +531,7 @@ with open("output.wav", "wb") as f:
 
 ### OpenAI Python SDK
 
-The endpoint is compatible with the OpenAI Python SDK when the client points to
-the SGLang-Omni server:
+The endpoint is compatible with the OpenAI Python SDK when the client points to the SGLang-Omni server:
 
 ```python
 from openai import OpenAI

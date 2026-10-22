@@ -1,15 +1,12 @@
 # Nemotron 3.5 ASR
 
-[Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
-is a multilingual speech-recognition model with a FastConformer encoder and
-an RNN-T decoder. SGLang-Omni supports complete-file transcription through
-`/v1/audio/transcriptions` and native cache-aware PCM streaming through the shared
-WebSocket session API.
+[Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) is a multilingual speech-recognition model with a FastConformer encoder and an RNN-T decoder.
+SGLang-Omni supports complete-file transcription through `/v1/audio/transcriptions` and native cache-aware PCM streaming through the shared WebSocket session API.
 
 ## Prerequisites
 
-Follow [Installation](../get_started/installation.md), then run the examples
-from the repository root. Use the repository's pinned Transformers version;
+Follow [Installation](../get_started/installation.md), then run the examples from the repository root.
+Use the repository's pinned Transformers version;
 the Nemotron compatibility implementation is included.
 
 For Intel GPUs, follow the [Nemotron 3.5 ASR XPU recipe](../get_started/installation_xpu.md#nemotron-35-asr-speech-to-text-single-xpu).
@@ -52,9 +49,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-Within each scheduler batch, complete-file requests with the same
-`max_new_tokens` value share one model `generate()` call. Different token limits
-are processed in separate batches to preserve each request's output limit.
+Within each scheduler batch, complete-file requests with the same `max_new_tokens` value share one model `generate()` call.
+Different token limits are processed in separate batches to preserve each request's output limit.
 
 ## Transcribe Audio
 
@@ -68,10 +64,10 @@ curl http://localhost:8000/v1/audio/transcriptions \
   -F response_format=verbose_json
 ```
 
-Use `response_format=text` for the transcript alone, or `json` for a JSON
-response. `verbose_json` also includes duration and language information.
-Locale tags are removed from the transcript. With `language=auto`, the
-response reports a language when the model emits one unambiguous locale tag.
+Use `response_format=text` for the transcript alone, or `json` for a JSON response.
+`verbose_json` also includes duration and language information.
+Locale tags are removed from the transcript.
+With `language=auto`, the response reports a language when the model emits one unambiguous locale tag.
 
 ## Request Parameters
 
@@ -87,22 +83,22 @@ response reports a language when the model emits one unambiguous locale tag.
 | `stream` | `false` | Stream the HTTP response after a complete file upload; see below |
 
 Supported language values come from the checkpoint's prompt dictionary.
-Unsupported values fail before model inference. Nemotron supports transcription
-only; `/v1/audio/translations` returns HTTP 400. Segment timestamps, SRT/VTT
-output, and speaker diarization are not supported.
+Unsupported values fail before model inference.
+Nemotron supports transcription only;
+`/v1/audio/translations` returns HTTP 400.
+Segment timestamps, SRT/VTT output, and speaker diarization are not supported.
 
 ## Native Streaming
 
-Enable realtime on the server with `--enable-realtime`, then connect to
-`/v1/realtime?model=nvidia/nemotron-3.5-asr-streaming-0.6b`.
+Enable realtime on the server with `--enable-realtime`, then connect to `/v1/realtime?model=nvidia/nemotron-3.5-asr-streaming-0.6b`.
 This uses the shared native path (default `intent=conversation`) for ASR text.
-It does not add support for `intent=transcription`, VAD, manual commit, or
-conversation generation.
+It does not add support for `intent=transcription`, VAD, manual commit, or conversation generation.
 
-The public configuration accepts 16 kHz mono PCM16 and text output. Language
-is auto and decoding uses the model default; the shared schema has no language
-or max_new_tokens fields. Instructions are unsupported. Ordinary file
-transcription parameters above are unchanged.
+The public configuration accepts 16 kHz mono PCM16 and text output.
+Language is auto and decoding uses the model default;
+the shared schema has no language or max_new_tokens fields.
+Instructions are unsupported.
+Ordinary file transcription parameters above are unchanged.
 
 Run this example with a mono 16 kHz PCM16 WAV file:
 
@@ -164,58 +160,58 @@ async def transcribe(path: str) -> None:
 asyncio.run(transcribe("tests/data/query_to_draw.wav"))
 ```
 
-One session is one recognition stream. EOS flushes a residual window and
-emits exactly one final, including an empty final for an empty stream.
-Audio after EOS is rejected. Close/disconnect cancels and releases state;
-it does not flush. Clear only discards PCM still pending in the realtime
-runtime, preserving an active unit and model caches already submitted to
-the stage. Open a new session for another recognition stream.
+One session is one recognition stream.
+EOS flushes a residual window and emits exactly one final, including an empty final for an empty stream.
+Audio after EOS is rejected.
+Close/disconnect cancels and releases state;
+it does not flush.
+Clear only discards PCM still pending in the realtime runtime, preserving an active unit and model caches already submitted to the stage.
+Open a new session for another recognition stream.
 
-The 20 ms native unit is an input operation, not a model window or a first
-text latency guarantee. Deployment callers can configure native_unit_ms
-on create_realtime_deployment. Short units complete without waiting for a
-future window; long appends drain all currently runnable windows.
+The 20 ms native unit is an input operation, not a model window or a first text latency guarantee.
+Deployment callers can configure native_unit_ms on create_realtime_deployment.
+Short units complete without waiting for a future window;
+long appends drain all currently runnable windows.
 
-Each ASR replica owns one engine and model thread. Different sessions share
-model batches while retaining separate attention, convolution and RNN-T
-caches. H concurrent hook threads plus one inbox bridge thread feed that
-engine; if H is smaller than max_batch_size, the public path cannot submit a
-full batch. Replicas do not share batches. Offline and streaming work
-alternate at batch boundaries when both are ready; a long offline forward
-cannot be preempted. max_batch_wait_ms is a collection deadline, not an
-end-to-end latency bound.
+Each ASR replica owns one engine and model thread.
+Different sessions share model batches while retaining separate attention, convolution and RNN-T caches.
+H concurrent hook threads plus one inbox bridge thread feed that engine;
+if H is smaller than max_batch_size, the public path cannot submit a full batch.
+Replicas do not share batches.
+Offline and streaming work alternate at batch boundaries when both are ready;
+a long offline forward cannot be preempted.
+max_batch_wait_ms is a collection deadline, not an end-to-end latency bound.
 
-Model task, PCM, cache reservation, token history and text budgets are
-bounded. Usage reports actual persistent cache/history/PCM bytes; batch
-temporaries and shared weights are measured separately at process level.
-When an explicit internal-session token limit is reached, later PCM is
-validated and counted toward duration without further inference or buffering.
-Budget errors after stage acceptance terminate the stream; they are not a
-promise that retrying the same seq is safe. Public admission rejection follows
-the shared runtime's sequence/retry contract.
+Model task, PCM, cache reservation, token history and text budgets are bounded.
+Usage reports actual persistent cache/history/PCM bytes;
+batch temporaries and shared weights are measured separately at process level.
+When an explicit internal-session token limit is reached, later PCM is validated and counted toward duration without further inference or buffering.
+Budget errors after stage acceptance terminate the stream;
+they are not a promise that retrying the same seq is safe.
+Public admission rejection follows the shared runtime's sequence/retry contract.
 
 ### Persistent encoder state pool
 
 Streaming preallocates a bounded pool for attention and convolution history.
-Each session leases one slot, and batches address state by slot ID, preserving
-stable device storage across audio windows.
+Each session leases one slot, and batches address state by slot ID, preserving stable device storage across audio windows.
 
-Capacity is limited by `max_open_sessions` and `max_state_bytes`; a budget too
-small for one slot fails at startup. Completion, cancellation, failure and
-shutdown release slots, which are cleared before reuse. The pool is the sole
-streaming encoder state representation. Offline transcription is unchanged.
+Capacity is limited by `max_open_sessions` and `max_state_bytes`;
+a budget too small for one slot fails at startup.
+Completion, cancellation, failure and shutdown release slots, which are cleared before reuse.
+The pool is the sole streaming encoder state representation.
+Offline transcription is unchanged.
 
 ### Streaming encoder CUDA graphs
 
-At startup, CUDA captures every exact subsequent-window batch size from
-`min(encoder_graph_max_batch_size, max_batch_size, pool_capacity)` down to 1,
-largest first, in one shared graph memory pool. The defaults capture B8 through
-B1. First windows and uncovered shapes use the pooled eager encoder. Capture
-failures fail startup; set `enable_encoder_cuda_graph=false` to run entirely eager.
+At startup, CUDA captures every exact subsequent-window batch size from `min(encoder_graph_max_batch_size, max_batch_size, pool_capacity)` down to 1, largest first, in one shared graph memory pool.
+The defaults capture B8 through B1.
+First windows and uncovered shapes use the pooled eager encoder.
+Capture failures fail startup;
+set `enable_encoder_cuda_graph=false` to run entirely eager.
 
 Graphs update persistent attention, convolution and frame-count state by slot ID.
 History length therefore needs no additional buckets or Python cache packing.
 Graph workspaces and static inputs and outputs are outside `max_state_bytes`.
 
-Setting stream=true on /v1/audio/transcriptions streams the response to a
-complete uploaded file. It does not select native PCM input.
+Setting stream=true on /v1/audio/transcriptions streams the response to a complete uploaded file.
+It does not select native PCM input.

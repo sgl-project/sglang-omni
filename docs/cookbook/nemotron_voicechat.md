@@ -52,8 +52,8 @@ python examples/run_nemotron_voicechat_duplex.py \
 
 Open http://localhost:8097, click **Start**, and allow microphone access.
 If the server runs on a remote GPU host, forward port 8097 to your local machine first.
-Headphones help avoid acoustic feedback. The example uses the shared realtime
-playground and supports one session on one GPU, with a four-minute browser limit.
+Headphones help avoid acoustic feedback.
+The example uses the shared realtime playground and supports one session on one GPU, with a four-minute browser limit.
 It uses the checkpoint's default prompt and voice.
 
 ## Offline request parameters

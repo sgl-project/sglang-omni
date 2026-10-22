@@ -1,33 +1,27 @@
 # Bumping the SGLang Pin
 
-SGLang-Omni pins one SGLang release and the stack that release pins. Moving
-that pin is a version bump PR. This page covers what moves together, where
-Omni depends on SGLang beyond its public API, how the CI image is updated,
-and what has to be measured before the PR is credible. Read
-[main.md](./main.md) first for the stage / scheduler / model-runner picture;
+SGLang-Omni pins one SGLang release and the stack that release pins.
+Moving that pin is a version bump PR.
+This page covers what moves together, where Omni depends on SGLang beyond its public API, how the CI image is updated, and what has to be measured before the PR is credible.
+Read [main.md](./main.md) first for the stage / scheduler / model-runner picture;
 the seams named below are the ones that page introduces.
 
-Omni is not a thin caller of SGLang. `OmniScheduler` borrows the upstream
-`Scheduler` methods it does not override and runs them on itself,
-`SGLModelRunner` subclasses `ModelRunner`, the execution bridge drives
-`ForwardBatch` from Omni's own event loops, and the engine builders mutate
-`ServerArgs` at fixed points of the engine lifecycle. Each of those is a
-contract with one SGLang release, and upstream can move any of them without
-touching a public signature. That is why a bump is reviewed as a contract
-change, not as a pin edit.
+Omni is not a thin caller of SGLang.
+`OmniScheduler` borrows the upstream `Scheduler` methods it does not override and runs them on itself, `SGLModelRunner` subclasses `ModelRunner`, the execution bridge drives `ForwardBatch` from Omni's own event loops, and the engine builders mutate `ServerArgs` at fixed points of the engine lifecycle.
+Each of those is a contract with one SGLang release, and upstream can move any of them without touching a public signature.
+That is why a bump is reviewed as a contract change, not as a pin edit.
 
 ## What moves together
 
-The pin set is whatever upstream's `python/pyproject.toml` pins at the target
-tag. Diff it against the current tag first, and resolve the `lmsysorg/sglang`
-image for the tag to a digest; the size of the bump follows from whether
-torch, CUDA or Python moved, not from the SGLang version number.
+The pin set is whatever upstream's `python/pyproject.toml` pins at the target tag.
+Diff it against the current tag first, and resolve the `lmsysorg/sglang` image for the tag to a digest;
+the size of the bump follows from whether torch, CUDA or Python moved, not from the SGLang version number.
 
-Omni mirrors these pins in `pyproject.toml`: `sglang`, `torch`,
-`torchvision`, `torchcodec`, `flashinfer_python[cu13]`, `flash-attn-4`,
-`kernels`, `numba`, `transformers`, and `torchaudio` when upstream moves it.
-`sglang-kernel` is not pinned by Omni; it comes with the image. Every
-comment that says a pin matches the sglang stack marks a line to revisit.
+Omni mirrors these pins in `pyproject.toml`:
+`sglang`, `torch`, `torchvision`, `torchcodec`, `flashinfer_python[cu13]`, `flash-attn-4`, `kernels`, `numba`, `transformers`, and `torchaudio` when upstream moves it.
+`sglang-kernel` is not pinned by Omni;
+it comes with the image.
+Every comment that says a pin matches the sglang stack marks a line to revisit.
 
 The other places a version lives:
 
@@ -41,333 +35,219 @@ The other places a version lives:
 | `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
 
-Search the tree for the old versions and the old image digest; the table is
-what past bumps touched.
+Search the tree for the old versions and the old image digest;
+the table is what past bumps touched.
 
-The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
-their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile`
-on every PR that touches `sglang_omni/`. `sglang_omni/platforms/` imports the
-pinned release's modules at import time, so those workflows fail on a bump
-until the two stacks move with it: the `-xeon` image digest, the XPU tag, and
-the verified tag in the provider pyprojects, install scripts and install docs.
-The XPU image builds SGLang from source, so diff upstream's
-`python/pyproject_xpu.toml` and `docker/xpu.Dockerfile` between the tags for
-new build requirements, and diff `python/pyproject_cpu.toml` for its own
-torch and torchvision pins, which move independently of the CUDA manifest:
-one release moved the SYCL kernel from a git
-requirement to a pinned wheel and added `setuptools-rust` to the build
-requirements, which the image avoids by building without isolation.
+The Intel CPU and XPU stacks pin their own SGLang tag and base images, and their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile` on every PR that touches `sglang_omni/`.
+`sglang_omni/platforms/` imports the pinned release's modules at import time, so those workflows fail on a bump until the two stacks move with it:
+the `-xeon` image digest, the XPU tag, and the verified tag in the provider pyprojects, install scripts and install docs.
+The XPU image builds SGLang from source, so diff upstream's `python/pyproject_xpu.toml` and `docker/xpu.Dockerfile` between the tags for new build requirements, and diff `python/pyproject_cpu.toml` for its own torch and torchvision pins, which move independently of the CUDA manifest:
+one release moved the SYCL kernel from a git requirement to a pinned wheel and added `setuptools-rust` to the build requirements, which the image avoids by building without isolation.
 
-The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`)
-pin their own SGLang tag and base images. No project CI builds them, so a bump
-PR leaves them alone, says so in its description, and hands the provider owners
-the new tag, the matching provider image digest if one exists, and any platform
-dispatch change made in `sglang_omni/platforms/`.
+The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`) pin their own SGLang tag and base images.
+No project CI builds them, so a bump PR leaves them alone, says so in its description, and hands the provider owners the new tag, the matching provider image digest if one exists, and any platform dispatch change made in `sglang_omni/platforms/`.
 
 ## Where Omni depends on SGLang
 
-Omni's contracts with SGLang are not all visible from the import list. The
-surfaces below are the ones past bumps had to revisit, each with an example
-of how it broke. Check every one of them, and expect a release to add a
-surface this list does not name.
+Omni's contracts with SGLang are not all visible from the import list.
+The surfaces below are the ones past bumps had to revisit, each with an example of how it broke.
+Check every one of them, and expect a release to add a surface this list does not name.
 
 **Imports.** Every `from sglang... import` in `sglang_omni/` and `tests/`.
-Most files import upstream directly; `sglang_omni/vendor/sglang/` re-exports
-the layers, distributed helpers and core types that Omni patches or wants one
-import site for. Check that the module and symbol still exist, that a
-re-export resolves to the same origin, and that the signature or dataclass
-fields are unchanged. An import behind `except ImportError` gets the
-same check: the MOSS-TTS flash attention import was guarded that way, and
-when `sglang.jit_kernel` became `sglang.kernels.ops` it would have fallen
-back to SDPA without a word.
+Most files import upstream directly;
+`sglang_omni/vendor/sglang/` re-exports the layers, distributed helpers and core types that Omni patches or wants one import site for.
+Check that the module and symbol still exist, that a re-export resolves to the same origin, and that the signature or dataclass fields are unchanged.
+An import behind `except ImportError` gets the same check:
+the MOSS-TTS flash attention import was guarded that way, and when `sglang.jit_kernel` became `sglang.kernels.ops` it would have fallen back to SDPA without a word.
 
-**Borrowed and subclassed classes.** `OmniScheduler` looks up the upstream
-`Scheduler` methods it does not override through `__getattr__` and runs them
-with itself as `self`, and builds the scheduler components those methods
-expect (`SchedulerDPAttnAdapter`, `SchedulerLoadInquirer`, the logprob
-processor, `NewTokenRatioTracker`) with upstream's own
-kwargs; `SGLModelRunner` subclasses `ModelRunner`. Diff the body of every
-method Omni overrides and every borrowed method it calls, and look for
-`self.<attr>` reads the new upstream bodies make that `OmniScheduler.__init__`
-never assigns. A decorator on a borrowed method reads `self` too: one release
-wrapped `get_next_batch_to_run` in a stage timer whose first statement read an
-attribute only upstream's `__init__` set. Upstream also moves work between
-methods: request timeout aborts left `get_next_batch_to_run` for an intake
-method Omni's event loops never call, which disables them without an error.
+**Borrowed and subclassed classes.** `OmniScheduler` looks up the upstream `Scheduler` methods it does not override through `__getattr__` and runs them with itself as `self`, and builds the scheduler components those methods expect (`SchedulerDPAttnAdapter`, `SchedulerLoadInquirer`, the logprob processor, `NewTokenRatioTracker`) with upstream's own kwargs;
+`SGLModelRunner` subclasses `ModelRunner`.
+Diff the body of every method Omni overrides and every borrowed method it calls, and look for `self.<attr>` reads the new upstream bodies make that `OmniScheduler.__init__` never assigns.
+A decorator on a borrowed method reads `self` too:
+one release wrapped `get_next_batch_to_run` in a stage timer whose first statement read an attribute only upstream's `__init__` set.
+Upstream also moves work between methods:
+request timeout aborts left `get_next_batch_to_run` for an intake method Omni's event loops never call, which disables them without an error.
 When a constructor gains or loses fields, pass the new shape;
-a helper that filters kwargs by signature or branches on field layout keeps
-two versions alive.
+a helper that filters kwargs by signature or branches on field layout keeps two versions alive.
 
-**The boot sequence.** `ModelWorker` runs upstream's worker
-boot itself: publish the resolved config together with the process
-placement, run the parallel runtime phase, run the layer runtime phase, then
-build the runner. The order and the arguments of each step are upstream's, and
-a step that upstream adds in front of the runner is not an import change. One
-release moved the ranks from a record passed to the runner into the published
-context, and every rank read made before the placement was published raised.
-The image encoders that build model parallel groups outside a worker publish
-their own placement first, and follow the same contract.
+**The boot sequence.** `ModelWorker` runs upstream's worker boot itself:
+publish the resolved config together with the process placement, run the parallel runtime phase, run the layer runtime phase, then build the runner.
+The order and the arguments of each step are upstream's, and a step that upstream adds in front of the runner is not an import change.
+One release moved the ranks from a record passed to the runner into the published context, and every rank read made before the placement was published raised.
+The image encoders that build model parallel groups outside a worker publish their own placement first, and follow the same contract.
 
-**Decoder layers.** The Qwen3-Omni talker, the Ming-Omni thinker and the
-Ming-TTS model define their own decoder layers on upstream's layer boundary
-API (`sglang_omni/vendor/sglang/layers.py` re-exports it). The Qwen3-Omni
-talker's layer lives in `qwen3_omni/components/thinker_model.py`; the
-Qwen3-Omni thinker itself runs upstream's `Qwen3MoeLLMModel`, and Qwen3-TTS
-keeps its own decoder layer with an explicit residual and reuses only the
-attention class. A layer written against the boundary API is a copy of
-upstream's layer forward with Omni's hooks in it. Diff upstream's layer for
-the same architecture between the tags and mirror the change in order: which
-boundary prepares, which finishes, what the exit scope publishes for the MoE
-reduction. Outputs of a boundary are modified in place or through its
-accessors; the boundary checks the stream identity. A layer appends its
-stages to the stack that `make_layers` opens and gives the stack a
-`stage_facts` function that declares them without building the layer, which
-is how a neighbouring pipeline rank binds them. The boundary completes every
-output sum: the MoE blocks return partial sums, every projection under a
-boundary is built with `reduce_results=False`, and the model loader rejects
-a model where one is not.
+**Decoder layers.** The Qwen3-Omni talker, the Ming-Omni thinker and the Ming-TTS model define their own decoder layers on upstream's layer boundary API (`sglang_omni/vendor/sglang/layers.py` re-exports it).
+The Qwen3-Omni talker's layer lives in `qwen3_omni/components/thinker_model.py`;
+the Qwen3-Omni thinker itself runs upstream's `Qwen3MoeLLMModel`, and Qwen3-TTS keeps its own decoder layer with an explicit residual and reuses only the attention class.
+A layer written against the boundary API is a copy of upstream's layer forward with Omni's hooks in it.
+Diff upstream's layer for the same architecture between the tags and mirror the change in order:
+which boundary prepares, which finishes, what the exit scope publishes for the MoE reduction.
+Outputs of a boundary are modified in place or through its accessors;
+the boundary checks the stream identity.
+A layer appends its stages to the stack that `make_layers` opens and gives the stack a `stage_facts` function that declares them without building the layer, which is how a neighbouring pipeline rank binds them.
+The boundary completes every output sum:
+the MoE blocks return partial sums, every projection under a boundary is built with `reduce_results=False`, and the model loader rejects a model where one is not.
 
-**The tree cache.** `sglang_omni/scheduling/sglang_backend/cache.py` builds
-upstream's unified radix cache for the radix-disabled stages and for the
-streaming-session stages, with the tree components the pools call for (full
-attention, a sliding window, hybrid state), and keeps the evict-heap radix
-tree for the radix-enabled stages without sessions. The session records live
-inside that cache and are read through `session_records()`. A cache class
-that upstream no longer builds for its own models is a surface to re-check at
-every bump: its base-class contract moves with the one upstream does build.
+**The tree cache.** `sglang_omni/scheduling/sglang_backend/cache.py` builds upstream's unified radix cache for the radix-disabled stages and for the streaming-session stages, with the tree components the pools call for (full attention, a sliding window, hybrid state), and keeps the evict-heap radix tree for the radix-enabled stages without sessions.
+The session records live inside that cache and are read through `session_records()`.
+A cache class that upstream no longer builds for its own models is a surface to re-check at every bump:
+its base-class contract moves with the one upstream does build.
 
-**The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
-`RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
-docstrings state what each patch does, and `models.py` the condition for
-removing it. Check that the wrapped upstream body still has the shape the
-patch assumes (a dispatch rewrite upstream can route around a patched method
-without an error) and that `tests/unit_test/vendor/` still pins it.
+**The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches `RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`;
+the module docstrings state what each patch does, and `models.py` the condition for removing it.
+Check that the wrapped upstream body still has the shape the patch assumes (a dispatch rewrite upstream can route around a patched method without an error) and that `tests/unit_test/vendor/` still pins it.
 
-**`ServerArgs` mutation.** `build_sglang_server_args` constructs the record
-and resolves it once, so every reader between the builder and publish sees
-what resolution decided rather than the raw input. Omni changes engine
-configuration after the builder through one seam,
-`sglang_omni/vendor/sglang/server_args.py::override_server_args`. Upstream
-decides what a mutation means at each lifecycle phase; today a resolved record
-that is not yet published takes the change as a declaration, and a
-published record is read-only with its values living on the runtime-context
-bags. Every call site has a
-phase, and every later reader has to read from where the current release
-stores the value. The bump that introduced the read-only record turned
-several write-then-read-back sites into hard errors.
+**`ServerArgs` mutation.** `build_sglang_server_args` constructs the record and resolves it once, so every reader between the builder and publish sees what resolution decided rather than the raw input.
+Omni changes engine configuration after the builder through one seam, `sglang_omni/vendor/sglang/server_args.py::override_server_args`.
+Upstream decides what a mutation means at each lifecycle phase;
+today a resolved record that is not yet published takes the change as a declaration, and a published record is read-only with its values living on the runtime-context bags.
+Every call site has a phase, and every later reader has to read from where the current release stores the value.
+The bump that introduced the read-only record turned several write-then-read-back sites into hard errors.
 
-**Compat overlays.** `sglang_omni/models/dots_tts/compat.py`,
-`sglang_omni/models/qwen3_tts/compat.py` and
-`sglang_omni/models/qwen3_omni/components/vision_compat.py` bridge a pinned
-third-party package to the pinned stack, and each carries its removal
-condition in its docstring. Read the condition against the new stack and
-delete the overlay when it is met. A new overlay is one module that every
-import of the package goes through, with the condition written down. The
-Transformers overlays, `qwen3_omni/components/vision_compat.py`,
-`audio_encoder.py` and `code2wav.py`, with the config copy in
-`qwen3_omni/hf_config.py` that carries upstream's defaults, are diffed the
-same way when Transformers moves: the helper names and call shapes they call
-into, and the defaults the copy repeats. A shim is dead only when the new
-stack serves the call itself; qwen-tts reads the rope initializer registry
-by key, which Transformers fills for its scaled types and not for the
-default one, so that shim stays.
+**Compat overlays.** `sglang_omni/models/dots_tts/compat.py`, `sglang_omni/models/qwen3_tts/compat.py` and `sglang_omni/models/qwen3_omni/components/vision_compat.py` bridge a pinned third-party package to the pinned stack, and each carries its removal condition in its docstring.
+Read the condition against the new stack and delete the overlay when it is met.
+A new overlay is one module that every import of the package goes through, with the condition written down.
+The Transformers overlays, `qwen3_omni/components/vision_compat.py`, `audio_encoder.py` and `code2wav.py`, with the config copy in `qwen3_omni/hf_config.py` that carries upstream's defaults, are diffed the same way when Transformers moves:
+the helper names and call shapes they call into, and the defaults the copy repeats.
+A shim is dead only when the new stack serves the call itself;
+qwen-tts reads the rope initializer registry by key, which Transformers fills for its scaled types and not for the default one, so that shim stays.
 
-**Copies of upstream code.** Omni re-implements a few upstream helpers where
-it needs a different shape, for example the seeded sampling transform in
-`moss_tts/sampling_kernels.py` and `qwen3_tts/sampling_kernels.py`. A copy
-imports nothing, so no import or signature diff flags it; find them through
-the comments that name the upstream source and diff them against the new tag
-by hand. When upstream changes a numerical detail (a clamp, an accumulation
-order), mirror it in every copy and pin the boundary with a test per copy.
+**Copies of upstream code.** Omni re-implements a few upstream helpers where it needs a different shape, for example the seeded sampling transform in `moss_tts/sampling_kernels.py` and `qwen3_tts/sampling_kernels.py`.
+A copy imports nothing, so no import or signature diff flags it;
+find them through the comments that name the upstream source and diff them against the new tag by hand.
+When upstream changes a numerical detail (a clamp, an accumulation order), mirror it in every copy and pin the boundary with a test per copy.
 
-**Test doubles and monkeypatch targets.** `tests/unit_test/fakes.py` and the
-test-local fakes model resolved upstream shapes. A test that patches an
-upstream name fails loudly when the name is gone; a fake that still accepts
-a field upstream removed does not, so the test passes and the code does
-not. A test that builds an upstream parallel layer under
-`override_server_args()` gets a context with no process placement, so it
-also overrides the ranks on the parallel context.
+**Test doubles and monkeypatch targets.** `tests/unit_test/fakes.py` and the test-local fakes model resolved upstream shapes.
+A test that patches an upstream name fails loudly when the name is gone;
+a fake that still accepts a field upstream removed does not, so the test passes and the code does not.
+A test that builds an upstream parallel layer under `override_server_args()` gets a context with no process placement, so it also overrides the ranks on the parallel context.
 
-**Defensive access.** `getattr`, `hasattr` and `except AttributeError`
-against state the pinned release defines statically are a second version
-kept alive by accident. The bump adds none and converts the ones in files it
-touches.
+**Defensive access.** `getattr`, `hasattr` and `except AttributeError` against state the pinned release defines statically are a second version kept alive by accident.
+The bump adds none and converts the ones in files it touches.
 
 ## Reading the upstream delta
 
-SGLang squash-merges, so every upstream PR is one first-parent commit and the
-first-parent log between the two tags is the complete delta. Most of it
-touches files Omni never reaches. Scope the log to the files behind the
-import and subclass surfaces above and read every commit that remains,
-noting the old behavior, the new behavior and the first place in Omni where
-the difference is visible. Check separately for release-line patches that
-the previous tag carried and the new tag does not.
+SGLang squash-merges, so every upstream PR is one first-parent commit and the first-parent log between the two tags is the complete delta.
+Most of it touches files Omni never reaches.
+Scope the log to the files behind the import and subclass surfaces above and read every commit that remains, noting the old behavior, the new behavior and the first place in Omni where the difference is visible.
+Check separately for release-line patches that the previous tag carried and the new tag does not.
 
-Some upstream modules are borrowed as behavior, not as names, and are read
-as full diffs regardless of what the scoped log says: `managers/scheduler.py`
-and `scheduler_components/`, `schedule_batch.py`, `schedule_policy.py`,
-`model_executor/model_runner.py`, `forward_batch_info.py`, the CUDA graph
-runners, `server_args.py` with the runtime context, `sampling/`, the layers
-named in the vendor module, `mem_cache/` where Omni sizes KV, and
-`environ.py` for changed defaults.
+Some upstream modules are borrowed as behavior, not as names, and are read as full diffs regardless of what the scoped log says:
+`managers/scheduler.py` and `scheduler_components/`, `schedule_batch.py`, `schedule_policy.py`, `model_executor/model_runner.py`, `forward_batch_info.py`, the CUDA graph runners, `server_args.py` with the runtime context, `sampling/`, the layers named in the vendor module, `mem_cache/` where Omni sizes KV, and `environ.py` for changed defaults.
 
-Changes that reach Omni live through borrowed `Scheduler` methods (admission
-order, tree-cache eviction, memory reservations subtracted from the KV
-budget, which of stop and `max_new_tokens` wins on the same step) are
-upstream behavior. Omni does not pin or patch them; they go in the PR as
-inherited changes with the user-visible effect stated, and the A/B measures
-them.
+Changes that reach Omni live through borrowed `Scheduler` methods (admission order, tree-cache eviction, memory reservations subtracted from the KV budget, which of stop and `max_new_tokens` wins on the same step) are upstream behavior.
+Omni does not pin or patch them;
+they go in the PR as inherited changes with the user-visible effect stated, and the A/B measures them.
 
 ## Consequences of the stack, not of SGLang
 
-A torch or Python move brings changes no upstream commit describes. Examples
-that have cost time:
+A torch or Python move brings changes no upstream commit describes.
+Examples that have cost time:
 
-- Transitive pins. torch pins its own NCCL; one NCCL release made a failed
-  NVLS multicast bind fatal at communicator creation where the previous one
-  logged and fell back, so every TP>=2 engine died on hosts where the bind
-  fails. The fix was an environment variable in the TP workflow with the
-  cause in a comment, but finding it needed the torch release's dependency
-  list, not SGLang's.
-- Kernel hubs. Transformers serves some attention implementations from the
-  `kernels` hub, which builds per torch and CUDA version. When no build
-  exists for the new pair the model falls back to eager without an error.
-  For the paths Omni captures into CUDA graphs, SGLang's own attention
-  classes ship with the pin and do not have this problem.
-- Import guards in model packages. A package that checks the torch and
-  torchaudio versions at import refused a torch that torchaudio never
-  matched. That is what a compat overlay is for.
-- Floating-point programs. A Transformers upgrade changed the intermediate
-  dtype and reduction order of a vision positional-embedding interpolation.
-  Every API and shape matched and a benchmark score dropped. For a
-  pretrained model the arithmetic that interprets its weights is part of
-  the contract; the overlay preserves the old sequence and is verified on
-  intermediates, not only on the final score.
-- Caches. New Inductor, Triton, FlashInfer and DeepGEMM versions invalidate
-  every compiled artifact once, so the first pass in a fresh image measures
-  compilation, not serving. SGLang builds DeepGEMM, Triton and its own JIT
-  kernels under `SGLANG_CACHE_DIR`; the CI setup action points it at a
-  directory shared across PRs on the persistent CI mount, so only the first
-  job after a bump pays the build.
-- Compiled kernels. A Triton upgrade can change the cost of an Omni kernel
-  without changing its output. The torch 2.14 bump brought Triton 3.8, and a
-  `tl.dot` operand computed inside the loop and consumed by two dots was
-  rebuilt per dot: the fused predictor MLP kernel took 2.6 times longer and
-  the Qwen3-TTS decode step grew by a millisecond, with every output bit
-  identical. After a Triton or torch bump, time each fused kernel family
-  alone on both stacks with the torch profiler's GPU durations, and when a
-  step time moves, trace the serving step by kernel name before reading the
-  scheduler.
+- Transitive pins.
+  torch pins its own NCCL;
+  one NCCL release made a failed NVLS multicast bind fatal at communicator creation where the previous one logged and fell back, so every TP>=2 engine died on hosts where the bind fails.
+  The fix was an environment variable in the TP workflow with the cause in a comment, but finding it needed the torch release's dependency list, not SGLang's.
+- Kernel hubs.
+  Transformers serves some attention implementations from the `kernels` hub, which builds per torch and CUDA version.
+  When no build exists for the new pair the model falls back to eager without an error.
+  For the paths Omni captures into CUDA graphs, SGLang's own attention classes ship with the pin and do not have this problem.
+- Import guards in model packages.
+  A package that checks the torch and torchaudio versions at import refused a torch that torchaudio never matched.
+  That is what a compat overlay is for.
+- Floating-point programs.
+  A Transformers upgrade changed the intermediate dtype and reduction order of a vision positional-embedding interpolation.
+  Every API and shape matched and a benchmark score dropped.
+For a pretrained model the arithmetic that interprets its weights is part of the contract;
+the overlay preserves the old sequence and is verified on intermediates, not only on the final score.
+- Caches.
+  New Inductor, Triton, FlashInfer and DeepGEMM versions invalidate every compiled artifact once, so the first pass in a fresh image measures compilation, not serving.
+  SGLang builds DeepGEMM, Triton and its own JIT kernels under `SGLANG_CACHE_DIR`;
+  the CI setup action points it at a directory shared across PRs on the persistent CI mount, so only the first job after a bump pays the build.
+- Compiled kernels.
+  A Triton upgrade can change the cost of an Omni kernel without changing its output.
+  The torch 2.14 bump brought Triton 3.8, and a `tl.dot` operand computed inside the loop and consumed by two dots was rebuilt per dot:
+  the fused predictor MLP kernel took 2.6 times longer and the Qwen3-TTS decode step grew by a millisecond, with every output bit identical.
+  After a Triton or torch bump, time each fused kernel family alone on both stacks with the torch profiler's GPU durations, and when a step time moves, trace the serving step by kernel name before reading the scheduler.
 
 ## The CI image
 
-GPU CI runs inside `hongccc/sglang-omni`, pinned by digest in every
-workflow. The base image installs its Python with uv, so `/usr/bin/python3`
-is a wrapper for the `/opt/sglang` interpreter; the CI virtualenv is created
-from `/opt/sglang/bin/python3` with system site-packages and
-loads `/opt/sglang/lib/python3.12/site-packages` with `site.addsitedir`, including
-the upstream SGLang editable-install `.pth` file. Torch, FlashInfer and SGLang
-come from the image and only what
-the image lacks is installed on top; `verify_omni_installed_pins.py` then
-checks every exact pin in `pyproject.toml` against what is installed.
+GPU CI runs inside `hongccc/sglang-omni`, pinned by digest in every workflow.
+The base image installs its Python with uv, so `/usr/bin/python3` is a wrapper for the `/opt/sglang` interpreter;
+the CI virtualenv is created from `/opt/sglang/bin/python3` with system site-packages and loads `/opt/sglang/lib/python3.12/site-packages` with `site.addsitedir`, including the upstream SGLang editable-install `.pth` file.
+Torch, FlashInfer and SGLang come from the image and only what the image lacks is installed on top;
+`verify_omni_installed_pins.py` then checks every exact pin in `pyproject.toml` against what is installed.
 
-The image also installs Qwen-TTS without its conflicting dependencies, system
-SoX, the Descript DAC packages, and the Audar/CosyVoice/MiniCPM-o extras. Apply the
-project's dependency overrides when resolving these packages. CosyVoice itself
-has no package release, so the CI venv setup clones it at the commit the
-Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
-the venv through a `.pth` file. The CI import gate checks Qwen-TTS after the
-compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
-SoX executable. It imports llama.cpp before Torch to catch system NCCL
-conflicts; the image prioritizes Torch's NCCL library. A package listing alone
-does not prove a usable runtime.
+The image also installs Qwen-TTS without its conflicting dependencies, system SoX, the Descript DAC packages, and the Audar/CosyVoice/MiniCPM-o extras.
+Apply the project's dependency overrides when resolving these packages.
+CosyVoice itself has no package release, so the CI venv setup clones it at the commit the Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to the venv through a `.pth` file.
+The CI import gate checks Qwen-TTS after the compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the SoX executable.
+It imports llama.cpp before Torch to catch system NCCL conflicts;
+the image prioritizes Torch's NCCL library.
+A package listing alone does not prove a usable runtime.
 
 The base image ships FlashInfer's AOT packages at the pinned version:
-`flashinfer-cubin`, the `flashinfer-jit-cache` umbrella and one provider
-package per architecture (`flashinfer-jit-cache-sm90a` and the rest). The
-Dockerfile keeps them, so every kernel they hold loads without a compile and
-only shapes outside them compile into `FLASHINFER_WORKSPACE_BASE` at run time.
-Uninstalling the umbrella alone leaves the providers behind as a package
-without a version, and the flashinfer import fails on it. The reinstall of
-`flashinfer-python` after the Omni dependencies pins the package back to the
-version the AOT packages were built for.
+`flashinfer-cubin`, the `flashinfer-jit-cache` umbrella and one provider package per architecture (`flashinfer-jit-cache-sm90a` and the rest).
+The Dockerfile keeps them, so every kernel they hold loads without a compile and only shapes outside them compile into `FLASHINFER_WORKSPACE_BASE` at run time.
+Uninstalling the umbrella alone leaves the providers behind as a package without a version, and the flashinfer import fails on it.
+The reinstall of `flashinfer-python` after the Omni dependencies pins the package back to the version the AOT packages were built for.
 
-Whether a bump ships a new image follows from the pin diff. When torch, CUDA,
-Python or FlashInfer move, it does: build `docker/Dockerfile` on the
-`lmsysorg/sglang` digest for the new tag, push it, and put the new digest in
-the workflows. CI on the branch means nothing
-until the workflows point at the new image: on the old one the setup step
-installs the new torch into the virtualenv and nothing after that reflects
-the shipped stack.
+Whether a bump ships a new image follows from the pin diff.
+When torch, CUDA, Python or FlashInfer move, it does:
+build `docker/Dockerfile` on the `lmsysorg/sglang` digest for the new tag, push it, and put the new digest in the workflows.
+CI on the branch means nothing until the workflows point at the new image:
+on the old one the setup step installs the new torch into the virtualenv and nothing after that reflects the shipped stack.
 
-When only SGLang and the wheels it pins move (`sglang-kernel`,
-`sgl-deep-gemm`), the image stays. The setup step installs those pins into the
-virtualenv, whose site-packages precede the image's, and they are the same
-PyPI wheels upstream's CUDA image installs. The FlashInfer packages in the
-image carry a version that did not change. `SGLANG_IMAGE` in
-`docker/Dockerfile` still moves to the new tag's digest so the next rebuild
-starts from the right base; the workflow digests do not.
+When only SGLang and the wheels it pins move (`sglang-kernel`, `sgl-deep-gemm`), the image stays.
+The setup step installs those pins into the virtualenv, whose site-packages precede the image's, and they are the same PyPI wheels upstream's CUDA image installs.
+The FlashInfer packages in the image carry a version that did not change.
+`SGLANG_IMAGE` in `docker/Dockerfile` still moves to the new tag's digest so the next rebuild starts from the right base;
+the workflow digests do not.
 
 ## Validation
 
-Two things prove the bump: the complete unit suite on the new stack, and an
-A/B of every model between the current pin and the target pin. Profiling
-comes in when the A/B moves a number.
+Two things prove the bump:
+the complete unit suite on the new stack, and an A/B of every model between the current pin and the target pin.
+Profiling comes in when the A/B moves a number.
 
-Run the complete unit suite, default and accelerator selections, inside the
-new image. A failure is one of three things: a test that patches an upstream
-name that no longer exists, a fake that models the old shape, or a real
-contract break. The first two are test fixes; the third is a surface above
-that was missed.
+Run the complete unit suite, default and accelerator selections, inside the new image.
+A failure is one of three things:
+a test that patches an upstream name that no longer exists, a fake that models the old shape, or a real contract break.
+The first two are test fixes;
+the third is a surface above that was missed.
 
-The A/B compares `main` at the merge base on the current image with the
-branch on the new image, on the same host with the same datasets and
-concurrency, from a warm server (the first pass in a fresh image is
-discarded). Run the CI presets and gates for the families the workflows
-cover, and a manual launch with one non-streaming and one streaming request
-for the families they do not, at the CI concurrency and at concurrency 1,
-where per-request host cost shows. The families that consume something
-nothing else does, such as the diffusion runtime, the dLLM scheduler or the
-weight-share topology, are the ones most likely to break without a test
-noticing.
+The A/B compares `main` at the merge base on the current image with the branch on the new image, on the same host with the same datasets and concurrency, from a warm server (the first pass in a fresh image is discarded).
+Run the CI presets and gates for the families the workflows cover, and a manual launch with one non-streaming and one streaming request for the families they do not, at the CI concurrency and at concurrency 1, where per-request host cost shows.
+The families that consume something nothing else does, such as the diffusion runtime, the dLLM scheduler or the weight-share topology, are the ones most likely to break without a test noticing.
 
-Compare accuracy gates per sample rather than by aggregate score: a sample
-that flips between two runs of one arm is noise, a sample that is stable on
-each arm and differs across arms is the bump. Compare the startup logs too:
-CUDA graphs captured for the families that enable them, the same set of
-fallback warnings, the KV pool size, and time to ready from a warm cache. A
-gate that `main` also fails is not the bump's to retune; it belongs to a
-calibration PR of its own.
+Compare accuracy gates per sample rather than by aggregate score:
+a sample that flips between two runs of one arm is noise, a sample that is stable on each arm and differs across arms is the bump.
+Compare the startup logs too:
+CUDA graphs captured for the families that enable them, the same set of fallback warnings, the KV pool size, and time to ready from a warm cache.
+A gate that `main` also fails is not the bump's to retune;
+it belongs to a calibration PR of its own.
 
-When a number moves, the request-level event recorder says which stage owns
-the difference, a torch trace per stage separates kernel time from host
-time, and a microbenchmark of the kernel the trace points at settles it;
-[profiler.md](./profiler.md) has the mechanics. A regression belongs to the
-bump when the same-host A/B reproduces it with the Omni commit held fixed.
-One TTS regression blamed on a bump bisected to an unrelated PR merged three
-days before the branch existed; the bump was just the first change to run
-that configuration at the CI concurrency.
+When a number moves, the request-level event recorder says which stage owns the difference, a torch trace per stage separates kernel time from host time, and a microbenchmark of the kernel the trace points at settles it;
+[profiler.md](./profiler.md) has the mechanics.
+A regression belongs to the bump when the same-host A/B reproduces it with the Omni commit held fixed.
+One TTS regression blamed on a bump bisected to an unrelated PR merged three days before the branch existed;
+the bump was just the first change to run that configuration at the CI concurrency.
 
 ## The PR
 
-The description carries the upstream delta, not the diff: the pins that
-move and the one upstream change that dominates the adaptation, the
-modifications grouped by the surfaces above, a separate list of every
-inherited upstream change a user can observe, and the A/B with both arms'
-commits and image digests, sample counts and the profiler attribution for
-any delta outside noise. Measurements and inferences are labeled as what
-they are.
+The description carries the upstream delta, not the diff:
+the pins that move and the one upstream change that dominates the adaptation, the modifications grouped by the surfaces above, a separate list of every inherited upstream change a user can observe, and the A/B with both arms' commits and image digests, sample counts and the profiler attribution for any delta outside noise.
+Measurements and inferences are labeled as what they are.
 
-Run CI with `run-all-ci`. A stage without a model label draws its model at
-random, so give each preset its own run on the new image before merge: keep
-`run-all-ci` and add one model label per stage, for example
-`run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and
-`run-minicpm-o-4.5`. The model labels within a stage are exclusive. The
-CI section of the pull request template lists every label.
+Run CI with `run-all-ci`.
+A stage without a model label draws its model at random, so give each preset its own run on the new image before merge:
+keep `run-all-ci` and add one model label per stage, for example `run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and `run-minicpm-o-4.5`.
+The model labels within a stage are exclusive.
+The CI section of the pull request template lists every label.
 
-After the merge, everyone pulls the new image and rebuilds their
-virtualenvs; an environment built against the old pins does not run `main`.
+After the merge, everyone pulls the new image and rebuilds their virtualenvs;
+an environment built against the old pins does not run `main`.
 
-A full CI calibration must follow the merge. The new stack moves throughput
-and latency, so the thresholds in the workflows still describe the old image.
+A full CI calibration must follow the merge.
+The new stack moves throughput and latency, so the thresholds in the workflows still describe the old image.
 Recalibrate every family on the merged commit, in its own PR.

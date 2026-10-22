@@ -1,14 +1,11 @@
 # Ming-Omni-TTS
 
-[Ming-Omni-TTS-16.8B-A3B](https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B)
-is a mixture-of-experts audio generation model from inclusionAI. The current SGLang-Omni
-serving path supports **text-to-speech** and **zero-shot voice cloning** through the
-OpenAI-compatible `/v1/audio/speech` endpoint and produces **44.1 kHz** audio.
+[Ming-Omni-TTS-16.8B-A3B](https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B) is a mixture-of-experts audio generation model from inclusionAI.
+The current SGLang-Omni serving path supports **text-to-speech** and **zero-shot voice cloning** through the OpenAI-compatible `/v1/audio/speech` endpoint and produces **44.1 kHz** audio.
 
 ![Ming-Omni-TTS model architecture](https://github.com/inclusionAI/Ming-omni-tts/raw/main/figures/ming_omni_tts.png)
 
-The serving pipeline keeps the SGLang autoregressive backbone and the Ming acoustic feedback
-loop in one generation stage:
+The serving pipeline keeps the SGLang autoregressive backbone and the Ming acoustic feedback loop in one generation stage:
 
 ```text
 preprocessing -> reference_encode -> tts_engine -> audio_decode
@@ -17,15 +14,14 @@ preprocessing -> reference_encode -> tts_engine -> audio_decode
                                        latent feedback
 ```
 
-`reference_encode` is a no-op for text-only requests. For voice cloning it extracts the speaker
-embedding and prompt latents before the autoregressive loop starts. `tts_engine` runs the
-SGLang backbone, FlowLoss/CFM acoustic tail, stop head, and feedback projection. `audio_decode`
-converts the generated latent sequence into the final waveform with the Ming AudioVAE.
+`reference_encode` is a no-op for text-only requests.
+For voice cloning it extracts the speaker embedding and prompt latents before the autoregressive loop starts.
+`tts_engine` runs the SGLang backbone, FlowLoss/CFM acoustic tail, stop head, and feedback projection.
+`audio_decode` converts the generated latent sequence into the final waveform with the Ming AudioVAE.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download
-the checkpoint:
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the checkpoint:
 
 ```bash
 hf download inclusionAI/Ming-omni-tts-16.8B-A3B
@@ -42,18 +38,16 @@ sgl-omni serve \
   --port 8000
 ```
 
-The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
-graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
-compact eager, and requests are non-streaming unless `stream` is set.
+The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA graph for streaming AudioVAE transitions.
+Non-streaming full-sequence AudioVAE decode remains compact eager, and requests are non-streaming unless `stream` is set.
 
-For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
-one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
-with request-local cache and overlap state. Older configs need three changes, all enforced
-during config loading: remove `decode_mode` from the audio_decode stage's
-`factory` group, because non-streaming chunked decode is no longer supported;
-set `tts_engine.stream_to` to `[audio_decode]` to declare the latent stream edge; and set
-`audio_decode.can_accept_stream_before_payload` to `true` so the consumer accepts latents that
-arrive while generation is still running. The provided YAML already carries all three.
+For non-streaming requests, `audio_decode` sends the complete generated latent sequence through one full-sequence AudioVAE decode.
+Streaming requests use the separate incremental AudioVAE path with request-local cache and overlap state.
+Older configs need three changes, all enforced during config loading:
+remove `decode_mode` from the audio_decode stage's `factory` group, because non-streaming chunked decode is no longer supported;
+set `tts_engine.stream_to` to `[audio_decode]` to declare the latent stream edge;
+and set `audio_decode.can_accept_stream_before_payload` to `true` so the consumer accepts latents that arrive while generation is still running.
+The provided YAML already carries all three.
 
 Cross-request non-streaming AudioVAE batching is not implemented yet. The only supported non-streaming batch configuration is `max_batch_size: 1` with `max_batch_wait_ms: 0`, as shown in the provided YAML; other values are rejected before the server starts.
 
@@ -76,8 +70,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Voice Cloning
 
-Ming-Omni-TTS currently accepts one local reference clip and requires its transcript. Start the
-server with access to the directory containing the clip:
+Ming-Omni-TTS currently accepts one local reference clip and requires its transcript.
+Start the server with access to the directory containing the clip:
 
 ```bash
 sgl-omni serve \
@@ -108,16 +102,16 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Streaming returns headerless mono signed 16-bit little-endian PCM (`s16le`) at 44.1 kHz with
-`Content-Type: audio/pcm`. The `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` headers report the
-sample rate, channel count, and bit depth; HTTP EOF ends the stream.
+Streaming returns headerless mono signed 16-bit little-endian PCM (`s16le`) at 44.1 kHz with `Content-Type: audio/pcm`.
+The `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` headers report the sample rate, channel count, and bit depth;
+HTTP EOF ends the stream.
 
-Ming AudioVAE uses separate initial and steady cadence settings. Its first non-terminal call
-buffers `stages.audio_decode.factory.initial_chunk_patches` latent patches and emits no PCM; a
-later call supplies the right-hand context needed to emit that initial group. Subsequent calls
-consume `steady_chunk_patches` at a time. The provided configuration uses two initial patches and
-four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
-to play it during generation:
+Ming AudioVAE uses separate initial and steady cadence settings.
+Its first non-terminal call buffers `stages.audio_decode.factory.initial_chunk_patches` latent patches and emits no PCM;
+a later call supplies the right-hand context needed to emit that initial group.
+Subsequent calls consume `steady_chunk_patches` at a time.
+The provided configuration uses two initial patches and four steady patches, and the terminal step flushes any remainder.
+Pipe the response to `ffplay` to play it during generation:
 
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
@@ -131,8 +125,9 @@ curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
   | ffplay -nodisp -autoexit -f s16le -ar 44100 -ac 1 -
 ```
 
-To save the raw stream instead, use `--output output.pcm`. The file has no WAV header; convert it
-with `ffmpeg -f s16le -ar 44100 -ac 1 -i output.pcm output.wav`.
+To save the raw stream instead, use `--output output.pcm`.
+The file has no WAV header;
+convert it with `ffmpeg -f s16le -ar 44100 -ac 1 -i output.pcm output.wav`.
 
 ## Generation Parameters
 
@@ -162,13 +157,13 @@ Advanced FlowLoss controls can be passed through `stage_params.tts_engine`:
 }
 ```
 
-`cfg` must be at least `1e-5` and cannot equal `1.0`; `sigma` and `temperature` must be
-non-negative.
+`cfg` must be at least `1e-5` and cannot equal `1.0`;
+`sigma` and `temperature` must be non-negative.
 
 ## Benchmarking
 
-The benchmark uses Seed-TTS-Eval with concurrency 8. Run each row below for
-both `en` and `zh`, replacing `{lang}` in the output directory:
+The benchmark uses Seed-TTS-Eval with concurrency 8.
+Run each row below for both `en` and `zh`, replacing `{lang}` in the output directory:
 
 | Response mode | Input mode | Scenario flags | Output directory |
 |---|---|---|---|
@@ -177,8 +172,7 @@ both `en` and `zh`, replacing `{lang}` in the output directory:
 | Streaming | Reference | `--stream` | `results/ming_tts/stream/reference/{lang}` |
 | Streaming | Text-only | `--stream --no-ref-audio` | `results/ming_tts/stream/text_only/{lang}` |
 
-With the Ming-TTS server running on port 8000, generate each scenario by
-substituting its language, flags, and output directory in this command:
+With the Ming-TTS server running on port 8000, generate each scenario by substituting its language, flags, and output directory in this command:
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -192,8 +186,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   <scenario-flags>
 ```
 
-After generation finishes, stop the TTS server and start the ASR server in
-another terminal:
+After generation finishes, stop the TTS server and start the ASR server in another terminal:
 
 ```bash
 sgl-omni serve \
@@ -201,8 +194,7 @@ sgl-omni serve \
   --port 8100
 ```
 
-Then transcribe each output directory with the same language and scenario
-flags used for generation:
+Then transcribe each output directory with the same language and scenario flags used for generation:
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -255,14 +247,10 @@ Streaming playback continuity:
 
 ## Known Limitations
 
-- **Serving optimizations.** Prefix/radix cache and `torch.compile` are not supported and remain
-  disabled in the provided configuration.
-- **Reference inputs.** The current request adapter accepts one local reference audio file with a
-  non-empty transcript; remote URLs, data URLs, precomputed prompt latents, and speaker embeddings
-  are not supported.
-- **Generation controls.** Request-local `seed`, logits sampling fields (`top_p`, `top_k`,
-  `repetition_penalty`), named voices, explicit language selection, instructions, and duration
-  control are not supported. `initial_codec_chunk_frames` is rejected because AudioVAE cadence
-  is a pipeline-level setting.
-- **Checkpoint coverage.** The current serving implementation supports only the 16.8B-A3B MoE
-  checkpoint; the dense 0.5B checkpoint is not supported.
+- **Serving optimizations.** Prefix/radix cache and `torch.compile` are not supported and remain disabled in the provided configuration.
+- **Reference inputs.** The current request adapter accepts one local reference audio file with a non-empty transcript;
+  remote URLs, data URLs, precomputed prompt latents, and speaker embeddings are not supported.
+- **Generation controls.** Request-local `seed`, logits sampling fields (`top_p`, `top_k`, `repetition_penalty`), named voices, explicit language selection, instructions, and duration control are not supported.
+  `initial_codec_chunk_frames` is rejected because AudioVAE cadence is a pipeline-level setting.
+- **Checkpoint coverage.** The current serving implementation supports only the 16.8B-A3B MoE checkpoint;
+  the dense 0.5B checkpoint is not supported.

@@ -733,17 +733,16 @@ A Session takes four operations: `open`, `append`, `control` and `close`. `Clien
 
 A `/v1/session` client opens the Session the pipeline declares; the open frame carries `params`, and the Session's limits are the deployment's. An `append` frame carries a `chunk` and is answered with `accepted`; a `control` frame carries the event as its `chunk`, with optional `stages` and `should_preempt`, and is answered with `controlled`. Both answers carry the chunk's seq, and a full queue answers either with `rejected` and leaves the Session open.
 
-A chunk's `turn` identifies a cancellable reply within the Session, not a tool
-call or an input audio frame. All work belonging to that reply preserves the
-same ID, including tool responses. Interrupted reply IDs remain fenced for the
-lifetime of the graph, including tool results carried by control edges. Session
-control commands such as interrupt and truncate remain deliverable. Nodes must discard any matching
-work they have already buffered when they receive the interrupt.
+A chunk's `turn` identifies a cancellable reply within the Session, not a tool call or an input audio frame.
+All work belonging to that reply preserves the same ID, including tool responses.
+Interrupted reply IDs remain fenced for the lifetime of the graph, including tool results carried by control edges.
+Session control commands such as interrupt and truncate remain deliverable.
+Nodes must discard any matching work they have already buffered when they receive the interrupt.
 
-A producer without reply boundaries leaves `turn` unset. VoiceChat's continuous
-duplex stream does not currently allocate reply turns; tool call IDs identify its
-individual calls. Passing through a supplied `turn` does not add native speech
-interruption or reply-boundary detection to VoiceChat.
+A producer without reply boundaries leaves `turn` unset.
+VoiceChat's continuous duplex stream does not currently allocate reply turns;
+tool call IDs identify its individual calls.
+Passing through a supplied `turn` does not add native speech interruption or reply-boundary detection to VoiceChat.
 
 
 ### Cascade components

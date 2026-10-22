@@ -6,7 +6,9 @@ MOSS-Transcribe-Diarize does not support `/v1/audio/translations`; that endpoint
 
 ![Model Architecture](https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize/resolve/main/Model_Architecture.png)
 
-It transcribes speech, assigns speakers, and predicts timestamps in a single generation pass. With 128K context, it supports up to ~90-minute audio, handles meetings, interruptions, long conversations, and overlapping speech, and adds hotword boosting for names, companies, product terms, and domain vocabulary. MOSS-Transcribe-Diarize is served through the OpenAI-compatible `/v1/audio/transcriptions` endpoint.
+It transcribes speech, assigns speakers, and predicts timestamps in a single generation pass.
+With 128K context, it supports up to ~90-minute audio, handles meetings, interruptions, long conversations, and overlapping speech, and adds hotword boosting for names, companies, product terms, and domain vocabulary.
+MOSS-Transcribe-Diarize is served through the OpenAI-compatible `/v1/audio/transcriptions` endpoint.
 Transcriptions support `response_format=srt` or `response_format=vtt` with real segment timestamps for this model.
 
 | Component | Spec |
@@ -98,20 +100,18 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 
 ### Launching Commands
 
-Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or
-[Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
+Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or [Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
 
 ```bash
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
 ```
 
-MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
-default target is 4 requests with a 12 ms oldest-request deadline. While more
-request builds are pending, the scheduler waits for either limit; after build
-work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
-limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
-set the request target to `0` to disable coalescing.
+MOSS-TD briefly holds newly built LM requests to admit larger prefills.
+The default target is 4 requests with a 12 ms oldest-request deadline.
+While more request builds are pending, the scheduler waits for either limit;
+after build work drains, it releases immediately only when decode is idle.
+During active decode, it continues coalescing until the target or deadline.
+Override the two limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or set the request target to `0` to disable coalescing.
 
 Serve the model:
 
@@ -128,8 +128,7 @@ sgl-omni serve \
 
 **Intel GPU**
 
-MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
-BF16 on one Intel Arc Pro B60 with 24 GB of memory:
+MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in BF16 on one Intel Arc Pro B60 with 24 GB of memory:
 
 ```bash
 sgl-omni serve \
@@ -141,18 +140,15 @@ sgl-omni serve \
   --mem-fraction-static 0.70
 ```
 
-The graph configuration names retain `cuda_graph` for compatibility, but
-SGLang selects the XPUGraph backend on XPU. The B60 validation uses
-`mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
-buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
+The graph configuration names retain `cuda_graph` for compatibility, but SGLang selects the XPUGraph backend on XPU.
+The B60 validation uses `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph buckets;
+`0.80` leaves too little graph-capture headroom on a 24 GB card.
 
-Before it reports ready, the server transcribes one second of audio, at most 8
-tokens. `/health` returns 503 with status `starting` until that request has
-finished, so the one-time kernel builds of the transcription path happen before
-the first user request. The first concurrent batch can still build batch-size
-kernel variants. A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT`
-(seconds, default 600) bounds the request, and `--skip-server-warmup` reports
-ready without it.
+Before it reports ready, the server transcribes one second of audio, at most 8 tokens.
+`/health` returns 503 with status `starting` until that request has finished, so the one-time kernel builds of the transcription path happen before the first user request.
+The first concurrent batch can still build batch-size kernel variants.
+A failed warmup stops the server.
+`SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds the request, and `--skip-server-warmup` reports ready without it.
 
 ### Sending Requests
 
@@ -210,8 +206,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `max_new_tokens` | int | duration scaled | Max generated tokens. With the stock config, omitted requests use `max(512, 10 * audio seconds)`; empty audio uses a 128-token fallback. A fixed stage value disables duration scaling. Explicit values always win and are clamped to the remaining model context |
 | `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
 
-`verbose_json` parses the model markup into OpenAI-style `segments` with
-`start`, `end`, and speaker-prefixed `text` (for example `[S01]...`).
+`verbose_json` parses the model markup into OpenAI-style `segments` with `start`, `end`, and speaker-prefixed `text` (for example `[S01]...`).
 `json` / `text` return the full transcript string without segment parsing.
 
 ## Benchmarking
@@ -261,13 +256,9 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --output-dir results/moss_transcribe_diarize_googletime
 ```
 
-`--profile-events` starts request-level event recording through the serve
-profiler endpoints, runs one extra pass, and adds its `stage_breakdown`,
-`hop_breakdown`, and speed metrics under `profile` in both
-`transcribe_diarize_results.json` and `transcribe_diarize_speed_results.json`.
-The event directory is a server-side path, so report generation requires the
-benchmark process to see the same filesystem. For router or DP deployments,
-pass every worker serve URL with a comma-separated `--profile-urls` value.
+`--profile-events` starts request-level event recording through the serve profiler endpoints, runs one extra pass, and adds its `stage_breakdown`, `hop_breakdown`, and speed metrics under `profile` in both `transcribe_diarize_results.json` and `transcribe_diarize_speed_results.json`.
+The event directory is a server-side path, so report generation requires the benchmark process to see the same filesystem.
+For router or DP deployments, pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 

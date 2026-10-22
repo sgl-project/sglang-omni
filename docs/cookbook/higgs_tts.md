@@ -1,7 +1,7 @@
 # Higgs TTS
 
-[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
-is a text-to-speech model from Boson AI. It generates **24 kHz speech** and supports [**100+ languages**](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b#supported-languages), voice cloning from a reference clip, and fine-grained **inline control** over emotion, style, sound effects, and prosody.
+[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) is a text-to-speech model from Boson AI.
+It generates **24 kHz speech** and supports [**100+ languages**](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b#supported-languages), voice cloning from a reference clip, and fine-grained **inline control** over emotion, style, sound effects, and prosody.
 
 ![Higgs Audio v3 Generation Architecture](../_static/image/higgs-architecture.png)
 
@@ -58,17 +58,14 @@ sgl-omni serve \
   --port 8000
 ```
 
-The voice-cloning examples below use local reference clips from
-`docs/_static/audio`.
+The voice-cloning examples below use local reference clips from `docs/_static/audio`.
 
-CUDA reference encoding temporarily disables cuDNN convolutions and cuDNN
-attention. These settings affect the whole process, so `audio_encoder` must
-run in a separate process from CUDA stages such as `tts_engine` and `vocoder`,
-even when they use different GPUs. The default layout already does this:
-CPU preprocessing and the audio encoder share `tts_frontend`, while the
-engine and vocoder share `pipeline` on the same GPU. Custom layouts that
-combine the CUDA encoder with another CUDA stage are rejected at configuration
-validation; CPU encoding does not have this restriction.
+CUDA reference encoding temporarily disables cuDNN convolutions and cuDNN attention.
+These settings affect the whole process, so `audio_encoder` must run in a separate process from CUDA stages such as `tts_engine` and `vocoder`, even when they use different GPUs.
+The default layout already does this:
+CPU preprocessing and the audio encoder share `tts_frontend`, while the engine and vocoder share `pipeline` on the same GPU.
+Custom layouts that combine the CUDA encoder with another CUDA stage are rejected at configuration validation;
+CPU encoding does not have this restriction.
 
 ## Synthesizing Speech
 
@@ -175,13 +172,12 @@ Reference output:
 
 Unlike a standard request where you wait for the full audio to be generated before receiving anything, streaming lets you start receiving and playing audio **while generation is still in progress**. This significantly reduces time-to-first-audio, which matters for real-time or interactive use cases.
 
-Higgs TTS implements streaming as raw PCM bytes. Your client can play or buffer
-each chunk as it arrives, rather than waiting for the full response.
+Higgs TTS implements streaming as raw PCM bytes.
+Your client can play or buffer each chunk as it arrives, rather than waiting for the full response.
 
-Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in
-the request body. During generation, the vocoder emits incremental audio chunks.
-The HTTP response returns `audio/pcm` bytes and exposes sample-rate metadata in
-headers.
+Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in the request body.
+During generation, the vocoder emits incremental audio chunks.
+The HTTP response returns `audio/pcm` bytes and exposes sample-rate metadata in headers.
 
 1. Use curl
 
@@ -206,20 +202,19 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 The `-N` flag disables curl's output buffering so chunks are written as they arrive.
 
-Streaming returns `audio/pcm` 16-bit mono PCM bytes. It has no in-band JSON
-events, final usage event, or terminal sentinel. The response headers report the
-actual stream sample rate, channel count, and bit depth. Higgs defaults
-`initial_codec_chunk_frames` to `20`; with eight codebooks, the AR producer
-flushes the corresponding delayed-code rows at row 27. Clients can still set
-another value, including `0` to use the steady chunk size from the start. The
-producer and vocoder share the effective value, and it controls only the first
-chunk. Follow-up chunks return to the normal Higgs streaming window.
+Streaming returns `audio/pcm` 16-bit mono PCM bytes.
+It has no in-band JSON events, final usage event, or terminal sentinel.
+The response headers report the actual stream sample rate, channel count, and bit depth.
+Higgs defaults `initial_codec_chunk_frames` to `20`;
+with eight codebooks, the AR producer flushes the corresponding delayed-code rows at row 27.
+Clients can still set another value, including `0` to use the steady chunk size from the start.
+The producer and vocoder share the effective value, and it controls only the first chunk.
+Follow-up chunks return to the normal Higgs streaming window.
 
 2. Use Python
 
-This example writes streamed PCM bytes to a WAV file. In a real application, you
-would pipe the chunks directly to an audio player (e.g., via `pyaudio` or
-`sounddevice`).
+This example writes streamed PCM bytes to a WAV file.
+In a real application, you would pipe the chunks directly to an audio player (e.g., via `pyaudio` or `sounddevice`).
 
 ```python
 import wave
@@ -276,21 +271,15 @@ All tags follow `<|category:value|>` syntax and can be inserted mid-utterance.
   - Pitch — `pitch_low` (~−3 st), `pitch_high` (~+2.5 st)
   - Delivery — `expressive_high`, `expressive_low`
 
-Embed control tokens directly in the `input` field. Tokens from different
-categories can be combined. Each request is a single **turn**, and two rules make control tokens reliable:
+Embed control tokens directly in the `input` field.
+Tokens from different categories can be combined.
+Each request is a single **turn**, and two rules make control tokens reliable:
 
-1. **Lead the turn with the delivery tokens.** Emotion (`<|emotion:…|>`), Style
-   (`<|style:…|>`), and the prosody *speed* (`<|prosody:speed_…|>`), *pitch*
-   (`<|prosody:pitch_…|>`) and *expressive* (`<|prosody:expressive_…|>`) tokens
-   set how the entire turn is delivered, so place them at the very start of the
-   `input`, before any text. Positional tokens are the exception:
-   `<|prosody:pause|>` / `<|prosody:long_pause|>` go inline exactly where the
-   break should fall, and each `<|sfx:…|>` goes right before the sound it triggers.
+1. **Lead the turn with the delivery tokens.** Emotion (`<|emotion:…|>`), Style (`<|style:…|>`), and the prosody *speed* (`<|prosody:speed_…|>`), *pitch* (`<|prosody:pitch_…|>`) and *expressive* (`<|prosody:expressive_…|>`) tokens set how the entire turn is delivered, so place them at the very start of the `input`, before any text.
+  Positional tokens are the exception:
+   `<|prosody:pause|>` / `<|prosody:long_pause|>` go inline exactly where the break should fall, and each `<|sfx:…|>` goes right before the sound it triggers.
 
-2. **Pair every sound effect with its onomatopoeia.** A `<|sfx:…|>` token lands
-   best when the matching written sound follows it immediately
-   (e.g. `<|sfx:laughter|>Haha`, `<|sfx:sigh|>Uh`, `<|sfx:sneeze|>Achoo`) — the
-   onomatopoeia gives the model the acoustic cue to realize the effect.
+2. **Pair every sound effect with its onomatopoeia.** A `<|sfx:…|>` token lands best when the matching written sound follows it immediately (e.g. `<|sfx:laughter|>Haha`, `<|sfx:sigh|>Uh`, `<|sfx:sneeze|>Achoo`) — the onomatopoeia gives the model the acoustic cue to realize the effect.
 
 **Demo**
 

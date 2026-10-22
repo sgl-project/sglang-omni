@@ -1,23 +1,19 @@
 # Audio Translations
 
-This guide uses [Whisper ASR](../cookbook/whisper_asr.md) as an example model
-with the OpenAI-compatible `POST /v1/audio/translations` endpoint, which
-translates source speech to English. The endpoint is served only by pipelines
-that declare audio-translation capability; other ASR models return an explicit
-HTTP 400 instead of silently transcribing.
+This guide uses [Whisper ASR](../cookbook/whisper_asr.md) as an example model with the OpenAI-compatible `POST /v1/audio/translations` endpoint, which translates source speech to English.
+The endpoint is served only by pipelines that declare audio-translation capability;
+other ASR models return an explicit HTTP 400 instead of silently transcribing.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md),
-then download a multilingual Whisper checkpoint:
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a multilingual Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
 ```
 
-Translation requires a multilingual, non-turbo checkpoint: `*.en` checkpoints
-have no translate task, and `whisper-large-v3-turbo` was distilled without it,
-so serving those checkpoints returns transcriptions regardless of endpoint.
+Translation requires a multilingual, non-turbo checkpoint:
+`*.en` checkpoints have no translate task, and `whisper-large-v3-turbo` was distilled without it, so serving those checkpoints returns transcriptions regardless of endpoint.
 
 ## Launch the Server
 
@@ -38,8 +34,7 @@ curl -X POST http://localhost:8000/v1/audio/translations \
 ```
 
 `language` is an optional source-language hint and a SGLang-Omni extension;
-OpenAI's official audio translations schema does not define it, and the
-translation target is English in both APIs.
+OpenAI's official audio translations schema does not define it, and the translation target is English in both APIs.
 
 ## Model Support
 
@@ -63,10 +58,9 @@ See each model's cookbook for its transcription workflow.
 | `text` | Raw translated text with `text/plain` content type |
 | `srt`, `vtt` | Whisper subtitles with model-derived segment timestamps |
 
-`verbose_json` returns a single segment spanning the audio duration, matching
-`/v1/audio/transcriptions`. Subtitle formats require a model adapter with real
-segment timestamps; unsupported models return HTTP 400 before inference.
+`verbose_json` returns a single segment spanning the audio duration, matching `/v1/audio/transcriptions`.
+Subtitle formats require a model adapter with real segment timestamps;
+unsupported models return HTTP 400 before inference.
 
-Streaming is available with `stream=true` for `json` and `text`, using the same
-SSE lifecycle as transcriptions: `transcript.text.delta` events, one
-`transcript.text.done` event, then `data: [DONE]`.
+Streaming is available with `stream=true` for `json` and `text`, using the same SSE lifecycle as transcriptions:
+`transcript.text.delta` events, one `transcript.text.done` event, then `data: [DONE]`.

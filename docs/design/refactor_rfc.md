@@ -223,8 +223,7 @@ class Stage:
 Responsibilities:
 
 - **Control plane (ZMQ):** receive `SubmitMessage`, `DataReadyMessage`, `AbortMessage`
-- **Data plane:** read/write tensors via relay, CUDA IPC stream fast path, or
-  same-process LOCAL_OBJECT dispatch
+- **Data plane:** read/write tensors via relay, CUDA IPC stream fast path, or same-process LOCAL_OBJECT dispatch
 - **Input aggregation:** wait for multiple upstream stages before dispatching (`AggregatedInput`)
 - **Stream routing:** receive/send streaming chunks (hidden states, codec codes)
 - **Dispatch:** push all messages into `scheduler.inbox`, drain `scheduler.outbox`
@@ -249,13 +248,11 @@ sequenceDiagram
 - **Data plane:** large tensors normally go through relay. Pluggable backends: SHM (single machine), NCCL (multi-GPU), NixL (RDMA multi-node), Mooncake. Same-GPU stream edges use CUDA IPC automatically. Same-process safe edges may use LOCAL_OBJECT and pass the original Python object by reference.
 - **Streaming:** hidden states / codec codes flow via `DataReadyMessage` with `chunk_id` and `is_done` fields, parallel to normal result routing.
 
-LOCAL_OBJECT is a Stage-level fast path, not a relay backend. It is used only
-when runtime prep knows sender and receiver live in the same OS process. Full
-payload dispatch can use it for single-target routes; projected fan-out can use
-it only when each projector returns a `StagePayload` with an isolated `data`
-container. The receiver sees the same Python object references, including nested
-tensors and metadata, so downstream code must treat them as read-only until the
-receiver has finished with the request.
+LOCAL_OBJECT is a Stage-level fast path, not a relay backend.
+It is used only when runtime prep knows sender and receiver live in the same OS process.
+Full payload dispatch can use it for single-target routes;
+projected fan-out can use it only when each projector returns a `StagePayload` with an isolated `data` container.
+The receiver sees the same Python object references, including nested tensors and metadata, so downstream code must treat them as read-only until the receiver has finished with the request.
 
 The split between control and data planes is the core architectural decision: ZMQ stays out of the tensor path (it carries only the small `SubmitMessage` / `DataReadyMessage` / `AbortMessage` coordination messages), the relay (SHM/NCCL/NIXL/Mooncake) stays out of the coordination path, and either can be swapped independently.
 
@@ -273,8 +270,7 @@ Utility module providing:
   - `write_payload` / `read_payload` — full `StagePayload` serialization via relay
   - `send_stream_chunk` — handles same-GPU IPC vs cross-GPU relay, NIXL credit deadlock avoidance
 - **Same-process dispatch**
-  - `LocalStageDispatcher` — directly calls target stage receive methods with
-    Python object references for LOCAL_OBJECT payloads and stream chunks
+  - `LocalStageDispatcher` — directly calls target stage receive methods with Python object references for LOCAL_OBJECT payloads and stream chunks
 - **Internal-facing API**
   - `write_blob` / `read_blob` — raw tensor transfer for streaming chunks
   - `extract_tensors` / `restore_tensors` — recursive tensor extraction from nested dicts

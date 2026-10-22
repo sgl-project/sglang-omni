@@ -18,21 +18,19 @@ Architecturally, MOSS-TTS-Local-Transformer-v1.5 is the `local-transformer` coun
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then
-download the model (public, no token required):
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model (public, no token required):
 
 ```bash
 hf download OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
 ```
 
-The processor ships with the checkpoint, so no extra TTS package is needed. Decoding base64
-(data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
+The processor ships with the checkpoint, so no extra TTS package is needed.
+Decoding base64 (data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
 
 ## Server Configuration
 
-The default layout runs preprocessing, the AR backbone, and the vocoder in
-separate processes on the same GPU. MPS defaults to `auto`, enabling CUDA MPS
-when the device and process layout support it:
+The default layout runs preprocessing, the AR backbone, and the vocoder in separate processes on the same GPU.
+MPS defaults to `auto`, enabling CUDA MPS when the device and process layout support it:
 
 ```bash
 sgl-omni serve \
@@ -42,9 +40,8 @@ sgl-omni serve \
 
 A matching config file is available at `examples/configs/moss_tts_local.yaml`.
 
-Speech input admission follows the text backbone's context metadata rather than
-the generic 4,096-character precheck. Requests that exceed the effective model
-context are rejected with an OpenAI-compatible HTTP 400 error.
+Speech input admission follows the text backbone's context metadata rather than the generic 4,096-character precheck.
+Requests that exceed the effective model context are rejected with an OpenAI-compatible HTTP 400 error.
 
 ### Streaming vocoder CUDA graphs
 
@@ -79,9 +76,9 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Voice Cloning
 
-Provide a reference clip when you want voice cloning. The `references` field accepts `audio_path`
-(a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip). Supplying
-the transcript materially improves cloning quality.
+Provide a reference clip when you want voice cloning.
+The `references` field accepts `audio_path` (a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip).
+Supplying the transcript materially improves cloning quality.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -98,8 +95,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-`ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
-`references[0].text`.
+`ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and `references[0].text`.
 
 **Python**
 
@@ -156,9 +152,8 @@ Reference encodes are cached (LRU) and coalesced into batched codec calls, so re
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw 48 kHz
-mono PCM chunks in real time. Pipe the stream through `ffmpeg` when you want a
-playable WAV file:
+Set `"stream": true` and `"response_format": "pcm"` to receive raw 48 kHz mono PCM chunks in real time.
+Pipe the stream through `ffmpeg` when you want a playable WAV file:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -205,8 +200,8 @@ If omitted, the model picks the duration itself.
 
 ### Text Markup, Style, and Language
 
-Inline text markup that the model understands (for example `[pause Xs]`, pinyin, and IPA) is passed through unchanged. An optional `instructions` field carries a
-free-text style directive, and an optional `language` hint biases the target language (omit it to let the model infer from the text):
+Inline text markup that the model understands (for example `[pause Xs]`, pinyin, and IPA) is passed through unchanged.
+An optional `instructions` field carries a free-text style directive, and an optional `language` hint biases the target language (omit it to let the model infer from the text):
 
 ```json
 {
@@ -253,25 +248,23 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.0` | Audio repetition penalty |
 | `seed` | `null` | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility) |
 
-The two default values reflect the model's separate sampling channels: the `text` channel is the
-per-frame continue/stop head and the `audio` channel is the RVQ codebooks. A single `temperature`,
-`top_p`, or `top_k` in the request applies to both.
+The two default values reflect the model's separate sampling channels:
+the `text` channel is the per-frame continue/stop head and the `audio` channel is the RVQ codebooks.
+A single `temperature`, `top_p`, or `top_k` in the request applies to both.
 
 ## Seed Reproducibility
 
-A fixed `seed` is reproducible at **any concurrency**: each token's sampling depends only on its
-own seed and position, never on its batch neighbours.
+A fixed `seed` is reproducible at **any concurrency**:
+each token's sampling depends only on its own seed and position, never on its batch neighbours.
 
-- Reproducibility holds for a **fixed server configuration and hardware** — backbone
-  floating-point non-determinism (different batch shapes, GPUs, or kernels) can still shift the
-  sampled tokens across deployments.
+- Reproducibility holds for a **fixed server configuration and hardware** — backbone floating-point non-determinism (different batch shapes, GPUs, or kernels) can still shift the sampled tokens across deployments.
 - `seed` must be a non-negative integer; negative or non-integer values are rejected.
 - Without a `seed`, each request draws a fresh random seed and is not reproducible across runs.
 
 ## Benchmarking
 
-MOSS-TTS-Local clones from each prompt (`--ref-format references`) and estimates a per-sample
-duration with `--token-count auto`. Run at `--max-concurrency 16`.
+MOSS-TTS-Local clones from each prompt (`--ref-format references`) and estimates a per-sample duration with `--token-count auto`.
+Run at `--max-concurrency 16`.
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -289,9 +282,8 @@ Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full w
 
 ### Seed-TTS-Eval Reference Performance
 
-Seed-TTS-Eval full set (EN = 1088, ZH = 2020) on 2× H100, concurrency 16,
-`--token-count auto`. These are reference inference-performance numbers reported
-in PR #728 — reproducible references, not CI thresholds.
+Seed-TTS-Eval full set (EN = 1088, ZH = 2020) on 2× H100, concurrency 16, `--token-count auto`.
+These are reference inference-performance numbers reported in PR #728 — reproducible references, not CI thresholds.
 
 | Split | Latency mean / p95 (s) | RTF mean | Throughput (req/s) |
 |---|---:|---:|---:|
@@ -300,12 +292,10 @@ in PR #728 — reproducible references, not CI thresholds.
 
 ### Multilingual Voice Clone
 
-We evaluate MOSS-TTS-Local-Transformer-v1.5 on public multilingual TTS suites and
-internal voice-cloning stress sets, covering multilingual synthesis, speaker
-similarity, and hard speaker-stability cases.
+We evaluate MOSS-TTS-Local-Transformer-v1.5 on public multilingual TTS suites and internal voice-cloning stress sets, covering multilingual synthesis, speaker similarity, and hard speaker-stability cases.
 
-WER (↓) and SIM (↑) are macro-averaged and reported in percentage points. `N/A`
-means the benchmark is speaker-similarity only and does not report WER.
+WER (↓) and SIM (↑) are macro-averaged and reported in percentage points.
+`N/A` means the benchmark is speaker-similarity only and does not report WER.
 
 | Benchmark | WER ↓ | SIM ↑ |
 |---|---:|---:|
@@ -314,17 +304,15 @@ means the benchmark is speaker-similarity only and does not report WER.
 | `MiniMax Multilingual` | 6.3692 | 75.3121 |
 | `X Voice` | 20.4787 | 63.0023 |
 
-These results were measured with audio sampling parameters `temperature=1.7`,
-`top_p=0.8`, and `top_k=25`. In tests from MOSI.AI, `temperature=0.6`, `top_p=0.95`,
-`top_k=25`, and `audio_repetition_penalty=1.2` may produce better quality.
+These results were measured with audio sampling parameters `temperature=1.7`, `top_p=0.8`, and `top_k=25`.
+In tests from MOSI.AI, `temperature=0.6`, `top_p=0.95`, `top_k=25`, and `audio_repetition_penalty=1.2` may produce better quality.
 
 ## Known Limitations
 
-- **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide
-  the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
-- **Rare runaway generation.** A small fraction of utterances can loop and generate up to
-  `max_new_tokens`; setting a `token_count` (or lowering `max_new_tokens`) bounds the output.
-- **Duration is a hint.** `${token:N}` / `token_count` steers length but is not an exact clip
-  duration.
-- **Reproducibility is hardware-bound.** A fixed `seed` reproduces only on the same server
-  configuration and GPU; see [Seed Reproducibility](#seed-reproducibility).
+- **Voice cloning depends on the reference.** Omit the reference for non-cloned speech;
+  provide the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
+- **Rare runaway generation.** A small fraction of utterances can loop and generate up to `max_new_tokens`;
+  setting a `token_count` (or lowering `max_new_tokens`) bounds the output.
+- **Duration is a hint.** `${token:N}` / `token_count` steers length but is not an exact clip duration.
+- **Reproducibility is hardware-bound.** A fixed `seed` reproduces only on the same server configuration and GPU;
+  see [Seed Reproducibility](#seed-reproducibility).

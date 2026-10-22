@@ -42,18 +42,14 @@ The graph is captured after SGLang's generation graphs. With pre-LM off, raise `
 ## Breakable Prefill CUDA Graph
 
 The decoder body uses SGLang's breakable prefill CUDA Graph backend by default.
-Whisper encoder states and cross-attention K/V are prepared outside the captured
-decoder body. The default capture ladder stops at the largest aggregate decoder
-token count atomic admission can form. The cap considers every reachable request
-count because a batch of more, shorter prompts can contain more decoder tokens
-than a batch sized from the longest possible request. With the default 6,144
-budget, 1,500 encoder placeholders, and at most 232 decoder tokens per request,
-the cap is 696. Startup logs report the capture cost and confirm the active
-buckets with `prefill CUDA graphs attested`.
+Whisper encoder states and cross-attention K/V are prepared outside the captured decoder body.
+The default capture ladder stops at the largest aggregate decoder token count atomic admission can form.
+The cap considers every reachable request count because a batch of more, shorter prompts can contain more decoder tokens than a batch sized from the longest possible request.
+With the default 6,144 budget, 1,500 encoder placeholders, and at most 232 decoder tokens per request, the cap is 696.
+Startup logs report the capture cost and confirm the active buckets with `prefill CUDA graphs attested`.
 
-The current benchmark results were collected with
-`cuda_graph_max_bs_prefill=256`. To reproduce that capture profile and limit
-startup time and GPU memory, set the prefill graph cap explicitly:
+The current benchmark results were collected with `cuda_graph_max_bs_prefill=256`.
+To reproduce that capture profile and limit startup time and GPU memory, set the prefill graph cap explicitly:
 
 ```yaml
 stages:
@@ -62,9 +58,8 @@ stages:
       cuda_graph_max_bs_prefill: 256
 ```
 
-Whisper runs three independently configured graph planes, each bucketed on its
-own axis; cross-attention K/V is written once per request between the first
-two and only read afterwards:
+Whisper runs three independently configured graph planes, each bucketed on its own axis;
+cross-attention K/V is written once per request between the first two and only read afterwards:
 
 | plane | bucket axis | config |
 |---|---|---|
@@ -74,8 +69,7 @@ two and only read afterwards:
 
 Disabling one plane leaves the other two active.
 
-To disable only the prefill graph while keeping decode and encoder CUDA Graphs
-enabled, override the ASR stage:
+To disable only the prefill graph while keeping decode and encoder CUDA Graphs enabled, override the ASR stage:
 
 ```yaml
 config_cls: WhisperASRPipelineConfig
@@ -144,10 +138,9 @@ print(resp.json()["text"])
 
 ## Translate Audio
 
-Whisper multilingual checkpoints can translate source speech to English via
-`/v1/audio/translations`. Use a multilingual, non-turbo checkpoint: `*.en`
-checkpoints have no translate task, and `whisper-large-v3-turbo` was distilled
-without it.
+Whisper multilingual checkpoints can translate source speech to English via `/v1/audio/translations`.
+Use a multilingual, non-turbo checkpoint:
+`*.en` checkpoints have no translate task, and `whisper-large-v3-turbo` was distilled without it.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/translations \
@@ -157,11 +150,10 @@ curl -X POST http://localhost:8000/v1/audio/translations \
   -F response_format=json
 ```
 
-For this endpoint, `language` is an optional source-language hint and a
-**SGLang-Omni extension**. OpenAI's official audio translations request schema
-does not include `language`; the translation target is English in both APIs.
-See the [audio translation support matrix](../basic_usage/audio_translations.md)
-for response formats and other ASR models.
+For this endpoint, `language` is an optional source-language hint and a **SGLang-Omni extension**.
+OpenAI's official audio translations request schema does not include `language`;
+the translation target is English in both APIs.
+See the [audio translation support matrix](../basic_usage/audio_translations.md) for response formats and other ASR models.
 
 ## Request Parameters
 
@@ -174,37 +166,39 @@ for response formats and other ASR models.
 | `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
-The serving route selects the internal `task` from the endpoint (`transcribe`
-or `translate`); it is not a public form field. The route uses the ASR stage
-default unless the pipeline is configured another way. For smoke tests, keep
-the request minimal and use `response_format=json`.
+The serving route selects the internal `task` from the endpoint (`transcribe` or `translate`);
+it is not a public form field.
+The route uses the ASR stage default unless the pipeline is configured another way.
+For smoke tests, keep the request minimal and use `response_format=json`.
 
-For both transcription and translation, `srt` and `vtt` request Whisper's
-model-derived segment timestamps. Non-streaming subtitle requests are
-supported; `stream=true` with either subtitle format returns HTTP 400.
+For both transcription and translation, `srt` and `vtt` request Whisper's model-derived segment timestamps.
+Non-streaming subtitle requests are supported;
+`stream=true` with either subtitle format returns HTTP 400.
 
 ## Long Audio
 
-Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
-In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
-running each chunk as its own engine request, and joining the transcripts back in order. By default, chunks decode independently and the caller's
-`prompt` is sent to each chunk. Setting `condition_on_previous_text` to `true` makes chunks decode sequentially: the caller prompt conditions the
-first chunk, then each chunk uses the immediately preceding chunk's decoded text as its prompt. If an enabled chunk contains a sustained repeated
-character cycle, it is retried once without previous context; the first result is discarded, and the retry result conditions the next chunk.
-The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
-depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. A single Latin-script word repeated three
-times is excluded to preserve literal repetition. The three-copy threshold caught the observed pathological loops while producing zero retries
-on the submitted TED-LIUM evaluation; it remains a conservative recovery heuristic rather than a transcription guarantee.
+Whisper reads at most 30 seconds of audio in one request:
+the feature extractor works on a fixed 30-second mel window and drops everything past it.
+In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary, running each chunk as its own engine request, and joining the transcripts back in order.
+By default, chunks decode independently and the caller's `prompt` is sent to each chunk.
+Setting `condition_on_previous_text` to `true` makes chunks decode sequentially:
+the caller prompt conditions the first chunk, then each chunk uses the immediately preceding chunk's decoded text as its prompt.
+If an enabled chunk contains a sustained repeated character cycle, it is retried once without previous context;
+the first result is discarded, and the retry result conditions the next chunk.
+The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times.
+It does not depend on whitespace-delimited words, so it also covers languages without reliable word boundaries.
+A single Latin-script word repeated three times is excluded to preserve literal repetition.
+The three-copy threshold caught the observed pathological loops while producing zero retries on the submitted TED-LIUM evaluation;
+it remains a conservative recovery heuristic rather than a transcription guarantee.
 
-This opt-in is not identical to OpenAI Whisper's `condition_on_previous_text=True`: OpenAI Whisper carries decoded token history across internal
-windows and can reset that history during fallback, while SGLang-Omni currently passes the previous server chunk's decoded text. The current
-TED-LIUM evaluation did not show an accuracy or throughput advantage from enabling this implementation, so it remains disabled by default.
+This opt-in is not identical to OpenAI Whisper's `condition_on_previous_text=True`:
+OpenAI Whisper carries decoded token history across internal windows and can reset that history during fallback, while SGLang-Omni currently passes the previous server chunk's decoded text.
+The current TED-LIUM evaluation did not show an accuracy or throughput advantage from enabling this implementation, so it remains disabled by default.
 Changing the default or implementing token-level parity should be evaluated in a separate PR.
 
 The behavior follows two kinds of values.
 
-The scheduling policy is yours to tune, with dotted flags or the matching
-YAML keys:
+The scheduling policy is yours to tune, with dotted flags or the matching YAML keys:
 
 | Name | Default | Meaning |
 |---|---|---|
@@ -213,18 +207,13 @@ YAML keys:
 | `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
 | `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
 
-The last knob is the aggregate guard: decoded waveforms held at once are at
-most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4`
-bytes (decoding itself has transient peaks above that), and long audio holds
-at most
-`max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at
-once. The default keeps that product at half of
-`--asr.engine.max_running_requests`; an explicit value whose product reaches
-`max_running_requests` logs a warning at startup, since short requests would
-then queue behind long audio whenever it is saturated.
+The last knob is the aggregate guard:
+decoded waveforms held at once are at most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4` bytes (decoding itself has transient peaks above that), and long audio holds at most `max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at once.
+The default keeps that product at half of `--asr.engine.max_running_requests`;
+an explicit value whose product reaches `max_running_requests` logs a warning at startup, since short requests would then queue behind long audio whenever it is saturated.
 
-The model properties are ClassVars on `WhisperASRPipelineConfig`; no
-configuration path reaches them:
+The model properties are ClassVars on `WhisperASRPipelineConfig`;
+no configuration path reaches them:
 
 | Name | Value | Meaning |
 |---|---|---|
@@ -327,35 +316,25 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 
 ## Known Limitations
 
-- Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
-  operational behavior before production deployment.
-- `verbose_json` returns a single segment spanning the audio duration; `srt`
-  and `vtt` are not supported and return HTTP 400.
-- Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
-  Graph. Validate the selected buckets before production use.
-- Audio encoding runs before LM admission by default
-  (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
-  `enable_pre_lm_encoder: false` under `stages.asr.factory` to run the
-  encoder inside prefill again.
-- The pre-LM encoder cache (`pre_lm_cache_max_entries=1024`) keeps its
-  entries in page-locked (pinned) host memory so device-to-host and
-  host-to-device copies run asynchronously on the DMA path instead of
-  blocking a worker thread through a pageable bounce buffer. The whole
-  budget (`entries × 3.84 MB` for large-v3, `≈3.9 GB`) is locked at start-up
-  and cannot be swapped; size container memory limits accordingly, or set
-  `pre_lm_cache_pin_host_memory: false` to fall back to pageable memory.
-- Prefill budget defaults to 6,144 tokens (`⌊6144/1500⌋=4`) under atomic
-  admission (`chunked_prefill_size=0`). This caps LM-side prefill batching
-  independently of the pre-LM encoder batch limit.
-- Chunked prefill stays disabled because the Whisper encoder prefix must be
-  admitted atomically. Requests that exceed the current prefill budget wait
-  for the next batch instead of splitting the encoder prefix.
+- Whisper ASR remains experimental.
+  Validate checkpoint-specific accuracy and operational behavior before production deployment.
+- `verbose_json` returns a single segment spanning the audio duration;
+  `srt` and `vtt` are not supported and return HTTP 400.
+- Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA Graph.
+  Validate the selected buckets before production use.
+- Audio encoding runs before LM admission by default (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`).
+  Set `enable_pre_lm_encoder: false` under `stages.asr.factory` to run the encoder inside prefill again.
+- The pre-LM encoder cache (`pre_lm_cache_max_entries=1024`) keeps its entries in page-locked (pinned) host memory so device-to-host and host-to-device copies run asynchronously on the DMA path instead of blocking a worker thread through a pageable bounce buffer.
+  The whole budget (`entries × 3.84 MB` for large-v3, `≈3.9 GB`) is locked at start-up and cannot be swapped;
+  size container memory limits accordingly, or set `pre_lm_cache_pin_host_memory: false` to fall back to pageable memory.
+- Prefill budget defaults to 6,144 tokens (`⌊6144/1500⌋=4`) under atomic admission (`chunked_prefill_size=0`).
+  This caps LM-side prefill batching independently of the pre-LM encoder batch limit.
+- Chunked prefill stays disabled because the Whisper encoder prefix must be admitted atomically.
+  Requests that exceed the current prefill budget wait for the next batch instead of splitting the encoder prefix.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
-- `prompt` conditions decoding via Whisper prev-context tokens. Only the last
-  223 prompt tokens are kept (224 prev-context tokens including
-  `<|startofprev|>`) — fewer when `max_new_tokens` is large, since prompt,
-  task prefix, and output share Whisper's 448-token decoder context.
-  `max_new_tokens` is likewise clamped to that context. The prompt must not
-  contain Whisper special tokens.
+- `prompt` conditions decoding via Whisper prev-context tokens.
+  Only the last 223 prompt tokens are kept (224 prev-context tokens including `<|startofprev|>`) — fewer when `max_new_tokens` is large, since prompt, task prefix, and output share Whisper's 448-token decoder context.
+  `max_new_tokens` is likewise clamped to that context.
+The prompt must not contain Whisper special tokens.

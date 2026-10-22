@@ -1,10 +1,8 @@
 # Voxtral TTS
 
-[Voxtral-4B-TTS](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) is an open-weights
-text-to-speech model from Mistral AI built on a Ministral-3B backbone. It generates lifelike
-24 kHz speech with natural prosody across 9 languages and ships with a set of preset named
-voices. In SGLang-Omni, Voxtral runs as a `preprocessing → tts_generation → vocoder` pipeline
-and is served through the OpenAI-compatible `/v1/audio/speech` endpoint.
+[Voxtral-4B-TTS](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) is an open-weights text-to-speech model from Mistral AI built on a Ministral-3B backbone.
+It generates lifelike 24 kHz speech with natural prosody across 9 languages and ships with a set of preset named voices.
+In SGLang-Omni, Voxtral runs as a `preprocessing → tts_generation → vocoder` pipeline and is served through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 
 ## Prerequisites
@@ -36,8 +34,8 @@ sgl-omni serve \
 
 ### Preset Voice
 
-Voxtral ships preset voices with the checkpoint. Use `cheerful_female` for the
-default preset voice.
+Voxtral ships preset voices with the checkpoint.
+Use `cheerful_female` for the default preset voice.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -52,8 +50,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Named Voices
 
-Voxtral speaks with **preset named voices** (it does not clone from a reference clip). Select
-one with the `voice` field:
+Voxtral speaks with **preset named voices** (it does not clone from a reference clip).
+Select one with the `voice` field:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -67,8 +65,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-The available voices ship inside the checkpoint as `voice_embedding/*.pt` files. List them
-from your downloaded snapshot:
+The available voices ship inside the checkpoint as `voice_embedding/*.pt` files.
+List them from your downloaded snapshot:
 
 ```bash
 MODEL_PATH="$(hf download mistralai/Voxtral-4B-TTS-2603 --quiet)"
@@ -96,8 +94,7 @@ with open("output.wav", "wb") as f:
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time:
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio chunks in real time:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -112,9 +109,8 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
-for a full Python raw PCM consumer.
+Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in the response headers.
+See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming) for a full Python raw PCM consumer.
 
 ## Request Parameters
 
@@ -127,15 +123,15 @@ for a full Python raw PCM consumer.
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream raw PCM audio chunks |
 
-> Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so a request
-> that sets `temperature`, `top_p`, `top_k`, `repetition_penalty` or `seed` is rejected. Reference-clip voice
-> cloning (`references`) is **not** supported for Voxtral — use a preset `voice` instead.
+> Voxtral generation is **deterministic**:
+> the engine fixes `temperature` to `0.0`, so a request that sets `temperature`, `top_p`, `top_k`, `repetition_penalty` or `seed` is rejected.
+> Reference-clip voice cloning (`references`) is **not** supported for Voxtral — use a preset `voice` instead.
 
 ## Benchmark Results
 
-Seed-TTS EN (full set, 1088 utterances), bf16, `max_new_tokens=4096`,
-`--no-ref-audio --voice cheerful_female`, concurrency 16, WER scored with HF
-Whisper-large-v3. Hardware: 1× H200 SXM.
+Seed-TTS EN (full set, 1088 utterances), bf16, `max_new_tokens=4096`, `--no-ref-audio --voice cheerful_female`, concurrency 16, WER scored with HF Whisper-large-v3.
+Hardware:
+1× H200 SXM.
 
 | Metric | Value |
 |---|---|
@@ -150,17 +146,16 @@ Whisper-large-v3. Hardware: 1× H200 SXM.
 | Throughput (req/s) | 5.40 |
 | Completed / failed requests | 1088 / 0 |
 
-Reproduce with the SeedTTS command documented in `benchmarks/README.md`. The Voxtral model card
-also quotes ~70 ms first-audio latency at concurrency 1; the table above is a throughput-oriented
-run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
-single-stream figure. Output is 24 kHz.
+Reproduce with the SeedTTS command documented in `benchmarks/README.md`.
+The Voxtral model card also quotes ~70 ms first-audio latency at concurrency 1;
+the table above is a throughput-oriented run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized single-stream figure.
+Output is 24 kHz.
 
 ## Known Limitations
 
-- **Preset voices only.** Voxtral selects from named voices baked into the checkpoint; it does
-  not clone an arbitrary speaker from a reference clip in this engine.
-- **Deterministic decoding.** `temperature` is fixed at `0.0`; you cannot trade determinism for
-  diversity through sampling parameters.
-- **Language coverage.** Quality is tuned for the 9 supported languages (English, French,
-  Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).
+- **Preset voices only.** Voxtral selects from named voices baked into the checkpoint;
+  it does not clone an arbitrary speaker from a reference clip in this engine.
+- **Deterministic decoding.** `temperature` is fixed at `0.0`;
+  you cannot trade determinism for diversity through sampling parameters.
+- **Language coverage.** Quality is tuned for the 9 supported languages (English, French, Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).
 - **Non-commercial license.** The weights are CC BY-NC 4.0; commercial use is not permitted.

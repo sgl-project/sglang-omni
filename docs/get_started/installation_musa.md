@@ -2,13 +2,13 @@
 
 This document describes how to install SGLang-Omni on Moore Threads GPUs.
 
-SGLang owns the base MUSA runtime environment. Install or build SGLang's MUSA
-environment first, then install SGLang-Omni as an overlay.
+SGLang owns the base MUSA runtime environment.
+Install or build SGLang's MUSA environment first, then install SGLang-Omni as an overlay.
 
 ## Prerequisites
 
-Install the Moore Threads driver and MUSA runtime on the host first. For the
-base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
+Install the Moore Threads driver and MUSA runtime on the host first.
+For the base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 
 ## Option A: Docker
 
@@ -28,12 +28,10 @@ docker build -f docker/musa.Dockerfile \
   -t sglang-omni:main-musa520-s5000 .
 ```
 
-The base image is built from the immutable `v0.5.22` release tag, which
-includes `docker/musa.Dockerfile`.
+The base image is built from the immutable `v0.5.22` release tag, which includes `docker/musa.Dockerfile`.
 
-Run the image with MUSA devices exposed by the host runtime. If `mthreads` is
-already configured as the Docker default runtime on your host, omit
-`--runtime=mthreads`.
+Run the image with MUSA devices exposed by the host runtime.
+If `mthreads` is already configured as the Docker default runtime on your host, omit `--runtime=mthreads`.
 
 ```bash
 docker run -it --rm \
@@ -49,9 +47,8 @@ docker run -it --rm \
 
 ## Option B: Install from Source
 
-Start from an environment where SGLang `v0.5.22` has been installed with MUSA
-support. If you build SGLang from source, clone the pinned tag rather than
-`main`:
+Start from an environment where SGLang `v0.5.22` has been installed with MUSA support.
+If you build SGLang from source, clone the pinned tag rather than `main`:
 
 ```bash
 git clone --depth 1 --branch v0.5.22 \
@@ -116,12 +113,10 @@ cd "${omni_root}"
 )
 ```
 
-The subshell restores the original `pyproject.toml` when installation exits, so
-the source checkout is not left with the MUSA dependency overlay.
+The subshell restores the original `pyproject.toml` when installation exits, so the source checkout is not left with the MUSA dependency overlay.
 
-The MUSA pyproject installs only SGLang-Omni overlay dependencies. The base
-MUSA torch stack, SGLang, sgl-kernel, Triton, TileLang, and MATE are inherited
-from the SGLang MUSA environment.
+The MUSA pyproject installs only SGLang-Omni overlay dependencies.
+The base MUSA torch stack, SGLang, sgl-kernel, Triton, TileLang, and MATE are inherited from the SGLang MUSA environment.
 
 ## Verify
 
