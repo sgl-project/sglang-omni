@@ -24,6 +24,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -36,6 +37,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <typeinfo>
 #include <vector>
 
@@ -284,12 +286,22 @@ std::string NewRequestId() {
 // address and port since civetweb does not expose it, or -1.
 int ClientSocket(const mg_connection *connection) {
   const mg_request_info *request_info = mg_get_request_info(connection);
-  // Note (Minyi Tang): a process out of descriptors cannot list them, and the
-  // request is then served without watching its client.
+  // Note (Minyi Tang): a listing that fails, as it does in a process out of
+  // descriptors, ends the search, and the request is then served without
+  // watching its client. Nothing here throws, since an exception would unwind
+  // through civetweb's C callback and terminate the server.
   std::error_code listing_error;
-  for (const auto &entry :
-       std::filesystem::directory_iterator("/dev/fd", listing_error)) {
-    const int file_descriptor = std::stoi(entry.path().filename().string());
+  for (std::filesystem::directory_iterator listing("/dev/fd", listing_error);
+       !listing_error && listing != std::filesystem::directory_iterator();
+       listing.increment(listing_error)) {
+    const std::string name = listing->path().filename().string();
+    int file_descriptor = -1;
+    const auto [parse_end, parse_error] = std::from_chars(
+        name.data(), name.data() + name.size(), file_descriptor);
+    if (parse_error != std::errc() || parse_end != name.data() + name.size()) {
+      continue;
+    } else {
+    }
     sockaddr_storage peer{};
     socklen_t peer_size = sizeof(peer);
     char address[INET6_ADDRSTRLEN] = "";
