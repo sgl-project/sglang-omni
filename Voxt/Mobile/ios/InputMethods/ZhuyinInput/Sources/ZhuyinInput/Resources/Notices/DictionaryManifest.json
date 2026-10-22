@@ -1,0 +1,29 @@
+{
+  "revision": "f5ba010ce8795d283ee336ca7d16380f200bd2ec",
+  "command": "make data.txt",
+  "inputs": {
+    "BPMFBase.txt": "46e64a53dc9c6baa2cbe6e0b1af572f8ef6aafb50597178b5fd53df804316ce7",
+    "BPMFMappings.txt": "baa9452ef927b3268f600ca69fe27eb0838b8be31c8ae0dd8540561db68c7ffd",
+    "BPMFPunctuations.txt": "3058fd5fb933a5919900caa7332c2d1a95cd11a2a2ff56e51526a4daa4c95083",
+    "phrase.occ": "2dbe37c1c61266f65d158a3e0020a0c1f2a75039ebd7f1580ef8e537a7bc8779",
+    "exclusion.txt": "d0d72eb220d31d5800658de8d788a9e2531b504e9f05ffe633fb11d43d217a3d",
+    "Symbols.txt": "d05d69afb44cbe6833db98dd46b0a4c6d60fbc97df8fcb361dce8123938e9b94",
+    "Macros.txt": "44f6b29c3d23189f5519ab83c4b9a6cf2d0cf91398276c277d84779b7e472582",
+    "heterophony1.list": "7fddbb6a66022b1809181484c7627d79dee4231849cb2d3c8c8cd4578b3d22cb",
+    "heterophony2.list": "4afd69a2702ae3af533cd01b755f81d77a430ace91311a8229319334aec24e37",
+    "heterophony3.list": "8be3f37fe419744c3792df1bdfc67a0abdb215dbbb759c92204d4f8d68a32cd9",
+    "Postprocess.txt": "5f01a9b387f6f1a7198a8c19d3a0181aad4f29663d40307de9cc8de664adf5ab",
+    "Makefile": "8377d7e6bc939aa8fd724f26261608209c44fea43d69b8e7e76f2225a74bb844"
+  },
+  "output_sha256": "0deae7b7c1dcde1d7a30d139e7068543e0c0e7112e944b63eb52947bca1db7ac",
+  "generation_code": {
+    "curation/__init__.py": "a850afdc000b3fa8564f10826b4169409686f13159ccab0bf3d45f37c1250b5f",
+    "curation/builders/__init__.py": "a624c18a02bd8403cdb37b9eeaa70c6a7bb4611caa39e4f3b012c224592ff860",
+    "curation/compilers/__init__.py": "a37876e8e8d15154df6fe9dc88c540b5132994c402263b57ac09bf56bac9d292",
+    "curation/builders/frequency_builder.py": "8042e65097ff209464e702a846e6cea42aa566dc8197f0f712b9e947dd4b26e7",
+    "curation/compilers/compiler_utils.py": "828e8faa0adc42053111a08e87e85314e1f83a801c8a0c3a3c3e44f39d32b60a",
+    "curation/compilers/main_compiler.py": "1ba950bc915ef423d3f01b44066e5aa6539293a11da13042f9f30f2c9fa572c4",
+    "curation/compilers/postprocess.py": "e73b83d93e604560663ed4eaa8a0e0ef23467595b758affe961eadb2d9b9fb92",
+    "curation/mandarin/grid.py": "38132daacd2963001dfe616b48df95a4735a9373825ab01eea3947055f3a748c"
+  }
+}

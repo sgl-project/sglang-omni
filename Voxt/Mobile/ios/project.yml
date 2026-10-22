@@ -1,4 +1,7 @@
 name: VoxtMobile
+# Japanese, pinyin and Zhuyin layouts with their dictionaries; drop this line to build without them.
+include:
+  - InputMethods.yml
 options:
   bundleIdPrefix: com.voxt.VoxtMobile
   deploymentTarget:

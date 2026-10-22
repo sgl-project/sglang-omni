@@ -2,7 +2,7 @@
 
 Dictate on your iPhone with the models Voxt runs on your Mac. Tap the mic on the Voxt keyboard in any app and speak; Voxt on the Mac transcribes with your speech model, cleans up with your text model, prompt and dictionary, and the text appears in the field you were typing in. With local models in Voxt, the recording and the text stay on your phone and your Mac.
 
-Four ways to write: **dictate**, **translate** (hold the mic and slide up to a language), **edit** the selected text by saying what to change, and **write** from a spoken request. The keyboard also types English, French, German, Spanish and Korean.
+Four ways to write: **dictate**, **translate** (hold the mic and slide up to a language), **edit** the selected text by saying what to change, and **write** from a spoken request. The keyboard also types English, French, German, Spanish and Korean, plus Japanese flick, pinyin and Zhuyin when the build includes `ios/InputMethods/`.
 
 Three apps work together:
 
@@ -61,6 +61,8 @@ One VoxtMobileKit test writes to the login Keychain, which CI runners and a shel
 
 The UI tests (`VoxtMobileUITests`) run on a simulator against `tools/design-tour-fixture.py`, a loopback server that answers like the Local API without a model; each test names the environment it reads. After editing `ios/project.yml`, run `xcodegen generate` in `ios/`.
 
+`ios/InputMethods.yml` brings in the Japanese, pinyin and Zhuyin packages (about 50 MB of dictionaries). Remove its `include` line in `ios/project.yml` to build without them; `ios/tools/test-input-methods-optional.sh` checks that build.
+
 ## How it fits together
 
 | Folder | What it is |
@@ -68,7 +70,7 @@ The UI tests (`VoxtMobileUITests`) run on a simulator against `tools/design-tour
 | `ios/App`, `ios/Keyboard` | The iPhone app and its keyboard extension |
 | `ios/VoxtMobileKit` | Pairing, the Local API client, the keyboard–app channel, history |
 | `ios/VoxtTailcat`, `tailcat/native` | The phone's tailnet node: Go, built into `CVoxtTailcat.xcframework` |
-| `ios/TypingInput`, `KoreanInput`, `SpanishInput` | Typing layouts |
+| `ios/TypingInput`, `KoreanInput`, `SpanishInput`, `InputMethods/` | Typing layouts and conversion engines |
 | `connector/VoxtConnector`, `connector/VoxtConnectionKit` | The Mac menu bar app and its logic |
 | `tailcat/host` | The Mac's tailnet node, bundled into the Connector |
 | `contract/` | Local API responses both sides test against |

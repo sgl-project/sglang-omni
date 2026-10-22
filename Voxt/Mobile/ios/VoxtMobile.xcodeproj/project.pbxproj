@@ -25,10 +25,12 @@
 		322BA6BCEAF34CFBF8F65ECD /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9453B0F6D1D8F3942885AE4 /* Onboarding.swift */; };
 		32E31407FF35F7A6564C9E8D /* MicrophoneCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821D0408E0F30AD674B6A6CF /* MicrophoneCapture.swift */; };
 		3319EBE65F31ADC54FEDE3A3 /* JapaneseKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C60EF0E45F02800A6C97A730 /* JapaneseKeyboardView.swift */; };
+		39C4AF32A13E999888D442C9 /* TypingHost in Frameworks */ = {isa = PBXBuildFile; productRef = D79EF57517A086319AD10BF3 /* TypingHost */; };
 		3E838227409BD75212065D28 /* DictationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46911ABF4195A36473ED5677 /* DictationView.swift */; };
 		43D9A47D6521AF8C28B5A08F /* AppModelDeveloperPromptsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC74F22282F23393852658CA /* AppModelDeveloperPromptsTests.swift */; };
 		4744C9DB27750C2F7C4EE658 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA43C695E03BA48A0590FFCA /* OnboardingView.swift */; };
 		4F783B66C0BC0F59EDEE9E54 /* AppModelMacFeaturesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B997E344019B39D5CBBE0E8 /* AppModelMacFeaturesTests.swift */; };
+		5355BEB2B285916920684B16 /* SpanishInput in Frameworks */ = {isa = PBXBuildFile; productRef = 06281447DE9A9C5D26391D57 /* SpanishInput */; };
 		54177F6E38A929336C1DA091 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D8FD64C41F424EFFDD074DB0 /* Assets.xcassets */; };
 		57D44D92312AE12BBFF2C69A /* AppScreensUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C1DCF01C41838761968D05 /* AppScreensUITests.swift */; };
 		5A8CEC952556A7DDB045ECEC /* TestLanguageLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764D7BD1E8D0EE67913FEC97 /* TestLanguageLaunchTests.swift */; };
@@ -37,13 +39,13 @@
 		62B366EBBF9FE0B5C68CEAE3 /* KeyboardHandoffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E25545ED0745C63198BCB2FE /* KeyboardHandoffView.swift */; };
 		65AF14A56B67649C251860DF /* DictionaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F62BFFA777FA78BAC8EB96DB /* DictionaryView.swift */; };
 		6FF0B82F3B1D3BBA518ACE7D /* AppModelConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CEE62A5600E01CBD6B465A1 /* AppModelConnectionTests.swift */; };
-		70116FCA5C50E99536F85390 /* TypingHost in Frameworks */ = {isa = PBXBuildFile; productRef = D79EF57517A086319AD10BF3 /* TypingHost */; };
+		70116FCA5C50E99536F85390 /* PinyinInput in Frameworks */ = {isa = PBXBuildFile; productRef = 22C29D367B54E2137315D6DB /* PinyinInput */; };
 		7537C2CF67E109C273F4BDD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D26B0BC60F97AE9AB4FBF7F /* SettingsView.swift */; };
-		7790B78487AB4C1CF167CA49 /* TypingInput in Frameworks */ = {isa = PBXBuildFile; productRef = FF96FC0325B0EA333728E08B /* TypingInput */; };
+		7790B78487AB4C1CF167CA49 /* ZhuyinInput in Frameworks */ = {isa = PBXBuildFile; productRef = 999389AFB1A5193A765F257F /* ZhuyinInput */; };
 		83B5532B2EFC98DAEACD9B13 /* AppModelResultAttributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BBB654FD3BD613DFC7FCBAD /* AppModelResultAttributionTests.swift */; };
 		85865862F2F7E60B3C8BE29A /* WeekSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AD40D8C2C58D028E2F6E71C /* WeekSummary.swift */; };
 		8BD1ABC7071C3CB3FD90D5D0 /* ZhuyinKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A548A45F81DAA4D188B88B9 /* ZhuyinKeyboardView.swift */; };
-		8CC2DDA6AE103907B50869BB /* SpanishInput in Frameworks */ = {isa = PBXBuildFile; productRef = 06281447DE9A9C5D26391D57 /* SpanishInput */; };
+		8CC2DDA6AE103907B50869BB /* TypingInput in Frameworks */ = {isa = PBXBuildFile; productRef = FF96FC0325B0EA333728E08B /* TypingInput */; };
 		8D2B0036E414BFA90DCEFB72 /* AppModelCorrectionLifetimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34B5A414BC5A0E4462E44001 /* AppModelCorrectionLifetimeTests.swift */; };
 		94C3675EB629CED9240E9A6E /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26FE854EE2833D9ABC8DEFD7 /* KeyboardViewController.swift */; };
 		94DABD5FF4BD7CBADA07CE11 /* PenIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3153CE755D3F9B659ECDCB /* PenIntentTests.swift */; };
@@ -52,13 +54,13 @@
 		9C8CB8CCC60A7F82B727215F /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C573316AF3AAB69A2F226856 /* InfoPlist.strings */; };
 		9CB15EE50AA74DDF9AF5F415 /* AppModelTailcatInvitationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A35F25709DE34FB4BC8E4276 /* AppModelTailcatInvitationTests.swift */; };
 		9DC63C35E06A1C259C647710 /* AppModelPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C47B0131E57911A6EFEE24B /* AppModelPersistenceTests.swift */; };
-		AF2CD11490D33BD8C15515A4 /* VoxtMobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = 569402215B01799888694C48 /* VoxtMobileKit */; };
+		AF2CD11490D33BD8C15515A4 /* JapaneseInput in Frameworks */ = {isa = PBXBuildFile; productRef = 8D6DDB3769CB7201466BD420 /* JapaneseInput */; };
 		AF7325E9DAFA1110D313180F /* CompositionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */; };
 		B17C8CB4DE227AAE57F92EDA /* DesignTourUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53149FD2F88F732673E9CAF /* DesignTourUITests.swift */; };
 		B98073B447CC175B6BDC8219 /* TranslationLanguagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 058BD9792DB779D8BA580706 /* TranslationLanguagesView.swift */; };
 		BBF8BD4F5A726CDDF7D77F8B /* DeviceAppScreensUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B258E00BBCEC5924F37BFCD1 /* DeviceAppScreensUITests.swift */; };
 		C0D27AE0B69C43D39073A6E9 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D431E0A60F34D24AA70C5D /* OnboardingTests.swift */; };
-		C44EDE699C04AA5601ED49FC /* KoreanInput in Frameworks */ = {isa = PBXBuildFile; productRef = A5AA652A41F938B54EF54689 /* KoreanInput */; };
+		C44EDE699C04AA5601ED49FC /* VoxtMobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = 569402215B01799888694C48 /* VoxtMobileKit */; };
 		C8F3FD9C9F2B5BFFF321E741 /* PersonalStyleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435D46623B9D8E9DBDB3A300 /* PersonalStyleView.swift */; };
 		CF3388E8B321CB5BBB6089C1 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D874FBB937928ED6E546E2D /* HistoryView.swift */; };
 		D4D4D6E3DB103665609A264F /* AppModelHistorySyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F305E780A5580EAEDA008494 /* AppModelHistorySyncTests.swift */; };
@@ -67,6 +69,7 @@
 		E5571A38B617400859818A44 /* TextKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 962A7F5FF725C5915C2DF572 /* TextKeyboardView.swift */; };
 		E744F7EC3A1DD9C48A0169B3 /* VoxtMobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA456DD9AE9A091CD6391D36 /* VoxtMobileKit */; };
 		EC0BFA7C39D33EF1DB255CE0 /* VoxtKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F70FCB2F67A0803E1C9DCC61 /* KoreanInput in Frameworks */ = {isa = PBXBuildFile; productRef = A5AA652A41F938B54EF54689 /* KoreanInput */; };
 		FCAB19FBE3E8398A8A370C06 /* TestResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A940BEBF7D6C3619BCA5C73 /* TestResetTests.swift */; };
 		FEFA2789D1E7ABBBFAC775DE /* HomeSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE244A93F561B9CF9C243FD7 /* HomeSummaryTests.swift */; };
 		FF0DF8723FAE682EEC46822D /* LocalizationBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0718882140522D65DFC9DFE9 /* LocalizationBundleTests.swift */; };
@@ -166,10 +169,12 @@
 		AF4EC09D8DEC125C4C879937 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		B258E00BBCEC5924F37BFCD1 /* DeviceAppScreensUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAppScreensUITests.swift; sourceTree = "<group>"; };
 		B33FDF758831B853DD6DEFFB /* FileAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAudioCapture.swift; sourceTree = "<group>"; };
+		B564054FBF046B43C431995A /* ZhuyinInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ZhuyinInput; path = InputMethods/ZhuyinInput; sourceTree = SOURCE_ROOT; };
 		B9453B0F6D1D8F3942885AE4 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		C53149FD2F88F732673E9CAF /* DesignTourUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTourUITests.swift; sourceTree = "<group>"; };
 		C60EF0E45F02800A6C97A730 /* JapaneseKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JapaneseKeyboardView.swift; sourceTree = "<group>"; };
 		C8C1DCF01C41838761968D05 /* AppScreensUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppScreensUITests.swift; sourceTree = "<group>"; };
+		C994871478A5E77BC1C775E1 /* PinyinInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PinyinInput; path = InputMethods/PinyinInput; sourceTree = SOURCE_ROOT; };
 		CA43C695E03BA48A0590FFCA /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositionSession.swift; sourceTree = "<group>"; };
 		D8FD64C41F424EFFDD074DB0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -183,6 +188,7 @@
 		F3646B845D62EC9DEA97E0D6 /* VoxtKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoxtKeyboard.entitlements; sourceTree = "<group>"; };
 		F45845D10B39B4B116D3CDCE /* TypingInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TypingInput; path = TypingInput; sourceTree = SOURCE_ROOT; };
 		F62BFFA777FA78BAC8EB96DB /* DictionaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryView.swift; sourceTree = "<group>"; };
+		F755E81E724012E95B4F1ABD /* JapaneseInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = JapaneseInput; path = InputMethods/JapaneseInput; sourceTree = SOURCE_ROOT; };
 		F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = VoxtKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -191,11 +197,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AF2CD11490D33BD8C15515A4 /* VoxtMobileKit in Frameworks */,
-				7790B78487AB4C1CF167CA49 /* TypingInput in Frameworks */,
-				70116FCA5C50E99536F85390 /* TypingHost in Frameworks */,
-				C44EDE699C04AA5601ED49FC /* KoreanInput in Frameworks */,
-				8CC2DDA6AE103907B50869BB /* SpanishInput in Frameworks */,
+				AF2CD11490D33BD8C15515A4 /* JapaneseInput in Frameworks */,
+				7790B78487AB4C1CF167CA49 /* ZhuyinInput in Frameworks */,
+				70116FCA5C50E99536F85390 /* PinyinInput in Frameworks */,
+				C44EDE699C04AA5601ED49FC /* VoxtMobileKit in Frameworks */,
+				8CC2DDA6AE103907B50869BB /* TypingInput in Frameworks */,
+				39C4AF32A13E999888D442C9 /* TypingHost in Frameworks */,
+				F70FCB2F67A0803E1C9DCC61 /* KoreanInput in Frameworks */,
+				5355BEB2B285916920684B16 /* SpanishInput in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -251,11 +260,14 @@
 		52A0E757543541F60516E34F /* Packages */ = {
 			isa = PBXGroup;
 			children = (
+				F755E81E724012E95B4F1ABD /* JapaneseInput */,
 				E44ED83EB1187264964918DA /* KoreanInput */,
+				C994871478A5E77BC1C775E1 /* PinyinInput */,
 				02CC9FAA3FF73FF4E9F525D0 /* SpanishInput */,
 				F45845D10B39B4B116D3CDCE /* TypingInput */,
 				918DE773E095ED2265A42F19 /* VoxtMobileKit */,
 				39DA949BEB741CD4904C28E0 /* VoxtTailcat */,
+				B564054FBF046B43C431995A /* ZhuyinInput */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -416,6 +428,9 @@
 			);
 			name = VoxtKeyboard;
 			packageProductDependencies = (
+				8D6DDB3769CB7201466BD420 /* JapaneseInput */,
+				999389AFB1A5193A765F257F /* ZhuyinInput */,
+				22C29D367B54E2137315D6DB /* PinyinInput */,
 				569402215B01799888694C48 /* VoxtMobileKit */,
 				FF96FC0325B0EA333728E08B /* TypingInput */,
 				D79EF57517A086319AD10BF3 /* TypingHost */,
@@ -469,11 +484,14 @@
 			mainGroup = B8E7040D56EBAB21E409A371;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				91DB5EF1DCA81EDC2646DEE1 /* XCLocalSwiftPackageReference "InputMethods/JapaneseInput" */,
 				F8BCB7E6578B38627128B08A /* XCLocalSwiftPackageReference "KoreanInput" */,
+				5950F6D790FCF85E4C7A74E6 /* XCLocalSwiftPackageReference "InputMethods/PinyinInput" */,
 				405DD79DE3DCFAD65B4CBFF3 /* XCLocalSwiftPackageReference "SpanishInput" */,
 				3ED42451ED42590F7A817B72 /* XCLocalSwiftPackageReference "TypingInput" */,
 				FE755DD33BA5B9926DBDB18E /* XCLocalSwiftPackageReference "VoxtMobileKit" */,
 				AB998A5A13B4BFE7AF7EF795 /* XCLocalSwiftPackageReference "VoxtTailcat" */,
+				1F89811BA9D3D582BC7F317B /* XCLocalSwiftPackageReference "InputMethods/ZhuyinInput" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 825B2A04712E58B76935C845 /* Products */;
@@ -683,6 +701,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
+				VOXT_INPUT_METHODS = "ja-flick zh-Hant-zhuyin zh-Hans-pinyin";
 			};
 			name = Debug;
 		};
@@ -775,6 +794,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
+				VOXT_INPUT_METHODS = "ja-flick zh-Hant-zhuyin zh-Hans-pinyin";
 			};
 			name = Release;
 		};
@@ -931,6 +951,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		1F89811BA9D3D582BC7F317B /* XCLocalSwiftPackageReference "InputMethods/ZhuyinInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/ZhuyinInput;
+		};
 		3ED42451ED42590F7A817B72 /* XCLocalSwiftPackageReference "TypingInput" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = TypingInput;
@@ -938,6 +962,14 @@
 		405DD79DE3DCFAD65B4CBFF3 /* XCLocalSwiftPackageReference "SpanishInput" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = SpanishInput;
+		};
+		5950F6D790FCF85E4C7A74E6 /* XCLocalSwiftPackageReference "InputMethods/PinyinInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/PinyinInput;
+		};
+		91DB5EF1DCA81EDC2646DEE1 /* XCLocalSwiftPackageReference "InputMethods/JapaneseInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/JapaneseInput;
 		};
 		AB998A5A13B4BFE7AF7EF795 /* XCLocalSwiftPackageReference "VoxtTailcat" */ = {
 			isa = XCLocalSwiftPackageReference;
@@ -958,9 +990,21 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = SpanishInput;
 		};
+		22C29D367B54E2137315D6DB /* PinyinInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PinyinInput;
+		};
 		569402215B01799888694C48 /* VoxtMobileKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = VoxtMobileKit;
+		};
+		8D6DDB3769CB7201466BD420 /* JapaneseInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = JapaneseInput;
+		};
+		999389AFB1A5193A765F257F /* ZhuyinInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ZhuyinInput;
 		};
 		9C58FE21B9EBFA0AFF2208DD /* VoxtTailcat */ = {
 			isa = XCSwiftPackageProductDependency;

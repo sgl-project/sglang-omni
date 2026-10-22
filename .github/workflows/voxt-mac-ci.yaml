@@ -367,7 +367,8 @@ jobs:
       - name: Swift package tests
         working-directory: Voxt/Mobile
         run: |
-          for package in ios/VoxtMobileKit ios/VoxtTailcat ios/TypingInput ios/KoreanInput ios/SpanishInput; do
+          for package in ios/VoxtMobileKit ios/VoxtTailcat ios/TypingInput ios/KoreanInput ios/SpanishInput \
+            ios/InputMethods/JapaneseInput ios/InputMethods/PinyinInput ios/InputMethods/ZhuyinInput; do
             swift test --package-path "$package" --scratch-path "$RUNNER_TEMP/spm/$package" \
               --disable-keychain --disable-netrc
           done
@@ -410,3 +411,4 @@ jobs:
           for test in tools/test_*.py tools/test-design-tour-fixture.py; do
             python3 -I "$test"
           done
+          python3 ios/InputMethods/PinyinInput/Tools/test_make_data.py
