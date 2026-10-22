@@ -157,13 +157,25 @@ mx::array NemotronModel::FeedForward(const mx::array &x,
       prefix + ".linear2");
 }
 
+mx::array
+NemotronModel::ProjectRelativePositions(const mx::array &relative_positions,
+                                        int layer) const {
+  const int position_count = relative_positions.shape(1);
+  const int head_width = config_.model_width / config_.head_count;
+  const std::string prefix =
+      "encoder.layers." + std::to_string(layer) + ".self_attn.linear_pos";
+  return mx::transpose(
+      mx::reshape(checkpoint_.Linear(relative_positions, prefix),
+                  {1, position_count, config_.head_count, head_width}),
+      {0, 2, 1, 3});
+}
+
 mx::array NemotronModel::RelativeAttention(const mx::array &queries,
                                            const mx::array &keys_values,
-                                           const mx::array &relative_positions,
+                                           const mx::array &projected_positions,
                                            const std::string &prefix) const {
   const int query_count = queries.shape(1);
   const int key_count = keys_values.shape(1);
-  const int position_count = relative_positions.shape(1);
   const int head_count = config_.head_count;
   const int head_width = config_.model_width / head_count;
   const float scale =
@@ -189,11 +201,8 @@ mx::array NemotronModel::RelativeAttention(const mx::array &queries,
       heads(checkpoint_.Linear(keys_values, prefix + ".linear_k"), key_count);
   const mx::array values =
       heads(checkpoint_.Linear(keys_values, prefix + ".linear_v"), key_count);
-  const mx::array positions =
-      heads(checkpoint_.Linear(relative_positions, prefix + ".linear_pos"),
-            position_count);
   mx::array position_scores =
-      mx::matmul(position_queries, mx::swapaxes(positions, -2, -1));
+      mx::matmul(position_queries, mx::swapaxes(projected_positions, -2, -1));
   position_scores = qwen3_asr::RelativeShift(position_scores);
   position_scores =
       mx::multiply(mx::slice(position_scores, {0, 0, 0, 0},
@@ -209,7 +218,7 @@ mx::array NemotronModel::RelativeAttention(const mx::array &queries,
 }
 
 mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
-                                     const mx::array &relative_positions,
+                                     const mx::array &projected_positions,
                                      LayerCache &cache) const {
   const std::string prefix = "encoder.layers." + std::to_string(layer);
   const mx::Dtype dtype = x.dtype();
@@ -227,7 +236,7 @@ mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
           ? mx::concatenate({*cache.attention_inputs, attention_input}, 1)
           : attention_input;
   hidden = mx::add(hidden, RelativeAttention(attention_input, keys_values,
-                                             relative_positions,
+                                             projected_positions,
                                              prefix + ".self_attn"));
   const int key_count = keys_values.shape(1);
   cache.attention_inputs = mx::slice(

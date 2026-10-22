@@ -61,10 +61,15 @@ public:
   // Relative positions length - 1 down to -(length - 1), [1, 2 * length - 1,
   // width] in dtype; every layer of a chunk shares them.
   mlx::core::array RelativePositions(int length, mlx::core::Dtype dtype) const;
+  // Project one relative-position table through a layer's fixed position
+  // weights.
+  mlx::core::array
+  ProjectRelativePositions(const mlx::core::array &relative_positions,
+                           int layer) const;
   // One conformer layer over a chunk [1, frames, width], reading and replacing
   // the layer's cache.
   mlx::core::array StreamLayer(const mlx::core::array &x, int layer,
-                               const mlx::core::array &relative_positions,
+                               const mlx::core::array &projected_positions,
                                LayerCache &cache) const;
   // Encoder frames conditioned on the language prompt.
   mlx::core::array ApplyPrompt(const mlx::core::array &encoded,
@@ -91,10 +96,11 @@ private:
                           int stride, int groups) const;
   mlx::core::array FeedForward(const mlx::core::array &x,
                                const std::string &prefix) const;
-  mlx::core::array RelativeAttention(const mlx::core::array &queries,
-                                     const mlx::core::array &keys_values,
-                                     const mlx::core::array &relative_positions,
-                                     const std::string &prefix) const;
+  mlx::core::array
+  RelativeAttention(const mlx::core::array &queries,
+                    const mlx::core::array &keys_values,
+                    const mlx::core::array &projected_positions,
+                    const std::string &prefix) const;
 
   NemotronConfig config_;
   qwen3_asr::Checkpoint checkpoint_;

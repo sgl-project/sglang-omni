@@ -66,6 +66,8 @@ private:
 
   // Encoder state between chunks.
   std::vector<LayerCache> layer_caches_;
+  std::vector<mlx::core::array> projected_positions_;
+  int position_frames_ = 0;
   std::optional<mlx::core::array> mel_cache_;
   int emitted_frames_ = 0;
   int consumed_mel_frames_ = 0;

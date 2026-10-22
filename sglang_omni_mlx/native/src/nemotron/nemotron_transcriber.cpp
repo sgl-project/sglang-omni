@@ -220,11 +220,22 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
         layer_caches_[0].attention_inputs.has_value()
             ? layer_caches_[0].attention_inputs->shape(1)
             : 0;
-    const mx::array positions =
-        model.RelativePositions(attention_frames + high - low, hidden.dtype());
+    const int position_frames = attention_frames + high - low;
+    if (position_frames != position_frames_) {
+      const mx::array positions =
+          model.RelativePositions(position_frames, hidden.dtype());
+      projected_positions_.clear();
+      projected_positions_.reserve(config.layer_count);
+      for (int layer = 0; layer < config.layer_count; ++layer) {
+        projected_positions_.push_back(
+            model.ProjectRelativePositions(positions, layer));
+      }
+      position_frames_ = position_frames;
+    } else {
+    }
     for (int layer = 0; layer < config.layer_count; ++layer) {
-      hidden =
-          model.StreamLayer(hidden, layer, positions, layer_caches_[layer]);
+      hidden = model.StreamLayer(hidden, layer, projected_positions_[layer],
+                                 layer_caches_[layer]);
     }
     DecodeChunk(model.ApplyPrompt(hidden, prompt_index_));
   }
