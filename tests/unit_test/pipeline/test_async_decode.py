@@ -1705,3 +1705,58 @@ def test_the_prediction_follows_the_retract_test_gate(
     monkeypatch.setattr(omni_scheduler, "TEST_RETRACT_NO_PREFILL_BS", 2)
 
     assert s.is_prefill_expected() is True
+
+
+@pytest.mark.parametrize(
+    "unsupported_state",
+    ["chunked_req", "decoding_reqs", "is_prefill_only", "return_logprob"],
+)
+def test_async_prefill_rejects_partial_or_special_batches(unsupported_state):
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.async_prefill = True
+    scheduler.session_bridge = None
+    scheduler.chunked_req = None
+    batch = types.SimpleNamespace(
+        forward_mode=types.SimpleNamespace(
+            is_extend=lambda: True,
+            is_target_verify=lambda: False,
+            is_draft_extend_v2=lambda: False,
+        ),
+        chunked_req=None,
+        decoding_reqs=[],
+        is_prefill_only=False,
+        return_logprob=False,
+        reqs=[types.SimpleNamespace(inflight_middle_chunks=0)],
+    )
+    assert scheduler.is_async_prefill_batch(batch)
+    setattr(batch, unsupported_state, True)
+    assert not scheduler.is_async_prefill_batch(batch)
+
+
+def test_async_prefill_runs_prefill_hook_before_publishing_tokens():
+    runner = StubRunner()
+    build_forward_batch = runner.build_forward_batch
+    events = []
+
+    def build_prefill(scheduler_output):
+        forward_batch, schedule_batch, _ = build_forward_batch(scheduler_output)
+        return forward_batch, schedule_batch, True
+
+    def finish_prefill(*arguments):
+        events.append("prefill")
+
+    publish_next_tokens = runner.publish_next_tokens
+
+    def publish(*arguments):
+        events.append("publish")
+        return publish_next_tokens(*arguments)
+
+    runner.build_forward_batch = build_prefill
+    runner.post_prefill = finish_prefill
+    runner.publish_next_tokens = publish
+    with patch_event(ready=True):
+        step = runner.execute_launch(make_sched_output(1))
+        assert step is not None
+        assert events == ["prefill", "publish"]
+        runner.execute_resolve(step)
+    assert events == ["prefill", "publish"]
