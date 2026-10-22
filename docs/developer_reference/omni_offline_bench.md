@@ -1,6 +1,6 @@
-# MiniCPM-o offline benchmark runbook
+# Omni offline benchmark runbook
 
-This page measures MiniCPM-o 4.5 offline serving in SGLang-Omni on one GPU. It also shows how to run the MiniCPM-o CI stages on a GPU pair. Full duplex serving is covered in the [Full-Duplex-Bench v1.5 runbook](full_duplex_bench.md).
+This page measures offline serving of omni models in SGLang-Omni on one GPU, using MiniCPM-o 4.5 as the example. It also shows how to run the MiniCPM-o CI stages on a GPU pair. Full duplex serving is covered in the [Full-Duplex-Bench v1.5 runbook](full_duplex_bench.md).
 
 Many commands end with a check that prints a fixed word in capitals, such as `READY` or `GPU_FREE`. If the word does not print, the step did not finish and its numbers are not usable.
 
