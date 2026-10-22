@@ -395,6 +395,23 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     assert "name=Intel(R) Arc(TM) Pro B60 Graphics" in rendered
 
 
+def test_an_unset_affinity_mask_ignores_an_unrelated_cuda_mask(monkeypatch) -> None:
+    """With ZE_AFFINITY_MASK unset, a CUDA_VISIBLE_DEVICES left in the process
+    environment was parsed as the XPU mask, so two unmasked cards were reported
+    as physical 2 and 5 while their uuids said 0 and 1.
+    """
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,2")
+    monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
+    pin_platform(monkeypatch, "xpu")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(torch_module=FakeXpuTorch([0, 1]))
+
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [0, 1]
+    assert [gpu["uuid"] for gpu in report["gpus"]] == ["uuid-0", "uuid-1"]
+    assert report["environment"]["visible_devices"] is None
+
+
 @pytest.mark.parametrize(
     "platform",
     [
