@@ -3,8 +3,8 @@ name: Voxt Release
 # Builds Voxt with the native runtime for a voxt-vX.Y.Z tag, as a universal app
 # (the runtime stays arm64; on Intel Voxt uses remote ASR), signs it with the
 # Developer ID certificates and provisioning profile, notarizes it, and uploads
-# it to a draft release that a maintainer reviews and publishes. Publishing it
-# runs Voxt Appcast. A run without a tag only builds an unsigned package, as a
+# it to a draft release whose notes a maintainer writes before publishing it.
+# Publishing it runs Voxt Appcast. A run without a tag only builds an unsigned package, as a
 # check of the build on GitHub's runner.
 
 on:
@@ -194,19 +194,19 @@ jobs:
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/release-notes.md"
-          # The notes are the English section of the version's changelog entry.
-          awk -v version="$VERSION" '
-            index($0, "## [" version "]") == 1 { in_version = 1; next }
-            in_version && /^## \[/ { exit }
-            in_version && /^### / { in_english = ($0 == "### English"); next }
-            in_version && in_english { print }
-          ' Voxt/CHANGELOG.md > "$notes"
-          if [[ ! -s "$notes" ]]; then
-            echo "::error::Voxt/CHANGELOG.md has no English entry for $VERSION"
-            exit 1
-          else
-            printf '\nRequires macOS 15 or later. Local models need Apple Silicon; on an Intel Mac, use a remote speech recognition provider.\n\nBuilt from %s. Signed with Developer ID and notarized by Apple; SHA-256 checksums are attached.\n' \
-              "$GITHUB_SHA" >> "$notes"
-          fi
+          # The maintainer replaces the TODO line in the draft; Voxt Appcast refuses to publish it.
+          cat > "$notes" <<NOTES
+          ### Changed
+
+          - TODO: describe this release before publishing.
+
+          ### Requirements
+
+          - macOS 15 or later. Local models need Apple Silicon; on an Intel Mac, use a remote speech recognition provider.
+
+          ### Build
+
+          - Built from $GITHUB_SHA. Signed with Developer ID and notarized by Apple; SHA-256 checksums are attached.
+          NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*

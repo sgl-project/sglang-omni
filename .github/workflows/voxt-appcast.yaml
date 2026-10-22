@@ -132,15 +132,11 @@ jobs:
           retry=(--retry 6 --retry-all-errors --retry-delay 10 --retry-max-time 180)
           immutable="public, max-age=31536000, immutable"
 
-          # The in-app notes are every language of the version's changelog entry.
+          # The in-app notes are the published release notes, as in the original Voxt workflow.
           notes_by_locale="$RUNNER_TEMP/release-notes-by-locale.json"
-          RELEASE_BODY="$(awk -v version="$VERSION" '
-            index($0, "## [" version "]") == 1 { in_version = 1; next }
-            in_version && /^## \[/ { exit }
-            in_version { print }
-          ' Voxt/CHANGELOG.md)"
-          if [[ -z "$RELEASE_BODY" ]]; then
-            echo "::error::Voxt/CHANGELOG.md has no entry for $VERSION"
+          RELEASE_BODY="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if [[ -z "$RELEASE_BODY" || "$RELEASE_BODY" == *"TODO: describe this release"* ]]; then
+            echo "::error::Write the notes of $TAG on its release page, then run Voxt Appcast for it"
             exit 1
           else
             :
