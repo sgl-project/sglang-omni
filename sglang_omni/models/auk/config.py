@@ -33,7 +33,10 @@ class AuKPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_conditioning_executor",
             factory=FactoryArgs(
                 device=current_platform.device_type,
-                dtype="bfloat16",
+                # Keep the conditioner in FP32 by default for parity with the
+                # reference implementation.  BF16 remains available as an
+                # explicit stage-factory override.
+                dtype="float32",
                 text_encoder_path=C.DEFAULT_TEXT_ENCODER,
                 max_batch_size=8,
                 max_batch_wait_ms=10,
