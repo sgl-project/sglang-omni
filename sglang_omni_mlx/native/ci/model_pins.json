@@ -100,5 +100,16 @@
       "config.json": "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5",
       "model.safetensors": "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a"
     }
+  },
+  "mlx-community/MiniMax-Music3-mxfp8": {
+    "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
+    "files": {
+      "config.json": "843a7e7affe6f348a7b087c39e7c26b4e0baced492d391dfc955760a1d9c91dc",
+      "model-00001-of-00003.safetensors": "bf401989345219258b1a9b3eb10e74faa619a626f92d089a9d6c1949d63a2817",
+      "model-00002-of-00003.safetensors": "54117b8658e1d1981b5fcd550992cd72e246bdd7433ec891bdda0033bf204a98",
+      "model-00003-of-00003.safetensors": "a71aa696d66edbe08972aece48d6304b6ae7a6ce3229dab1b496549c69ce816c",
+      "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
+      "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
+    }
   }
 }
