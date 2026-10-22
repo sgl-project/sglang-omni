@@ -31,6 +31,7 @@ std::vector<float> ResampleAudio(const std::vector<float> &samples,
       throw std::runtime_error(
           error ? error : "audio resampling did not consume input");
     } else {
+      output.resize(produced);
       return output;
     }
   }
