@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { DuplexSession } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
+const workletSource = readFileSync(new URL("./worklet.js", import.meta.url), "utf8");
 
 function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
   const nodes = [];
@@ -55,10 +56,30 @@ function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
       constructor(audioContext) {
         this.context = audioContext;
         this.messages = [];
-        this.port = { onmessage: null, postMessage: (message) => this.messages.push(message) };
+        const node = this;
+        const processors = new Map();
+        vm.runInNewContext(workletSource, {
+          sampleRate: audioContext.sampleRate,
+          AudioWorkletProcessor: class {
+            constructor() { this.port = { postMessage: (status) => node.port.onmessage?.({ data: status }) }; }
+          },
+          registerProcessor: (name, processor) => processors.set(name, processor),
+        });
+        this.processor = new (processors.get("playback-processor"))({});
+        this.port = { onmessage: null, postMessage: (message) => {
+          this.messages.push(message);
+          this.processor.port.onmessage({ data: message });
+        } };
         nodes.push(this);
       }
       connect() { return this; }
+      render(sampleCount) {
+        const output = new Float32Array(sampleCount);
+        for (let offset = 0; offset < sampleCount; offset += 128) {
+          this.processor.process([], [[output.subarray(offset, offset + 128)]]);
+        }
+        return output;
+      }
     },
     WebSocket: class {
       static OPEN = 1;
@@ -87,12 +108,14 @@ function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
     get session() { return vm.runInContext("session", context); },
     connect: () => vm.runInContext("connect()", context),
     settled: () => vm.runInContext("eventChain", context),
+    interrupt: () => vm.runInContext("interrupt()", context),
   };
 }
 
-function grant(socket, unitMilliseconds, outputSampleRate = 24000) {
+function grant(socket, unitMilliseconds, outputSampleRate = 24000, interaction = "native") {
   socket.receive({ type: "session.updated", session: { sglang: { granted: {
     native_unit_ms: unitMilliseconds,
+    interaction,
     input_audio_format: { rate: 16000 },
     output_audio_format: { rate: outputSampleRate },
   } } } });
@@ -219,4 +242,60 @@ test("a grant finishing during reconnect cannot configure or start the next sess
   const node = app.nodes.at(-1);
   assert.equal(node.context.sampleRate, 24000);
   assert.equal(node.messages.find((message) => message.type === "config").nativeUnitSamples, 24000);
+});
+
+test("backend switches preserve turn-based buffered replies and restore native catch-up", async () => {
+  const app = createApp();
+  for (const [interaction, unitMilliseconds] of [["turn_based", 200], ["native", 1000], ["turn_based", 1000], ["native", 200], ["turn_based", 200]]) {
+    await app.connect();
+    const socket = app.sockets.at(-1);
+    socket.open();
+    grant(socket, unitMilliseconds, 24000, interaction);
+    await app.settled();
+    assert.equal(app.nodes.length, 1);
+    const node = app.nodes[0];
+    node.render(240);
+    socket.receive({ type: "response.created", response: { id: "first" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "first", delta: Buffer.alloc(48000, 32).toString("base64") });
+    socket.receive({ type: "response.done", response: { id: "first", status: "completed" } });
+    socket.receive({ type: "response.created", response: { id: "next" } });
+    socket.receive({ type: "sglang.unit.done", unit_id: "listen", decision: "listen" });
+    await app.settled();
+    const output = node.render(24000);
+    if (interaction === "turn_based") {
+      assert.ok(output.every((sample) => sample === 0x2020 / 32768));
+    } else {
+      assert.ok(output.filter((sample) => sample === 0).length >= 12000);
+    }
+
+    socket.receive({ type: "response.output_audio.delta", response_id: "next", delta: Buffer.alloc(144000, 32).toString("base64") });
+    await app.settled();
+    node.render(2400);
+    const status = app.session.trace.findLast((row) => row.event.type === "playback.status").event;
+    if (interaction === "turn_based") {
+      assert.equal(status.rate, 1);
+      assert.equal(status.droppedMs, 0);
+    } else {
+      assert.ok(status.rate > 1);
+      assert.ok(status.droppedMs > 0);
+    }
+    socket.receive({ type: "response.done", response: { id: "next", status: "cancelled" } });
+    await app.settled();
+    assert.ok(node.render(480).subarray(240).every((sample) => sample === 0));
+    socket.receive({ type: "response.created", response: { id: "stop" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "stop", delta: Buffer.alloc(48000, 32).toString("base64") });
+    await app.settled();
+    node.render(128);
+    app.interrupt();
+    assert.ok(node.render(480).subarray(240).every((sample) => sample === 0));
+    socket.receive({ type: "response.output_audio.delta", response_id: "stop", delta: Buffer.alloc(48000, 32).toString("base64") });
+    await app.settled();
+    assert.ok(node.render(24000).every((sample) => sample === 0));
+    socket.receive({ type: "response.created", response: { id: "resume" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "resume", delta: Buffer.alloc(24000, 32).toString("base64") });
+    socket.receive({ type: "response.done", response: { id: "resume", status: "completed" } });
+    await app.settled();
+    assert.equal(node.render(12240).filter((sample) => sample === 0x2020 / 32768).length, 12000);
+    await socket.close();
+  }
 });

@@ -330,12 +330,12 @@ const STREAMING_UNIT_MS = 500;
 const NATIVE_PLAYBACK = { jitterMs: JITTER_MS, maxJitterMs: JITTER_MS, maxMs: 2500, keepMs: 1500, catchUp: { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 } };
 const STREAMING_PLAYBACK = { jitterMs: 400, maxJitterMs: 900, maxMs: 3500, keepMs: 2200, catchUp: { slow: 0.5, fast: 1.0, skip: 2.0, slowRate: 1.06, fastRate: 1.12 } };
 
-function configurePlayback(unitMs) {
+function configurePlayback(unitMs, turnBased) {
   if (!playbackNode) return;
   const samples = (ms) => Math.round((playbackContext.sampleRate * ms) / 1000);
   const nativeUnitSamples = Number.isFinite(unitMs) && unitMs > 0 ? samples(unitMs) : 0;
   const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = nativeUnitSamples > 0 && unitMs < STREAMING_UNIT_MS ? STREAMING_PLAYBACK : NATIVE_PLAYBACK;
-  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples });
+  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples, turnBased });
 }
 
 function pcm16ToFloat(bytes, sourceRate, targetRate) {
@@ -367,7 +367,7 @@ function sessionListeners(activeSession) {
       sessionStart = performance.now();
       await ensurePlayback(activeSession.outputRate);
       if (session !== activeSession || !isOpen()) return;
-      configurePlayback(activeSession.unitMs);
+      configurePlayback(activeSession.unitMs, activeSession.turnBased);
       const node = playbackNode;
       if (node !== boundPlaybackNode) {
         boundPlaybackNode = node;
