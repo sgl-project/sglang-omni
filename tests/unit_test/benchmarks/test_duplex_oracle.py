@@ -572,6 +572,33 @@ def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
         assert result["metrics"]["admission_rejections"] == 0
 
 
+def test_rejection_after_session_updated_fails() -> None:
+    """A rejection of an update sent after session.updated counted as an admission retry, so the trace passed."""
+    trace = trace_fixture()
+    late_update, late_rejection = rejected_update(), rejection()
+    late_update["time_s"], late_rejection["time_s"] = 100.03, 100.04
+    trace[3:3] = [late_update, late_rejection]
+    result = evaluate_trace(trace)
+    assert result["status"] == "fail"
+    assert any("code=admission_rejected" in item for item in result["violations"])
+    assert result["metrics"]["admission_rejections"] == 0
+
+
+def test_rejection_of_an_append_keeps_its_acceptance_check() -> None:
+    """A rejection that answered an append counted as an admission retry and removed the append, hiding its missing acceptance receipt."""
+    trace = trace_fixture()
+    early_append = copy.deepcopy(trace[3])
+    early_append["event"]["event_id"] = "early"
+    early_append["time_s"] = 100.012
+    early_rejection = rejection(event_id="early")
+    early_rejection["time_s"] = 100.015
+    trace[2:2] = [early_append, early_rejection]
+    result = evaluate_trace(trace)
+    assert any("code=admission_rejected" in item for item in result["violations"])
+    assert "missing input acceptance receipt" in result["violations"]
+    assert result["metrics"]["admission_rejections"] == 0
+
+
 def test_session_updated_cannot_acknowledge_the_rejected_update() -> None:
     """A rejected session.update stayed a valid acknowledgment target, so a server that acknowledged it instead of the re-sent update passed."""
     trace = trace_fixture()

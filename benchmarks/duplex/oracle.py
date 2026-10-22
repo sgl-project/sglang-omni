@@ -587,10 +587,16 @@ def evaluate_trace(
             elif event_type == "error":
                 error = event.error or {}
                 rejected_event_id = error.get("event_id")
+                rejected_command = (
+                    sent_commands.get(rejected_event_id)
+                    if isinstance(rejected_event_id, str)
+                    else None
+                )
                 if (
                     is_admission_rejection(record.event)
-                    and isinstance(rejected_event_id, str)
-                    and rejected_event_id in sent_commands
+                    and not updated
+                    and rejected_command is not None
+                    and rejected_command.event.type == "session.update"
                 ):
                     admission_rejections += 1
                     # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
