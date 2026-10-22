@@ -283,56 +283,71 @@ class SigningProfilePolicyTests(unittest.TestCase):
                     prepare_entitlements(self.profile, source, self.bundle_identifier)
 
 
-class NotarizedWorkflowArgumentsTests(unittest.TestCase):
-    def test_real_workflow_block_optional_arguments_under_nounset(self) -> None:
-        workflow = (ROOT.parent / ".github/workflows/voxt-mac-notarized-release.yaml").read_text()
-        self.assertIn("vars.VOXT_ENABLE_NOTARIZED_RELEASE == 'true'", workflow)
-        self.assertIn("permissions:\n  contents: read", workflow)
-        self.assertIn("VOXT_DEVELOPER_ID_PROFILE_BASE64", workflow)
-        block = re.search(r"      - name: Build and sign app packages\n.*?        run: \|\n(.*?)\n      - name:", workflow, re.S)
+class ReleaseWorkflowArgumentsTests(unittest.TestCase):
+    def test_package_step_passes_signing_and_universal_arguments(self) -> None:
+        workflow = (ROOT.parent / ".github/workflows/voxt-release.yaml").read_text()
+        self.assertIn('tags: ["voxt-v*"]', workflow)
+        self.assertIn("--draft --verify-tag --latest", workflow)
+        block = re.search(r"      - name: Package\n.*?        run: \|\n(.*?)\n      - name:", workflow, re.S)
         self.assertIsNotNone(block)
-        shell_source = textwrap.dedent(block[1])
+        shell_source = "set -u\n" + textwrap.dedent(block[1])
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
+            runner = temporary / "runner space"
             executable = temporary / "Voxt/tools/package_local_app.sh"
             executable.parent.mkdir(parents=True)
             executable.write_text(
                 "#!/usr/bin/env python3\nimport json, os, sys\n"
                 "from pathlib import Path\n"
                 "Path(os.environ['VOXT_ARGUMENT_LOG']).write_text(json.dumps(sys.argv[1:]))\n"
+                "Path(os.environ['RUNNER_TEMP'], 'package', '1.2.3-101020399').mkdir(parents=True, exist_ok=True)\n"
                 "sys.exit(int(os.environ.get('VOXT_FAKE_FAILURE', '0')))\n"
             )
             executable.chmod(0o755)
-            for version, build_number in (("", ""), ("1.2.3", ""), ("", "123"), ("1.2.3", "123")):
-                with self.subTest(version=version, build_number=build_number):
+            common = [
+                "--optimized", "--universal", "--version", "1.2.3", "--build-number", "101020399",
+                "--native-runtime", str(runner / "runtime"),
+                "--output-dir", str(runner / "package"), "--derived-data", str(runner / "derived-data"),
+            ]
+            signed = [
+                "--provisioning-profile", str(runner / "voxt.provisionprofile"),
+                "--app-sign-identity", "SYNTHETICAPPIDENTITY",
+                "--pkg-sign-identity", "synthetic installer identity",
+                "--notary-key", str(runner / "notary.p8"), "--notary-key-id", "SYNTHETICKEY",
+                "--notary-issuer", "synthetic-issuer",
+            ]
+            for is_release, expected in (("true", common + signed), ("false", common + ["--no-sign"])):
+                with self.subTest(is_release=is_release):
                     environment = {
-                        **os.environ, "VERSION_INPUT": version, "BUILD_NUMBER_INPUT": build_number,
-                        "RUNNER_TEMP": str(temporary / "runner space"),
-                        "DEVELOPER_ID_APP_IDENTITY": "synthetic app identity",
+                        **os.environ, "IS_RELEASE": is_release, "VERSION": "1.2.3", "BUILD_NUMBER": "101020399",
+                        "RUNNER_TEMP": str(runner), "GITHUB_ENV": str(temporary / "github-env"),
+                        "APP_SIGN_IDENTITY": "SYNTHETICAPPIDENTITY",
                         "DEVELOPER_ID_INSTALLER_IDENTITY": "synthetic installer identity",
+                        "APPLE_NOTARIZATION_KEY_ID": "SYNTHETICKEY", "APPLE_NOTARIZATION_ISSUER": "synthetic-issuer",
                         "VOXT_ARGUMENT_LOG": str(temporary / "arguments.json"),
                     }
                     result = subprocess.run(
-                        [os.environ.get("VOXT_TEST_BASH", "/bin/bash"), "-c", shell_source],
+                        [os.environ.get("VOXT_TEST_BASH", "/bin/bash"), "-e", "-c", shell_source],
                         cwd=temporary, env=environment, capture_output=True, text=True, check=False,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    optional = (["--version", version] if version else []) + (["--build-number", build_number] if build_number else [])
-                    expected = optional + [
-                        "--optimized", "--native-runtime", str(temporary / "runner space/voxt-native-runtime"),
-                        "--output-dir", str(temporary / "runner space/voxt-package"),
-                        "--app-sign-identity", "synthetic app identity",
-                        "--pkg-sign-identity", "synthetic installer identity",
-                        "--provisioning-profile", str(temporary / "runner space/voxt-developer-id.provisionprofile"),
-                    ]
                     self.assertEqual(json.loads((temporary / "arguments.json").read_text()), expected)
+                    self.assertIn("ARTIFACTS_DIR=", (temporary / "github-env").read_text())
                     failed = subprocess.run(
-                        [os.environ.get("VOXT_TEST_BASH", "/bin/bash"), "-c", shell_source],
+                        [os.environ.get("VOXT_TEST_BASH", "/bin/bash"), "-e", "-c", shell_source],
                         cwd=temporary, env={**environment, "VOXT_FAKE_FAILURE": "37"},
                         capture_output=True, text=True, check=False,
                     )
                     self.assertEqual(failed.returncode, 37, failed.stderr)
 
+    def test_appcast_follows_published_voxt_releases(self) -> None:
+        workflow = (ROOT.parent / ".github/workflows/voxt-appcast.yaml").read_text()
+        self.assertIn("types: [published]", workflow)
+        self.assertIn("startsWith(github.event.release.tag_name, 'voxt-v')", workflow)
+        self.assertIn("environment: voxt-release", workflow)
+        self.assertIn("SPARKLE_SHA256:", workflow)
+        self.assertIn("sign_update --verify", workflow)
+        self.assertFalse((ROOT.parent / ".github/workflows/voxt-mac-notarized-release.yaml").exists())
 
 if __name__ == "__main__":
     unittest.main()
