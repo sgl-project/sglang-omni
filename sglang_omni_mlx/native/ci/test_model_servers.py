@@ -52,6 +52,7 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+ARKASR_REPO = "Edge0/ARK-ASR-3B"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
@@ -289,6 +290,7 @@ def test_whisper_shutdown_reports_stopped() -> None:
         ("nemotron_asr_server", "qwen3_asr"),
         ("parakeet_server", "cohere_transcribe"),
         ("sensevoice_server", "cohere_transcribe"),
+        ("arkasr_server", "qwen3_asr"),
     ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
@@ -929,3 +931,133 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
     assert status == 400
     assert "overlap" in json.loads(body)["detail"]
+
+
+@pytest.fixture(scope="module")
+def arkasr_server() -> Iterator[ModelServer]:
+    running = ModelServer("arkasr_server", "arkasr", ARKASR_REPO)
+    yield running
+    running.stop()
+
+
+def test_arkasr_final_request_streams_text_and_generation_metadata(
+    arkasr_server: ModelServer,
+) -> None:
+    assert arkasr_server.ready["model_name"].startswith("voxt-arkasr-")
+    status, body = arkasr_server.post_form(
+        {"stream": "true", "language": "zh", "include_generation_metadata": "true"},
+        clip("0152_zh_short"),
+    )
+    assert status == 200
+    [done, end] = sse_events(body)
+    assert end == "[DONE]"
+    assert done["type"] == "transcript.text.done"
+    assert done["text"]
+    metadata = done["generation_metadata"]
+    assert metadata["language"] == "zh"
+    assert metadata["finish_reason"] == "stop"
+    assert metadata["generated_token_count"] > 0
+
+
+def test_arkasr_plain_request_returns_json_text(arkasr_server: ModelServer) -> None:
+    status, body = arkasr_server.post_form({}, clip("0001_en_short"))
+    assert status == 200
+    assert json.loads(body)["text"]
+
+
+def test_arkasr_decodes_long_audio_one_window_at_a_time(
+    arkasr_server: ModelServer,
+) -> None:
+    # Note (AzizbekMuminoff): the checkpoint's processor stops at 30 s, so the
+    # text past it comes only from the later windows.
+    fields = {"stream": "true", "include_generation_metadata": "true"}
+    status, body = arkasr_server.post_form(fields, long_wav(30))
+    assert status == 200
+    one_window = sse_events(body)[0]["generation_metadata"]
+    status, body = arkasr_server.post_form(fields, long_wav(75))
+    assert status == 200
+    three_windows = sse_events(body)[0]["generation_metadata"]
+    assert three_windows["finish_reason"] == "stop"
+    assert (
+        three_windows["generated_token_count"] > 2 * one_window["generated_token_count"]
+    )
+
+
+def test_arkasr_token_budget_applies_to_each_window(
+    arkasr_server: ModelServer,
+) -> None:
+    status, body = arkasr_server.post_form(
+        {
+            "stream": "true",
+            "include_generation_metadata": "true",
+            "max_new_tokens": "2",
+        },
+        long_wav(75),
+    )
+    assert status == 200
+    metadata = sse_events(body)[0]["generation_metadata"]
+    assert metadata["finish_reason"] == "length"
+    assert metadata["generated_token_count"] == 3 * 2
+
+
+@pytest.mark.parametrize(
+    ("fields", "wav"),
+    [
+        ({}, None),
+        ({}, b"not audio"),
+        ({"include_generation_metadata": "true"}, "wav"),
+        ({"max_new_tokens": "many"}, "wav"),
+        ({"max_new_tokens": "0"}, "wav"),
+        ({"max_new_tokens": "-1"}, "wav"),
+    ],
+)
+def test_arkasr_invalid_requests_are_rejected(
+    arkasr_server: ModelServer, fields: dict[str, str], wav: bytes | str | None
+) -> None:
+    status, body = arkasr_server.post_form(
+        fields, clip("0006_en_short") if wav == "wav" else wav
+    )
+    assert status == 400
+    assert "detail" in json.loads(body)
+
+
+def test_arkasr_disconnected_stream_stops_its_decode(
+    arkasr_server: ModelServer,
+) -> None:
+    boundary = uuid.uuid4().hex
+    body = (
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="stream"\r\n\r\ntrue\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n'
+        ).encode()
+        + long_wav(600)
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", arkasr_server.port, timeout=30)
+    connection.request(
+        "POST",
+        "/v1/audio/transcriptions",
+        body,
+        {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    response = connection.getresponse()
+    assert response.status == 200
+    time.sleep(2.0)
+    assert json.loads(arkasr_server.request("GET", "/health")[1])["request_states"] == {
+        "running": 1
+    }
+    closed_at = time.monotonic()
+    response.close()
+    connection.close()
+    while (
+        json.loads(arkasr_server.request("GET", "/health")[1])["request_states"] != {}
+    ):
+        assert (
+            time.monotonic() - closed_at < 2.0
+        ), "the decode kept running after its client left"
+        time.sleep(0.05)
+
+
+def test_arkasr_serves_no_realtime_api(arkasr_server: ModelServer) -> None:
+    with pytest.raises(InvalidHandshake):
+        connect(f"ws://127.0.0.1:{arkasr_server.port}/v1/realtime")

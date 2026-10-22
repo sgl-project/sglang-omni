@@ -38,8 +38,9 @@ Voxt/backend/run_omni_dev.sh run
 `whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`,
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
-`sensevoice_server`, `sensevoice_transcribe`, and the pinned MLX library
-and Metal kernels next to them.
+`sensevoice_server`, `sensevoice_transcribe`, `arkasr_server`,
+`arkasr_transcribe`, and the pinned MLX library and Metal kernels next to
+them. ARK-ASR's server is not routed from Voxt yet.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its

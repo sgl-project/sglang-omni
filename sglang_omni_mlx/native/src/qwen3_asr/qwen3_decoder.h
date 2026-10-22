@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The Qwen3 text decoder Qwen3-ASR and MOSS-Transcribe-Diarize share; only the
-// weight-name prefix differs.
+// weight-name prefix differs. ARK-ASR's Qwen2 decoder runs on it too: no
+// query and key norms, and the projection biases Linear already applies.
 #pragma once
 
 #include <optional>
@@ -21,7 +22,11 @@ struct Qwen3DecoderConfig {
   int head_dim = 0;
   float rms_norm_eps = 0.0f;
   float rope_theta = 0.0f;
+  // Qwen3 normalizes each head's queries and keys; Qwen2 does not.
+  bool has_query_key_norm = true;
 
+  // head_dim defaults to hidden_size / num_attention_heads, as Qwen2's config
+  // leaves it out.
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
 

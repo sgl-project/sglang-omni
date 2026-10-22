@@ -15,10 +15,13 @@ constexpr int kKvCacheStepTokens = 256;
 
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
+  const int head_count = text_config.at("num_attention_heads").get<int>();
   return {text_config.at("num_hidden_layers").get<int>(),
-          text_config.at("num_attention_heads").get<int>(),
+          head_count,
           text_config.at("num_key_value_heads").get<int>(),
-          text_config.at("head_dim").get<int>(),
+          text_config.contains("head_dim")
+              ? text_config.at("head_dim").get<int>()
+              : text_config.at("hidden_size").get<int>() / head_count,
           text_config.at("rms_norm_eps").get<float>(),
           text_config.at("rope_theta").get<float>()};
 }
@@ -77,14 +80,17 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const int head_dim = config_.head_dim;
   const mx::array normed =
       checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
-  mx::array queries = checkpoint_.RmsNorm(
+  mx::array queries =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
-                  {batch, length, head_count, head_dim}),
-      prefix + ".self_attn.q_norm", eps);
-  mx::array keys = checkpoint_.RmsNorm(
+                  {batch, length, head_count, head_dim});
+  mx::array keys =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.k_proj"),
-                  {batch, length, kv_head_count, head_dim}),
-      prefix + ".self_attn.k_norm", eps);
+                  {batch, length, kv_head_count, head_dim});
+  if (config_.has_query_key_norm) {
+    queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
+    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm", eps);
+  } else {
+  }
   const mx::array values =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
                   {batch, length, kv_head_count, head_dim});
