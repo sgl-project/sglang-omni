@@ -48,7 +48,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     var onPartialTranscription: ((String) -> Void)?
     var dictionaryEntryProvider: (() -> [DictionaryEntry])?
 
-    private let audioEngine = AVAudioEngine()
+    private let audioEngine: AVAudioEngine
     private let inferenceTaskPriority: TaskPriority
     private let audioLevelDelivery = MLXAudioLevelDelivery()
     private let sampleStore = AudioSampleStore()
@@ -104,6 +104,9 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     private var didRetryCaptureStartup = false
     private var activeCaptureUsesPreferredInputDevice = false
     private var loggedSampleExtractionFailure = false
+    /// Reading `inputNode` creates the input unit and opens the default input device, which can
+    /// block for minutes; only a transcriber that configured capture has one to tear down.
+    private var hasConfiguredCaptureGraph = false
     private var activeSessionBehavior = MLXModelManager.transcriptionBehavior(
         for: MLXModelManager.defaultModelRepo
     )
@@ -120,8 +123,10 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     init(
         modelManager: MLXModelManager,
         transcriptionPurpose: MLXTranscriptionPurpose = .dictation,
-        inferenceTaskPriority: TaskPriority = .userInitiated
+        inferenceTaskPriority: TaskPriority = .userInitiated,
+        audioEngine: AVAudioEngine = AVAudioEngine()
     ) {
+        self.audioEngine = audioEngine
         self.modelManager = modelManager
         self.transcriptionPurpose = transcriptionPurpose
         self.inferenceTaskPriority = inferenceTaskPriority
@@ -354,9 +359,12 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
               !nativeLiveRuntime.hasPendingWork else { return false }
 
         sessionRevision += 1
-        stopAudioEngine()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.reset()
+        if hasConfiguredCaptureGraph {
+            stopAudioEngine()
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.reset()
+            hasConfiguredCaptureGraph = false
+        }
         cancelActiveTasks()
         earlyPrewarmTask?.cancel()
         earlyPrewarmTask = nil
@@ -796,6 +804,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         }
         audioEngine.reset()
 
+        hasConfiguredCaptureGraph = true
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
 

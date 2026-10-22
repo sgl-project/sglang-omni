@@ -29,8 +29,9 @@ python3 Voxt/Mobile/docs/evidence/loopback-e2e/run.py --models <folder with mlx-
 | compose-prompts | `GET /v1/compose/prompts` | one built-in prompt per mode |
 | correction | `POST /v1/corrections` with `correction-request.json` | the pair or null, as in `correction-response.json` (only when the contract lists corrections) |
 | error-unauthorized, error-notFound, error-wrongMethod | wrong token, unknown path, `GET /v1/dictations` | equal to `errors.json` |
+| dictation-after-idle | `POST /v1/dictations?language=auto`, `testdata/jfk.wav`, sent after both models unloaded on idle (about two minutes after the last request), which also starts Voxt's idle memory reclamation | answers within 90 s with the text of jfk.wav; a stall behind the reclamation shows as no answer |
 
-Model output is not deterministic, so text is compared by what it must contain, and everything else exactly. The checker was itself checked against a fake server that answers from the contract: 10 of 10 checks pass with the right token and 1 of 10 (the unauthorized check) with a wrong one.
+Model output is not deterministic, so text is compared by what it must contain, and everything else exactly. The checker was itself checked against a fake server that answers from the contract: 10 of 10 checks pass with the right token and 1 of 10 (the unauthorized check) with a wrong one; that fake server does not unload models, so dictation-after-idle is checked against Voxt itself: it fails on a build that stalls behind the reclamation and passes on one that does not.
 
 ## Results
 

@@ -28,6 +28,9 @@ TESTDATA = VOXT / "Mobile/testdata"
 RESULTS = HERE / "results"
 SAMPLE_ID = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
 HEALTH_TIMEOUT_SECONDS = 300
+# Reloading both models and dictating takes about 20 s here; the stall this catches lasted minutes.
+IDLE_ANSWER_SECONDS = 90
+IDLE_UNLOAD_LINES = ["MLX Audio model released", "Custom LLM model released"]
 CHINESE_CHARACTER = re.compile(r"[一-鿿]")
 
 
@@ -43,6 +46,7 @@ class Check:
     passed: bool
     compared: str
     response: Response
+    failure: str = ""
 
 
 def free_port() -> int:
@@ -88,9 +92,9 @@ def serving_xctestrun(work: Path, variables: dict[str, str]) -> Path:
     return destination
 
 
-def send(url: str, token: str, path: str, method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> Response:
-    """One request through curl, so each check can be repeated by hand."""
-    command = ["curl", "-sS", "-o", "-", "-w", "\n%{http_code}", "-X", method, "-H", f"Authorization: Bearer {token}"]
+def send(url: str, token: str, path: str, method: str = "GET", body: bytes | None = None, content_type: str | None = None, max_seconds: int = 600) -> Response:
+    """One request through curl, so each check can be repeated by hand. Status 0 means no answer within max_seconds."""
+    command = ["curl", "-sS", "--max-time", str(max_seconds), "-o", "-", "-w", "\n%{http_code}", "-X", method, "-H", f"Authorization: Bearer {token}"]
     if content_type is not None:
         command += ["-H", f"Content-Type: {content_type}"]
     else:
@@ -99,7 +103,7 @@ def send(url: str, token: str, path: str, method: str = "GET", body: bytes | Non
         command += ["--data-binary", "@-"]
     else:
         pass
-    finished = subprocess.run(command + [url + path], input=body, capture_output=True, timeout=600)
+    finished = subprocess.run(command + [url + path], input=body, capture_output=True, timeout=max_seconds + 30)
     text, _, status = finished.stdout.decode().rpartition("\n")
     return Response(status=int(status or 0), body=json.loads(text) if text.strip() else None)
 
@@ -153,6 +157,33 @@ def run_checks(url: str, token: str) -> list[Check]:
     return checks
 
 
+def check_dictation_after_idle(url: str, token: str, serve_log: Path, deadline: float) -> Check:
+    """Waits until both models unload on idle, which also starts Voxt's idle memory reclamation, then dictates once more."""
+    start = serve_log.stat().st_size
+    unloaded = False
+    while not unloaded and time.monotonic() < deadline:
+        time.sleep(5)
+        with open(serve_log, errors="replace") as log:
+            log.seek(start)
+            later = log.read()
+        unloaded = all(line in later for line in IDLE_UNLOAD_LINES)
+    compared = f"after both models unloaded on idle, the dictation answers within {IDLE_ANSWER_SECONDS} s with the text of jfk.wav"
+    if not unloaded:
+        return Check(name="dictation-after-idle", response=Response(status=0, body=None), compared=compared, passed=False, failure="the models did not unload on idle before the serve window ended, so this was not checked")
+    else:
+        pass
+    time.sleep(5)
+    answer = send(url, token, "/v1/dictations?language=auto", "POST", (TESTDATA / "jfk.wav").read_bytes(), "audio/wav", max_seconds=IDLE_ANSWER_SECONDS)
+    passed = answer.status == 200 and "country" in text_of(answer).lower()
+    if passed:
+        failure = ""
+    elif answer.status == 0:
+        failure = f"no answer within {IDLE_ANSWER_SECONDS} s: the request is stalled behind idle memory reclamation on the main actor"
+    else:
+        failure = f"answered {answer.status} without the jfk.wav text"
+    return Check(name="dictation-after-idle", response=answer, compared=compared, passed=passed, failure=failure)
+
+
 def write_results(checks: list[Check], host: str) -> None:
     RESULTS.mkdir(exist_ok=True)
     for check in checks:
@@ -165,7 +196,7 @@ def write_results(checks: list[Check], host: str) -> None:
         (RESULTS / f"{check.name}.json").write_text(json.dumps(saved, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
     passed = sum(check.passed for check in checks)
     lines = [f"Host: {host}. {passed} of {len(checks)} checks passed.", "", "| Check | Result | Compared |", "| --- | --- | --- |"]
-    lines += [f"| {check.name} | {'pass' if check.passed else 'FAIL'} | {check.compared} |" for check in checks]
+    lines += [f"| {check.name} | {'pass' if check.passed else 'FAIL: ' + check.failure} | {check.compared} |" for check in checks]
     (RESULTS / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
@@ -236,8 +267,10 @@ def main() -> int:
             hand_off.write_text(f"VOXT_E2E_URL={url}\nVOXT_E2E_TOKEN={token}\n")
             hand_off.chmod(0o600)
             ready.touch()
+            window_ends = time.monotonic() + options.serve_seconds - 60
             print(f"Local API up on {url}; hand-off file {hand_off}")
             checks = run_checks(url, token)
+            checks.append(check_dictation_after_idle(url, token, serve_log, window_ends))
             write_results(checks, "XCTest host (LocalAPILoopbackServeTests)")
             print(f"Serving until the test's {options.serve_seconds} s are up.")
             server.wait()
