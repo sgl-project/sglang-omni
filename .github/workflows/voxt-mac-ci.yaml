@@ -97,34 +97,63 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
-      # the runner's work directory; say so plainly instead of failing midway.
+      # Keep room for a replacement while the previous artifact remains usable.
       - name: Check free disk space
+        id: native-disk
         run: |
           mkdir -p "$VOXT_CI_ROOT"
+          required_gb=$(python3 - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+          data = Path(os.environ["VOXT_CI_ROOT"]) / "data"
+          pins = json.loads(Path("sglang_omni_mlx/native/ci/model_pins.json").read_text())
+          missing_source_bytes = 0
+          for repo in ("tencent/AuK", "tencent/AuK-Flash", "Qwen/Qwen2.5-Omni-3B"):
+              directory = data / "models" / repo.replace("/", "_")
+              for name, size in pins[repo]["file_sizes"].items():
+                  path = directory / name
+                  if not path.is_file() or path.stat().st_size != size:
+                      missing_source_bytes += size
+          required = 17 + math.ceil(missing_source_bytes / 1024**3)
+          prepared = [data / "native_models" / model for model in ("tencent_AuK", "tencent_AuK-Flash")]
+          required += 14 * sum(not directory.exists() for directory in prepared)
+          required += 14 * any(directory.exists() for directory in prepared)
+          print(required)
+          PY
+          )
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
+          if [ "$free_gb" -lt "$required_gb" ]; then
+            echo "::error::Only ${free_gb} GB free; this run needs ${required_gb} GB including missing AuK checkpoints."
             exit 1
           else
-            :
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: astral-sh/setup-uv@v6
 
       - name: Set up the CI Python
+        id: ci-python
         run: |
           uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
       - name: Provision checkpoints and corpus
+        id: asr-checkpoints
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
 
       - name: Build the runtime
+        id: native-build
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/cmake" --build "$VOXT_CI_ROOT/runtime-build/cmake" --target asr_service_probe
+
+      - name: AuK checkpoint preparation tests
+        run: |
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/python" -m unittest sglang_omni_mlx.native.ci.test_prepare_auk
 
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
@@ -139,8 +168,10 @@ jobs:
           exit $status
 
       - name: Server API tests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          NATIVE_SERVICE_PROBE: ${{ env.VOXT_CI_ROOT }}/runtime-build/cmake/asr_service_probe
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
@@ -149,15 +180,45 @@ jobs:
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
       - name: Provision the other models' checkpoints
-        if: ${{ always() }}
+        id: model-checkpoints
+        if: ${{ !cancelled() && steps.native-disk.outputs.ready == 'true' && steps.ci-python.outcome == 'success' && steps.native-build.outcome == 'success' }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data"
 
+      - name: Prepare AuK native checkpoints
+        id: auk-checkpoints
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
+        run: |
+          preparation_python="$VOXT_CI_ROOT/runtime-build/venv/bin/python"
+          pins=sglang_omni_mlx/native/ci/model_pins.json
+          conditioner_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Qwen/Qwen2.5-Omni-3B"]["revision"])' "$pins")
+          for model in AuK AuK-Flash; do
+            auk_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["tencent/" + sys.argv[2]]["revision"])' "$pins" "$model")
+            "$preparation_python" sglang_omni_mlx/native/tools/prepare_auk.py \
+              --auk-directory "$VOXT_CI_ROOT/data/models/tencent_$model" \
+              --conditioner-directory "$VOXT_CI_ROOT/data/models/Qwen_Qwen2.5-Omni-3B" \
+              --output "$VOXT_CI_ROOT/data/native_models/tencent_$model" \
+              --auk-revision "$auk_revision" --conditioner-revision "$conditioner_revision" --reuse
+          done
+
       - name: Other models' golden outputs on the frozen corpus
-        if: ${{ always() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
+        env:
+          AUK_CHECKPOINTS_READY: ${{ steps.auk-checkpoints.outcome == 'success' }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
+            case "$golden" in
+              */auk.json|*/auk-flash.json)
+                if [ "$AUK_CHECKPOINTS_READY" != true ]; then
+                  echo "::error::Skipping $golden because AuK checkpoint preparation did not succeed."
+                  result=1
+                  continue
+                else
+                  :
+                fi
+                ;;
+            esac
             "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
               --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
               --outputs "$RUNNER_TEMP/golden-outputs" || result=1
@@ -173,12 +234,27 @@ jobs:
           if-no-files-found: ignore
 
       - name: Other model servers' API tests
-        if: ${{ always() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
+
+      - name: AuK server API tests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.auk-checkpoints.outcome == 'success' }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          AUK_MODEL_DIRECTORY: ${{ env.VOXT_CI_ROOT }}/data/native_models/tencent_AuK-Flash
+          MLX_ENABLE_TF32: "0"
+        run: |
+          status=0
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_auk_api.py || status=1
+          AUK_MODEL_DIRECTORY="$VOXT_CI_ROOT/data/native_models/tencent_AuK" \
+            "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q \
+            sglang_omni_mlx/native/ci/test_auk_api.py::test_health_models_and_speech_formats \
+            sglang_omni_mlx/native/ci/test_auk_api.py::test_reference_cloning_duration_and_raw_instruction || status=1
+          exit "$status"
 
   voxt-unit:
     name: Voxt Omni unit tests

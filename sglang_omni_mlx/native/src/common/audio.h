@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -23,7 +24,21 @@ inline constexpr int kChunkTokenCount = 13;
 // mel frame, and a token count computed with float32 true division).
 enum class AudioLayout { kReference, kVoxtSwift };
 
-// 16 kHz mono PCM16 or float32 WAV to float32 samples; throws
+struct DecodedAudio {
+  std::vector<float> samples;
+  int sample_rate;
+};
+
+// Complete mono PCM16 or finite float32 WAV at its declared sample rate.
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes);
+std::string EncodePcm16(const std::vector<float> &samples);
+std::string EncodeWavPcm16(const std::vector<float> &samples, int sample_rate);
+// PCM16 bytes must be little-endian, with complete interleaved channel frames.
+std::string EncodeWavPcm16(std::string_view pcm_bytes, int sample_rate,
+                           int channels);
+
+// 16 kHz mono WAV, accepting streaming length placeholders and complete
+// samples in a partial final frame. Throws
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes);
 
@@ -35,6 +50,9 @@ const std::vector<float> &PeriodicHannWindow();
 // Whisper-style log-mel in float32 on MLX, [mel_bins, frames]. The reference
 // layout drops the final centered STFT frame; the Swift layout keeps it.
 mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout);
+mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout,
+                        const mlx::core::array &window,
+                        const mlx::core::array &filters);
 
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;
