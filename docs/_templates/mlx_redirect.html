@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>MLX Path has moved</title>
+    <link rel="canonical" href="{{ pathto('mlx/index') | e }}">
+    <script>
+      window.location.replace({{ pathto('mlx/index') | tojson }} + window.location.search + window.location.hash);
+    </script>
+  </head>
+  <body>
+    <h1>MLX Path has moved</h1>
+    <p>Continue to <a href="{{ pathto('mlx/index') | e }}">MLX Path</a>.</p>
+  </body>
+</html>

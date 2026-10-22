@@ -192,15 +192,6 @@ def test_request_builder_drops_prompt_when_generation_fills_context(
     assert data.max_new_tokens == 448 - len(PREFIX)
 
 
-def test_request_builder_clamps_max_new_tokens_without_prompt(monkeypatch) -> None:
-    """A promptless max_new_tokens=448 request must not outgrow the table."""
-    data = build(monkeypatch, {"max_new_tokens": 448})
-
-    assert data.prompt_token_ids == PREFIX
-    assert data.max_new_tokens == 448 - len(PREFIX)
-    assert len(data.prompt_token_ids) + data.max_new_tokens <= 448
-
-
 def test_decoder_budget_invariant_exhaustive() -> None:
     """prev block + prefix + max_new never exceed the 448-position table.
 

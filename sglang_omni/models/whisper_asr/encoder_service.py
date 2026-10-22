@@ -11,14 +11,30 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Iterator
-from typing import Any, cast
+from collections.abc import Generator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeGuard
 
 import torch
-from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
+from transformers.models.whisper.feature_extraction_whisper import (
+    WhisperFeatureExtractor,
+)
 
-from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
+from sglang_omni.scheduling.pre_lm_encoder import (
+    PreLMEncoderService,
+    QueueEntry,
+    QueueSignal,
+)
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.whisper_asr.sglang_model import (
+        WhisperForConditionalGeneration,
+    )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +43,18 @@ logger = logging.getLogger(__name__)
 # derived from that: 1024 entries is ~3.9 GB of host memory for large-v3
 # (3.84 MB per entry) and ~1.5 GB for base.
 _CACHE_MAX_ENTRIES = 1024
-_SHUTDOWN = object()
 
 
 def build_cache_namespace(
-    model: Any,
+    model: WhisperForConditionalGeneration,
     *,
     model_path: str,
-    feature_extractor: Any,
+    feature_extractor: WhisperFeatureExtractor,
 ) -> str:
     """Digest identifying this process's encoder pipeline for cache keying."""
     config = model.config
     try:
-        model_config: Any = config.to_dict()
+        model_config: dict[str, object] | str = config.to_dict()
     except AttributeError:
         model_config = repr(config)
     reference = next(model.model.encoder.parameters())
@@ -62,19 +77,33 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def expected_audio_tokens(item: Any) -> int | None:
+def expected_audio_tokens(item: MultimodalDataItem) -> int | None:
     num_tokens = item.num_audio_tokens
     return int(num_tokens) if num_tokens is not None else None
 
 
-class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
+@dataclass(kw_only=True)
+class LaunchedEncoderBatch:
+    """An encoder batch queued on the encoder stream but not yet delivered."""
+
+    batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    embeddings: list[torch.Tensor]
+    host_copies: list[torch.Tensor | None]
+    done: torch.cuda.Event | None
+    started_s: float
+    error: Exception | None = None
+
+
+class WhisperPreLMEncoderService(
+    PreLMEncoderService[MultimodalDataItem, torch.Tensor, torch.Tensor]
+):
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
 
     def __init__(
         self,
-        model: Any,
+        model: WhisperForConditionalGeneration,
         *,
         cache_namespace: str,
         encoder_token_count: int,
@@ -83,6 +112,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 0,
         pin_host_memory: bool = True,
+        pipeline_batches: bool = False,
     ) -> None:
         if encoder_token_count < 1:
             raise ValueError(
@@ -98,6 +128,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             raise ValueError(f"cache_max_bytes must be >= 0, got {cache_max_bytes}")
         else:
             pass
+        self.pipeline_batches = pipeline_batches
         self.model = model
         reference = next(model.model.encoder.parameters())
         self.device = reference.device
@@ -231,8 +262,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             blocks.clear()
             self.prewarm_s = time.perf_counter() - started
         logger.info(
-            "Whisper pre-LM cache: prewarmed %d pinned host entries "
-            "(%.1f MB) in %.2fs",
+            "Whisper pre-LM cache: prewarmed %d pinned host entries (%.1f MB) in %.2fs",
             warmed,
             warmed
             * self._entry_bytes
@@ -262,12 +292,12 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             else:
                 pass
             self.closed = True
-            self.queue.put(_SHUTDOWN)
+            self.queue.put(QueueSignal.SHUTDOWN)
         self.thread.join(timeout=5)
 
     def enqueue(
         self,
-        item: Any,
+        item: MultimodalDataItem,
         future: concurrent.futures.Future[torch.Tensor],
     ) -> None:
         with self.lifecycle_lock:
@@ -283,7 +313,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 )
             )
 
-    def encode_item(self, item: Any) -> None:
+    def encode_item(self, item: MultimodalDataItem) -> None:
         """Block until item.precomputed_embeddings holds encoder states."""
         expected_tokens = expected_audio_tokens(item)
         if expected_tokens is None:
@@ -356,8 +386,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             with self.lock:
                 self.failed += 1
             raise RuntimeError(
-                f"Whisper pre-LM encode leader for {key} returned an invalid "
-                f"embedding"
+                f"Whisper pre-LM encode leader for {key} returned an invalid embedding"
             )
         else:
             pass
@@ -417,7 +446,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 "pin_prewarm_s": self.prewarm_s,
             }
 
-    def cache_key(self, item: Any) -> str | None:
+    def cache_key(self, item: MultimodalDataItem) -> str | None:
         return self.cache_key_from_fingerprint(item.audio_fingerprint)
 
     def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
@@ -427,7 +456,9 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             pass
         return f"{self.namespace}:{audio_fingerprint}"
 
-    def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def is_valid(
+        self, embedding: object, expected_tokens: int
+    ) -> TypeGuard[torch.Tensor]:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -436,7 +467,9 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             and embedding.dtype == self.dtype
         )
 
-    def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+    def attach_embedding(
+        self, item: MultimodalDataItem, embedding: torch.Tensor
+    ) -> None:
         embedding = embedding.to(self.device, non_blocking=True)
         if self.stream is not None and embedding.is_cuda:
             embedding.record_stream(torch.cuda.default_stream(self.device))
@@ -446,13 +479,15 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
-    def drain_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+    def drain_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         first = self.queue.get()
-        if first is _SHUTDOWN:
+        if first is QueueSignal.SHUTDOWN:
             return [], True
         else:
             pass
-        batch = [cast(QueueEntry[Any], first)]
+        batch = [first]
         deadline = time.monotonic() + self.max_batch_wait_s
         shutdown = False
         while len(batch) < self.max_batch_size:
@@ -465,19 +500,38 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 )
             except queue.Empty:
                 break
-            if queued is _SHUTDOWN:
+            if queued is QueueSignal.SHUTDOWN:
                 shutdown = True
                 break
             else:
                 pass
-            batch.append(cast(QueueEntry[Any], queued))
+            batch.append(queued)
         return batch, shutdown
 
-    def next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+    def drain_queued_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
+        """Take what is already queued (up to a batch) without blocking."""
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]] = []
+        while len(batch) < self.max_batch_size:
+            try:
+                queued = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if queued is QueueSignal.SHUTDOWN:
+                return batch, True
+            else:
+                pass
+            batch.append(queued)
+        return batch, False
+
+    def next_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         return self.drain_batch()
 
     @contextlib.contextmanager
-    def batch_context(self) -> Iterator[None]:
+    def batch_context(self) -> Generator[None, None, None]:
         with torch.inference_mode():
             if self.stream is None:
                 yield
@@ -485,18 +539,17 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 with torch.cuda.stream(self.stream):
                     yield
 
-    def encode_batch(self, items: list[Any]) -> torch.Tensor:
+    def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
         return self.model.encode_audio_features(items)
 
     def split_embeddings(
         self,
-        items: list[Any],
+        items: list[MultimodalDataItem],
         encoded: torch.Tensor,
     ) -> list[torch.Tensor]:
         if encoded.dim() != 3:
             raise RuntimeError(
-                f"Whisper encoder output rank {encoded.dim()} != 3 "
-                f"(expected [B, T, H])"
+                f"Whisper encoder output rank {encoded.dim()} != 3 (expected [B, T, H])"
             )
         else:
             pass
@@ -532,7 +585,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         return parts
 
     def stage_host_copy(
-        self, item: Any, embedding: torch.Tensor
+        self, item: MultimodalDataItem | None, embedding: torch.Tensor
     ) -> torch.Tensor | None:
         """Copy embedding GPU->CPU into a pinned buffer without waiting.
 
@@ -563,9 +616,132 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         else:
             pass
 
+    def launch_batch(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    ) -> LaunchedEncoderBatch:
+        """Queue one batch on the encoder stream without waiting for it."""
+        self.notify_batch_start(batch)
+        items = [entry.item for entry in batch]
+        started_s = time.perf_counter()
+        host_copies: list[torch.Tensor | None] = []
+        try:
+            with self.batch_context():
+                embeddings = self.split_embeddings(items, self.encode_batch(items))
+                if len(embeddings) != len(items):
+                    raise RuntimeError(
+                        "Encoder output count does not match request batch"
+                    )
+                else:
+                    pass
+                for item, embedding in zip(items, embeddings):
+                    host_copies.append(self.stage_host_copy(item, embedding))
+                    self.attach_embedding(item, embedding)
+                done = torch.cuda.Event()
+                done.record(self.stream)
+        except Exception as exc:
+            return LaunchedEncoderBatch(
+                batch=batch,
+                embeddings=[],
+                host_copies=[],
+                done=None,
+                started_s=started_s,
+                error=exc,
+            )
+        return LaunchedEncoderBatch(
+            batch=batch,
+            embeddings=embeddings,
+            host_copies=host_copies,
+            done=done,
+            started_s=started_s,
+        )
+
+    def finish_batch(self, launched: LaunchedEncoderBatch) -> None:
+        """Wait for a launched batch and hand its embeddings to the waiters."""
+        error = launched.error
+        if error is None:
+            try:
+                assert launched.done is not None
+                launched.done.synchronize()
+                for entry, embedding, host_copy in zip(
+                    launched.batch, launched.embeddings, launched.host_copies
+                ):
+                    self.cache_embedding(entry.item, embedding, host_copy)
+            except Exception as exc:
+                error = exc
+            else:
+                pass
+        else:
+            pass
+        elapsed_s = time.perf_counter() - launched.started_s
+        if error is None:
+            for entry, embedding in zip(launched.batch, launched.embeddings):
+                self.set_result(entry, embedding)
+        else:
+            error = self.handle_batch_failure(launched.batch, error)
+            if self.retry_batch(launched.batch, error):
+                recovered = 0
+                for entry in launched.batch:
+                    try:
+                        self.set_result(entry, self.execute_batch([entry.item])[0])
+                        recovered += 1
+                    except Exception as exc:
+                        self.set_exception(entry, self.handle_item_failure(entry, exc))
+                self.notify_batch_finished(launched.batch, error, recovered, elapsed_s)
+                return
+            else:
+                for entry in launched.batch:
+                    self.set_exception(entry, error)
+        self.notify_batch_finished(launched.batch, error, None, elapsed_s)
+
+    def worker(self) -> None:
+        """Keep one batch in flight so the encoder stream never waits on the host.
+
+        Batch k+1 is drained and launched while batch k still runs, so the
+        stream goes straight from one encoder graph to the next instead of
+        idling through the result hand-off and the next drain.
+        """
+        if not self.pipeline_batches or self.stream is None:
+            super().worker()
+            return
+        else:
+            pass
+        in_flight: LaunchedEncoderBatch | None = None
+        launched: LaunchedEncoderBatch | None = None
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]] = []
+        try:
+            shutdown = False
+            while not shutdown:
+                if in_flight is None:
+                    batch, shutdown = self.drain_batch()
+                else:
+                    batch, shutdown = self.drain_queued_batch()
+                launched = self.launch_batch(batch) if batch else None
+                batch = []
+                if in_flight is not None:
+                    self.finish_batch(in_flight)
+                else:
+                    pass
+                in_flight = launched
+            if in_flight is not None:
+                self.finish_batch(in_flight)
+            else:
+                pass
+        except Exception as worker_exc:
+            logger.exception("pre-LM encoder worker failed")
+            pending = list(batch)
+            if in_flight is not None:
+                pending.extend(in_flight.batch)
+            else:
+                pass
+            if launched is not None and launched is not in_flight:
+                pending.extend(launched.batch)
+            else:
+                pass
+            self.fail_worker(worker_exc, pending)
+
     def cache_embedding(
         self,
-        item: Any,
+        item: MultimodalDataItem,
         embedding: torch.Tensor,
         host_copy: torch.Tensor | None = None,
     ) -> None:
@@ -578,7 +754,9 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         # between) and already pinned, so the cache stores it without another copy.
         self.cache.put(key, host_copy if host_copy is not None else embedding)
 
-    def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def retry_batch(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]], _exc: Exception
+    ) -> bool:
         if len(batch) == 1:
             return False
         else:
@@ -589,7 +767,9 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         )
         return True
 
-    def on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+    def on_batch_start(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    ) -> None:
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -606,7 +786,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
 
     def on_batch_finished(
         self,
-        batch: list[QueueEntry[Any]],
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         batch_exc: Exception | None,
         retry_recovered: int | None,
         elapsed_s: float,

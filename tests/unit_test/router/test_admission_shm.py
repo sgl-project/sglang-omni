@@ -299,43 +299,38 @@ def test_reclaim_normalizes_a_slot_left_odd_by_a_mid_write_crash() -> None:
     assert view.generation == 0
 
 
-def test_fail_fast_read_sheds_instead_of_blocking() -> None:
-    import time as time_module
+def test_fail_fast_read_sheds_instead_of_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sglang_omni_router.python.admission_shm as shm
 
+    sleeps: list[float] = []
+    monkeypatch.setattr(shm.time, "sleep", lambda secs: sleeps.append(secs))
     buf = make_buf()
     a = make_admission(buf, 0, bound=4)
     # Note (Jiaxin Deng): sibling slot 1 is stuck odd (its writer crashed mid-write)
     seq = struct.unpack_from("<q", buf, SLOT_SIZE)[0]
     struct.pack_into("<q", buf, SLOT_SIZE, seq + 1)
 
-    started = time_module.monotonic()
     assert a.try_acquire() is False  # shed, not admitted on unknown state
-    elapsed = time_module.monotonic() - started
-    assert elapsed < 0.5  # no sleep-backoff on the request path
+    assert sleeps == []  # no sleep-backoff on the request path
 
 
 def test_retired_slot_keeps_rejected_and_peak_across_reclaim() -> None:
-    from sglang_omni_router.python.admission_shm import retired_slot_index
+    from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+    from sglang_omni_router.python.supervisor import RouterSupervisor
 
     buf = make_buf()
     a = make_admission(buf, 0, bound=1)
     assert a.try_acquire() is True
     assert a.try_acquire() is False  # rejected_total = 1, peak = 1
 
-    # Note (Jiaxin Deng): supervisor folds before reclaiming (what
-    # _fold_and_reclaim_slot does)
-    view = SlotCodec(buf, 0).read()
-    retired = SlotCodec(buf, retired_slot_index(3))
-    accumulated = retired.read()
-    retired.write(
-        inflight=0,
-        peak_sum=max(accumulated.peak_sum, view.peak_sum),
-        rejected_total=accumulated.rejected_total + view.rejected_total,
-        generation=0,
-        pid=0,
-        heartbeat_ts=0.0,
+    supervisor = RouterSupervisor(
+        RouterConfig(workers=[WorkerConfig(url="http://127.0.0.1:8101")]),
+        router_processes=3,
     )
-    SlotCodec(buf, 0).reclaim()
+    supervisor._admission_mmap = buf  # noqa: leading-underscore  # production name
+    supervisor.fold_and_reclaim_slot(0)
 
     aggregate = AdmissionAggregateView(buf, 3).to_dict(1)
     assert aggregate["rejected_total"] == 1  # not reset by the crash

@@ -28,7 +28,11 @@ class FakeCodec:
         )
 
 
-def make_service(codec: FakeCodec) -> ReferenceEncodeService:
+def make_service(
+    codec: FakeCodec,
+) -> ReferenceEncodeService[
+    HiggsReferenceInput, torch.Tensor, torch.Tensor, HiggsReferenceInput
+]:
     hook = HiggsReferenceEncodeHook(
         codec, num_codebooks=codec.num_codebooks, model_identity="ckpt"
     )

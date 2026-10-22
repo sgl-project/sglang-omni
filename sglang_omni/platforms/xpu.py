@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
-from sglang.srt.platforms.device_mixin import PlatformEnum
+from sglang.srt.platforms.xpu import XpuDeviceMixin
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +24,18 @@ else:
     pass
 
 
-class XPUOmniPlatform(OmniPlatform):
-    _enum: PlatformEnum = PlatformEnum.XPU
-    device_name: str = "xpu"
-    device_type: str = "xpu"
-
-    def get_device(self, local_rank: int) -> "torch.device":
-        return torch.device("xpu", local_rank)
-
+class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def set_device(self, device: "torch.device | int") -> None:
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
 
     def enable_code2wav_graph(self):
         return True
+
+    def get_encoder_decoder_attention_backend(self) -> str | None:
+        # note (jianan): intel_xpu requires graphs disabled for encoder-decoder
+        # models; torch_native makes SGLang disable both graph phases.
+        return "torch_native"
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
@@ -50,8 +48,16 @@ class XPUOmniPlatform(OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        from sgl_kernel.jit.rope import apply_rope_inplace
+
+        return apply_rope_inplace
+
     def enable_talker_graph(self) -> bool:
         return True
+
+    def enable_tts_vocoder_fast_path(self) -> bool:
+        return False
 
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
@@ -88,6 +94,14 @@ class XPUOmniPlatform(OmniPlatform):
         from torch.nn.attention import SDPBackend
 
         return (SDPBackend.FLASH_ATTENTION, SDPBackend.MATH)
+
+    def supports_graph_captured_fft(self) -> bool:
+        return False
+
+    def supports_graph_captured_host_read(self) -> bool:
+        # Note (siju): a host read inside a capture raises on XPU, which is what
+        # the Mimi encoder's mask helper does.
+        return False
 
     def apply_model_worker_backend_policy(
         self,

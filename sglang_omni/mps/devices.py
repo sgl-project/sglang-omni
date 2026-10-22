@@ -6,7 +6,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
 
 _MIN_COMPUTE_CAPABILITY = (7, 0)
 
@@ -17,7 +16,7 @@ class MpsPhysicalDevice:
     unsupported_reason: str | None = None
 
 
-def check_cuda(status: Any, operation: str) -> None:
+def check_cuda(status: int, operation: str) -> None:
     if int(status) == 0:
         return
     else:

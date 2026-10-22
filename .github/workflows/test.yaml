@@ -16,14 +16,24 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
-# sequence: PR Test -> ASR -> TTS -> Qwen3-Omni). Restores omni only.
+# sequence: PR Test -> ASR -> TTS -> MPS -> Omni). Any stage label runs it.
+# run-lint-only does not.
+# Restores omni only.
 
 jobs:
   unit-test:
-    name: unit-test
+    name: ${{ matrix.name }}
     runs-on: [self-hosted, h100]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: unit-test-a
+            partition: 0
+          - name: unit-test-b
+            partition: 1
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -47,17 +57,22 @@ jobs:
           # note (Jingwen): Hide CUDA from the default unit-test process. Tests
           # that need an accelerator belong in the unit-test-accelerator job below.
           CUDA_VISIBLE_DEVICES: ""
+          OMNI_CI_STAGE_LABEL: ${{ matrix.name }}
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x
+            pytest tests/ -v -m "not benchmark and not accelerator" -x \
+            -p scripts.ci.utils.pytest_partition \
+            --auto-partition-id "${{ matrix.partition }}" \
+            --auto-partition-size 2 \
+            --partition-model-file .github/unit_test_durations.json
 
   unit-test-accelerator:
     name: unit-test-accelerator
     runs-on: [self-hosted, h100]
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

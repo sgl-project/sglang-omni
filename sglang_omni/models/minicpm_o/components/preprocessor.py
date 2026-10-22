@@ -3,14 +3,37 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import re
+from collections.abc import Mapping
 
+import numpy as np
+import numpy.typing as npt
 import torch
-from PIL import Image
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
+from sglang_omni.models.minicpm_o.payload_types import (
+    AudioEncoderInputs,
+    ImageEncoderInputs,
+    MiniCPMOPipelineState,
+    ModalityInputs,
+    StreamState,
+)
+from sglang_omni.models.minicpm_o.prompt_frontend import AUDIO_PLACEHOLDER
+from sglang_omni.models.minicpm_o.prompt_frontend import (
+    IMAGE_PLACEHOLDER as IMAGE_PLACEHOLDER,
+)
+from sglang_omni.models.minicpm_o.prompt_frontend import (
+    RenderedChat,
+    first_batch_item,
+    has_inline_media,
+    messages_with_media_placeholders,
+    normalize_message_contents,
+    render_ordered_chat,
+    video_to_images,
+)
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
+from sglang_omni.models.minicpm_o.video_frontend import VideoProcessingOptions
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
@@ -27,13 +50,16 @@ from sglang_omni.preprocessing.video import (
 )
 from sglang_omni.proto import StagePayload
 
-if TYPE_CHECKING:
-    from transformers import ProcessorMixin
-else:
-    pass
-
-IMAGE_PLACEHOLDER = "<image>./</image>"
-AUDIO_PLACEHOLDER = "<audio>./</audio>"
+TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
+TTS_READ_PROMPT_ZH = "请用中文朗读以下文本: "
+# Forwarded to the talker as talker_<field>; the seed already reaches it.
+TALKER_SPEECH_SAMPLING_FIELDS = (
+    "max_new_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+)
 
 # note (MayDomine): task prompts match the checkpoint's audio-understanding template.
 ASR_PROMPT_ZH = "请仔细听这段音频片段，并将其内容逐字记录。"
@@ -42,53 +68,16 @@ ASR_PROMPT_EN = (
 )
 
 
-def first_batch_item(value: Any) -> Any:
-    """Unwrap the batch dimension of a processor output (batch size is 1)."""
-    if isinstance(value, list):
-        return value[0] if value else None
-    else:
-        pass
-    if isinstance(value, torch.Tensor):
-        return value[0]
-    else:
-        pass
-    return value
+def is_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
 
 
-def video_to_images(video: Any) -> list[Image.Image]:
-    """Convert one decoded video (T, C, H, W) tensor to RGB frames."""
-    if isinstance(video, list) and all(
-        isinstance(frame, Image.Image) for frame in video
-    ):
-        return [frame.convert("RGB") for frame in video]
+def tts_read_prompt(text: str, language: str | None) -> str:
+    if language in (None, "Auto"):
+        language = "Chinese" if is_chinese(text) else "English"
     else:
         pass
-
-    frames = video if isinstance(video, torch.Tensor) else torch.as_tensor(video)
-    if frames.ndim != 4:
-        raise ValueError(
-            "MiniCPM-o video inputs must have shape (T, C, H, W), "
-            f"got {tuple(frames.shape)}"
-        )
-    else:
-        pass
-    if frames.shape[1] in (1, 3, 4):
-        frames = frames.permute(0, 2, 3, 1)
-    elif frames.shape[-1] not in (1, 3, 4):
-        raise ValueError(
-            "MiniCPM-o video frames must have 1, 3, or 4 channels, "
-            f"got {tuple(frames.shape)}"
-        )
-    else:
-        pass
-
-    frames = frames.detach().cpu()
-    if frames.is_floating_point() and frames.numel() and float(frames.max()) <= 1.0:
-        frames = frames * 255.0
-    else:
-        pass
-    frames = frames.clamp(0, 255).to(torch.uint8)
-    return [Image.fromarray(frame.numpy()).convert("RGB") for frame in frames]
+    return TTS_READ_PROMPT_ZH if language == "Chinese" else TTS_READ_PROMPT_EN
 
 
 class MiniCPMOPreprocessor:
@@ -97,25 +86,35 @@ class MiniCPMOPreprocessor:
         model_path: str,
         *,
         speech_enabled: bool = False,
+        device: torch.device = torch.device("cpu"),
     ) -> None:
-        local_dir = str(resolve_model_path(model_path))
+        local_model_directory = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
-            local_dir, trust_remote_code=True
+            local_model_directory, trust_remote_code=True
         )
         # note (MayDomine): text-only requests do not need Whisper feature extraction.
-        self.model_dir = local_dir
-        self._processor = None  # noqa: leading-underscore
-        self.speech_enabled = speech_enabled
+        self.model_dir: str = local_model_directory
+        self._processor: ProcessorMixin | None = None  # noqa: leading-underscore
+        self.speech_enabled: bool = speech_enabled
+        self.device: torch.device = device
 
     def speech_to_text_inputs(
-        self, payload: StagePayload, inputs: dict[str, Any]
-    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        self, payload: StagePayload, inputs: Mapping[str, object]
+    ) -> tuple[list[dict[str, str]], list[npt.NDArray[np.float32]]]:
         """Turn a transcription upload into a chat turn plus audio list."""
-        params = payload.request.params or {}
-        language = str(params.get("language") or "").lower()
+        request_parameters = payload.request.params or {}
+        language = str(request_parameters.get("language") or "").lower()
         prompt = ASR_PROMPT_ZH if language.startswith("zh") else ASR_PROMPT_EN
-        audio, _ = AudioMediaIO(target_sr=16000).load_bytes(inputs["audio_bytes"])
-        return [{"role": "user", "content": prompt}], [audio]
+        audio_bytes = inputs["audio_bytes"]
+        if not isinstance(audio_bytes, bytes):
+            raise ValueError("Transcription input requires audio bytes")
+        else:
+            audio_waveform, sample_rate = AudioMediaIO(target_sr=16000).load_bytes(
+                audio_bytes
+            )
+        # note (Tianyao Wu): the recipe puts a blank line between prompt and audio.
+        message = {"role": "user", "content": f"{prompt}\n\n{AUDIO_PLACEHOLDER}"}
+        return [message], [audio_waveform]
 
     def should_use_tts_template(self, payload: StagePayload) -> bool:
         return self.speech_enabled and should_generate_audio_output(payload)
@@ -126,38 +125,154 @@ class MiniCPMOPreprocessor:
             self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
+            if self.device.type == "cuda":
+                processor = self._processor  # noqa: leading-underscore
+                processor.process_image = CUDAImageProcessor(
+                    processor.image_processor, self.device
+                )
+            else:
+                pass
         else:
             pass
         return self._processor  # noqa: leading-underscore
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
+        params = payload.request.params or {}
+        metadata = payload.request.metadata or {}
+        known_tts_text = None
+        if metadata.get("task") == "tts":
+            known_tts_text = inputs["text"] if isinstance(inputs, Mapping) else inputs
+            tts_params = metadata.get("tts_params") or {}
+            read_prompt = tts_read_prompt(known_tts_text, tts_params.get("language"))
+            inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
+            talker_params = {
+                f"talker_{field}": value
+                for field, value in params.items()
+                if field in TALKER_SPEECH_SAMPLING_FIELDS and value is not None
+            }
+            params = {**params, **talker_params}
+            payload.request.params = params
+        else:
+            pass
         raw_images = None
         raw_audios = None
         raw_videos = None
         use_audio_in_video = False
-        video_params: dict[str, Any] = {}
+        video_options = VideoProcessingOptions()
+        media_placeholders_placed = False
+        audio_turn_indices: list[int] | None = None
+        has_inline_video = False
+        rendered_chat: RenderedChat | None = None
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
+            media_placeholders_placed = True
         elif isinstance(inputs, dict):
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_audios = inputs.get("audio") or inputs.get("audios")
-            raw_videos = inputs.get("videos") or inputs.get("video")
+            raw_videos = inputs.get("videos")
+            if raw_videos is None:
+                raw_videos = inputs.get("video")
+            else:
+                pass
+            if raw_videos is not None and not isinstance(raw_videos, list):
+                raw_videos = [raw_videos]
+            else:
+                pass
             use_audio_in_video = bool(inputs.get("use_audio_in_video", False))
-            video_params = {
-                key: inputs.get(key)
-                for key in (
-                    "video_fps",
-                    "video_max_frames",
-                    "video_min_pixels",
-                    "video_max_pixels",
-                    "video_total_pixels",
-                )
-                if inputs.get(key) is not None
-            }
+            video_options = VideoProcessingOptions.model_validate(inputs)
         else:
             messages = inputs
+
+        if known_tts_text is not None:
+            if not isinstance(known_tts_text, str) or not known_tts_text.strip():
+                raise ValueError("speech input must be nonempty text")
+            elif not self.should_use_tts_template(payload):
+                raise ValueError("speech requests require the speech pipeline")
+            elif raw_images or raw_audios or raw_videos:
+                raise ValueError("speech requests take text only")
+            elif params.get("stream", False):
+                raise ValueError("MiniCPM-o speech output does not stream")
+            else:
+                pass
+        else:
+            pass
+
+        if raw_videos and use_audio_in_video and not has_inline_media(messages):
+            video_sources = raw_videos if isinstance(raw_videos, list) else [raw_videos]
+            has_only_video_sources = all(
+                isinstance(source, str) for source in video_sources
+            )
+            if not has_only_video_sources:
+                raise ValueError(
+                    "Video audio interleaving requires file or URL video sources"
+                )
+            elif (
+                not isinstance(messages, list)
+                or not messages
+                or messages[-1].get("role") != "user"
+            ):
+                raise ValueError("Top-level video inputs require a final user message")
+            else:
+                image_contents = await ensure_image_list_async(raw_images)
+                audio_contents = await ensure_audio_list_async(
+                    raw_audios, target_sr=16000
+                )
+                content = messages[-1].get("content", "")
+                text_contents = (
+                    content
+                    if isinstance(content, list)
+                    else ([] if content == "" else [content])
+                )
+                messages = [
+                    *messages[:-1],
+                    {
+                        **messages[-1],
+                        "content": [
+                            *image_contents,
+                            *audio_contents,
+                            *[
+                                {
+                                    "type": "video_url",
+                                    "video_url": {
+                                        "url": source,
+                                        "use_audio": use_audio_in_video,
+                                    },
+                                }
+                                for source in video_sources
+                            ],
+                            *text_contents,
+                        ],
+                    },
+                ]
+                raw_images = raw_audios = raw_videos = None
+        else:
+            pass
+
+        if has_inline_media(messages):
+            if raw_images or raw_audios or raw_videos:
+                raise ValueError(
+                    "Inline media cannot be combined with top-level images, audios or videos"
+                )
+            else:
+                rendered_chat = await render_ordered_chat(
+                    messages,
+                    use_audio_in_video=use_audio_in_video,
+                    video_fps=video_options.video_fps,
+                    video_max_frames=video_options.video_max_frames,
+                    video_min_pixels=video_options.video_min_pixels,
+                    video_max_pixels=video_options.video_max_pixels,
+                    video_total_pixels=video_options.video_total_pixels,
+                )
+                messages = rendered_chat.messages
+                raw_images = rendered_chat.images
+                raw_audios = rendered_chat.audios
+                audio_turn_indices = rendered_chat.audio_turn_indices
+                media_placeholders_placed = True
+                has_inline_video = rendered_chat.has_video
+        else:
+            pass
 
         if raw_images or raw_audios or raw_videos:
             return await self.preprocess_multimodal(
@@ -166,8 +281,11 @@ class MiniCPMOPreprocessor:
                 raw_images=raw_images,
                 raw_audios=raw_audios,
                 raw_videos=raw_videos,
-                use_audio_in_video=use_audio_in_video,
-                video_params=video_params,
+                video_options=video_options,
+                media_placeholders_placed=media_placeholders_placed,
+                audio_turn_indices=audio_turn_indices,
+                has_inline_video=has_inline_video,
+                rendered_chat=rendered_chat,
             )
         else:
             pass
@@ -188,26 +306,54 @@ class MiniCPMOPreprocessor:
             input_ids = encoded["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
+        known_tts_output_ids = None
+        if known_tts_text is not None:
+            tts_bos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_bos|>")
+            tts_eos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_eos|>")
+            if int(input_ids[-1]) != tts_bos_token_id:
+                raise ValueError("speech prompt must end at the TTS boundary")
+            else:
+                pass
+            known_tts_output_ids = self.tokenizer.encode(
+                known_tts_text, add_special_tokens=False
+            )
+            if not known_tts_output_ids or any(
+                token_id in (tts_bos_token_id, tts_eos_token_id)
+                for token_id in known_tts_output_ids
+            ):
+                raise ValueError("speech input has no speakable tokens")
+            else:
+                pass
+            suffix = torch.tensor(
+                [*known_tts_output_ids, tts_eos_token_id], dtype=torch.long
+            )
+            input_ids = torch.cat((input_ids, suffix))
+            attention_mask = torch.ones_like(input_ids)
+        else:
+            pass
+
+        stream_state: StreamState = {"token_ids": [], "text": ""}
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
+                "known_tts_output_ids": known_tts_output_ids,
             },
-            stream_state={"token_ids": [], "text": ""},
+            stream_state=stream_state,
         )
         payload.data = state.to_dict()
         payload.request.inputs = None
         return payload
 
     def render_chat_template(
-        self, messages: Any, *, use_tts_template: bool = False
+        self, messages: object, *, use_tts_template: bool = False
     ) -> str:
         if isinstance(messages, str):
             return messages
         else:
             pass
-        messages = self.normalize_message_contents(messages)
+        messages = normalize_message_contents(messages)
         return self.tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -216,100 +362,89 @@ class MiniCPMOPreprocessor:
             enable_thinking=False,
         )
 
-    @staticmethod
-    def normalize_message_contents(messages: Any) -> Any:
-        """Convert OpenAI text-part content to the string form expected by MiniCPM."""
-        if not isinstance(messages, list):
-            return messages
-        else:
-            pass
-        normalized = []
-        for message in messages:
-            if not isinstance(message, dict):
-                normalized.append(message)
-                continue
-            else:
-                pass
-            content = message.get("content", "")
-            if isinstance(content, list):
-                content = "".join(
-                    str(part.get("text", ""))
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            else:
-                pass
-            normalized.append({**message, "content": content})
-        return normalized
-
-    def messages_with_media_placeholders(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        num_images: int,
-        num_audios: int,
-    ) -> list[dict[str, Any]]:
-        """Prepend media placeholders to the last user message."""
-        result: list[dict[str, Any]] = []
-        messages = self.normalize_message_contents(messages)
-        for i, msg in enumerate(messages):
-            if i == len(messages) - 1 and msg.get("role", "user") == "user":
-                parts = (
-                    [IMAGE_PLACEHOLDER] * num_images
-                    + [AUDIO_PLACEHOLDER] * num_audios
-                    + [str(msg.get("content", ""))]
-                )
-                result.append({**msg, "content": "\n".join(parts)})
-            else:
-                result.append(msg)
-        return result
-
     async def preprocess_multimodal(
         self,
         payload: StagePayload,
-        messages: Any,
+        messages: object,
         *,
-        raw_images: Any,
-        raw_audios: Any,
-        raw_videos: Any,
-        use_audio_in_video: bool,
-        video_params: dict[str, Any],
+        raw_images: object,
+        raw_audios: object,
+        raw_videos: object,
+        video_options: VideoProcessingOptions,
+        media_placeholders_placed: bool,
+        audio_turn_indices: list[int] | None = None,
+        has_inline_video: bool = False,
+        rendered_chat: RenderedChat | None = None,
     ) -> StagePayload:
-        video_kwargs = {
-            key.removeprefix("video_"): value for key, value in video_params.items()
-        }
-        image_cache_key = compute_image_cache_key(raw_images)
-        video_cache_key = (
-            compute_video_cache_key(raw_videos, **video_kwargs) if raw_videos else None
+        images = (
+            list(rendered_chat.images)
+            if rendered_chat is not None
+            else await ensure_image_list_async(raw_images)
         )
-
-        images = await ensure_image_list_async(raw_images)
         if raw_videos:
-            videos, _, video_audios = await ensure_video_list_async(
+            # note (AkazaAkane): top-level videos without audio retain the existing input policy.
+            videos, _, _ = await ensure_video_list_async(
                 raw_videos,
-                **video_kwargs,
-                extract_audio=use_audio_in_video,
+                fps=video_options.video_fps,
+                max_frames=video_options.video_max_frames,
+                min_pixels=video_options.video_min_pixels,
+                max_pixels=video_options.video_max_pixels,
+                total_pixels=video_options.video_total_pixels,
+                extract_audio=False,
                 audio_target_sr=16000,
             )
         else:
-            videos, video_audios = [], None
+            videos = []
+        # note (Yuhao Chen): image and video cache identities use separate source media.
+        image_cache_key = compute_image_cache_key(images)
+        video_cache_key = compute_video_cache_key(
+            videos,
+            fps=video_options.video_fps,
+            max_frames=video_options.video_max_frames,
+            min_pixels=video_options.video_min_pixels,
+            max_pixels=video_options.video_max_pixels,
+            total_pixels=video_options.video_total_pixels,
+        )
         video_images = [frame for video in videos for frame in video_to_images(video)]
         images.extend(video_images)
-        audios = await ensure_audio_list_async(raw_audios, target_sr=16000)
-        if video_audios:
-            audios.extend(audio for audio in video_audios if audio is not None)
+        audios = (
+            list(rendered_chat.audios)
+            if rendered_chat is not None
+            else await ensure_audio_list_async(raw_audios, target_sr=16000)
+        )
+        audio_cache_key = compute_audio_cache_key(audios)
+        if audio_cache_key is not None and audio_turn_indices is not None:
+            audio_cache_key = (
+                f"{audio_cache_key}|parts={audio_turn_indices}|segments=v1"
+            )
         else:
             pass
-        audio_cache_key = compute_audio_cache_key(audios)
 
-        cache_keys = [key for key in (image_cache_key, video_cache_key) if key]
+        cache_keys = [
+            cache_key for cache_key in (image_cache_key, video_cache_key) if cache_key
+        ]
         image_cache_key = "|".join(cache_keys) if cache_keys else None
+        # note (Yuhao Chen): slicing policy changes cached embeddings for identical pixels.
+        processor_video_options = (
+            {"max_slice_nums": 1, "use_image_id": False}
+            if raw_videos or has_inline_video
+            else {}
+        )
+        if image_cache_key is not None:
+            image_processing_policy = (
+                "video-v1" if processor_video_options else "default-v1"
+            )
+            image_cache_key = f"{image_cache_key}|policy={image_processing_policy}"
+        else:
+            pass
 
-        if isinstance(messages, list) and not (
-            messages and all(isinstance(token, int) for token in messages)
+        if (
+            not media_placeholders_placed
+            and isinstance(messages, list)
+            and not (messages and all(isinstance(token, int) for token in messages))
         ):
-            messages = self.messages_with_media_placeholders(
-                messages, num_images=len(images), num_audios=len(audios)
+            messages = messages_with_media_placeholders(
+                messages, image_count=len(images), audio_count=len(audios)
             )
         else:
             pass
@@ -318,23 +453,20 @@ class MiniCPMOPreprocessor:
             use_tts_template=bool(audios) or self.should_use_tts_template(payload),
         )
 
-        # Match the checkpoint's video recipe; the policy covers mixed images too.
-        video_options = (
-            {"max_slice_nums": 1, "use_image_id": False} if raw_videos else {}
-        )
+        # Note (Akazaakane): Independent extraction matches per-segment placeholder rounding.
         processed = self.processor(
             prompt_text,
             images=[images] if images else None,
             audios=[audios] if audios else None,
             return_tensors="pt",
-            **video_options,
+            **processor_video_options,
         )
 
         input_ids = processed["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
-        mm_inputs: dict[str, Any] = {}
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        modality_inputs: dict[str, ModalityInputs] = {}
+        encoder_inputs: dict[str, ImageEncoderInputs | AudioEncoderInputs] = {}
         if images:
             image_bound = first_batch_item(processed["image_bound"])
             # note (MayDomine): slice order must match the placeholder bound order.
@@ -345,40 +477,47 @@ class MiniCPMOPreprocessor:
                     per_image if isinstance(per_image, list) else [per_image]
                 )
             ]
-            tgt_sizes = first_batch_item(processed["tgt_sizes"])
-            mm_inputs["image"] = {"bounds": image_bound, "cache_key": image_cache_key}
+            target_image_sizes = first_batch_item(processed["tgt_sizes"])
+            modality_inputs["image"] = {
+                "bounds": image_bound,
+                "cache_key": image_cache_key,
+            }
             encoder_inputs["image_encoder"] = {
                 "pixel_values": pixel_values,
-                "tgt_sizes": tgt_sizes,
+                "tgt_sizes": target_image_sizes,
                 "cache_key": image_cache_key,
             }
         else:
             pass
         if audios:
             audio_bounds = first_batch_item(processed["audio_bounds"])
-            audio_feature_lens = first_batch_item(processed["audio_feature_lens"])
-            mm_inputs["audio"] = {"bounds": audio_bounds, "cache_key": audio_cache_key}
+            audio_feature_lengths = first_batch_item(processed["audio_feature_lens"])
+            modality_inputs["audio"] = {
+                "bounds": audio_bounds,
+                "cache_key": audio_cache_key,
+            }
             encoder_inputs["audio_encoder"] = {
                 "audio_features": processed["audio_features"],
-                "audio_feature_lens": audio_feature_lens,
+                "audio_feature_lens": audio_feature_lengths,
                 "cache_key": audio_cache_key,
             }
         else:
             pass
 
+        stream_state: StreamState = {"token_ids": [], "text": ""}
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
             },
-            mm_inputs=mm_inputs,
+            mm_inputs=modality_inputs,
             encoder_inputs=encoder_inputs,
-            stream_state={"token_ids": [], "text": ""},
+            stream_state=stream_state,
         )
         payload.data = state.to_dict()
         payload.request.inputs = None
-        for key in (
+        for metadata_field in (
             "audios",
             "audio",
             "images",
@@ -390,5 +529,5 @@ class MiniCPMOPreprocessor:
             "video_max_pixels",
             "video_total_pixels",
         ):
-            payload.request.metadata.pop(key, None)
+            payload.request.metadata.pop(metadata_field, None)
         return payload

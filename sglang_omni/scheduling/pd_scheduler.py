@@ -7,16 +7,22 @@ import logging
 import queue
 import threading
 import types
+from collections.abc import Mapping
 from contextlib import nullcontext
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
-from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.mem_cache.allocator.swa import (
+    PureSWATokenToKVPoolAllocator,
+    SWATokenToKVPoolAllocator,
+)
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
 from sglang_omni.comm import KVPageTransfer
-from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
+from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -28,6 +34,7 @@ from sglang_omni.scheduling.pd_utils import (
     request_page_indices,
     serialize_kv_allocator,
 )
+from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +62,18 @@ class PDKVLifecycle(OmniScheduler):
         self.pd_outstanding_releases.add(req.rid)
         self.pd_due_releases.put(req)
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
         # Health checks only care whether a running request can carry their
         # result. Destructive operations must also see PD-owned KV.
         if not for_health_check and self.pd_holds_kv():
             return False
         else:
             pass
-        return _Upstream.is_fully_idle(self, for_health_check=for_health_check)
+        return _Upstream.is_fully_idle(
+            self, for_health_check=for_health_check, ignore_waiting=ignore_waiting
+        )
 
     def drain_due_releases(self) -> None:
         while True:
@@ -80,12 +91,12 @@ class PDKVLifecycle(OmniScheduler):
 
     def run_weight_update_with_lifecycle(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         update_fn,
-        result_data: dict[str, Any],
+        result_data: Mapping[str, object],
         *,
         keep_pause_on_failure: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AdminActionResult:
         def update_after_pd_drains(update_payload):
             self.drain_due_releases()
             if self.pd_holds_kv():
@@ -290,12 +301,14 @@ class OmniDecodeScheduler(PDKVLifecycle):
         stage_name: str,
         state_restorer: Callable,
         resume_schema: str,
+        emit_transferred_token: bool = False,
         **kwargs,
     ) -> None:
         self.pd_admissions = queue.SimpleQueue()
         self.pd_deferred_admission = None
         self.pd_lifecycle_lock = threading.RLock()
         self.pd_state_restorer = state_restorer
+        self.emit_transferred_token = emit_transferred_token
         super().__init__(*args, **kwargs)
         validate_pd_runtime(self)
         serialize_kv_allocator(
@@ -320,7 +333,9 @@ class OmniDecodeScheduler(PDKVLifecycle):
         self.disagg_decode_prealloc_queue = types.SimpleNamespace(
             queue=[], retracted_queue=[], num_tokens_pre_allocated=0
         )
-        self.disagg_decode_transfer_queue = types.SimpleNamespace(queue=[])
+        self.disagg_decode_transfer_queue = types.SimpleNamespace(
+            queue=[], num_pending_deferred_releases=lambda: 0
+        )
 
     def pd_holds_kv(self) -> bool:
         with self.pd_lifecycle_lock:
@@ -331,7 +346,11 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 or super().pd_holds_kv()
             )
 
-    def is_fully_idle(self, for_health_check: bool = False) -> bool:
+    def is_fully_idle(
+        self, for_health_check: bool = False, ignore_waiting: bool = False
+    ) -> bool:
+        # note (ratish): an admitted request waits holding its transferred KV,
+        # so the waiting queue counts even when a paused flush asks to skip it.
         with self.pd_lifecycle_lock:
             return super().is_fully_idle(for_health_check=for_health_check)
 
@@ -418,6 +437,53 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 self.waiting_queue.append(req)
                 self.outbox.put(admitted)
 
+    def stream_output(
+        self,
+        reqs: list[Req],
+        return_logprob: bool = False,
+        skip_req: Req | None = None,
+    ) -> None:
+        if not self.emit_transferred_token:
+            super().stream_output(reqs, return_logprob, skip_req)
+            return
+        else:
+            pass
+        step_messages: list[OutgoingMessage] = []
+        for request in reqs:
+            if (
+                request is skip_req
+                or request.rid in self.aborted_request_ids
+                or isinstance(request.finished_reason, FINISH_ABORT)
+                or request.rid in self.first_emit_done
+                or request.omni_data is None
+                or len(request.output_ids) != 1
+                or self.stream_output_builder is None
+            ):
+                continue
+            else:
+                pass
+            try:
+                messages = list(
+                    self.stream_output_builder(
+                        request.rid,
+                        request.omni_data,
+                        RequestOutput(
+                            request_id=request.rid, data=request.output_ids[0]
+                        ),
+                    )
+                )
+            except Exception as error:
+                logger.exception(f"PD first-token stream failed for {request.rid}")
+                request.finished_reason = FINISH_ABORT(str(error))
+                self.release_request_kv_cache(request)
+                self.emit_model_path_end_once(request.rid, status="error")
+                self.close_completed_request(request)
+                self.emit_request_error(request.rid, error)
+            else:
+                self.stage_stream_messages(request.rid, messages, step_messages)
+        put_messages(self.outbox, step_messages)
+        super().stream_output(reqs, return_logprob, skip_req)
+
     def discard_pending_request_admissions(self) -> None:
         super().discard_pending_request_admissions()
         self.pd_receiver.close()
@@ -452,6 +518,21 @@ class OmniDecodeScheduler(PDKVLifecycle):
 
 
 def validate_pd_runtime(scheduler: OmniScheduler) -> None:
+    if scheduler.session_adapter is not None:
+        raise NotImplementedError(
+            "PD session adapters require a retained-state ownership contract"
+        )
+    else:
+        pass
+    if isinstance(scheduler.req_to_token_pool, HybridReqToTokenPool):
+        raise NotImplementedError("PD does not transfer linear-attention state")
+    elif isinstance(
+        scheduler.token_to_kv_pool_allocator,
+        (PureSWATokenToKVPoolAllocator, SWATokenToKVPoolAllocator),
+    ):
+        raise NotImplementedError("PD does not transfer sliding-window KV ownership")
+    else:
+        pass
     if scheduler.tp_size != 1:
         raise NotImplementedError("PD currently requires tp_size == 1")
     else:

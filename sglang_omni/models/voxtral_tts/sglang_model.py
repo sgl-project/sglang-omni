@@ -3,20 +3,26 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import asdict
-from typing import Any, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.runtime_context import get_model, get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
+from transformers import PretrainedConfig
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
     FlowMatchingAudioTransformer,
 )
-from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
+from sglang_omni.models.voxtral_tts.model_config import (
+    VoxtralModelConfig,
+    VoxtralTextConfig,
+)
 from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import (
     MultiVocabEmbeddings,
     interleave_qk_weight,
@@ -32,9 +38,11 @@ from sglang_omni.vendor.sglang.layers import (
     get_rope,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class VoxtralSGLangAttention(nn.Module):
-    def __init__(self, cfg: Any, layer_id: int, prefix: str = "") -> None:
+    def __init__(self, cfg: VoxtralTextConfig, layer_id: int, prefix: str = "") -> None:
         super().__init__()
         self.num_heads = cfg.n_heads
         self.num_kv_heads = cfg.n_kv_heads
@@ -86,7 +94,7 @@ class VoxtralSGLangAttention(nn.Module):
 
 
 class VoxtralSGLangDecoderLayer(nn.Module):
-    def __init__(self, cfg: Any, layer_id: int, prefix: str = "") -> None:
+    def __init__(self, cfg: VoxtralTextConfig, layer_id: int, prefix: str = "") -> None:
         super().__init__()
         self.self_attn = VoxtralSGLangAttention(
             cfg,
@@ -113,7 +121,7 @@ class VoxtralSGLangDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor],
+        residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
@@ -130,7 +138,7 @@ class VoxtralSGLangDecoderLayer(nn.Module):
 
 
 class VoxtralSGLangTextModel(nn.Module):
-    def __init__(self, cfg: Any) -> None:
+    def __init__(self, cfg: VoxtralTextConfig) -> None:
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(cfg.vocab_size, cfg.dim)
         self.layers = nn.ModuleList(
@@ -172,7 +180,13 @@ class VoxtralSGLangTextModel(nn.Module):
 class VoxtralSGLangTTSModel(nn.Module):
     """Voxtral TTS model with SGLang-managed text KV cache."""
 
-    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: PretrainedConfig,
+        quant_config: QuantizationConfig | None = None,
+        prefix: str = "",
+    ) -> None:
+        # note (SunskyXH): SGLang requires these arguments; Voxtral uses params.json.
         del config, quant_config, prefix
         super().__init__()
         self.model_path = get_model().model_path
@@ -195,9 +209,50 @@ class VoxtralSGLangTTSModel(nn.Module):
             device=embed_weight.device,
             dtype=embed_weight.dtype,
         )
+        self.acoustic_graphs: dict[
+            int, tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor]
+        ] = {}
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
+
+    @torch.no_grad()
+    def init_acoustic_graphs(self, batch_sizes: list[int]) -> None:
+        """Capture the acoustic transformer (semantic head plus the flow-matching
+        Euler loop) into one CUDA graph per decode batch-size bucket."""
+        weight = self.decode_input_embed_buffer
+        for bucket in sorted({int(bs) for bs in batch_sizes}):
+            hidden = torch.zeros(
+                bucket, self.hidden_size, device=weight.device, dtype=weight.dtype
+            )
+            warmup_stream = torch.cuda.Stream()
+            warmup_stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(warmup_stream):
+                for _ in range(2):
+                    self.acoustic_transformer(hidden)
+            torch.cuda.current_stream().wait_stream(warmup_stream)
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                codes = self.acoustic_transformer(hidden)
+            self.acoustic_graphs[bucket] = (graph, hidden, codes)
+        logger.info(
+            f"Voxtral acoustic transformer CUDA graphs captured for bs={sorted(self.acoustic_graphs)}"
+        )
+
+    def run_acoustic_transformer(self, hidden: torch.Tensor) -> torch.Tensor:
+        batch_size = int(hidden.shape[0])
+        bucket = min(
+            (bs for bs in self.acoustic_graphs if bs >= batch_size), default=None
+        )
+        if bucket is None:
+            return self.acoustic_transformer(hidden)
+        else:
+            pass
+        graph, static_hidden, static_codes = self.acoustic_graphs[bucket]
+        static_hidden[:batch_size].copy_(hidden)
+        graph.replay()
+        return static_codes[:batch_size].clone()
 
     @torch.no_grad()
     def forward(
@@ -242,7 +297,7 @@ class VoxtralSGLangTTSModel(nn.Module):
             pass
         return torch.cumsum(extend_seq_lens.to(device=device), dim=0) - 1
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         params = dict(self.named_parameters())
         for name, loaded_weight in weights:
             if self.load_text_weight(name, loaded_weight, params):

@@ -27,15 +27,11 @@ from benchmarks.tasks.audio_understanding import (
     make_mmsu_send_fn,
     save_mmsu_results,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_PROMPT = (
     "Listen to the audio and answer the multiple-choice question. "
     "Reply with only the option letter."
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 
 
@@ -113,6 +109,11 @@ async def run(
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     p = argparse.ArgumentParser(description="MMAU benchmark.")
     p.add_argument("--base-url", type=str, default=None)
     p.add_argument("--host", type=str, default="localhost")

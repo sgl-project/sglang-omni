@@ -3,11 +3,32 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
+
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_conv_transpose1d,
+    channels_last_weight,
+    is_channels_last_conv_device,
+)
+
+if TYPE_CHECKING:
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2CausalConvNet,
+        Qwen3TTSTokenizerV2CausalTransConvNet,
+        Qwen3TTSTokenizerV2ConvNeXtBlock,
+        Qwen3TTSTokenizerV2Decoder,
+        Qwen3TTSTokenizerV2DecoderAttention,
+        Qwen3TTSTokenizerV2DecoderDecoderResidualUnit,
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -105,8 +126,26 @@ class Qwen3TTSIncrementalCodecState:
         )
 
 
+def conv_history(
+    state: Qwen3TTSIncrementalCodecState,
+    key: str,
+    hidden_states: torch.Tensor,
+    batch_size: int,
+    channels: int,
+    history_size: int,
+) -> torch.Tensor:
+    """The conv's (B, C, history) state, zeros before the stream's first decode."""
+    history = state.conv_histories.get(key)
+    if history is None:
+        return hidden_states.new_zeros(batch_size, channels, history_size)
+    elif history.shape[:-1] != (batch_size, channels):
+        raise ValueError(f"incremental causal Conv1d state shape changed for {key}")
+    else:
+        return history
+
+
 def incremental_causal_conv1d(
-    module: Any,
+    module: "Qwen3TTSTokenizerV2CausalConvNet",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
     key: str,
@@ -118,15 +157,14 @@ def incremental_causal_conv1d(
     else:
         pass
     history_size = int(module.padding)
-    history = state.conv_histories.get(key)
-    if history is None:
-        history = hidden_states.new_zeros(
-            hidden_states.shape[0], hidden_states.shape[1], history_size
-        )
-    elif history.shape[:-1] != hidden_states.shape[:-1]:
-        raise ValueError(f"incremental causal Conv1d state shape changed for {key}")
-    else:
-        pass
+    history = conv_history(
+        state,
+        key,
+        hidden_states,
+        int(hidden_states.shape[0]),
+        int(hidden_states.shape[1]),
+        history_size,
+    )
 
     combined = torch.cat((history, hidden_states), dim=-1)
     output = conv(combined).contiguous()
@@ -145,7 +183,7 @@ def incremental_causal_conv1d(
 
 
 def incremental_causal_transconv1d(
-    module: Any,
+    module: "Qwen3TTSTokenizerV2CausalTransConvNet",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
     key: str,
@@ -193,6 +231,135 @@ def incremental_causal_transconv1d(
     return emitted.contiguous()
 
 
+def channels_last_causal_conv1d(
+    module: "Qwen3TTSTokenizerV2CausalConvNet",
+    weight: torch.Tensor,
+    hidden_states: torch.Tensor,
+    state: Qwen3TTSIncrementalCodecState,
+    key: str,
+) -> torch.Tensor:
+    """incremental_causal_conv1d of a (B, L, C) activation with its channels-last
+    weight; the history keeps its (B, C, history) layout."""
+    conv = module.conv
+    stride = int(conv.stride[0])
+    if stride != 1:
+        raise ValueError(f"incremental causal Conv1d requires stride=1, got {stride}")
+    else:
+        pass
+    history_size = int(module.padding)
+    batch_size, length, channels = hidden_states.shape
+    history = conv_history(
+        state, key, hidden_states, batch_size, channels, history_size
+    )
+
+    if history_size:
+        combined = torch.cat((history.transpose(1, 2), hidden_states), dim=1)
+    else:
+        combined = hidden_states
+    dilation = int(conv.dilation[0])
+    if dilation == 1:
+        padded = combined
+    else:
+        padded = F.pad(combined, (0, 0, 0, (-combined.shape[1]) % dilation))
+    output = channels_last_conv1d(padded, conv, weight, conv.bias, length)
+    if output.shape[1] != length:
+        raise RuntimeError(
+            f"incremental causal Conv1d changed temporal length for {key}"
+        )
+    else:
+        pass
+    state.conv_histories[key] = (
+        combined[:, combined.shape[1] - history_size :]
+        .transpose(1, 2)
+        .clone(memory_format=torch.contiguous_format)
+    )
+    return output.contiguous()
+
+
+def channels_last_causal_transconv1d(
+    module: "Qwen3TTSTokenizerV2CausalTransConvNet",
+    weight: torch.Tensor,
+    hidden_states: torch.Tensor,
+    state: Qwen3TTSIncrementalCodecState,
+    key: str,
+) -> torch.Tensor:
+    """incremental_causal_transconv1d of a (B, L, C) activation with its channels-last
+    weight; the overlap keeps its (B, C, overlap) layout."""
+    conv = module.conv
+    stride = int(conv.stride[0])
+    right_pad = int(module.right_pad)
+    output = channels_last_conv_transpose1d(hidden_states, conv, weight, None)
+    overlap = state.transconv_overlaps.get(key)
+    if overlap is not None:
+        if overlap.shape[:-1] != (output.shape[0], output.shape[2]):
+            raise ValueError(
+                f"incremental causal ConvTranspose1d state shape changed for {key}"
+            )
+        else:
+            pass
+        output[:, : int(overlap.shape[-1])] += overlap.transpose(1, 2)
+    else:
+        pass
+
+    emit_length = int(hidden_states.shape[1]) * stride
+    emitted = output[:, :emit_length]
+    tail = output[:, emit_length:]
+    if int(tail.shape[1]) != right_pad:
+        raise RuntimeError(
+            f"incremental causal ConvTranspose1d produced the wrong overlap for {key}"
+        )
+    else:
+        pass
+    state.transconv_overlaps[key] = tail.transpose(1, 2).clone(
+        memory_format=torch.contiguous_format
+    )
+    if conv.bias is not None:
+        emitted = emitted + conv.bias
+    else:
+        pass
+    return emitted.contiguous()
+
+
+def causal_conv1d(
+    module: "Qwen3TTSTokenizerV2CausalConvNet",
+    hidden_states: torch.Tensor,
+    state: Qwen3TTSIncrementalCodecState,
+    key: str,
+    channels_last_weights: dict[str, torch.Tensor] | None,
+) -> torch.Tensor:
+    if channels_last_weights is None:
+        return incremental_causal_conv1d(module, hidden_states, state, key)
+    else:
+        return channels_last_causal_conv1d(
+            module, channels_last_weights[key], hidden_states, state, key
+        )
+
+
+def causal_transconv1d(
+    module: "Qwen3TTSTokenizerV2CausalTransConvNet",
+    hidden_states: torch.Tensor,
+    state: Qwen3TTSIncrementalCodecState,
+    key: str,
+    channels_last_weights: dict[str, torch.Tensor] | None,
+) -> torch.Tensor:
+    if channels_last_weights is None:
+        return incremental_causal_transconv1d(module, hidden_states, state, key)
+    else:
+        return channels_last_causal_transconv1d(
+            module, channels_last_weights[key], hidden_states, state, key
+        )
+
+
+def apply_activation(
+    module: torch.nn.Module, hidden_states: torch.Tensor, is_channels_last: bool
+) -> torch.Tensor:
+    """Run a (B, C, L) activation module on the decoder's layout."""
+    if is_channels_last:
+        return module(hidden_states.transpose(1, 2)).transpose(1, 2)
+    else:
+        return module(hidden_states)
+
+
 def apply_rotary_pos_emb(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -225,7 +392,7 @@ def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
 
 
 def incremental_attention(
-    attention: Any,
+    attention: "Qwen3TTSTokenizerV2DecoderAttention",
     hidden_states: torch.Tensor,
     position_embeddings: tuple[torch.Tensor, torch.Tensor],
     state: Qwen3TTSIncrementalCodecState,
@@ -296,10 +463,25 @@ def incremental_attention(
     return attention.o_proj(output), key, value
 
 
+def frames_ending_at(
+    sequence: torch.Tensor, end_frames: torch.Tensor, count: int, dim: int
+) -> torch.Tensor:
+    """Each row's count entries of sequence along dim that end at end_frames[row]."""
+    index = (end_frames - count).unsqueeze(1) + torch.arange(
+        count, device=sequence.device
+    )
+    shape = [1] * sequence.ndim
+    shape[0], shape[dim] = int(sequence.shape[0]), count
+    expanded = list(sequence.shape)
+    expanded[dim] = count
+    return sequence.gather(dim, index.view(shape).expand(expanded))
+
+
 def incremental_transformer(
-    transformer: Any,
+    transformer: "Qwen3TTSTokenizerV2DecoderTransformerModel",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
+    valid_frames: torch.Tensor | None = None,
 ) -> torch.Tensor:
     hidden_states = transformer.input_proj(hidden_states)
     batch_size = int(hidden_states.shape[0])
@@ -342,16 +524,25 @@ def incremental_transformer(
         hidden_states = layer.post_attention_layernorm(hidden_states)
         hidden_states = layer.mlp(hidden_states)
         hidden_states = residual + layer.mlp_layer_scale(hidden_states)
-        next_keys[layer_index] = (
-            key[..., -retained_context:, :].clone()
-            if retained_context
-            else key[..., :0, :].clone()
-        )
-        next_values[layer_index] = (
-            value[..., -retained_context:, :].clone()
-            if retained_context
-            else value[..., :0, :].clone()
-        )
+        if valid_frames is not None:
+            retained_end = prior_length + valid_frames
+            next_keys[layer_index] = frames_ending_at(
+                key, retained_end, retained_context, -2
+            )
+            next_values[layer_index] = frames_ending_at(
+                value, retained_end, retained_context, -2
+            )
+        else:
+            next_keys[layer_index] = (
+                key[..., -retained_context:, :].clone()
+                if retained_context
+                else key[..., :0, :].clone()
+            )
+            next_values[layer_index] = (
+                value[..., -retained_context:, :].clone()
+                if retained_context
+                else value[..., :0, :].clone()
+            )
 
     state.transformer_keys = next_keys
     state.transformer_values = next_values
@@ -359,43 +550,56 @@ def incremental_transformer(
 
 
 def incremental_convnext(
-    module: Any,
+    module: "Qwen3TTSTokenizerV2ConvNeXtBlock",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
     key: str,
+    is_channels_last: bool,
 ) -> torch.Tensor:
     residual = hidden_states
-    hidden_states = incremental_causal_conv1d(
-        module.dwconv, hidden_states, state, f"{key}.dwconv"
-    )
-    hidden_states = module.norm(hidden_states.permute(0, 2, 1))
+    if is_channels_last:
+        # note (ratish): the depthwise conv stays on PyTorch's own (B, C, L) kernel,
+        # faster than cuDNN's channels-last depthwise and free of its per-shape setup.
+        hidden_states = incremental_causal_conv1d(
+            module.dwconv, hidden_states.transpose(1, 2), state, f"{key}.dwconv"
+        ).transpose(1, 2)
+    else:
+        hidden_states = incremental_causal_conv1d(
+            module.dwconv, hidden_states, state, f"{key}.dwconv"
+        ).permute(0, 2, 1)
+    hidden_states = module.norm(hidden_states)
     hidden_states = module.pwconv1(hidden_states)
     hidden_states = module.act(hidden_states)
     hidden_states = module.pwconv2(hidden_states)
     hidden_states = module.gamma * hidden_states
-    return residual + hidden_states.permute(0, 2, 1)
+    if is_channels_last:
+        return residual + hidden_states
+    else:
+        return residual + hidden_states.permute(0, 2, 1)
 
 
 def incremental_residual_unit(
-    module: Any,
+    module: "Qwen3TTSTokenizerV2DecoderDecoderResidualUnit",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
     key: str,
+    channels_last_weights: dict[str, torch.Tensor] | None,
 ) -> torch.Tensor:
+    is_channels_last = channels_last_weights is not None
     residual = hidden_states
-    hidden_states = module.act1(hidden_states)
-    hidden_states = incremental_causal_conv1d(
-        module.conv1, hidden_states, state, f"{key}.conv1"
+    hidden_states = apply_activation(module.act1, hidden_states, is_channels_last)
+    hidden_states = causal_conv1d(
+        module.conv1, hidden_states, state, f"{key}.conv1", channels_last_weights
     )
-    hidden_states = module.act2(hidden_states)
-    hidden_states = incremental_causal_conv1d(
-        module.conv2, hidden_states, state, f"{key}.conv2"
+    hidden_states = apply_activation(module.act2, hidden_states, is_channels_last)
+    hidden_states = causal_conv1d(
+        module.conv2, hidden_states, state, f"{key}.conv2", channels_last_weights
     )
     return hidden_states + residual
 
 
 class Qwen3TTSIncrementalDecoder:
-    def __init__(self, decoder: Any) -> None:
+    def __init__(self, decoder: "Qwen3TTSTokenizerV2Decoder") -> None:
         self.require_attrs(
             decoder,
             "decoder",
@@ -488,14 +692,42 @@ class Qwen3TTSIncrementalDecoder:
                 )
         self.decoder = decoder
         self.total_upsample = int(decoder.total_upsample)
+        # note (ratish): on CUDA the convs run channels last on weights kept here in
+        # that layout; the shared modules keep theirs for the whole-utterance decode.
+        if is_channels_last_conv_device(decoder.pre_conv.conv.weight.device):
+            self.channels_last_weights: dict[str, torch.Tensor] | None = {
+                "pre_conv": channels_last_weight(decoder.pre_conv.conv),
+                "decoder.0": channels_last_weight(decoder.decoder[0].conv),
+                "decoder.final": channels_last_weight(decoder.decoder[-1].conv),
+            }
+            for stage_index, blocks in enumerate(decoder.upsample):
+                self.channels_last_weights[f"upsample.{stage_index}.transconv"] = (
+                    channels_last_weight(blocks[0].conv)
+                )
+            for block_index, block in enumerate(decoder.decoder[1:-2], start=1):
+                self.channels_last_weights[f"decoder.{block_index}.transconv"] = (
+                    channels_last_weight(block.block[1].conv)
+                )
+                for residual_index, residual in enumerate(block.block[2:]):
+                    key = f"decoder.{block_index}.residual.{residual_index}"
+                    self.channels_last_weights[f"{key}.conv1"] = channels_last_weight(
+                        residual.conv1.conv
+                    )
+                    self.channels_last_weights[f"{key}.conv2"] = channels_last_weight(
+                        residual.conv2.conv
+                    )
+        else:
+            self.channels_last_weights = None
         self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-        self.compiled_kernel: Any = None
+        self.compiled_kernel: (
+            Callable[[torch.Tensor, Qwen3TTSIncrementalCodecState], torch.Tensor] | None
+        ) = None
         self.compiled_shapes: set[tuple[int, int]] = set()
 
     @staticmethod
-    def require_attrs(module: Any, path: str, *names: str) -> None:
+    def require_attrs(module: object, path: str, *names: str) -> None:
         missing = [name for name in names if not hasattr(module, name)]
         if missing:
             raise TypeError(
@@ -530,10 +762,12 @@ class Qwen3TTSIncrementalDecoder:
         conv: list[tuple[str, int, int]] = []
         transconv: list[tuple[str, int, int]] = []
 
-        def add_conv(module: Any, key: str) -> None:
+        def add_conv(module: "Qwen3TTSTokenizerV2CausalConvNet", key: str) -> None:
             conv.append((key, int(module.conv.in_channels), int(module.padding)))
 
-        def add_transconv(module: Any, key: str) -> None:
+        def add_transconv(
+            module: "Qwen3TTSTokenizerV2CausalTransConvNet", key: str
+        ) -> None:
             transconv.append(
                 (key, int(module.conv.out_channels), int(module.right_pad))
             )
@@ -667,6 +901,57 @@ class Qwen3TTSIncrementalDecoder:
         state.advance(fresh_frames)
         return waveform
 
+    def tail_frames(self, emit_frames: int) -> int:
+        """How many transformer outputs the last emit_frames frames' samples and the conv-stack
+        state depend on, walked back from the waveform: a causal conv adds its history, and a
+        transposed conv of kernel k and stride s maps n samples to (n + k - 1) // s inputs.
+        """
+        decoder = self.decoder
+        samples = int(emit_frames) * self.total_upsample + int(
+            decoder.decoder[-1].padding
+        )
+        for decoder_block in reversed(decoder.decoder[1:-2]):
+            for residual_unit in reversed(decoder_block.block[2:]):
+                samples += int(residual_unit.conv2.padding) + int(
+                    residual_unit.conv1.padding
+                )
+            transconv = decoder_block.block[1].conv
+            samples = (samples + int(transconv.kernel_size[0]) - 1) // int(
+                transconv.stride[0]
+            )
+        samples += int(decoder.decoder[0].padding)
+        for blocks in reversed(decoder.upsample):
+            samples += int(blocks[1].dwconv.padding)
+            transconv = blocks[0].conv
+            samples = (samples + int(transconv.kernel_size[0]) - 1) // int(
+                transconv.stride[0]
+            )
+        return samples
+
+    def decode_tail(
+        self,
+        codes: torch.Tensor,
+        valid_frames: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+        emit_frames: int,
+    ) -> torch.Tensor:
+        """Decode row i's valid_frames[i] frames with the conv stack on the last
+        tail_frames(emit_frames) outputs only, and return the last emit_frames frames' samples.
+        Needs arena state (per-row positions, full-width K/V), tail_frames <= valid_frames[i].
+        """
+        if state.frame_positions is None:
+            raise ValueError("Qwen3-TTS tail decoding needs per-row frame positions")
+        else:
+            pass
+        tail_frames = self.tail_frames(emit_frames)
+        hidden_states = self.frame_tensors(codes, state, valid_frames)
+        time_dim = 1 if self.channels_last_weights is not None else 2
+        window = frames_ending_at(hidden_states, valid_frames, tail_frames, time_dim)
+        waveform = self.conv_stack_tensors(window, state)
+        state.transformer_context_length = self.state_spec().retained_context
+        state.frame_positions = state.frame_positions + valid_frames
+        return waveform[..., -int(emit_frames) * self.total_upsample :]
+
     def decode_tensors(
         self,
         codes: torch.Tensor,
@@ -676,39 +961,93 @@ class Qwen3TTSIncrementalDecoder:
 
         The frame counter and retained-context bookkeeping live in ``decode``:
         they are the Python scalars that change every step, and inside the
-        traced region each distinct value would force a recompile.
+        traced region each distinct value would force a recompile. With
+        channels_last_weights, activations flow as (B, L, C) from the quantizer
+        to the final conv.
         """
+        return self.conv_stack_tensors(self.frame_tensors(codes, state), state)
+
+    def frame_tensors(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+        valid_frames: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Quantizer, pre_conv and transformer in the decoder's layout; with valid_frames,
+        row i's pre_conv history and kept K/V end at valid_frames[i]."""
+        channels_last_weights = self.channels_last_weights
+        is_channels_last = channels_last_weights is not None
         hidden_states = self.decoder.quantizer.decode(codes)
-        hidden_states = incremental_causal_conv1d(
+        if is_channels_last:
+            hidden_states = hidden_states.transpose(1, 2)
+        else:
+            pass
+        prior_history = (
+            state.conv_histories["pre_conv"] if valid_frames is not None else None
+        )
+        quantized = hidden_states
+        hidden_states = causal_conv1d(
             self.decoder.pre_conv,
             hidden_states,
             state,
             "pre_conv",
-        ).transpose(1, 2)
-        hidden_states = incremental_transformer(
-            self.decoder.pre_transformer, hidden_states, state
-        ).permute(0, 2, 1)
+            channels_last_weights,
+        )
+        if valid_frames is not None:
+            history_size = int(prior_history.shape[-1])
+            inputs = quantized.transpose(1, 2) if is_channels_last else quantized
+            state.conv_histories["pre_conv"] = frames_ending_at(
+                torch.cat((prior_history, inputs), dim=-1),
+                history_size + valid_frames,
+                history_size,
+                -1,
+            )
+        else:
+            pass
+        if is_channels_last:
+            return incremental_transformer(
+                self.decoder.pre_transformer, hidden_states, state, valid_frames
+            )
+        else:
+            return incremental_transformer(
+                self.decoder.pre_transformer,
+                hidden_states.transpose(1, 2),
+                state,
+                valid_frames,
+            ).permute(0, 2, 1)
 
+    def conv_stack_tensors(
+        self, hidden_states: torch.Tensor, state: Qwen3TTSIncrementalCodecState
+    ) -> torch.Tensor:
+        """Everything after the transformer, from its outputs to the clamped waveform."""
+        channels_last_weights = self.channels_last_weights
+        is_channels_last = channels_last_weights is not None
         for stage_index, blocks in enumerate(self.decoder.upsample):
             if len(blocks) != 2:
                 raise TypeError("unsupported Qwen3-TTS upsample layout")
             else:
                 pass
-            hidden_states = incremental_causal_transconv1d(
+            hidden_states = causal_transconv1d(
                 blocks[0],
                 hidden_states,
                 state,
                 f"upsample.{stage_index}.transconv",
+                channels_last_weights,
             )
             hidden_states = incremental_convnext(
                 blocks[1],
                 hidden_states,
                 state,
                 f"upsample.{stage_index}.convnext",
+                is_channels_last,
             )
 
-        waveform = incremental_causal_conv1d(
-            self.decoder.decoder[0], hidden_states, state, "decoder.0"
+        waveform = causal_conv1d(
+            self.decoder.decoder[0],
+            hidden_states,
+            state,
+            "decoder.0",
+            channels_last_weights,
         )
         for block_index, decoder_block in enumerate(
             self.decoder.decoder[1:-2], start=1
@@ -717,12 +1056,15 @@ class Qwen3TTSIncrementalDecoder:
                 raise TypeError("unsupported Qwen3-TTS decoder block layout")
             else:
                 pass
-            waveform = decoder_block.block[0](waveform)
-            waveform = incremental_causal_transconv1d(
+            waveform = apply_activation(
+                decoder_block.block[0], waveform, is_channels_last
+            )
+            waveform = causal_transconv1d(
                 decoder_block.block[1],
                 waveform,
                 state,
                 f"decoder.{block_index}.transconv",
+                channels_last_weights,
             )
             for residual_index, residual_unit in enumerate(decoder_block.block[2:]):
                 waveform = incremental_residual_unit(
@@ -730,11 +1072,23 @@ class Qwen3TTSIncrementalDecoder:
                     waveform,
                     state,
                     f"decoder.{block_index}.residual.{residual_index}",
+                    channels_last_weights,
                 )
-        waveform = self.decoder.decoder[-2](waveform)
-        return incremental_causal_conv1d(
-            self.decoder.decoder[-1], waveform, state, "decoder.final"
-        ).clamp(min=-1, max=1)
+        waveform = apply_activation(
+            self.decoder.decoder[-2], waveform, is_channels_last
+        )
+        waveform = causal_conv1d(
+            self.decoder.decoder[-1],
+            waveform,
+            state,
+            "decoder.final",
+            channels_last_weights,
+        )
+        if is_channels_last:
+            waveform = waveform.transpose(1, 2)
+        else:
+            pass
+        return waveform.clamp(min=-1, max=1)
 
     def precompile(
         self, codes: torch.Tensor, state: Qwen3TTSIncrementalCodecState

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Runtime resource monitoring: NVML sampling, PID scoping, aggregation, provenance."""
+
 import sys
 import threading
 import time

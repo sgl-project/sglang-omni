@@ -1,4 +1,4 @@
-# 🚀 Installation — Ascend NPU
+# Installation — Ascend NPU
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Verify the host installation before continuing:
 npu-smi info
 ```
 
-## 🐳 Option A: Docker (recommended)
+## Option A: Docker (recommended)
 
 The ARM64 image includes SGLang-Omni source, the SGLang/CANN/PyTorch runtime
 selected by [`pyproject_npu.toml`](../../pyproject_npu.toml), and common audio
@@ -150,7 +150,7 @@ required. Model-specific inputs belong in the corresponding cookbook, such as
 the [Qwen3-TTS guide](../cookbook/qwen3_tts.md); GPU-specific configurations
 there should not be assumed to work unchanged on NPU.
 
-## 🛠️ Option B: Manual install
+## Option B: Manual install
 
 Install the Ascend software stack and NPU build of SGLang before installing
 `sglang-omni`. The helper script

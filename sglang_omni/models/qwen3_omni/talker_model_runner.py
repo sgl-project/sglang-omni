@@ -3,30 +3,57 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections import deque
+from queue import Queue
+from typing import TYPE_CHECKING, TypeAlias
 
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
+from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    session_projected_prefill_rows,
+)
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 
 if TYPE_CHECKING:
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
 else:
     pass
 
 
-class QwenTalkerModelRunner(ModelRunner):
+TalkerInputQueue: TypeAlias = (
+    PendingTextTensorQueue | deque[torch.Tensor] | list[torch.Tensor] | None
+)
+
+
+class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
+    model: Qwen3OmniTalker
 
     def __init__(
         self,
-        tp_worker: Any,
-        output_processor: Any,
-        outbox: Any,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        outbox: Queue[OutgoingMessage],
         *,
         code2wav_target: str = "code2wav",
         code2wav_in_process: bool = False,
@@ -44,14 +71,14 @@ class QwenTalkerModelRunner(ModelRunner):
         self.codec_coalesce_first_frames = max(int(codec_coalesce_first_frames), 0)
         self.codec_coalesce_early_frames = max(int(codec_coalesce_early_frames), 0)
 
-    def execute(self, scheduler_output: Any):
+    def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         return super().execute(scheduler_output)
 
     def before_prefill(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
         composed = self.compose_prefill_embeds(forward_batch, requests)
@@ -70,9 +97,9 @@ class QwenTalkerModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -96,10 +123,10 @@ class QwenTalkerModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         # Note (Xuesong): Do not clear data.prefill_input_embeds: decode retract may requeue
         # the Req for another prefill pass and Req.input_embeds is None.
@@ -131,10 +158,10 @@ class QwenTalkerModelRunner(ModelRunner):
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         if not self.feedback_enabled:
             return
@@ -152,8 +179,8 @@ class QwenTalkerModelRunner(ModelRunner):
     def emit_code_chunks_and_feedback(
         self,
         *,
-        schedule_batch: Any,
-        requests: list,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         bs = len(requests)
         # Note (wenyao): one batched clone per buffer, not one per row: the
@@ -208,7 +235,7 @@ class QwenTalkerModelRunner(ModelRunner):
         self.put_code_messages(code_messages)
 
     def put_code_messages(self, code_messages: list[OutgoingMessage]) -> None:
-        """Send the messages with one ready event recorded after all their codes.
+        """Send the messages in one put with one ready event for all their codes.
 
         The event is recorded once every snapshot and stack the messages carry
         is enqueued, and before any message is visible to the consumer. Only a
@@ -228,18 +255,17 @@ class QwenTalkerModelRunner(ModelRunner):
                 message.metadata["codes_ready_event"] = codes_ready_event
         else:
             pass
-        for message in code_messages:
-            self.outbox.put(message)
+        put_messages(self.outbox, code_messages)
 
     @staticmethod
-    def is_streaming(data: Any) -> bool:
+    def is_streaming(data: SGLangARRequestData) -> bool:
         stage_payload = data.stage_payload
         return bool(
             stage_payload is not None
             and (stage_payload.request.params or {}).get("stream", False)
         )
 
-    def coalesce_threshold(self, data: Any) -> int:
+    def coalesce_threshold(self, data: SGLangARRequestData) -> int:
         first = self.codec_coalesce_first_frames
         if first > 0 and not data.codec_first_flush_done:
             return first
@@ -248,7 +274,10 @@ class QwenTalkerModelRunner(ModelRunner):
         return self.codec_coalesce_frames
 
     def flush_codec_rows(
-        self, request_id: str, data: Any, code_messages: list[OutgoingMessage]
+        self,
+        request_id: str,
+        data: SGLangARRequestData,
+        code_messages: list[OutgoingMessage],
     ) -> None:
         pending = data.pending_codec_rows
         if not pending:
@@ -268,7 +297,9 @@ class QwenTalkerModelRunner(ModelRunner):
             )
         )
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: "SGLangARRequestData"
+    ) -> None:
         pending = req_data.pending_codec_rows
         if not pending:
             return
@@ -284,18 +315,24 @@ class QwenTalkerModelRunner(ModelRunner):
         self.put_code_messages(code_messages)
 
     def sample_before_post_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         del forward_batch, schedule_batch, requests
         return True
 
     def sample_before_post_decode(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         del forward_batch, schedule_batch, requests
         return False
 
-    def is_decode_batch_ready(self, schedule_batch: Any) -> bool:
+    def is_decode_batch_ready(self, schedule_batch: ScheduleBatch) -> bool:
         if not self.feedback_enabled or not schedule_batch.forward_mode.is_decode():
             return True
         else:
@@ -309,8 +346,8 @@ class QwenTalkerModelRunner(ModelRunner):
 
     def compose_prefill_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> tuple[torch.Tensor, bool] | None:
         """Assemble prefill rows and preserve whether they are projected."""
         projected_flags = [
@@ -334,16 +371,31 @@ class QwenTalkerModelRunner(ModelRunner):
             pass
 
         parts: list[torch.Tensor] = []
-        for sched_req in requests:
-            req = sched_req.data.req
-            prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_range.length)
-            part = self.projected_prefill_slice(
-                sched_req=sched_req,
-                prefix_len=prefix_len,
-                extend_len=extend_len,
-                device=forward_batch.input_ids.device,
-            )
+        # note (ratish): a row's prefix and extend length live on the batch; a decode
+        # tail mixed into a prefill batch keeps Req.prefix_len at its last prefill.
+        for sched_req, prefix_len, extend_len in zip(
+            requests,
+            forward_batch.extend_prefix_lens_cpu,
+            forward_batch.extend_seq_lens_cpu,
+            strict=True,
+        ):
+            if sched_req.data.session_embedding_spans:
+                # Note (Junnan Li): A session unit's projected prompt rides the native request as embedding spans.
+                part = session_projected_prefill_rows(
+                    sched_req.data,
+                    self.model.get_input_embeddings(),
+                    device=forward_batch.input_ids.device,
+                    dtype=self.model.activation_dtype,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                )
+            else:
+                part = self.projected_prefill_slice(
+                    sched_req=sched_req,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                    device=forward_batch.input_ids.device,
+                )
             if part is not None and part.shape[0] > 0:
                 parts.append(part)
             else:
@@ -373,7 +425,7 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def projected_prefill_slice(
         *,
-        sched_req: Any,
+        sched_req: SchedulerRequest,
         prefix_len: int,
         extend_len: int,
         device: torch.device,
@@ -471,7 +523,7 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def generated_prefill_slice(
         *,
-        sched_req: Any,
+        sched_req: SchedulerRequest,
         gen_start: int,
         gen_end: int,
         device: torch.device,
@@ -509,7 +561,7 @@ class QwenTalkerModelRunner(ModelRunner):
             pass
         return torch.stack(rows, dim=0)
 
-    def write_feedback_buffers(self, requests: list) -> None:
+    def write_feedback_buffers(self, requests: list[SchedulerRequest]) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -568,13 +620,13 @@ class QwenTalkerModelRunner(ModelRunner):
             pass
         return bool(data.thinker_chunks_done and data.tts_pad_embed is not None)
 
-    def requests_ready_for_decode(self, requests: list) -> bool:
+    def requests_ready_for_decode(self, requests: list[SchedulerRequest]) -> bool:
         return all(
             self.data_has_next_decode_input(sched_req.data) for sched_req in requests
         )
 
     @staticmethod
-    def pop_left(queue: Any) -> torch.Tensor | None:
+    def pop_left(queue: TalkerInputQueue) -> torch.Tensor | None:
         if not queue:
             return None
         else:
@@ -590,7 +642,7 @@ class QwenTalkerModelRunner(ModelRunner):
         return None
 
     @staticmethod
-    def peek_left(queue: Any) -> torch.Tensor | None:
+    def peek_left(queue: TalkerInputQueue) -> torch.Tensor | None:
         if not queue:
             return None
         else:
@@ -642,7 +694,7 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def peek_next_decode_inputs(
         data: SGLangARRequestData,
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | None:
         """The feedback row and the text row of the next decode input. None
         while the feedback row is missing, or while the text row is missing
         and the text stream is still open. After the stream has closed, the
@@ -694,7 +746,7 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def take_next_decode_input_embed(
         *,
-        sched_req: Any,
+        sched_req: SchedulerRequest,
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:

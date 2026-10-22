@@ -26,7 +26,7 @@ import types
 import typing
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, get_args, get_origin
+from typing import Any, TypeGuard, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -224,10 +224,10 @@ class Segment:
 
     raw: str
     kind: SegmentKind
-    annotation: Any
+    annotation: object
     """Declared type of the value *at* this segment."""
 
-    container: Any
+    container: object
     """Declared type the segment was resolved against."""
 
 
@@ -264,7 +264,7 @@ class ConfigPath:
             pass
 
         segments: list[Segment] = []
-        current: Any = root
+        current: object = root
         for index, part in enumerate(parts):
             prefix = ".".join(parts[:index])
             segment = descend(current, part, raw=raw, prefix=prefix)
@@ -302,7 +302,7 @@ class ConfigPath:
         return tuple(segment.raw for segment in self.segments)
 
     @property
-    def value_type(self) -> Any:
+    def value_type(self) -> object:
         return self.segments[-1].annotation
 
     @property
@@ -372,7 +372,7 @@ class ConfigPath:
     # values
     # ------------------------------------------------------------------
 
-    def coerce(self, value: Any) -> Any:
+    def coerce(self, value: object) -> object:
         """Convert a raw (usually textual) value into this path's declared type.
 
         Numeric conversions only go the lossless way: an int fits a float
@@ -435,7 +435,7 @@ class ConfigPath:
         except Exception:
             return coerce_scalar_text(value)
 
-    def refuse_lossy_scalar(self, value: Any, annotation: Any) -> None:
+    def refuse_lossy_scalar(self, value: object, annotation: object) -> None:
         allowed = annotation_scalars(annotation)
         if bool in allowed:
             return
@@ -456,9 +456,9 @@ class ConfigPath:
         else:
             pass
 
-    def read(self, source: BaseModel | dict[str, Any]) -> Any:
+    def read(self, source: BaseModel | dict[str, object]) -> object:
         """Read the value at this path from a config instance or a dumped dict."""
-        current: Any = source
+        current: object = source
         if isinstance(current, BaseModel):
             current = current.model_dump()
         else:
@@ -467,14 +467,14 @@ class ConfigPath:
             current = read_segment(current, segment, path=self.raw)
         return current
 
-    def write(self, data: dict[str, Any], value: Any) -> None:
+    def write(self, data: dict[str, object], value: object) -> None:
         """Assign ``value`` at this path inside a dumped config dict, in place.
 
         ``data`` is expected to be the output of ``PipelineConfig.model_dump()``.
         Missing containers are created only where the schema allows a free
         mapping key; a missing stage is an error, never a silent insert.
         """
-        current: Any = data
+        current: object = data
         for segment in self.segments[:-1]:
             current = read_segment(current, segment, path=self.raw, create_missing=True)
         last = self.segments[-1]
@@ -500,7 +500,7 @@ class ConfigPath:
 # ----------------------------------------------------------------------
 
 
-def descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
+def descend(container: object, part: str, *, raw: str, prefix: str) -> Segment:
     """Resolve one segment against ``container``'s declared type."""
     core = unwrap_optional(container)
 
@@ -638,7 +638,7 @@ def descend(container: Any, part: str, *, raw: str, prefix: str) -> Segment:
     )
 
 
-def annotation_scalars(annotation: Any) -> set[type]:
+def annotation_scalars(annotation: object) -> set[type]:
     """The scalar base types a declared annotation admits, unions flattened."""
     out: set[type] = set()
     stack = [annotation]
@@ -667,7 +667,7 @@ def annotation_scalars(annotation: Any) -> set[type]:
     return out
 
 
-def unwrap_optional(annotation: Any) -> Any:
+def unwrap_optional(annotation: object) -> object:
     """Strip ``Annotated`` metadata and ``| None`` from a declared type.
 
     Unions of real types are left untouched. ``Annotated`` shows up through
@@ -691,7 +691,7 @@ def unwrap_optional(annotation: Any) -> Any:
     return annotation
 
 
-def is_model(annotation: Any) -> bool:
+def is_model(annotation: object) -> TypeGuard[type[BaseModel]]:
     # ``get_origin`` guards the ``issubclass`` call: on Python 3.10 a subscripted
     # generic such as ``list[StageConfig]`` *is* an instance of ``type``, so
     # ``issubclass`` receives a non-class and raises ``TypeError``. 3.11 changed
@@ -703,7 +703,7 @@ def is_model(annotation: Any) -> bool:
     )
 
 
-def named_collection_item(annotation: Any) -> type[BaseModel] | None:
+def named_collection_item(annotation: object) -> type[BaseModel] | None:
     """Return the item type when ``annotation`` is a name-keyed model list."""
     if get_origin(annotation) not in (list, tuple):
         return None
@@ -722,7 +722,7 @@ def named_collection_item(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
-def mapping_value_type(annotation: Any) -> Any | None:
+def mapping_value_type(annotation: object) -> object:
     if get_origin(annotation) is not dict:
         return None
     else:
@@ -731,11 +731,11 @@ def mapping_value_type(annotation: Any) -> Any | None:
     return args[1] if len(args) == 2 else Any
 
 
-def is_plain_sequence(annotation: Any) -> bool:
+def is_plain_sequence(annotation: object) -> bool:
     return get_origin(annotation) in (list, tuple, set, frozenset)
 
 
-def is_non_engine_stage(annotation: Any) -> bool:
+def is_non_engine_stage(annotation: object) -> bool:
     return (
         isinstance(annotation, type)
         and get_origin(annotation) is None
@@ -744,7 +744,7 @@ def is_non_engine_stage(annotation: Any) -> bool:
     )
 
 
-def is_chunkless_pipeline(annotation: Any) -> bool:
+def is_chunkless_pipeline(annotation: object) -> bool:
     return (
         isinstance(annotation, type)
         and get_origin(annotation) is None
@@ -753,7 +753,7 @@ def is_chunkless_pipeline(annotation: Any) -> bool:
     )
 
 
-def is_traversable(annotation: Any) -> bool:
+def is_traversable(annotation: object) -> bool:
     core = unwrap_optional(annotation)
     if is_model(core):
         return True
@@ -770,7 +770,7 @@ def is_traversable(annotation: Any) -> bool:
     return core is Any
 
 
-def type_name(annotation: Any) -> str:
+def type_name(annotation: object) -> str:
     # Constraint metadata is not part of the name a user reads.
     if get_origin(annotation) is typing.Annotated:
         return type_name(get_args(annotation)[0])
@@ -791,12 +791,12 @@ def type_name(annotation: Any) -> str:
 
 
 def read_segment(
-    current: Any,
+    current: object,
     segment: Segment,
     *,
     path: str,
     create_missing: bool = False,
-) -> Any:
+) -> object:
     if segment.kind is SegmentKind.NAMED_ITEM:
         if not isinstance(current, list):
             raise ConfigPathError(
@@ -838,7 +838,7 @@ def read_segment(
     return current[segment.raw]
 
 
-def named_index(items: list[Any], name: str, *, path: str) -> int:
+def named_index(items: list[object], name: str, *, path: str) -> int:
     for index, item in enumerate(items):
         if isinstance(item, dict) and item.get("name") == name:
             return index
@@ -903,7 +903,7 @@ def join_prefix(prefix: str) -> str:
     return prefix or "<root>"
 
 
-def coerce_scalar_text(value: Any) -> Any:
+def coerce_scalar_text(value: str) -> str | bool | int | float | None:
     """Best-effort scalar parsing for untyped (``Any``) positions.
 
     Mirrors the historical behaviour of ``ConfigManager._convert_scalar`` so
@@ -951,7 +951,7 @@ def iter_schema_paths(
     """
     out: list[str] = []
 
-    def walk(annotation: Any, prefix: tuple[str, ...], depth: int) -> None:
+    def walk(annotation: object, prefix: tuple[str, ...], depth: int) -> None:
         if depth > _MAX_SCHEMA_DEPTH:
             return
         else:

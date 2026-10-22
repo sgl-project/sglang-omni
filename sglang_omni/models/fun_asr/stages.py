@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import torch
 
 # note(LauraGPT): Auto* loading depends on these local registrations.
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 
+if TYPE_CHECKING:
+    from sglang_omni.models.fun_asr.request_builders import FunASRRequestData
+    from sglang_omni.models.fun_asr.sglang_model import (
+        FunAsrNanoForConditionalGeneration,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
 def compile_fun_asr_audio_encoder(
-    model: Any, *, warmup_lfr_frames: int = 128, warmup_inference_mode: bool = True
+    model: "FunAsrNanoForConditionalGeneration",
+    *,
+    warmup_lfr_frames: int = 128,
+    warmup_inference_mode: bool = True,
 ) -> None:
     """Compile the SANM encoder and adaptor with a symbolic sequence length.
 
@@ -106,7 +119,7 @@ def create_sglang_fun_asr_executor(
     enable_encoder_torch_compile: bool = False,
     enable_encoder_cuda_graph: bool = False,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 16,
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,
@@ -121,8 +134,8 @@ def create_sglang_fun_asr_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
-):
+    server_args_overrides: Mapping[str, object] | None = None,
+) -> OmniScheduler[FunASRRequestData]:
     if pre_lm_max_batch_size < 1:
         raise ValueError(
             f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
@@ -175,7 +188,7 @@ def create_sglang_fun_asr_executor(
     )
 
 
-def create_fun_asr_executor(*args, **kwargs):
+def create_fun_asr_executor(*args, **kwargs) -> OmniScheduler[FunASRRequestData]:
     return create_sglang_fun_asr_executor(*args, **kwargs)
 
 

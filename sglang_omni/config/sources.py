@@ -33,8 +33,7 @@ provenance and conflict detection stay per value.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any
+from collections.abc import Hashable, Iterable, Mapping
 
 import yaml
 from pydantic import ValidationError
@@ -48,6 +47,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError, SegmentKind
 from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.utils.json import JsonValue
 
 __all__ = [
     "dump_user_config",
@@ -69,7 +69,7 @@ class DuplicateKeyRefusingLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node, deep=False):  # type: ignore[override]
-        seen: set[Any] = set()
+        seen: set[Hashable] = set()
         for key_node, _value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
             if isinstance(key, (dict, list, set)):
@@ -115,7 +115,7 @@ _STAGES_LIST_GUIDANCE = (
 
 
 def patches_from_dotted_cli(
-    extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+    extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
     config: PipelineConfig,
     *,
     origin: str = "extra CLI args",
@@ -195,7 +195,7 @@ def patches_from_model_path_flag(
 
 
 def patches_from_shared_block(
-    shared_block: Any,
+    shared_block: object,
     config_cls: type[PipelineConfig],
     stage_names: Iterable[str],
     *,
@@ -257,7 +257,7 @@ def patches_from_shared_block(
 
 
 def select_stages(
-    select: Any,
+    select: object,
     config_cls: type[PipelineConfig],
     stage_names: list[str],
     *,
@@ -339,7 +339,7 @@ def select_stages(
 
 
 def patches_from_stages_mapping(
-    stages_block: Any,
+    stages_block: object,
     config_cls: type[PipelineConfig],
     known_names: Iterable[str],
     *,
@@ -443,7 +443,7 @@ def sources_from_config_file(
 
     if "config_cls" not in data:
         raise ValueError(
-            f"Config file {file_path!r} must name its pipeline class in " "config_cls"
+            f"Config file {file_path!r} must name its pipeline class in config_cls"
         )
     else:
         pass
@@ -458,7 +458,7 @@ def sources_from_config_file(
     # file twice -- the baseline would already carry the value, so a diff
     # against it shows nothing and provenance calls the same value both the
     # model default and the file's write.
-    construction: dict[str, Any] = {}
+    construction: dict[str, object] = {}
     while True:
         try:
             config = config_cls(**construction)
@@ -513,7 +513,7 @@ def sources_from_config_file(
     return config, patches
 
 
-def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
+def dump_user_config(config: PipelineConfig) -> dict[str, JsonValue]:
     """Dump a config in the shape a config file is written in.
 
     The internal stage list becomes the user-facing ``stages:`` mapping: the
@@ -525,7 +525,7 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
     """
     data = config.model_dump(mode="json")
     data.pop("entry_stage", None)
-    stages: dict[str, Any] = {}
+    stages: dict[str, dict[str, JsonValue]] = {}
     for stage in data.get("stages", []):
         body = dict(stage)
         body.pop("name", None)
@@ -540,16 +540,16 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
 
 def flatten(
     prefix: str,
-    value: dict[str, Any],
+    value: Mapping[str, object],
     root: type[PipelineConfig],
-) -> list[tuple[str, Any]]:
+) -> list[tuple[str, object]]:
     """Split a nested stage entry into one patch per leaf.
 
     Stopping at schema leaves keeps the by-name merge a merge (an omitted
     sibling keeps its default) while keeping provenance per value rather
     than per block.
     """
-    out: list[tuple[str, Any]] = []
+    out: list[tuple[str, object]] = []
     for key, child in value.items():
         path = f"{prefix}.{key}"
         if isinstance(child, dict) and not ConfigPath.parse(path, root).is_leaf:

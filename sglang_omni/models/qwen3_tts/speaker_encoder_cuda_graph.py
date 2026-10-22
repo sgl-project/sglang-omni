@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA graphs for the Qwen3-TTS speaker encoder at bucketed mel lengths."""
+"""Device graphs for the Qwen3-TTS speaker encoder at bucketed mel lengths."""
 
 from __future__ import annotations
 
@@ -13,7 +13,13 @@ import torch
 import torch.nn.functional as F
 from librosa.filters import mel as librosa_mel_fn
 
-from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import smallest_bucket
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    ReferenceEncoderGraphStats,
+    smallest_bucket,
+)
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.utils.device import device_guard, supports_device_streams
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +112,7 @@ def encode_bucketed(
 
 @dataclass
 class CapturedSpeakerEncoderGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     static_mels: torch.Tensor
     static_frames: torch.Tensor
     static_embedding: torch.Tensor
@@ -137,6 +143,8 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         ) - {0}
         self.lock = threading.Lock()
         self.graphs: dict[int, CapturedSpeakerEncoderGraph] = {}
+        self.bucket_frames: list[int] = []
+        self.disable_reason: str | None = None
         self.replays = 0
         self.misses = 0
 
@@ -164,18 +172,24 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         """One graph per bucket of the reference encoder's ladder, in mel frames;
         none when a capture fails, so every clip runs eager."""
         param = next(self.encoder.parameters())
-        if param.device.type not in {"cuda", "musa"}:
-            return
-        else:
-            pass
         buckets = sorted(
             frames * codec_hop // SPEAKER_MEL_HOP for frames in codec_frame_buckets
         )
+        self.bucket_frames = buckets
+        graph_backend = current_platform.get_device_graph_backend(param.device)
+        if not buckets:
+            return
+        elif not supports_device_streams(param.device) or graph_backend is None:
+            self.disable_reason = f"no graph backend on {param.device.type}"
+            return
+        else:
+            pass
+        device_module = torch.get_device_module(param.device)
         graphs: dict[int, CapturedSpeakerEncoderGraph] = {}
         try:
-            with torch.cuda.device(param.device):
-                pool = torch.cuda.graph_pool_handle()
-                stream = torch.cuda.Stream(device=param.device)
+            with device_guard(param.device):
+                pool = graph_backend.graph_pool_handle()
+                stream = device_module.Stream(device=param.device)
                 # note(ratish): largest first so the shared pool is sized once.
                 for frames in reversed(buckets):
                     static_mels = torch.zeros(
@@ -186,21 +200,19 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                     static_frames = torch.full(
                         (1,), frames, device=param.device, dtype=torch.long
                     )
-                    stream.wait_stream(torch.cuda.current_stream(param.device))
-                    with torch.inference_mode(), torch.cuda.stream(stream):
+                    stream.wait_stream(device_module.current_stream(param.device))
+                    with torch.inference_mode(), device_module.stream(stream):
                         for _ in range(2):
                             encode_bucketed(
                                 self.encoder, static_mels, static_frames, self.pads
                             )
-                    graph = torch.cuda.CUDAGraph()
                     with (
                         torch.inference_mode(),
-                        torch.cuda.graph(
-                            graph,
+                        graph_backend.capture(
                             pool=pool,
                             stream=stream,
-                            capture_error_mode="thread_local",
-                        ),
+                            thread_local_errors=True,
+                        ) as graph,
                     ):
                         static_embedding = encode_bucketed(
                             self.encoder, static_mels, static_frames, self.pads
@@ -213,14 +225,25 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
                         static_embedding=static_embedding,
                     )
         except Exception as exc:
+            self.disable_reason = f"capture_failed: {type(exc).__name__}: {exc}"
             logger.warning(
                 "Qwen3-TTS speaker encoder graph capture disabled the runner: "
-                f"{type(exc).__name__}: {exc}",
+                f"{self.disable_reason}",
                 exc_info=True,
             )
             return
         self.graphs = graphs
         logger.info(f"Qwen3-TTS speaker encoder graphs captured for {buckets} frames")
+
+    def stats(self) -> ReferenceEncoderGraphStats:
+        return {
+            "enabled": bool(self.graphs),
+            "disable_reason": self.disable_reason,
+            "bucket_frames": list(self.bucket_frames),
+            "captured": sorted(self.graphs),
+            "replays": self.replays,
+            "misses": self.misses,
+        }
 
     def embed(self, waveform: np.ndarray) -> torch.Tensor:
         """Speaker embedding (enc_dim,) of a waveform at the encoder's sample rate."""
@@ -231,7 +254,10 @@ class Qwen3TTSSpeakerEncoderCudaGraphRunner:
         mels = mels.to(param.device).to(param.dtype)
         bucket = smallest_bucket(frames, self.graphs)
         if bucket is None:
-            self.misses += 1
+            # note (Haoling Pu): preprocessing threads embed concurrently, and
+            # model_info reports this count.
+            with self.lock:
+                self.misses += 1
             return self.encoder(mels.transpose(1, 2))[0]
         else:
             pass

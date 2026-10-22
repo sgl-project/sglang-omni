@@ -1,9 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import asyncio
+import logging
+import multiprocessing
 import os
+import queue
+import signal
+import subprocess
+import sys
+import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -18,6 +28,7 @@ from sglang_omni.pipeline.stage_workers import (
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
+from tests.unit_test.fixtures import affinity_probe
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -50,6 +61,203 @@ def worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
         process_name="worker",
         stage_specs=list(stage_specs),
     )
+
+
+@pytest.mark.parametrize(
+    "parent_preload",
+    [None, "", "/lib/profiler.so", "/lib/profiler.so /lib/allocator.so"],
+)
+def test_spawn_env_merges_preload_and_restores_parent(
+    monkeypatch: pytest.MonkeyPatch, parent_preload: str | None
+) -> None:
+    monkeypatch.delenv("LD_PRELOAD", raising=False)
+    if parent_preload is not None:
+        monkeypatch.setenv("LD_PRELOAD", parent_preload)
+    else:
+        pass
+    spec = worker_spec(
+        *[
+            StageLaunchConfig(
+                stage_name=stage_name,
+                env_defaults={"LD_PRELOAD": "/lib/allocator.so"},
+            )
+            for stage_name in ("ar", "acoustic")
+        ]
+    )
+    with patched_spawn_env(spec):
+        expected = "/lib/allocator.so"
+        if parent_preload:
+            expected += ":/lib/profiler.so"
+        else:
+            pass
+        assert os.environ["LD_PRELOAD"] == expected
+    assert os.environ.get("LD_PRELOAD") == parent_preload
+
+
+@pytest.mark.parametrize("parent_threads", [None, "4"])
+def test_spawn_env_applies_cpu_plan_and_respects_parent(
+    monkeypatch: pytest.MonkeyPatch, parent_threads: str | None
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_OMP_FROM_CPU_PLAN", raising=False)
+    if parent_threads is not None:
+        monkeypatch.setenv("OMP_NUM_THREADS", parent_threads)
+    else:
+        pass
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_threads = 9
+
+    with patched_spawn_env(spec):
+        assert os.environ["OMP_NUM_THREADS"] == (parent_threads or "9")
+        assert os.environ.get("SGLANG_OMNI_OMP_FROM_CPU_PLAN") == (
+            "1" if parent_threads is None else None
+        )
+
+    assert os.environ.get("OMP_NUM_THREADS") == parent_threads
+    assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "env_defaults,extra_env,expected_threads",
+    [
+        ({"OMP_NUM_THREADS": "1"}, {}, "1"),
+        ({"OMP_NUM_THREADS": "1"}, {"OMP_NUM_THREADS": "2"}, "2"),
+    ],
+)
+def test_spawn_env_cpu_plan_preserves_configured_omp(
+    monkeypatch: pytest.MonkeyPatch,
+    env_defaults: dict[str, str],
+    extra_env: dict[str, str],
+    expected_threads: str,
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_OMP_FROM_CPU_PLAN", raising=False)
+    spec = worker_spec(
+        StageLaunchConfig(stage_name="preprocess", env_defaults=env_defaults)
+    )
+    spec.cpu_threads = 37
+
+    with patched_spawn_env(spec, extra_env=extra_env):
+        assert os.environ["OMP_NUM_THREADS"] == expected_threads
+        assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+    assert "OMP_NUM_THREADS" not in os.environ
+    assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
+
+
+class StartupClock:
+    """A fake monotonic clock that a rank script advances one step per poll."""
+
+    def __init__(self, steps: Callable[[float], None]) -> None:
+        self.now = 0.0
+        self.steps = steps
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float | None) -> bool:
+        self.now += seconds or 0.0
+        self.steps(self.now)
+        return False
+
+
+class ScriptedReady:
+    def __init__(self, clock: StartupClock) -> None:
+        self.clock = clock
+        self.ready = False
+
+    def is_set(self) -> bool:
+        return self.ready
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.clock.advance(timeout)
+
+
+@pytest.mark.parametrize(
+    ("case", "error", "message"),
+    [
+        ("slow_start", None, None),
+        ("stalled_sibling", TimeoutError, "rank1 made no startup progress"),
+        ("dead_after_ready", RuntimeError, "rank1 died during startup"),
+    ],
+)
+def test_wait_ready_watches_every_rank_on_its_own_progress_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    error: type[Exception] | None,
+    message: str | None,
+) -> None:
+    alive = [True, True]
+    counters = [SimpleNamespace(value=0), SimpleNamespace(value=0)]
+
+    def steps(now: float) -> None:
+        # Rank 0 makes progress every second and is ready at 30s, three
+        # timeouts in. Rank 1 depends on the case.
+        if now < 30:
+            counters[0].value += 1
+        else:
+            ready[0].ready = True
+        if case == "slow_start":
+            counters[1].value += 1
+            ready[1].ready = now >= 25
+        elif case == "dead_after_ready":
+            ready[1].ready = True
+            alive[1] = now < 3
+        else:
+            pass
+
+    clock = StartupClock(steps)
+    ready = [ScriptedReady(clock), ScriptedReady(clock)]
+    monkeypatch.setattr(
+        stage_workers, "time", SimpleNamespace(monotonic=clock.monotonic)
+    )
+    group = stage_workers.StageGroup(
+        "ranks",
+        [
+            StageWorkerProcessSpec(process_name="rank0", stage_specs=[]),
+            StageWorkerProcessSpec(process_name="rank1", stage_specs=[]),
+        ],
+    )
+    group._processes = [  # noqa: leading-underscore  # production name
+        SimpleNamespace(is_alive=lambda i=i: alive[i], exitcode=None) for i in range(2)
+    ]
+    group.ready_events = ready
+    group.startup_error_channels = [queue.Queue(), queue.Queue()]
+    group.startup_progress = counters
+
+    if error is None:
+        asyncio.run(group.wait_ready(10))
+        assert clock.now >= 30
+    else:
+        with pytest.raises(error, match=message):
+            asyncio.run(group.wait_ready(10))
+        assert clock.now < 30
+        assert not ready[0].ready
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "sched_setaffinity") or len(os.sched_getaffinity(0)) < 2,
+    reason="needs control over the CPU mask of two or more CPUs",
+)
+def test_spawned_process_threads_start_on_the_planned_cpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher_cpus = os.sched_getaffinity(0)
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_affinity = frozenset({min(launcher_cpus)})
+    monkeypatch.setattr(
+        stage_workers, "stage_process_main", affinity_probe.report_thread_cpus
+    )
+    monkeypatch.setenv(affinity_probe.SPAWNED_ENV, "1")
+    group = stage_workers.StageGroup("probe", [spec])
+
+    group.spawn(multiprocessing.get_context("spawn"))
+    import_thread_cpus, thread_cpus = group.startup_error_channels[0].get(timeout=120)
+    group.processes[0].join(timeout=30)
+
+    assert os.sched_getaffinity(0) == launcher_cpus
+    assert import_thread_cpus == sorted(spec.cpu_affinity)
+    assert all(cpus == sorted(spec.cpu_affinity) for cpus in thread_cpus)
 
 
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
@@ -165,22 +373,6 @@ def test_xpu_tp_rejects_a_gpu_id_outside_the_mask() -> None:
         XPUOmniPlatform().get_stage_process_env(
             tp_spec(gpu_id=2), {"ZE_AFFINITY_MASK": "4,5"}
         )
-
-
-def test_spawn_env_leaves_a_group_affinity_mask_intact_for_the_child(
-    monkeypatch,
-) -> None:
-    """End-to-end through the spawn hook: the child inherits the operator's mask
-    unchanged, so its xpu:N indices keep meaning the cards the operator chose."""
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
-    monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
-    monkeypatch.setenv("ZE_AFFINITY_MASK", "4,5")
-
-    with patched_spawn_env(worker_spec(tp_spec(gpu_id=1))):
-        assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
-
-    assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
 
 
 def test_xpu_tp_process_env_requires_gpu_id() -> None:
@@ -341,6 +533,40 @@ def test_rocm_spawn_env_maps_rank_through_hip_visible_devices(monkeypatch) -> No
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
+@pytest.mark.parametrize("platform", [cuda_platform, ROCMOmniPlatform()])
+def test_native_child_owner_sees_only_its_gpus(monkeypatch, platform) -> None:
+    """A stage that owns native children starts narrowed to the GPUs its
+    engine owns and hands that engine local ids in their declared order."""
+    variable = (
+        "HIP_VISIBLE_DEVICES"
+        if isinstance(platform, ROCMOmniPlatform)
+        else "CUDA_VISIBLE_DEVICES"
+    )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setenv(variable, "4,5,6,7")
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
+    spec = StageLaunchConfig(
+        stage_name="generation",
+        gpu_id=1,
+        allow_child_processes=True,
+        factory_kwargs={"runtime_gpu_ids": [1, 3]},
+        factory_arg_defaults={"gpu_id": 1},
+        comm_config={"gpu_id": 1},
+    )
+
+    with patched_spawn_env(worker_spec(spec)):
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "5,7"
+        assert os.environ[variable] == "5,7"
+        # The child starts with this environment.
+        stage_workers.prepare_accelerator_environment(spec, RecordingLog())
+
+    assert (spec.gpu_id, spec.placement_gpu_id) == (0, 1)
+    assert spec.factory_kwargs["runtime_gpu_ids"] == [0, 1]
+    assert spec.factory_arg_defaults["gpu_id"] == spec.comm_config["gpu_id"] == 0
+    assert os.environ[variable] == "4,5,6,7"
+
+
 class RecordingLog:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -349,27 +575,6 @@ class RecordingLog:
         if args:
             message = message % args
         self.messages.append(message)
-
-
-def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
-    """GPU stage factory construction is serialized per visible device."""
-    seen_gpu_ids: list[int] = []
-
-    @contextmanager
-    def fake_lock(gpu_id: int):
-        seen_gpu_ids.append(gpu_id)
-        yield Path("/tmp/test.lock")
-
-    monkeypatch.setattr(stage_workers, "gpu_startup_lock", fake_lock)
-    spec = StageLaunchConfig(
-        stage_name="thinker",
-        factory=fake_factory_path("make_scheduler"),
-    )
-
-    scheduler = stage_workers.construct_scheduler(spec, 0, RecordingLog())
-
-    assert isinstance(scheduler, FakeScheduler)
-    assert seen_gpu_ids == [0]
 
 
 def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
@@ -452,17 +657,58 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
         StageLaunchConfig(
             stage_name=f"gpu_stage_{idx}",
             factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
-            factory_arg_defaults={"gpu_id": 0},
-            gpu_id=0,
+            factory_arg_defaults={"gpu_id": idx},
+            gpu_id=idx,
+            placement_gpu_id=idx + 2,
         )
         for idx in range(2)
     ]
 
     stages = [stage_workers.construct_stage(spec, RecordingLog()) for spec in specs]
 
-    assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
-    assert set_device_calls == [0, 0]
-    assert seen_gpu_ids == [0, 0]
+    assert [stage.scheduler.gpu_id for stage in stages] == [0, 1]
+    assert set_device_calls == [0, 1]
+    assert seen_gpu_ids == [0, 1]
+
+
+def test_construct_stage_skips_device_pinning_for_child_process_engines(
+    monkeypatch,
+) -> None:
+    """A host that only owns a native engine's subprocesses pins no device."""
+
+    class _FakeStage:
+        def __init__(self, **kwargs):
+            self.scheduler = kwargs["scheduler"]
+            self.allow_child_processes = kwargs["allow_child_processes"]
+
+    set_device_calls: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        yield Path("/tmp/test.lock")
+
+    monkeypatch.setattr(
+        torch.get_device_module(platforms.current_platform.device_type),
+        "set_device",
+        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+    )
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_workers, "Stage", _FakeStage)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+
+    spec = StageLaunchConfig(
+        stage_name="native_stage",
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 1},
+        gpu_id=1,
+        allow_child_processes=True,
+    )
+
+    stage = stage_workers.construct_stage(spec, RecordingLog())
+
+    assert stage.scheduler.gpu_id == 1
+    assert stage.allow_child_processes is True
+    assert set_device_calls == []
 
 
 def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
@@ -512,3 +758,199 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     scheduler = stage_workers.construct_scheduler(spec, None, RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "expected"),
+    [
+        (platforms.CPUOmniPlatform, []),
+        (
+            platforms.XPUOmniPlatform,
+            ["set_device:xpu:1", "synchronize", "empty_cache"],
+        ),
+        (
+            CUDAOmniPlatform,
+            ["set_device:cuda:1", "synchronize", "empty_cache", "ipc_collect"],
+        ),
+    ],
+)
+def test_stage_teardown_reclaims_through_the_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[platforms.OmniPlatform],
+    expected: list[str],
+) -> None:
+    """A stage that dies on a non-CUDA accelerator still has to give its memory back,
+    which the torch.cuda.is_available guard used to skip entirely."""
+    calls: list[str] = []
+    platform = platform_type()
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
+    monkeypatch.setattr(
+        platform_type,
+        "set_device",
+        lambda self, device: calls.append(f"set_device:{device}"),
+    )
+    monkeypatch.setattr(
+        platform_type, "synchronize", lambda self: calls.append("synchronize")
+    )
+    monkeypatch.setattr(
+        platform_type, "empty_cache", lambda self: calls.append("empty_cache")
+    )
+    monkeypatch.setattr(torch.cuda, "ipc_collect", lambda: calls.append("ipc_collect"))
+
+    stage_workers.reclaim_process_gpu_memory(
+        [1], logging.getLogger(__name__), reason="test"
+    )
+
+    assert calls == expected
+
+
+STAGE_PROCESS_WITH_LIVE_PARENT = """
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+
+def block_after_registration() -> None:
+    Path(marker_dir, "registered").touch()
+    Event().wait()
+
+stage_workers.configure_dependency_loggers = block_after_registration
+stage_workers.stage_process_main(
+    SimpleNamespace(log_level=20, stage_specs=[], process_name="p"), None
+)
+"""
+
+
+def process_has_exited(pid: int) -> bool:
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        return True
+    else:
+        return stat_path.read_text().rsplit(") ", 1)[1].split()[0] == "Z"
+
+
+def test_stage_process_asks_to_die_with_its_parent(tmp_path: Path) -> None:
+    spawn_and_wait = (
+        "import multiprocessing, sys, time\n"
+        "child = multiprocessing.get_context('spawn').Process(target=exec, args=("
+        "sys.argv[1], {'marker_dir': sys.argv[2]}))\n"
+        "child.start()\n"
+        "open(sys.argv[2] + '/child.pid', 'w').write(str(child.pid))\n"
+        "time.sleep(600)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", spawn_and_wait, STAGE_PROCESS_WITH_LIVE_PARENT]
+        + [str(tmp_path)]
+    )
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 300
+        while not (tmp_path / "registered").exists():
+            assert parent.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        child_pid = int((tmp_path / "child.pid").read_text())
+
+        parent.kill()
+        parent.wait(timeout=30)
+
+        deadline = time.monotonic() + 30
+        while not process_has_exited(child_pid):
+            assert time.monotonic() < deadline, "stage process outlived its parent"
+            time.sleep(0.05)
+    finally:
+        parent.kill()
+        if child_pid is not None and not process_has_exited(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+        else:
+            pass
+
+
+# note (Richard Wang): the worker spawned below runs this once its parent is
+# gone, so the parent dies before the worker registers its death signal. The
+# worker inherits the output pipes, so the run returns once it exits.
+STAGE_PROCESS_AFTER_PARENT_DIED = """
+import multiprocessing, time
+from pathlib import Path
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+parent = multiprocessing.parent_process()
+while parent.is_alive():
+    time.sleep(0.01)
+try:
+    stage_workers.stage_process_main(
+        SimpleNamespace(log_level=20, stage_specs=[], process_name="p"), None
+    )
+except ValueError:
+    Path(marker_dir, "built").touch()
+finally:
+    Path(marker_dir, "exited").touch()
+"""
+
+
+def test_stage_process_exits_when_its_parent_died_before_it_started(
+    tmp_path: Path,
+) -> None:
+    spawn_and_die = (
+        "import multiprocessing, os, sys\n"
+        "multiprocessing.get_context('spawn').Process(target=exec, args=("
+        "sys.argv[1], {'marker_dir': sys.argv[2]})).start()\n"
+        "os._exit(0)\n"
+    )
+    command = [sys.executable, "-c", spawn_and_die, STAGE_PROCESS_AFTER_PARENT_DIED]
+
+    subprocess.run([*command, str(tmp_path)], capture_output=True, timeout=300)
+
+    assert (tmp_path / "exited").exists()
+    assert not (tmp_path / "built").exists()
+
+
+# note (Richard Wang): run_process stands in for a stage that stopped or was
+# interrupted. The object in the script's globals reports interpreter teardown.
+STAGE_PROCESS_THAT_STOPS = """
+import atexit, sys, threading, time
+from types import SimpleNamespace
+from sglang_omni.pipeline import stage_workers
+
+marker, interrupted = sys.argv[1], sys.argv[2] == "1"
+
+def note(text):
+    with open(marker, "a") as fh:
+        fh.write(text)
+
+class Teardown:
+    # Module globals are cleared before this runs at teardown.
+    def __del__(self, open=open, marker=marker):
+        with open(marker, "a") as fh:
+            fh.write("teardown,")
+
+def run_process(spec, ready_event, log):
+    threading.Thread(target=lambda: (time.sleep(0.2), note("thread,"))).start()
+    atexit.register(note, "atexit,")
+    sys.stdout.write("unflushed")
+    if interrupted:
+        raise KeyboardInterrupt
+
+teardown = Teardown()
+stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
+stage_workers.run_process = run_process
+stage = SimpleNamespace(gpu_id=None, allow_child_processes=False)
+spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
+stage_workers.stage_process_main(spec, None)
+"""
+
+
+@pytest.mark.parametrize("interrupted, code", [(False, 0), (True, 1)])
+def test_stage_process_exits_without_interpreter_teardown(
+    tmp_path: Path, interrupted: bool, code: int
+) -> None:
+    marker = tmp_path / "marker.txt"
+    command = [sys.executable, "-c", STAGE_PROCESS_THAT_STOPS, str(marker)]
+
+    done = subprocess.run(
+        [*command, str(int(interrupted))], capture_output=True, text=True, timeout=300
+    )
+
+    assert done.returncode == code, done.stderr
+    assert "unflushed" in done.stdout
+    # Threads finish before the atexit callbacks, as at a normal exit.
+    assert marker.read_text() == "thread,atexit,"

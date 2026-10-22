@@ -5,15 +5,23 @@ from __future__ import annotations
 
 import collections
 import hashlib
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.types import RequestOutput
+
+if TYPE_CHECKING:
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+else:
+    pass
 
 
 @dataclass
@@ -22,7 +30,11 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
     voice_embedding: torch.Tensor | None = None
     audio_token_id: int = 24
     output_codes: list[torch.Tensor] = field(default_factory=list)
-    pending_feedback_queue: Any = field(default_factory=collections.deque)
+    pending_feedback_queue: collections.deque[torch.Tensor] = field(
+        default_factory=collections.deque
+    )
+    stream: bool = False
+    stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
 
 
 def voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | None:
@@ -37,7 +49,7 @@ def voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | N
 def build_sglang_voxtral_request(
     payload: StagePayload,
     *,
-    model: Any,
+    model: "VoxtralSGLangTTSModel",
     voice_embeddings: dict[str, torch.Tensor],
 ) -> VoxtralSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
@@ -77,6 +89,7 @@ def build_sglang_voxtral_request(
         req=req,
         voice_embedding=voice_embedding,
         audio_token_id=int(model.audio_token_id),
+        stream=bool((payload.request.params or {}).get("stream")),
     )
     data.stage_payload = payload
     return data
@@ -101,11 +114,50 @@ def apply_sglang_voxtral_result(
     )
 
 
+class VoxtralStreamOutput:
+    """Forwards generated frames to the vocoder in transport batches and on finish."""
+
+    transport_frames = 5
+
+    def __call__(
+        self,
+        request_id: str,
+        data: VoxtralSGLangRequestData,
+        req_output: RequestOutput | None = None,
+    ) -> Iterator[OutgoingMessage]:
+        del req_output
+        if len(data.stream_pending_rows) >= self.transport_frames:
+            yield from self.flush(request_id, data)
+        else:
+            pass
+
+    def flush(
+        self, request_id: str, data: VoxtralSGLangRequestData
+    ) -> Iterator[OutgoingMessage]:
+        rows = data.stream_pending_rows
+        if not rows:
+            return
+        else:
+            pass
+        codes = torch.stack(rows, dim=0)
+        rows.clear()
+        yield OutgoingMessage(
+            request_id=request_id,
+            type="stream",
+            target="vocoder",
+            data=codes,
+            metadata={"modality": "audio_codes", "stream": True},
+        )
+
+
 def make_voxtral_scheduler_adapters(
     *,
-    model: Any,
+    model: "VoxtralSGLangTTSModel | None",
     voice_embeddings: dict[str, torch.Tensor],
-):
+) -> tuple[
+    Callable[[StagePayload], VoxtralSGLangRequestData],
+    Callable[[VoxtralSGLangRequestData], StagePayload],
+]:
     def request_builder(payload: StagePayload) -> VoxtralSGLangRequestData:
         return build_sglang_voxtral_request(
             payload,

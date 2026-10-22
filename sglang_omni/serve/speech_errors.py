@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from fastapi.responses import JSONResponse
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
 @dataclass
@@ -32,7 +31,7 @@ def openai_error_payload(
     error_type: str,
     param: str | None = None,
     code: int | str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, dict[str, str | int | None]]:
     """Build an OpenAI-style error envelope."""
 
     return {
@@ -76,9 +75,9 @@ def speech_error_response(error: SpeechAPIError) -> JSONResponse:
     )
 
 
-def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, Any]:
+def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, str | int]:
     """Build the public error event used by speech WebSocket transports."""
-    payload: dict[str, Any] = {
+    payload: dict[str, str | int] = {
         "type": "error",
         "message": error.message,
         "error_type": error.error_type,
@@ -130,12 +129,10 @@ def speech_generation_error(exc: BaseException) -> SpeechAPIError:
         return exc
     else:
         pass
-    if QueueFullError.matches(exc):
+    status_code = generation_error_status_code(exc)
+    if status_code == 503:
         return service_unavailable(QueueFullError.MESSAGE)
-    else:
-        pass
-    if is_bad_request_error(exc):
+    elif status_code == 400:
         return bad_request(str(exc))
     else:
-        pass
-    return internal_error(str(exc))
+        return internal_error(str(exc))

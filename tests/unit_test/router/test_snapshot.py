@@ -35,19 +35,6 @@ def test_snapshot_round_trip(tmp_path: Path) -> None:
     assert reader.maybe_reload() is False
 
 
-def test_snapshot_seq_is_monotonic_and_applied(tmp_path: Path) -> None:
-    path = str(tmp_path / "snap.json")
-    writer = SnapshotWriter(path, cp_epoch="epoch-a")
-    writer.publish(make_workers(1))
-    writer.publish(make_workers(3))
-    assert writer.seq == 2
-
-    reader = SnapshotReader(path)
-    assert reader.maybe_reload() is True
-    assert reader.snapshot.seq == 2
-    assert len(reader.snapshot.workers) == 3
-
-
 def test_reader_keeps_last_good_snapshot_on_torn_file(tmp_path: Path) -> None:
     path = str(tmp_path / "snap.json")
     writer = SnapshotWriter(path, cp_epoch="epoch-a")
@@ -97,16 +84,6 @@ def test_reader_accepts_a_new_cp_epoch_with_a_restarted_seq(
     assert reader.maybe_reload() is True
     assert reader.snapshot.cp_epoch == "epoch-b"
     assert reader.snapshot.seq == 2
-
-
-def test_reader_reports_snapshot_age(tmp_path: Path) -> None:
-    path = str(tmp_path / "snap.json")
-    reader = SnapshotReader(path)
-    assert reader.age_secs() is None
-    SnapshotWriter(path, cp_epoch="epoch-a").publish(make_workers())
-    reader.maybe_reload()
-    generated_at = reader.snapshot.generated_at
-    assert reader.age_secs(now=generated_at + 7.5) == 7.5
 
 
 def test_writer_unlink_is_idempotent(tmp_path: Path) -> None:

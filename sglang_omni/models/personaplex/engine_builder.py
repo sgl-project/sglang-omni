@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Protocol
 
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
@@ -28,12 +31,18 @@ from sglang_omni.models.personaplex.request_builders import (
 )
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.vendor.sglang.server_args import override_server_args
+
+logger = logging.getLogger(__name__)
 
 
 class LMRequestBuilder(Protocol):
@@ -42,12 +51,6 @@ class LMRequestBuilder(Protocol):
 
 class LMResultBuilder(Protocol):
     def __call__(self, data: SGLangARRequestData) -> StagePayload: ...
-
-
-class LMStreamOutputBuilder(Protocol):
-    def __call__(
-        self, request_id: str, data: SGLangARRequestData, req_output: RequestOutput
-    ) -> list[OutgoingMessage]: ...
 
 
 def shim_checkpoint_dir(source: Path, *, context_length: int) -> Path:
@@ -71,15 +74,20 @@ def shim_checkpoint_dir(source: Path, *, context_length: int) -> Path:
     return shim
 
 
-class PersonaPlexEngineBuilder(TtsEngineBuilder):
+class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     model_name = "personaplex"
     context_length = DEFAULT_CONTEXT_LENGTH
     supports_context_length_override = True
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        enable_async_decode: bool,
+        max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
+        context_length: int | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.enable_async_decode = enable_async_decode
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -90,9 +98,12 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
         source = Path(resolve_model_path(model_path))
         return str(shim_checkpoint_dir(source, context_length=self.context_length))
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
-            "disable_cuda_graph": True,
+            # note (wilsonzheng0327): The decode step reads its row from fusion_buffer
+            # and leaves its hidden state in hidden_out, so SGLang can replay it.
+            # Other platforms keep the eager path they were validated on.
+            "disable_cuda_graph": not current_platform.is_cuda(),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -103,6 +114,29 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
             # Note (wilsonzheng0327): Seeded top-k sampling needs the torch sampler.
             "sampling_backend": "pytorch",
         }
+
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        config = resolved_view(server_args)
+        if (
+            current_platform.is_cuda()
+            and config.device == "cuda"
+            and config.page_size == 1
+            and config.disable_radix_cache
+        ):
+            pass
+        else:
+            override_server_args(
+                server_args,
+                "sglang_omni.personaplex.window_kv",
+                disable_hybrid_swa_memory=True,
+            )
+            logger.info(
+                f"PersonaPlex uses the full KV pool on device={config.device}, "
+                f"platform={current_platform.device_type} "
+                f"with page_size={config.page_size}, "
+                f"disable_radix_cache={config.disable_radix_cache}; "
+                "window KV requires CUDA, page_size=1 and disabled radix caching"
+            )
 
     def setup_model(
         self,
@@ -135,7 +169,10 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder):
 
         return build, apply_lm_result
 
-    def extra_scheduler_kwargs(
-        self,
-    ) -> dict[str, LMStreamOutputBuilder]:
-        return {"stream_output_builder": lm_stream_output_builder}
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[SGLangARRequestData]:
+        return {
+            "stream_output_builder": lm_stream_output_builder,
+            "async_decode_resolve_before_prefill": True,
+            "enable_async_decode": self.enable_async_decode
+            and current_platform.is_cuda(),
+        }

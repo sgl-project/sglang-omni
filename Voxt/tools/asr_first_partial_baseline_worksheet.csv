@@ -1,0 +1,6 @@
+machine,chip,memory_gb,date,model_repo,cold_or_warm,utterance_id,startToFirstLiveASRMs,requestToStartMs,model_load_elapsedMs,live_session_ready_elapsedMs,stopToASRMs,captureGapMs,notes
+Apple-M4,Apple M4,24,2026-07-31,mlx-community/Qwen3-ASR-1.7B-4bit,mixed-historical,hist-agg-n23,2956(p50)/5655(p95)/3247(mean),typically_<100,2064(p50 load),n/a,see-log,see-log,From voxt-legacy-20260616.log transcription+liveDisplay; best warm 619-753ms
+,,,,,,,
+# Fill rows below during controlled collection (n>=10 per cell). utterance_id: Q1|Q2|Q3
+# cold_or_warm: cold|warm
+# Leave model_load_elapsedMs blank on warm runs when no load log appears.

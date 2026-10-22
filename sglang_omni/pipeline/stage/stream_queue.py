@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-request bounded queue for streaming between pipeline stages."""
+"""Per-request unbounded queues for streaming between pipeline stages."""
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,9 @@ class StreamItem:
     """A single item of streaming data between stages."""
 
     chunk_id: int
-    data: Any
+    data: object
     from_stage: str
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
 
 @dataclass
@@ -43,9 +42,8 @@ class StreamQueue:
         sq.close("req-1")             # cleanup
     """
 
-    def __init__(self, max_pending: int = 16):
-        self.max_pending = max_pending
-        self.queues: dict[str, asyncio.Queue] = {}
+    def __init__(self) -> None:
+        self.queues: dict[str, asyncio.Queue[StreamItem | StreamSignal]] = {}
         self.closed: set[str] = set()  # track closed request IDs for abort race
 
     def open(self, request_id: str) -> None:

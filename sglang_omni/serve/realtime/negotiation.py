@@ -28,11 +28,17 @@ def merge_config(
     return merged_config
 
 
-def admission_fields(config: SessionConfiguration) -> SessionConfiguration:
+def admission_fields(
+    config: SessionConfiguration, *, hot_instructions: bool
+) -> SessionConfiguration:
     """Fields fixed once the session is OPEN; everything else may be hot-updated."""
     admission_config = copy.deepcopy(config)
     admission_config.pop("output_modalities", None)
     admission_config.get("audio", {}).get("input", {}).pop("turn_detection", None)
+    if hot_instructions:
+        admission_config.pop("instructions", None)
+    else:
+        pass
     return admission_config
 
 
@@ -60,7 +66,10 @@ class SessionNegotiation:
             raise ProtocolError(
                 "invalid_request", "invalid session configuration", location
             ) from exc
-        if state == "OPEN" and admission_fields(candidate) != admission_fields(current):
+        hot_instructions = self.capabilities.supports_instruction_updates
+        if state == "OPEN" and admission_fields(
+            candidate, hot_instructions=hot_instructions
+        ) != admission_fields(current, hot_instructions=hot_instructions):
             raise ProtocolError("invalid_state", "session field is frozen")
         elif (
             "instructions" in candidate
@@ -83,7 +92,7 @@ class SessionNegotiation:
             modality
             for modality in requested_modalities
             if modality in self.capabilities.output_modalities
-        ][:1]
+        ][: self.capabilities.max_granted_modalities]
         if not granted_modalities:
             raise ProtocolError("invalid_request", "no supported output combination")
         else:
@@ -115,15 +124,66 @@ class SessionNegotiation:
                 )
             else:
                 pass
-        if audio.get("input", {}).get("turn_detection") is not None:
+        turn_detection = audio.get("input", {}).get("turn_detection")
+        if turn_detection is None:
+            pass
+        elif not any(self.capabilities.turn_control):
             raise ProtocolError(
                 "not_applicable", "VAD is only available for turn-based sessions"
+            )
+        elif (
+            turn_detection.get("type", "server_vad")
+            not in self.capabilities.turn_control
+        ):
+            raise ProtocolError(
+                "not_applicable",
+                "turn detection type is unavailable",
+                "session.audio.input.turn_detection.type",
             )
         else:
             pass
 
     def validate_extension(self, candidate: SessionConfiguration) -> None:
         extension = candidate.get("sglang", {})
+        unsupported_sampling = set(extension.get("sampling", {})) - set(
+            self.capabilities.sampling_parameters
+        )
+        if unsupported_sampling:
+            raise ProtocolError(
+                "not_applicable",
+                f"unsupported sampling parameters: {', '.join(sorted(unsupported_sampling))}",
+                "session.sglang.sampling",
+            )
+        else:
+            pass
+        for field in ("reference_audio", "tts_reference_audio"):
+            if field in extension and not self.capabilities.supports_reference_audio:
+                raise ProtocolError(
+                    "not_applicable",
+                    "reference audio is unavailable",
+                    f"session.sglang.{field}",
+                )
+            else:
+                pass
+        if (
+            "max_slice_nums" in extension
+            and "image" not in self.capabilities.input_modalities
+        ):
+            raise ProtocolError(
+                "not_applicable",
+                "image input is unavailable",
+                "session.sglang.max_slice_nums",
+            )
+        elif "max_slice_nums" in extension and extension["max_slice_nums"] > len(
+            self.capabilities.image_frames_per_unit
+        ):
+            raise ProtocolError(
+                "invalid_request",
+                "slice count exceeds deployment limit",
+                "session.sglang.max_slice_nums",
+            )
+        else:
+            pass
         native_unit_ms = extension.get("timebase", {}).get(
             "native_unit_ms", self.capabilities.native_unit_ms
         )
@@ -144,6 +204,15 @@ class SessionNegotiation:
         granted_modalities: list[str],
     ) -> tuple[SessionConfiguration, GrantedCapabilities]:
         granted = self.capabilities.to_granted_capabilities()
+        if "image" in self.capabilities.input_modalities:
+            slice_count = candidate.get("sglang", {}).get(
+                "max_slice_nums", self.capabilities.default_max_slice_nums
+            )
+            granted["input_image_format"]["max_frames_per_unit"] = (
+                self.capabilities.image_frames_per_unit[slice_count - 1]
+            )
+        else:
+            pass
         granted.update(
             {
                 "output_modalities": granted_modalities,

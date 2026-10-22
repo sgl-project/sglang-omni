@@ -16,10 +16,12 @@ import logging
 import queue as _queue_mod
 import threading
 import time
-from typing import Any, Awaitable, Callable, Protocol
+from collections.abc import Coroutine, Sequence
+from typing import Awaitable, Callable, Generic, Protocol
 
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, ComputeResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +30,34 @@ class RequestArrivalHook(Protocol):
     def __call__(self, payload: StagePayload) -> None: ...
 
 
-class SimpleScheduler:
+class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     """Process requests one at a time via a callable.
 
     Supports sync and async callables for ``new_request`` messages only.
+    A batch_compute_fn may return a BaseException in an item's
+    result slot to fail only that request while preserving the rest of the batch.
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
 
     def __init__(
         self,
-        compute_fn: Callable,
+        compute_fn: Callable[
+            [ComputeInput], ComputeResult | Coroutine[None, None, ComputeResult]
+        ],
         *,
-        batch_compute_fn: Callable | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[ComputeInput]],
+                Sequence[ComputeResult]
+                | Coroutine[None, None, Sequence[ComputeResult]],
+            ]
+            | None
+        ) = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
         batch_wait_when_idle: bool = True,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
@@ -123,15 +136,12 @@ class SimpleScheduler:
             pass
         return max(int(self.request_cost_fn(msg.data)), 0)
 
-    def next_message(self) -> IncomingMessage | None:
+    def next_message(self) -> IncomingMessage:
         if self.pending_messages:
             return self.pending_messages.popleft()
         else:
             pass
-        try:
-            return self.inbox.get(timeout=0.1)
-        except _queue_mod.Empty:
-            return None
+        return self.inbox.get()
 
     def collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
         batch = [first_msg]
@@ -186,7 +196,9 @@ class SimpleScheduler:
 
     @staticmethod
     def emit_result(
-        request_id: str, result: Any, outbox: _queue_mod.Queue[OutgoingMessage]
+        request_id: str,
+        result: object,
+        outbox: _queue_mod.Queue[OutgoingMessage],
     ) -> None:
         outbox.put(
             OutgoingMessage(
@@ -260,19 +272,25 @@ class SimpleScheduler:
                 continue
             else:
                 pass
-            self.emit_result(msg.request_id, result, self.outbox)
+            if isinstance(result, BaseException):
+                self.emit_error(msg.request_id, result, self.outbox)
+            else:
+                self.emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
-    async def await_result(result: Awaitable[Any]) -> Any:
+    async def await_result(result: Awaitable[ComputeResult]) -> ComputeResult:
         return await result
 
-    def run_compute_in_thread(self, payload: Any) -> Any:
+    def run_compute_in_thread(self, payload: ComputeInput) -> ComputeResult:
         result = self.fn(payload)
         if inspect.isawaitable(result):
             result = asyncio.run(self.await_result(result))
         else:
             pass
         return result
+
+    def warm_up_serving_thread(self) -> None:
+        pass
 
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
@@ -287,11 +305,6 @@ class SimpleScheduler:
         try:
             while self.running:
                 msg = self.next_message()
-                if msg is None:
-                    continue
-                else:
-                    pass
-
                 if msg.type == "new_request":
                     if self.consume_if_aborted(msg.request_id):
                         continue
@@ -385,6 +398,7 @@ class SimpleScheduler:
 
     def stop(self) -> None:
         self.running = False
+        self.inbox.put(IncomingMessage(request_id="", type="wakeup"))
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None
