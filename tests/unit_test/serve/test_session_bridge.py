@@ -190,6 +190,23 @@ async def test_every_vocabulary_item_projects_through_the_table():
 
 
 @pytest.mark.asyncio
+async def test_a_reply_the_talker_cut_at_its_token_budget_ends_incomplete():
+    """Reaching the talker's token budget ends the response as incomplete instead of reporting a completed one."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=0)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Half a sen"})
+    h.client.control(TURN_DONE, reply_truncated=True)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(
+            "resp_0", "item_0", "Half a sen", False, "incomplete", "max_output_tokens"
+        )
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     h = Harness()
     await h.open()
