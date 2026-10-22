@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
+from benchmarks.duplex.oracle_models import is_admission_rejection
 from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_capture import (
     AUDIO_DELTA,
@@ -316,6 +317,13 @@ def analyze_variant(
                     reasons.append("session.closed at or before window end")
                 else:
                     pass
+            elif is_admission_rejection(event) and first_append_s is None:
+                anomalies.append(
+                    {
+                        "elapsed_s": at(time_s),
+                        "message": f"admission rejected before input: {event['error']}",
+                    }
+                )
             elif kind == "error":
                 problem(f"native server error: {event.get('error', event)}", time_s)
             elif kind == "response.created":

@@ -14,7 +14,7 @@ from typing import Literal, TypedDict
 import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from benchmarks.duplex.oracle_models import ADMISSION_REJECTED_CODE, turn_detection_type
+from benchmarks.duplex.oracle_models import is_admission_rejection, turn_detection_type
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 SAMPLE_RATE = 16000
@@ -273,25 +273,20 @@ async def run_session(
                             ) from exc
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
-                        if event_type == "error":
+                        if (
+                            is_admission_rejection(event)
+                            and not seen.get(
+                                "session.updated", asyncio.Event()
+                            ).is_set()
+                        ):
+                            rejected.set()
+                        elif event_type == "error":
+                            # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
-                            error = event.get("error")
-                            is_fatal = bool(
+                            fatal = fatal or bool(
                                 isinstance(extension, dict) and extension.get("fatal")
                             )
-                            if (
-                                not is_fatal
-                                and isinstance(error, dict)
-                                and error.get("code") == ADMISSION_REJECTED_CODE
-                                and not seen.get(
-                                    "session.updated", asyncio.Event()
-                                ).is_set()
-                            ):
-                                rejected.set()
-                            else:
-                                # note (wenyao): Close waits for adapter teardown.
-                                fatal = fatal or is_fatal
-                                aborted.set()
+                            aborted.set()
                         else:
                             pass
                     if not seen.get("session.closed", asyncio.Event()).is_set():
@@ -312,16 +307,14 @@ async def run_session(
                         and rejected.is_set()
                         and admission_attempts <= ADMISSION_RETRIES
                     ):
-                        admission_attempts += 1
                         rejected.clear()
-                        await asyncio.sleep(ADMISSION_BACKOFF_S)
-                        await send("session.update", session=configure)
-                        admitted = await settle("session.updated")
+                        try:
+                            await asyncio.wait_for(aborted.wait(), ADMISSION_BACKOFF_S)
+                        except asyncio.TimeoutError:
+                            admission_attempts += 1
+                            await send("session.update", session=configure)
+                            admitted = await settle("session.updated")
                     is_admission_exhausted = not admitted and rejected.is_set()
-                    if is_admission_exhausted:
-                        aborted.set()
-                    else:
-                        pass
                     if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad
                         # when no Smart Turn model is loaded, so the echo is the only

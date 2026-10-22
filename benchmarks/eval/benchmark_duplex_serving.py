@@ -51,7 +51,7 @@ def format_table(report: dict[str, JsonValue]) -> str:
         rows.append(
             f"| {level['concurrency']} | {level['mean_open_sessions']:.1f} "
             f"| {level['sessions_failed']}/{level['sessions']} "
-            f"| {level['admission_denials']} | {level['admission_rejections']} "
+            f"| {level['admission_denials']} | {level['sessions_rejected']} "
             f"| {level['input_pacing_violations']} "
             f"| {ratio(level['unit_miss_rate'], '.1%')} "
             f"| {milliseconds(unit_lag['p50'])} / {milliseconds(unit_lag['p90'])} / "

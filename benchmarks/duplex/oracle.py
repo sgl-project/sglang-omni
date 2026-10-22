@@ -8,7 +8,6 @@ from collections import Counter
 from pydantic import JsonValue, ValidationError
 
 from benchmarks.duplex.oracle_models import (
-    ADMISSION_REJECTED_CODE,
     AdmissionEvent,
     Identifier,
     MediaTime,
@@ -20,6 +19,7 @@ from benchmarks.duplex.oracle_models import (
     StatusDetails,
     TraceRecord,
     WireEvent,
+    is_admission_rejection,
     turn_detection_type,
 )
 from benchmarks.duplex.profiles import (
@@ -593,8 +593,7 @@ def evaluate_trace(
                     else None
                 )
                 if (
-                    error.get("code") == ADMISSION_REJECTED_CODE
-                    and event.sglang.fatal is False
+                    is_admission_rejection(record.event)
                     and not updated
                     and rejected_command is not None
                     and rejected_command.event.type == "session.update"

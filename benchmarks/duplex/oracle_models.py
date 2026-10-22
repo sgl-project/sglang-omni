@@ -10,7 +10,6 @@ from benchmarks.duplex.profiles import Protocol
 
 Identifier = Annotated[str, Field(min_length=1)]
 Nonnegative = Annotated[float, Field(ge=0)]
-# note (Yucheng Hu): The server answers a session.update it cannot admit with this non-fatal code and keeps the session open for another update.
 ADMISSION_REJECTED_CODE = "admission_rejected"
 
 
@@ -79,6 +78,19 @@ class WireEvent(BaseModel):
     padding_ms: Nonnegative | None = None
     reason: str | None = None
     error: dict[str, JsonValue] | None = None
+
+
+def is_admission_rejection(event: dict[str, JsonValue]) -> bool:
+    """A non-fatal admission_rejected error: the server could not admit a
+    session.update and keeps the session open for another one."""
+    extension, error = event.get("sglang"), event.get("error")
+    return (
+        event.get("type") == "error"
+        and isinstance(extension, dict)
+        and extension.get("fatal") is False
+        and isinstance(error, dict)
+        and error.get("code") == ADMISSION_REJECTED_CODE
+    )
 
 
 def turn_detection_type(session: JsonValue, protocol: Protocol) -> JsonValue:

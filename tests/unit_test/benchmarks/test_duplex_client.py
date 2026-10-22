@@ -302,6 +302,7 @@ def test_client_closes_once_the_rejection_budget_is_exhausted(tmp_path: Path) ->
     sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
 
     assert sends == ["session.update"] * (ADMISSION_RETRIES + 1) + ["session.close"]
+    assert records[-2]["event"]["type"] == "session.closed"
     assert records[-1]["direction"] == "error"
     assert (
         records[-1]["event"]["message"]
@@ -311,6 +312,35 @@ def test_client_closes_once_the_rejection_budget_is_exhausted(tmp_path: Path) ->
     result = evaluate_trace(records)
     assert result["status"] == "fail", result
     assert result["metrics"]["admission_rejections"] == ADMISSION_RETRIES + 1
+
+
+def test_client_does_not_resend_after_another_error(tmp_path: Path) -> None:
+    peer = DuplexPeer(rejected_updates=1, rejection_code="fixture_failure")
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update", "session.close"]
+    result = evaluate_trace(records)
+    assert result["status"] == "fail", result
+    assert any("code=fixture_failure" in item for item in result["violations"])
+
+
+def test_client_stops_retrying_when_the_session_fails_during_the_backoff(
+    tmp_path: Path,
+) -> None:
+    """A fatal error during the backoff used to leave the recorder asleep after the server closed, so the trace recorded a stalled driver."""
+    peer = DuplexPeer("fatal_after_rejection", rejected_updates=1)
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update"]
+    assert not [r for r in records if r["direction"] == "error"]
+    assert records[-1]["event"]["type"] == "session.closed"
+    assert evaluate_trace(records)["status"] == "fail"
 
 
 def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:

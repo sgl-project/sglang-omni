@@ -237,6 +237,8 @@ SAMPLES_PER_FRAME = 1764
 TAIL_HOLDBACK_SAMPLES = 256
 # Note (wenyao): Adapter teardown can delay close beyond the observation window.
 FATAL_CLOSE_DELAY_S = POST_CLOSE_SECONDS * 3
+# note (Yucheng Hu): A late readmission fails a client that does not wait for the answer to each re-sent session.update.
+READMISSION_DELAY_S = 0.05
 PeerMode = Literal[
     "healthy",
     "server_error",
@@ -248,13 +250,20 @@ PeerMode = Literal[
     "nonfinite",
     "linger",
     "close_without_update",
+    "fatal_after_rejection",
 ]
 
 
 class DuplexPeer:
-    def __init__(self, mode: PeerMode = "healthy", rejected_updates: int = 0) -> None:
+    def __init__(
+        self,
+        mode: PeerMode = "healthy",
+        rejected_updates: int = 0,
+        rejection_code: str = "admission_rejected",
+    ) -> None:
         self.mode = mode
         self.rejected_updates = rejected_updates
+        self.rejection_code = rejection_code
         self.received: list[dict[str, JsonValue]] = []
         self.sent: list[dict[str, JsonValue]] = []
         self.pcm = bytearray()
@@ -433,9 +442,16 @@ class DuplexPeer:
                         websocket,
                         event["event_id"],
                         fatal=False,
-                        code="admission_rejected",
+                        code=self.rejection_code,
                     )
-                    continue
+                    if self.mode == "fatal_after_rejection":
+                        await self.emit_error(websocket, event["event_id"], fatal=True)
+                        await self.close_session(websocket, "server_error", None)
+                        return
+                    else:
+                        continue
+                elif any(sent["type"] == "error" for sent in self.sent):
+                    await asyncio.sleep(READMISSION_DELAY_S)
                 else:
                     pass
                 if self.mode == "close_without_update":
