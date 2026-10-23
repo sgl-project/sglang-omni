@@ -117,15 +117,15 @@ class SessionGraphRunner(CoordinatorSessions):
             inbox.wake.set()
             node = self.sessions[graph.nodes[target].id]
             kept = deque(
-                (chunk, size)
-                for chunk, size in node.pending
-                if chunk.turn != event.turn
-                or chunk.seq in graph.client_sequences[target]
+                pending
+                for pending in node.pending
+                if pending.chunk.turn != event.turn
+                or pending.chunk.seq in graph.client_sequences[target]
             )
             node.pending_count -= len(node.pending) - len(kept)
-            node.pending_bytes -= sum(size for _, size in node.pending) - sum(
-                size for _, size in kept
-            )
+            node.pending_bytes -= sum(
+                pending.encoded_bytes for pending in node.pending
+            ) - sum(pending.encoded_bytes for pending in kept)
             node.pending = kept
         else:
             pass
@@ -528,6 +528,14 @@ class SessionGraphRunner(CoordinatorSessions):
             if not holds_turn_end(chunk, pacer is not None, is_published):
                 for reader in graph.graph.reading_nodes(name, output.format):
                     await self.put_graph_inbox(graph, reader, name, chunk)
+            else:
+                pass
+            # Note (ruoyu): The chunk passed the fence before a full edge held it, and the interrupt may have landed during the wait.
+            if any(
+                is_interrupted_reply(chunk, turn)
+                for turn in graph.interrupted_turns.get(name, ())
+            ):
+                continue
             else:
                 pass
             if is_published and pacer is not None:

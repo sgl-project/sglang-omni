@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.config.session_audio import REALTIME_MAX_PENDING_CHUNKS
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -276,6 +277,7 @@ async def open_graph(
     graph: SessionGraph,
     names: tuple[str, ...],
     params: dict[str, object] | None = None,
+    limits: SessionLimits = LIMITS,
 ) -> AsyncIterator[tuple[Coordinator, SessionIdentity, Gates, Log]]:
     gates = Gates(names)
     async with pipeline(
@@ -286,7 +288,7 @@ async def open_graph(
     ) as (coordinator, events, _):
         coordinator.session_graph = graph
         identity = await coordinator.open_session(
-            OmniRequest(None, params=params or {}), limits=LIMITS
+            OmniRequest(None, params=params or {}), limits=limits
         )
         log = Log(events)
         try:
@@ -325,15 +327,25 @@ async def next_data(outputs: AsyncIterator[OutputChunk]) -> OutputChunk:
 
 
 @pytest.mark.asyncio
-async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(tmp_path):
-    """Declared downstream first, the nodes still open upstream first, take the interrupt upstream first and close downstream first."""
+@pytest.mark.parametrize(
+    "max_pending_chunks, unsent_appends",
+    [(1, 0), (REALTIME_MAX_PENDING_CHUNKS, 2)],
+    ids=["no_unsent_appends", "unsent_appends"],
+)
+async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(
+    tmp_path, max_pending_chunks, unsent_appends
+):
+    """Declared downstream first, the nodes still open upstream first, take the interrupt upstream first and close downstream first.
+
+    With the realtime pending limit, the interrupt meets appends of the turn that the target's node session has not sent yet, and drops them.
+    """
     graph = cascade_graph(order=("tts", "llm", "front"))
-    async with open_graph(tmp_path, graph, ("front", "llm", "tts")) as (
-        coordinator,
-        identity,
-        gates,
-        log,
-    ):
+    async with open_graph(
+        tmp_path,
+        graph,
+        ("front", "llm", "tts"),
+        limits=SessionLimits(max_pending_chunks=max_pending_chunks),
+    ) as (coordinator, identity, gates, log):
         assert log.names("open") == ["llm", "tts"]
         outputs = coordinator.session_outputs(identity)
         gates.hold("tts")
@@ -342,6 +354,8 @@ async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(tmp_pat
         await wait_until(lambda: len(log.of("append", "llm")) == 3)
         await settle()
         assert log.of("append", "tts") == ["text:llm(old0)"]
+        tts_node = coordinator.sessions[coordinator.graphs[identity.id].nodes["tts"].id]
+        assert len(tts_node.pending) == unsent_appends
         await append(coordinator, identity, speech_chunk(3, turn=1))
         await wait_until(lambda: log.names("control") == ["llm", "tts"])
         gates.release("tts")

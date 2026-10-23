@@ -630,6 +630,65 @@ async def test_an_interrupted_node_publishes_only_the_end_of_the_interrupted_tur
     ]
 
 
+def bounded_reader_runtime(sessions: SessionGraphRunner) -> SessionGraphRuntime:
+    """A reply node whose text_delta a reader takes over an edge holding one chunk; the client's interrupt reaches both, and no forwarder drains the reader."""
+    interrupt = ControlEdge("input", "interrupt")
+    nodes = {
+        "reply": SessionNode(("reply",), ("input",), controls=(interrupt,)),
+        "reader": SessionNode(
+            ("reader",),
+            (DataEdge("reply:text_delta", capacity=1),),
+            controls=(interrupt,),
+        ),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}") for name in nodes}
+    for name, identity in identities.items():
+        sessions.sessions[identity.id] = Session(
+            session_identity=identity,
+            request=OmniRequest(None),
+            stages=(name,),
+            bindings={},
+            limits=SessionLimits(),
+            is_node=True,
+        )
+    return SessionGraphRuntime(
+        session_identity=SessionIdentity("graph"),
+        graph=SessionGraph(nodes=nodes, publish={"reply": ("text_delta", "session")}),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        client_sequences={name: {} for name in nodes},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_producer_held_on_a_full_edge_drops_a_turn_interrupted_meanwhile():
+    """A chunk that passed the fence and then waited for room on a reader's edge must not reach the client once its turn was interrupted during the wait."""
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("text_delta", {"text": "first"}, 1),
+            reply_output("text_delta", {"text": "second"}, 1),
+            reply_output("session", {"type": "turn.interrupted"}, 1),
+            reply_output("text_delta", {"text": "next"}, 2),
+        ]
+    )
+    graph = bounded_reader_runtime(sessions)
+    routing = asyncio.create_task(sessions.route_graph_outputs(graph, "reply"))
+    await wait_until(lambda: graph.outputs.qsize() == 1)
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await sessions.control_graph(graph, interrupt, None, False)
+    await asyncio.wait_for(routing, OUTPUT_TIMEOUT_S)
+    published = []
+    while not graph.outputs.empty():
+        published.append(graph.outputs.get_nowait()[0])
+    assert [(item.payload, item.turn) for item in published] == [
+        ({"text": "first"}, 1),
+        ({"type": "turn.interrupted"}, 1),
+        ({"text": "next"}, 2),
+    ]
+
+
 def report_runtime(sessions: SessionGraphRunner) -> SessionGraphRuntime:
     """A `tts` node whose session output the `aligner` reads, and a `dialog` that takes the aligner's progress on a control edge; both publish `session`."""
     nodes = {
