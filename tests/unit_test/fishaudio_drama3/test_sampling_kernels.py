@@ -30,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import RequestSampling
 
 if HAS_TRITON:
     import triton
@@ -50,14 +51,25 @@ if HAS_TRITON:
         step_pointer,
         stream_id,
         noise_pointer,
+        request_seeds_pointer,
+        positions_pointer,
+        HAS_REQUEST_SAMPLING: tl.constexpr,
         WIDTH: tl.constexpr,
         BLOCK_WIDTH: tl.constexpr,
     ):
         row = tl.program_id(0)
         columns = tl.arange(0, BLOCK_WIDTH)
+        step = tl.load(step_pointer)
+        sampling_row = row
+        if HAS_REQUEST_SAMPLING:
+            seed = tl.load(request_seeds_pointer + row)
+            step = tl.load(positions_pointer + row)
+            sampling_row = 0
+        else:
+            pass
         tl.store(
             noise_pointer + row * WIDTH + columns,
-            exponential_noise(seed, tl.load(step_pointer), row, stream_id, columns),
+            exponential_noise(seed, step, sampling_row, stream_id, columns),
             mask=columns < WIDTH,
         )
 
@@ -210,7 +222,11 @@ def sampler(step: int) -> CodebookSampler:
 
 
 def kernel_noise(
-    codebook_sampler: CodebookSampler, stream_id: int, rows: int, width: int
+    codebook_sampler: CodebookSampler,
+    stream_id: int,
+    rows: int,
+    width: int,
+    request_sampling: RequestSampling | None = None,
 ) -> torch.Tensor:
     noise = torch.empty(rows, width, dtype=torch.float32, device="cuda")
     noise_kernel[(rows,)](
@@ -218,6 +234,13 @@ def kernel_noise(
         codebook_sampler.step,
         stream_id,
         noise,
+        codebook_sampler.step if request_sampling is None else request_sampling.seeds,
+        (
+            codebook_sampler.step
+            if request_sampling is None
+            else request_sampling.positions
+        ),
+        HAS_REQUEST_SAMPLING=request_sampling is not None,
         WIDTH=width,
         BLOCK_WIDTH=triton.next_power_of_2(width),
     )
@@ -948,3 +971,91 @@ def test_semantic_kernel_breaks_top_k_one_ties_like_the_pytorch_sampler(
 
     assert torch.equal(sampled[0], expected[0])
     assert torch.equal(sampled[1], expected[1])
+
+
+@pytest.mark.accelerator
+def test_request_seed_survives_graph_replay_reordering_and_split_batches() -> None:
+    require_validated_gpu()
+    rows, width = 16, 64
+    generator = torch.Generator().manual_seed(37)
+    logits = head_logits(rows, width, generator)
+    semantic_logits, candidates = semantic_inputs(rows, width, generator)
+    windows = torch.full(
+        (rows, RAS_WINDOW_FRAMES),
+        SYNTHETIC_SEMANTIC_BEGIN_ID + 5,
+        dtype=torch.int64,
+        device="cuda",
+    )
+    temperature = torch.ones(rows, device="cuda")
+    top_k = torch.full((rows,), 30, dtype=torch.int64, device="cuda")
+    top_p = torch.full((rows,), 0.9, device="cuda")
+    request_sampling = RequestSampling(
+        seeds=torch.arange(rows, dtype=torch.int64, device="cuda") + (1 << 40),
+        positions=torch.arange(rows, dtype=torch.int64, device="cuda") + 127,
+    )
+    codebook_sampler = sampler(11)
+
+    def draw(selected_rows: int) -> tuple[torch.Tensor, torch.Tensor]:
+        selected_sampling = RequestSampling(
+            seeds=request_sampling.seeds[:selected_rows],
+            positions=request_sampling.positions[:selected_rows],
+        )
+        codebook_sampler.step.add_(1)
+        main_tokens, _ = sample_semantic_with_ras(
+            semantic_logits[:selected_rows],
+            candidates,
+            windows[:selected_rows],
+            temperature[:selected_rows],
+            top_k[:selected_rows],
+            top_p[:selected_rows],
+            SYNTHETIC_SEMANTIC_BEGIN_ID,
+            width,
+            codebook_sampler,
+            request_sampling=selected_sampling,
+        )
+        head_tokens = sample_top_k_top_p(
+            logits[:selected_rows],
+            temperature[:selected_rows],
+            top_k[:selected_rows],
+            top_p[:selected_rows],
+            codebook_sampler,
+            FIRST_CODEBOOK_HEAD_STREAM,
+            request_sampling=selected_sampling,
+        )
+        return main_tokens, head_tokens
+
+    expected = draw(rows)
+    for stream_id in (FIRST_DRAW_STREAM, RAS_DRAW_STREAM, FIRST_CODEBOOK_HEAD_STREAM):
+        torch.testing.assert_close(
+            request_sampling.exponential_noise(
+                torch.arange(width, device="cuda").expand(rows, width),
+                stream_id,
+            ),
+            kernel_noise(codebook_sampler, stream_id, rows, width, request_sampling),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+    side_stream = torch.cuda.Stream()
+    side_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side_stream):
+        draw(rows)
+    torch.cuda.current_stream().wait_stream(side_stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        graph_outputs = draw(rows)
+
+    order = torch.arange(rows - 1, -1, -1, device="cuda")
+    for tensor in (
+        logits,
+        semantic_logits,
+        windows,
+        request_sampling.seeds,
+        request_sampling.positions,
+    ):
+        tensor.copy_(tensor[order])
+    codebook_sampler.step.fill_(10000)
+    graph.replay()
+    for actual, original in zip(graph_outputs, expected, strict=True):
+        assert torch.equal(actual, original[order])
+    for actual, original in zip(draw(5), expected, strict=True):
+        assert torch.equal(actual, original[order[:5]])

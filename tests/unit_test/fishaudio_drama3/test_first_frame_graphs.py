@@ -60,6 +60,7 @@ def first_frame_inputs(
         temperature=numbered((request_count,), torch.float32, start, device),
         top_k=numbered((request_count,), torch.int64, start, device),
         top_p=numbered((request_count,), torch.float32, start, device),
+        sampling_seeds=numbered((request_count,), torch.int64, start, device),
         request_pool_indices=numbered((request_count,), torch.int64, start, device),
         sequence_lengths=numbered((request_count,), torch.int64, start, device),
         cache_slots=numbered((request_count,), torch.int64, start, device),
@@ -71,6 +72,7 @@ def summed_frames(frame_inputs: FirstFrameInputs) -> torch.Tensor:
         frame_inputs.input_frames
         + frame_inputs.positions[:, None]
         + frame_inputs.cache_slots[:, None]
+        + frame_inputs.sampling_seeds[:, None]
     )
 
 
@@ -149,6 +151,7 @@ def never_sampled(
     top_k: torch.Tensor,
     top_p: torch.Tensor,
     forward_batch: ForwardBatch,
+    sampling_seeds: torch.Tensor,
 ) -> torch.Tensor:
     raise AssertionError("a refused capture samples nothing")
 
@@ -203,6 +206,7 @@ def test_capture_records_every_request_count_largest_first_in_capture_mode() -> 
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
+        sampling_seeds: torch.Tensor,
     ) -> torch.Tensor:
         is_capturing = torch.cuda.is_current_stream_capturing()
         calls.append(
@@ -214,7 +218,12 @@ def test_capture_records_every_request_count_largest_first_in_capture_mode() -> 
                 forward_mode=forward_batch.forward_mode,
             )
         )
-        return input_frames + positions[:, None] + forward_batch.out_cache_loc[:, None]
+        return (
+            input_frames
+            + positions[:, None]
+            + forward_batch.out_cache_loc[:, None]
+            + sampling_seeds[:, None]
+        )
 
     had_forward_context = has_forward_context()
     graphs = Drama3FirstFrameGraphs.capture(
@@ -273,6 +282,7 @@ def test_a_failed_capture_names_its_request_count_and_the_switch() -> None:
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
+        sampling_seeds: torch.Tensor,
     ) -> torch.Tensor:
         if torch.cuda.is_current_stream_capturing() and forward_batch.batch_size == 2:
             raise RuntimeError("injected capture failure")

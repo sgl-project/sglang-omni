@@ -51,6 +51,28 @@ if HAS_TRITON:
         return ((1 << INDEX_BITS) - 1 - (keys & ((1 << INDEX_BITS) - 1))).to(tl.int32)
 
     @triton.jit
+    def sampling_coordinates(
+        legacy_seed: tl.tensor,
+        legacy_step: tl.tensor,
+        batch_row: tl.tensor,
+        request_seeds_pointer: tl.tensor,
+        positions_pointer: tl.tensor,
+        HAS_REQUEST_SAMPLING: tl.constexpr,
+    ) -> tuple[tl.tensor, tl.tensor, tl.tensor]:
+        if HAS_REQUEST_SAMPLING:
+            request_seed = tl.load(request_seeds_pointer + batch_row)
+            is_seeded = request_seed >= 0
+            return (
+                tl.where(is_seeded, request_seed, legacy_seed),
+                tl.where(
+                    is_seeded, tl.load(positions_pointer + batch_row), legacy_step
+                ),
+                tl.where(is_seeded, 0, batch_row),
+            )
+        else:
+            return legacy_seed, legacy_step, batch_row
+
+    @triton.jit
     def exponential_noise(
         seed: tl.tensor,
         step: tl.tensor,

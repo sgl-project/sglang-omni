@@ -12,6 +12,10 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.sampling_noise import (
+    UNSEEDED_REQUEST,
+    checked_sampling_seed,
+)
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
 )
@@ -42,6 +46,7 @@ class Drama3GenerationInput:
     temperature: float
     top_k: int
     top_p: float
+    seed: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -60,6 +65,7 @@ class Drama3RequestData(SGLangARRequestData):
     frame_rows: list[list[int]] = field(default_factory=list)
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
+    sampling_seed: int = UNSEEDED_REQUEST
 
 
 class Drama3RequestBuilder:
@@ -94,6 +100,7 @@ class Drama3RequestBuilder:
             )
         else:
             pass
+        sampling_seed = checked_sampling_seed(generation_input.seed)
         prompt_rows = generation_input.prompt_rows
         if (
             prompt_rows.dtype != torch.int64
@@ -216,6 +223,7 @@ class Drama3RequestBuilder:
             top_p=generation_input.top_p,
             frame_rows=frame_rows,
             prompt_row_count=len(frame_rows),
+            sampling_seed=sampling_seed,
         )
 
 

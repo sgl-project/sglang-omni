@@ -30,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     FIRST_CODEBOOK_HEAD_STREAM,
     CodebookSampler,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import RequestSampling
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FusedTowerLayers,
     fused_tower_layers_unsupported_reason,
@@ -314,6 +315,8 @@ class AudioDecoder(nn.Module):
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         attention: DecoderAttention,
+        *,
+        sampling_seeds: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Sample the next int64 frame [rows, 1 + num_codebooks] per backbone row,
         filling the tower cache at its position.
@@ -322,6 +325,11 @@ class AudioDecoder(nn.Module):
         hidden_states, the backbone's final-norm output; an end-of-speech frame still
         runs every layer.
         """
+        request_sampling = (
+            None
+            if sampling_seeds is None
+            else RequestSampling(seeds=sampling_seeds, positions=positions)
+        )
         sampler = self.sampler
         if sampler is not None:
             sampler.step.add_(1)
@@ -337,6 +345,7 @@ class AudioDecoder(nn.Module):
             self.semantic_begin_id,
             self.codebook_size,
             sampler,
+            request_sampling=request_sampling,
         )
         label_is_semantic = self.is_semantic(main_tokens)
         hidden_states = self.run_shared_layers(
@@ -372,6 +381,7 @@ class AudioDecoder(nn.Module):
                     top_p,
                     sampler,
                     FIRST_CODEBOOK_HEAD_STREAM + residual_index,
+                    request_sampling=request_sampling,
                 )
             )
         return torch.stack([main_tokens, *codes], dim=-1)

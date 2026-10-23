@@ -5,6 +5,8 @@ import dataclasses
 
 import torch
 
+from sglang_omni.models.fishaudio_drama3.sampling_noise import RequestSampling
+
 try:
     import triton
     import triton.language as tl
@@ -66,6 +68,7 @@ if HAS_TRITON:
         ordered_keys,
         race_above_threshold,
         race_selected,
+        sampling_coordinates,
         search_threshold,
         selected_candidates,
     )
@@ -78,6 +81,8 @@ if HAS_TRITON:
         top_k_pointer: tl.tensor,
         top_p_pointer: tl.tensor,
         step_pointer: tl.tensor,
+        request_seeds_pointer: tl.tensor,
+        positions_pointer: tl.tensor,
         sampled_codes_pointer: tl.tensor,
         seed: tl.tensor,
         stream_id: tl.tensor,
@@ -89,6 +94,7 @@ if HAS_TRITON:
         TAIL_WIDTH: tl.constexpr,
         MINIMUM_TEMPERATURE: tl.constexpr,
         KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr,
+        HAS_REQUEST_SAMPLING: tl.constexpr,
     ) -> None:
         row = tl.program_id(0)
         columns = tl.arange(0, BLOCK_WIDTH)
@@ -119,6 +125,14 @@ if HAS_TRITON:
             SELECTED,
             False,
         )
+        seed, step, sampling_row = sampling_coordinates(
+            seed,
+            tl.load(step_pointer),
+            row,
+            request_seeds_pointer,
+            positions_pointer,
+            HAS_REQUEST_SAMPLING,
+        )
         sampled_code = draw_candidate(
             main_keys,
             main_weights,
@@ -130,8 +144,8 @@ if HAS_TRITON:
             tl.load(top_k_pointer + row),
             tl.load(top_p_pointer + row),
             seed,
-            tl.load(step_pointer),
-            row,
+            step,
+            sampling_row,
             stream_id,
             INDEX_BITS,
             KEY_BITS,
@@ -150,6 +164,8 @@ if HAS_TRITON:
         top_k_pointer: tl.tensor,
         top_p_pointer: tl.tensor,
         step_pointer: tl.tensor,
+        request_seeds_pointer: tl.tensor,
+        positions_pointer: tl.tensor,
         main_tokens_pointer: tl.tensor,
         codebook_zero_pointer: tl.tensor,
         seed: tl.tensor,
@@ -163,6 +179,7 @@ if HAS_TRITON:
         CODEBOOK_SIZE: tl.constexpr,
         WINDOW_FRAMES: tl.constexpr,
         MINIMUM_TEMPERATURE: tl.constexpr,
+        HAS_REQUEST_SAMPLING: tl.constexpr,
         RAS_TEMPERATURE: tl.constexpr,
         RAS_TOP_K: tl.constexpr,
         RAS_TOP_P: tl.constexpr,
@@ -186,7 +203,14 @@ if HAS_TRITON:
         temperature = tl.maximum(
             tl.load(temperature_pointer + row), MINIMUM_TEMPERATURE
         )
-        step = tl.load(step_pointer)
+        seed, step, sampling_row = sampling_coordinates(
+            seed,
+            tl.load(step_pointer),
+            row,
+            request_seeds_pointer,
+            positions_pointer,
+            HAS_REQUEST_SAMPLING,
+        )
         (
             first_main_keys,
             first_main_weights,
@@ -244,7 +268,7 @@ if HAS_TRITON:
             tl.load(top_p_pointer + row),
             seed,
             step,
-            row,
+            sampling_row,
             FIRST_STREAM,
             INDEX_BITS,
             KEY_BITS,
@@ -262,7 +286,7 @@ if HAS_TRITON:
             tl.full([], RAS_TOP_P, tl.float32),
             seed,
             step,
-            row,
+            sampling_row,
             RAS_STREAM,
             INDEX_BITS,
             KEY_BITS,
@@ -348,6 +372,7 @@ def sample_codebook_head(
     minimum_temperature: float,
     *,
     keep_top_p_crossing_token: bool = False,
+    request_sampling: RequestSampling | None = None,
 ) -> torch.Tensor:
     row_count, codebook_size = logits.shape
     assert logits.stride(1) == 1
@@ -360,6 +385,8 @@ def sample_codebook_head(
         top_k.long().contiguous(),
         top_p.float().contiguous(),
         sampler.step,
+        sampler.step if request_sampling is None else request_sampling.seeds,
+        sampler.step if request_sampling is None else request_sampling.positions,
         sampled_codes,
         sampler.seed,
         stream_id,
@@ -371,6 +398,7 @@ def sample_codebook_head(
         TAIL_WIDTH=TAIL_BLOCK_WIDTH,
         MINIMUM_TEMPERATURE=minimum_temperature,
         KEEP_TOP_P_CROSSING_TOKEN=keep_top_p_crossing_token,
+        HAS_REQUEST_SAMPLING=request_sampling is not None,
         num_warps=SAMPLER_WARPS,
     )
     return sampled_codes
@@ -391,6 +419,7 @@ def sample_semantic_candidates(
     ras_temperature: float,
     ras_top_k: int,
     ras_top_p: float,
+    request_sampling: RequestSampling | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     row_count = semantic_logits.shape[0]
     candidate_count = candidate_token_ids.shape[0]
@@ -410,6 +439,8 @@ def sample_semantic_candidates(
         top_k.long().contiguous(),
         top_p.float().contiguous(),
         sampler.step,
+        sampler.step if request_sampling is None else request_sampling.seeds,
+        sampler.step if request_sampling is None else request_sampling.positions,
         main_tokens,
         codebook_zero,
         sampler.seed,
@@ -423,6 +454,7 @@ def sample_semantic_candidates(
         CODEBOOK_SIZE=codebook_size,
         WINDOW_FRAMES=previous_main_tokens.shape[1],
         MINIMUM_TEMPERATURE=minimum_temperature,
+        HAS_REQUEST_SAMPLING=request_sampling is not None,
         RAS_TEMPERATURE=ras_temperature,
         RAS_TOP_K=ras_top_k,
         RAS_TOP_P=ras_top_p,

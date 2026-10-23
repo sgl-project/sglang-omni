@@ -12,6 +12,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     sample_codebook_head,
     sample_semantic_candidates,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import RequestSampling
 
 # note (SunskyXH): RAS settings are fixed for Drama 3, not request parameters:
 # when a semantic first draw repeats a main token from the last 16 frames, the
@@ -34,6 +35,7 @@ def sample_top_k_top_p(
     stream_id: int,
     *,
     keep_top_p_crossing_token: bool = False,
+    request_sampling: RequestSampling | None = None,
 ) -> torch.Tensor:
     """Sample one token per row in fp32.
 
@@ -50,6 +52,7 @@ def sample_top_k_top_p(
             stream_id,
             MINIMUM_TEMPERATURE,
             keep_top_p_crossing_token=keep_top_p_crossing_token,
+            request_sampling=request_sampling,
         )
     else:
         pass
@@ -72,6 +75,10 @@ def sample_top_k_top_p(
         sorted_logits.masked_fill(is_dropped, float("-inf")), dim=-1
     )
     exponential_noise = torch.empty_like(probabilities).exponential_(1)
+    if request_sampling is not None:
+        request_sampling.apply_noise(exponential_noise, sorted_token_ids, stream_id)
+    else:
+        pass
     sorted_choice = torch.argmax(
         probabilities / exponential_noise, dim=-1, keepdim=True
     )
@@ -88,6 +95,7 @@ def sample_semantic_with_ras(
     semantic_begin_id: int,
     codebook_size: int,
     sampler: CodebookSampler | None,
+    request_sampling: RequestSampling | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sample each frame's main token and codebook-0 code.
 
@@ -119,6 +127,7 @@ def sample_semantic_with_ras(
             ras_temperature=RAS_TEMPERATURE,
             ras_top_k=RAS_TOP_K,
             ras_top_p=RAS_TOP_P,
+            request_sampling=request_sampling,
         )
     else:
         pass
@@ -132,6 +141,7 @@ def sample_semantic_with_ras(
             None,
             FIRST_DRAW_STREAM,
             keep_top_p_crossing_token=True,
+            request_sampling=request_sampling,
         )
     ]
     row_count = candidate_logits.shape[0]
@@ -147,6 +157,7 @@ def sample_semantic_with_ras(
             None,
             RAS_DRAW_STREAM,
             keep_top_p_crossing_token=True,
+            request_sampling=request_sampling,
         )
     ]
     is_repeat = (previous_main_tokens == first_draw.unsqueeze(-1)).any(dim=-1)

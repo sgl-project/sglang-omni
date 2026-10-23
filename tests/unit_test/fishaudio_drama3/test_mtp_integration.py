@@ -709,6 +709,7 @@ def step_inputs(
         temperature=torch.ones(request_count),
         top_k=torch.ones(request_count, dtype=torch.int64),
         top_p=torch.ones(request_count),
+        sampling_seeds=torch.full((request_count,), -1, dtype=torch.int64),
     )
 
 
@@ -775,10 +776,12 @@ class StagedRows:
     frames: list[list[int]]
     ras_windows: list[list[int]]
     sampling_knobs: list[tuple[float, int, float]]
+    sampling_seeds: list[int]
 
 
 def staged_rows(buffers: Drama3DecodeBuffers, row_count: int) -> StagedRows:
     return StagedRows(
+        sampling_seeds=buffers.sampling_seeds[:row_count].tolist(),
         frames=buffers.frames[:row_count].tolist(),
         ras_windows=buffers.ras_windows[:row_count].tolist(),
         sampling_knobs=list(
@@ -797,6 +800,7 @@ def pool_rows(
 ) -> StagedRows:
     rows = torch.tensor(request_slots, dtype=torch.int64)
     return StagedRows(
+        sampling_seeds=state_pool.sampling_seeds[rows].tolist(),
         frames=state_pool.frames[rows].tolist(),
         ras_windows=state_pool.ras_windows[rows].tolist(),
         sampling_knobs=list(
@@ -847,6 +851,12 @@ def history_staged_rows(batch_request_data: list[Drama3RequestData]) -> StagedRo
         torch.tensor(
             [request_data.top_p for request_data in batch_request_data],
             dtype=torch.float32,
+        )
+    )
+    buffers.sampling_seeds.copy_(
+        torch.tensor(
+            [request_data.sampling_seed for request_data in batch_request_data],
+            dtype=torch.int64,
         )
     )
     return staged_rows(buffers, row_count)
@@ -1484,6 +1494,7 @@ def prompted_request(
     prompt_rows: list[list[int]], request_id: str, knob_index: int
 ) -> SchedulerRequest:
     request_data = built_request(prompt_rows, request_id)
+    request_data.sampling_seed = 1234 + knob_index
     request_data.temperature = 0.5 + 0.25 * (knob_index % 4)
     request_data.top_k = 1 + knob_index % 7
     request_data.top_p = 0.55 + 0.15 * (knob_index % 3)
@@ -1561,6 +1572,46 @@ def test_decode_gathers_rows_in_place_as_the_batch_shrinks_and_grows() -> None:
     decode_step(decode.runner, requests)
     assert decode.forward.reads[-1] == expected
     assert buffer_addresses(buffers) == addresses
+
+
+def test_decode_reuses_seed_staging_until_prefill_or_batch_changes() -> None:
+    """Stable batches reuse seeds; reordering and slot reuse must refresh them."""
+    decode = decode_runner(row_count=4)
+    requests = decoding_scheduler_requests(decode, [3, 4])
+    seed_pool = decode.runner.state_pool.sampling_seeds
+    decode.forward.next_frames = [[90, 4, 3, 2, 1], [91, 4, 3, 2, 1]]
+
+    with patch.object(torch, "index_select", wraps=torch.index_select) as gathers:
+        for expected_gathers, active_requests in enumerate(
+            [requests, list(reversed(requests))], start=1
+        ):
+            for _ in range(2):
+                decode_step(decode.runner, active_requests)
+                assert decode.forward.reads[-1].sampling_seeds == [
+                    request_data_of(request).sampling_seed
+                    for request in active_requests
+                ]
+            assert (
+                sum(
+                    invocation.args[0] is seed_pool
+                    for invocation in gathers.call_args_list
+                )
+                == expected_gathers
+            )
+
+        replacement = prompted_request(
+            frame_rows_of([3], seed=17)[0], requests[0].request_id, knob_index=9
+        )
+        prefill_step(decode, [replacement], [1], [[82, 1, 2, 3, 4]])
+        for _ in range(2):
+            decode_step(decode.runner, [requests[1], replacement])
+            assert decode.forward.reads[-1].sampling_seeds == [1235, 1243]
+        assert (
+            sum(
+                invocation.args[0] is seed_pool for invocation in gathers.call_args_list
+            )
+            == 3
+        )
 
 
 @pytest.mark.parametrize("is_lookahead", [False, True], ids=["sync", "lookahead"])
