@@ -178,9 +178,9 @@ def test_reference_audio_checks_only_configured_rotary_capacity(
     should_reject: bool,
 ) -> None:
     monkeypatch.setattr(
-        talker_model.torchaudio,
-        "load",
-        lambda path, backend: (torch.zeros(1, 8), 24000),
+        talker_model,
+        "load_with_torchaudio",
+        lambda path, source_name: (torch.zeros(1, 8), 24000),
     )
     audio_detokenizer = SimpleNamespace(
         config=SimpleNamespace(sample_rate=24000),

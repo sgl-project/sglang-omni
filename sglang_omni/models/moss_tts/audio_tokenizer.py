@@ -1712,9 +1712,13 @@ class MossAudioEncoder:
     ) -> list[tuple[torch.Tensor, int]]:
         import torchaudio
 
+        from sglang_omni.utils.audio import load_with_torchaudio
+
         waveforms = []
         for path in paths:
-            waveform, sample_rate = torchaudio.load(path)
+            waveform, sample_rate = load_with_torchaudio(
+                str(path), source_name="reference"
+            )
             if int(sample_rate) != self.sample_rate:
                 waveform = torchaudio.functional.resample(
                     waveform=waveform,

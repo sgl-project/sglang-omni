@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 import threading
@@ -272,13 +271,12 @@ class MiniCPMOCode2Wav(nn.Module):
         self, reference_key: str, reference: str | bytes
     ) -> Future[SpeakerPrompt]:
         """Start preparing one reference; the caller holds reference_lock."""
-        source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
 
         def prepare_reference() -> SpeakerPrompt:
             device_module = torch.get_device_module(self.token2wav.device)
             # note (zhaochenyang20): cached prompts must share the decoder's stream.
             with device_module.stream(self.decode_stream):
-                return self.token2wav.prepare_prompt(source)
+                return self.token2wav.prepare_prompt(reference)
 
         future = self.reference_executor.submit(prepare_reference)
         self.pending_references[reference_key] = future

@@ -99,11 +99,11 @@ def fake_speaker_prompt(reference_audio: bytes) -> SpeakerPrompt:
     )
 
 
-def fake_prepare_prompt(source: str | io.BytesIO) -> SpeakerPrompt:
+def fake_prepare_prompt(source: str | bytes) -> SpeakerPrompt:
     if isinstance(source, str):
         reference_audio = Path(source).read_bytes()
     else:
-        reference_audio = source.getvalue()
+        reference_audio = source
     return fake_speaker_prompt(reference_audio)
 
 
@@ -729,7 +729,7 @@ def test_vocode_prepares_and_decodes_on_its_private_stream(
     hift_streams: list[torch.Stream] = []
     reference_preparation_streams: list[torch.Stream] = []
 
-    def record_reference_preparation_stream(source: str | io.BytesIO) -> SpeakerPrompt:
+    def record_reference_preparation_stream(source: str | bytes) -> SpeakerPrompt:
         reference_preparation_streams.append(torch.cpu.current_stream())
         return fake_prepare_prompt(source)
 
@@ -870,8 +870,7 @@ def test_prepare_references_runs_in_parallel_and_restores_row_order(
     both_started = threading.Barrier(2, timeout=THREAD_WAIT_SECONDS)
     second_finished = threading.Event()
 
-    def prepare_out_of_order(source: io.BytesIO) -> SpeakerPrompt:
-        reference_audio = source.getvalue()
+    def prepare_out_of_order(reference_audio: bytes) -> SpeakerPrompt:
         both_started.wait()
         if reference_audio == b"a":
             assert second_finished.wait(THREAD_WAIT_SECONDS)
@@ -893,8 +892,7 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
     failed = threading.Event()
     release_slow = threading.Event()
 
-    def fail_while_other_runs(source: io.BytesIO) -> SpeakerPrompt:
-        reference_audio = source.getvalue()
+    def fail_while_other_runs(reference_audio: bytes) -> SpeakerPrompt:
         if reference_audio == b"a":
             assert slow_started.wait(THREAD_WAIT_SECONDS)
             failed.set()
@@ -933,11 +931,11 @@ def test_close_reference_pool_waits_for_running_preparation(
     release = threading.Event()
     preparation_threads: set[threading.Thread] = set()
 
-    def blocking_prepare(source: io.BytesIO) -> SpeakerPrompt:
+    def blocking_prepare(reference_audio: bytes) -> SpeakerPrompt:
         preparation_threads.add(threading.current_thread())
         started.set()
         assert release.wait(THREAD_WAIT_SECONDS)
-        return fake_speaker_prompt(source.getvalue())
+        return fake_speaker_prompt(reference_audio)
 
     fake_token2wav.prepare_prompt.side_effect = blocking_prepare
     model = build_code2wav_model(reference_workers=reference_workers)
