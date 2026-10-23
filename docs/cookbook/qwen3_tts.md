@@ -577,7 +577,7 @@ only the first chunk.
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
+| `max_new_tokens` | Text-aware, at most `2048` | Maximum number of generated codec frames; an explicit positive integer overrides the text budget |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -693,3 +693,50 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
   fall into a repetition loop and keep generating up to `max_new_tokens`. Raising
   `repetition_penalty` (default `1.05`) or lowering `max_new_tokens` mitigates it; the 1.7B
   checkpoint is less prone.
+
+
+## Text-aware Generation Budget
+
+When a request omits `max_new_tokens`, Qwen3-TTS bounds generation using the target text. The 12Hz tokenizer actually emits one frame per 1,920 samples at 24 kHz, or 12.5 frames/second; the former unconditional 2,048-frame default allowed about 164 seconds even for a greeting.
+
+The default allowance is five seconds plus half a second per Latin letter and one second per other visible character, including digits, punctuation, and CJK characters. It has a ten-second floor and the existing 2,048-frame ceiling. The count uses Unicode NFKC normalization and ignores whitespace, combining marks, and control/format characters. Reference transcripts and style instructions do not increase the target-text budget. These are conservative safety allowances, not calibrated speaking-rate estimates or a guarantee of speech completeness.
+
+An explicit positive integer `max_new_tokens` takes precedence, including values above 2,048 for deliberately extended delivery. `stage_params.tts_engine.max_new_tokens` takes precedence over the top-level field; `null` leaves the lower-precedence setting or automatic budget in effect. This applies to Base, CustomVoice, and VoiceDesign, with the same limit passed to streaming and non-streaming generation. The limit does not suppress natural EOS, change sampling parameters, or trim already generated PCM.
+
+A capped request reports `length`. Non-streaming clients read `X-Finish-Reason`, SSE clients read `speech.audio.done.finish_reason`, and raw PCM clients use the advertised `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{id}` after draining the stream. Behind an Omni router, echo `X-SGLang-Omni-Worker` as `x-sglang-omni-route-worker` on the GET. The cascade synthesizer checks this advertised outcome before reporting sentence progress: incomplete speech raises a generation error through the existing session error path. Backends without the Omni outcome header keep their existing PCM contract.
+
+Legacy adapters such as Higgs may report `unknown` after a normal PCM stream. The cascade preserves their existing completion behavior for this value; it does not reinterpret `unknown` as a confirmed natural stop. Explicit truncation or failure outcomes, including `length`, `error`, and `abort`, still fail the turn. The Qwen3-TTS budget probe remains strict and rejects `unknown` because its validation requires a reported model termination reason.
+
+### Repeated-synthesis Regression
+
+The probe below compares the former 2,048-frame limit with the automatic budget, pairing the same target, voice settings, and seed. It saves every response, including partial audio, alongside request parameters, request/worker IDs, finish reasons, codec frame counts, duration, audio hashes, and HTTP chunk arrival times. It fails when normal-speech cases do not finish naturally, generation exceeds the budget, terminal metadata is missing, or the automatic budget truncates a naturally completed baseline. It does not treat a duration check as a transcript or listening-quality check.
+
+Create a request template, for example `request.json`:
+
+```json
+{
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "input": "replaced by each case",
+  "voice": "Ryan"
+}
+```
+
+For Base, use the deployed model name and a fixed `references` entry instead of a built-in voice. Preserve the exact reference audio, transcript, model revision, server launch configuration, and hardware details with the results. The bundled corpus includes short English/Chinese, numbers, mixed scripts, slow delivery, long speech, symbols, and Japanese. Add the original failing text to `--cases` when a model-backed failure is found; the bundled cases are regression candidates, not claims of a reproduced model defect.
+
+```bash
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 \
+  --request request.json \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 0 --output-dir results/budget-nonstream
+
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 \
+  --request request.json \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 0 --stream --output-dir results/budget-stream
+```
+
+Output directories must be new. Increase `--repeats` for a seed sweep; eight repetitions are only a smoke check for a rare failure. Pin deterministic inference when comparing seeded waveforms: a fixed seed alone does not establish bitwise equality across batching or runtime changes. Listen to both versions of any affected utterance, compare transcriptions including the final phrase, and inspect pauses/repetition within the audio. HTTP chunk timestamps measure delivery, so a within-sentence speaking-rate change must be checked in the saved waveform separately from a network stall.
+
+The existing TTS CI non-streaming and streaming stages include eight repetitions of four normal short-speech cases for Qwen3-TTS. Each retry keeps its own audio and JSONL results, uploaded for seven days as `tts-generation-budget-{nonstream,stream}-<run-attempt>` workflow artifacts, including failed requests. SeedTTS benchmarks also leave the Qwen3-TTS budget unset by default so that quality evaluation exercises the server policy; use `--max-new-tokens 2048` explicitly for a legacy-budget comparison. GPU synthesis, full SeedTTS WER/CER, and listening checks are required before treating the budget coefficients as validated for a deployment.

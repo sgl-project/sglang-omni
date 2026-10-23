@@ -7,6 +7,7 @@ import io
 import json
 import re
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,7 +17,14 @@ import pytest
 import yaml
 
 from sglang_omni.audio.segmentation import UtteranceSegmenter
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    HiggsStreamingVocoderScheduler,
+    HiggsStreamState,
+)
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -41,7 +49,12 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.synthesizers import (
+    OpenAISpeechSynthesizer,
+    OpenAISpeechSynthesizerConfig,
+)
 from sglang_omni.proto.session import TimedChunk
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -69,6 +82,7 @@ from sglang_omni.proto.streams import (
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
+from sglang_omni.serve.openai_api import create_app
 
 PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
@@ -1592,3 +1606,111 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["stop", "length", "error", "abort", "unknown", ""]
+)
+async def test_speech_checks_terminal_outcome_before_claiming_the_sentence(
+    finish_reason: str,
+) -> None:
+    """A truncated PCM response previously advanced progress over the entire sentence."""
+    requests: list[httpx.Request] = []
+    outputs: list[TimedChunk] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                content=bytes(8),
+                headers={
+                    "X-Sample-Rate": "24000",
+                    "X-SGLang-Omni-Speech-Id": "speech-1",
+                    "X-SGLang-Omni-Worker": "worker-2",
+                },
+            )
+        else:
+            assert request.url.path == "/v1/audio/speech/speech-1"
+            assert request.headers["x-sglang-omni-route-worker"] == "worker-2"
+            return httpx.Response(
+                200, json={"request_id": "speech-1", "finish_reason": finish_reason}
+            )
+
+    synthesizer = OpenAISpeechSynthesizer(
+        OpenAISpeechSynthesizerConfig(base_url="http://test/v1", model="test-model")
+    )
+    await synthesizer.client.aclose()
+    synthesizer.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+
+    async def deltas() -> AsyncIterator[TimedChunk]:
+        yield text_chunk("First sentence. Second sentence.", turn=1)
+
+    try:
+        if finish_reason in ("stop", "unknown"):
+            await synthesizer.speak_reply(deltas(), 1, outputs.append)
+            assert sum(control_type(chunk) == REPLY_PROGRESS for chunk in outputs) == 2
+            assert len(requests) == 4
+        else:
+            with pytest.raises(RuntimeError, match=f"stopped with {finish_reason}"):
+                await synthesizer.speak_reply(deltas(), 1, outputs.append)
+            assert all(control_type(chunk) != REPLY_PROGRESS for chunk in outputs)
+            assert len(requests) == 2
+        assert outputs[0].format == PCM_F32
+    finally:
+        await synthesizer.close()
+
+
+@pytest.mark.asyncio
+async def test_higgs_speech_without_model_stop_reason_completes_the_cascade() -> None:
+    """A normal Higgs stream was rejected after audio delivery because its outcome was unknown."""
+    scheduler = HiggsStreamingVocoderScheduler.__new__(HiggsStreamingVocoderScheduler)
+    scheduler.sample_rate = 24000
+
+    class CompletedHiggsClient:
+        def health(self) -> dict[str, bool]:
+            return {"running": True}
+
+        async def generate(
+            self, request: GenerateRequest, request_id: str | None = None
+        ) -> AsyncIterator[GenerateChunk]:
+            assert request_id is not None
+            yield GenerateChunk(
+                request_id=request_id,
+                modality="audio",
+                audio_data=[0.0, 0.1, -0.1, 0.0],
+                sample_rate=24000,
+            )
+            terminal = scheduler.final_result_data(
+                request_id,
+                StagePayload(
+                    request_id=request_id,
+                    request=OmniRequest(inputs=request.prompt),
+                    data=HiggsTtsState(completion_tokens=10).to_dict(),
+                ),
+                HiggsStreamState(),
+            )
+            yield Client.default_result_builder(request_id, terminal)
+
+    app = create_app(CompletedHiggsClient(), model_name="higgs-audio-v2")
+    synthesizer = OpenAISpeechSynthesizer(
+        OpenAISpeechSynthesizerConfig(base_url="http://test/v1", model="higgs-audio-v2")
+    )
+    await synthesizer.client.aclose()
+    synthesizer.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
+    outputs = await drain(
+        synthesizer,
+        [
+            text_chunk("First sentence. Second sentence.", turn=1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [control_type(chunk) for chunk in outputs] == [
+        None,
+        REPLY_PROGRESS,
+        None,
+        REPLY_PROGRESS,
+        TURN_DONE,
+    ]
+    assert sum(chunk.format == PCM_F32 for chunk in outputs) == 2

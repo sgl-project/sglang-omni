@@ -18,6 +18,11 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
+from sglang_omni.models.qwen3_tts.generation import (
+    GENERATION_FIELDS,
+    build_generation_kwargs,
+    text_generation_budget,
+)
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
@@ -66,26 +71,12 @@ else:
     pass
 
 
-QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
 QWEN3_TTS_TASK_BASE = "Base"
 QWEN3_TTS_TASK_CUSTOM_VOICE = "CustomVoice"
 QWEN3_TTS_TASK_VOICE_DESIGN = "VoiceDesign"
 QWEN3_TTS_DEFAULT_CUSTOM_VOICE = "Vivian"
 _QWEN3_TTS_PREPARED_MARKER = "_qwen3_tts_prepared_request"
 _QWEN3_TTS_REF_CODE_BATCH_STOP = object()
-
-_GENERATION_FIELDS = (
-    "do_sample",
-    "temperature",
-    "top_p",
-    "top_k",
-    "repetition_penalty",
-    "subtalker_dosample",
-    "subtalker_temperature",
-    "subtalker_top_p",
-    "subtalker_top_k",
-    "max_new_tokens",
-)
 
 _QWEN3_TTS_SAMPLING_SEED_MASK = SAMPLING_SEED_MASK
 
@@ -482,6 +473,7 @@ def build_qwen3_tts_state(
 
     generation_kwargs = build_generation_kwargs(
         params,
+        text=text,
         tts_engine_params=tts_engine_params,
     )
     suppress_bootstrap_silence = resolve_bootstrap_silence_suppression(
@@ -688,7 +680,7 @@ QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES = frozenset({"english"})
 # note (luojiaxuan): max_new_tokens caps length without touching the first
 # frame's sampling distribution, so it stays out of the eligibility gate.
 _BOOTSTRAP_SILENCE_SAMPLING_FIELDS = frozenset(
-    name for name in _GENERATION_FIELDS if name != "max_new_tokens"
+    name for name in GENERATION_FIELDS if name != "max_new_tokens"
 )
 
 
@@ -759,44 +751,6 @@ def resolve_x_vector_only_mode(
         else:
             pass
     return not bool(ref_text)
-
-
-def build_generation_kwargs(
-    params: Mapping[str, object],
-    *,
-    tts_engine_params: Mapping[str, object],
-) -> dict[str, object]:
-    selected_fields: dict[str, object] = {}
-    for field in _GENERATION_FIELDS:
-        stage_value = tts_engine_params.get(field)
-        if stage_value is not None:
-            selected_fields[field] = stage_value
-            continue
-        else:
-            pass
-        value = params.get(field)
-        if value is None:
-            continue
-        else:
-            pass
-        selected_fields[field] = value
-
-    max_new_tokens = selected_fields.get("max_new_tokens")
-    if max_new_tokens is None:
-        max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
-    else:
-        pass
-    generation_kwargs: dict[str, object] = {"max_new_tokens": int(max_new_tokens)}
-    for field in _GENERATION_FIELDS:
-        if field == "max_new_tokens":
-            continue
-        else:
-            pass
-        if field in selected_fields:
-            generation_kwargs[field] = selected_fields[field]
-        else:
-            pass
-    return generation_kwargs
 
 
 def build_instruct_id(
@@ -1773,6 +1727,11 @@ def build_sglang_qwen3_tts_request(
 
     gen_kwargs = prepared.gen_kwargs
     state = prepared.state
+    max_new_tokens = gen_kwargs.get("max_new_tokens")
+    if max_new_tokens is None:
+        max_new_tokens = text_generation_budget(state.text)
+    else:
+        max_new_tokens = int(max_new_tokens)
     do_sample = bool(gen_kwargs.get("do_sample", True))
     temperature = float(gen_kwargs.get("temperature", 0.9)) if do_sample else 0.0
     if state.seed is None:
@@ -1787,9 +1746,7 @@ def build_sglang_qwen3_tts_request(
         )
         request_sampling_seed = semantic_sampling_seed
     sampling_params = SamplingParams(
-        max_new_tokens=int(
-            gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
-        ),
+        max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_p=float(gen_kwargs.get("top_p", 1.0)),
         top_k=int(gen_kwargs.get("top_k", 50)),
@@ -1823,9 +1780,7 @@ def build_sglang_qwen3_tts_request(
     data = Qwen3TTSSGLangRequestData(
         input_ids=prepared.input_ids,
         attention_mask=prepared.attention_mask,
-        max_new_tokens=int(
-            gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
-        ),
+        max_new_tokens=max_new_tokens,
         temperature=temperature,
         output_ids=req.output_ids,
         req=req,

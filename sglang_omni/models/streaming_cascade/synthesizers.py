@@ -5,11 +5,13 @@ import asyncio
 import re
 from collections.abc import AsyncIterator
 from typing import Literal
+from urllib.parse import quote
 
 import httpx
 import numpy as np
 from pydantic import Field
 
+from sglang_omni.client.types import UNKNOWN_FINISH_REASON
 from sglang_omni.models.streaming_cascade.base import (
     SPEECH_SAMPLE_RATE_HZ,
     ComponentConfig,
@@ -33,6 +35,7 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
+from sglang_omni.serve.protocol import SpeechStreamOutcome
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -224,6 +227,31 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                     ) / 32768
                 else:
                     pass
+            if carry:
+                raise RuntimeError("Speech stream ended with an incomplete PCM sample")
+            else:
+                pass
+            outcome_id = response.headers.get("X-SGLang-Omni-Speech-Id")
+            worker_id = response.headers.get("X-SGLang-Omni-Worker")
+
+        if outcome_id:
+            outcome_response = await self.client.get(
+                f"{self.config.base_url.rstrip('/')}/audio/speech/{quote(outcome_id, safe='')}",
+                headers={"x-sglang-omni-route-worker": worker_id} if worker_id else {},
+            )
+            outcome_response.raise_for_status()
+            outcome = SpeechStreamOutcome.model_validate_json(outcome_response.content)
+            if outcome.request_id != outcome_id:
+                raise RuntimeError("Speech stream outcome request id does not match")
+            # Legacy adapters such as Higgs can finish normally without reporting a model stop reason.
+            elif outcome.finish_reason not in ("stop", UNKNOWN_FINISH_REASON):
+                raise RuntimeError(
+                    f"Speech generation stopped with {outcome.finish_reason}"
+                )
+            else:
+                pass
+        else:
+            pass
 
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter

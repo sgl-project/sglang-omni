@@ -1116,7 +1116,7 @@ def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> Non
     assert state.ref_text == "reference"
     assert state.x_vector_only_mode is False
     assert state.non_streaming_mode is False
-    assert state.generation_kwargs == {"max_new_tokens": 2048}
+    assert state.generation_kwargs == {"max_new_tokens": 125}
 
 
 def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
@@ -1132,7 +1132,7 @@ def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
     state = build_qwen3_tts_state(payload)
 
     assert state.generation_kwargs == {
-        "max_new_tokens": 2048,
+        "max_new_tokens": 125,
         "temperature": 0.8,
         "top_p": 1.0,
         "top_k": 30,
@@ -1164,14 +1164,14 @@ def test_qwen3_tts_forwards_tts_engine_stage_sampling_params() -> None:
     greedy_state = build_qwen3_tts_state(greedy_payload)
 
     assert sampled_state.generation_kwargs == {
-        "max_new_tokens": 2048,
+        "max_new_tokens": 125,
         "subtalker_dosample": True,
         "subtalker_temperature": 0.7,
         "subtalker_top_p": 0.8,
         "subtalker_top_k": 40,
     }
     assert greedy_state.generation_kwargs == {
-        "max_new_tokens": 2048,
+        "max_new_tokens": 125,
         "subtalker_dosample": False,
     }
 
@@ -9434,6 +9434,47 @@ def prepared_request_fixture(*, dtype: torch.dtype) -> Qwen3TTSPreparedRequest:
         tts_pad_embed=torch.randn(4).to(dtype),
         gen_kwargs={"max_new_tokens": 8, "top_k": 7},
     )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("explicit_budget", [None, 512])
+def test_text_budget_survives_preprocessing_and_reaches_both_engine_limits(
+    stream: bool, explicit_budget: int | None
+) -> None:
+    """Short text used to receive the same multi-minute limit as a long passage."""
+    payload = make_payload(
+        inputs={
+            "text": "Hello.",
+            "references": [{"audio_path": "voice.wav", "text": "reference " * 100}],
+        },
+        params={"stream": stream, "max_new_tokens": explicit_budget},
+    )
+    prepared = prepared_request_fixture(dtype=torch.float32)
+    prepared.state = build_qwen3_tts_state(payload)
+    prepared.gen_kwargs = prepared.state.generation_kwargs
+    stored = qwen3_request_builders.store_prepared_qwen3_tts_payload(payload, prepared)
+    request_data = build_sglang_qwen3_tts_request(
+        stored,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200),
+            model=SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4)),
+        ),
+        wrapper=None,
+    )
+    assert request_data.max_new_tokens == (512 if explicit_budget else 125)
+    assert (
+        request_data.req.sampling_params.max_new_tokens == request_data.max_new_tokens
+    )
+    assert request_data.req.sampling_params.stop_token_ids == {42}
+    assert not [name for name in stored.data if name.startswith("prepared_")]
+    request_data.req.output_ids.extend([1] * (request_data.max_new_tokens - 1))
+    request_data.req.update_finish_state()
+    assert not request_data.req.finished()
+    request_data.req.output_ids.append(1)
+    request_data.req.update_finish_state()
+    assert request_data.req.finished()
+    result = apply_sglang_qwen3_tts_result(stored, request_data)
+    assert result.data["finish_reason"] == "length"
 
 
 def test_qwen3_tts_prepared_payload_drops_the_consumed_reference_clip() -> None:
