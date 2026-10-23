@@ -67,10 +67,24 @@ def test_serve_exits_without_interpreter_teardown(
 # A process that sent a CUDA tensor to another one keeps a reference counter
 # file in shared memory, named after its pid.
 SEND_CUDA_TENSOR = """
-import glob, json, os
+import inspect, json, os
+from multiprocessing import reduction
 import torch
 import torch.multiprocessing as mp
+from torch.multiprocessing import reductions
 from sglang_omni.utils.process import exit_without_teardown
+
+reference_files = []
+
+def reduce_and_record(tensor):
+    rebuild, arguments = reductions.reduce_tensor(tensor)
+    reference_counter_handle = (
+        inspect.signature(rebuild).bind(*arguments).arguments["ref_counter_handle"]
+    )
+    reference_files.append(
+        "/dev/shm/" + os.fsdecode(reference_counter_handle).lstrip("/")
+    )
+    return rebuild, arguments
 
 def receive(queue, done):
     tensor = queue.get()
@@ -79,8 +93,7 @@ def receive(queue, done):
     done.set()
 
 if __name__ == "__main__":
-    pattern = f"/dev/shm/torch_{os.getpid()}_*"
-    files_before_sending = set(glob.glob(pattern))
+    reduction.register(torch.Tensor, reduce_and_record)
     ctx = mp.get_context("spawn")
     queue, done = ctx.Queue(), ctx.Event()
     child = ctx.Process(target=receive, args=(queue, done))
@@ -88,7 +101,7 @@ if __name__ == "__main__":
     queue.put(torch.ones(4, device="cuda"))
     done.wait(120)
     child.join(120)
-    print(json.dumps(sorted(set(glob.glob(pattern)) - files_before_sending)))
+    print(json.dumps({path: os.path.exists(path) for path in reference_files}))
     exit_without_teardown(0)
 """
 
@@ -96,7 +109,7 @@ if __name__ == "__main__":
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_fast_exit_removes_the_cuda_ipc_reference_file(tmp_path: Path) -> None:
-    """A fast exit removes the reference counter files the process made; files another process with the same pid left in the shared /dev/shm do not count."""
+    """A fast exit removes the reference counter file that the sent tensor's transfer names; other files in the shared /dev/shm with the same pid do not count."""
     script = tmp_path / "send_cuda_tensor.py"
     script.write_text(SEND_CUDA_TENSOR)
 
@@ -106,5 +119,5 @@ def test_fast_exit_removes_the_cuda_ipc_reference_file(tmp_path: Path) -> None:
 
     assert sender.returncode == 0, sender.stderr
     reference_files = json.loads(sender.stdout)
-    assert reference_files
+    assert list(reference_files.values()) == [True]
     assert [path for path in reference_files if Path(path).exists()] == []
