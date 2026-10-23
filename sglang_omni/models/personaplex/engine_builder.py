@@ -12,17 +12,19 @@ from pathlib import Path
 from typing import Protocol
 
 import torch
+from sentencepiece import SentencePieceProcessor
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME
+from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
 from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
     build_backbone_config,
 )
+from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.model_runner import PersonaPlexModelRunner
 from sglang_omni.models.personaplex.request_builders import (
     apply_lm_result,
@@ -175,4 +177,36 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             "async_decode_resolve_before_prefill": True,
             "enable_async_decode": self.enable_async_decode
             and current_platform.is_cuda(),
+        }
+
+
+class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
+    """The LM of full-duplex sessions: one SGLang streaming session each."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: SentencePieceProcessor,
+        enable_async_decode: bool,
+        context_length: int | None = None,
+    ) -> None:
+        super().__init__(
+            enable_async_decode=enable_async_decode, context_length=context_length
+        )
+        self.tokenizer = tokenizer
+
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        return {
+            **super().generation_defaults(dtype=dtype),
+            "enable_streaming_session": True,
+        }
+
+    def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter]:
+        # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
+        return {
+            "session_adapter": PersonaPlexSessionAdapter(
+                vocab_size=TEXT_CARD,
+                context_length=self.context_length,
+                tokenizer=self.tokenizer,
+            )
         }

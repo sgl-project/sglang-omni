@@ -333,6 +333,7 @@ def make_hybrid_configurator(
     configurator.attn_dp_size = 1
     configurator.spec_algorithm = SimpleNamespace(is_none=lambda: True)
     configurator.model_config = SimpleNamespace(hf_config=SimpleNamespace())
+    configurator.extra_mamba_cache_bytes_per_req = 0
     return configurator
 
 

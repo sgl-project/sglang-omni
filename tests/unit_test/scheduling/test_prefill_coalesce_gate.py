@@ -13,6 +13,7 @@ patched to a sentinel.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from types import SimpleNamespace, TracebackType
 from unittest import mock
 
@@ -53,6 +54,7 @@ class StubScheduler:
         self.prefill_coalesce_after_builds_during_decode = (
             coalesce_after_builds_during_decode
         )
+        self.async_prefill = False
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
@@ -452,3 +454,99 @@ def test_the_prefill_expectation_reads_the_clock_before_the_pending_builds(
     assert clock.return_value == 100.060001
     assert is_expected is False
     assert enqueue_stamps(sched) == [100.0]
+
+
+@pytest.mark.parametrize("async_prefill", [False, True])
+def test_build_admission_preserves_fifo_unless_async_prefill_is_enabled(
+    async_prefill: bool,
+) -> None:
+    """A later completed build may bypass the first only on the opt-in path."""
+    first = Future()
+    second = Future()
+    second.set_result("second-result")
+    scheduler = SimpleNamespace(
+        async_prefill=async_prefill,
+        request_admission_lock=threading.RLock(),
+        pending_request_builds={
+            "first": ("first-payload", False, first),
+            "second": ("second-payload", False, second),
+        },
+        aborted_request_ids=set(),
+        admit_or_defer_built_request=mock.Mock(),
+    )
+    OmniScheduler.drain_request_build_results(scheduler)
+    assert scheduler.admit_or_defer_built_request.call_count == int(async_prefill)
+    if async_prefill:
+        assert (
+            scheduler.admit_or_defer_built_request.call_args.args[0] == "second-payload"
+        )
+    first.set_result("first-result")
+    OmniScheduler.drain_request_build_results(scheduler)
+    expected = (
+        ["second-payload", "first-payload"]
+        if async_prefill
+        else ["first-payload", "second-payload"]
+    )
+    assert [
+        call.args[0] for call in scheduler.admit_or_defer_built_request.call_args_list
+    ] == expected
+    assert not scheduler.pending_request_builds
+
+
+@pytest.mark.parametrize(
+    "batch_full,available_slots", [(True, 4), (False, 0), (False, 4)]
+)
+def test_expired_coalescing_does_not_repeat_wait_when_admission_is_blocked(
+    upstream: mock.MagicMock,
+    clock: mock.MagicMock,
+    batch_full: bool,
+    available_slots: int,
+) -> None:
+    """A full running batch must keep decoding without waiting for request builds."""
+    clock.return_value = 101.0
+    scheduler = DecodingStubScheduler(request_admission_lock=threading.RLock())
+    scheduler.async_prefill = True
+    scheduler.running_batch.batch_is_full = batch_full
+    scheduler.get_num_allocatable_reqs = lambda *args, **kwargs: available_slots
+    scheduler.is_prefill_expected = lambda: OmniScheduler.is_prefill_expected(scheduler)
+    scheduler.admit_imminent_request_builds = mock.Mock()
+    for _ in range(3):
+        assert scheduler.get_new_batch_prefill() is UPSTREAM_BATCH
+    assert scheduler.admit_imminent_request_builds.call_count == (
+        3 if not batch_full and available_slots else 0
+    )
+
+
+@pytest.mark.parametrize("async_prefill", [False, True])
+def test_drain_admits_a_build_that_finishes_during_another_admission(
+    async_prefill: bool,
+) -> None:
+    """Opt-out admission must retain same-iteration completion collection."""
+    first = Future()
+    second = Future()
+    first.set_result("first-result")
+    admitted = []
+
+    def admit(payload, pending_stream_done, result, *, request_admission_lock_held):
+        assert not pending_stream_done
+        assert request_admission_lock_held
+        admitted.append((payload, result))
+        if payload == "first-payload":
+            second.set_result("second-result")
+
+    scheduler = SimpleNamespace(
+        async_prefill=async_prefill,
+        request_admission_lock=threading.RLock(),
+        pending_request_builds={
+            "first": ("first-payload", False, first),
+            "second": ("second-payload", False, second),
+        },
+        aborted_request_ids=set(),
+        admit_or_defer_built_request=admit,
+    )
+    OmniScheduler.drain_request_build_results(scheduler)
+    assert admitted == [
+        ("first-payload", "first-result"),
+        ("second-payload", "second-result"),
+    ]
+    assert not scheduler.pending_request_builds

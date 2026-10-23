@@ -82,7 +82,9 @@ class SegmentSplits:
         self.value: list[int] | None = None
 
 
-def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
+def forward_with_shared_segments(
+    self, hidden_states, cu_seqlens, max_seqlen: int | None = None, **kwargs
+):
     splits = (
         self._omni_segment_splits.value
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -90,7 +92,7 @@ def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
         # Note (wenyao): a stale or mismatched split would silently corrupt
         # attention rather than fail, so fall back instead of trusting it.
         return self._omni_unshared_forward(
-            hidden_states, cu_seqlens, **kwargs
+            hidden_states, cu_seqlens, max_seqlen=max_seqlen, **kwargs
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     else:
         pass
@@ -207,7 +209,9 @@ class Qwen3OmniAudioEncoder(nn.Module):
     def enable_layer_cuda_graph(self) -> None:
         tower = self.audio_tower
         chunk_tokens = int(
-            self.downsample_lengths(torch.tensor([tower.n_window * 2])).item()
+            self.downsample_lengths(
+                torch.tensor([tower.n_window * 2]), tower.n_window
+            ).item()
         )
         window = chunk_tokens * (tower.n_window_infer // (tower.n_window * 2))
         runner = AudioLayerGraphRunner(tower, device=self.device, window=window)
@@ -252,7 +256,7 @@ class Qwen3OmniAudioEncoder(nn.Module):
         padded_feature, chunk_lengths = hf_modeling.chunk_and_pad_features(
             input_features, lengths_cpu, tower.n_window
         )
-        valid_indices = hf_modeling.get_valid_indices(chunk_lengths)
+        valid_indices = hf_modeling.get_valid_indices(chunk_lengths, tower.n_window)
         cu_seqlens = hf_modeling.get_audio_cu_seqlens(
             chunk_lengths,
             lengths_cpu,
@@ -270,11 +274,14 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 chunk_lengths=chunk_lengths,
                 valid_indices=valid_indices,
                 cu_seqlens=cu_seqlens,
+                max_seqlen=max(self.segment_splits.value),
             )
         finally:
             self.segment_splits.value = None
         audio_embeds = outputs.last_hidden_state
-        audio_output_lengths = self.downsample_lengths(audio_feature_lengths)
+        audio_output_lengths = self.downsample_lengths(
+            audio_feature_lengths, tower.n_window
+        )
         return {
             "audio_embeds": audio_embeds,
             "audio_feature_lengths": audio_feature_lengths,

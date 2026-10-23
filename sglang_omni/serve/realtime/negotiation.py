@@ -156,6 +156,14 @@ class SessionNegotiation:
             )
         else:
             pass
+        if "voice" in extension and extension["voice"] not in self.capabilities.voices:
+            raise ProtocolError(
+                "not_applicable",
+                "voice is unavailable",
+                "session.sglang.voice",
+            )
+        else:
+            pass
         for field in ("reference_audio", "tts_reference_audio"):
             if field in extension and not self.capabilities.supports_reference_audio:
                 raise ProtocolError(

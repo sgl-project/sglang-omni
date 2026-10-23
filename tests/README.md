@@ -448,8 +448,8 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
   GitHub CI runs the Omni stage with `run-omni-ci` or `run-all-ci`. The
-  mutually exclusive `run-omni-qwen3-omni-30b-a3b-instruct` and
-  `run-omni-minicpm-o-4.5` labels select the model; without either, the stage
+  mutually exclusive `run-qwen3-omni-30b-a3b-instruct` and
+  `run-minicpm-o-4.5` labels select the model; without either, the stage
   draws one at random. A manual dispatch takes the same labels through its
   `ci_labels` input.
   Model selection does not imply calibrated performance or quality thresholds.
@@ -941,8 +941,15 @@ that happened to contain an older version of the test.
   channel, `audios` input, role prompt, voice resolution, `stage_params`),
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
-  filler values, seeds, stream chunks, context limit, input validation). CPU
-  only, no weights; runner and request tests need SGLang but start no engine.
+  filler values, seeds, stream chunks, context limit, input validation), and
+  full-duplex sessions (a session stepped unit by unit through the LM session
+  adapter matches one offline request row for row, frame for frame and word
+  for word, however the audio is cut into units; per-session Mimi encode and
+  batched decode on the offline decode slots; the prompt handed on once; stage
+  sizes and settings resolved through the session config; deployment and
+  session voice, role prompt and sampling; the `/v1/realtime` events, and a
+  session over the WebSocket against a scripted pipeline). CPU only, no
+  weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

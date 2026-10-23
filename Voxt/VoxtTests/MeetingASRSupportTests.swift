@@ -78,22 +78,24 @@ final class MeetingASRSupportTests: XCTestCase {
     func testVisibleQwenModelUsesNativeLocalLiveMode() {
         let mode = MeetingASRSupport.resolveLocalMode(repo: "mlx-community/Qwen3-ASR-0.6B-4bit")
 
-        XCTAssertEqual(mode, .liveLocal(mode: .nativeQwenLive))
-        XCTAssertTrue(mode.usesLiveSessions)
-        XCTAssertTrue(mode.usesLocalVoiceActivityGate)
+        XCTAssertEqual(mode, OmniASRBackend.isAppleSilicon ? .liveLocal(mode: .nativeQwenLive) : .chunk(profile: .quality))
+        XCTAssertEqual(mode.usesLiveSessions, OmniASRBackend.isAppleSilicon)
+        XCTAssertEqual(mode.usesLocalVoiceActivityGate, OmniASRBackend.isAppleSilicon)
     }
 
-    func testVisibleCohereMossAndNemotronUseTheirNativeLocalLiveModes() {
+    func testLocalLiveModesOnlyUseNativeSupportedRealtimeCapabilities() {
         let modes: [MeetingASRResolvedMode] = [
             MeetingASRSupport.resolveLocalMode(repo: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"),
             MeetingASRSupport.resolveLocalMode(repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize"),
             MeetingASRSupport.resolveLocalMode(repo: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit")
         ]
 
-        XCTAssertEqual(modes[0], .liveLocal(mode: .nativeStreamingLive))
-        XCTAssertEqual(modes[1], .liveLocal(mode: .nativeStreamingLive))
-        XCTAssertEqual(modes[2], .liveLocal(mode: .nativeNemotronLive))
-        XCTAssertTrue(modes.allSatisfy(\.usesLocalVoiceActivityGate))
+        XCTAssertEqual(modes[0], .chunk(profile: .quality))
+        XCTAssertEqual(modes[1], OmniASRBackend.isAppleSilicon ? .liveLocal(mode: .nativeStreamingLive) : .chunk(profile: .quality))
+        XCTAssertEqual(modes[2], OmniASRBackend.isAppleSilicon ? .liveLocal(mode: .nativeNemotronLive) : .chunk(profile: .quality))
+        XCTAssertFalse(modes[0].usesLocalVoiceActivityGate)
+        XCTAssertEqual(modes[1].usesLocalVoiceActivityGate, OmniASRBackend.isAppleSilicon)
+        XCTAssertEqual(modes[2].usesLocalVoiceActivityGate, OmniASRBackend.isAppleSilicon)
     }
 
     func testRemoteAndChunkModesDoNotUseLocalVoiceActivityGate() {

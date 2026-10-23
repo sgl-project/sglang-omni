@@ -17,14 +17,6 @@ enum RelativeNoteTimestampFormatter {
         )
     }
 
-    static func noteCardTimestamp(for date: Date, now: Date = Date()) -> String? {
-        historyCardTimestamp(for: date, now: now)
-    }
-
-    static func noteHistoryTimestamp(for date: Date, now: Date = Date()) -> String {
-        historyCardTimestamp(for: date, now: now)
-    }
-
     static func historyCardTimestamp(
         for date: Date,
         now: Date = Date(),

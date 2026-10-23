@@ -20,7 +20,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
-from sglang_omni.models.qwen3_omni.session_input import INPUT_BYTES_PER_SECOND
+from sglang_omni.models.qwen3_omni.payload_types import INPUT_BYTES_PER_SECOND
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.session import GRAPH_INPUT, SessionLimits

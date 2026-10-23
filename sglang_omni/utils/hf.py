@@ -12,15 +12,10 @@ from pathlib import Path
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from transformers import AutoConfig, PretrainedConfig
+from transformers.initialization import no_init_weights
+from transformers.utils.hub import cached_file
 
 from sglang_omni.utils.json import JsonValue
-
-try:
-    from transformers.initialization import no_init_weights
-except ImportError:
-    from transformers.modeling_utils import no_init_weights
-
-from transformers.utils.hub import cached_file
 
 _CONFIG_MODEL_TYPE_TO_ARCH = {
     "fish_qwen3_omni": "FishQwen3OmniForCausalLM",

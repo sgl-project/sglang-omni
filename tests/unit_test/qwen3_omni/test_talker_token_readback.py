@@ -62,6 +62,8 @@ def bare_runner() -> ModelRunner:
     runner = ModelRunner.__new__(ModelRunner)
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     return runner
 
 
@@ -167,3 +169,23 @@ def test_stage_token_ids_cuda_matches_reference():
 
     assert not host.is_cuda
     assert host.tolist() == ref.cpu().tolist()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_stage_token_ids_reuses_two_events_across_steps():
+    runner = bare_runner()
+    results = [SimpleNamespace() for _ in range(4)]
+    events = []
+    for step, result in enumerate(results):
+        runner.stage_token_ids(result, torch.tensor([step, step + 10], device="cuda"))
+        events.append(
+            result._host_token_ids_event
+        )  # noqa: leading-underscore  # production name
+        if step > 0:
+            previous = runner.resolve_host_token_ids(results[step - 1])
+            assert previous.tolist() == [step - 1, step + 9]
+        else:
+            pass
+
+    assert len({id(event) for event in events}) == 2

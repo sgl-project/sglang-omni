@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 # Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
 # Torch family pinned to +xpu; CUDA-only wheels dropped; deps scoped to the
-# XPU-supported models. sglang is verified against v0.5.21 but cannot be
+# XPU-supported models. sglang is verified against v0.5.22 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.
 
 [project]
@@ -17,7 +17,7 @@ description = "Multi-stage pipeline framework for omni models (Intel XPU build)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # --- Core framework (device-agnostic) ----------------------------------
     "pyzmq>=25.0.0",
@@ -35,14 +35,14 @@ dependencies = [
 
     # --- PyTorch XPU builds (from --extra-index-url .../whl/xpu) -------------
     # Pins match SGLang's pyproject_xpu.toml / xpu.Dockerfile.
-    "torch==2.13.0+xpu",
-    "torchvision==0.28.0+xpu",
+    "torch==2.14.0+xpu",
+    "torchvision==0.29.0+xpu",
     "torchaudio==2.11.0+xpu",
-    "torchcodec==0.13.0",
+    "torchcodec==0.17.0",
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
-    "transformers==5.12.1",
+    "transformers==5.19.0",
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub>=0.36.0",

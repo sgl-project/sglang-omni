@@ -5,6 +5,7 @@ SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A na
 | Model | Interaction | Launch |
 | --- | --- | --- |
 | MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
+| PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
 | Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
 
 ## Native Full Duplex: MiniCPM-o
@@ -32,7 +33,7 @@ We provide two demonstrative config files.
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
-| `speech.n_timesteps` | 10 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
+| `speech.n_timesteps` | 5 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | see the config | Default sampling when a session does not set its own |
 | `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
@@ -93,6 +94,45 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
 
 [Full-Duplex-Bench](full_duplex_bench.md) measures a native full-duplex deployment.
+
+## Native Full Duplex: PersonaPlex
+
+[PersonaPlex](https://huggingface.co/nvidia/personaplex-7b-v1) is served for full duplex with its `session` variant; [PersonaPlex](../cookbook/personaplex.md) covers its installation and offline usage.
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path nvidia/personaplex-7b-v1 --variant session \
+  --enable-realtime --port 8000
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. The LM keeps `max_sessions + 1` request slots, and a lower `--lm.engine.max_running_requests` is rejected at startup |
+| `voice` | `NATF2` | Packaged voice name, or the path of a voice recording, used when a session names no voice |
+| `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
+| `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |
+| `--code2wav.factory.max_graph_frames` | 2 | Mimi decode replays CUDA graphs for units of up to this many frames, for up to `max_sessions` conversations decoded together; `0` turns the graphs off |
+| `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
+| `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
+
+Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
+
+The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`, `"native_unit_ms":80` and the packaged voices under `voices`:
+
+```bash
+curl --fail http://localhost:8000/v1/realtime/capabilities
+```
+
+The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+
+| Setting | Field | Notes |
+|---|---|---|
+| Audio | `input_audio_buffer.append` | 24 kHz mono PCM16 in, 24 kHz out; the server pads a trailing partial 80 ms unit |
+| Role prompt | `instructions` | Replaces the deployment's role prompt |
+| Voice | `sglang.voice` | One of the `voices` in the capabilities |
+| Sampling | `sglang.sampling` | The fields listed under `sampling` above; unset fields keep the deployment defaults |
+
+The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
 
 ## Streaming Cascade
 

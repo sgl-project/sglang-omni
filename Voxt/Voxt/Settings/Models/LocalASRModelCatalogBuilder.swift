@@ -51,14 +51,12 @@ extension ModelCatalogBuilder {
             return ModelCatalogEntry(
                 id: "mlx:\(repo)",
                 title: mlxModelManager.displayTitle(for: repo),
-                engine: MLXWhisperMigrationSupport.isWhisperRepo(repo)
-                    ? localizedModelCatalog("Whisper (MLX)")
-                    : localizedModelCatalog("MLX Audio"),
+                engine: ModelCatalogEngineSupport.asrTitle(for: repo),
                 sizeText: mlxASRSizeText(repo: repo, isInstalled: installSnapshot.isInstalled),
                 ratingText: MLXModelManager.ratingText(for: repo),
                 filterTags: decoration.filterTags,
                 displayTags: decoration.displayTags,
-                statusText: installSnapshot.statusText,
+                statusText: OmniASRBackend.unavailabilityReason(for: repo) ?? installSnapshot.statusText,
                 usageLocations: decoration.usageLocations,
                 badgeText: installSnapshot.badgeText ?? ModelCatalogBadgeSupport.recommendedBadgeText(forMLXRepo: repo),
                 primaryAction: catalogPrimaryAction(installSnapshot),

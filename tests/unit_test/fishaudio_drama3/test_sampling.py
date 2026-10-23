@@ -178,6 +178,37 @@ def ras_logits(rows: int) -> torch.Tensor:
     return logits
 
 
+def test_candidate_columns_match_the_same_row_taken_from_the_full_vocabulary() -> None:
+    rows = 4
+    logits = ras_logits(rows)
+    candidates = candidate_token_ids()
+    window = torch.full((rows, 16), EMPTY_WINDOW_TOKEN)
+    parameters = request_parameters(rows, 1.0, 30, 0.9)
+    torch.manual_seed(1)
+    from_vocabulary, from_vocabulary_codes = sample_semantic_with_ras(
+        logits,
+        candidates,
+        window,
+        *parameters,
+        SEMANTIC_BEGIN_ID,
+        CODEBOOK_SIZE,
+        None,
+    )
+    torch.manual_seed(1)
+    from_columns, from_column_codes = sample_semantic_with_ras(
+        logits[:, candidates],
+        candidates,
+        window,
+        *parameters,
+        SEMANTIC_BEGIN_ID,
+        CODEBOOK_SIZE,
+        None,
+    )
+
+    assert torch.equal(from_vocabulary, from_columns)
+    assert torch.equal(from_vocabulary_codes, from_column_codes)
+
+
 def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() -> None:
     """Both draws happen in order; the fixed-parameter one wins only on a window hit."""
     rows = 8

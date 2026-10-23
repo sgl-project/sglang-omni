@@ -371,10 +371,14 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
             pass
 
         parts: list[torch.Tensor] = []
-        for sched_req in requests:
-            req = sched_req.data.req
-            prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_range.length)
+        # note (ratish): a row's prefix and extend length live on the batch; a decode
+        # tail mixed into a prefill batch keeps Req.prefix_len at its last prefill.
+        for sched_req, prefix_len, extend_len in zip(
+            requests,
+            forward_batch.extend_prefix_lens_cpu,
+            forward_batch.extend_seq_lens_cpu,
+            strict=True,
+        ):
             if sched_req.data.session_embedding_spans:
                 # Note (Junnan Li): A session unit's projected prompt rides the native request as embedding spans.
                 part = session_projected_prefill_rows(
@@ -382,6 +386,8 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
                     self.model.get_input_embeddings(),
                     device=forward_batch.input_ids.device,
                     dtype=self.model.activation_dtype,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
                 )
             else:
                 part = self.projected_prefill_slice(

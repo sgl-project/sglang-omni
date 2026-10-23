@@ -20,7 +20,6 @@ import math
 from typing import Iterable, Optional, Tuple
 
 import torch
-from sglang.srt.layers.layer_boundary import enable_moe_dense_fully_dp
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
@@ -32,8 +31,9 @@ from sglang_omni.models.ming_omni.configuration import (
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import (
+    LinearParallelGroup,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     QuantizationConfig,
@@ -42,12 +42,14 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
+    StageDeclaration,
     VocabParallelEmbedding,
+    append_stages,
     declare_attn,
     declare_ffn,
     get_moe_impl_class,
     get_rope,
-    make_stages,
+    is_dense_ffn_fully_dp,
     residual_batch,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
@@ -111,8 +113,7 @@ class BailingMoeV2Attention(nn.Module):
             self.num_kv_heads,
             bias=config.use_qkv_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("qkv_proj", prefix),
         )
 
@@ -122,8 +123,7 @@ class BailingMoeV2Attention(nn.Module):
             bias=False,
             reduce_results=False,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("o_proj", prefix),
         )
 
@@ -222,19 +222,17 @@ class BailingMoeV2MLP(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         reduce_results: bool = True,
         prefix: str = "",
-        tp_rank: Optional[int] = None,
-        tp_size: Optional[int] = None,
+        *,
+        parallel_group: LinearParallelGroup = "tp",
     ):
         super().__init__()
-        self.tp_size = tp_size
         self.gate_up_proj = MergedColumnParallelLinear(
             config.hidden_size,
             [intermediate_size] * 2,
             bias=False,
             quant_config=quant_config,
             prefix=add_prefix("gate_up_proj", prefix),
-            tp_rank=tp_rank,
-            tp_size=tp_size,
+            parallel_group=parallel_group,
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
@@ -243,17 +241,15 @@ class BailingMoeV2MLP(nn.Module):
             reduce_results=reduce_results,
             quant_config=quant_config,
             prefix=add_prefix("down_proj", prefix),
-            tp_rank=tp_rank,
-            tp_size=tp_size,
+            parallel_group=parallel_group,
         )
+        self.tp_size = get_group_rank_size(self.gate_up_proj.tp_group)[1]
         self.act_fn = SiluAndMul()
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         if (self.tp_size == 1) and hidden_states.shape[0] == 0:
             return hidden_states
@@ -261,10 +257,7 @@ class BailingMoeV2MLP(nn.Module):
             pass
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
-        hidden_states, _ = self.down_proj(
-            hidden_states,
-            skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
-        )
+        hidden_states, _ = self.down_proj(hidden_states)
         return hidden_states
 
 
@@ -331,18 +324,17 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             shared_intermediate = (
                 config.moe_intermediate_size * config.num_shared_experts
             )
-            if should_use_flashinfer_cutlass_moe_fp4_allgather():
-                shared_tp_rank, shared_tp_size = 0, 1
-            else:
-                shared_tp_rank, shared_tp_size = None, None
             self.shared_experts = BailingMoeV2MLP(
                 config,
                 shared_intermediate,
                 quant_config,
                 reduce_results=False,
                 prefix=add_prefix("shared_experts", prefix),
-                tp_rank=shared_tp_rank,
-                tp_size=shared_tp_size,
+                parallel_group=(
+                    "replicated"
+                    if should_use_flashinfer_cutlass_moe_fp4_allgather()
+                    else "tp"
+                ),
             )
         else:
             self.shared_experts = None
@@ -351,8 +343,6 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         del forward_batch
         num_tokens, hidden_dim = hidden_states.shape
@@ -403,16 +393,6 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             final_hidden_states = routed_output + shared_output
         else:
             final_hidden_states = routed_output
-
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        else:
-            pass
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
@@ -492,17 +472,13 @@ class BailingMoeV2DecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         if self.is_dense:
-            if enable_moe_dense_fully_dp():
-                mlp_tp_rank, mlp_tp_size = 0, 1
-            else:
-                mlp_tp_rank, mlp_tp_size = None, None
             self.mlp = BailingMoeV2MLP(
                 config,
                 config.intermediate_size,
                 quant_config,
+                reduce_results=False,
                 prefix=add_prefix("mlp", prefix),
-                tp_rank=mlp_tp_rank,
-                tp_size=mlp_tp_size,
+                parallel_group="replicated" if is_dense_ffn_fully_dp() else "tp",
             )
         else:
             self.mlp = BailingMoeV2SparseMoeBlock(
@@ -512,24 +488,22 @@ class BailingMoeV2DecoderLayer(nn.Module):
                 prefix=add_prefix("mlp", prefix),
             )
 
-        is_layer_sparse = not self.is_dense
-        is_previous_layer_sparse = layer_id - 1 >= config.first_k_dense_replace
-        is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
+        attn, ffn = self.stage_facts(config, layer_id)
+        self.attn_boundary, self.ffn_boundary = append_stages(
+            (attn, self.input_layernorm),
+            (ffn, self.post_attention_layernorm),
+        )
 
-        self.attn_boundary, self.ffn_boundary = make_stages(
-            (declare_attn(), self.input_layernorm),
-            (
-                declare_ffn(sparse=is_layer_sparse, next_sparse=is_next_layer_sparse),
-                self.post_attention_layernorm,
-            ),
-            previous=(
-                declare_ffn(
-                    sparse=is_previous_layer_sparse, next_sparse=is_layer_sparse
-                )
-                if layer_id != 0
-                else None
-            ),
-            terminal=layer_id == config.num_hidden_layers - 1,
+    @staticmethod
+    def stage_facts(
+        config: BailingMoeV2Config, layer_id: int
+    ) -> tuple[StageDeclaration, StageDeclaration]:
+        """The stages the layer declares, from the config alone (see make_layers)."""
+        is_layer_sparse = layer_id >= config.first_k_dense_replace
+        is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
+        return (
+            declare_attn(),
+            declare_ffn(sparse=is_layer_sparse, next_layer_sparse=is_next_layer_sparse),
         )
 
     def forward(
@@ -547,17 +521,8 @@ class BailingMoeV2DecoderLayer(nn.Module):
         hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
         hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
 
-        # note (ratish): the MLP reduces its own output, so it takes the exit's
-        # decision or the sum is taken twice.
-        with self.ffn_boundary.exit(forward_batch) as ffn_exit:
-            hidden_states = self.mlp(
-                hidden_states,
-                forward_batch=forward_batch,
-                should_allreduce_fusion=ffn_exit.fuse_mlp_allreduce,
-                use_reduce_scatter=ffn_exit.mlp_reduce_scatter,
-            )
-
-        return ffn_exit.finish(hidden_states)
+        hidden_states = self.mlp(hidden_states, forward_batch=forward_batch)
+        return self.ffn_boundary.finish(hidden_states, forward_batch)
 
 
 # ============================================================================
@@ -584,6 +549,7 @@ class BailingMoeV2TextModel(nn.Module):
                 config, idx, quant_config, prefix=prefix
             ),
             prefix="layers",
+            stage_facts=lambda idx: BailingMoeV2DecoderLayer.stage_facts(config, idx),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -604,11 +570,9 @@ class BailingMoeV2TextModel(nn.Module):
         for layer in self.layers:
             hidden_states = layer(hidden_states, forward_batch)
 
-        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
-        if hidden_states.shape[0] != 0:
-            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):

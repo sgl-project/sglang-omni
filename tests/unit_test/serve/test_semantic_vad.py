@@ -12,13 +12,13 @@ from sglang_omni.audio.semantic_vad import SemanticTurnDetector, SemanticVADConf
 from sglang_omni.audio.smart_turn import (
     SMART_TURN_MODEL_ENV,
     SMART_TURN_MODEL_FILENAME,
-    SMART_TURN_MODEL_REPO,
     SMART_TURN_MODEL_SHA256,
     SmartTurnEOU,
     load_smart_turn,
     resolve_model_path,
 )
 from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, Emit, VADEvent
+from sglang_omni.models.turn_detection.node import SMART_TURN_MODEL_REPO
 from sglang_omni.serve.realtime.turn_detector import build_turn_detector
 
 

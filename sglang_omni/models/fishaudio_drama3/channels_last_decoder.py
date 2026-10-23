@@ -136,7 +136,11 @@ class ChannelsLastDecoder:
         alignment = (-(module.padding + frame_count)) % dilation
         padded = F.pad(hidden_states, (0, 0, module.padding, alignment))
         return channels_last_conv1d(
-            padded, module.conv, self.conv_weights[id(module.conv)], frame_count
+            padded,
+            module.conv,
+            self.conv_weights[id(module.conv)],
+            module.conv.bias,
+            frame_count,
         )
 
     def causal_transposed_conv(

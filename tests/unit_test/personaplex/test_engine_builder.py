@@ -11,15 +11,17 @@ import pytest
 from sglang.srt.configs.model_config import get_hybrid_layer_ids, is_hybrid_swa_model
 from transformers import PretrainedConfig
 
-from sglang_omni.models.personaplex.architecture import TEMPORAL_TRANSFORMER
+from sglang_omni.models.personaplex.architecture import TEMPORAL_TRANSFORMER, TEXT_CARD
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
+    PersonaPlexSessionEngineBuilder,
     shim_checkpoint_dir,
 )
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
     build_backbone_config,
 )
+from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
@@ -143,3 +145,17 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
         assert declarations == []
     else:
         assert declarations == [("sglang_omni.personaplex.window_kv", True)]
+
+
+def test_realtime_engine_serves_calls_through_streaming_sessions():
+    tokenizer = object()
+    builder = PersonaPlexSessionEngineBuilder(
+        tokenizer=tokenizer, context_length=4096, enable_async_decode=False
+    )
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["enable_streaming_session"] is True
+    assert defaults["disable_radix_cache"] is True
+    adapter = builder.extra_scheduler_kwargs()["session_adapter"]
+    assert isinstance(adapter, PersonaPlexSessionAdapter)
+    assert (adapter.vocab_size, adapter.context_length) == (TEXT_CARD, 4096)
+    assert adapter.tokenizer is tokenizer

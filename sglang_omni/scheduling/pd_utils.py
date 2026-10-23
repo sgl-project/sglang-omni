@@ -369,10 +369,10 @@ def req_from_continuation(
     except Exception:
         req_to_token_pool.free(req)
         raise
-    req.prefix_indices = allocation.slots
+    req.prefix_len = allocation.seq_len
     req.kv.kv_committed_len = allocation.seq_len
     req.kv.kv_allocated_len = allocation.seq_len
-    req.set_extend_range(allocation.seq_len, allocation.seq_len)
+    req.extend_end = allocation.seq_len
     req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return req
@@ -383,8 +383,7 @@ def sampling_params_to_dict(params: SamplingParams) -> dict[str, object]:
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
     if isinstance(custom, dict):
-        # Note(Yue Yin): Req.__init__ injects the live Req under "__req__", and
-        # injects it again on the Decode side. Do not serialize it.
+        # note (Yue Yin): Legacy custom parameters can retain a live Req; it must not cross the PD transport.
         values["custom_params"] = {
             key: value for key, value in custom.items() if key != "__req__"
         }

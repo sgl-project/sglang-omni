@@ -10,13 +10,13 @@ import pytest
 
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.audio.semantic_vad import SemanticVADConfig
-from sglang_omni.audio.smart_turn import SMART_TURN_MODEL_REPO
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig
 from sglang_omni.models.qwen3_omni.payload_types import UNIT_FORMAT
 from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.models.streaming_cascade.base import text_chunk, transcript_chunk
 from sglang_omni.models.turn_detection.node import (
     SESSION_PORTS,
+    SMART_TURN_MODEL_REPO,
     TURN_DETECTION_STAGE,
     TurnDetectionStageConfig,
     turn_detection_stage,

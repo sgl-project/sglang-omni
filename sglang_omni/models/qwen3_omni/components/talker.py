@@ -46,7 +46,6 @@ from sglang_omni.utils.predictor_layers import (
     supports_exact_add_rmsnorm,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     AuxHiddenStateList,
     MergedColumnParallelLinear,
@@ -57,7 +56,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     residual_batch,
-    should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
@@ -290,8 +288,8 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
     Inherits from Thinker's MoE for routed experts (topk, experts, gate).
     Adds shared expert with gated output.
 
-    All-reduce is unified: both routed and shared expert outputs stay as
-    per-rank partial sums until combined, then a single all-reduce is applied.
+    Routed and shared expert outputs stay per-rank partial sums until
+    combined; the layer's FFN boundary completes the sum.
     """
 
     def __init__(
@@ -328,8 +326,6 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
@@ -351,18 +347,7 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         topk_output = self.topk(linear_hidden_states, router_logits)
         routed_output = self.experts(linear_hidden_states, topk_output)
 
-        # --- Combine then unified all-reduce ---
         final_hidden_states = routed_output + shared_output
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        else:
-            pass
-
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
@@ -417,6 +402,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 alt_stream=alt_stream,
             ),
             prefix=add_prefix("layers", prefix),
+            stage_facts=lambda idx: Qwen3OmniMoeTalkerDecoderLayer.stage_facts(
+                config, idx
+            ),
         )
         self.start_layer = 0
         self.end_layer = config.num_hidden_layers
@@ -492,11 +480,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 ),
             )
 
-        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
-        if hidden_states.shape[0] != 0:
-            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
 
         if aux_hidden_states:
             return hidden_states, aux_hidden_states

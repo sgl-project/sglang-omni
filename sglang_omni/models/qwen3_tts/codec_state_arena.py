@@ -13,7 +13,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalDecoder,
 )
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -135,7 +135,7 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if supports_device_streams(self.device):
+        if has_device_streams(self.device):
             released = self.device_module.Event()
             released.record(self.device_module.current_stream(self.device))
         else:
@@ -190,7 +190,7 @@ class Qwen3TTSCodecStateArena:
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if not supports_device_streams(self.device):
+        if not has_device_streams(self.device):
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass

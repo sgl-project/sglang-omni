@@ -38,6 +38,17 @@ bool IsSpacedScript(uint32_t code_point) {
   return true;
 }
 
+std::string NewEventId() {
+  static thread_local std::mt19937_64 generator{std::random_device{}()};
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string id = "evt_";
+  for (int i = 0; i < 32; ++i)
+    id.push_back(kHex[generator() % 16]);
+  return id;
+}
+
+} // namespace
+
 std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
   // Note (Jiaxin Deng): matches Python's b64decode(validate=False), which
   // drops characters outside the alphabet but still checks the padding.
@@ -83,17 +94,6 @@ std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
   }
   return bytes;
 }
-
-std::string NewEventId() {
-  static thread_local std::mt19937_64 generator{std::random_device{}()};
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string id = "evt_";
-  for (int i = 0; i < 32; ++i)
-    id.push_back(kHex[generator() % 16]);
-  return id;
-}
-
-} // namespace
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,

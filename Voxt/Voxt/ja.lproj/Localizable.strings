@@ -1176,7 +1176,7 @@
 "Clear one or more filters to view more models." = "フィルターを 1 つ以上解除すると、より多くのモデルを表示できます。";
 "Cloud" = "クラウド";
 "Configure the speech path, translation engine, target language, and prompt behavior for translation mode." = "翻訳モードで使う音声経路、翻訳モデル、対象言語、プロンプト動作を設定します。";
-"Configure this provider in Model settings first." = "先にモデル設定でこのプロバイダを設定してください。";
+"Configure this provider in Model settings first." = "未設定";
 "Configured" = "設定済み";
 "Experimental" = "実験中";
 "Enable LLM Enhancement" = "LLM 強化を有効化";
@@ -1185,7 +1185,7 @@
 "Fast" = "高速";
 "In Use" = "使用中";
 "Install" = "インストール";
-"Install this model in Model settings first." = "先にモデル設定でこのモデルをインストールしてください。";
+"Install this model in Model settings first." = "未インストール";
 "LLM" = "LLM";
 "LLM Model" = "LLM モデル";
 "Local LLM" = "ローカル LLM";
@@ -1245,6 +1245,9 @@
 "Translation Model" = "翻訳モデル";
 "Translation will keep using the best compatible model automatically." = "翻訳は引き続き最適な互換モデルを自動で使います。";
 "Unavailable" = "利用不可";
+"This model is temporarily unavailable while Native Omni support is being added. Choose another ASR model." = "このモデルは Native Omni 対応を準備中のため、一時的に利用できません。別の音声認識モデルを選択してください。";
+"Local Native Omni models require Apple Silicon. Choose a Remote ASR provider or Direct Dictation." = "ローカルの Native Omni モデルには Apple Silicon が必要です。リモート音声認識サービスまたはシステム音声認識を選択してください。";
+"The Native Omni runtime is unavailable. Reinstall Voxt or configure the development runtime." = "Native Omni ランタイムを利用できません。Voxt を再インストールするか、開発用ランタイムを設定してください。";
 "Uninstall" = "アンインストール";
 "Usage" = "使用先";
 "Use" = "使う";
@@ -2369,3 +2372,7 @@
 "Open Notes from the main window" = "メインウィンドウから「メモ」を開く";
 "Try Later" = "後で試す";
 "Less" = "折りたたむ";
+
+"API Format" = "API 形式";
+
+"Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自動では OpenAI に Responses を使用し、カスタムエンドポイントに明示した Chat Completions URL を維持します。";

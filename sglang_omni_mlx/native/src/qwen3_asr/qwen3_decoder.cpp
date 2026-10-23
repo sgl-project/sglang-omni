@@ -77,21 +77,26 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const int head_dim = config_.head_dim;
   const mx::array normed =
       checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
-  mx::array queries = checkpoint_.RmsNorm(
+  mx::array queries =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
-                  {batch, length, head_count, head_dim}),
-      prefix + ".self_attn.q_norm", eps);
-  mx::array keys = checkpoint_.RmsNorm(
+                  {batch, length, head_count, head_dim});
+  mx::array keys =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.k_proj"),
-                  {batch, length, kv_head_count, head_dim}),
-      prefix + ".self_attn.k_norm", eps);
+                  {batch, length, kv_head_count, head_dim});
+  if (config_.has_query_key_norm) {
+    queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
+    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm", eps);
+  } else {
+  }
   const mx::array values =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
                   {batch, length, kv_head_count, head_dim});
   queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
-                           false, config_.rope_theta, 1.0f, cache.offset());
-  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim, false,
-                        config_.rope_theta, 1.0f, cache.offset());
+                           config_.traditional_rope, config_.rope_theta, 1.0f,
+                           cache.offset());
+  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
+                        config_.traditional_rope, config_.rope_theta, 1.0f,
+                        cache.offset());
   auto [cached_keys, cached_values] =
       cache.UpdateAndFetch(keys, mx::transpose(values, {0, 2, 1, 3}));
   const mx::array attended = mx::fast::scaled_dot_product_attention(

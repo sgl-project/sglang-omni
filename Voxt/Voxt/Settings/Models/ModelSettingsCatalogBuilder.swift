@@ -276,6 +276,10 @@ struct ModelCatalogBuilder {
             featureSettings.rewrite.llmSelectionID == selectionID {
             labels.append(localizedModelCatalog("Rewrite"))
         }
+        if featureSettings.meeting.asrSelectionID == selectionID ||
+            featureSettings.meeting.summaryModelSelectionID == selectionID {
+            labels.append(localizedModelCatalog("Meeting"))
+        }
         return labels
     }
 
@@ -314,26 +318,6 @@ struct ModelCatalogBuilder {
             displayTags: deduplicatedTags(displayTags),
             usageLocations: usageLocations
         )
-    }
-
-    func catalogFilterTags(
-        base: [String],
-        installed: Bool,
-        requiresConfiguration: Bool,
-        configured: Bool,
-        selectionID: FeatureModelSelectionID
-    ) -> [String] {
-        var tags = base
-        if installed {
-            tags.append(localizedModelCatalog("Installed"))
-        }
-        if requiresConfiguration && configured {
-            tags.append(localizedModelCatalog("Configured"))
-        }
-        if !usageLocations(for: selectionID).isEmpty {
-            tags.append(localizedModelCatalog("In Use"))
-        }
-        return deduplicatedTags(tags)
     }
 
     func catalogDisplayTags(

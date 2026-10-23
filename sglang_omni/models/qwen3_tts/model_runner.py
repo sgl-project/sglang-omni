@@ -20,7 +20,7 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -68,7 +68,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         self.silence_codec_ids = silence_codec_ids
         self.codes_event_module = (
             torch.get_device_module(self.device)
-            if supports_device_streams(self.device)
+            if has_device_streams(self.device)
             else None
         )
 
@@ -397,8 +397,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         for sched_req in requests:
             data: Qwen3TTSSGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             if data.prefill_input_embeds is None:
                 data.prefill_input_embeds = data.prompt_input_embeds
             else:
