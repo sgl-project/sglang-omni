@@ -191,6 +191,7 @@ impl HttpRelay {
             () = tokio::time::sleep_until(deadline) => {
                 let fault = deadline_fault(outgoing.upload.as_ref());
                 if fault == HttpFault::UpstreamTimeout {
+                    lease.record_upstream_failure();
                     lease.request_immediate_probe();
                 }
                 return Err(fault);
@@ -202,6 +203,7 @@ impl HttpRelay {
                 let fault = upload_fault(outgoing.upload.as_ref())?
                     .unwrap_or(HttpFault::UpstreamProtocolError);
                 if fault == HttpFault::UpstreamProtocolError {
+                    lease.record_upstream_failure();
                     lease.request_immediate_probe();
                 }
                 return Err(fault);
@@ -222,11 +224,17 @@ impl HttpRelay {
             Ok(headers) => headers,
             Err(fault) => {
                 drop(body);
+                lease.record_upstream_failure();
                 lease.request_immediate_probe();
                 return Err(fault);
             }
         };
-        let relay = DirectResponseBody::new(body, lease, Arc::clone(&self.metrics));
+        let is_server_error = parts.status.is_server_error();
+        if is_server_error {
+            lease.record_upstream_failure();
+        }
+        let relay =
+            DirectResponseBody::new(body, lease, Arc::clone(&self.metrics), is_server_error);
         let mut downstream = Response::new(Body::new(relay));
         *downstream.status_mut() = parts.status;
         *downstream.headers_mut() = headers;

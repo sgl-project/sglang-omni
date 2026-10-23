@@ -249,6 +249,20 @@ fn render_metrics(
         .count();
     let _ = writeln!(output, "sglang_omni_router_workers_routable {routable}");
 
+    output.push_str(
+        "# HELP sglang_omni_router_workers_circuit_open Workers with an open request circuit.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_workers_circuit_open gauge\n");
+    let circuit_open = snapshot
+        .workers
+        .iter()
+        .filter(|worker| worker.circuit_open)
+        .count();
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_workers_circuit_open {circuit_open}"
+    );
+
     render_probe_metrics(&mut output, snapshot);
     render_admission_metrics(&mut output, snapshot);
     render_worker_metrics(&mut output, snapshot);
@@ -645,6 +659,7 @@ struct DiagnosticWorker<'a> {
     health: &'static str,
     probe: DiagnosticProbe,
     routable: bool,
+    circuit_open: bool,
     active_requests: usize,
     dispatches: Vec<DiagnosticDispatch>,
     capacity: Vec<DiagnosticCapacity>,
@@ -713,6 +728,7 @@ impl<'a> Diagnostics<'a> {
                     health: worker.health.label(),
                     probe: worker.probe.into(),
                     routable: worker.routable,
+                    circuit_open: worker.circuit_open,
                     active_requests: worker.active_requests,
                     dispatches: CapacityClass::ALL
                         .into_iter()
@@ -832,6 +848,7 @@ mod tests {
                     health: WorkerHealth::Unknown,
                     probe: probe(ProbeOutcome::HttpFailure, 2, 3),
                     routable: false,
+                    circuit_open: false,
                     active_requests: 3,
                     dispatches: [1, 2, 3, 4, 5, 6],
                     voice_control_dispatches: 7,
@@ -847,6 +864,7 @@ mod tests {
                     health: WorkerHealth::Healthy,
                     probe: probe(ProbeOutcome::Success, 4, 1),
                     routable: true,
+                    circuit_open: false,
                     active_requests: 1,
                     dispatches: [8, 9, 10, 11, 12, 13],
                     voice_control_dispatches: 14,
@@ -1078,6 +1096,9 @@ mod tests {
                 "# HELP sglang_omni_router_workers_routable Routable workers.\n",
                 "# TYPE sglang_omni_router_workers_routable gauge\n",
                 "sglang_omni_router_workers_routable 1\n",
+                "# HELP sglang_omni_router_workers_circuit_open Workers with an open request circuit.\n",
+                "# TYPE sglang_omni_router_workers_circuit_open gauge\n",
+                "sglang_omni_router_workers_circuit_open 0\n",
                 "# HELP sglang_omni_router_worker_probes_total Worker health probes.\n",
                 "# TYPE sglang_omni_router_worker_probes_total counter\n",
                 "sglang_omni_router_worker_probes_total{outcome=\"success\"} 6\n",
@@ -1264,6 +1285,7 @@ mod tests {
                 },
                 probe: probe(ProbeOutcome::Success, 1, 0),
                 routable: registration_ordinal % 2 == 0,
+                circuit_open: false,
                 active_requests: registration_ordinal,
                 dispatches: [registration_ordinal as u64; 6],
                 voice_control_dispatches: registration_ordinal as u64,

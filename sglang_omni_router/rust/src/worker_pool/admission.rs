@@ -74,6 +74,7 @@ pub(crate) struct RequestLease {
     _envelope: Option<EnvelopeLease>,
     _capacity: Option<OwnedSemaphorePermit>,
     load: WorkerLoadGuard,
+    circuit_generation: Option<u64>,
 }
 
 impl RequestLease {
@@ -84,6 +85,10 @@ impl RequestLease {
             _admission: Some(admission),
             _envelope: None,
             _capacity: None,
+            circuit_generation: registration
+                .circuit
+                .as_ref()
+                .map(|circuit| circuit.generation()),
             load: WorkerLoadGuard::new(registration, weight),
         }
     }
@@ -99,6 +104,10 @@ impl RequestLease {
             _admission: Some(admission),
             _envelope: None,
             _capacity: Some(capacity),
+            circuit_generation: registration
+                .circuit
+                .as_ref()
+                .map(|circuit| circuit.generation()),
             load: WorkerLoadGuard::new(registration, weight),
         }
     }
@@ -109,6 +118,10 @@ impl RequestLease {
             _admission: None,
             _envelope: Some(envelope),
             _capacity: None,
+            circuit_generation: registration
+                .circuit
+                .as_ref()
+                .map(|circuit| circuit.generation()),
             load: WorkerLoadGuard::new(registration, 1),
         }
     }
@@ -118,6 +131,10 @@ impl RequestLease {
             _admission: None,
             _envelope: Some(envelope),
             _capacity: None,
+            circuit_generation: registration
+                .circuit
+                .as_ref()
+                .map(|circuit| circuit.generation()),
             load: WorkerLoadGuard::new(registration, 1),
         }
     }
@@ -128,6 +145,22 @@ impl RequestLease {
 
     pub(crate) fn worker_id(&self) -> &str {
         self.load.registration.worker_id.as_str()
+    }
+
+    pub(crate) fn record_upstream_failure(&self) {
+        if let (Some(circuit), Some(generation)) =
+            (&self.load.registration.circuit, self.circuit_generation)
+        {
+            circuit.record_failure(generation);
+        }
+    }
+
+    pub(crate) fn record_upstream_success(&self) {
+        if let (Some(circuit), Some(generation)) =
+            (&self.load.registration.circuit, self.circuit_generation)
+        {
+            circuit.record_success(generation);
+        }
     }
 
     pub(crate) fn request_immediate_probe(&self) {
