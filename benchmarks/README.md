@@ -126,9 +126,12 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
     --output-dir results/qwen3_omni_en --model qwen3-omni --port 8000
 
 # 4. Qwen3-Omni — MMSU (audio comprehension)
+# Text-audio WER transcribes the replies on an ASR server, for example
+# `sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8001`.
+# Without --asr-router-port the run skips WER and keeps the other results.
 python -m benchmarks.eval.benchmark_omni_mmsu \
     --model qwen3-omni --port 8000 \
-    --modalities text+audio --max-samples 50
+    --modalities text+audio --max-samples 50 --asr-router-port 8001
 
 # 5a. Qwen3-Omni — MMAU (audio comprehension)
 python -m benchmarks.eval.benchmark_omni_mmau \
@@ -159,7 +162,7 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
     --repo-id zhaochenyang20/Video_AMME_ci \
     --max-samples 50 --max-concurrency 16 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
-    --enable-audio --asr-device cuda:0 --asr-concurrency 32
+    --enable-audio --asr-router-port 8001 --asr-concurrency 32
 
 # 9. SocialOmni — fixed-prefix speaker, turn-entry, and response evaluation
 python -m benchmarks.eval.benchmark_omni_socialomni \
