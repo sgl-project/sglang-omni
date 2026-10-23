@@ -30,8 +30,8 @@ to mono 16 kHz, and keeps each upload as one decoder request. Measured
 transcripts are the short clips in [Short-clip validation](#short-clip-validation):
 4.352 s and 5.855 s. A one-hour recording can repeat sentences until the
 16384-token response budget. The HTTP status stays 200. `json` and
-`verbose_json` then include `"finish_reason": "length"`. `text`, `srt`, and
-`vtt` set `X-Finish-Reason: length`. A stream puts the same reason on
+`verbose_json` then include `"finish_reason": "length"`. `text` sets
+`X-Finish-Reason: length`. A stream puts the same reason on
 `transcript.text.done`. The encoder processes the recording in
 checkpoint-defined windows with left and right context; the default checkpoint
 uses 40-second core windows.
