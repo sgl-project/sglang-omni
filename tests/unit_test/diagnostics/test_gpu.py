@@ -458,18 +458,21 @@ def test_a_platform_without_a_device_module_keeps_the_nvml_report(
     )
 
 
+@pytest.mark.parametrize("mask", ["5,2", "5,2,2", "2,5,5,2"])
 def test_an_affinity_mask_maps_to_physical_cards_in_ascending_order(
-    monkeypatch,
+    monkeypatch, mask
 ) -> None:
-    """Level Zero admits the masked cards in ascending order and ignores the
-    order they were written in, so ZE_AFFINITY_MASK=5,2 makes physical 2 the
-    logical 0. Reading it like CUDA_VISIBLE_DEVICES names the wrong card.
+    """Level Zero admits each masked card once, in ascending order, however
+    often and in whatever order it was written, so ZE_AFFINITY_MASK=5,2 and
+    5,2,2 both make physical 2 the logical 0 and physical 5 the logical 1.
+    Reading it like CUDA_VISIBLE_DEVICES, or keeping a repeat, names the wrong
+    card.
     """
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     pin_platform(monkeypatch, "xpu")
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
-        env={"ZE_AFFINITY_MASK": "5,2"}, torch_module=FakeXpuTorch([2, 5])
+        env={"ZE_AFFINITY_MASK": mask}, torch_module=FakeXpuTorch([2, 5])
     )
 
     assert [gpu["physical_index"] for gpu in report["gpus"]] == [2, 5]
