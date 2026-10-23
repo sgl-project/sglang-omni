@@ -35,6 +35,9 @@ pub(crate) struct HttpRelay {
     metrics: Arc<RouterMetrics>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RelayedResponse;
+
 pub(crate) struct BufferedUpload {
     pub(crate) bytes: Bytes,
     budget: Option<OwnedSemaphorePermit>,
@@ -230,6 +233,7 @@ impl HttpRelay {
         let mut downstream = Response::new(Body::new(relay));
         *downstream.status_mut() = parts.status;
         *downstream.headers_mut() = headers;
+        downstream.extensions_mut().insert(RelayedResponse);
         Ok(downstream)
     }
 }

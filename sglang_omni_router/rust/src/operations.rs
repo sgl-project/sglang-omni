@@ -299,6 +299,20 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     }
 
     output.push_str(
+        "# HELP sglang_omni_router_http_first_payload_duration_seconds Time from request boundary entry until the first nonempty upstream response data frame is yielded downstream.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_http_first_payload_duration_seconds histogram\n");
+    for route in HttpRoute::ALL {
+        let histogram = metrics.first_payload_duration(route);
+        render_histogram(
+            output,
+            "sglang_omni_router_http_first_payload_duration_seconds",
+            &[("route", route.label())],
+            &histogram,
+        );
+    }
+
+    output.push_str(
         "# HELP sglang_omni_router_http_cancelled_before_headers_total Requests cancelled before response headers became available.\n",
     );
     output.push_str("# TYPE sglang_omni_router_http_cancelled_before_headers_total counter\n");
@@ -956,6 +970,14 @@ mod tests {
                     "sglang_omni_router_http_cancelled_before_headers_total{{route=\"{}\"}} 0\n",
                     route.label()
                 ),
+                format!(
+                    "sglang_omni_router_http_first_payload_duration_seconds_bucket{{route=\"{}\",le=\"+Inf\"}} 0\n",
+                    route.label()
+                ),
+                format!(
+                    "sglang_omni_router_http_first_payload_duration_seconds_count{{route=\"{}\"}} 0\n",
+                    route.label()
+                ),
             ] {
                 assert!(
                     rendered.contains(&sample),
@@ -1027,6 +1049,7 @@ mod tests {
             .filter(|line| {
                 let new_boundary_metric = line
                     .contains("sglang_omni_router_http_response_header_duration_seconds")
+                    || line.contains("sglang_omni_router_http_first_payload_duration_seconds")
                     || line.contains("sglang_omni_router_http_cancelled_before_headers_total")
                     || line.contains("sglang_omni_router_classification_duration_seconds")
                     || line.contains("sglang_omni_router_classifications_total")

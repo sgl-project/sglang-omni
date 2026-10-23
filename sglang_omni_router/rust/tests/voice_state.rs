@@ -436,6 +436,13 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
     assert_eq!(captures[2].path, "/v1/audio/voices/name%20one");
     assert_eq!(captures[3].request_id.as_deref(), Some("parallel-id"));
     assert!(non_owner.captures().is_empty());
+    let observed =
+        request(router.address, "GET", "/metrics", &[], b"").expect("voice metrics response");
+    let observed = std::str::from_utf8(&observed).expect("metrics are UTF-8");
+    assert!(observed.contains("sglang_omni_router_http_first_payload_duration_seconds_count{route=\"voice_collection\"} 3\n"));
+    assert!(observed.contains(
+        "sglang_omni_router_http_first_payload_duration_seconds_count{route=\"voice_item\"} 1\n"
+    ));
 }
 
 #[test]

@@ -725,6 +725,21 @@ fn relays_all_media_routes_with_exact_bytes_headers_and_large_direct_uploads() {
     );
     assert!(response.starts_with(b"HTTP/1.1 200"));
     assert_eq!(capture.body, large_multipart);
+    let observed =
+        request(router.address, "GET", "/metrics", None, b"").expect("media metrics response");
+    let observed = std::str::from_utf8(&observed).expect("metrics are UTF-8");
+    for (route, count) in [
+        ("speech", 5),
+        ("speech_batch", 2),
+        ("speech_outcome", 1),
+        ("transcription", 5),
+        ("translation", 3),
+        ("metrics", 0),
+    ] {
+        assert!(observed.contains(&format!(
+            "sglang_omni_router_http_first_payload_duration_seconds_count{{route=\"{route}\"}} {count}\n"
+        )), "unexpected first-payload counts: {observed}");
+    }
 }
 
 #[test]
