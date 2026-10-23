@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_audio.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
 

@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/qwen3_decoder.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
@@ -65,7 +66,6 @@ set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-c
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
-  src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
