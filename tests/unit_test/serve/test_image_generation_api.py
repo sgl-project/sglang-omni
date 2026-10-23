@@ -24,6 +24,9 @@ from sglang_omni.proto import CompleteMessage, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.protocol import ImageGenerationParams
 
+# note (syd520zy): Cold API imports exceeded 30 seconds in CPU-only validation.
+NON_IMAGE_APP_STARTUP_TIMEOUT_SECONDS = 90
+
 
 class DecodePayload(TypedDict, total=False):
     text: str
@@ -113,7 +116,7 @@ with TestClient(app) as client:
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=NON_IMAGE_APP_STARTUP_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
