@@ -2044,6 +2044,24 @@ class OmniScheduler(Generic[RequestDataT]):
                 ),
             )
 
+    @staticmethod
+    def waiting_requests_allow_after_build_drain_hold(waiting: list[Req]) -> bool:
+        saw_explicit_no_hold = False
+        for request in waiting:
+            request_data = getattr(request, "omni_data", None)
+            after_build_drain_hint = getattr(
+                request_data,
+                "prefill_coalesce_after_build_drain_hint",
+                None,
+            )
+            if after_build_drain_hint is True:
+                return True
+            elif after_build_drain_hint is False:
+                saw_explicit_no_hold = True
+            else:
+                pass
+        return not saw_explicit_no_hold
+
     def is_prefill_expected(self) -> bool:
         running_batch = self.running_batch
         if self.is_mixed_chunk or self.dllm_config is not None:
@@ -2107,9 +2125,14 @@ class OmniScheduler(Generic[RequestDataT]):
                     or self.pending_request_admissions
                     or self.backlogged_request_build_payloads
                 )
-            if not build_work_pending and not (
-                self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
-            ):
+            hold_after_builds = (
+                self.prefill_coalesce_after_builds_during_decode
+                and not decode_is_idle
+                and self.waiting_requests_allow_after_build_drain_hold(
+                    self.waiting_queue
+                )
+            )
+            if not build_work_pending and not hold_after_builds:
                 return None
             else:
                 pass

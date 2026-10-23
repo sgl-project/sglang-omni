@@ -27,6 +27,7 @@ def create_sglang_arkasr_executor(
     prefill_coalesce_wait_ms: float = 32.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -56,6 +57,9 @@ def create_sglang_arkasr_executor(
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
         prefill_coalesce_requires_pending_builds=(
             prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
         ),
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,

@@ -171,6 +171,7 @@ class ArkasrPreLMEncoderService(
         self.closed = False
         self.inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
         self.hits = 0
+        self.early_hits = 0
         self.misses = 0
         self.merged = 0
         self.failed = 0
@@ -256,26 +257,12 @@ class ArkasrPreLMEncoderService(
         else:
             pass
 
-        cached = self.cache.get(key)
+        cached = self.lookup_cached_embedding(
+            getattr(item, "audio_fingerprint", None),
+            expected_tokens,
+        )
         if cached is not None:
-            if self.is_valid(cached, expected_tokens):
-                with self.lock:
-                    self.hits += 1
-                self.attach_embedding(item, cached)
-                future: concurrent.futures.Future[torch.Tensor] = (
-                    concurrent.futures.Future()
-                )
-                future.set_result(cached)
-                return self.track_submission(future)
-            else:
-                pass
-            logger.warning(
-                f"ARK-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self.cache.remove_if_same(key, cached)
-            cached = None
+            return self.submit_cache_hit(item, cached, early=False)
         else:
             pass
 
@@ -285,24 +272,19 @@ class ArkasrPreLMEncoderService(
             future = self.inflight.get(key)
             if future is None:
                 cached = self.cache.get(key)
-                if cached is not None and self.is_valid(cached, expected_tokens):
-                    self.hits += 1
-                else:
+                if cached is None or not self.is_valid(cached, expected_tokens):
                     cached = None
                     future = concurrent.futures.Future()
                     self.inflight[key] = future
                     leader = True
                     self.misses += 1
+                else:
+                    pass
             else:
                 self.merged += 1
                 follower_of = future
         if cached is not None:
-            self.attach_embedding(item, cached)
-            completed: concurrent.futures.Future[torch.Tensor] = (
-                concurrent.futures.Future()
-            )
-            completed.set_result(cached)
-            return self.track_submission(completed)
+            return self.submit_cache_hit(item, cached, early=False)
         else:
             pass
         if leader:
@@ -328,6 +310,7 @@ class ArkasrPreLMEncoderService(
         completion: concurrent.futures.Future[torch.Tensor] = (
             concurrent.futures.Future()
         )
+        self.track_submission(completion)
 
         def attach_follower(done: concurrent.futures.Future[torch.Tensor]) -> None:
             try:
@@ -339,13 +322,65 @@ class ArkasrPreLMEncoderService(
                     )
                 else:
                     pass
-                self.attach_embedding(item, embedding)
+                self.attach_ready_embedding(item, embedding)
                 completion.set_result(embedding)
             except Exception as exc:
                 completion.set_exception(exc)
 
         follower_of.add_done_callback(attach_follower)
-        return self.track_submission(completion)
+        return completion
+
+    def submit_cached_item(
+        self,
+        item: MultimodalDataItem,
+        embedding: torch.Tensor,
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        return self.submit_cache_hit(item, embedding, early=True)
+
+    def submit_cache_hit(
+        self,
+        item: MultimodalDataItem,
+        embedding: torch.Tensor,
+        *,
+        early: bool,
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        self.track_submission(future)
+        try:
+            self.attach_ready_embedding(item, embedding)
+        except Exception as exc:
+            future.set_exception(exc)
+            return future
+        with self.lock:
+            self.hits += 1
+            if early:
+                self.early_hits += 1
+            else:
+                pass
+        future.set_result(embedding)
+        return future
+
+    def attach_ready_embedding(
+        self, item: MultimodalDataItem, embedding: torch.Tensor
+    ) -> None:
+        expected_tokens = expected_audio_tokens(item)
+        if expected_tokens is None or not self.is_valid(embedding, expected_tokens):
+            raise RuntimeError("ARK-ASR embedding attachment failed validation")
+        else:
+            pass
+        try:
+            if self.device.type == "cuda":
+                with torch.cuda.stream(torch.cuda.default_stream(self.device)):
+                    self.attach_embedding(item, embedding)
+            else:
+                self.attach_embedding(item, embedding)
+        except Exception as exc:
+            failure = self.detach_failure(exc)
+            logger.error(
+                f"ARK-ASR embedding attachment failed:\n{failure.formatted_traceback}"
+            )
+            self.recover_after_failure(failure.exception)
+            raise failure.exception from None
 
     def encode_item(self, item: MultimodalDataItem) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
@@ -389,11 +424,39 @@ class ArkasrPreLMEncoderService(
             else:
                 pass
 
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated cached embedding without starting an encode."""
+        key = self.cache_key_from_fingerprint(audio_fingerprint)
+        if key is None:
+            return None
+        else:
+            pass
+        cached = self.cache.get(key)
+        if cached is None:
+            return None
+        elif self.is_valid(cached, expected_tokens):
+            return cached
+        else:
+            pass
+        logger.warning(
+            f"ARK-ASR pre-LM cache entry {key} failed validation "
+            f"(shape={getattr(cached, 'shape', None)}, "
+            f"dtype={getattr(cached, 'dtype', None)}); discarding it if unchanged "
+            "before re-encoding"
+        )
+        self.cache.remove_if_same(key, cached)
+        return None
+
     def stats(self) -> dict[str, int | float]:
         with self.lock:
             cache_lookups = self.hits + self.misses
             return {
                 "hits": self.hits,
+                "early_hits": self.early_hits,
                 "misses": self.misses,
                 "merged": self.merged,
                 "failed": self.failed,
@@ -418,12 +481,14 @@ class ArkasrPreLMEncoderService(
             }
 
     def cache_key(self, item: MultimodalDataItem) -> str | None:
-        item_hash = getattr(item, "audio_fingerprint", None)
-        if item_hash is None:
+        return self.cache_key_from_fingerprint(getattr(item, "audio_fingerprint", None))
+
+    def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+        if audio_fingerprint is None:
             return None
         else:
             pass
-        return f"{self.namespace}:{item_hash}"
+        return f"{self.namespace}:{audio_fingerprint}"
 
     def is_valid(
         self, embedding: object, expected_tokens: int
