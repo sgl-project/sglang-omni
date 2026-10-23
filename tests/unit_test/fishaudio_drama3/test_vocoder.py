@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,8 +32,9 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
 )
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler import event_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 
@@ -786,4 +790,152 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
         codes.shape[0] == 1
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
         for codes in codec.decoded_codes
+    )
+
+
+FRAMES_TO_150_WINDOWS = [
+    (0, 0, 0, 10, 10),
+    (1, 0, 0, 10, 20),
+    (2, 0, 0, 12, 32),
+    (3, 0, 0, 32, 64),
+]
+
+
+@pytest.mark.parametrize(
+    ("total_frame_count", "chunk_frame_ranges", "is_done_first", "windows"),
+    [
+        pytest.param(
+            150,
+            [(0, 64), (64, 150)],
+            False,
+            FRAMES_TO_150_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 22, 54)],
+            id="payload-before-done",
+        ),
+        pytest.param(
+            150,
+            [(0, 64), (64, 150)],
+            True,
+            FRAMES_TO_150_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 22, 54)],
+            id="done-before-payload",
+        ),
+        pytest.param(
+            128,
+            [(0, 64), (64, 128)],
+            False,
+            FRAMES_TO_150_WINDOWS + [(4, 1, 0, 64, 96)],
+            id="ends-on-a-window",
+        ),
+        pytest.param(
+            150,
+            [(0, 64)],
+            False,
+            FRAMES_TO_150_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 22, 54)],
+            id="window-only-in-the-final-result",
+        ),
+    ],
+)
+def test_every_decoded_window_records_its_decode_outside_the_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    total_frame_count: int,
+    chunk_frame_ranges: list[tuple[int, int]],
+    is_done_first: bool,
+    windows: list[tuple[int, int, int, int, int]],
+) -> None:
+    vocoder = vocoder_with(FrameNumberCodec())
+    frames = numbered_frames(total_frame_count)
+    handling = False
+    written_while_handling: list[bool] = []
+    on_stream_chunk = vocoder.on_stream_chunk
+    on_stream_done = vocoder.on_stream_done
+
+    def tracked_on_stream_chunk(
+        request_id: str, chunk: StreamItem
+    ) -> list[OutgoingMessage]:
+        nonlocal handling
+        handling = True
+        messages = on_stream_chunk(request_id, chunk)
+        handling = False
+        return messages
+
+    def tracked_on_stream_done(request_id: str) -> list[OutgoingMessage]:
+        nonlocal handling
+        handling = True
+        messages = on_stream_done(request_id)
+        handling = False
+        return messages
+
+    original_emit = event_recorder.emit
+
+    def record_event(
+        *,
+        request_id: str,
+        stage: str | None,
+        event_name: str,
+        metadata: dict[str, object] | None = None,
+        timestamp_ns: int | None = None,
+    ) -> None:
+        written_while_handling.append(handling)
+        original_emit(
+            request_id=request_id,
+            stage=stage,
+            event_name=event_name,
+            metadata=metadata,
+            timestamp_ns=timestamp_ns,
+        )
+
+    monkeypatch.setattr(vocoder, "on_stream_chunk", tracked_on_stream_chunk)
+    monkeypatch.setattr(vocoder, "on_stream_done", tracked_on_stream_done)
+    monkeypatch.setattr(event_recorder, "emit", record_event)
+    chunk_messages = [
+        IncomingMessage(
+            request_id="request-a",
+            type="stream_chunk",
+            data=StreamItem(
+                chunk_id=chunk_id,
+                data=frames[start:end].T,
+                from_stage="tts_engine",
+            ),
+        )
+        for chunk_id, (start, end) in enumerate(chunk_frame_ranges)
+    ]
+    payload_message = IncomingMessage(
+        request_id="request-a",
+        type="new_request",
+        data=final_payload(frames, is_streaming=True),
+    )
+    done_message = IncomingMessage(request_id="request-a", type="stream_done")
+    end_messages = (
+        [done_message, payload_message]
+        if is_done_first
+        else [payload_message, done_message]
+    )
+    loop = asyncio.new_event_loop()
+    path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
+    try:
+        for message in chunk_messages + end_messages:
+            vocoder.handle_message(message, loop)
+    finally:
+        event_recorder.get_recorder().stop()
+        loop.close()
+
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    assert written_while_handling and not any(written_while_handling)
+    assert [
+        (
+            event["event_name"].removeprefix("drama3_vocoder_window_decode_"),
+            event["metadata"]["window_index"],
+            event["metadata"]["chunk_id"],
+            event["metadata"]["is_final"],
+            event["metadata"]["emitted_frames"],
+            event["metadata"]["decoded_frames"],
+        )
+        for event in events
+    ] == [
+        (phase, window_index, chunk_id, is_final, emitted, decoded)
+        for window_index, chunk_id, is_final, emitted, decoded in windows
+        for phase in ("started", "finished")
+    ]
+    assert events[-1]["metadata"]["emitted_audio_s"] == pytest.approx(
+        sum(window[3] for window in windows[:-1]) * SAMPLES_PER_FRAME / SAMPLE_RATE
     )
