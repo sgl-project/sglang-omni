@@ -79,7 +79,9 @@ class Dialog(StreamComponent):
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` moves the
     cut back to what the listener heard; from then on each cut is
-    published as reply.heard. The language the recognizer last
+    published as reply.heard. A reply the history keeps nothing of when the
+    next reply begins leaves no entry, and the next utterance joins the user
+    message it followed. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
@@ -278,7 +280,14 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            self.messages.append(ChatMessage(role="user", content=text))
+            if self.messages[-1].role == "assistant" and not self.messages[-1].content:
+                # note (luojiaxuan): Nothing of the last reply was heard, so the user kept talking; an empty assistant entry would only show the model an empty answer to copy.
+                self.messages.pop()
+                self.messages[-1] = ChatMessage(
+                    role="user", content=f"{self.messages[-1].content} {text}"
+                )
+            else:
+                self.messages.append(ChatMessage(role="user", content=text))
             if language is not None:
                 self.language = language
             else:
