@@ -128,8 +128,8 @@ def evaluate_trace(
 ) -> dict[str, JsonValue]:
     """Report protocol failures separately from an unexercised duplex scenario.
 
-    max_admission_attempts is the retry limit the recording client used, read from
-    its manifest; None checks only that denials count up from one.
+    max_admission_attempts is the retry limit from the recording manifest; the
+    initial attempt is additional. None leaves the retry budget unchecked.
     """
     profile_contract = PROFILES[profile]
     if profile_contract.protocol == "legacy":
@@ -163,6 +163,7 @@ def evaluate_trace(
     event_ids: dict[str, set[str]] = {"send": set(), "receive": set()}
     sent_commands: dict[str, SentCommand] = {}
     acknowledged: set[tuple[str, str | None]] = set()
+    rejected_updates: set[str] = set()
     response_states: dict[str, ResponseState] = {}
     input_times: list[float] = []
     audio_times: list[float] = []
@@ -198,7 +199,7 @@ def evaluate_trace(
                 )
                 check(
                     max_admission_attempts is None
-                    or admission.attempt <= max_admission_attempts,
+                    or admission.attempt <= max_admission_attempts + 1,
                     f"admission attempt {admission.attempt} exceeds the recorded "
                     f"limit {max_admission_attempts}",
                 )
@@ -228,6 +229,11 @@ def evaluate_trace(
                 if event_type == "session.update":
                     check(
                         session_id is not None, "session.update before session.created"
+                    )
+                    check(
+                        max_admission_attempts is None
+                        or admissions <= max_admission_attempts,
+                        f"admission retry exceeds the recorded limit {max_admission_attempts}",
                     )
                     if turn_based:
                         requested_type = turn_detection_type(
@@ -264,7 +270,10 @@ def evaluate_trace(
                 elif event_type == "sglang.input_audio.end":
                     check(updated, "EOS before session.updated")
                 elif event_type == "session.close":
-                    check(drained, "session.close before input drained")
+                    check(
+                        drained or (not updated and bool(rejected_updates)),
+                        "session.close before input drained",
+                    )
                 else:
                     violations.append(
                         f"client command outside this scenario: {event_type}"
@@ -299,6 +308,10 @@ def evaluate_trace(
                     "missing session ID",
                 )
             elif event_type == "session.updated":
+                check(
+                    event.client_event_id not in rejected_updates,
+                    "session.updated acknowledges a rejected update",
+                )
                 session_fields = event.session or {}
                 check(
                     session_id is not None and session_fields.get("id") == session_id,
@@ -561,7 +574,10 @@ def evaluate_trace(
                 else:
                     pass
             elif event_type == "session.closed":
-                check(drained, "session.closed before input drained")
+                check(
+                    drained or (not updated and bool(rejected_updates)),
+                    "session.closed before input drained",
+                )
                 check(
                     event.reason == "client_closed", "unexpected session close reason"
                 )
@@ -572,14 +588,58 @@ def evaluate_trace(
                     pass
             elif event_type == "error":
                 error = event.error or {}
-                violations.append(
-                    f"server error: code={error.get('code')} "
-                    f"fatal={event.sglang.fatal}: {error.get('message')}"
+                rejected_event_id = error.get("event_id")
+                rejected_command = (
+                    sent_commands.get(rejected_event_id)
+                    if isinstance(rejected_event_id, str)
+                    else None
                 )
+                if (
+                    error.get("code") == "admission_rejected"
+                    and event.sglang.fatal is False
+                    and not updated
+                    and rejected_command is not None
+                    and rejected_command.event.type == "session.update"
+                    and rejected_event_id not in rejected_updates
+                ):
+                    rejected_updates.add(rejected_event_id)
+                    admissions += 1
+                else:
+                    violations.append(
+                        f"server error: code={error.get('code')} "
+                        f"fatal={event.sglang.fatal}: {error.get('message')}"
+                    )
             else:
                 violations.append(f"unsupported server event: {event_type}")
         except (ValidationError, ValueError, binascii.Error) as exc:
             violations.append(f"record {index}: {exc}")
+
+    if (
+        not updated
+        and admissions
+        and not violations
+        and (closed or not event_ids["receive"])
+        and counts["send", "session.update"] == len(rejected_updates)
+        and (
+            not closed
+            or counts["send", "session.close"]
+            == counts["receive", "session.closed"]
+            == 1
+        )
+    ):
+        return {
+            "status": "fail",
+            "failure_kind": "admission_rejected",
+            "violations": ["session admission rejected before audio input"],
+            "coverage": {"input_output_overlap": False},
+            "metrics": {
+                "input_audio_s": 0.0,
+                "output_audio_s": 0.0,
+                "admission_denials": admissions,
+            },
+        }
+    else:
+        pass
 
     for direction, event_type in (
         ("receive", "session.created"),
@@ -592,7 +652,13 @@ def evaluate_trace(
         ("receive", "session.closed"),
     ):
         check(
-            counts[direction, event_type] == 1,
+            counts[direction, event_type]
+            == 1
+            + (
+                len(rejected_updates)
+                if (direction, event_type) == ("send", "session.update")
+                else 0
+            ),
             f"expected exactly one {direction} {event_type}",
         )
     check(bool(input_times), "missing audio input")
@@ -689,6 +755,7 @@ def evaluate_trace(
         ),
     }
     return {
+        "failure_kind": "runtime" if violations else None,
         "status": (
             "fail"
             if violations
@@ -754,7 +821,7 @@ def evaluate_legacy_trace(
                 )
                 check(
                     max_admission_attempts is None
-                    or admission.attempt <= max_admission_attempts,
+                    or admission.attempt <= max_admission_attempts + 1,
                     f"admission attempt {admission.attempt} exceeds the recorded "
                     f"limit {max_admission_attempts}",
                 )
@@ -786,6 +853,11 @@ def evaluate_legacy_trace(
                         session_id is not None, "session.update before session.created"
                     )
                     if updates_sent == 0:
+                        check(
+                            max_admission_attempts is None
+                            or admissions <= max_admission_attempts,
+                            f"admission retry exceeds the recorded limit {max_admission_attempts}",
+                        )
                         turn = session_fields.get("turn_detection")
                         requested_type = (
                             turn.get("type") if isinstance(turn, dict) else None
@@ -971,6 +1043,26 @@ def evaluate_legacy_trace(
         except (ValidationError, ValueError, binascii.Error) as exc:
             violations.append(f"record {index}: {exc}")
 
+    if (
+        admissions
+        and not event_ids["send"]
+        and not event_ids["receive"]
+        and not violations
+    ):
+        return {
+            "status": "fail",
+            "failure_kind": "admission_rejected",
+            "violations": ["connection admission rejected before session creation"],
+            "coverage": {"input_output_overlap": False},
+            "metrics": {
+                "input_audio_s": 0.0,
+                "output_audio_s": 0.0,
+                "admission_denials": admissions,
+            },
+        }
+    else:
+        pass
+
     check(
         counts["receive", "session.created"] == 1,
         "expected exactly one receive session.created",
@@ -1012,6 +1104,7 @@ def evaluate_legacy_trace(
         ),
     }
     return {
+        "failure_kind": "runtime" if violations else None,
         "status": "fail" if violations else "pass",
         "violations": violations,
         "coverage": coverage,

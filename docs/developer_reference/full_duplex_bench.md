@@ -287,8 +287,10 @@ Each level is one row:
 | Column | Meaning |
 |---|---|
 | `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
-| `sessions failed` | Sessions whose protocol replay failed or that broke off |
-| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `sessions failed` | Sessions with runtime, protocol or artifact failures, excluding final admission rejection |
+| `sessions rejected` | Sessions that never obtained admission and ended without a separate runtime or cleanup failure |
+| `sessions with denials`, `denial events` | Sessions encountering HTTP 503 or an initial nonfatal `admission_rejected`, including recovered sessions; and the total number of such rejections, including the final exhausted attempt |
+| `pacing violations` | Sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
 | `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
 | `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
@@ -298,6 +300,20 @@ Each level is one row:
 | `meets targets` | `yes`, or the targets the level misses |
 
 A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+The v1.0 and v1.5 recorders share a budget of three retries after the initial attempt, with a fixed 250 ms backoff, across HTTP 503 and in-session admission rejection. The manifest records this policy under `config.transport` in each variant. For native and turn-based session profiles, only a nonfatal `admission_rejected` correlated with the pending initial `session.update` is retried, using the same WebSocket and configuration before any input audio is sent. Fatal errors, unrelated error codes, and errors after `session.updated` are not retried. The legacy conversation profile retains HTTP 503 retries only. The session timeout includes connection attempts, backoff, recording and cleanup; cancellation closes the connection and cancels its tasks.
+
+Raw traces retain every rejected update and server error. Recovered sessions can pass protocol replay, but their rejection counts still disqualify the concurrency level from the no-denials target. An exhausted session keeps status `fail` and records `failure_kind: admission_rejected`; runtime, protocol, timeout and cleanup failures use `failure_kind: runtime`. Unsent audio after final rejection is not an artifact-integrity failure. Run summaries expose `variants_rejected`, `variants_failed`, `variants_with_admission_denials` and `admission_denial_events`. Serving JSON retains `admission_denials` as the number of affected sessions and adds `sessions_rejected` and `admission_denial_events`. Failed and rejected native sessions still contribute all expected units as missed, so rejection cannot improve the reported miss rate. Older runs without the new classification retain their original failure counts and show an unavailable event total; re-record to obtain complete counts, since older clients omitted the final exhausted HTTP 503 from the trace.
+
+CPU regression tests use loopback WebSocket peers and require no model weights:
+
+```bash
+.venv/bin/python -m pytest tests/unit_test/benchmarks/test_duplex_client.py tests/unit_test/benchmarks/test_duplex_oracle.py tests/unit_test/benchmarks/test_duplex_artifacts.py tests/unit_test/benchmarks/test_duplex_v15_runner.py tests/unit_test/benchmarks/test_duplex_turn_based.py tests/unit_test/benchmarks/test_duplex_serving.py
+```
+
+For a real-backend integration check, record the server/client commits, hardware, model revision, admission limits and workload, then run the same workload with available capacity and with the admission limit occupied. Retain `continuous.jsonl`, `input-send-receipts.json`, each variant's `report.json`, `run.json`, and `serving.json`. Check recovery when a slot becomes available within the retry budget, final rejection when it stays occupied, and independent runtime-failure reporting. These client regressions do not establish a serving-capacity improvement.
+
+The separate reference-audio export path still treats server errors before the audio window as invalidating that window, including recovered admission rejections. Updating its eligibility policy is follow-up work; the recovery and rejection classification described here applies to recorder protocol replay and serving reports.
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 

@@ -21,6 +21,7 @@ from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
+from benchmarks.duplex.serving import summarize_level
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
@@ -29,6 +30,7 @@ from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_SAMPLES,
     SERVER,
     DuplexPeer,
+    PeerMode,
     write_dataset,
     write_sample,
 )
@@ -290,6 +292,48 @@ async def serve_samples(handler, dataset: Path, output: Path, **kwargs) -> dict:
             timeout_s=5.0,
             **kwargs,
         )
+
+
+@pytest.mark.parametrize(
+    ("denials", "mode", "failure_kind"),
+    [
+        (1, "healthy", None),
+        (4, "healthy", "admission_rejected"),
+        (1, "server_error", "runtime"),
+    ],
+)
+def test_recording_reports_admission_separately_from_runtime_failure(
+    tmp_path: Path, denials: int, mode: PeerMode, failure_kind: str | None
+) -> None:
+    """Recovered and exhausted admission must survive recording and serving reports."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+
+    async def handler(websocket: ServerConnection) -> None:
+        await DuplexPeer(mode, admission_denials=denials).handler(websocket)
+
+    result = asyncio.run(
+        serve_samples(handler, dataset, output, sample_ids=["user_backchannel/1"])
+    )
+    variants = result["samples"][0]["variants"].values()
+    assert {variant["failure_kind"] for variant in variants} == {failure_kind}
+    assert result["load"]["admission_denial_events"] == 2 * denials
+    assert result["load"]["variants_with_admission_denials"] == 2
+    assert result["load"]["variants_rejected"] == (
+        2 if failure_kind == "admission_rejected" else 0
+    )
+    assert result["load"]["variants_failed"] == (2 if failure_kind == "runtime" else 0)
+    level = summarize_level(output, 0.08)
+    assert level["sessions_rejected"] == result["load"]["variants_rejected"]
+    assert level["sessions_failed"] == result["load"]["variants_failed"]
+    assert level["admission_denial_events"] == 2 * denials
+    for variant in variants:
+        report = json.loads((output / variant["directory"] / "report.json").read_text())
+        assert report["cases"][0]["failure_kind"] == failure_kind
+        if failure_kind == "admission_rejected":
+            assert report["cases"][0]["artifact_errors"] == []
+        else:
+            pass
 
 
 def test_run_samples_records_both_variants_over_a_real_websocket(
@@ -704,8 +748,8 @@ def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     ]
     denied = [variant for variant in variants if variant["status"] == "fail"]
     assert denied and all(
-        any("admission denied" in violation for violation in variant["violations"])
-        and variant["output"]["admission_denials"] == ADMISSION_RETRIES
+        variant["failure_kind"] == "admission_rejected"
+        and variant["output"]["admission_denials"] == ADMISSION_RETRIES + 1
         for variant in denied
     )
     assert all(

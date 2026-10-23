@@ -241,7 +241,13 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
     sessions_failed = sum(
-        variant_state["status"] in FAILED_STATUSES for variant_state in attempted
+        variant_state["status"] in FAILED_STATUSES
+        and variant_state.get("failure_kind") != "admission_rejected"
+        for variant_state in attempted
+    )
+    sessions_rejected = sum(
+        variant_state.get("failure_kind") == "admission_rejected"
+        for variant_state in attempted
     )
     # note (jeffro): a native reply comes out one unit per input unit, so its
     # real-time factor tracks the input pace.
@@ -288,7 +294,9 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
+        "sessions_rejected": sessions_rejected,
         "admission_denials": load["variants_with_admission_denials"],
+        "admission_denial_events": load.get("admission_denial_events"),
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
         "units_missed": units_missed,

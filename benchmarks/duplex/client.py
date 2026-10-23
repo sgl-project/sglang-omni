@@ -153,10 +153,11 @@ async def run_session(
             )
             return observed_time_s
 
-        async def admit() -> websockets.ClientConnection:
-            attempt = 0
+        admission_denials = 0
+
+        async def admit() -> websockets.ClientConnection | None:
+            nonlocal admission_denials
             while True:
-                attempt += 1
                 try:
                     return await websockets.connect(
                         url,
@@ -167,24 +168,29 @@ async def run_session(
                 except websockets.InvalidStatus as exc:
                     if exc.response.status_code != ADMISSION_DENIED_STATUS:
                         raise
-                    elif attempt > ADMISSION_RETRIES:
-                        raise RuntimeError(
-                            f"admission denied {attempt} times with HTTP "
-                            f"{ADMISSION_DENIED_STATUS}"
-                        ) from exc
                     else:
+                        admission_denials += 1
                         record(
                             "admission",
                             {
                                 "type": "connection_denied",
                                 "http_status": exc.response.status_code,
-                                "attempt": attempt,
+                                "attempt": admission_denials,
                             },
                         )
-                        await asyncio.sleep(ADMISSION_BACKOFF_S)
+                        if admission_denials > ADMISSION_RETRIES:
+                            return None
+                        else:
+                            await asyncio.sleep(ADMISSION_BACKOFF_S)
 
         async def exchange() -> None:
-            async with await admit() as websocket:
+            nonlocal admission_denials
+            connection = await admit()
+            if connection is None:
+                return
+            else:
+                pass
+            async with connection as websocket:
                 seen: dict[str, asyncio.Event] = {}
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
@@ -201,7 +207,7 @@ async def run_session(
                     session: dict[str, JsonValue] | None = None,
                     audio: str | None = None,
                     sglang: InputAudioMetadata | None = None,
-                ) -> None:
+                ) -> str:
                     event_id = uuid.uuid4().hex
                     event: dict[str, JsonValue] = {
                         "type": event_type,
@@ -233,6 +239,7 @@ async def run_session(
                         )
                     else:
                         pass
+                    return event_id
 
                 async def settle(event_type: str) -> bool:
                     receipt = seen.setdefault(event_type, asyncio.Event())
@@ -246,7 +253,7 @@ async def run_session(
                         for waiter in waiters:
                             waiter.cancel()
                         await asyncio.gather(*waiters, return_exceptions=True)
-                    return receipt.is_set()
+                    return receipt.is_set() and not aborted.is_set()
 
                 async def receive() -> None:
                     nonlocal fatal
@@ -286,9 +293,42 @@ async def run_session(
                         pass
 
                 async def drive() -> None:
+                    nonlocal admission_denials
                     streamed = False
                     if await settle("session.created"):
-                        await send("session.update", session=configure)
+                        while True:
+                            update_event_id = await send(
+                                "session.update", session=configure
+                            )
+                            if await settle("session.updated"):
+                                break
+                            else:
+                                error_event = latest.get("error", {})
+                                error = error_event.get("error")
+                                extension = error_event.get("sglang")
+                                if (
+                                    legacy
+                                    or fatal
+                                    or "session.updated" in latest
+                                    or "session.closed" in latest
+                                    or not isinstance(extension, dict)
+                                    or extension.get("fatal") is not False
+                                    or not isinstance(error, dict)
+                                    or error.get("code") != "admission_rejected"
+                                    or error.get("event_id") != update_event_id
+                                ):
+                                    break
+                                else:
+                                    admission_denials += 1
+                            if admission_denials > ADMISSION_RETRIES:
+                                break
+                            else:
+                                aborted.clear()
+                                await asyncio.sleep(ADMISSION_BACKOFF_S)
+                                if aborted.is_set() or "session.closed" in latest:
+                                    break
+                                else:
+                                    pass
                     else:
                         pass
                     if await settle("session.updated"):
