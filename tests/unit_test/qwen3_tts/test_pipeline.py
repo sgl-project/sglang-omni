@@ -1965,6 +1965,78 @@ def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> 
     assert torch.equal(result.cpu(), torch.zeros((2, 2), dtype=torch.long))
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="requires two visible CUDA devices",
+)
+def test_qwen3_tts_preprocessing_pool_threads_stay_on_the_stream_device_after_leaving_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a second card, a preprocessing pool thread went back to card 0 on leaving its stream and opened a context there."""
+
+    class FakeModel:
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+
+        def build_prompt_constants(self) -> Qwen3TTSPromptConstants:
+            return placeholder_prompt_constants()
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "get_qwen3_tts_adhoc_reference_service_locked",
+        lambda model, wrapper, *, graph_bucket_frames: None,
+    )
+    device = torch.device("cuda", 1)
+    stream = torch.cuda.Stream(device=device)
+
+    def leave_stream() -> int:
+        with torch.cuda.stream(stream):
+            pass
+        return torch.cuda.current_device()
+
+    qwen3_request_builders.set_qwen3_tts_preprocessing_context(
+        model=FakeModel(), wrapper=SimpleNamespace(), device=device
+    )
+    scheduler = qwen3_stages.create_preprocessing_executor("unused", max_concurrency=1)
+    try:
+        thread_device_index = scheduler.executor.submit(leave_stream).result(timeout=10)
+    finally:
+        scheduler.executor.shutdown(wait=True)
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    assert thread_device_index == 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="requires two visible CUDA devices",
+)
+def test_qwen3_tts_reference_code_batcher_stays_on_the_encoder_device_after_leaving_its_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a second card, the reference encoder thread went back to card 0 on leaving its stream and opened a context there."""
+    batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
+        fake_speech_tokenizer(device=torch.device("cuda", 1)),
+    )
+    thread_device_indices: list[int] = []
+    synchronize_outcomes = batcher.synchronize_outcomes
+
+    def record_device_then_synchronize(
+        outcomes: dict[int, torch.Tensor | Exception],
+    ) -> None:
+        thread_device_indices.append(torch.cuda.current_device())
+        synchronize_outcomes(outcomes)
+
+    monkeypatch.setattr(batcher, "synchronize_outcomes", record_device_then_synchronize)
+    try:
+        batcher.encode(np.zeros(16, dtype=np.float32), 24000)
+    finally:
+        batcher.close()
+
+    assert thread_device_indices == [1]
+
+
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
