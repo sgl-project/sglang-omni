@@ -99,6 +99,10 @@ class UMMStep:
     A step starts the phase it names and every phase in dispatches, at most
     one per phase stage of the request. A step that starts none publishes its
     outputs and completes the request, or waits while phases of it run.
+    finish_reason and token_usage (prompt_tokens, completion_tokens, and
+    total_tokens) go out with the completed result, the latest reported
+    value of each replacing an earlier one. Without them the result reports
+    stop and no usage.
     """
 
     phase: str | None = None
@@ -106,6 +110,19 @@ class UMMStep:
     outputs: tuple[UMMOutput, ...] = ()
     context: ContextRef | None = None
     dispatches: tuple[UMMDispatch, ...] = ()
+    finish_reason: str | None = None
+    token_usage: Mapping[str, int] | None = None
+
+
+TOKEN_USAGE_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+
+def is_token_usage(usage: object) -> bool:
+    return (
+        isinstance(usage, Mapping)
+        and set(usage) == set(TOKEN_USAGE_KEYS)
+        and all(type(usage[key]) is int and usage[key] >= 0 for key in usage)
+    )
 
 
 def limit_problems(limits: Mapping[str, object]) -> list[str]:
@@ -167,6 +184,8 @@ class UMMContext:
     busy: bool = False
     closed: CloseReason | None = None
     shedding: bool = False
+    finish_reason: str | None = None
+    token_usage: dict[str, int] | None = None
 
     def shed(self) -> None:
         """End this request because the deployment cannot finish it in time.
@@ -534,6 +553,15 @@ class UMMController(
         limits = self.limits
         if not isinstance(step, UMMStep):
             raise TypeError("UMM adapter must return a UMMStep")
+        elif step.finish_reason is not None and (
+            not isinstance(step.finish_reason, str) or not step.finish_reason
+        ):
+            raise TypeError("UMM adapter finish_reason must be a non-empty string")
+        elif step.token_usage is not None and not is_token_usage(step.token_usage):
+            raise TypeError(
+                "UMM adapter token_usage must map "
+                f"{', '.join(TOKEN_USAGE_KEYS)} to token counts"
+            )
         else:
             pass
         offered = [step.context, *(dispatch.context for dispatch in step.dispatches)]
@@ -605,6 +633,14 @@ class UMMController(
         context.outputs.extend(added)
         context.output_bytes = retained
         context.produced = None
+        if step.finish_reason is not None:
+            context.finish_reason = step.finish_reason
+        else:
+            pass
+        if step.token_usage is not None:
+            context.token_usage = dict(step.token_usage)
+        else:
+            pass
         if not dispatches and context.expected:
             # The request waits for the results of its running phases.
             return None, added, {}
@@ -640,8 +676,12 @@ class UMMController(
                     )
                     for segment in context.outputs
                 ],
-                "finish_reason": "stop",
+                "finish_reason": context.finish_reason or "stop",
             }
+            if context.token_usage is not None:
+                result["usage"] = context.token_usage
+            else:
+                pass
             return StagePayload(request_id, request, result), added, {}
         else:
             pass
