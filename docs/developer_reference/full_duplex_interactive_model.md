@@ -231,7 +231,7 @@ Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-customvoice
 
 ### The forced-alignment worker
 
-An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy` and `pydantic` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
 
 ```bash
 PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
