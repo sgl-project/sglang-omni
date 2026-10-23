@@ -147,7 +147,7 @@ class Ming3AudioPreprocessor:
                 elif is_url(source):
                     waveform = await connector.load_resource_async(source, media_io)
                 else:
-                    waveform = media_io.load_file(Path(source))
+                    waveform = connector.load_local_path(source, media_io)
                 waveforms.append(waveform)
 
         features = [
