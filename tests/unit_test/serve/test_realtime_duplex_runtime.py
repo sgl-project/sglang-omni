@@ -68,6 +68,7 @@ SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
+PROTOCOL_LOGGER_NAME = "sglang_omni.serve.realtime.protocol"
 MAX_STALLED_FRAMES = 16
 CANCELLED_RESPONSE_ID = "resp_1"
 CANCELLED_ITEM_ID = "item_1"
@@ -575,16 +576,21 @@ def test_an_audio_delta_is_sized_by_its_base64_audio_and_the_envelope() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("event_type", "client_reads", "fatal_codes"),
+    ("event_type", "client_reads", "fatal_codes", "dispatch_errors"),
     [
-        ("input_audio_buffer.append", False, ["output_budget_exhausted"]),
-        ("unsupported", False, ["output_budget_exhausted"]),
-        ("input_audio_buffer.append", True, []),
+        ("input_audio_buffer.append", False, ["output_budget_exhausted"], 1),
+        ("unsupported", False, ["output_budget_exhausted"], 0),
+        ("input_audio_buffer.append", True, [], 0),
     ],
 )
 async def test_client_that_stops_reading_fails_with_the_output_budget_code(
-    event_type: str, client_reads: bool, fatal_codes: list[str]
+    event_type: str,
+    client_reads: bool,
+    fatal_codes: list[str],
+    dispatch_errors: int,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.ERROR, logger=PROTOCOL_LOGGER_NAME)
     runtime = SessionRuntime(
         MODEL_NAME,
         Capabilities(),
@@ -619,6 +625,12 @@ async def test_client_that_stops_reading_fails_with_the_output_budget_code(
         for event in websocket.sent_events
         if event["type"] == "error" and event["sglang"]["fatal"]
     ] == fatal_codes
+    protocol_records = [
+        record for record in caplog.records if record.name == PROTOCOL_LOGGER_NAME
+    ]
+    assert len(protocol_records) == dispatch_errors
+    assert all(record.levelno == logging.ERROR for record in protocol_records)
+    assert all(record.exc_info is None for record in protocol_records)
 
 
 def test_output_budget_counts_outbound_events_only() -> None:
