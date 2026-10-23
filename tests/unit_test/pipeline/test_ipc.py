@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
+from sglang_omni.client.client import Client
 from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
@@ -30,10 +31,11 @@ from sglang_omni.config.schema import (
     StageConfig,
 )
 from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.metrics.runtime import RuntimeMetrics
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve import launcher
-from sglang_omni.serve.openai_api import ServerStatus
+from sglang_omni.serve.openai_api import ServerStatus, create_app
 from sglang_omni.serve.protocol import (
     ChatCompletionRequest,
     ChatMessage,
@@ -500,6 +502,7 @@ async def run_launcher_with_fake_runner(
     replica_counts: tuple[int, ...] = (1,),
     host: str = "0.0.0.0",
     created_runners: list[object] | None = None,
+    enable_metrics: bool = False,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
@@ -510,10 +513,16 @@ async def run_launcher_with_fake_runner(
     runner_ref = None
 
     class FakeRunner:
-        def __init__(self, pipeline_config: PipelineConfig) -> None:
+        def __init__(
+            self,
+            pipeline_config: PipelineConfig,
+            *,
+            metrics: RuntimeMetrics | None = None,
+        ) -> None:
             del pipeline_config
             nonlocal runner_ref
             runners.append(self)
+            self.metrics = metrics
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
@@ -571,9 +580,50 @@ async def run_launcher_with_fake_runner(
     if serve_mock is not None:
         monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
-    await launcher.run_server(config, host=host, port=8000)
+    await launcher.run_server(
+        config, host=host, port=8000, enable_metrics=enable_metrics
+    )
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_metrics", [False, True])
+async def test_launcher_exposes_runner_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enable_metrics: bool,
+) -> None:
+    """The metrics switch must reach both stage workers and the HTTP endpoint."""
+    monkeypatch.setattr(launcher, "set_prometheus_multiproc_dir", Mock())
+    runner, app, _ = await run_launcher_with_fake_runner(
+        config=make_config(tmp_path),
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+        enable_metrics=enable_metrics,
+    )
+    assert runner.started
+    assert runner.stopped
+    assert app.state.create_app_kwargs["metrics"] is runner.metrics
+    served_app = create_app(Client(StubCoordinator()), **app.state.create_app_kwargs)
+    if enable_metrics:
+        assert runner.metrics is not None
+        runner.metrics.record("audio_response_start", "speech-1", "api", 0)
+        runner.metrics.record(
+            "audio_response_done",
+            "speech-1",
+            "api",
+            1_000_000_000,
+            {"audio_duration_s": 1.0, "is_streaming": False},
+        )
+        with TestClient(served_app) as client:
+            response = client.get("/metrics")
+        assert response.status_code == 200
+        assert "sglang_omni:audio_duration_s_sum 1.0" in response.text
+    else:
+        assert runner.metrics is None
+        with TestClient(served_app) as client:
+            assert client.get("/metrics").status_code == 404
 
 
 @pytest.mark.asyncio
@@ -1213,8 +1263,14 @@ async def test_launcher_preserves_runner_start_error(
     from sglang_omni.serve import launcher
 
     class FakeRunner:
-        def __init__(self, pipeline_config: PipelineConfig) -> None:
+        def __init__(
+            self,
+            pipeline_config: PipelineConfig,
+            *,
+            metrics: RuntimeMetrics | None = None,
+        ) -> None:
             del pipeline_config
+            self.metrics = metrics
 
         async def start(self, timeout: float) -> None:
             del timeout
