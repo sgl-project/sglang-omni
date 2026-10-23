@@ -166,6 +166,10 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             checkpoint_to_language_model_weights(language_model_weights())
         )
 
+        # SGLang builds this module under the serving dtype, so the filterbank
+        # is bfloat16. Float the frontend before load_state_dict: copy_ would
+        # otherwise round the checkpoint filterbank into that buffer.
+        self.perception.preprocessor.float()
         incompatible = self.perception.load_state_dict(perception_weights, strict=False)
         missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
         unexpected = [
@@ -180,9 +184,11 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             pass
         # Keep waveform preprocessing and per-feature normalization in fp32,
         # matching the NeMo reference path. The encoder and projection still
-        # run in the serving dtype after normalization.
+        # run in the serving dtype after normalization. Float the frontend
+        # again so mel.to(fb.dtype) cannot return the serving dtype.
         self.perception.encoder.to(PERCEPTION_DTYPE)
         self.perception.proj.to(PERCEPTION_DTYPE)
+        self.perception.preprocessor.float()
         self.perception.eval()
         logger.info(f"Loaded {len(perception_weights)} perception tensors")
 
