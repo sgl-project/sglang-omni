@@ -72,9 +72,11 @@ class DotsVocoderGraphRunner:
             {(int(b), int(t)) for b, t in keys} - set(self.graphs), reverse=True
         )
         with torch.cuda.device(self.device):
-            started = time.perf_counter()
+            capture_start_seconds = time.perf_counter()
             device_index = torch.cuda.current_device()
-            before_mem = get_available_gpu_memory(self.device.type, device_index)
+            available_memory_before_gib = get_available_gpu_memory(
+                self.device.type, device_index
+            )
             # note (ratish): a collection during capture can free what a reference cycle
             # holds, a dead pool's graphs among them, and invalidate the graph.
             with freeze_gc(enable_cudagraph_gc=False):
@@ -99,11 +101,14 @@ class DotsVocoderGraphRunner:
                     self.graphs[key] = CapturedStepGraph(graph, *inputs, outputs)
                 current_stream.wait_stream(capture_stream)
                 torch.cuda.synchronize(self.device)
-            after_mem = get_available_gpu_memory(self.device.type, device_index)
+            available_memory_after_gib = get_available_gpu_memory(
+                self.device.type, device_index
+            )
         logger.info(
             f"dots.tts streaming vocoder CUDA graphs captured: {self.captured_keys}, "
-            f"elapsed={time.perf_counter() - started:.2f} s, "
-            f"mem usage={before_mem - after_mem:.2f} GB, avail mem={after_mem:.2f} GB."
+            f"elapsed={time.perf_counter() - capture_start_seconds:.2f} s, "
+            f"mem usage={available_memory_before_gib - available_memory_after_gib:.2f} GiB, "
+            f"avail mem={available_memory_after_gib:.2f} GiB."
         )
 
     @torch.no_grad()
