@@ -70,6 +70,7 @@ and quitting stops it.
   - `/v1/models`;
   - `/v1/audio/transcriptions` (JSON or SSE);
   - the `/v1/realtime` manual-turn socket.
+- An idle Qwen3-ASR server returns MLX's buffer cache, so it holds only the model. During a request the cache follows MLX's own limit; `--cache-limit-mb N` caps it. Voxt doesn't pass this flag. Without a cap, one Final over 5 minutes of audio on 1.7B-8bit kept 6.2 GB of cache beside 2.3 GB of weights. A 512 MB cap measured no slower, while 0 was about 27% slower.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
   - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.

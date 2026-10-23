@@ -1,0 +1,1 @@
+Reading the instruction: it was dictated. Skip fillers, hesitations and false starts; when the user corrected themselves ("shorter, no, more formal"), follow the final version; read past obvious recognition errors.{{#if SELECTED}} This is about reading the instruction only: the selected text changes only as the instruction asks.{{/if}}

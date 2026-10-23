@@ -1,0 +1,25 @@
+{"to":"helper","msg":{"id":"c1","method":"capture.devices"}}
+{"to":"app","msg":{"id":"c1","error":{"code":"not_initialized","message":"helper.hello must come first"}}}
+{"to":"helper","msg":{"id":"c2","method":"helper.hello","params":{"protocol":9,"app":"9.0.0"}}}
+{"to":"app","msg":{"id":"c2","error":{"code":"protocol_mismatch","message":"This helper speaks protocol 1","data":{"supported":[1]}}}}
+{"to":"helper","msg":{"id":"c3","method":"tts.synthesize","params":{"text":"hi"}}}
+{"to":"app","msg":{"id":"c3","error":{"code":"method_not_found","message":"Unknown method tts.synthesize"}}}
+{"to":"helper","msg":{"id":"c4","method":"capture.start"}}
+{"to":"app","msg":{"id":"c4","error":{"code":"permission_denied","message":"VoxtNew may not use the microphone","data":{"permission":"microphone"}}}}
+{"to":"helper","msg":{"id":"c5","method":"capture.start","params":{"devices":["Gone"]}}}
+{"to":"app","msg":{"id":"c5","error":{"code":"device_unavailable","message":"No input gave audio: the default input delivered nothing within 1.2 s, twice","data":{"device":"BuiltInMicrophoneDevice"}}}}
+{"to":"helper","msg":{"id":"c6","method":"capture.start"}}
+{"to":"app","msg":{"method":"capture.started","params":{"job":"c6","device":"BuiltInMicrophoneDevice","deviceName":"MacBook Air Microphone","fellBack":false,"deviceSampleRate":48000,"deviceChannels":1,"sampleRate":16000,"startMs":101.2}}}
+{"to":"helper","msg":{"id":"c7","method":"capture.start"}}
+{"to":"app","msg":{"id":"c7","error":{"code":"busy","message":"A recording is running already (c6)"}}}
+{"to":"helper","msg":{"id":"c8","method":"capture.stop","params":{"job":"c6"}}}
+{"to":"app","msg":{"id":"c6","result":{"device":"BuiltInMicrophoneDevice","reason":"stopped","frames":0,"samples":0,"seconds":0,"restarts":0,"peak":-120,"cpuSeconds":0.001}}}
+{"to":"app","msg":{"id":"c8","result":{"stopped":true}}}
+{"to":"helper","msg":{"id":"c9","method":"capture.stop","params":{"job":""}}}
+{"to":"app","msg":{"id":"c9","error":{"code":"bad_request","message":"Missing job"}}}
+{"to":"helper","msg":{"id":"c10","method":"textio.paste","params":{"text":"hello"}}}
+{"to":"app","msg":{"id":"c10","error":{"code":"permission_denied","message":"VoxtNew may not use Accessibility","data":{"permission":"accessibility"}}}}
+{"to":"helper","msg":{"id":"c11","method":"textio.selection","params":{"allowCopy":true,"copyTimeoutMs":300}}}
+{"to":"app","msg":{"id":"c11","error":{"code":"timeout","message":"The app in front did not answer Accessibility within 1 s"}}}
+{"to":"helper","msg":{"id":"c12","method":"capture.devices"}}
+{"to":"app","msg":{"id":"c12","error":{"code":"internal","message":"AudioObjectGetPropertyData failed: -10875"}}}

@@ -1,0 +1,1 @@
+Output: only the final text, without quotes, labels, explanations or <input> tags. If nothing meaningful was said, return an empty string.

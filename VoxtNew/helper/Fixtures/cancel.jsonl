@@ -1,0 +1,8 @@
+{"to":"helper","msg":{"id":"01JB0C4000000000000000000A","method":"capture.start"}}
+{"to":"app","msg":{"method":"capture.started","params":{"job":"01JB0C4000000000000000000A","device":"BuiltInMicrophoneDevice","deviceName":"MacBook Air Microphone","fellBack":false,"deviceSampleRate":48000,"deviceChannels":1,"sampleRate":16000,"startMs":99.7}}}
+{"to":"app","msg":{"method":"capture.level","params":{"job":"01JB0C4000000000000000000A","seconds":0.05,"rms":-60,"peak":-48}}}
+{"to":"helper","msg":{"id":"c5","method":"job.cancel","params":{"job":"01JB0C4000000000000000000A"}}}
+{"to":"app","msg":{"id":"01JB0C4000000000000000000A","error":{"code":"cancelled","message":"The recording was cancelled"}}}
+{"to":"app","msg":{"id":"c5","result":{"cancelled":true}}}
+{"to":"helper","msg":{"id":"c6","method":"job.cancel","params":{"job":"01JB0C4000000000000000000A"}}}
+{"to":"app","msg":{"id":"c6","result":{"cancelled":false}}}

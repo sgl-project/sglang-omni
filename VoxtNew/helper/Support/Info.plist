@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Linked into voxtnew-helper (__TEXT,__info_plist; Package.swift): the
+     helper's identity and version (helper.hello) when it runs on its own.
+     Inside VoxtNew.app macOS attributes its permissions to the app (the
+     responsible process) and asks with the app's usage descriptions
+     (mygo.json); these are for a helper run from a terminal.
+     scripts/build-helper.sh keeps the version in step with mygo.json. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.hehehai.voxtnew.helper</string>
+	<key>CFBundleName</key>
+	<string>voxtnew-helper</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0-beta.1</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 the SGLang-Omni and VoxtNew contributors. Licensed under the Apache License 2.0.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>VoxtNew records your voice while you use its shortcut and recognises it on this Mac: the audio never leaves it.</string>
+</dict>
+</plist>

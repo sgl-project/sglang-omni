@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of voxtnew-llm inside VoxtNew.app, signed with them by
+     scripts/build-llm.sh; mygo build keeps them when it signs the app's
+     nested code again (not in mygo.json's helperEntitlements, which would
+     make an app build without the language models fail). It needs none: Metal (MLX's
+     kernels, compiled at run time too, and llama.cpp's) needs no
+     entitlement, and llama.framework beside it is signed with the same
+     identity, which library validation accepts. It reads only the model
+     files Go names and writes nothing but stderr. Ad hoc builds run
+     without the hardened runtime and do not check them. -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

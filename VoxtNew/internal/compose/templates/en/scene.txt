@@ -1,0 +1,3 @@
+Scene: the text goes into {{APP_NAME}}.{{#if SCENE_PROMPT}} The user's rules for it:
+{{SCENE_PROMPT}}{{/if}}
+Use the scene to choose wording and form only; do not add facts that were not said.

@@ -1,0 +1,122 @@
+text: lay out a long text at its own width on one line on macOS
+
+On macOS, a single-line text that gets exactly its measured width can
+still end in "…" (and a wrapping one drop its last word to a second line).
+CTTypesetterSuggestLineBreak forgives a width 0.0002 DIPs short of the
+line's at most. A float32 sum of a long line's float32 advances loses
+more (2e-4 at 570 DIPs), so long lines broke early: line() now sums in
+float64, and coreText.shape breaks at width * (1 + 1e-6).
+
+Until MyGo 0.5.0 the patch also folded the room Core Text leaves between
+runs of two fonts (a bracket next to a letter of another script, as in
+"M4B（含章节）") into the advances; 0.5.0's penAdvances does that upstream
+(TestCoreTextLanguageSpacing), so that part is gone. On macOS 26.7 with
+0.5.5 alone, TestOwnWidthFits still fails for the long lines (10 cases,
+"Downloads start when you finish, and go on in the background." at 20/600
+among them) and passes with this patch.
+
+TestOwnWidthFits lays out each text at its own width and checks it keeps
+to one line and the glyphs stay within the width.
+---
+diff --git a/internal/text/coretext_darwin.go b/internal/text/coretext_darwin.go
+index a37d0a0..0b0b723 100644
+--- a/internal/text/coretext_darwin.go
++++ b/internal/text/coretext_darwin.go
+@@ -981,12 +981,16 @@ func (e *coreText) shape(text []rune, style Style, spans []Span, width float32,
+ 		e.breaks = lineBreaks(&e.seg, e.breaks, text)
+ 		breaks = e.breaks
+ 	}
++	// Widths are float32, from Core Text's doubles rounded glyph by glyph:
++	// a text laid out again at the width it measured may come out short
++	// of Core Text's own by more than the 0.0002 DIPs it forgives.
++	breakWidth := float64(width) * (1 + 1e-6)
+ 	var lines []shapedLine
+ 	mark := len(e.shapeScratch.lines)
+ 	for start := 0; start < n; {
+ 		count := n - start
+ 		if width > 0 {
+-			count = max(ct.suggestLineBreak(typesetter, start, float64(width)), 1)
++			count = max(ct.suggestLineBreak(typesetter, start, breakWidth), 1)
+ 			// Core Text breaks a word that does not fit a line; carry
+ 			// on to the next break instead.
+ 			if breaks != nil {
+diff --git a/internal/text/layout.go b/internal/text/layout.go
+index a9215bf..846365c 100644
+--- a/internal/text/layout.go
++++ b/internal/text/layout.go
+@@ -973,6 +973,10 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
+ 	size := p.Style.FontSize()
+ 	x0 := float32(math.MaxFloat32)
+ 	starts := *buf
++	// The width adds up in float64, as engines move their pens: a float32
++	// sum of a long line's advances falls short of the engine's own width
++	// by more than Core Text forgives as it breaks the text at it again.
++	var width float64
+ 	for _, run := range sl.runs {
+ 		runSize := size
+ 		if f := run.font; f != nil {
+@@ -1016,14 +1020,14 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
+ 			// Logical width follows the pen, not the glyphs' drawing
+ 			// offsets. Pango may kern "11" by offsetting its second glyph
+ 			// while keeping whole-pixel advances for line breaking.
+-			line.Width += g.Advance
++			width += float64(g.Advance)
+ 			line.Glyphs = append(line.Glyphs, g)
+ 		}
+ 	}
+ 	if len(line.Glyphs) == 0 {
+ 		x0 = 0
+ 	}
+-	line.Width = max(line.Width, 0)
++	line.Width = float32(max(width, 0))
+ 	line.Height = max(m.lineHeight, line.Ascent+line.Descent)
+ 	line.Y = *y
+ 	line.Baseline = *y + (line.Height-line.Ascent-line.Descent)/2 + line.Ascent
+diff --git a/internal/text/text_test.go b/internal/text/text_test.go
+index 7b84ee2..787a875 100644
+--- a/internal/text/text_test.go
++++ b/internal/text/text_test.go
+@@ -85,6 +85,43 @@ func TestTruncation(t *testing.T) {
+ 	}
+ }
+ 
++// A text laid out at its own width keeps to one line. Core Text spaces a
++// bracket apart from a letter of another script, between runs of two fonts
++// by moving glyphs alone, which the width must count; and it forgives a
++// width short of its own by 0.0002 at most, less than float32 widths of
++// long lines can lose.
++func TestOwnWidthFits(t *testing.T) {
++	s := Shared()
++	for _, size := range []float32{11, 12, 13, 14, 20} {
++		for _, weight := range []int{400, 600} {
++			for _, str := range []string{
++				"M4B（含章节）", "标题(可选)", "M4B（含章节）尾", "标题（可选）", "M4B (含章节)",
++				"含章节的 M4B", "Format (M4B)", "مرحبا (M4B) عالم", "已完成，共三章",
++				"Downloads start when you finish, and go on in the background.",
++				"Wait for the jobs in progress to finish, or cancel them, first.",
++				"AudioSmith 在这台 Mac 上运行：这些权限只用于每一行说明的用途，音频不会离开这台 Mac。",
++				"AudioSmith 用 macOS 自带的 AVFoundation 读写音视频。ffmpeg 是一个免费的媒体工具，装上后可以导出 MP3、Opus 和 FLAC，读取 WebM 和 MKV 视频，并把字幕烧录进视频。它是可选的，以独立程序运行。",
++				"Say how words are read: names, brands, abbreviations. Matching ignores case; in Chinese and Japanese a term matches inside words too. In a script, [[word|say it like this]] changes one place only.",
++			} {
++				style := Style{Size: size, Weight: weight}
++				full := s.Layout(Params{Text: str, Style: style})
++				line := full.Lines[0]
++				var right float32
++				for _, g := range line.Glyphs {
++					right = max(right, g.X+g.Advance)
++				}
++				if right > full.Width+1e-3 {
++					t.Errorf("%v/%d %q: glyphs reach %v, the line is %v wide", size, weight, str, right, full.Width)
++				}
++				l := s.Layout(Params{Text: str, Style: style, Width: full.Width, MaxLines: 1})
++				if l.Truncated || len(l.Lines) != 1 || l.Lines[0].End != len(l.Runes) {
++					t.Errorf("%v/%d %q at its own width %v: truncated %v, %d lines", size, weight, str, full.Width, l.Truncated, len(l.Lines))
++				}
++			}
++		}
++	}
++}
++
+ func TestGlyphRaster(t *testing.T) {
+ 	s := Shared()
+ 	l := s.Layout(Params{Text: "Ag", Style: Style{Size: 32}})

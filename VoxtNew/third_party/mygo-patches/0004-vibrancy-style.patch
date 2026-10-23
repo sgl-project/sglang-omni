@@ -1,0 +1,226 @@
+MyGo patch 0004 (Auralink): Window.SetVibrancyStyle.
+
+Auralink's recording pill is a transparent, borderless, non-activating
+panel that draws a rounded HUD with room around it for its own shadow
+(the window has none: macOS would shadow its rectangle). A blurred
+material behind the HUD (what the user dictates over shows through,
+frosted) cannot come from native UI's materials (plugins/glass blurs
+what MyGo painted under an element, not the desktop): it takes the
+window's NSVisualEffectView. SetVibrancy puts that view under the whole
+content view, a rectangle that would show in the shadow's margin.
+
+VibrancyStyle insets the material from the content's edges, rounds its
+corners with a stretchable mask image (maskImage with cap insets, as
+AppKit documents for shaped materials; CALayer corners do not clip a
+behind-window blur everywhere), and can show it in the dark appearance
+whatever the app's (a HUD that stays dark over light and dark content).
+The effect view keeps its insets as the window resizes (autoresizing).
+Other platforms ignore it: a Windows system backdrop fills the window.
+diff --git a/internal/darwin/objc.go b/internal/darwin/objc.go
+index f67e1cf..21f7e63 100644
+--- a/internal/darwin/objc.go
++++ b/internal/darwin/objc.go
+@@ -45,6 +45,8 @@ var (
+ 	msgSetPoint      func(obj id, sel objc.SEL, p NSPoint)
+ 	msgInitRect      func(obj id, sel objc.SEL, r NSRect) id
+ 	msgInitRectID    func(obj id, sel objc.SEL, r NSRect, a id) id
++	msgInitSize      func(obj id, sel objc.SEL, s NSSize) id
++	msgRectRadii     func(cls id, sel objc.SEL, r NSRect, rx, ry float64) id
+ 	msgRectIDUint    func(obj id, sel objc.SEL, r NSRect, a id, n uint)
+ 	msgInitIDPoint   func(obj id, sel objc.SEL, a id, p NSPoint) id
+ 	msgInitWindow    func(obj id, sel objc.SEL, r NSRect, style uint, backing uint, deferFlag bool) id
+@@ -143,6 +145,8 @@ func load() {
+ 		purego.RegisterFunc(&msgSetPoint, msgSendAddr)
+ 		purego.RegisterFunc(&msgInitRect, msgSendAddr)
+ 		purego.RegisterFunc(&msgInitRectID, msgSendAddr)
++		purego.RegisterFunc(&msgInitSize, msgSendAddr)
++		purego.RegisterFunc(&msgRectRadii, msgSendAddr)
+ 		purego.RegisterFunc(&msgRectIDUint, msgSendAddr)
+ 		purego.RegisterFunc(&msgInitIDPoint, msgSendAddr)
+ 		purego.RegisterFunc(&msgInitWindow, msgSendAddr)
+diff --git a/internal/darwin/window.go b/internal/darwin/window.go
+index 3639bd7..c2f2996 100644
+--- a/internal/darwin/window.go
++++ b/internal/darwin/window.go
+@@ -59,7 +59,9 @@ type window struct {
+ 	delegate id
+ 	ucc      id
+ 	effect   id
+-	parent   *window
++	// vstyle shapes the effect view (SetVibrancyStyle).
++	vstyle platform.VibrancyStyle
++	parent *window
+ 	// flyout is how a flyout (WindowOptions.Flyout) was placed last, at
+ 	// flyoutSize.
+ 	flyout     platform.Flyout
+@@ -905,11 +907,61 @@ func (w *window) SetVibrancy(material string) {
+ 			// Behind the page and a docked inspector.
+ 			send(w.view, "addSubview:positioned:relativeTo:", uintptr(w.effect), ^uintptr(0), 0) // NSWindowBelow
+ 			send(w.web, "setValue:forKey:", uintptr(nsBool(false)), uintptr(nsString("drawsBackground")))
++			w.styleEffect()
+ 		}
+ 		send(w.effect, "setMaterial:", m)
+ 	})
+ }
+ 
++func (w *window) SetVibrancyStyle(s platform.VibrancyStyle) {
++	w.vstyle = s
++	withPool(w.styleEffect)
++}
++
++// styleEffect fits the effect view to vstyle: its frame inset from the
++// content view's bounds (which it follows as they resize), its corners
++// rounded by a mask, its appearance.
++func (w *window) styleEffect() {
++	if w.effect == 0 {
++		return
++	}
++	s := w.vstyle
++	b := msgRect(w.view, sel("bounds"))
++	// The content view is not flipped: Bottom is the origin's side.
++	f := NSRect{
++		Origin: NSPoint{X: s.Left, Y: s.Bottom},
++		Size:   NSSize{Width: max(b.Size.Width-s.Left-s.Right, 0), Height: max(b.Size.Height-s.Top-s.Bottom, 0)},
++	}
++	msgSetRect(w.effect, sel("setFrame:"), f)
++	var mask id
++	if s.Radius > 0 {
++		mask = roundedMask(s.Radius)
++	}
++	send(w.effect, "setMaskImage:", uintptr(mask))
++	var appearance id
++	if s.Dark {
++		appearance = send(class("NSAppearance"), "appearanceNamed:", uintptr(nsString("NSAppearanceNameDarkAqua")))
++	}
++	send(w.effect, "setAppearance:", uintptr(appearance))
++}
++
++// roundedMask is a mask image for NSVisualEffectView: a rounded
++// rectangle of radius r whose corners stay as they are while its middle
++// stretches to the view's size (cap insets). Autoreleased.
++func roundedMask(r float64) id {
++	size := 2*r + 1
++	img := autorelease(msgInitSize(send(class("NSImage"), "alloc"), sel("initWithSize:"), NSSize{Width: size, Height: size}))
++	send(img, "lockFocus")
++	send(send(class("NSColor"), "blackColor"), "set")
++	path := msgRectRadii(class("NSBezierPath"), sel("bezierPathWithRoundedRect:xRadius:yRadius:"), NSRect{Size: NSSize{Width: size, Height: size}}, r, r)
++	send(path, "fill")
++	send(img, "unlockFocus")
++	// NSEdgeInsets (top, left, bottom, right) has NSRect's layout.
++	msgSetRect(img, sel("setCapInsets:"), NSRect{Origin: NSPoint{X: r, Y: r}, Size: NSSize{Width: r, Height: r}})
++	send(img, "setResizingMode:", 1) // NSImageResizingModeStretch
++	return img
++}
++
+ func (w *window) SetMenu(*platform.Menu) {}
+ 
+ // SetAutoHideMenu does nothing: the menu bar belongs to the application.
+diff --git a/internal/fake/fake.go b/internal/fake/fake.go
+index d2385df..be967f7 100644
+--- a/internal/fake/fake.go
++++ b/internal/fake/fake.go
+@@ -1333,3 +1333,6 @@ func (b *Backend) SetSecretError(err error) {
+ 	defer b.mu.Unlock()
+ 	b.secretError = err
+ }
++
++// SetVibrancyStyle does nothing: the fake shows no material.
++func (w *Window) SetVibrancyStyle(platform.VibrancyStyle) {}
+diff --git a/internal/linux/window.go b/internal/linux/window.go
+index 6165d78..c1b6ac3 100644
+--- a/internal/linux/window.go
++++ b/internal/linux/window.go
+@@ -1665,3 +1665,6 @@ func initWindowCallbacks() {
+ 		return 0 // CAIRO_STATUS_SUCCESS
+ 	})
+ }
++
++// SetVibrancyStyle does nothing: Linux has no material.
++func (w *window) SetVibrancyStyle(platform.VibrancyStyle) {}
+diff --git a/internal/platform/platform.go b/internal/platform/platform.go
+index ab9f488..3f025d2 100644
+--- a/internal/platform/platform.go
++++ b/internal/platform/platform.go
+@@ -47,6 +47,15 @@ type TitleBar struct{ Height, Left, Right int }
+ // Color is an 8-bit RGBA color.
+ type Color struct{ R, G, B, A uint8 }
+ 
++// VibrancyStyle shapes a window's material: insets from the edges of its
++// content, in DIPs, a corner radius, and the dark appearance whatever the
++// app's.
++type VibrancyStyle struct {
++	Top, Right, Bottom, Left float64
++	Radius                   float64
++	Dark                     bool
++}
++
+ // Backend is implemented by every native backend.
+ type Backend interface {
+ 	// Name identifies the backend, for example "darwin/wkwebview".
+@@ -436,6 +445,9 @@ type Window interface {
+ 	SetIgnoreMouseEvents(v bool)
+ 	SetContentProtection(v bool)
+ 	SetVibrancy(material string)
++	// SetVibrancyStyle shapes the material (macOS; elsewhere it does
++	// nothing).
++	SetVibrancyStyle(s VibrancyStyle)
+ 	// SetProgressBar shows progress on the taskbar button, Dock icon or
+ 	// launcher entry: state is "" (none), "normal", "indeterminate",
+ 	// "paused" or "error", value between 0 and 1.
+diff --git a/internal/web/window.go b/internal/web/window.go
+index aa28075..24a2387 100644
+--- a/internal/web/window.go
++++ b/internal/web/window.go
+@@ -235,3 +235,6 @@ func (w *window) PrintToPDF(_ platform.PDFOptions, cb func([]byte, error)) { cb(
+ func (w *window) CallAsyncFunction(_ string, cb func(string, error)) {
+ 	cb("", errUnsupported)
+ }
++
++// SetVibrancyStyle does nothing: a page shows no material.
++func (w *window) SetVibrancyStyle(platform.VibrancyStyle) {}
+diff --git a/internal/windows/window.go b/internal/windows/window.go
+index 88ce63b..de2cea2 100644
+--- a/internal/windows/window.go
++++ b/internal/windows/window.go
+@@ -1015,6 +1015,9 @@ func (w *window) SetVibrancy(material string) {
+ // menu bar: flyouts and panels show none.
+ func (w *window) hasAppMenu() bool { return w.opts.Flyout == nil && !w.opts.Panel }
+ 
++// SetVibrancyStyle does nothing: a system backdrop fills the window.
++func (w *window) SetVibrancyStyle(platform.VibrancyStyle) {}
++
+ func (w *window) SetMenu(m *platform.Menu) {
+ 	w.ownMenu = m != nil
+ 	if m == nil && w.hasAppMenu() {
+diff --git a/window.go b/window.go
+index fcd1784..9e0fddf 100644
+--- a/window.go
++++ b/window.go
+@@ -995,6 +995,27 @@ func (w *Window) SetVibrancy(v Vibrancy) {
+ 	w.Invalidate()
+ }
+ 
++// VibrancyStyle shapes a window's material (WindowOptions.Vibrancy,
++// SetVibrancy) on macOS: the material fills a rectangle inset from the
++// edges of the window's content by Top, Right, Bottom and Left DIPs, its
++// corners rounded by Radius, as for a transparent window that draws a
++// rounded HUD with room for its own shadow around it. Dark shows the
++// material as in the dark appearance whatever the app's, for a HUD that
++// stays dark over anything. The zero value fills the window, as without a
++// style. Other platforms ignore it.
++type VibrancyStyle struct {
++	Top, Right, Bottom, Left float64
++	Radius                   float64
++	Dark                     bool
++}
++
++// SetVibrancyStyle shapes the window's material (see VibrancyStyle); it
++// holds for a material set later too.
++func (w *Window) SetVibrancyStyle(s VibrancyStyle) {
++	ps := platform.VibrancyStyle(s)
++	w.do(func(n platform.Window) { n.SetVibrancyStyle(ps) })
++}
++
+ // ProgressState is the state of a progress bar; see ProgressBar.
+ type ProgressState string
+ 

@@ -1,0 +1,40 @@
+{
+  "libraries": [
+    {
+      "name": "mygo-sqlite3",
+      "source": "https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip",
+      "files": {
+        "darwin-amd64": {
+          "name": "libmygo-sqlite3.dylib",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-darwin-amd64.dylib",
+          "sha256": "9b98b6d304a3f76cfe517340c5aae83d0e1835b680a056600d5ae3ac19bd4067"
+        },
+        "darwin-arm64": {
+          "name": "libmygo-sqlite3.dylib",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-darwin-arm64.dylib",
+          "sha256": "f78fe493715c8b7b88aaebb275e47bbad831707d780843f078ed4a8f47de14d0"
+        },
+        "linux-amd64": {
+          "name": "libmygo-sqlite3.so",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-linux-amd64.so",
+          "sha256": "24ddd8074536e222b53bdf79f620b099782ddb33e4a1cc05bff7cce012c3ff0c"
+        },
+        "linux-arm64": {
+          "name": "libmygo-sqlite3.so",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-linux-arm64.so",
+          "sha256": "ae2b5953424531440648d91703f8aa790098261317007960cc6293428492e90a"
+        },
+        "windows-amd64": {
+          "name": "mygo-sqlite3.dll",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-windows-amd64.dll",
+          "sha256": "a9fa4b1eae82d8f9826d6b3cac20e337ebb29b5e859eab3d2852d65b323224f4"
+        },
+        "windows-arm64": {
+          "name": "mygo-sqlite3.dll",
+          "url": "https://github.com/egoist/mygo/releases/download/sqlite-3.53.4-1/mygo-sqlite3-windows-arm64.dll",
+          "sha256": "6f43349dc4d410d490324b62eb4137f9b6c021f6587cc104ec6213d31a8b3c9a"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+name: VoxtNew CI
+
+# VoxtNew (VoxtNew/: Go + MyGo, no cgo) on Linux: gofmt, every Go test (the
+# views in MyGo's ui.Tester, the store, the session against fake models, the
+# helper and model runtime protocols against their fixtures and fakes, i18n
+# key parity, archtest), MyGo's vet, and the vendored MyGo checked against
+# its patches. The Swift helper, voxtnew-llm, the Omni runtime and the real
+# models are checked on a Mac by hand: VoxtNew/scripts/mac-regress.sh and
+# VoxtNew/docs/manual-test.md.
+
+on:
+  pull_request:
+    paths:
+      - "VoxtNew/**"
+      - ".github/workflows/voxtnew-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "VoxtNew/**"
+      - ".github/workflows/voxtnew-ci.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: voxtnew-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: VoxtNew
+
+jobs:
+  go:
+    # The CJK fonts below are this release's packages.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Pango draws Chinese with what fontconfig finds, and the runner has
+      # no CJK font: the overlay's ink checks of Chinese text would see
+      # nothing. It gets the fonts a dev machine (Ubuntu 24.04) has, so that
+      # the views measure the same: fonts-noto-cjk, and fonts-droid-fallback,
+      # which fontconfig puts first for text without a language. Pool paths
+      # and sha256 pinned, the files cached.
+      FONT_DEBS: |
+        f/fonts-noto-cjk/fonts-noto-cjk_20230817+repack1-3_all.deb 7d64b985f6fe128c99eae5610d5c047338e572bdcfb2bb09736be01b824a7f6c
+        f/fonts-android/fonts-droid-fallback_6.0.1r16-1.1build1_all.deb 353e093dd32677e48edbdc9c94c4e92db0e80763fc326ddec1ba8281d8553a5e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: VoxtNew/go.mod
+          cache-dependency-path: VoxtNew/go.sum
+
+      # The MyGo SQLite plugin loads a prebuilt library. Tests would download
+      # it on first use; CI fetches it once, checks its sha256 against the
+      # plugin's manifest and points the plugin at it.
+      - name: SQLite library for the MyGo plugin
+        id: sqlite
+        run: |
+          dir="$(go list -m -f '{{.Dir}}' github.com/egoist/mygo)/plugins/sqlite"
+          read -r url sum < <(jq -r '.libraries[0].files["linux-amd64"] | "\(.url) \(.sha256)"' "$dir/mygo-plugin.json")
+          echo "sha=$sum" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/voxtnew-ci/sqlite
+          key: mygo-sqlite-${{ steps.sqlite.outputs.sha }}
+
+      - name: Fetch and verify the SQLite library
+        run: |
+          mkdir -p ~/.cache/voxtnew-ci/sqlite
+          lib=~/.cache/voxtnew-ci/sqlite/libmygo-sqlite3.so
+          if [ ! -f "$lib" ]; then
+            curl -fsSL --retry 3 -o "$lib" "${{ steps.sqlite.outputs.url }}"
+          else
+            echo "cached: $lib"
+          fi
+          echo "${{ steps.sqlite.outputs.sha }}  $lib" | sha256sum -c -
+          echo "MYGO_SQLITE_LIBRARY=$lib" >> "$GITHUB_ENV"
+
+      - name: Font packages' cache key
+        id: fonts
+        run: echo "key=fonts-$(printf '%s' "$FONT_DEBS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/voxtnew-ci/fonts
+          key: ${{ steps.fonts.outputs.key }}
+
+      - name: CJK fonts
+        run: |
+          mkdir -p ~/.cache/voxtnew-ci/fonts
+          debs=()
+          while read -r path sum; do
+            if [ -z "$path" ]; then
+              continue
+            else
+              :
+            fi
+            deb=~/.cache/voxtnew-ci/fonts/"$(basename "$path")"
+            if [ ! -f "$deb" ]; then
+              curl -fsSL --retry 3 -o "$deb" "http://archive.ubuntu.com/ubuntu/pool/main/$path"
+            else
+              :
+            fi
+            echo "$sum  $deb" | sha256sum -c -
+            debs+=("$deb")
+          done <<< "$FONT_DEBS"
+          sudo dpkg -i "${debs[@]}"
+          fc-cache -f
+          fc-list :lang=zh family | sort
+
+      - name: gofmt
+        run: |
+          bad="$(git ls-files -z '*.go' ':!:third_party/**' | xargs -0 gofmt -l)"
+          if [ -n "$bad" ]; then
+            echo "::error::not gofmt-ed (run gofmt -w): $bad"
+            exit 1
+          else
+            echo "gofmt: clean"
+          fi
+
+      # -count=1: setup-go's cache keeps the last run's test results too,
+      # and a result does not change with what a test does not see (the
+      # fonts, a flake): without it a run after a green one says "(cached)".
+      - name: Go tests
+        run: CGO_ENABLED=0 go test -count=1 ./...
+
+      - name: MyGo vet
+        run: go tool mygo vet .
+
+      - name: Vet the update-check build
+        run: go vet -tags updatecheck .
+
+      - name: Vendored MyGo is MyGo with the patches
+        run: scripts/vendor-mygo.sh --check

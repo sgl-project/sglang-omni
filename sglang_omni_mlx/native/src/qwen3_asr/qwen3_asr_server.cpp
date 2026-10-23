@@ -132,6 +132,7 @@ int main(int argc, char **argv) {
   int decode_interval_ms = 1000;
   int first_decode_ms = 100;
   double max_segment_seconds = 30.0;
+  long long cache_limit_mb = -1;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -145,6 +146,8 @@ int main(int argc, char **argv) {
        [&](const std::string &value) {
          max_segment_seconds = std::stod(value);
        }},
+      {"--cache-limit-mb",
+       [&](const std::string &value) { cache_limit_mb = std::stoll(value); }},
   };
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
@@ -157,10 +160,21 @@ int main(int argc, char **argv) {
                  max_segment_samples <= std::numeric_limits<int>::max())) {
       throw std::invalid_argument(
           "--max-segment-seconds must span one sample to 134217 s");
+    } else if (cache_limit_mb < -1 || cache_limit_mb > (1LL << 30)) {
+      throw std::invalid_argument(
+          "--cache-limit-mb must be 0 to 1073741824, or -1 for MLX's limit");
     } else {
     }
   };
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
+    // Note (hehehai): within one long Final MLX keeps every freed buffer
+    // for reuse (the growing KV cache, the encoder's activations), several
+    // GB beside the weights; a client can bound it. Decoding reuses buffers
+    // of a few sizes, so a few hundred MB keep its speed.
+    if (cache_limit_mb >= 0) {
+      mlx::core::set_cache_limit(static_cast<size_t>(cache_limit_mb) << 20);
+    } else {
+    }
     return std::make_unique<Qwen3ASRModel>(
         model_directory,
         qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
