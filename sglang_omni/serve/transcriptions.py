@@ -8,6 +8,7 @@ import logging
 import math
 import uuid
 from collections.abc import Awaitable
+from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -317,7 +318,7 @@ async def transcribe_planned_upload(
         adapter = speech_to_text.resolve_speech_to_text_adapter(
             getattr(app.state, "architectures", None)
         )
-        chunk_texts = await await_transcription_with_disconnect_abort(
+        chunk_transcripts = await await_transcription_with_disconnect_abort(
             request,
             transcribe_audio_chunks(
                 client,
@@ -348,11 +349,21 @@ async def transcribe_planned_upload(
         else:
             pass
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    chunk_texts = [chunk_transcript.text for chunk_transcript in chunk_transcripts]
+    # verbose_json reports one language, so the first chunk that detected one wins.
+    detected_language = next(
+        (
+            chunk_transcript.language
+            for chunk_transcript in chunk_transcripts
+            if chunk_transcript.language is not None
+        ),
+        None,
+    )
     text = join_transcript_parts(chunk_texts)
     return assemble_chunked_response(
         text=text,
         response_format=form.response_format,
-        language=form.language,
+        language=detected_language or form.language,
         plan=plan,
         chunk_texts=chunk_texts,
         architectures=getattr(app.state, "architectures", None),
@@ -443,6 +454,14 @@ def build_chunk_generate_request(
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ChunkTranscript:
+    """One chunk's transcript and the language the model detected for it."""
+
+    text: str
+    language: str | None
+
+
 async def transcribe_audio_chunks(
     client: Client,
     plan: ChunkPlan,
@@ -458,8 +477,8 @@ async def transcribe_audio_chunks(
     max_concurrent: int,
     condition_on_previous_text: bool,
     adapter: TranscriptionAdapter,
-) -> list[str]:
-    """Transcribe the chunks of a plan, returning one text per chunk.
+) -> list[ChunkTranscript]:
+    """Transcribe the chunks of a plan, returning one transcript per chunk.
 
     Independent chunks run up to max_concurrent at once and return in span
     order. When previous-text conditioning is enabled, capable adapters instead
@@ -477,9 +496,9 @@ async def transcribe_audio_chunks(
         *,
         chunk_prompt: str | None,
         retry: bool = False,
-    ) -> str:
+    ) -> ChunkTranscript:
         if not span.has_speech:
-            return ""
+            return ChunkTranscript(text="", language=None)
         else:
             pass
         async with semaphore:
@@ -516,17 +535,17 @@ async def transcribe_audio_chunks(
                     f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
                 ) from exc
             in_flight.discard(chunk_request_id)
-            return result.text
+            return ChunkTranscript(text=result.text, language=result.language)
 
-    tasks: list[asyncio.Task[str]] = []
+    tasks: list[asyncio.Task[ChunkTranscript]] = []
     try:
         if condition_on_previous_text and adapter.requires_ordered_chunk_decoding:
-            texts: list[str] = []
+            chunk_transcripts: list[ChunkTranscript] = []
             previous_text: str | None = None
             is_first_decoded_chunk = True
             for span in plan.spans:
                 if not span.has_speech:
-                    texts.append("")
+                    chunk_transcripts.append(ChunkTranscript(text="", language=None))
                     continue
                 else:
                     pass
@@ -535,23 +554,23 @@ async def transcribe_audio_chunks(
                     previous_text=previous_text,
                     is_first_decoded_chunk=is_first_decoded_chunk,
                 )
-                text = await run_chunk(span, chunk_prompt=chunk_prompt)
+                chunk_transcript = await run_chunk(span, chunk_prompt=chunk_prompt)
                 should_retry = await asyncio.to_thread(
                     adapter.should_retry_chunk_without_context,
-                    text,
+                    chunk_transcript.text,
                 )
                 if should_retry:
-                    text = await run_chunk(
+                    chunk_transcript = await run_chunk(
                         span,
                         chunk_prompt=None,
                         retry=True,
                     )
                 else:
                     pass
-                texts.append(text)
-                previous_text = text
+                chunk_transcripts.append(chunk_transcript)
+                previous_text = chunk_transcript.text
                 is_first_decoded_chunk = False
-            return texts
+            return chunk_transcripts
         else:
             pass
 
@@ -579,8 +598,8 @@ async def transcribe_audio_chunks(
 
 async def await_transcription_with_disconnect_abort(
     request: Request,
-    work: Awaitable[list[str]],
-) -> list[str]:
+    work: Awaitable[list[ChunkTranscript]],
+) -> list[ChunkTranscript]:
     """Run chunked transcription while watching for client disconnect.
 
     The non-stream handler has no response-owned disconnect watcher, so
