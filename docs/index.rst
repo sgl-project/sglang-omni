@@ -190,6 +190,7 @@ Supported Models
    developer_reference/full_duplex_bench.md
    developer_reference/full_duplex_metrics.md
    developer_reference/tts_bench.md
+   developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
    developer_reference/omni_offline_bench.md
    developer_reference/rl_admin_control.md
