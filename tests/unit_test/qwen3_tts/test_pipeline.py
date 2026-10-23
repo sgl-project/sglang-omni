@@ -13,6 +13,7 @@ import time
 import types
 from collections import deque
 from collections.abc import Iterable, Iterator
+from concurrent.futures import Future
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
@@ -1970,10 +1971,10 @@ def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> 
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="requires two visible CUDA devices",
 )
-def test_qwen3_tts_preprocessing_pool_threads_stay_on_the_stream_device_after_leaving_it(
+def test_qwen3_tts_preprocessing_pool_thread_stays_on_the_stream_card(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On a second card, a preprocessing pool thread went back to card 0 on leaving its stream and opened a context there."""
+    """A preprocessing pool thread stays on its stream's card after leaving the stream, so a stage on a second card opens no context on card 0."""
 
     class FakeModel:
         model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
@@ -2012,29 +2013,35 @@ def test_qwen3_tts_preprocessing_pool_threads_stay_on_the_stream_device_after_le
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="requires two visible CUDA devices",
 )
-def test_qwen3_tts_reference_code_batcher_stays_on_the_encoder_device_after_leaving_its_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On a second card, the reference encoder thread went back to card 0 on leaving its stream and opened a context there."""
+def test_qwen3_tts_reference_code_batcher_thread_stays_on_the_encoder_card() -> None:
+    """The reference-code batcher thread stays on its encoder's card after leaving the encode stream, so a stage on a second card opens no context on card 0."""
+    device = torch.device("cuda", 1)
+    callback_added = threading.Event()
+
+    def encode(values: torch.Tensor) -> torch.Tensor:
+        callback_added.wait()
+        return torch.zeros(
+            (1, 2, values.shape[-1] // 8), dtype=torch.long, device=device
+        )
+
+    completing_thread_device_indices: list[int] = []
+
+    def record_completing_thread_device(completed_future: Future[torch.Tensor]) -> None:
+        completing_thread_device_indices.append(torch.cuda.current_device())
+
     batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
-        fake_speech_tokenizer(device=torch.device("cuda", 1)),
+        fake_speech_tokenizer(encode, device=device),
     )
-    thread_device_indices: list[int] = []
-    synchronize_outcomes = batcher.synchronize_outcomes
-
-    def record_device_then_synchronize(
-        outcomes: dict[int, torch.Tensor | Exception],
-    ) -> None:
-        thread_device_indices.append(torch.cuda.current_device())
-        synchronize_outcomes(outcomes)
-
-    monkeypatch.setattr(batcher, "synchronize_outcomes", record_device_then_synchronize)
     try:
-        batcher.encode(np.zeros(16, dtype=np.float32), 24000)
+        future = batcher.submit(np.zeros(16, dtype=np.float32), 24000)
+        future.add_done_callback(record_completing_thread_device)
+        callback_added.set()
+        future.result(timeout=10)
     finally:
+        callback_added.set()
         batcher.close()
 
-    assert thread_device_indices == [1]
+    assert completing_thread_device_indices == [1]
 
 
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
