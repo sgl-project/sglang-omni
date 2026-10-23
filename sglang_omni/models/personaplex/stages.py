@@ -250,7 +250,7 @@ def create_lm_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     context_length: int | None = None,
-    depformer_cuda_graph_batch_sizes: list[int] | None = None,
+    depformer_cuda_graph_batch_sizes: list[int],
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -276,6 +276,7 @@ def create_lm_executor(
 def create_session_lm_executor(
     model_path: str,
     *,
+    depformer_cuda_graph_batch_sizes: list[int],
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -290,6 +291,7 @@ def create_session_lm_executor(
         # Note (Junnan Li): A unit decodes one or two frames, so async
         # lookahead past it would only be discarded.
         enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
     )
     return builder.build(
         model_path,

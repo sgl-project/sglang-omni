@@ -43,6 +43,7 @@ from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
 
+
 @dataclass(kw_only=True)
 class DecodeFeedback:
     user_rows: torch.Tensor

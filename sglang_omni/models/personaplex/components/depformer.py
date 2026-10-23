@@ -114,7 +114,7 @@ class Depformer(nn.Module):
         key_value_caches: list[torch.Tensor] | None = None,
         output_codes: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Spell out one frame of agent codes. Subsequent calls do not overwrite them.
+        """Spell out one frame of agent codes.
 
         Args:
             text_token_B: the frame's sampled text token.
@@ -123,6 +123,8 @@ class Depformer(nn.Module):
                 where the step is free. A forced code still conditions the
                 steps after it, as teacher forcing does in the reference.
             sample: [B, card] float logits → [B] ids.
+            key_value_caches: Preallocated per-layer caches reused during generation.
+            output_codes: Preallocated [B, steps] result overwritten by this call.
         """
         spec = self.spec
         caches = (

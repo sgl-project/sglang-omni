@@ -30,7 +30,13 @@ CODE2WAV_STAGE = "code2wav"
 DEFAULT_LM_MAX_RUNNING_REQUESTS = 1
 
 
-class PersonaPlexLMFactoryArgs(FactoryArgs):
+class PersonaPlexDepformerFactoryArgs(FactoryArgs):
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+    )
+
+
+class PersonaPlexLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
     enable_async_decode: bool = False
 
 
@@ -38,14 +44,10 @@ class PersonaPlexLMStageConfig(EngineStageConfig):
     factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
 
 
-class PersonaPlexLMFactoryArgs(FactoryArgs):
-    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
-        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+class PersonaPlexSessionLMStageConfig(EngineStageConfig):
+    factory: PersonaPlexDepformerFactoryArgs = Field(
+        default_factory=PersonaPlexDepformerFactoryArgs
     )
-
-
-class PersonaPlexLMStageConfig(EngineStageConfig):
-    factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
 
 
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
@@ -129,11 +131,11 @@ def personaplex_session_stages_factory() -> list[StageConfig]:
             gpu=0,
             next=LM_STAGE,
         ),
-        EngineStageConfig(
+        PersonaPlexSessionLMStageConfig(
             name=LM_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_lm_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=PersonaPlexDepformerFactoryArgs(dtype="bfloat16"),
             gpu=0,
             engine=EngineArgs(mem_fraction_static=0.3),
             next=CODE2WAV_STAGE,
@@ -235,10 +237,10 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
         "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
     )
     is_realtime_only: ClassVar[bool] = True
-    # Note (wilsonzheng0327): The offline LM and code2wav factory fields have no
-    # session counterpart.
+    # Note (wilsonzheng0327): Async LM decode and offline code2wav factory fields
+    # have no session counterpart.
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: EngineStageConfig
+        LM_STAGE: PersonaPlexSessionLMStageConfig
     }
 
     max_sessions: int = Field(default=1, ge=1)

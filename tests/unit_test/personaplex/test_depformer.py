@@ -2,7 +2,6 @@
 """Depformer weight slicing and teacher forcing, on a scaled-down spec."""
 
 from itertools import groupby
-from typing import Literal
 
 import pytest
 import torch
@@ -10,7 +9,6 @@ import torch
 from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
 from sglang_omni.models.personaplex.components.depformer import Depformer
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
-    CapturedDepformerGraph,
     DepformerCudaGraphRunner,
 )
 from sglang_omni.models.personaplex.sampling import (
@@ -264,12 +262,11 @@ def test_each_row_draws_from_its_own_generator():
     assert [int(picks[3]) for picks in batched] == alone(3, 8)
 
 
-@pytest.mark.parametrize("batch_sizes", [(), (1,), (1, 4)])
 @torch.inference_mode()
-def test_cuda_graph_runner_falls_back_on_cpu(batch_sizes: tuple[int, ...]) -> None:
+def test_cuda_graph_runner_falls_back_on_cpu() -> None:
     model = Depformer(SPEC)
     model.load_reference_weights(reference_weights(8))
-    runner = DepformerCudaGraphRunner(model, batch_sizes)
+    runner = DepformerCudaGraphRunner(model, (1, 4))
     hidden_states = torch.randn(3, SPEC.input_dim)
     text_tokens = torch.arange(3)
     forced_codes = torch.full((3, SPEC.steps), -1, dtype=torch.long)
@@ -310,6 +307,7 @@ def test_graph_batch_codes_and_rng_match_eager(
     model = Depformer(SPEC).to(device="cuda", dtype=dtype)
     model.load_reference_weights(weights)
     runner = DepformerCudaGraphRunner(model, (1, 2, 4, 8, 16, 32))
+    runner.capture_graphs(AudioSampling(0.8, 25), max_batch_size=batch_size)
     hidden_states = torch.randn(batch_size, SPEC.input_dim, device="cuda", dtype=dtype)
     text_tokens = torch.arange(batch_size, device="cuda")
     forced_codes = torch.full(
@@ -390,31 +388,16 @@ def test_graph_batch_codes_and_rng_match_eager(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize(
-    "fallback", ["disabled", "oversized", "cache_full", "capture_failure"]
-)
+@pytest.mark.parametrize("fallback", ["disabled", "oversized"])
 @torch.inference_mode()
-def test_graph_supported_fallbacks(
-    monkeypatch: pytest.MonkeyPatch,
-    fallback: Literal["disabled", "oversized", "cache_full", "capture_failure"],
-) -> None:
+def test_graph_supported_fallbacks(fallback: str) -> None:
     model = Depformer(SPEC).cuda()
     model.load_reference_weights(reference_weights(8))
     runner = DepformerCudaGraphRunner(model, () if fallback == "disabled" else (1,))
     batch_size = 2 if fallback == "oversized" else 1
-    if fallback == "cache_full":
-        monkeypatch.setattr(
-            "sglang_omni.models.personaplex.components.depformer_cuda_graph.MAX_CACHED_GRAPHS",
-            0,
-        )
-    elif fallback == "capture_failure":
-
-        def fail_capture(
-            layout: tuple[tuple[int, AudioSampling], ...]
-        ) -> CapturedDepformerGraph:
-            raise RuntimeError("simulated capture failure")
-
-        monkeypatch.setattr(runner, "capture", fail_capture)
+    sampling = AudioSampling(0.8, 25)
+    if fallback == "oversized":
+        runner.capture_graphs(sampling, max_batch_size=1)
     else:
         pass
     hidden_states = torch.randn(batch_size, SPEC.input_dim, device="cuda")
@@ -425,7 +408,7 @@ def test_graph_supported_fallbacks(
     runs = [
         SamplingRun(
             row_slice=slice(0, batch_size),
-            sampling=AudioSampling(0.8, 25),
+            sampling=sampling,
             generators=[None] * batch_size,
         )
     ]

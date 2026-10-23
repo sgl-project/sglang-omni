@@ -17,7 +17,12 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
+from sglang_omni.models.personaplex.architecture import (
+    DEFAULT_AUDIO_TEMPERATURE,
+    DEFAULT_AUDIO_TOP_K,
+    MOSHI_WEIGHTS_NAME,
+    TEXT_CARD,
+)
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
 )
@@ -34,6 +39,7 @@ from sglang_omni.models.personaplex.request_builders import (
     build_lm_request,
     lm_stream_output_builder,
 )
+from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.platforms import current_platform
@@ -88,14 +94,14 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         self,
         *,
         enable_async_decode: bool,
+        depformer_cuda_graph_batch_sizes: list[int],
         max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length: int | None = None,
-        depformer_cuda_graph_batch_sizes: list[int] | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.enable_async_decode = enable_async_decode
         self.depformer_cuda_graph_batch_sizes: tuple[int, ...] = tuple(
-            depformer_cuda_graph_batch_sizes or ()
+            depformer_cuda_graph_batch_sizes
         )
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
@@ -164,10 +170,20 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         output_proc: SGLangOutputProcessor,
     ) -> PersonaPlexModelRunner:
         runner = PersonaPlexModelRunner(model_worker, output_proc)
-        if self.depformer_cuda_graph_batch_sizes:
-            runner.depformer_cuda_graph = DepformerCudaGraphRunner(
+        server_args = model_worker.server_args
+        if (
+            current_platform.is_cuda()
+            and not server_args.disable_cuda_graph
+            and self.depformer_cuda_graph_batch_sizes
+        ):
+            graph_runner = DepformerCudaGraphRunner(
                 runner.model.depformer, self.depformer_cuda_graph_batch_sizes
             )
+            graph_runner.capture_graphs(
+                AudioSampling(DEFAULT_AUDIO_TEMPERATURE, DEFAULT_AUDIO_TOP_K),
+                max_batch_size=server_args.max_running_requests,
+            )
+            runner.depformer_cuda_graph = graph_runner
         else:
             pass
         return runner
@@ -202,10 +218,13 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         *,
         tokenizer: SentencePieceProcessor,
         enable_async_decode: bool,
+        depformer_cuda_graph_batch_sizes: list[int],
         context_length: int | None = None,
     ) -> None:
         super().__init__(
-            enable_async_decode=enable_async_decode, context_length=context_length
+            enable_async_decode=enable_async_decode,
+            depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
+            context_length=context_length,
         )
         self.tokenizer = tokenizer
 
