@@ -311,12 +311,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         )
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
-        """Reject incompatible runtime settings before allocating engine resources.
-        NPU pre-LM encoding uses a separate stream from language-model execution; with either encoder or decode graphs enabled, a shared Host queue can stall cross-stream submission. Per-stream queues require TaskQueue delivery and asynchronous launches, so reject settings that disable either rather than overriding explicit user choices.
-        """
+        """Reject incompatible runtime settings before allocating engine resources."""
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
+        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream.
         if (
             current_platform.is_npu()
             and self.enable_pre_lm_encoder
