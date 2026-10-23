@@ -17,6 +17,7 @@ from sglang_omni.proto.streams import (
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
+    REPLY_DELIVERED,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -97,6 +98,21 @@ def test_speech_during_a_reply_interrupts_it_and_the_next_turn_follows(dialog) -
     truncate = outputs[-1]
     assert truncate.format == TRUNCATE_FORMAT
     assert truncate.turn is None and truncate.payload == {"turn": 1, "t_ms": 250.0}
+
+
+def test_the_delivered_audio_of_an_interrupted_reply_reaches_the_model_as_a_truncate(
+    dialog,
+) -> None:
+    """A client that sends no truncate used to leave the whole generated reply in history; the graph's report of the audio it delivered bounds it instead."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control(COMMIT))
+    append(hooks, context, control(TURN_STARTED, 1))
+    hooks.control(IDENTITY, control(INTERRUPT))
+    append(hooks, context, control(REPLY_DELIVERED, 1, audio_ms=500.0))
+    delivered = outputs[-1]
+    assert delivered.format == TRUNCATE_FORMAT
+    assert delivered.turn is None and delivered.payload == {"turn": 1, "t_ms": 500.0}
 
 
 def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:

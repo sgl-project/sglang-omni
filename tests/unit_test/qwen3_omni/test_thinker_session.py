@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The thinker session keeps one native turn per append and refills what an interrupted reply's listener heard."""
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -8,6 +9,7 @@ import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni import thinker_session
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.models.qwen3_omni.thinker_session import (
     CODEC_FRAME_MS,
     PREFILL_TEXT_ROWS,
@@ -16,7 +18,17 @@ from sglang_omni.models.qwen3_omni.thinker_session import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import CONTROL
+from sglang_omni.proto.streams import (
+    COMMIT,
+    CONTROL,
+    INTERRUPT,
+    PCM16,
+    REPLY_DELIVERED,
+    SESSION_CONTROL,
+    TRUNCATE,
+    TURN_STARTED,
+)
+from sglang_omni.scheduling.session import SessionContext
 
 IDENTITY = SessionIdentity("session")
 END = 99
@@ -104,6 +116,37 @@ def truncate(turn: int, **fields: object) -> TimedChunk:
     )
 
 
+def session_control(
+    event: str, turn: int | None = None, **fields: object
+) -> TimedChunk:
+    return TimedChunk(
+        CONTROL, 0, 0, 0, {"type": event, **fields}, format=SESSION_CONTROL, turn=turn
+    )
+
+
+def interrupted_dialog() -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """A dialog whose first turn's reply was interrupted after it started; what it tells the thinker from here on are truncates."""
+    hooks = QwenInputHooks(
+        max_utterance_seconds=1, max_queued_turns=2, max_utterance_frames=4
+    )
+    outputs: list[TimedChunk] = []
+    hooks.open(IDENTITY, OmniRequest(None))
+    hooks.attach_output_stream(IDENTITY, outputs.append)
+    context = SessionContext(
+        session_identity=IDENTITY, cancelled=threading.Event(), emit=outputs.append
+    )
+    stage_payload = StagePayload("in", OmniRequest(None), {})
+    hooks.append(
+        TimedChunk("audio", 0, 20, 0, b"\x01\x00" * 320, format=PCM16),
+        stage_payload,
+        context,
+    )
+    hooks.append(session_control(COMMIT), stage_payload, context)
+    hooks.append(session_control(TURN_STARTED, 1), stage_payload, context)
+    hooks.control(IDENTITY, session_control(INTERRUPT))
+    return hooks, outputs, context
+
+
 def test_each_turn_is_one_native_append_after_the_last_reply(
     adapter: QwenThinkerSessionAdapter,
 ) -> None:
@@ -157,6 +200,50 @@ def test_without_truncate_the_whole_generated_reply_stays(
     abort(adapter, [51, 52])
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert second.req.origin_input_ids == SYSTEM_PREFIX + [5, 51, 52, END, NEWLINE, 7]
+
+
+@pytest.mark.parametrize(
+    ("client_ms", "is_client_first", "heard"),
+    [
+        (None, False, PREFILL_TEXT_ROWS + 2),
+        (CODEC_FRAME_MS, False, PREFILL_TEXT_ROWS + 1),
+        (4 * CODEC_FRAME_MS, False, PREFILL_TEXT_ROWS + 2),
+        (4 * CODEC_FRAME_MS, True, PREFILL_TEXT_ROWS + 2),
+    ],
+)
+def test_an_interrupted_reply_keeps_at_most_the_smaller_of_delivered_and_heard(
+    adapter: QwenThinkerSessionAdapter,
+    client_ms: float | None,
+    is_client_first: bool,
+    heard: int,
+) -> None:
+    """The graph delivered two codec frames of the reply when the interrupt came: the history keeps those without a client truncate, fewer when the client heard less, and never more, whichever report reaches the dialog first."""
+    hooks, dialog_outputs, context = interrupted_dialog()
+    adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    generated = [51, 52, 53, 54, 55, 56, 57, 58]
+    abort(adapter, generated)
+    reports = [session_control(REPLY_DELIVERED, 1, audio_ms=2.0 * CODEC_FRAME_MS)]
+    if client_ms is None:
+        pass
+    elif is_client_first:
+        reports.insert(0, session_control(TRUNCATE, t_ms=client_ms))
+    else:
+        reports.append(session_control(TRUNCATE, t_ms=client_ms))
+    for report in reports:
+        hooks.append(report, StagePayload("in", OmniRequest(None), {}), context)
+    for output in dialog_outputs:
+        if output.format == TRUNCATE_FORMAT:
+            adapter.control(IDENTITY, output)
+        else:
+            pass
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    assert second.req.origin_input_ids == SYSTEM_PREFIX + [
+        5,
+        *generated[:heard],
+        END,
+        NEWLINE,
+        7,
+    ]
 
 
 def test_truncating_past_the_end_of_a_finished_reply_keeps_its_kv(

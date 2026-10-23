@@ -24,6 +24,7 @@ from sglang_omni.proto.streams import (
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
+    REPLY_DELIVERED,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -114,6 +115,21 @@ class QwenInputHooks(SessionHooks):
             )
         )
 
+    def emit_truncate(
+        self, state: QwenInputState, turn: int | None, audio_end_ms: float
+    ) -> None:
+        # Note (Junnan Li): The truncate names its reply in the payload; a chunk of an interrupted turn would not pass the model node's edge.
+        state.emit(
+            TimedChunk(
+                CONTROL,
+                state.input_end_ms,
+                0,
+                0,
+                {"turn": turn, "t_ms": audio_end_ms},
+                format=TRUNCATE_FORMAT,
+            )
+        )
+
     def drop_unreachable_frames(self, state: QwenInputState) -> None:
         """Keep the frames an utterance can still take: from the open one's start, else from the oldest audio the segmenter holds."""
         if state.utterance is not None and state.utterance_start_ms is not None:
@@ -189,22 +205,15 @@ class QwenInputHooks(SessionHooks):
             return payload
         elif event_type == TRUNCATE:
             if state.reply_turn is not None:
-                # Note (Junnan Li): The truncate names its reply in the payload; a chunk of an interrupted turn would not pass the model node's edge.
-                state.emit(
-                    TimedChunk(
-                        CONTROL,
-                        state.input_end_ms,
-                        0,
-                        0,
-                        {
-                            "turn": state.reply_turn,
-                            "t_ms": float(chunk.payload["t_ms"]),
-                        },
-                        format=TRUNCATE_FORMAT,
-                    )
+                self.emit_truncate(
+                    state, state.reply_turn, float(chunk.payload["t_ms"])
                 )
             else:
                 pass
+            return payload
+        elif event_type == REPLY_DELIVERED:
+            # Note (ruoyu): The thinker only ever cuts a reply further, so this report and the client's truncate keep the smaller of the delivered and the heard audio in either order, and the delivered audio alone bounds a reply the client never truncates.
+            self.emit_truncate(state, chunk.turn, float(chunk.payload["audio_ms"]))
             return payload
         elif event_type == SPEECH_STARTED and state.answering is not None:
             self.interrupt(state)
