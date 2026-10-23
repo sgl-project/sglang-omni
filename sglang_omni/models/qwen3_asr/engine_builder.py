@@ -315,7 +315,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
-        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream.
+        # note (wangyao-i): With pre-LM encoding on NPU, encoder and language-model work use separate streams. If either encoder or decode graphs are enabled, a shared Host queue can stall cross-stream submission; this guard covers that graph configuration, not eager-only execution or execution without the pre-LM encoder.
+        # Per-stream Host queues require TASK_QUEUE_ENABLE=1 or 2. ASCEND_LAUNCH_BLOCKING=1 forces synchronous launches, which are incompatible with this asynchronous graph path; independent Host queues do not replace device-stream synchronization.
+        # Validate before infrastructure allocation so incompatible explicit settings fail at startup instead of during graph execution. The pipeline supplies the default before worker startup; direct engine callers must configure the runtime themselves, so this check must not silently override their environment.
         if (
             current_platform.is_npu()
             and self.enable_pre_lm_encoder
