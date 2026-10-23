@@ -25,6 +25,7 @@ from websockets.asyncio.server import ServerConnection
 from benchmarks.duplex.client import TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.profiles import PROFILES, DuplexProfile
+from benchmarks.duplex.reference_audio import analyze_variant
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.duplex.v15_audio import TURN_BASED_BARGE_IN_CUT, reconstruct_output
@@ -474,6 +475,17 @@ def test_client_records_a_passing_turn_based_session(
     transcript = json.loads((tmp_path / "transcript.json").read_text())
     assert transcript["provenance"].startswith("turn_based server transcript deltas")
     assert transcript["text"] == {"response.output_audio_transcript.delta": "hihi"}
+
+    (tmp_path / "input.pcm").write_bytes(FIXTURE_PCM)
+    exported, _, audio = analyze_variant(
+        tmp_path,
+        TraceFormat.TURN_BASED_PCM16,
+        hashlib.sha256(FIXTURE_PCM).hexdigest(),
+        receipts_required=True,
+    )
+    assert exported["window"]["valid"], exported["window"]["reasons"]
+    assert audio is not None and len(audio) == len(FIXTURE_PCM) // 2
+    assert len(exported["lifecycle"]["protocol_anomalies"]) == int(reject_first)
 
 
 def test_client_records_an_empty_turn(tmp_path: Path) -> None:

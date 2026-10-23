@@ -21,6 +21,7 @@ from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
+from benchmarks.duplex.reference_export import export_runs
 from benchmarks.duplex.serving import summarize_level
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
@@ -334,6 +335,16 @@ def test_recording_reports_admission_separately_from_runtime_failure(
             assert report["cases"][0]["artifact_errors"] == []
         else:
             pass
+
+    exported = export_runs([output], tmp_path / "reference", "fixture")
+    assert exported["counts"]["eligible_variants"] == (2 if failure_kind is None else 0)
+    if failure_kind is None:
+        for variant in exported["samples"][0]["variants"].values():
+            assert len(variant["lifecycle"]["protocol_anomalies"]) == denials
+        assert (tmp_path / "reference/user_backchannel/1/output.wav").is_file()
+        assert (tmp_path / "reference/user_backchannel/1/clean_output.wav").is_file()
+    else:
+        pass
 
 
 def test_run_samples_records_both_variants_over_a_real_websocket(

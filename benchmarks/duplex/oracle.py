@@ -19,6 +19,7 @@ from benchmarks.duplex.oracle_models import (
     StatusDetails,
     TraceRecord,
     WireEvent,
+    is_admission_rejection_for_update,
     turn_detection_type,
 )
 from benchmarks.duplex.profiles import (
@@ -120,6 +121,23 @@ def pcm_bytes(value: str | None) -> bytes:
             return pcm_data
 
 
+def admission_rejection_result(
+    admission_denials: int, message: str
+) -> dict[str, JsonValue]:
+    """A recording rejected before audio input, without a separate runtime failure."""
+    return {
+        "status": "fail",
+        "failure_kind": "admission_rejected",
+        "violations": [message],
+        "coverage": {"input_output_overlap": False},
+        "metrics": {
+            "input_audio_s": 0.0,
+            "output_audio_s": 0.0,
+            "admission_denials": admission_denials,
+        },
+    }
+
+
 def evaluate_trace(
     records: list[dict[str, JsonValue]],
     *,
@@ -171,6 +189,7 @@ def evaluate_trace(
     input_byte_count = output_byte_count = next_sequence = admissions = 0
     speech_starts = interruptions = 0
     session_id = requested_type = None
+    pending_update_id: str | None = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
     drain_after_eos_s = close_ack_s = None
@@ -227,6 +246,11 @@ def evaluate_trace(
             check(not closed, f"{event_type} after session.closed")
             if direction == "send":
                 if event_type == "session.update":
+                    check(
+                        pending_update_id is None,
+                        "session.update while another update is pending",
+                    )
+                    pending_update_id = event.event_id
                     check(
                         session_id is not None, "session.update before session.created"
                     )
@@ -308,6 +332,11 @@ def evaluate_trace(
                     "missing session ID",
                 )
             elif event_type == "session.updated":
+                check(
+                    event.client_event_id == pending_update_id,
+                    "session.updated does not acknowledge the pending update",
+                )
+                pending_update_id = None
                 check(
                     event.client_event_id not in rejected_updates,
                     "session.updated acknowledges a rejected update",
@@ -595,15 +624,22 @@ def evaluate_trace(
                     else None
                 )
                 if (
-                    error.get("code") == "admission_rejected"
-                    and event.sglang.fatal is False
-                    and not updated
+                    not updated
                     and rejected_command is not None
                     and rejected_command.event.type == "session.update"
                     and rejected_event_id not in rejected_updates
+                    and is_admission_rejection_for_update(
+                        record.event, pending_update_id
+                    )
                 ):
+                    pending_update_id = None
                     rejected_updates.add(rejected_event_id)
                     admissions += 1
+                    check(
+                        max_admission_attempts is None
+                        or admissions <= max_admission_attempts + 1,
+                        f"admission rejections exceed the recorded retry limit {max_admission_attempts}",
+                    )
                 else:
                     violations.append(
                         f"server error: code={error.get('code')} "
@@ -618,6 +654,7 @@ def evaluate_trace(
         not updated
         and admissions
         and not violations
+        and (max_admission_attempts is None or admissions == max_admission_attempts + 1)
         and (closed or not event_ids["receive"])
         and counts["send", "session.update"] == len(rejected_updates)
         and (
@@ -627,17 +664,9 @@ def evaluate_trace(
             == 1
         )
     ):
-        return {
-            "status": "fail",
-            "failure_kind": "admission_rejected",
-            "violations": ["session admission rejected before audio input"],
-            "coverage": {"input_output_overlap": False},
-            "metrics": {
-                "input_audio_s": 0.0,
-                "output_audio_s": 0.0,
-                "admission_denials": admissions,
-            },
-        }
+        return admission_rejection_result(
+            admissions, "session admission rejected before audio input"
+        )
     else:
         pass
 
@@ -1048,18 +1077,11 @@ def evaluate_legacy_trace(
         and not event_ids["send"]
         and not event_ids["receive"]
         and not violations
+        and (max_admission_attempts is None or admissions == max_admission_attempts + 1)
     ):
-        return {
-            "status": "fail",
-            "failure_kind": "admission_rejected",
-            "violations": ["connection admission rejected before session creation"],
-            "coverage": {"input_output_overlap": False},
-            "metrics": {
-                "input_audio_s": 0.0,
-                "output_audio_s": 0.0,
-                "admission_denials": admissions,
-            },
-        }
+        return admission_rejection_result(
+            admissions, "connection admission rejected before session creation"
+        )
     else:
         pass
 

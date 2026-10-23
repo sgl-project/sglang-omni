@@ -364,9 +364,45 @@ def test_client_does_not_retry_unrelated_or_unsafe_errors(
     assert sum(event["type"] == "session.update" for event in peer.received) == 1
 
 
+def test_admission_rejection_does_not_overwrite_an_unrelated_error(
+    tmp_path: Path,
+) -> None:
+    """A later admission rejection must not clear a preceding protocol failure."""
+
+    class ErrorPeer(DuplexPeer):
+        async def send(
+            self, websocket: ServerConnection, event: dict[str, JsonValue]
+        ) -> None:
+            if event["type"] == "error":
+                await super().send(
+                    websocket,
+                    {
+                        "type": "error",
+                        "sglang": {"fatal": False},
+                        "error": {
+                            "code": "invalid_request",
+                            "message": "invalid configuration",
+                        },
+                    },
+                )
+            else:
+                pass
+            await super().send(websocket, event)
+
+    peer = ErrorPeer(admission_denials=1)
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
+    assert evaluate_trace(records)["failure_kind"] == "runtime"
+    assert sum(event["type"] == "session.update" for event in peer.received) == 1
+    assert not input_append_records(records)
+
+
 @pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("handshake_denied", [False, True])
 def test_admission_backoff_obeys_deadline_and_cancellation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+    handshake_denied: bool,
 ) -> None:
     """Backoff must stay inside the session deadline and release every task/socket."""
 
@@ -385,7 +421,18 @@ def test_admission_backoff_obeys_deadline_and_cancellation(
         monkeypatch.setattr(client.asyncio, "sleep", pause_backoff)
         peer = DuplexPeer(admission_denials=1)
         trace_path = tmp_path / "trace.jsonl"
-        async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
+
+        def process_request(
+            connection: ServerConnection, request: Request
+        ) -> Response | None:
+            if handshake_denied:
+                return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "busy\n")
+            else:
+                return None
+
+        async with websockets.serve(
+            peer.handler, "127.0.0.1", 0, process_request=process_request
+        ) as server:
             port = server.sockets[0].getsockname()[1]
             recording = asyncio.create_task(
                 run_session(
@@ -404,7 +451,9 @@ def test_admission_backoff_obeys_deadline_and_cancellation(
                 await recording
         assert asyncio.all_tasks() <= existing_tasks
         assert not peer.pcm
-        assert sum(event["type"] == "session.update" for event in peer.received) == 1
+        assert sum(event["type"] == "session.update" for event in peer.received) == int(
+            not handshake_denied
+        )
         assert json.loads((tmp_path / "input-send-receipts.json").read_text()) == {
             "appends": []
         }
@@ -413,9 +462,14 @@ def test_admission_backoff_obeys_deadline_and_cancellation(
     records = asyncio.run(capture())
     if not cancel:
         assert "Session timeout" in records[-1]["event"]["message"]
-        assert evaluate_trace(records)["failure_kind"] == "runtime"
     else:
-        pass
+        assert "Session cancelled" in records[-1]["event"]["message"]
+    assert (
+        evaluate_trace(records, max_admission_attempts=ADMISSION_RETRIES)[
+            "failure_kind"
+        ]
+        == "runtime"
+    )
 
 
 def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:

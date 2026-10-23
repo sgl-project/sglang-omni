@@ -14,7 +14,10 @@ from typing import Literal, TypedDict
 import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from benchmarks.duplex.oracle_models import turn_detection_type
+from benchmarks.duplex.oracle_models import (
+    is_admission_rejection_for_update,
+    turn_detection_type,
+)
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 SAMPLE_RATE = 16000
@@ -195,6 +198,8 @@ async def run_session(
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
                 fatal = False
+                has_nonretryable_error = False
+                pending_update_id: str | None = None
 
                 async def send(
                     event_type: Literal[
@@ -208,6 +213,7 @@ async def run_session(
                     audio: str | None = None,
                     sglang: InputAudioMetadata | None = None,
                 ) -> str:
+                    nonlocal pending_update_id
                     event_id = uuid.uuid4().hex
                     event: dict[str, JsonValue] = {
                         "type": event_type,
@@ -223,6 +229,13 @@ async def run_session(
                         pass
                     if sglang is not None:
                         event["sglang"] = sglang
+                    else:
+                        pass
+                    if (
+                        event_type == "session.update"
+                        and "session.updated" not in latest
+                    ):
+                        pending_update_id = event_id
                     else:
                         pass
                     send_started_s = record("send", event)
@@ -256,7 +269,7 @@ async def run_session(
                     return receipt.is_set() and not aborted.is_set()
 
                 async def receive() -> None:
-                    nonlocal fatal
+                    nonlocal fatal, has_nonretryable_error, pending_update_id
                     async for frame in websocket:
                         try:
                             event = json.loads(frame)
@@ -279,6 +292,16 @@ async def run_session(
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if event_type == "error":
+                            if (
+                                not legacy
+                                and "session.updated" not in latest
+                                and is_admission_rejection_for_update(
+                                    event, pending_update_id
+                                )
+                            ):
+                                pending_update_id = None
+                            else:
+                                has_nonretryable_error = True
                             # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
                             fatal = fatal or bool(
@@ -302,24 +325,19 @@ async def run_session(
                             )
                             if await settle("session.updated"):
                                 break
+                            elif (
+                                legacy
+                                or fatal
+                                or has_nonretryable_error
+                                or "session.updated" in latest
+                                or "session.closed" in latest
+                                or not is_admission_rejection_for_update(
+                                    latest.get("error", {}), update_event_id
+                                )
+                            ):
+                                break
                             else:
-                                error_event = latest.get("error", {})
-                                error = error_event.get("error")
-                                extension = error_event.get("sglang")
-                                if (
-                                    legacy
-                                    or fatal
-                                    or "session.updated" in latest
-                                    or "session.closed" in latest
-                                    or not isinstance(extension, dict)
-                                    or extension.get("fatal") is not False
-                                    or not isinstance(error, dict)
-                                    or error.get("code") != "admission_rejected"
-                                    or error.get("event_id") != update_event_id
-                                ):
-                                    break
-                                else:
-                                    admission_denials += 1
+                                admission_denials += 1
                             if admission_denials > ADMISSION_RETRIES:
                                 break
                             else:
@@ -443,6 +461,9 @@ async def run_session(
 
         try:
             await asyncio.wait_for(exchange(), timeout=timeout_s)
+        except asyncio.CancelledError:
+            record("error", {"message": "Session cancelled"})
+            raise
         except asyncio.TimeoutError:
             record("error", {"message": f"Session timeout after {timeout_s}s"})
         except (

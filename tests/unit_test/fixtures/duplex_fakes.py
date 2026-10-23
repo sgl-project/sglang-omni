@@ -463,6 +463,9 @@ class DuplexPeer:
                             "type": "realtime",
                             "model": "fixture",
                             "output_modalities": ["audio"],
+                            "audio": {
+                                "output": {"format": GRANTED["output_audio_format"]}
+                            },
                             "sglang": {"granted": GRANTED},
                         },
                     },

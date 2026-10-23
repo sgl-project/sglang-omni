@@ -520,11 +520,7 @@ traces and reports when comparing historical runs.
 acknowledgment times. They are not audible speech onset and not acoustic stop
 time.
 
-A case that is healthy but did not exercise its scenario grades
-`not_exercised`, never `pass`: continuous duplex requires input sent between
-observed output audio packets. A second concurrent connection is refused with HTTP 503 and
-retried up to three times before any input is sent; that is admission behavior,
-not concurrency support.
+A case that is healthy but did not exercise its scenario grades `not_exercised`, never `pass`: continuous duplex requires input sent between observed output audio packets. HTTP 503 and a correlated, nonfatal initial `admission_rejected` share a budget of three retries before audio input, with a 250 ms backoff inside the session deadline. In-session retries use the same WebSocket for native and turn-based profiles; the legacy conversation profile retries HTTP 503 only.
 
 Declared limits, also written into `manifest.config`: explicit response
 cancellation, automatic speech interruption, concurrent native sessions, session
@@ -589,16 +585,11 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --output results/minicpmo-v15 --timeout 90
 ```
 
-`--concurrency N` processes up to N variants at once, including post-processing.
-Connections above the server's `max_sessions` may receive HTTP 503; a session
-fails if admission retries are exhausted. Latencies recorded under load are not
-comparable to N=1, and `run.json` gains a `load`
-block (p50/p90/max initial delay, pacing violations, admission diagnostics).
-`load.input_pacing_violations` counts variants with measured out-of-tolerance
-appends; a session that sends no appends is excluded. The
-`load.variants_with_admission_denials` count includes each variant with recorded
-HTTP 503 admission denials once, even if a retry succeeds and the variant passes.
-Final outcomes remain in `summary.variants` and `load.variants_passed`.
+`--concurrency N` processes up to N variants at once, including post-processing. Connections may receive HTTP 503 before the WebSocket upgrade or `admission_rejected` during initial session configuration. Exhausted admission keeps status `fail` with `failure_kind: admission_rejected`; runtime, protocol and cleanup failures use `failure_kind: runtime`. Latencies recorded under load are not comparable to N=1, and `run.json` includes a `load` block with latency, pacing and admission diagnostics.
+
+`load.input_pacing_violations` counts variants with measured out-of-tolerance appends; a session that sends no appends is excluded. `load.variants_with_admission_denials` includes each variant encountering either kind of rejection once, including recovered variants. `load.admission_denial_events` counts all rejections, including the final exhausted attempt. `load.variants_rejected` counts final admission rejection separately from `load.variants_failed`. Final outcomes remain in `summary.variants` and `load.variants_passed`.
+
+Reference export retains correlated initial rejections as diagnostics once a subsequent retry is acknowledged before audio input. It preserves the input-relative audio timeline and still rejects samples with unrelated errors or unconfirmed recovery.
 
 Pin the server and model revisions separately. Sending 80 ms transport packets
 does not change MiniCPM-o's one-second native processing unit. The v1.5 scoring
@@ -640,10 +631,7 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
     --max-per-subset 2
 ```
 
-`record --concurrency N` processes up to N variants at once, including
-post-processing. Connections above the server's capacity are retried on HTTP
-503. Latencies recorded under load are not comparable to N=1, and `run.json` gains a
-`load` block with the same metric definitions as the v1.5 recorder above.
+`record --concurrency N` processes up to N variants at once, including post-processing. HTTP 503 and initial in-session admission rejection use the shared retry policy above. Latencies recorded under load are not comparable to N=1, and `run.json` includes a `load` block with the same metric definitions as the v1.5 recorder.
 
 Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
 pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers

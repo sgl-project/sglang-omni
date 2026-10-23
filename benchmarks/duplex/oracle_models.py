@@ -79,6 +79,23 @@ class WireEvent(BaseModel):
     error: dict[str, JsonValue] | None = None
 
 
+def is_admission_rejection_for_update(
+    event: dict[str, JsonValue], update_event_id: str | None
+) -> bool:
+    """Whether a nonfatal admission error answers the given session update."""
+    error = event.get("error")
+    metadata = event.get("sglang")
+    return (
+        bool(update_event_id)
+        and event.get("type") == "error"
+        and isinstance(error, dict)
+        and error.get("code") == "admission_rejected"
+        and error.get("event_id") == update_event_id
+        and isinstance(metadata, dict)
+        and metadata.get("fatal") is False
+    )
+
+
 def turn_detection_type(session: JsonValue, protocol: Protocol) -> JsonValue:
     """turn_detection.type of a session object: top-level on the legacy protocol,
     under audio.input on the turn-based one; None when absent."""

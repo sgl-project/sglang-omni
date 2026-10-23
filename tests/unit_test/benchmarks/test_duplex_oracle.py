@@ -7,6 +7,7 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.profiles import ProfileName
 from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
@@ -515,6 +516,74 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert result["status"] == "fail"
     assert any("admission denied after 3 attempts" in i for i in result["violations"])
     assert "missing audio input" in result["violations"]
+
+
+@pytest.mark.parametrize(
+    "profile", ["minicpmo-native-pr2377", "qwen3-omni-half-duplex"]
+)
+def test_unfinished_handshake_attempt_is_not_final_admission_rejection(
+    profile: ProfileName,
+) -> None:
+    """An interrupted recording must not masquerade as an exhausted retry budget."""
+    result = evaluate_trace([admission(1)], profile=profile, max_admission_attempts=3)
+    assert result["failure_kind"] == "runtime"
+    assert result["metrics"]["admission_denials"] == 1
+
+
+@pytest.mark.parametrize("attempts", [2, 5])
+def test_overlapping_initial_updates_are_protocol_failures(attempts: int) -> None:
+    """Pipelining updates must not bypass reply ordering or the admission budget."""
+    records = [trace_fixture()[0]]
+    for attempt in range(attempts):
+        records.append(
+            {
+                "direction": "send",
+                "time_s": 101.0 + attempt,
+                "event": {
+                    "type": "session.update",
+                    "event_id": f"update{attempt}",
+                    "session": {},
+                },
+            }
+        )
+    for attempt in range(attempts):
+        records.append(
+            {
+                "direction": "receive",
+                "time_s": 110.0 + attempt,
+                "event": {
+                    "type": "error",
+                    "event_id": f"rejected{attempt}",
+                    "sglang": {"fatal": False},
+                    "error": {
+                        "code": "admission_rejected",
+                        "event_id": f"update{attempt}",
+                    },
+                },
+            }
+        )
+    records.extend(
+        [
+            {
+                "direction": "send",
+                "time_s": 120.0,
+                "event": {"type": "session.close", "event_id": "close"},
+            },
+            {
+                "direction": "receive",
+                "time_s": 121.0,
+                "event": {
+                    "type": "session.closed",
+                    "event_id": "closed",
+                    "client_event_id": "close",
+                    "reason": "client_closed",
+                },
+            },
+        ]
+    )
+    result = evaluate_trace(records, max_admission_attempts=3)
+    assert result["failure_kind"] == "runtime", result
+    assert any("pending" in violation for violation in result["violations"])
 
 
 @pytest.mark.parametrize(

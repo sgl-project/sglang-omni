@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
+from benchmarks.duplex.oracle_models import is_admission_rejection_for_update
 from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_capture import (
     AUDIO_DELTA,
@@ -196,6 +197,10 @@ def analyze_variant(
     created_responses, response_terminals = set(), {}
     closed_count, close_times_s = 0, []
     accepted_receipts = {}
+    has_session_updated = False
+    pending_update_id: str | None = None
+    admission_errors: list[tuple[float, str]] = []
+    rejected_update_ids: set[str] = set()
 
     def at(time_s: float) -> float | None:
         return None if first_append_s is None else time_s - first_append_s
@@ -272,6 +277,22 @@ def analyze_variant(
             else:
                 pass
             if direction == "send":
+                if (
+                    kind == "session.update"
+                    and not has_session_updated
+                    and first_append_s is None
+                    and trace_format is not TraceFormat.LEGACY_PCM16
+                ):
+                    if pending_update_id is not None:
+                        problem(
+                            "session.update while another update is pending", time_s
+                        )
+                    else:
+                        pass
+                    event_id = event.get("event_id")
+                    pending_update_id = event_id if isinstance(event_id, str) else None
+                else:
+                    pass
                 if first_append_s is not None:
                     accepted_receipts.setdefault(f"sent:{kind}", at(time_s))
                 else:
@@ -307,6 +328,25 @@ def analyze_variant(
                 live_after_t = True
             else:
                 pass
+            if kind == "session.updated":
+                if (
+                    not has_session_updated
+                    and first_append_s is None
+                    and pending_update_id is not None
+                    and pending_update_id not in rejected_update_ids
+                    and event.get("client_event_id") == pending_update_id
+                ):
+                    anomalies.extend(
+                        {"elapsed_s": None, "message": message}
+                        for _, message in admission_errors
+                    )
+                    admission_errors.clear()
+                else:
+                    pass
+                has_session_updated = True
+                pending_update_id = None
+            else:
+                pass
             if capture.declares_output_rate:
                 out_rate = capture.output_rate
             elif kind == "session.closed":
@@ -317,7 +357,19 @@ def analyze_variant(
                 else:
                     pass
             elif kind == "error":
-                problem(f"native server error: {event.get('error', event)}", time_s)
+                message = f"native server error: {event.get('error', event)}"
+                if (
+                    trace_format is not TraceFormat.LEGACY_PCM16
+                    and not has_session_updated
+                    and first_append_s is None
+                    and is_admission_rejection_for_update(event, pending_update_id)
+                ):
+                    assert pending_update_id is not None
+                    admission_errors.append((time_s, message))
+                    rejected_update_ids.add(pending_update_id)
+                    pending_update_id = None
+                else:
+                    problem(message, time_s)
             elif kind == "response.created":
                 created_responses.add(response_id(event))
             elif kind == "response.done":
@@ -402,6 +454,8 @@ def analyze_variant(
             else:
                 pass
 
+    for rejection_time_s, message in admission_errors:
+        problem(message, rejection_time_s)
     if first_append_s is None:
         reasons.append("no input append sent")
     elif appends < expected_appends:
