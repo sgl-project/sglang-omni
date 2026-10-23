@@ -93,9 +93,10 @@ VISIBLE_DEVICES_VARIABLES = {
     "npu": "ASCEND_RT_VISIBLE_DEVICES",
 }
 DEFAULT_VISIBLE_DEVICES_VARIABLE = "CUDA_VISIBLE_DEVICES"
-# Level Zero admits the cards named in ZE_AFFINITY_MASK in ascending order and
-# ignores the order they were written in, so ZE_AFFINITY_MASK=5,2 makes physical
-# 2 the logical 0. CUDA_VISIBLE_DEVICES honours the written order instead.
+# Level Zero admits each card named in ZE_AFFINITY_MASK once, in ascending
+# order, however often and in whatever order it was written, so
+# ZE_AFFINITY_MASK=5,2,2 makes physical 2 the logical 0 and physical 5 the
+# logical 1. CUDA_VISIBLE_DEVICES honours the written order instead.
 ASCENDING_VISIBLE_MASK_DEVICES = frozenset({"xpu"})
 
 _BACKENDS = (
@@ -444,7 +445,7 @@ def accelerator_logical_devices(
     if device_type in ASCENDING_VISIBLE_MASK_DEVICES and all(
         isinstance(entry, int) for entry in visible_devices
     ):
-        visible_devices = sorted(visible_devices)
+        visible_devices = sorted(set(visible_devices))
     else:
         pass
 
