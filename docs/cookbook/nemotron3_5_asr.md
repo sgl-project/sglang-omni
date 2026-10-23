@@ -31,7 +31,7 @@ Tune the ASR stage with `--asr.factory.*` flags:
 | `dtype` | `float32` | Model dtype |
 | `num_lookahead_tokens` | `3` | Encoder right context; the checkpoint supports `0`, `3`, `6`, and `13` |
 | `max_batch_size` | `8` | Maximum number of requests in a scheduler batch |
-| `max_batch_wait_ms` | `2.0` | Maximum wait to form a batch, in milliseconds |
+| `max_batch_wait_ms` | `2.0` | Batch collection wait in milliseconds, not an end-to-end latency bound |
 | `enable_encoder_cuda_graph` | `true` | Capture steady-state streaming encoder batches at startup |
 | `encoder_graph_max_batch_size` | `16` | Maximum captured batch size, capped by `max_batch_size` and pool capacity |
 | `session_max_concurrency` | `max(4, max_batch_size)` | Concurrent hooks/ordinary requests per ASR replica |
@@ -164,46 +164,27 @@ async def transcribe(path: str) -> None:
 asyncio.run(transcribe("tests/data/query_to_draw.wav"))
 ```
 
-One session is one recognition stream. EOS flushes a residual window and
-emits exactly one final, including an empty final for an empty stream.
-Audio after EOS is rejected. Close/disconnect cancels and releases state;
-it does not flush. Clear only discards PCM still pending in the realtime
-runtime, preserving an active unit and model caches already submitted to
-the stage. Open a new session for another recognition stream.
+### Session behavior
 
-The 20 ms native unit is an input operation, not a model window or a first
-text latency guarantee. Deployment callers can configure native_unit_ms
-on create_realtime_deployment. Short units complete without waiting for a
-future window; long appends drain all currently runnable windows.
+Each session handles one recognition stream. After sending all audio, send
+`sglang.input_audio.end` and wait for `sglang.input_audio.drained` before
+closing the session. The server emits one final transcript, which may be
+empty. Start a new session for the next recording.
 
-Each ASR replica owns one engine and model thread. Different sessions share
-model batches while retaining separate attention, convolution and RNN-T
-caches. H concurrent hook threads plus one inbox bridge thread feed that
-engine; if H is smaller than max_batch_size, the public path cannot submit a
-full batch. Replicas do not share batches. Offline and streaming work
-alternate at batch boundaries when both are ready; a long offline forward
-cannot be preempted. max_batch_wait_ms is a collection deadline, not an
-end-to-end latency bound.
+Closing or disconnecting cancels recognition without processing the remaining
+audio. Clearing the input buffer only removes pending audio. It does not
+reset recognition or undo audio already submitted for processing.
 
-Model task, PCM, cache reservation, token history and text budgets are
-bounded. Usage reports actual persistent cache/history/PCM bytes; batch
-temporaries and shared weights are measured separately at process level.
-When an explicit internal-session token limit is reached, later PCM is
-validated and counted toward duration without further inference or buffering.
-Budget errors after stage acceptance terminate the stream; they are not a
-promise that retrying the same seq is safe. Public admission rejection follows
-the shared runtime's sequence/retry contract.
+Audio packet size does not determine how often text is returned.
 
-### Persistent encoder state pool
+### HTTP streaming versus realtime input
 
-Streaming preallocates a bounded pool for attention and convolution history.
-Each session leases one slot, and batches address state by slot ID, preserving
-stable device storage across audio windows.
+`stream=true` on `/v1/audio/transcriptions` returns text incrementally after
+a complete audio file is uploaded. To send audio while recording, use the
+realtime WebSocket endpoint.
 
-Capacity is limited by `max_open_sessions` and `max_state_bytes`; a budget too
-small for one slot fails at startup. Completion, cancellation, failure and
-shutdown release slots, which are cleared before reuse. The pool is the sole
-streaming encoder state representation. Offline transcription is unchanged.
+For batching, input processing and resource limits, see the
+[Nemotron ASR runtime reference](../developer_reference/nemotron_asr.md).
 
 ### Streaming encoder CUDA graphs
 
@@ -217,5 +198,7 @@ Graphs update persistent attention, convolution and frame-count state by slot ID
 History length therefore needs no additional buckets or Python cache packing.
 Graph workspaces and static inputs and outputs are outside `max_state_bytes`.
 
-Setting stream=true on /v1/audio/transcriptions streams the response to a
-complete uploaded file. It does not select native PCM input.
+## Reproduce evaluation
+
+See the [benchmark reproduction guide](../../benchmarks/eval/nemotron.md) for
+HTTP and native streaming measurements.
