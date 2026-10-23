@@ -12,6 +12,7 @@ import torch
 from sglang.srt.server_args import ServerArgs
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
+import sglang_omni.platforms as platforms
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
@@ -29,7 +30,7 @@ from sglang_omni.models.whisper_asr.request_builders import (
 from sglang_omni.models.whisper_asr.text_streaming import (
     ExactWhisperStreamOutputBuilder,
 )
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -285,6 +286,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: WhisperPreLMEncoderService | None = None
+        self.device: str | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -491,7 +493,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
-        attention_backend = current_platform.get_encoder_decoder_attention_backend()
+        stage_platform = (
+            CPUOmniPlatform() if self.device == "cpu" else platforms.current_platform
+        )
+        attention_backend = stage_platform.get_encoder_decoder_attention_backend()
         if attention_backend is not None:
             defaults["attention_backend"] = attention_backend
         else:

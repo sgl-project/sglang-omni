@@ -15,6 +15,7 @@ import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
+from sglang_omni import platforms
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
@@ -185,7 +186,7 @@ def test_whisper_encoder_decoder_attention_backend_defaults(
     platform_type: type[OmniPlatform],
     expected_backend: str | None,
 ) -> None:
-    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
+    monkeypatch.setattr(platforms, "current_platform", platform_type())
     defaults = whisper_asr_builder.WhisperASREngineBuilder(
         encoder_attention_backend="auto",
         max_running_requests=4,
@@ -335,10 +336,31 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     )
 
 
+def test_whisper_async_decode_dotted_overrides() -> None:
+    from sglang_omni.config.manager import ConfigManager
+
+    config = WhisperASRPipelineConfig(model_path="openai/whisper-base")
+
+    forced_sync = ConfigManager(config).merge_config(
+        [("asr.factory.enable_async_decode", "false")]
+    )
+    assert forced_sync.stages[0].factory.enable_async_decode is False
+
+    forced_async = ConfigManager(config).merge_config(
+        [
+            ("asr.factory.enable_async_decode", "true"),
+            ("asr.factory.async_decode_min_batch_size", "4"),
+        ]
+    )
+    assert forced_async.stages[0].factory.enable_async_decode is True
+    assert forced_async.stages[0].factory.async_decode_min_batch_size == 4
+
+
 @pytest.mark.parametrize("encoder_attention_backend", [None, "auto", "sdpa", "fa4"])
 def test_whisper_asr_threads_explicit_cuda_graph_bs(
     monkeypatch: pytest.MonkeyPatch, encoder_attention_backend: str | None
 ) -> None:
+    monkeypatch.setattr(platforms, "current_platform", CUDAOmniPlatform())
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
     graph_init_calls: list[object] = []
@@ -466,6 +488,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
         factory_kwargs.pop("encoder_attention_backend")
     whisper_asr_stages.create_sglang_whisper_asr_executor(
         "dummy",
+        device="cuda",
+        gpu_id=0,
         **factory_kwargs,
         server_args_overrides={"json_model_override_args": '{"test_setting": 7}'},
     )
