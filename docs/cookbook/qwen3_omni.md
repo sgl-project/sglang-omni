@@ -37,18 +37,18 @@ Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.
 
 | Mode | Topology | Thinker TP | Precision | Status |
 |---|---|---|---|---|
-| Thinker-only | — | — | BF16 | ✅ |
-| Thinker-only | — | — | FP8 | ✅ |
-| Thinker-only | — | — | AutoRound INT4 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Colocated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
+| Thinker-only | — | — | BF16 | Yes |
+| Thinker-only | — | — | FP8 | Yes |
+| Thinker-only | — | — | AutoRound INT4 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | BF16 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | FP8 | Yes |
+| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | BF16 | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | FP8 | Yes |
+| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
+| Thinker-Talker | Colocated | TP=1 | BF16 | Yes |
+| Thinker-Talker | Colocated | TP=1 | FP8 | Yes |
+| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | Yes |
 
 ## Input / Output Modalities
 

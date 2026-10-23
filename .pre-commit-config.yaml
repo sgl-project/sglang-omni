@@ -104,3 +104,11 @@ repos:
         language: system
         types: [markdown]
         files: ^docs/
+      # Check only. Scan all docs so RST navigation edits and cross-file
+      # duplicates are checked together; this hook never rewrites files.
+      - id: doc-style
+        name: document style
+        entry: python3 scripts/check_doc_style.py
+        language: system
+        files: ^docs/
+        pass_filenames: false

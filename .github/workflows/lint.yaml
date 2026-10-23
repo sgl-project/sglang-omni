@@ -2,8 +2,8 @@ name: Lint
 
 # Runs on every pull request without CI labels, and is a required check on
 # main. The self-hosted CI gates (.github/scripts/pr_ci_gate.py) wait for the
-# lint job on the same commit, so keep this workflow fast. Pushes to main only
-# refresh the pre-commit cache that pull requests read.
+# lint job on the same commit, so keep this workflow fast. On pushes to main,
+# the lint job only refreshes the pre-commit cache that pull requests read.
 on:
   pull_request:
   push:
@@ -48,6 +48,29 @@ jobs:
       - name: Linting
         if: ${{ github.event_name != 'push' }}
         run: pre-commit run --all-files --show-diff-on-failure
+
+  doc-style-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install pytest
+
+      - name: Check all documentation
+        run: |
+          python scripts/check_doc_headings.py
+          python scripts/check_doc_style.py
+
+      - name: Test documentation style checker
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style.py -q
 
   playback-test:
     runs-on: ubuntu-latest

@@ -65,7 +65,7 @@ Text form: `HTTP API / WebSocket → Client → Coordinator → Stage → [Sched
 
 ### Directory Layout
 
-```
+```text
 sglang_omni/
 ├── pipeline/           # Inter-stage orchestration (model-agnostic)
 ├── scheduling/         # Scheduling loops (OmniScheduler, SimpleScheduler)
@@ -351,7 +351,7 @@ class OutgoingMessage:
 
 ## Model Runner + Callbacks
 
-```
+```text
 ForwardBatch → before_*() → custom_*_forward() or standard forward → post_*() → sample/output
                     ↑ hook             ↑ explicit custom path          ↑ hook
 ```
@@ -503,7 +503,7 @@ The model class handles steps 1–6 inside `forward()`. `FeedbackARModelRunner` 
 
 Every model follows the same file structure:
 
-```
+```text
 models/<model_name>/
 ├── config.py              — Pipeline config (stage definitions, GPU placement)
 ├── stages.py              — Stage factories (returns callable or OmniScheduler)
@@ -519,7 +519,7 @@ models/<model_name>/
 
 ### Qwen3-Omni
 
-```
+```text
 models/qwen3_omni/
 ├── config.py              — 8-stage speech, 6-stage text
 ├── stages.py              — 8 factories
@@ -550,7 +550,7 @@ The "tower" terminology for image/audio encoders follows the official Qwen3-Omni
 
 ### Fish Audio S2-Pro
 
-```
+```text
 models/fishaudio_s2_pro/
 ├── config.py              — 3-stage TTS
 ├── stages.py              — 3 factories
@@ -656,7 +656,7 @@ The `Pipeline` vs `Stages` distinction in code still needs to be sharper: both n
 
 ## Multi-Process Runner
 
-```
+```text
 pipeline/
 ├── stage_workers.py    # StageLaunchConfig, StageWorkerProcessSpec, entrypoint, StageGroup
 └── mp_runner.py        # MultiProcessRunner — orchestrates all groups
