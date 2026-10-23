@@ -1,9 +1,10 @@
 # Nemotron Transcribe
 
-Nemotron Transcribe serves whole-file transcription through
-`/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer,
-and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's
-NemotronH decoder. The serving path does not require NeMo.
+[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B)
+serves whole-file transcription through `/v1/audio/transcriptions`. A native
+PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder
+produce audio embeddings for SGLang's NemotronH decoder. The serving path does
+not require NeMo.
 
 This integration accepts consolidated NeMo SpeechLM checkpoints with the
 `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`,
@@ -13,13 +14,19 @@ small configuration shim and reads the original weights without copying them.
 
 ## Serve a checkpoint
 
-Install SGLang-Omni following [Installation](../get_started/installation.md).
+Install SGLang-Omni following [Installation](../get_started/installation.md),
+then download the checkpoint:
+
+```bash
+hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
+```
+
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for
 audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
 sgl-omni serve \
-  --model-path /path/to/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --port 8000
@@ -86,7 +93,7 @@ Enable compilation and encoder CUDA graphs independently of decoder graphs:
 SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1 \
 SGLANG_FLASHINFER_AUTOTUNE_CACHE=0 \
 sgl-omni serve \
-  --model-path /path/to/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --asr.engine.max_running_requests 16 \
