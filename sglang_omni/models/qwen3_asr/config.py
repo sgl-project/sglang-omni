@@ -20,6 +20,7 @@ from sglang_omni.config import (
 )
 from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
 from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -103,8 +104,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     ]
 
     def resolved_env_defaults(self) -> dict[str, str]:
-        from sglang_omni.platforms import current_platform
-
         # Set before worker startup: torch_npu caches its Host queue settings.
         if current_platform.is_npu():
             return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
