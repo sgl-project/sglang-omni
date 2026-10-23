@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 
+import soundfile as sf
 import torch
 import torchaudio
 from filelock import FileLock
@@ -179,6 +180,20 @@ class UTMOSScorer:
         model_path = ensure_utmos_assets(cache_dir)
         logger.info(f"Loading UTMOS from {model_path} ...")
         self.predictor = torch.jit.load(str(model_path), map_location=device)
+        # map_location moves tensors, but the traced artifact also embeds CUDA devices.
+        if torch.device(device).type == "cpu":
+            for module in self.predictor.modules():
+                for method_name in module._c._method_names():
+                    graph = module._c._get_method(method_name).graph
+                    for node in graph.findAllNodes("prim::Constant"):
+                        if str(node.output().type()) == "Device" and node.s(
+                            "value"
+                        ).startswith("cuda"):
+                            node.s_("value", "cpu")
+                        else:
+                            pass
+        else:
+            pass
         self.predictor.eval()
         self.device = device
         logger.info(f"UTMOS loaded on {device}")
@@ -192,7 +207,8 @@ class UTMOSScorer:
         """
         scores: list[float] = []
         for path in wav_paths:
-            wave, sr = torchaudio.load(path)
+            audio, sr = sf.read(path, dtype="float32", always_2d=True)
+            wave = torch.from_numpy(audio.T.copy())
             if wave.shape[0] > 1:
                 wave = wave.mean(dim=0, keepdim=True)
             if sr != SAMPLE_RATE:

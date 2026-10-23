@@ -65,6 +65,7 @@ from tests.utils import (
     MetricCheckCollector,
     assert_speed_thresholds,
     assert_streaming_consistency,
+    assert_tts_audio_result_integrity,
     assert_wer_results,
     no_proxy_env,
     wait_for_gpu_memory_release,
@@ -403,66 +404,6 @@ def load_speed_results(results_path: Path) -> dict:
         speed_results = json.load(f)
     validate_speed_results_keys(speed_results)
     return speed_results
-
-
-def assert_tts_audio_result_integrity(
-    summary: dict,
-    per_request: list[dict],
-    *,
-    label: str,
-    collector: MetricCheckCollector,
-) -> None:
-    failed_rows = [
-        request for request in per_request if request.get("is_success") is not True
-    ]
-    failed_requests = summary.get("failed_requests")
-    completed_requests = summary.get("completed_requests")
-    collector.check(
-        isinstance(failed_requests, int),
-        f"{label}: failed_requests must be an int, got {failed_requests}",
-    )
-    collector.check(
-        isinstance(completed_requests, int),
-        f"{label}: completed_requests must be an int, got {completed_requests}",
-    )
-    if isinstance(failed_requests, int):
-        collector.check(
-            failed_requests == len(failed_rows),
-            f"{label}: summary failed_requests={failed_requests}, "
-            f"per_request failures={len(failed_rows)}",
-        )
-        collector.check(
-            failed_requests == 0,
-            f"{label}: failed_requests={failed_requests}, expected 0",
-        )
-    if isinstance(failed_requests, int) and isinstance(completed_requests, int):
-        collector.check(
-            completed_requests + failed_requests == len(per_request),
-            f"{label}: completed_requests + failed_requests = "
-            f"{completed_requests + failed_requests}, per_request={len(per_request)}",
-        )
-
-    audio_duration_mean_s = summary.get("audio_duration_mean_s")
-    collector.check(
-        audio_duration_mean_s is not None and audio_duration_mean_s > 0,
-        f"{label}: expected positive audio_duration_mean_s, "
-        f"got {audio_duration_mean_s}",
-    )
-
-    for request in per_request:
-        request_id = request.get("id", "<missing id>")
-        if request.get("is_success") is not True:
-            collector.check(
-                bool(request.get("error")),
-                f"{label}: failed request {request_id} is missing error detail",
-            )
-            continue
-        audio_duration_s = request.get("audio_duration_s")
-        collector.check(
-            audio_duration_s is not None and audio_duration_s > 0,
-            f"{label}: request {request_id} audio_duration_s={audio_duration_s}, "
-            "expected > 0",
-        )
 
 
 def store_consistency_inputs(
