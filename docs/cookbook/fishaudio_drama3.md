@@ -175,6 +175,12 @@ Drama 3 request: a prompt of 8193 rows exceeds the maximum allowed length of 819
 
 Change the cap with `--tts_engine.factory.max_prompt_rows`. A prompt and its `max_new_tokens` must also fit the engine's context length.
 
+### KV Cache Capacity
+
+The engine defaults `max_total_tokens` to `context_length × max_running_requests`: 262144 tokens with the default context length of 16384 and 16 running requests. The memory budget may produce a smaller pool. Drama 3 disables prefix caching, so KV capacity beyond all live request contexts cannot serve additional requests; bounding it leaves memory available for prefill and audio decoding without reducing the context length or request limit.
+
+An explicit `--tts_engine.engine.max_total_tokens` overrides this default. Smaller pools can make requests wait or retract; larger pools require more GPU memory. Request admission still follows the existing prefill, KV and request-slot budgets.
+
 ## Attention Backend
 
 Drama 3 runs its attention on the `triton` backend only. The server refuses to start with any other attention backend, for example `--tts_engine.engine.attention_backend fa3`.
@@ -191,7 +197,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer.
+The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB. GPTQ-Marlin needs compute capability 8.0 or newer.
 
 Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.
 
@@ -269,7 +275,7 @@ by default) and logs:
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB
 ```
 
-The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment).
+The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. Increasing the engine's share or request capacity, or overriding its automatic KV capacity limit, can leave too little memory for concurrent non-streaming requests. Keep the engine's default share of 0.70 on the GPU that runs the vocoder, stream those requests (`"stream": true`), or put the vocoder on a second GPU, as under [Deployment](#deployment). All declared stage budgets must fit the GPU's capacity.
 
 ## Defaults Parameters
 
