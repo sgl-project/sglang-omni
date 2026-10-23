@@ -53,6 +53,7 @@ class SpeculativeTargetWorker:
         skip_attn_backend_init: bool | None = None,
         *,
         capture_hidden_mode: CaptureHiddenMode | None = None,
+        return_kv_loc_plan: bool = False,
     ) -> GenerationBatchResult:
         if pp_proxy_tensors is not None:
             raise ValueError("speculative decoding does not support pipeline parallel")
@@ -68,6 +69,7 @@ class SpeculativeTargetWorker:
                 expert_distribution_metrics=output.expert_distribution_metrics,
                 routed_experts_output=output.routed_experts_output,
                 indexer_topk_output=output.indexer_topk_output,
+                kv_loc_plan=forward_batch.kv_loc_plan if return_kv_loc_plan else None,
             )
         elif self.omni_runner is None:
             raise RuntimeError("the speculative target runner is not attached")
@@ -100,4 +102,9 @@ class SpeculativeTargetWorker:
                 )
             else:
                 pass
+            # note (wilsonzheng0327): The draft writes its KV into the slots this
+            # plan resolved for the target.
+            batch_result.kv_loc_plan = (
+                forward_batch.kv_loc_plan if return_kv_loc_plan else None
+            )
             return batch_result
