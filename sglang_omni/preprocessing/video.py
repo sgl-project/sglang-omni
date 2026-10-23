@@ -20,7 +20,10 @@ from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.resource_connector import (
+    MediaPolicyError,
+    MultiModalResourceConnector,
+)
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
@@ -31,6 +34,72 @@ logger = logging.getLogger(__name__)
 
 class VideoDecodeError(RuntimeError):
     """Raised when video decoding fails."""
+
+
+class VideoBudgetError(MediaPolicyError):
+    """A video request over the server's frame or pixel budget."""
+
+
+def check_caller_video_budget(
+    *,
+    max_frames: object,
+    min_pixels: object,
+    total_pixels: object,
+    max_pixels: object = None,
+    server_max_frames: int | None = None,
+    server_max_pixels: int | None = None,
+    server_total_pixels: int | None = None,
+) -> None:
+    """Reject caller video fields that raise the server's budget.
+
+    A caller may ask for fewer frames or pixels than the server allows, never
+    more. The server values default to the video library's own limits. A
+    caller's per-frame maximum is checked only against a configured server
+    value, since the loader already caps it at the library's limit.
+    """
+    frame_size_limit = (
+        qwen_vision.VIDEO_MAX_PIXELS if server_max_pixels is None else server_max_pixels
+    )
+    if min_pixels is not None and int(min_pixels) > frame_size_limit:
+        raise VideoBudgetError(
+            "Video request exceeds the server budget: video_min_pixels "
+            f"{int(min_pixels)} is above this server's limit of {frame_size_limit}"
+        )
+    else:
+        pass
+    if (
+        max_pixels is not None
+        and server_max_pixels is not None
+        and int(max_pixels) > server_max_pixels
+    ):
+        raise VideoBudgetError(
+            "Video request exceeds the server budget: video_max_pixels "
+            f"{int(max_pixels)} is above this server's limit of {server_max_pixels}"
+        )
+    else:
+        pass
+    frame_limit = (
+        qwen_vision.FPS_MAX_FRAMES if server_max_frames is None else server_max_frames
+    )
+    if max_frames is not None and int(max_frames) > frame_limit:
+        raise VideoBudgetError(
+            "Video request exceeds the server budget: video_max_frames "
+            f"{int(max_frames)} is above this server's limit of {frame_limit}"
+        )
+    else:
+        pass
+    pixel_limit = (
+        qwen_vision.VIDEO_TOTAL_PIXELS
+        if server_total_pixels is None
+        else server_total_pixels
+    )
+    if total_pixels is not None and int(total_pixels) > pixel_limit:
+        raise VideoBudgetError(
+            "Video request exceeds the server budget: video_total_pixels "
+            f"{int(total_pixels)} is above this server's limit of {pixel_limit}"
+        )
+    else:
+        pass
 
 
 class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]]):
@@ -527,6 +596,18 @@ def load_video_path(
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
+    # note (Richard Wang): the library sizes frames so a clip stays within the
+    # total budget times the temporal factor, and only a minimum frame size can
+    # push it past that, so refuse such a clip before the resize allocates it.
+    pixel_budget = int(total_pixels * qwen_vision.FRAME_FACTOR)
+    if nframes * resized_height * resized_width > pixel_budget:
+        raise VideoBudgetError(
+            f"Video request exceeds the server budget: {nframes} frames of "
+            f"{resized_width}x{resized_height} pixels are more than its "
+            f"{pixel_budget} pixels per clip. Lower video_min_pixels or video_fps."
+        )
+    else:
+        pass
     video = tv_f.resize(
         video,
         [resized_height, resized_width],
