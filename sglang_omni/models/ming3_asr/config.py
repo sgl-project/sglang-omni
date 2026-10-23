@@ -25,13 +25,6 @@ def default_stages() -> list[StageConfig]:
             name="preprocessing",
             process="preprocessing",
             factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
-            next="audio_encoder",
-        ),
-        StageConfig(
-            name="audio_encoder",
-            process="audio_encoder",
-            gpu=0,
-            factory_path=f"{PACKAGE}.stages.create_audio_encoder_executor",
             next="thinker",
         ),
         EngineStageConfig(
@@ -39,7 +32,14 @@ def default_stages() -> list[StageConfig]:
             process="thinker",
             gpu=0,
             factory_path=f"{PACKAGE}.stages.create_thinker_executor",
-            factory=FactoryArgs(max_seq_len=8192, max_new_tokens=256),
+            factory=FactoryArgs(
+                max_seq_len=8192,
+                max_new_tokens=256,
+                pre_lm_max_batch_size=8,
+                pre_lm_max_batch_wait_ms=2,
+                request_build_max_workers=8,
+                request_build_max_pending=32,
+            ),
             engine=EngineArgs(
                 mem_fraction_static=0.75,
                 max_running_requests=64,

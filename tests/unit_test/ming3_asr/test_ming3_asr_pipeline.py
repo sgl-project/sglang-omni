@@ -25,7 +25,6 @@ def test_default_pipeline_ends_at_thinker() -> None:
     config = Ming3ASRPipelineConfig(model_path="inclusionAI/Ming-3.0-asr-tiny")
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
-        "audio_encoder",
         "thinker",
     ]
     assert config.terminal_stages == ["thinker"]
