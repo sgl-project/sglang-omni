@@ -38,7 +38,10 @@ def chinese_number(token: str) -> str:
             digit = 0
             previous_magnitude = magnitude
             after_digit = False
-    if is_number:
+    if is_number and digit and token[-2:-1] in ("百", "千"):
+        # note (WenJing95): a digit right after 百 or 千 counts the next magnitude down, as in 一百五 = 150 and 两千三 = 2300.
+        return str(number + digit * previous_magnitude // 10)
+    elif is_number:
         return str(number + digit)
     else:
         return token
