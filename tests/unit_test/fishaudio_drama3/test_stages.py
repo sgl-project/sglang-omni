@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
@@ -15,6 +19,7 @@ from sglang_omni.models.fishaudio_drama3 import stages
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     DEFAULT_MAX_NEW_TOKENS_CAP,
+    Drama3PipelineConfig,
     Drama3VocoderFactoryArgs,
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
@@ -42,21 +47,31 @@ COMMIT = "1de9996b6be38b745688de084d87a5633f714e4e"
 
 
 class HubDownloads:
-    """Stands in for hf_hub_download and records each call."""
+    """Stands in for the isolated Hub downloader and records each call."""
 
     def __init__(self, local_file: Path) -> None:
         self.local_file = local_file
         self.calls: list[tuple[str, str, str]] = []
 
-    def __call__(self, repo_id: str, filename: str, *, revision: str) -> str:
-        self.calls.append((repo_id, filename, revision))
-        return str(self.local_file)
+    def __call__(
+        self,
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        assert check and capture_output and text
+        assert timeout == 120.0
+        self.calls.append(tuple(command[-3:]))
+        return subprocess.CompletedProcess(command, 0, stdout=f"{self.local_file}\n")
 
 
 @pytest.fixture
 def hub_downloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> HubDownloads:
     downloads = HubDownloads(tmp_path / "snapshot" / "codec.pth")
-    monkeypatch.setattr(stages, "hf_hub_download", downloads)
+    monkeypatch.setattr(stages.subprocess, "run", downloads)
     return downloads
 
 
@@ -66,18 +81,166 @@ def test_a_local_codec_file_or_directory_resolves_without_the_hub(
     codec_file = tmp_path / "codec.pth"
     codec_file.write_bytes(b"")
 
-    assert stages.resolve_codec_directory(str(codec_file)) == str(tmp_path)
-    assert stages.resolve_codec_directory(str(tmp_path)) == str(tmp_path)
+    assert stages.resolve_codec_directory(
+        str(codec_file), download_timeout_seconds=120.0
+    ) == str(tmp_path)
+    assert stages.resolve_codec_directory(
+        str(tmp_path), download_timeout_seconds=120.0
+    ) == str(tmp_path)
     assert hub_downloads.calls == []
 
 
 def test_a_hub_codec_downloads_only_codec_pth_at_its_commit(
     hub_downloads: HubDownloads,
 ) -> None:
-    assert stages.resolve_codec_directory(DEFAULT_CODEC_PATH) == str(
-        hub_downloads.local_file.parent
-    )
+    assert stages.resolve_codec_directory(
+        DEFAULT_CODEC_PATH, download_timeout_seconds=120.0
+    ) == str(hub_downloads.local_file.parent)
     assert hub_downloads.calls == [("fishaudio/s2-pro", "codec.pth", COMMIT)]
+
+
+@pytest.mark.parametrize(
+    "download_error",
+    [
+        OSError("Cannot start downloader"),
+        subprocess.CalledProcessError(1, ["python"], stderr="Hub is unreachable"),
+    ],
+)
+def test_hub_failure_names_the_codec_and_local_override(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    download_error: OSError | subprocess.CalledProcessError,
+) -> None:
+    def fail_download(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        raise download_error
+
+    monkeypatch.setattr(stages.subprocess, "run", fail_download)
+    with caplog.at_level(logging.INFO, logger=stages.__name__):
+        with pytest.raises(RuntimeError) as failure:
+            stages.resolve_codec_directory(
+                DEFAULT_CODEC_PATH, download_timeout_seconds=120.0
+            )
+
+    assert DEFAULT_CODEC_PATH in str(failure.value)
+    assert "--vocoder.factory.codec_path" in str(failure.value)
+    assert "HF_HUB_OFFLINE=1" in str(failure.value)
+    assert failure.value.__cause__ is download_error
+    assert DEFAULT_CODEC_PATH in caplog.text
+
+
+def test_an_offline_hub_cache_hit_resolves_in_the_downloader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    snapshot_directory = tmp_path / "models--fishaudio--s2-pro" / "snapshots" / COMMIT
+    snapshot_directory.mkdir(parents=True)
+    (snapshot_directory / "codec.pth").write_bytes(b"")
+
+    assert stages.resolve_codec_directory(
+        DEFAULT_CODEC_PATH, download_timeout_seconds=5.0
+    ) == str(snapshot_directory)
+
+
+def test_an_offline_hub_cache_miss_reports_the_codec_and_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+
+    with pytest.raises(RuntimeError) as failure:
+        stages.resolve_codec_directory(DEFAULT_CODEC_PATH, download_timeout_seconds=5.0)
+
+    assert DEFAULT_CODEC_PATH in str(failure.value)
+    assert "--vocoder.factory.codec_path" in str(failure.value)
+    assert "HF_HUB_OFFLINE=1" in str(failure.value)
+    assert isinstance(failure.value.__cause__, subprocess.CalledProcessError)
+    assert "LocalEntryNotFoundError" in str(failure.value)
+
+
+def test_a_stalled_hub_download_is_terminated_before_stage_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = subprocess.run
+    download_processes: list[subprocess.Popen[str]] = []
+    popen = subprocess.Popen
+
+    def record_process(
+        command: list[str], *, stdout: int, stderr: int, text: bool
+    ) -> subprocess.Popen[str]:
+        process = popen(command, stdout=stdout, stderr=stderr, text=text)
+        download_processes.append(process)
+        return process
+
+    def stalled_download(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        return run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", record_process)
+    monkeypatch.setattr(stages.subprocess, "run", stalled_download)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError) as failure:
+        stages.resolve_codec_directory(DEFAULT_CODEC_PATH, download_timeout_seconds=0.2)
+
+    assert time.monotonic() - started < 5.0
+    assert "0.2s" in str(failure.value)
+    assert DEFAULT_CODEC_PATH in str(failure.value)
+    assert "--vocoder.factory.codec_path" in str(failure.value)
+    assert "--vocoder.factory.codec_download_timeout_seconds" in str(failure.value)
+    assert isinstance(failure.value.__cause__, subprocess.TimeoutExpired)
+    assert len(download_processes) == 1
+    assert download_processes[0].poll() is not None
+
+
+def test_both_stages_use_the_bundled_codec_without_the_hub(
+    hub_downloads: HubDownloads, tmp_path: Path
+) -> None:
+    (tmp_path / "codec.pth").write_bytes(b"")
+    config = Drama3PipelineConfig(model_path=str(tmp_path))
+
+    for stage_name in ("preprocessing", "vocoder"):
+        codec_path = config.stage_factory_kwargs(stage_name)["codec_path"]
+        assert isinstance(codec_path, str)
+        assert stages.resolve_codec_directory(
+            codec_path, download_timeout_seconds=120.0
+        ) == str(tmp_path)
+    assert hub_downloads.calls == []
+
+
+def test_missing_explicit_codec_does_not_fall_back_to_bundled_codec(
+    hub_downloads: HubDownloads, tmp_path: Path
+) -> None:
+    (tmp_path / "codec.pth").write_bytes(b"")
+    config = Drama3PipelineConfig(model_path=str(tmp_path))
+    config.stage_named("vocoder").factory.codec_path = str(
+        tmp_path / "missing/codec.pth"
+    )
+
+    for stage_name in ("preprocessing", "vocoder"):
+        codec_path = config.stage_factory_kwargs(stage_name)["codec_path"]
+        assert isinstance(codec_path, str)
+        with pytest.raises(ValueError, match="--vocoder.factory.codec_path"):
+            stages.resolve_codec_directory(codec_path, download_timeout_seconds=120.0)
+    assert hub_downloads.calls == []
 
 
 @pytest.mark.parametrize(
@@ -94,7 +257,7 @@ def test_a_codec_path_that_could_drift_or_does_not_exist_is_refused(
     hub_downloads: HubDownloads, codec_path: str
 ) -> None:
     with pytest.raises(ValueError, match="names no codec.pth file"):
-        stages.resolve_codec_directory(codec_path)
+        stages.resolve_codec_directory(codec_path, download_timeout_seconds=120.0)
     assert hub_downloads.calls == []
 
 
@@ -105,14 +268,16 @@ def test_a_codec_file_of_another_name_is_refused(
     renamed_codec_file.write_bytes(b"")
 
     with pytest.raises(ValueError, match="names no codec.pth file"):
-        stages.resolve_codec_directory(str(renamed_codec_file))
+        stages.resolve_codec_directory(
+            str(renamed_codec_file), download_timeout_seconds=120.0
+        )
 
 
 def test_a_directory_without_codec_pth_is_refused(
     hub_downloads: HubDownloads, tmp_path: Path
 ) -> None:
     with pytest.raises(ValueError, match="names no codec.pth file"):
-        stages.resolve_codec_directory(str(tmp_path))
+        stages.resolve_codec_directory(str(tmp_path), download_timeout_seconds=120.0)
 
 
 class CodecLoads:
@@ -157,6 +322,7 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
         max_concurrency=2,
         max_prompt_rows=rows.shape[0],
         codec_path=str(tmp_path / "codec.pth"),
+        codec_download_timeout_seconds=120.0,
         reference_encode_dtype="float32",
         max_reference_audio_seconds=30.0,
     )
@@ -193,6 +359,7 @@ def test_a_bfloat16_reference_encode_on_the_cpu_is_refused(
             max_concurrency=1,
             max_prompt_rows=64,
             codec_path=str(tmp_path / "codec.pth"),
+            codec_download_timeout_seconds=120.0,
             reference_encode_dtype="bfloat16",
             max_reference_audio_seconds=60.0,
         )
@@ -247,6 +414,7 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
         max_concurrency=1,
         max_prompt_rows=64,
         codec_path=str(tmp_path / "codec.pth"),
+        codec_download_timeout_seconds=120.0,
         reference_encode_dtype=reference_encode_dtype,
         max_reference_audio_seconds=60.0,
     )
@@ -384,6 +552,7 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
     return stages.create_vocoder_executor(
         device="cpu",
         codec_path=factory_args.codec_path,
+        codec_download_timeout_seconds=factory_args.codec_download_timeout_seconds,
         stream_stride=factory_args.stream_stride,
         stream_followup_stride_ramp=factory_args.stream_followup_stride_ramp,
         stream_followup_stride=factory_args.stream_followup_stride,

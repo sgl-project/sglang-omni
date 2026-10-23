@@ -7,11 +7,12 @@ import logging
 import math
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Mapping
 from typing import Literal
 
 import torch
-from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
@@ -55,6 +56,10 @@ from sglang_omni.utils.device import resolve_concrete_device
 logger = logging.getLogger(__name__)
 
 CODEC_FILE_NAME = "codec.pth"
+CODEC_DOWNLOAD_SCRIPT = (
+    "import sys; from huggingface_hub import hf_hub_download; "
+    "print(hf_hub_download(sys.argv[1], sys.argv[2], revision=sys.argv[3]))"
+)
 REFERENCE_ENCODE_WARMUP_SECONDS = 1.0
 MEMORY_PROBE_ROW_COUNT = 2
 MEMORY_PROBE_FRAME_COUNT = 128
@@ -64,7 +69,7 @@ HUB_CODEC_PATTERN = re.compile(
 )
 
 
-def resolve_codec_directory(codec_path: str) -> str:
+def resolve_codec_directory(codec_path: str, *, download_timeout_seconds: float) -> str:
     """The local directory holding the codec.pth codec_path names: that file, a
     directory holding it, or <repo_id>@<40-hex commit>, of which only codec.pth
     downloads."""
@@ -74,15 +79,53 @@ def resolve_codec_directory(codec_path: str) -> str:
     elif os.path.isfile(os.path.join(codec_path, CODEC_FILE_NAME)):
         return codec_path
     elif hub_codec is not None:
-        return os.path.dirname(
-            hf_hub_download(
-                hub_codec["repo_id"], CODEC_FILE_NAME, revision=hub_codec["revision"]
-            )
+        resolution_help = (
+            "Set --vocoder.factory.codec_path to a local codec.pth file or "
+            "a directory containing it. Use HF_HUB_OFFLINE=1 with a local "
+            "codec or a cached Hub file for offline use."
         )
+        logger.info(
+            f"Resolving {CODEC_FILE_NAME} from Hub codec {codec_path} "
+            f"with a {download_timeout_seconds:g}s timeout"
+        )
+        try:
+            download = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    CODEC_DOWNLOAD_SCRIPT,
+                    hub_codec["repo_id"],
+                    CODEC_FILE_NAME,
+                    hub_codec["revision"],
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=download_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(
+                f"Timed out after {download_timeout_seconds:g}s resolving "
+                f"{CODEC_FILE_NAME} from Hub codec {codec_path}. "
+                f"{resolution_help} For a slow download, increase "
+                "--vocoder.factory.codec_download_timeout_seconds."
+            ) from error
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                f"Unable to load {CODEC_FILE_NAME} from Hub codec {codec_path}. "
+                f"{resolution_help}\n{error.stderr}"
+            ) from error
+        except OSError as error:
+            raise RuntimeError(
+                f"Unable to start the Hub codec downloader for {codec_path}. "
+                f"{resolution_help}"
+            ) from error
+        return os.path.dirname(download.stdout.strip())
     else:
         raise ValueError(
             f"codec_path {codec_path!r} names no {CODEC_FILE_NAME} file, no "
-            f"directory holding one and no <repo_id>@<40-hex commit> on the Hub"
+            f"directory holding one and no <repo_id>@<40-hex commit> on the Hub. "
+            "Check --vocoder.factory.codec_path."
         )
 
 
@@ -94,6 +137,7 @@ def create_preprocessing_executor(
     max_concurrency: int,
     max_prompt_rows: int,
     codec_path: str,
+    codec_download_timeout_seconds: float,
     reference_encode_dtype: Literal["float32", "bfloat16"],
     max_reference_audio_seconds: float,
 ) -> ThreadedSimpleScheduler:
@@ -109,7 +153,9 @@ def create_preprocessing_executor(
     else:
         pass
     checkpoint_dir = resolve_checkpoint(model_path)
-    codec_directory = resolve_codec_directory(codec_path)
+    codec_directory = resolve_codec_directory(
+        codec_path, download_timeout_seconds=codec_download_timeout_seconds
+    )
     codec = load_codec(codec_directory, resolved_device)
     reference_encode_hook = FishReferenceEncodeHook(
         codec=codec,
@@ -261,6 +307,7 @@ def create_vocoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     codec_path: str,
+    codec_download_timeout_seconds: float,
     stream_stride: int,
     stream_followup_stride_ramp: tuple[int, ...],
     stream_followup_stride: int,
@@ -275,7 +322,12 @@ def create_vocoder_executor(
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
-    codec = load_codec(resolve_codec_directory(codec_path), resolved_device)
+    codec = load_codec(
+        resolve_codec_directory(
+            codec_path, download_timeout_seconds=codec_download_timeout_seconds
+        ),
+        resolved_device,
+    )
     codec.fold_weight_norm()
     num_codebooks = (
         codec.quantizer.semantic_quantizer.n_codebooks
