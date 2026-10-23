@@ -34,10 +34,13 @@ export function heardTextEnd(progress, playedMs) {
 
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
-  constructor({ transport, now, outputModalities = ["audio"], listeners = {} }) {
+  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
     this.transport = transport;
     this.now = now;
     this.outputModalities = outputModalities;
+    this.instructions = instructions;
+    this.extension = extension;
+    this.turnDetection = turnDetection;
     this.listeners = listeners;
     this.state = "connecting";
     this.sessionId = null;
@@ -221,7 +224,11 @@ export class DuplexSession {
       case "session.created": {
         this.sessionId = event.session && event.session.id;
         this.state = "negotiating";
-        this.send("session.update", { session: { output_modalities: this.outputModalities } });
+        const session = { output_modalities: this.outputModalities };
+        if (this.instructions) session.instructions = this.instructions;
+        if (this.turnDetection) session.audio = { input: { turn_detection: this.turnDetection } };
+        if (this.extension && Object.keys(this.extension).length) session.sglang = this.extension;
+        this.send("session.update", { session });
         break;
       }
       case "session.updated": {
