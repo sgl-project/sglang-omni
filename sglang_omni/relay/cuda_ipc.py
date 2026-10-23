@@ -401,6 +401,7 @@ class CudaIpcPutOperation(ReceiverAckOperation):
             await self.wait_for_receiver(timeout)
         except TimeoutError as exc:
             self.completed = True
+            self.trace_stranded_slots(exc)
             self.fail_cb(exc)
             self.source_tensor = None
             self.ready_event = None
@@ -409,6 +410,7 @@ class CudaIpcPutOperation(ReceiverAckOperation):
             raise
         except Exception as exc:
             self.completed = True
+            self.trace_stranded_slots(exc)
             self.fail_cb(exc)
             self.source_tensor = None
             self.ready_event = None
@@ -442,6 +444,16 @@ class CudaIpcPutOperation(ReceiverAckOperation):
         else:
             pass
         _comm_trace("cuda_ipc_put_wait_ack", **trace_fields)
+
+    def trace_stranded_slots(self, error: BaseException) -> None:
+        _comm_trace(
+            "cuda_ipc_slots_stranded",
+            request_id=self.request_id,
+            slot_index=self.slot_index,
+            num_slots=self.num_slots,
+            bytes=self.size,
+            reason=type(error).__name__,
+        )
 
 
 class CudaIpcGetOperation(RelayOperation):
@@ -701,6 +713,10 @@ class ContiguousSlotAllocator:
             free_runs=free_runs,
         )
 
+    def snapshot_layout(self) -> SlotLayout:
+        """Return the current pool layout for failure-path diagnostics."""
+        return self.find_contiguous_with_layout(1)
+
 
 @register_relay("cuda_ipc")
 class CudaIpcRelay(Relay):
@@ -768,6 +784,7 @@ class CudaIpcRelay(Relay):
         self.remote_kv_pools: dict[tuple[str, str], tuple[torch.Tensor, ...]] = {}
         self.failed_error: BaseException | None = None
         self.failed_event = asyncio.Event()
+        self.stranded_slots_total = 0
         self.wait_executor = ThreadPoolExecutor(
             max_workers=event_wait_threads_from_env(),
             thread_name_prefix=f"cuda-ipc-wait-{engine_id}",
@@ -859,6 +876,31 @@ class CudaIpcRelay(Relay):
             self.failed_event.set()
         else:
             pass
+
+    def record_stranded_slots(
+        self,
+        allocator: ContiguousSlotAllocator,
+        num_slots: int,
+        error: BaseException,
+    ) -> None:
+        self.stranded_slots_total += num_slots
+        self.mark_failed(error)
+        self.emit_pool_state(allocator)
+
+    def emit_pool_state(self, allocator: ContiguousSlotAllocator) -> None:
+        if _comm_trace_enabled():
+            try:
+                layout = allocator.snapshot_layout()
+                _comm_trace(
+                    "cuda_ipc_pool_state",
+                    engine_id=self.engine_id,
+                    device=self.device,
+                    free_slots=layout.free_slots,
+                    largest_free_run=layout.largest_free_run,
+                    stranded_slots_total=self.stranded_slots_total,
+                )
+            except Exception:
+                logger.exception("Failed to trace stranded CUDA-IPC pool state")
 
     def raise_if_failed(self) -> None:
         if self.failed_error is not None:
@@ -1049,7 +1091,9 @@ class CudaIpcRelay(Relay):
             request_id=request_id,
             size=size,
             release_cb=lambda: allocator.release(offset, num_slots),
-            fail_cb=self.mark_failed,
+            fail_cb=lambda error: self.record_stranded_slots(
+                allocator, num_slots, error
+            ),
             copy_start_event=copy_start_event,
             copy_done_event=copy_done_event,
         )
@@ -1450,6 +1494,10 @@ class CudaIpcRelay(Relay):
         pass
 
     def close(self) -> None:
+        if self.allocator is not None:
+            self.emit_pool_state(self.allocator)
+        else:
+            pass
         self.remote_pools.clear()
         self.remote_kv_pools.clear()
         self.kv_pool_storage_handles.clear()
