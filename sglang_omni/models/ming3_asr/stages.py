@@ -175,8 +175,12 @@ def create_thinker_executor(
     def build_result(request: SGLangARRequestData) -> StagePayload:
         payload = request.stage_payload
         generated_text = tokenizer.decode(request.output_ids, skip_special_tokens=True)
+        transcript = extract_transcript(
+            generated_text, payload.request.params.get("language")
+        )
         payload.data = {
-            "text": extract_transcript(generated_text),
+            "text": transcript.text,
+            "language": transcript.language,
             "usage": {
                 "prompt_tokens": len(request.input_ids),
                 "completion_tokens": len(request.output_ids),

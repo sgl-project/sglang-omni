@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TypedDict
 
 import torch
@@ -65,19 +66,32 @@ def build_transcription_prompt(
     )
 
 
-def extract_transcript(generated_text: str) -> str:
-    """Drop the language label the model writes before the transcript."""
+@dataclass(frozen=True, kw_only=True)
+class Transcript:
+    text: str
+    language: str | None
+
+
+def extract_transcript(
+    generated_text: str, requested_language: str | None
+) -> Transcript:
+    """Split the language label the model writes from the transcript.
+
+    A requested language is already prefilled in the prompt, so the whole output is transcript.
+    """
     text = generated_text.strip()
-    if LANGUAGE_SEPARATOR in text:
-        return text.split(LANGUAGE_SEPARATOR, 1)[1].strip()
+    if requested_language is not None:
+        return Transcript(text=text, language=None)
+    elif LANGUAGE_SEPARATOR in text:
+        label, transcript = text.split(LANGUAGE_SEPARATOR, 1)
+        return Transcript(text=transcript.strip(), language=label.strip() or None)
     else:
-        pass
-    for language in RECOGNIZED_LANGUAGES:
-        if text.startswith(language):
-            return text[len(language) :].strip()
-        else:
-            pass
-    return text
+        for language in RECOGNIZED_LANGUAGES:
+            if text.startswith(language):
+                return Transcript(text=text[len(language) :].strip(), language=language)
+            else:
+                pass
+        return Transcript(text=text, language=None)
 
 
 class Ming3ASRPreprocessor:
