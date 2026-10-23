@@ -20,6 +20,7 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
+_FLASHINFER_CUDA_ARCH_LIST = "FLASHINFER_CUDA_ARCH_LIST"
 
 _GPU_ARCHITECTURES = {
     89: "ada",
@@ -164,20 +165,40 @@ def visible_gpus_need_flashinfer_cuda_norm(
     return False
 
 
+def sglang_flashinfer_cuda_arch(env: Mapping[str, str] | None = None) -> str | None:
+    """FLASHINFER_CUDA_ARCH_LIST as SGLang's model runner sets it for the first visible GPU."""
+    capability = get_compute_capability(0, env)
+    if capability is None:
+        return None
+    else:
+        pass
+    major, minor = capability
+    return f"{major}.{minor}{'a' if major >= 9 else ''}"
+
+
 def get_gpu_compat_env_defaults(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Return env overrides needed for the current visible GPU topology."""
     source_env = os.environ if env is None else env
-    if source_env.get(_FLASHINFER_USE_CUDA_NORM) is not None:
-        return {}
+    defaults: dict[str, str] = {}
+    if source_env.get(
+        _FLASHINFER_USE_CUDA_NORM
+    ) is None and visible_gpus_need_flashinfer_cuda_norm(source_env):
+        defaults[_FLASHINFER_USE_CUDA_NORM] = "1"
     else:
         pass
-    if not visible_gpus_need_flashinfer_cuda_norm(source_env):
-        return {}
+    if source_env.get(_FLASHINFER_CUDA_ARCH_LIST) is None:
+        # note (Junnan Li): on SM120 the model runner targets 12.0a and FlashInfer alone 12.0f in one
+        # JIT cache, so stages with and without a model runner rebuild each other's ops.
+        cuda_arch = sglang_flashinfer_cuda_arch(source_env)
+        if cuda_arch is not None:
+            defaults[_FLASHINFER_CUDA_ARCH_LIST] = cuda_arch
+        else:
+            pass
     else:
         pass
-    return {_FLASHINFER_USE_CUDA_NORM: "1"}
+    return defaults
 
 
 def apply_torch_compile_cache_env(
