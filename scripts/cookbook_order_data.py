@@ -17,7 +17,9 @@ file; scripts/check_cookbook_order.py does not need to change.
 """
 
 # Models listed under **Focus -> Supporting** in sgl-project/sglang-omni#1081,
-# in that exact order. Qwen3-TTS Base and CustomVoice share one cookbook page.
+# in that exact order. Qwen3-TTS Base and CustomVoice share one cookbook page;
+# MOSS-TTS-Nano-100M has no cookbook page yet. MiniCPM-o and LLaDA2.0-Uni are
+# no longer in the #1081 priority list and live in the download-sorted section.
 ROADMAP_ORDER = [
     "cookbook/qwen3_tts.md",
     "cookbook/moss_tts.md",
@@ -25,12 +27,11 @@ ROADMAP_ORDER = [
     "cookbook/nemotron3_5_asr.md",
     "cookbook/moss_transcribe_diarize.md",
     "cookbook/fishaudio_s2_pro.md",
+    "cookbook/fun_cosyvoice3.md",
+    "cookbook/nemotron_voicechat.md",
+    "cookbook/personaplex.md",
     "cookbook/cosmos3_nano.md",
     "cookbook/qwen3_omni.md",
-    "cookbook/fun_cosyvoice3.md",
-    "cookbook/personaplex.md",
-    "cookbook/minicpm_o.md",
-    "cookbook/llada2_uni.md",
 ]
 
 # Hugging Face download counts for every non-roadmap cookbook entry, in
@@ -39,8 +40,9 @@ ROADMAP_ORDER = [
 # for the affected models and adjust the counts (and docs/index.rst) if the
 # rank changed.
 DOWNLOADS_DESC = {
-    # Hugging Face download counts (descending), queried 2026-10-19.
+    # Hugging Face download counts (descending), queried 2026-10-22.
     "cookbook/qwen3_asr.md": 1_186_346,
+    "cookbook/minicpm_o.md": 436_065,
     "cookbook/fun_asr.md": 158_663,
     "cookbook/higgs_tts.md": 120_143,
     "cookbook/moss_tts_local.md": 117_224,
@@ -48,12 +50,12 @@ DOWNLOADS_DESC = {
     "cookbook/fishaudio_drama3.md": 11_795,
     "cookbook/minimax_music3.md": 6_234,
     "cookbook/ming_omni.md": 5_523,
-    "cookbook/nemotron_voicechat.md": 4_942,
     "cookbook/auk.md": 2_415,
     "cookbook/zonos2.md": 2_364,
     "cookbook/arkasr.md": 2_347,
     "cookbook/voxtral_tts.md": 1_589,
     "cookbook/dots_tts.md": 767,
+    "cookbook/llada2_uni.md": 437,
     "cookbook/ming_tts.md": 312,
     "cookbook/ming3_asr.md": 35,
     "cookbook/ming3_audio.md": 22,
@@ -65,6 +67,7 @@ DOWNLOADS_DESC = {
 # the page here and its count to DOWNLOADS_DESC.
 HF_REPO = {
     "cookbook/qwen3_asr.md": "Qwen/Qwen3-ASR-1.7B",
+    "cookbook/minicpm_o.md": "openbmb/MiniCPM-o-4_5",
     "cookbook/fun_asr.md": "FunAudioLLM/Fun-ASR-Nano-2512-hf",
     "cookbook/higgs_tts.md": "bosonai/higgs-audio-v3-tts-4b",
     "cookbook/moss_tts_local.md": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
@@ -72,12 +75,12 @@ HF_REPO = {
     "cookbook/minimax_music3.md": "MiniMaxAI/MiniMax-Music3",
     "cookbook/fishaudio_drama3.md": "fishaudio/drama-3",
     "cookbook/ming_omni.md": "inclusionAI/Ming-flash-omni-2.0",
-    "cookbook/nemotron_voicechat.md": "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B",
     "cookbook/auk.md": "tencent/AuK",
     "cookbook/arkasr.md": "AutoArk-AI/ARK-ASR-3B",
     "cookbook/zonos2.md": "Zyphra/zonos2",
     "cookbook/voxtral_tts.md": "mistralai/Voxtral-4B-TTS-2603",
     "cookbook/dots_tts.md": "dots-studio/dots.tts-mf",
+    "cookbook/llada2_uni.md": "inclusionAI/LLaDA2.0-Uni",
     "cookbook/ming_tts.md": "inclusionAI/Ming-omni-tts-16.8B-A3B",
     "cookbook/ming3_audio.md": "inclusionAI/Ming-3.0-audio-flash",
     "cookbook/ming3_tts.md": "inclusionAI/Ming-3.0-tts-tiny",
@@ -85,4 +88,4 @@ HF_REPO = {
 }
 
 # When DOWNLOADS_DESC was last checked against the HF API (maintained by hand).
-DOWNLOADS_QUERIED_AT = "2026-10"
+DOWNLOADS_QUERIED_AT = "2026-10-22"
