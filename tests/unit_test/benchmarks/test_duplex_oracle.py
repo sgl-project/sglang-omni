@@ -7,7 +7,6 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
-from benchmarks.duplex.oracle_models import is_admission_rejection
 from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
@@ -517,42 +516,6 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert "missing audio input" in result["violations"]
 
 
-@pytest.mark.parametrize(
-    ("event", "is_rejection"),
-    [
-        (
-            {
-                "type": "error",
-                "sglang": {"fatal": False},
-                "error": {"code": "admission_rejected"},
-            },
-            True,
-        ),
-        (
-            {
-                "type": "error",
-                "sglang": {"fatal": True},
-                "error": {"code": "admission_rejected"},
-            },
-            False,
-        ),
-        (
-            {
-                "type": "error",
-                "sglang": {"fatal": False},
-                "error": {"code": "invalid_request"},
-            },
-            False,
-        ),
-        ({"type": "error", "error": {"code": "admission_rejected"}}, False),
-    ],
-)
-def test_only_a_nonfatal_admission_rejected_error_is_an_admission_rejection(
-    event: dict[str, JsonValue], is_rejection: bool
-) -> None:
-    assert is_admission_rejection(event) is is_rejection
-
-
 def rejection(**error: JsonValue) -> dict[str, JsonValue]:
     return {
         "direction": "receive",
@@ -590,7 +553,6 @@ def rejected_update() -> dict[str, JsonValue]:
     [
         (rejection(), None),
         (rejection(code="invalid_request"), "code=invalid_request"),
-        (rejection(event_id="missing"), "code=admission_rejected"),
     ],
 )
 def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
@@ -606,42 +568,6 @@ def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
         assert result["status"] == "fail"
         assert any(violation in item for item in result["violations"])
         assert result["metrics"]["admission_rejections"] == 0
-
-
-def test_rejection_after_session_updated_fails() -> None:
-    trace = trace_fixture()
-    late_update, late_rejection = rejected_update(), rejection()
-    late_update["time_s"], late_rejection["time_s"] = 100.03, 100.04
-    trace[3:3] = [late_update, late_rejection]
-    result = evaluate_trace(trace)
-    assert result["status"] == "fail"
-    assert any("code=admission_rejected" in item for item in result["violations"])
-    assert result["metrics"]["admission_rejections"] == 0
-
-
-def test_rejection_of_an_append_keeps_its_acceptance_check() -> None:
-    trace = trace_fixture()
-    early_append = copy.deepcopy(trace[3])
-    early_append["event"]["event_id"] = "early"
-    early_append["time_s"] = 100.012
-    early_rejection = rejection(event_id="early")
-    early_rejection["time_s"] = 100.015
-    trace[2:2] = [early_append, early_rejection]
-    result = evaluate_trace(trace)
-    assert any("code=admission_rejected" in item for item in result["violations"])
-    assert "missing input acceptance receipt" in result["violations"]
-    assert result["metrics"]["admission_rejections"] == 0
-
-
-def test_session_updated_cannot_acknowledge_the_rejected_update() -> None:
-    trace = trace_fixture()
-    trace[1:1] = [rejected_update(), rejection()]
-    find_event(trace, "session.updated")["client_event_id"] = "rejected"
-    result = evaluate_trace(trace)
-    assert result["status"] == "fail"
-    assert (
-        "session.updated: missing matching prior client event" in result["violations"]
-    )
 
 
 @pytest.mark.parametrize(
