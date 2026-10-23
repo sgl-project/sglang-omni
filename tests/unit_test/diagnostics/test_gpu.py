@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
 from sglang_omni.platforms import load_platform_class
+from sglang_omni.platforms.apple import AppleOmniPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 
 
@@ -420,6 +421,9 @@ def test_an_unset_affinity_mask_ignores_an_unrelated_cuda_mask(monkeypatch) -> N
             id="no-device-fallback",
         ),
         pytest.param(CPUOmniPlatform(), id="cpu"),
+        # torch.mps has no get_device_properties, so the device-module arm
+        # would turn every healthy Apple host into a warning.
+        pytest.param(AppleOmniPlatform(), id="apple-mps"),
     ],
 )
 def test_a_platform_without_a_device_module_keeps_the_nvml_report(
