@@ -87,6 +87,14 @@ request values. Stage sampling also takes precedence for `seed`.
 `audio_temperature` and `audio_top_k` continue to control the audio sampler.
 The fixed caller-frame budget still determines the number of generated frames.
 
+## FP8 backbone and KV cache
+
+Two engine flags lower the precision of the temporal transformer on CUDA. Both are off by default, and you can set them separately. They change the numerics, so a greedy reply can differ from the BF16 reply. Compare audio quality instead of tokens.
+
+| Flag | Effect |
+|---|---|
+| `--lm.engine.quantization fp8` | Quantizes the linear layers of the temporal transformer to FP8 when they load, with one weight scale per output channel. This halves their weight memory, which is about 13 GB in BF16. The embeddings, the text head and the depformer stay in BF16. On SM89 and newer GPUs, such as the H100, the activations are also FP8, with one scale per token. On SM80 to SM88 GPUs, such as the A100, only the weights are FP8, through a weight-only Marlin kernel; this path was not measured. |
+| `--lm.engine.kv_cache_dtype fp8_e4m3` | Stores K and V in FP8, 256 KiB per position instead of 512 KiB. The checkpoint has no KV scales, so the scale is 1.0. |
 
 ## Known limitations
 
