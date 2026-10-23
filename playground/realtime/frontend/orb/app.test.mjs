@@ -7,7 +7,7 @@ import { DuplexSession } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 
-function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
+function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptions = {} } = {}) {
   const nodes = [];
   const sockets = [];
   const elements = new Map();
@@ -38,7 +38,7 @@ function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
     Settings: class {
       async init() {}
       lock() {}
-      sessionOptions() { return {}; }
+      sessionOptions() { return sessionOptions; }
       micConstraint() { return {}; }
     },
     AudioContext: class {
@@ -66,10 +66,11 @@ function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
       constructor() {
         this.readyState = 0;
         this.listeners = {};
+        this.sent = [];
         sockets.push(this);
       }
       addEventListener(name, listener) { this.listeners[name] = listener; }
-      send() {}
+      send(text) { this.sent.push(JSON.parse(text)); }
       open() {
         this.readyState = 1;
         this.listeners.open();
@@ -219,4 +220,23 @@ test("a grant finishing during reconnect cannot configure or start the next sess
   const node = app.nodes.at(-1);
   assert.equal(node.context.sampleRate, 24000);
   assert.equal(node.messages.find((message) => message.type === "config").nativeUnitSamples, 24000);
+});
+
+test("the first session.update carries what the settings panel chose, turn detection included", async () => {
+  const app = createApp({ sessionOptions: {
+    instructions: "Answer briefly.",
+    outputModalities: ["audio"],
+    extension: { voice: "NATM1", sampling: { temperature: 0.5 } },
+    turnDetection: { type: "server_vad", silence_duration_ms: 800 },
+  } });
+  await app.connect();
+  const socket = app.sockets[0];
+  socket.open();
+  await app.settled();
+  assert.deepEqual(socket.sent.find((event) => event.type === "session.update").session, {
+    output_modalities: ["audio"],
+    instructions: "Answer briefly.",
+    audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 800 } } },
+    sglang: { voice: "NATM1", sampling: { temperature: 0.5 } },
+  });
 });
