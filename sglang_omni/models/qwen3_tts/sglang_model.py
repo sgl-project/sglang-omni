@@ -21,6 +21,7 @@ from typing import (
     TypedDict,
 )
 
+import numpy as np
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend
 from sglang.kernels.spec import KernelBackend
@@ -539,7 +540,14 @@ class Qwen3TTSPromptBuilderMixin:
         return (self.config.spk_id or {}).keys()
 
     @torch.inference_mode()
-    def extract_speaker_embedding(self, audio, sr):
+    def extract_speaker_embedding(self, audio: np.ndarray, sr: int) -> torch.Tensor:
+        return self.extract_speaker_embeddings(audios=[audio], sr=sr)[0]
+
+    @torch.inference_mode()
+    def extract_speaker_embeddings(
+        self, *, audios: list[np.ndarray], sr: int
+    ) -> list[torch.Tensor]:
+        """Extract speaker embeddings without padding variable-length audio."""
         if sr != self.speaker_encoder_sample_rate:
             raise ValueError(
                 f"Expected {self.speaker_encoder_sample_rate}Hz reference audio"
@@ -550,7 +558,7 @@ class Qwen3TTSPromptBuilderMixin:
             raise RuntimeError("Qwen3-TTS speaker encoder is not loaded")
         else:
             pass
-        return self.speaker_encoder_graph_runner.embed(audio)
+        return self.speaker_encoder_graph_runner.embed_batch(audios)
 
     @torch.inference_mode()
     def generate_speaker_prompt(

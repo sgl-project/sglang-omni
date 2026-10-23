@@ -74,13 +74,13 @@ def test_bucketed_forward_matches_the_encoder_on_the_valid_frames() -> None:
     encoder = small_speaker_encoder(torch.float64)
     torch.manual_seed(2)
     with torch.inference_mode():
-        for frames, width in ((32, 32), (20, 32), (5, 64)):
-            mels = torch.randn(1, NUM_MELS, frames, dtype=torch.float64)
-            eager = encoder(mels.transpose(1, 2))[0]
-            padded = torch.randn(1, NUM_MELS, width, dtype=torch.float64)
+        for batch_size, frames, width in ((1, 32, 32), (2, 20, 32), (2, 5, 64)):
+            mels = torch.randn(batch_size, NUM_MELS, frames, dtype=torch.float64)
+            eager = encoder(mels.transpose(1, 2))
+            padded = torch.randn(batch_size, NUM_MELS, width, dtype=torch.float64)
             padded[:, :, :frames] = mels
             bucketed = encode_bucketed(encoder, padded, torch.tensor([frames]), PADS)
-            assert bucketed.shape == eager.shape == (ENC_DIM,)
+            assert bucketed.shape == eager.shape == (batch_size, ENC_DIM)
             assert torch.allclose(bucketed, eager, atol=1e-9, rtol=1e-9)
 
 
@@ -144,7 +144,7 @@ def test_runner_without_graphs_runs_the_encoder_eagerly() -> None:
     encoder = small_speaker_encoder(torch.float32)
     runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
-    assert runner.graphs == {}
+    assert all(not graphs for graphs in runner.graphs_by_batch_size.values())
     clip = clip_of(20, 6)
     with torch.inference_mode():
         embedding = runner.embed(clip)
@@ -228,7 +228,10 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
         runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     assert runner.pads == PADS
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
-    assert sorted(runner.graphs) == [16, 32]
+    assert {
+        batch_size: sorted(graphs)
+        for batch_size, graphs in runner.graphs_by_batch_size.items()
+    } == {1: [16, 32], 2: [16, 32], 4: [16, 32], 8: [16, 32]}
     assert runner.stats() == {
         "enabled": True,
         "disable_reason": None,
@@ -252,6 +255,24 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
             assert embedding.shape == (ENC_DIM,)
             assert torch.allclose(embedding, eager, atol=1e-4, rtol=1e-4)
         assert torch.equal(embeddings[1], embeddings[4])
+        for batch_size in range(2, 9):
+            batch_clips = [clip_of(20, 10 + index) for index in range(batch_size)]
+            batch_embeddings = runner.embed_batch(batch_clips)
+            device_module.synchronize(device)
+            assert runner.replays == 4 + batch_size
+            for clip, embedding in zip(batch_clips, batch_embeddings, strict=True):
+                mels = runner.mel(torch.from_numpy(clip).unsqueeze(0)).to(device)
+                eager = encoder(mels.transpose(1, 2))[0]
+                assert torch.allclose(embedding, eager, atol=1e-4, rtol=1e-4)
+        repeated_batch_embeddings = runner.embed_batch(batch_clips)
+        device_module.synchronize(device)
+        assert runner.replays == 13
+        assert all(
+            torch.equal(first, second)
+            for first, second in zip(
+                batch_embeddings, repeated_batch_embeddings, strict=True
+            )
+        )
         assert torch.equal(embeddings[5], runner.embed(clips[5]))
 
 
@@ -296,7 +317,7 @@ def test_a_failed_capture_leaves_no_graphs_and_the_runner_eager(
     )
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
     assert calls == list(range(1, failing_call + 1))
-    assert runner.graphs == {}
+    assert all(not graphs for graphs in runner.graphs_by_batch_size.values())
     assert "speaker encoder graph capture disabled the runner" in caplog.text
 
     clip = clip_of(32, 9)
