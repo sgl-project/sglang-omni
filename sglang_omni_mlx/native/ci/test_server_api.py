@@ -203,15 +203,15 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
 
 
 def long_wav(seconds: int) -> bytes:
-    """A clip repeated to about seconds long, so a full decode takes several seconds."""
-    pcm = pcm16("0344_en_long")
-    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
+    """Distinct long clips joined to seconds, so a full decode takes several seconds."""
+    pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
+    assert len(pcm) >= seconds * 32000
     out = io.BytesIO()
     with wave.open(out, "wb") as writer:
         writer.setnchannels(1)
         writer.setsampwidth(2)
         writer.setframerate(16000)
-        writer.writeframes(repeated[: seconds * 32000])
+        writer.writeframes(pcm[: seconds * 32000])
     return out.getvalue()
 
 
