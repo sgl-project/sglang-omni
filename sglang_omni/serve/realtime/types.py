@@ -47,6 +47,12 @@ class OutputBudgetError(RuntimeError):
     CODE = "output_budget_exhausted"
 
 
+class SessionOpenTimeoutError(TimeoutError):
+    """The backend did not finish opening a realtime session in time."""
+
+    CODE = "session_open_timeout"
+
+
 def failure_code(exc: Exception) -> str:
     """Client-facing error code of a server-side session failure."""
     if isinstance(
@@ -55,6 +61,7 @@ def failure_code(exc: Exception) -> str:
             ContextLimitError,
             OutputBudgetError,
             SessionIdleTimeoutError,
+            SessionOpenTimeoutError,
             SessionOutputBudgetError,
         ),
     ):

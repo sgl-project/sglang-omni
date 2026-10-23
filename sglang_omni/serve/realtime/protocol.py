@@ -190,8 +190,16 @@ class SharedRealtimeSession:
                     self.runtime.fail(str(budget_error), budget_error.CODE)
                     return False
             except Exception as exc:
-                logger.exception(f"Realtime session {self.session_id} dispatch failed")
-                self.runtime.fail(str(exc), failure_code(exc), event_id=event_id)
+                code = failure_code(exc)
+                if code == "internal":
+                    logger.exception(
+                        f"Realtime session {self.session_id} dispatch failed"
+                    )
+                else:
+                    logger.error(
+                        f"Realtime session {self.session_id} dispatch failed: {exc}"
+                    )
+                self.runtime.fail(str(exc), code, event_id=event_id)
                 return False
         return False
 

@@ -634,6 +634,8 @@ Each rule is followed by the error it raises.
 
 ### Rejected in a realtime session
 
+During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio. If opening exceeds its deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, when the session never reached OPEN before its initial-update deadline, and `session_idle_timeout`, when an open session receives no input. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
+
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
 - A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
 - `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
