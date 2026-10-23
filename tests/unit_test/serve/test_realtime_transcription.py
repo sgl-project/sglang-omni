@@ -488,7 +488,7 @@ async def test_prefix_padding_must_fit_inside_silence_window(
 
 
 @pytest.mark.asyncio
-async def test_vad_settings_reject_negative_padding_and_zero_silence(
+async def test_vad_settings_reject_out_of_range_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, websocket, _client = await make_session(monkeypatch)
@@ -499,6 +499,9 @@ async def test_vad_settings_reject_negative_padding_and_zero_silence(
     for turn_detection in (
         {"type": "server_vad", "prefix_padding_ms": -300, "silence_duration_ms": 500},
         {"type": "server_vad", "prefix_padding_ms": 0, "silence_duration_ms": 0},
+        {"type": "server_vad", "threshold": 1.5},
+        {"type": "server_vad", "threshold": -0.1},
+        {"type": "server_vad", "threshold": float("nan")},
     ):
         await session.dispatch(
             {"type": "session.update", "session": {"turn_detection": turn_detection}}

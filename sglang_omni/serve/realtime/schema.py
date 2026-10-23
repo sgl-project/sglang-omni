@@ -38,9 +38,9 @@ class ImageFormat(TypedDict):
 
 class TurnDetectionConfig(TypedDict, total=False):
     type: str
-    threshold: float | None
-    prefix_padding_ms: int | None
-    silence_duration_ms: int | None
+    threshold: Annotated[float, Field(ge=0, le=1)] | None
+    prefix_padding_ms: Annotated[int, Field(ge=0)] | None
+    silence_duration_ms: Annotated[int, Field(ge=0)] | None
     eagerness: str | None
     interrupt_response: bool
 

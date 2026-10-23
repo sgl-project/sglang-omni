@@ -345,6 +345,10 @@ class RealtimeTranscriptionSession:
 
     @staticmethod
     def vad_config_error(config: VADConfig) -> str | None:
+        if not 0.0 <= config.threshold <= 1.0:
+            return "threshold must be between 0 and 1."
+        else:
+            pass
         # Note (Jeffro): A new segment starts prefix_padding_ms before the frame that woke the VAD,
         # and the previous segment ended silence_duration_ms before that frame.
         # Padding must fit inside the silence window (minus the one frame the VAD reports late) or segments would overlap.
