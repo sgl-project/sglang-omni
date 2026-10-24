@@ -22,16 +22,26 @@ import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ReqKvInfo
+from sglang.srt.managers.schedule_batch import (
+    FINISH_LENGTH,
+    Req,
+    ReqKvInfo,
+    ScheduleBatch,
+)
+from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
     CacheRequestOutcome,
 )
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -4065,6 +4075,71 @@ def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
     )
     assert scheduler.waiting_queue == [req]
     assert scheduler.outbox.empty()
+
+
+@pytest.mark.usefixtures("published_config")
+@pytest.mark.parametrize("page_size", [4, 16])
+def test_omni_scheduler_queues_only_prompts_an_empty_pool_can_prefill(
+    page_size: int,
+) -> None:
+    """A prompt within a page of the KV limit was queued but never admitted, even on an empty pool."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.max_total_num_tokens = 128
+    scheduler.page_size = page_size
+    scheduler.max_req_len, scheduler.max_req_input_len = (
+        ModelWorker.request_length_limits(
+            context_length=4096, kv_capacity_tokens=128, page_size=page_size
+        )
+    )
+    scheduler.max_new_tokens_limit = None
+    init_sync_request_build_state(scheduler)
+
+    request = Req(
+        "request-longest-prompt",
+        "",
+        # note (apex-mochen): intake accepts prompts shorter than max_req_input_len.
+        [1] * (scheduler.max_req_input_len - 1),
+        SamplingParams(max_new_tokens=None),
+    )
+    request_data = SimpleNamespace(
+        req=request, max_new_tokens=None, enforce_request_limits=True
+    )
+    scheduler.request_builder = lambda payload: request_data
+
+    scheduler.process_input_requests([new_stage_payload("request-longest-prompt")])
+
+    assert scheduler.waiting_queue == [request]
+    assert scheduler.outbox.empty()
+    allocator = scheduler.token_to_kv_pool_allocator
+    tree_cache = RadixCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=None,
+            token_to_kv_pool_allocator=allocator,
+            page_size=page_size,
+        )
+    )
+    request.init_next_round_input(tree_cache)
+    prefill_adder = PrefillAdder(
+        page_size=page_size,
+        tree_cache=tree_cache,
+        token_to_kv_pool_allocator=allocator,
+        running_batch=ScheduleBatch(reqs=[], batch_is_full=False),
+        new_token_ratio=1.0,
+        rem_input_tokens=4096,
+        rem_chunk_tokens=None,
+    )
+    prefill_adder.add_one_req(
+        request, has_chunked_req=False, truncation_align_size=None
+    )
+    assert prefill_adder.can_run_list == [request]
 
 
 @pytest.mark.usefixtures("published_config")

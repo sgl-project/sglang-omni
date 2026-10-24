@@ -135,7 +135,7 @@ def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
         effective_max_total_num_tokens=512,
         max_running_requests=3,
         req_to_token_pool=SimpleNamespace(size=8, max_context_len=4096),
-        token_to_kv_pool_allocator=SimpleNamespace(size=2048),
+        token_to_kv_pool_allocator=SimpleNamespace(size=2048, page_size=1),
     )
     worker.random_seed = 7
     worker.device = "cuda"
