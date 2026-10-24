@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -18,9 +19,30 @@ class NemotronTalkerScheduler(OmniScheduler):
     def mark_stream_done(req_data) -> None:
         req_data.thinker_chunks_done = True
 
+    def is_talker_free_except_deferred(self) -> bool:
+        return (
+            self.running_batch.is_empty()
+            and (self.last_batch is None or self.last_batch.is_empty())
+            and self.queued_admission_count() == len(self.deferred_request_payloads)
+        )
+
+    def is_request_build_ready(
+        self, payload: StagePayload, *, pending_stream_done: bool
+    ) -> bool:
+        # note (Xinhao Tan): a request without text yet would stall the batch it joins.
+        is_thinker_done = pending_stream_done
+        has_text = len(payload.prefetched_chunks) > 0
+        is_talker_idle = (
+            self.is_talker_free_except_deferred() and not self.deferred_request_payloads
+        )
+        return is_thinker_done or has_text or is_talker_idle
+
     def get_next_batch_to_run(self):
         batch = super().get_next_batch_to_run()
-        if (
+        if batch is None and self.is_talker_free_except_deferred():
+            # note (Xinhao Tan): otherwise a deferred request waits for its next chunk.
+            self.dirty_deferred_request_ids.update(self.deferred_request_payloads)
+        elif (
             batch is not None
             and batch.forward_mode.is_decode()
             and not self.model_runner.is_decode_batch_ready(batch)
