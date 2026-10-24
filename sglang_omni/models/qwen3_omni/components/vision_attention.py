@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3-Omni vision attention with platform rotary and shared patch counts."""
+"""Qwen3-Omni vision attention with platform rotary and packed varlen attention."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class Qwen3OmniVisionAttention(nn.Module):
         attention: hf_modeling.Qwen3OmniMoeVisionAttention,
         *,
         joint_rope_kernel: JointRopeInplaceKernel | None,
+        packed_attention: nn.Module | None,
     ) -> None:
         super().__init__()
         self.qkv: nn.Linear = attention.qkv
@@ -36,6 +37,7 @@ class Qwen3OmniVisionAttention(nn.Module):
         self.attention_dropout: float = attention.attention_dropout
         self.is_causal: bool = attention.is_causal
         self.joint_rope_kernel: JointRopeInplaceKernel | None = joint_rope_kernel
+        self.packed_attention: nn.Module | None = packed_attention
         self.train(attention.training)
 
     def forward(
@@ -67,6 +69,22 @@ class Qwen3OmniVisionAttention(nn.Module):
                 is_neox=True,
             )
 
+        if self.packed_attention is not None:
+            attention_output = self.packed_attention(
+                query,
+                key,
+                value,
+                cu_seqlens,
+                bsz=1,
+                seq_len=sequence_patch_count,
+                softmax_scale=self.scaling,
+                max_seqlen=max_seqlen,
+            )
+            return self.proj(
+                attention_output.reshape(sequence_patch_count, -1).contiguous()
+            )
+        else:
+            pass
         query = query.transpose(0, 1).unsqueeze(0)
         key = key.transpose(0, 1).unsqueeze(0)
         value = value.transpose(0, 1).unsqueeze(0)

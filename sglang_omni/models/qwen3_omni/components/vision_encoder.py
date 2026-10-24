@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 from transformers.initialization import no_init_weights
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeVisionEncoderConfig,
 )
 
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    resolve_packed_attention,
+)
 from sglang_omni.models.qwen3_omni.components.vision_attention import (
     Qwen3OmniVisionAttention,
 )
@@ -28,13 +32,16 @@ class Qwen3OmniVisionEncoder(Qwen3OmniMoeVisionEncoderCompat):
         config: Qwen3OmniMoeVisionEncoderConfig,
         *,
         joint_rope_kernel: JointRopeInplaceKernel | None,
+        packed_attention: nn.Module | None,
     ) -> None:
         super().__init__(config)
         self.joint_rope_kernel: JointRopeInplaceKernel | None = joint_rope_kernel
         # note (yzxiao): Keep attention and its RoPE input format paired at construction.
         for block in self.blocks:
             block.attn = Qwen3OmniVisionAttention(
-                block.attn, joint_rope_kernel=joint_rope_kernel
+                block.attn,
+                joint_rope_kernel=joint_rope_kernel,
+                packed_attention=packed_attention,
             )
 
     def prepare_position_embeddings(
@@ -81,8 +88,15 @@ def instantiate_visual(
     if torch.device(device).type != current_platform.device_type:
         return instantiate_module(native_visual_class, vision_config)
     else:
+        # note (ratish): per-image Transformers attention reaches cuDNN on Hopper, whose output changes between processes.
+        packed_attention = (
+            resolve_packed_attention(torch.device(device))
+            if torch.device(device).type == "cuda"
+            else None
+        )
         with no_init_weights():
             return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
                 vision_config,
                 joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+                packed_attention=packed_attention,
             )

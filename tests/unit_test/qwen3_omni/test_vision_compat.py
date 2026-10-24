@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU contracts for Qwen3-Omni vision encoding."""
+"""Contracts for Qwen3-Omni vision encoding."""
 
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -9,13 +10,18 @@ from unittest.mock import Mock
 import pytest
 import torch
 from safetensors.torch import save_file
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 import sglang_omni.models.qwen3_omni.components.vision_encoder as vision_runtime
 from sglang_omni.models.qwen3_omni.components import image_encoder, vision_compat
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    resolve_packed_attention,
+)
 from sglang_omni.models.qwen3_omni.components.vision_encoder import (
     Qwen3OmniVisionEncoder,
 )
+from sglang_omni.platforms import current_platform
 
 
 def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
@@ -272,6 +278,7 @@ def test_flash_backend_receives_host_max_sequence_lengths(
         Qwen3OmniVisionEncoder(
             vision_encoder.config,
             joint_rope_kernel=kernel if has_joint_kernel else None,
+            packed_attention=None,
         )
         .eval()
         .to(torch.bfloat16)
@@ -304,3 +311,66 @@ def test_flash_backend_receives_host_max_sequence_lengths(
         assert isinstance(backend_call.kwargs["max_length_k"], int)
         assert backend_call.kwargs["max_length_q"] == 24
         assert backend_call.kwargs["max_length_k"] == 24
+
+
+def test_packed_attention_receives_every_sequence_and_the_host_max_length(
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    packed_attention = Mock(
+        side_effect=lambda query, key, value, cu_seqlens, **kwargs: value
+    )
+    encoder = (
+        Qwen3OmniVisionEncoder(
+            vision_encoder.config,
+            joint_rope_kernel=None,
+            packed_attention=packed_attention,
+        )
+        .eval()
+        .to(torch.bfloat16)
+    )
+    encoder.load_state_dict(vision_encoder.state_dict(), strict=True)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long, device="cpu")
+    pixels = torch.randn(64, 24, dtype=torch.bfloat16, device="cpu")
+
+    with torch.no_grad():
+        encoder(pixels, grid_thw=grid)
+
+    assert packed_attention.call_count == vision_encoder.config.depth
+    for attention_call in packed_attention.call_args_list:
+        assert attention_call.args[3].tolist() == [0, 16, 40, 64]
+        assert isinstance(attention_call.kwargs["max_seqlen"], int)
+        assert attention_call.kwargs["max_seqlen"] == 24
+        assert attention_call.kwargs["seq_len"] == 64
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_packed_attention_matches_the_fp32_transformers_encoder(
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    device = torch.device("cuda", 0)
+    reference = copy.deepcopy(vision_encoder).to(device, torch.float32)
+    encoder = (
+        Qwen3OmniVisionEncoder(
+            vision_encoder.config,
+            joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+            packed_attention=resolve_packed_attention(device),
+        )
+        .eval()
+        .to(device, torch.bfloat16)
+    )
+    encoder.load_state_dict(vision_encoder.state_dict(), strict=True)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long, device=device)
+    torch.manual_seed(0)
+    pixels = torch.randn(64, 24, device=device)
+
+    with torch.no_grad():
+        with sdpa_kernel(SDPBackend.MATH):
+            expected = reference(pixels, grid_thw=grid, return_dict=True)
+        actual = encoder(pixels.to(torch.bfloat16), grid_thw=grid, return_dict=True)
+
+    for got, want in zip(
+        (actual.pooler_output, *actual.deepstack_features),
+        (expected.pooler_output, *expected.deepstack_features),
+    ):
+        torch.testing.assert_close(got.float(), want, rtol=2e-2, atol=2e-2)
