@@ -1216,6 +1216,14 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def process_input_requests(self, recv_reqs: list[StagePayload]) -> None:
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        bridge = self.session_bridge
+        admission = (
+            bridge.admission_batch() if bridge is not None else contextlib.nullcontext()
+        )
+        with admission:
+            self.process_input_request_batch(recv_reqs)
+
+    def process_input_request_batch(self, recv_reqs: list[StagePayload]) -> None:
         ordinary_payloads: list[StagePayload] = []
         submitted_build = False
         for payload in recv_reqs:
