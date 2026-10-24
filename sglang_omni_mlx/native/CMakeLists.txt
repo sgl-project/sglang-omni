@@ -46,6 +46,9 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+set_property(TARGET civetweb-c-library PROPERTY SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/civetweb_connection.c")
+target_include_directories(civetweb-c-library PRIVATE src "${civetweb_SOURCE_DIR}/src")
 
 add_library(common STATIC
   src/common/audio.cpp
@@ -87,9 +90,19 @@ target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC qwen3_asr)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp src/common/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
+target_link_libraries(omni_service PUBLIC common civetweb-c-library)
+target_compile_options(omni_service PRIVATE -Wall -Wextra)
+add_library(tts_service STATIC src/common/tts_service.cpp)
+target_link_libraries(tts_service PUBLIC omni_service)
+target_compile_options(tts_service PRIVATE -Wall -Wextra)
+add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
+
+add_executable(asr_service_probe EXCLUDE_FROM_ALL ci/asr_service_probe.cpp)
+target_link_libraries(asr_service_probe PRIVATE asr_service)
+target_compile_options(asr_service_probe PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
@@ -214,6 +227,19 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
+  src/ming_tts/ming_tts_audio_transformer.cpp src/ming_tts/ming_tts_audio.cpp
+  src/ming_tts/ming_tts_generator.cpp src/ming_tts/ming_tts_reference.cpp)
+target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_compile_options(ming_tts PRIVATE -Wall -Wextra)
+add_executable(ming_tts_server src/ming_tts/ming_tts_service.cpp)
+target_link_libraries(ming_tts_server PRIVATE ming_tts tts_service)
+target_compile_options(ming_tts_server PRIVATE -Wall -Wextra)
+set_target_properties(ming_tts_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
 
 # Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
