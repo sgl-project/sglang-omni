@@ -188,6 +188,9 @@ def create_thinker_scheduler(
             model_arch_override="MiniCPMO",
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
+            # note (0xtoward): the talker reads a hidden row per committed token, which
+            # speculative steps do not hand over yet.
+            supports_speculative_decoding=not speech_enabled,
         )
         if defer_cuda_graph_capture:
             init_sglang_cuda_graphs(infrastructure[0])

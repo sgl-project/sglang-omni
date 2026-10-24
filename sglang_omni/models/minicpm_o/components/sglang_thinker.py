@@ -55,6 +55,18 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
     def lm_head(self) -> nn.Module:
         return self.language_model.lm_head
 
+    def get_input_embeddings(self) -> nn.Module:
+        return self.language_model.get_input_embeddings()
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.language_model.get_embed_and_head()
+
+    def set_eagle3_layers_to_capture(self, layer_ids: list[int] | None = None) -> None:
+        self.language_model.set_eagle3_layers_to_capture(layer_ids)
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        self.language_model.set_dflash_layers_to_capture(layer_ids)
+
     def forward(
         self,
         input_ids: torch.Tensor,
