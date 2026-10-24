@@ -181,9 +181,12 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         model.fusion_mask[:batch] = True
 
     def generate_codes(self, index: int) -> torch.Tensor:
+        return self.sample_codes(self.model.hidden_out[index : index + 1])
+
+    def sample_codes(self, hidden_TD: torch.Tensor) -> torch.Tensor:
         model = self.model
         return model.talker.generate_codes(
-            model.hidden_out[index : index + 1].float(),
+            hidden_TD.float(),
             model.mog_head,
             num_iter=NUM_ITER,
             exponent=self.exponent,
@@ -193,9 +196,12 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
 
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
         del result, forward_batch, schedule_batch
+        # note (Xinhao Tan): a call per request repeats the 8-step sampler and a GPU sync.
+        codes_BQ = self.sample_codes(self.model.hidden_out[: len(requests)])
+        host_codes_BQ = codes_BQ.cpu()
         for index, request in enumerate(requests):
             inputs = request.data.talker_model_inputs
-            codes = self.generate_codes(index)
+            codes = codes_BQ[index : index + 1]
             inputs["prev_codes"] = codes
             inputs["codes_rows"].append(codes[0])
-            inputs["stream_chunk"] = codes.cpu()
+            inputs["stream_chunk"] = host_codes_BQ[index : index + 1]

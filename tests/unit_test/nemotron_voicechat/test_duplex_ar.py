@@ -17,6 +17,8 @@ from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     ThinkerAdapter,
 )
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
+from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead
+from sglang_omni.models.nemotron_voicechat.talker import EarTtsTalker
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NemotronVoiceChatTalkerModelRunner,
 )
@@ -24,6 +26,13 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
+
+TALKER_HIDDEN_SIZE = 32
+TALKER_NUM_QUANTIZERS = 4
+TALKER_CODEBOOK_SIZE = 16
+TALKER_LATENT_SIZE = 8
+SAMPLING_ITERATIONS = 4
+SAMPLE_COUNT = 2000
 
 
 @pytest.fixture
@@ -437,3 +446,160 @@ def test_thinker_routes_tool_call_out_and_forces_response_in(
             2 * torch.ones(4) + 3 * embeddings[0] + 5 * embeddings[function_input],
         )
     assert state.tool_call_token_ids is None
+
+
+def test_talker_samples_the_batch_once_and_gives_each_request_its_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled_row_counts: list[int] = []
+
+    def sample_codes(
+        hidden: torch.Tensor,
+        head: torch.nn.Module,
+        *,
+        num_iter: int,
+        exponent: float,
+        top_p: float,
+        noise_scale: float,
+    ) -> torch.Tensor:
+        sampled_row_counts.append(hidden.shape[0])
+        return hidden.long()
+
+    def initialize_runner(
+        runner: NemotronVoiceChatTalkerModelRunner,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        runner.model = Mock(
+            hidden_out=torch.arange(24.0).reshape(6, 4),
+            talker=Mock(generate_codes=sample_codes),
+            mog_head=Mock(),
+        )
+        runner.exponent = 1.0
+        runner.top_p = 0.9
+        runner.noise_scale = 1.0
+
+    monkeypatch.setattr(
+        NemotronVoiceChatTalkerModelRunner, "__init__", initialize_runner
+    )
+    runner = NemotronVoiceChatTalkerModelRunner(
+        Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
+    )
+    requests = [
+        SchedulerRequest(
+            f"talker-{index}", data=Mock(talker_model_inputs={"codes_rows": []})
+        )
+        for index in range(3)
+    ]
+    runner.post_decode(Mock(), Mock(), Mock(), requests)
+
+    assert sampled_row_counts == [3]
+    for index, request in enumerate(requests):
+        inputs = request.data.talker_model_inputs
+        row_codes = torch.arange(4 * index, 4 * index + 4)[None]
+        torch.testing.assert_close(inputs["prev_codes"], row_codes)
+        torch.testing.assert_close(inputs["codes_rows"], [row_codes[0]])
+        torch.testing.assert_close(inputs["stream_chunk"], row_codes)
+        assert inputs["stream_chunk"].device.type == "cpu"
+
+
+def make_code_sampler() -> tuple[EarTtsTalker, MoGHead]:
+    torch.manual_seed(0)
+    talker = EarTtsTalker(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            vocab_size=10,
+            char_vocab_size=8,
+            num_quantizers=TALKER_NUM_QUANTIZERS,
+            codebook_size=TALKER_CODEBOOK_SIZE,
+            latent_size=TALKER_LATENT_SIZE,
+            char_encoder_config={
+                "encoder": dict(
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=1,
+                    head_dim=8,
+                )
+            },
+        )
+    )
+    talker.rvq_embs.normal_()
+    mog_head = MoGHead(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            intermediate_size=64,
+            num_layers=3,
+            num_predictions=TALKER_CODEBOOK_SIZE,
+            out_size=TALKER_LATENT_SIZE,
+            low_rank=4,
+        )
+    )
+    mog_head.low_mat.data.normal_()
+    return talker.eval(), mog_head.eval()
+
+
+def sample_rows(
+    talker: EarTtsTalker,
+    mog_head: MoGHead,
+    hidden_TD: torch.Tensor,
+    *,
+    top_p: float,
+    noise_scale: float,
+) -> torch.Tensor:
+    return talker.generate_codes(
+        hidden_TD,
+        mog_head,
+        num_iter=SAMPLING_ITERATIONS,
+        exponent=1.0,
+        top_p=top_p,
+        noise_scale=noise_scale,
+    )
+
+
+@torch.inference_mode()
+def test_batched_code_sampling_matches_each_row_sampled_alone_without_noise() -> None:
+    talker, mog_head = make_code_sampler()
+    hidden_TD = torch.randn(5, TALKER_HIDDEN_SIZE)
+    # note (Xinhao Tan): this nucleus keeps only the top component and zero noise
+    # samples its mean, so the codes are a pure function of the row.
+    batched = sample_rows(talker, mog_head, hidden_TD, top_p=1e-6, noise_scale=0.0)
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=1e-6, noise_scale=0.0)
+            for row_D in hidden_TD
+        ]
+    )
+    torch.testing.assert_close(batched, alone, rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_a_rows_code_distribution_does_not_depend_on_its_batch() -> None:
+    talker, mog_head = make_code_sampler()
+    row_D = torch.randn(TALKER_HIDDEN_SIZE)
+    others_TD = torch.randn(SAMPLE_COUNT, TALKER_HIDDEN_SIZE)
+
+    def first_level_distribution(codes_TQ: torch.Tensor) -> torch.Tensor:
+        counts = torch.bincount(codes_TQ[:, 0], minlength=TALKER_CODEBOOK_SIZE)
+        return counts / codes_TQ.shape[0]
+
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=0.9, noise_scale=1.0)
+            for _ in range(SAMPLE_COUNT)
+        ]
+    )
+    interleaved_TD = torch.stack(
+        [row_D.repeat(SAMPLE_COUNT, 1), others_TD], dim=1
+    ).reshape(-1, TALKER_HIDDEN_SIZE)
+    mixed = sample_rows(talker, mog_head, interleaved_TD, top_p=0.9, noise_scale=1.0)
+    copies = sample_rows(
+        talker, mog_head, row_D.repeat(SAMPLE_COUNT, 1), top_p=0.9, noise_scale=1.0
+    )
+
+    alone_distribution = first_level_distribution(alone)
+    assert (alone_distribution > 0).sum() > 1
+    for batched in (mixed[::2], copies):
+        distance = (first_level_distribution(batched) - alone_distribution).abs()
+        assert 0.5 * distance.sum() < 0.1
