@@ -318,7 +318,9 @@ async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
         last = len(session.outputs)
         await session.command(TRUNCATE, t_ms=0)
         await session.audio(eos=True)
-        assert backends[3][1][-2] == {"role": "assistant", "content": ""}
+        assert backends[3][1][1:] == [
+            {"role": "user", "content": "test question test question"}
+        ]
         assert not any(
             o.turn == 1 and o.format == PCM_F32 for o in session.outputs[last:]
         )

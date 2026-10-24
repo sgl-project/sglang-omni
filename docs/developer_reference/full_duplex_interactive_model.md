@@ -295,7 +295,7 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 | `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
 | `error` | The request or the session failed. |
 
-`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise; a reply interrupted before its first boundary leaves an empty answer. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent.
+`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking.
 
 To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
 
@@ -631,7 +631,7 @@ Every failure ends the realtime session with an `error` event.
 - Without an `alignment` node, the dialog's `reply.progress` control edge comes from `tts`, which reports sentence ends, so an interrupted reply is cut at the end of the last sentence heard in full.
 - `method: sentence`: the same sentence-level cut. With `forced`, the cut can fall between words of a finished sentence; a sentence cut off before its audio is complete counts as unheard in both methods unless `heard_asr_url` is set.
 - With `heard_asr_url`, a transcript that leaves out, repeats or changes the first words of the sentence at the cut keeps none of it.
-- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves an empty assistant entry in the history.
+- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves no assistant entry in the history, so the next utterance joins the user message the reply answered.
 - An aligner that does not read `tts:session` loads but receives no sentence ends and reports nothing.
 - `sglang.response.progress` reaches the client only from a node that publishes `session` and whose `session` no other node reads: the aligner when it is published, never `tts` while the dialog or an aligner reads it.
 - A client that sends no `conversation.item.truncate`: the history keeps an interrupted reply up to the audio the server had delivered, which is ahead of what was played by up to `max_output_lead_ms`. With `truncate`, the cut moves back to the client's `audio_end_ms`, never past the delivered audio.
