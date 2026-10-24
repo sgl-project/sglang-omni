@@ -147,6 +147,38 @@ class CallDriver:
 
 
 @pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="requires CUDA"
+                ),
+            ],
+        ),
+    ],
+)
+def test_session_result_keeps_prepared_codes_on_their_device(device):
+    """A completed unit must not serialize device codes through CPU bytes."""
+    driver = CallDriver(open_adapter())
+    request = driver.build(caller_codes(1))
+    inputs = request.data.talker_model_inputs
+    codes = torch.arange(16, device=device).view(2, 8)
+    inputs["pending_codes"] = codes
+    inputs["frames"].extend(codes.unbind())
+    request.data.output_ids = [77, 78]
+    payload = driver.adapter.result(CALL, request.data)
+    restored = PersonaPlexState.from_dict(payload.data)
+    assert restored.codes.device == codes.device
+    assert torch.equal(restored.codes, codes)
+    assert inputs["frames"] == []
+    assert "pending_codes" not in inputs
+
+
+@pytest.mark.parametrize(
     "frames_per_unit", [[1, 1, 1, 1], [2, 1, 1], [1, 3], [4]], ids=str
 )
 def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int]):

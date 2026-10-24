@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prefill and decode hooks feed timeline rows to the model and frames to the codec."""
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -78,6 +79,9 @@ class FakeModel:
 def make_runner(model: FakeModel) -> PersonaPlexModelRunner:
     runner = PersonaPlexModelRunner.__new__(PersonaPlexModelRunner)
     runner.model = model
+    runner.tp_worker = SimpleNamespace(
+        server_args=SimpleNamespace(enable_streaming_session=False)
+    )
     runner.output_processor = SGLangOutputProcessor()
     runner.async_query_hit = runner.async_query_miss = 0
     return runner
@@ -145,6 +149,96 @@ def generate(runner, request, tokens: list[int]) -> None:
             None,
             [request],
         )
+
+
+@pytest.mark.parametrize("frame_count", [1, 2])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="requires CUDA"
+                ),
+            ],
+        ),
+    ],
+)
+def test_session_codes_are_owned_before_text_completion(
+    monkeypatch, frame_count, device
+):
+    """A completed unit must publish owned codes before its text completion fence."""
+    reference_runner = make_runner(FakeModel())
+    reference_request = make_request(frame_count)
+    generate(
+        reference_runner,
+        reference_request,
+        [77 + step for step in range(frame_count)],
+    )
+    expected = torch.stack(reference_request.data.talker_model_inputs["frames"])
+    model = FakeModel()
+    model.fusion_buffer = model.fusion_buffer.to(device)
+    model.hidden_out = model.hidden_out.to(device)
+    runner = make_runner(model)
+    runner.tp_worker.server_args.enable_streaming_session = True
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
+    request = make_request(frame_count)
+    inputs = request.data.talker_model_inputs
+    original_stage = runner.stage_token_ids
+    published = []
+
+    def stage(result, tokens):
+        if len(request.data.req.output_ids) + 1 == frame_count:
+            assert inputs["pending_codes"].shape == (frame_count, 8)
+            assert inputs["pending_codes"].device.type == device
+            assert inputs["pending_frames"] == []
+            published.append(inputs["pending_codes"])
+        original_stage(result, tokens)
+
+    monkeypatch.setattr(runner, "stage_token_ids", stage)
+    producer = torch.cuda.Stream() if device == "cuda" else None
+    stream_context = (
+        torch.cuda.stream(producer) if producer is not None else nullcontext()
+    )
+    with stream_context:
+        for step in range(frame_count):
+            prefix = (
+                0 if step == 0 else len(request.data.req.origin_input_ids) + step - 1
+            )
+            prefill(
+                runner, request, scheduled(request, request.data.req.output_ids, prefix)
+            )
+            result = SimpleNamespace(
+                next_token_ids=torch.tensor([77 + step], device=device)
+            )
+            runner.post_prefill(result, None, None, [request])
+            assert runner.resolve_host_token_ids(result).tolist() == [77 + step]
+            request.data.req.output_ids.append(77 + step)
+    (codes,) = published
+    consumer = torch.cuda.Stream() if device == "cuda" else None
+    consumer_context = (
+        torch.cuda.stream(consumer) if consumer is not None else nullcontext()
+    )
+    with consumer_context:
+        consumed = codes.clone()
+    monkeypatch.setattr(runner, "stage_token_ids", original_stage)
+    next_request = make_request(1, request_id="next")
+    prefill(runner, next_request, scheduled(next_request))
+    next_result = SimpleNamespace(next_token_ids=torch.tensor([91], device=device))
+    runner.post_prefill(next_result, None, None, [next_request])
+    assert runner.resolve_host_token_ids(next_result).tolist() == [91]
+    if consumer is not None:
+        consumer.synchronize()
+    else:
+        pass
+    assert torch.equal(consumed.cpu(), expected)
+    assert torch.equal(codes.cpu(), expected)
 
 
 def test_prefill_uses_stored_voice_rows_and_embeds_the_rest():

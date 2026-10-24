@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
@@ -116,10 +117,14 @@ def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
     )
 
 
-def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_codec):
+@pytest.mark.parametrize("native_codes", [False, True])
+def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(
+    random_codec: MimiCodec, native_codes: bool
+) -> None:
     sessions = [SessionIdentity("a"), SessionIdentity("b")]
     frames_per_unit = {sessions[0]: [2, 1, 1], sessions[1]: [1, 1, 2]}
-    codes = {session: torch.randint(0, 2048, (4, 8)) for session in sessions}
+    codes = {session: torch.randint(0, 2048, (4, 9))[:, 1:] for session in sessions}
+    original_codes = {session: value.clone() for session, value in codes.items()}
     hooks = Code2WavHooks(decode_slots(random_codec, 2))
     emitted: dict[SessionIdentity, list[TimedChunk]] = {}
     for session in sessions:
@@ -135,10 +140,18 @@ def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_code
             state = PersonaPlexState(
                 codes=codes[session][start : start + count], text=f"w{index} "
             )
+            if native_codes:
+                unit_payload = StagePayload(
+                    "unit",
+                    request=OmniRequest(inputs=None),
+                    data={"codes": state.codes, "text": state.text},
+                )
+            else:
+                unit_payload = payload(state)
             appends.append(
                 SessionAppend(
                     chunk=unit(index, eos=index == 2),
-                    payload=payload(state),
+                    payload=unit_payload,
                     context=SessionContext(
                         session_identity=session,
                         cancelled=threading.Event(),
@@ -151,6 +164,7 @@ def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_code
         hooks.close(session)
 
     for session in sessions:
+        assert torch.equal(codes[session], original_codes[session])
         chunks = emitted[session]
         whole = random_codec.decode(codes[session].T[None])[0, 0]
         streamed = np.frombuffer(

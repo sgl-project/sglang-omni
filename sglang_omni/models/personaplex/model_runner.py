@@ -53,6 +53,7 @@ class DecodeFeedback:
 
 @dataclass(kw_only=True)
 class PersonaPlexFrameBatch:
+    # Note (Pinoeer-kingxi): Streaming sessions keep these rows on device.
     host_rows: torch.Tensor
     agent_rows: torch.Tensor
     audio_rng_states: list[torch.Tensor | None]
@@ -68,6 +69,10 @@ class SamplingRun:
 
 
 class PersonaPlexModelRunner(ModelRunner):
+    @property
+    def keep_audio_on_device(self) -> bool:
+        return self.tp_worker.server_args.enable_streaming_session
+
     def sample_before_post_prefill(
         self,
         forward_batch: ForwardBatch,
@@ -245,7 +250,9 @@ class PersonaPlexModelRunner(ModelRunner):
                 generator.get_state() if generator is not None else None
             )
         packed_rows = torch.cat((text_tokens[:, None], torch.stack(frames)), dim=1)
-        if non_blocking:
+        if self.keep_audio_on_device:
+            host_rows = packed_rows
+        elif non_blocking:
             # Note (edwardzh): Reused staging can be larger than a shrinking batch.
             host_rows = self.next_host_staging(packed_rows.shape, packed_rows.dtype)[
                 :batch_size
@@ -266,7 +273,6 @@ class PersonaPlexModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         host_rows = frames.host_rows
-        self.stage_token_ids(result, host_rows[:, 0])
         for index, request in enumerate(requests):
             data = request.data
             if data.req.finished() or data.req.is_retracted:
@@ -278,6 +284,18 @@ class PersonaPlexModelRunner(ModelRunner):
             inputs["frames"].append(host_rows[index, 1:])
             inputs["pending_frames"].append(host_rows[index, 1:])
             self.decode_feedback(data).audio_rng_state = frames.audio_rng_states[index]
+            if self.keep_audio_on_device and (
+                len(data.req.output_ids) + 1 >= data.req.sampling_params.max_new_tokens
+            ):
+                pending = inputs["pending_frames"]
+                inputs["pending_codes"] = (
+                    pending[0][None] if len(pending) == 1 else torch.stack(pending)
+                )
+                inputs["pending_frames"].clear()
+            else:
+                pass
+        # Note (Pinoeer-kingxi): The text completion fence also publishes the unit's device codes before another stage can consume them.
+        self.stage_token_ids(result, host_rows[:, 0])
 
     def post_decode_launch(
         self,

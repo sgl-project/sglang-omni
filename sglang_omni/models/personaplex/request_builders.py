@@ -162,6 +162,7 @@ class LMInputs(TypedDict, total=False):
     agent_rows: list[torch.Tensor]
     frames: list[torch.Tensor]
     pending_frames: list[torch.Tensor]
+    pending_codes: torch.Tensor
     num_samples: int
     decode_feedback: DecodeFeedback
     prefill_forced: torch.Tensor

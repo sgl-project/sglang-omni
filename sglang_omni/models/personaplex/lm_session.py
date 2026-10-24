@@ -171,13 +171,15 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         text_ids = [history.next_text_id]
         text_ids.extend(int(token) for token in request_data.output_ids)
         history.next_text_id = text_ids.pop()
-        codes = torch.stack(frames).cpu()
+        codes = history.model_inputs.pop("pending_codes", None)
+        if codes is None:
+            codes = torch.stack(frames).cpu()
+        else:
+            pass
         frames.clear()
         history.model_inputs["frames"].clear()
         payload = request_data.stage_payload
-        payload.data = PersonaPlexState(
-            codes=codes, text=self.spoken_words(history, text_ids)
-        ).to_dict()
+        payload.data = {"codes": codes, "text": self.spoken_words(history, text_ids)}
         return payload
 
 

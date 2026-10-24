@@ -195,7 +195,10 @@ class Code2WavHooks(BatchedSessionHooks):
             else:
                 pass
         for indices in rows_by_width.values():
-            codes_BKF = torch.stack([units[index].codes.T for index in indices])
+            if len(indices) == 1:
+                codes_BKF = units[indices[0]].codes.T[None]
+            else:
+                codes_BKF = torch.stack([units[index].codes.T for index in indices])
             waveform = self.decode_slots.decode_step(
                 codes_BKF.to(device=self.decode_slots.codec.device),
                 [
