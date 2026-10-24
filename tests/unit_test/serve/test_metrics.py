@@ -4,6 +4,7 @@ import importlib
 import sys
 from collections.abc import AsyncGenerator
 
+import numpy as np
 import pytest
 from starlette.types import Message, Receive, Scope, Send
 
@@ -453,12 +454,20 @@ def test_engine_gauges_are_leader_snapshots_and_removed_when_missing() -> None:
 
 
 @pytest.mark.parametrize("aborted", [False, True])
-def test_modality_counts_use_waveform_and_final_image(aborted: bool) -> None:
+@pytest.mark.parametrize("sample_shape", [None, (2, 20), (20, 2)])
+def test_modality_counts_use_waveform_and_final_image(
+    aborted: bool, sample_shape: tuple[int, int] | None
+) -> None:
+    """Waveform duration must count samples for either stereo layout."""
     metrics = RequestMetrics("test")
 
     async def source() -> AsyncGenerator[GenerateChunk, None]:
         audio = chunk(stage="vocoder", modality="audio")
-        audio.audio_data = [0.0] * 20
+        audio.audio_data = (
+            [0.0] * 20
+            if sample_shape is None
+            else np.zeros(sample_shape, dtype=np.float32)
+        )
         audio.sample_rate = 10
         yield audio
         image = chunk(stage="generate", modality="image")

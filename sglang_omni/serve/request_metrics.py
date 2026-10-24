@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import sglang_omni.serve.metrics_registry as metrics_registry
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk, UMMGenerateChunk, UsageInfo
+from sglang_omni.metrics.audio import AudioMetrics
 from sglang_omni.scheduling.metrics_snapshot import SchedulerMetricEvent
 
 SCHEDULER_METRICS_TIMEOUT_S = 5.0
@@ -32,6 +33,7 @@ class RequestMetrics:
         collectors = metrics_registry.create_request_collectors(model_name)
         self.model_name: str = model_name
         self.registry: metrics_registry.CollectorRegistry = collectors.registry
+        self.audio_metrics: AudioMetrics = AudioMetrics(self.registry)
         self.e2e: metrics_registry.Histogram = collectors.e2e
         self.ttft: metrics_registry.Histogram = collectors.ttft
         self.itl: metrics_registry.Histogram = collectors.itl
@@ -168,7 +170,7 @@ class RequestMetrics:
                     ):
                         shape = getattr(audio, "shape", None)
                         if shape is not None and len(shape) in (1, 2):
-                            samples = shape[-1]
+                            samples = max(shape)
                         elif isinstance(audio, (list, tuple)) and (
                             not audio or isinstance(audio[0], (int, float))
                         ):

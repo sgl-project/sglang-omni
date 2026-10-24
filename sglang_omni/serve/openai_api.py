@@ -146,6 +146,7 @@ from sglang_omni.serve.speech_limits import (
     MAX_VOICE_UPLOAD_BODY_BYTES,
     MAX_VOICE_UPLOAD_BYTES,
 )
+from sglang_omni.serve.speech_metrics import SpeechMetricsMiddleware
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_to_text import complete_unless_disconnected
@@ -403,9 +404,13 @@ def create_app(
         else:
             pass
         app.add_middleware(MetricsMiddleware, metrics=app.state.request_metrics)
+        app.add_middleware(
+            SpeechMetricsMiddleware, metrics=app.state.request_metrics.audio_metrics
+        )
 
         @app.get("/metrics", include_in_schema=False)
         async def metrics() -> Response:
+            app.state.request_metrics.audio_metrics.prune(time.perf_counter_ns())
             try:
                 await app.state.request_metrics.refresh_scheduler(client)
             except Exception:
@@ -1930,6 +1935,7 @@ def register_speech(app: FastAPI) -> None:
         except SpeechAPIError as exc:
             return speech_error_response(exc)
 
+        request.state.audio_streaming = req.stream
         if req.stream:
             try:
                 return await speech_audio_response(
@@ -1977,6 +1983,14 @@ def register_speech(app: FastAPI) -> None:
             # travels in the same X- header channel as usage.
             "X-Finish-Reason": result.finish_reason,
         }
+        request.state.audio_duration_s = result.duration_s
+        store_speech_usage(request, result.usage)
+        if result.format == "pcm":
+            headers["X-Sample-Rate"] = str(result.sample_rate or DEFAULT_SAMPLE_RATE)
+            headers["X-Channels"] = "1"
+            headers["X-Bit-Depth"] = "16"
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {
@@ -2140,6 +2154,14 @@ def speech_pcm_chunk_bytes(
     return audio_bytes, emitted_samples, sample_rate
 
 
+def store_speech_usage(request: Request, usage: UsageInfo | None) -> None:
+    """Store speech usage for response metrics."""
+    if usage is not None and usage.engine_time_s is not None:
+        request.state.audio_generation_s = usage.engine_time_s
+    else:
+        pass
+
+
 async def speech_audio_response(
     request: Request,
     client: Client,
@@ -2199,6 +2221,7 @@ async def speech_audio_response(
             except StopAsyncIteration:
                 stream_completed = True
                 break
+            store_speech_usage(request, chunk.usage)
             record_terminal_chunk_state(chunk)
             if chunk.audio_data is None:
                 continue
@@ -2250,6 +2273,7 @@ async def speech_audio_response(
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
+                store_speech_usage(request, chunk.usage)
                 record_terminal_chunk_state(chunk)
                 if chunk.audio_data is None:
                     continue

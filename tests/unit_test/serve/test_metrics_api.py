@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.serve.metrics_registry as metrics_module
 import sglang_omni.serve.openai_api as api_module
+from sglang_omni.metrics.types import ORPHANED_STATE_TTL_NS
 from sglang_omni.scheduling.metrics_snapshot import MetricsAdminResponse
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.request_metrics import RequestMetrics
@@ -65,6 +66,40 @@ def test_failed_scheduler_scrape_is_not_successful() -> None:
 
     app = create_app(FailedClient(), enable_metrics=True)
     assert TestClient(app).get("/metrics").status_code == 503
+
+
+def test_audio_metrics_share_the_existing_scrape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio observations must survive backend refresh in the same registry."""
+    client = MetricsClient()
+    app = create_app(client, model_name="test", enable_metrics=True)
+    audio_metrics = client.request_metrics.audio_metrics
+    audio_metrics.record("audio_response_start", "completed", 1)
+    audio_metrics.record(
+        "audio_response_done", "completed", 2, {"audio_duration_s": 0.5}
+    )
+    audio_metrics.record("audio_response_start", "orphaned", 1)
+    audio_metrics.record("audio_chunk", "orphaned", 2, {"duration_s": 0.1})
+    monkeypatch.setattr(
+        api_module.time, "perf_counter_ns", lambda: ORPHANED_STATE_TTL_NS + 3
+    )
+
+    response = TestClient(app).get("/metrics")
+
+    assert response.status_code == 200
+    assert "sglang_omni:audio_duration_s_sum 0.5" in response.text
+    assert (
+        'sglang:num_running_reqs{model_name="test",stage="generate"} 1.0'
+        in response.text
+    )
+    audio_metrics.record("audio_response_done", "orphaned", ORPHANED_STATE_TTL_NS + 4)
+    assert (
+        client.request_metrics.registry.get_sample_value(
+            "sglang_omni:audio_duration_s_count"
+        )
+        == 1
+    )
 
 
 def test_backend_histogram_is_visible_on_http_scrape() -> None:

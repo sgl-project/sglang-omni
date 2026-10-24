@@ -199,3 +199,21 @@ GPU/NPU latency overhead, actual TP/replica deployment and monitoring-platform
 label compatibility require hardware/deployment acceptance.
 Advanced feature-specific metrics are not a current acceptance gate. Existing
 conditional backend export does not imply every family has been validated.
+
+## Generated speech playback metrics
+
+The same `--enable-metrics` switch also enables audio measurements for `POST /v1/audio/speech`. These collectors share the existing HTTP-process registry and `/metrics` endpoint; the backend snapshot transport and optional metrics dependency remain unchanged.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `sglang_omni:audio_ttfp_s` | Histogram | Request arrival to the first streamed audio payload, in seconds. |
+| `sglang_omni:audio_rtf` | Histogram | Engine-reported generation seconds divided by generated audio seconds. |
+| `sglang_omni:audio_e2e_latency_s` | Histogram | Request arrival to the final successful audio response, in seconds. |
+| `sglang_omni:audio_duration_s` | Histogram | Successfully delivered generated audio duration, after speed conversion. |
+| `sglang_omni:audio_chunk_interval_s` | Histogram | Wall-clock interval between streamed audio payloads, in seconds. |
+| `sglang_omni:audio_underrun_s` | Histogram | Largest playback-buffer underrun per completed stream, in seconds. |
+| `sglang_omni:audio_continuity_ok_total{threshold_ms}` | Counter | Completed streams with a maximum underrun no larger than 50, 100, or 200 milliseconds. |
+
+Raw PCM chunks and decoded SSE `speech.audio.delta` payloads determine streaming audio duration. An SSE response counts as completed only after `speech.audio.done` has been sent successfully. Interrupted or failed streams retain their observed first-audio timing but do not add successful duration, RTF, underrun, or continuity observations. Non-streaming responses report duration and end-to-end latency without streaming-only observations. RTF is omitted when engine timing is unavailable. Scrapes prune abandoned request state after one hour.
+
+These response measurements complement `sglang_omni:audio_output_seconds_total`, which measures completed pipeline waveforms before encoding and speed conversion. They apply only to the speech HTTP endpoint and do not change the generic HTTP, backend, token, or per-stage metrics.
