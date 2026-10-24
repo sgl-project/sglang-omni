@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+import pytest
 import soundfile
 from numpy.typing import NDArray
 from pydantic import JsonValue
@@ -27,6 +28,200 @@ from tests.unit_test.fixtures.duplex_fakes import (
 )
 
 VariantName = Literal["overlap", "clean"]
+
+
+def make_run(
+    root: Path,
+    variants: dict[VariantName, tuple[bytes, str]],
+    *,
+    profile: Literal["sglang", "turn-based"] = "sglang",
+    protocol_verdict: Literal["pass"] | None = None,
+) -> Path:
+    """Write a paired SGLang capture with the supplied PCM and trace text."""
+    run = root / "run"
+    sample_id = "user_interruption/1"
+    states: dict[VariantName, dict[str, JsonValue]] = {}
+    for variant, (input_pcm, trace_text) in variants.items():
+        directory = Path("samples") / sample_id / variant
+        (run / directory).mkdir(parents=True)
+        (run / directory / "input.pcm").write_bytes(input_pcm)
+        (run / directory / "continuous.jsonl").write_text(trace_text)
+        states[variant] = {
+            "directory": str(directory),
+            "status": protocol_verdict or "captured",
+            "input": {"sha256": hashlib.sha256(input_pcm).hexdigest()},
+            "source": {"file": f"{sample_id}/input.wav", "sha256": None},
+        }
+        if protocol_verdict is not None:
+            states[variant]["protocol_verdict"] = protocol_verdict
+        else:
+            pass
+    (run / "manifest.json").write_text(json.dumps({"profile": profile}))
+    (run / "run.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "samples": [{"id": sample_id, "variants": states}],
+            }
+        )
+    )
+    return run
+
+
+@pytest.mark.parametrize(
+    "trace_format", [TraceFormat.PCM16, TraceFormat.TURN_BASED_PCM16]
+)
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "fatal",
+        "unrelated",
+        "other_code",
+        "after_admission",
+        "missing_ack",
+        "wrong_ack",
+        "duplicate",
+        "early_input",
+        "reused_update_id",
+        "overlapping_updates",
+    ],
+)
+def test_export_admission_recovery_requires_a_correlated_successful_update(
+    tmp_path: Path,
+    trace_format: TraceFormat,
+    failure: (
+        Literal[
+            "fatal",
+            "unrelated",
+            "other_code",
+            "after_admission",
+            "missing_ack",
+            "wrong_ack",
+            "duplicate",
+            "early_input",
+            "reused_update_id",
+            "overlapping_updates",
+        ]
+        | None
+    ),
+) -> None:
+    """Recovered admission must export audio without suppressing genuine failures."""
+    input_pcm = make_input_pcm(8000)
+    output_pcm = make_constant_pcm(0.1, SAMPLE_RATE)
+    records = [
+        json.loads(line)
+        for line in make_session_trace(
+            input_pcm, audio_deltas=[(0.1, output_pcm)]
+        ).splitlines()
+    ]
+    records[0]["event"]["client_event_id"] = "retry"
+    records[0]["event"]["event_id"] = "acknowledged"
+    rejection: dict[str, JsonValue] = {
+        "direction": "receive",
+        "time_s": TRACE_ORIGIN_S - 0.04,
+        "event": {
+            "type": "error",
+            "event_id": "rejected",
+            "sglang": {"fatal": failure == "fatal"},
+            "error": {
+                "code": (
+                    "invalid_request"
+                    if failure == "other_code"
+                    else "admission_rejected"
+                ),
+                "event_id": "foreign" if failure == "unrelated" else "initial",
+            },
+        },
+    }
+    records.extend(
+        [
+            {
+                "direction": "send",
+                "time_s": TRACE_ORIGIN_S - 0.05,
+                "event": {
+                    "type": "session.update",
+                    "event_id": "initial",
+                    "session": {},
+                },
+            },
+            rejection,
+            {
+                "direction": "send",
+                "time_s": TRACE_ORIGIN_S - 0.02,
+                "event": {"type": "session.update", "event_id": "retry", "session": {}},
+            },
+        ]
+    )
+    if failure == "missing_ack":
+        records.pop(0)
+    elif failure == "wrong_ack":
+        records[0]["event"]["client_event_id"] = "initial"
+    elif failure == "after_admission":
+        rejection["time_s"] = TRACE_ORIGIN_S - 0.005
+    elif failure == "duplicate":
+        records.append({**rejection, "time_s": TRACE_ORIGIN_S - 0.03})
+    elif failure == "early_input":
+        records[0]["time_s"] = TRACE_ORIGIN_S + 0.001
+    elif failure == "reused_update_id":
+        records[-1]["event"]["event_id"] = "initial"
+        records[0]["event"]["client_event_id"] = "initial"
+    elif failure == "overlapping_updates":
+        records[0]["event"]["client_event_id"] = "overlapping"
+        records.append(
+            {
+                "direction": "send",
+                "time_s": TRACE_ORIGIN_S - 0.015,
+                "event": {
+                    "type": "session.update",
+                    "event_id": "overlapping",
+                    "session": {},
+                },
+            }
+        )
+    else:
+        pass
+    records.sort(key=lambda record: record["time_s"])
+    trace_text = "".join(json.dumps(record) + "\n" for record in records)
+    run_dir = make_run(
+        tmp_path,
+        {variant: (input_pcm, trace_text) for variant in ("overlap", "clean")},
+        profile=(
+            "turn-based" if trace_format is TraceFormat.TURN_BASED_PCM16 else "sglang"
+        ),
+        protocol_verdict="pass",
+    )
+    trace_path = run_dir / "samples/user_interruption/1/overlap/continuous.jsonl"
+    output_dir = tmp_path / "export"
+    report = export_runs(
+        [run_dir], output_dir, "fixture", trace_format=trace_format.value
+    )
+    assert (
+        report["builder_sha256"]["oracle_models.py"]
+        == hashlib.sha256(
+            Path(reference_audio.__file__).with_name("oracle_models.py").read_bytes()
+        ).hexdigest()
+    )
+    assert trace_path.read_text() == trace_text
+    result = report["samples"][0]["variants"]["overlap"]
+    if failure is None:
+        assert result["eligible"], result["reasons"]
+        assert len(result["lifecycle"]["protocol_anomalies"]) == 1
+        audio, sample_rate = soundfile.read(
+            output_dir / "user_interruption/1/output.wav", dtype="int16"
+        )
+        assert sample_rate == SAMPLE_RATE
+        assert len(audio) == len(input_pcm) // 2
+        np.testing.assert_array_equal(
+            audio[1600:3200], np.frombuffer(output_pcm, "<i2")
+        )
+    else:
+        assert not result["eligible"]
+        assert any(
+            "server error" in reason or "pending" in reason
+            for reason in result["reasons"]
+        )
+        assert not (output_dir / "user_interruption/1/output.wav").exists()
 
 
 def make_send_receipts(
@@ -59,33 +254,6 @@ class AudioFixture(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
-
-    def make_run(self, variants: dict[VariantName, tuple[bytes, str]]) -> Path:
-        """Write a paired SGLang capture with the supplied PCM and trace text."""
-        run = self.root / "run"
-        sample_id = "user_interruption/1"
-        states = {}
-        for variant, (input_pcm, trace_text) in variants.items():
-            directory = Path("samples") / sample_id / variant
-            (run / directory).mkdir(parents=True)
-            (run / directory / "input.pcm").write_bytes(input_pcm)
-            (run / directory / "continuous.jsonl").write_text(trace_text)
-            states[variant] = {
-                "directory": str(directory),
-                "status": "captured",
-                "input": {"sha256": hashlib.sha256(input_pcm).hexdigest()},
-                "source": {"file": f"{sample_id}/input.wav", "sha256": None},
-            }
-        (run / "manifest.json").write_text(json.dumps({"profile": "sglang"}))
-        (run / "run.json").write_text(
-            json.dumps(
-                {
-                    "status": "complete",
-                    "samples": [{"id": sample_id, "variants": states}],
-                }
-            )
-        )
-        return run
 
     def analyze(
         self,
@@ -353,11 +521,12 @@ class TraceClock(AudioFixture):
 class ReferenceExport(AudioFixture):
     def test_engine_label_is_metadata_only(self) -> None:
         pcm = make_input_pcm(7681)
-        run = self.make_run(
+        run = make_run(
+            self.root,
             {
                 variant: (pcm, make_session_trace(pcm))
                 for variant in ("overlap", "clean")
-            }
+            },
         )
         original = export_runs([run], self.root / "original", "sglang")
         relabeled_output = self.root / "relabeled"
@@ -412,7 +581,7 @@ class ReferenceExport(AudioFixture):
     def test_declared_send_receipts_cannot_fall_back_to_legacy(self) -> None:
         pcm = make_input_pcm(8000)
         text = make_session_trace(pcm)
-        run = self.make_run({v: (pcm, text) for v in ("overlap", "clean")})
+        run = make_run(self.root, {v: (pcm, text) for v in ("overlap", "clean")})
         path = run / "manifest.json"
         manifest = json.loads(path.read_text())
         manifest["config"] = {
@@ -435,8 +604,9 @@ class ReferenceExport(AudioFixture):
                 (0.49, make_constant_pcm(0.1, SAMPLE_RATE, 2000)),
             ],
         )
-        run = self.make_run(
-            {variant: (input_pcm, capture_trace) for variant in ("overlap", "clean")}
+        run = make_run(
+            self.root,
+            {variant: (input_pcm, capture_trace) for variant in ("overlap", "clean")},
         )
         manifest_path = run / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
@@ -505,11 +675,12 @@ class ReferenceExport(AudioFixture):
         self,
     ) -> None:
         input_pcm = make_input_pcm(8000)
-        run = self.make_run(
+        run = make_run(
+            self.root,
             {
                 variant: (input_pcm, make_session_trace(input_pcm))
                 for variant in ("overlap", "clean")
-            }
+            },
         )
         dataset = self.root / "dataset"
         sample_directory = dataset / "user_interruption/1"
@@ -580,8 +751,9 @@ class ReferenceExport(AudioFixture):
             input_pcm,
             audio_deltas=[(0.1, make_constant_pcm(0.1, SAMPLE_RATE, 500))],
         )
-        first_run = self.make_run(
-            {variant: (input_pcm, first_trace) for variant in ("overlap", "clean")}
+        first_run = make_run(
+            self.root,
+            {variant: (input_pcm, first_trace) for variant in ("overlap", "clean")},
         ).rename(self.root / "first-run")
         first_run_path = first_run / "run.json"
         first_document = json.loads(first_run_path.read_text())
@@ -591,8 +763,9 @@ class ReferenceExport(AudioFixture):
             input_pcm,
             audio_deltas=[(0.1, make_constant_pcm(0.1, SAMPLE_RATE, 2000))],
         )
-        retry_run = self.make_run(
-            {variant: (input_pcm, retry_trace) for variant in ("overlap", "clean")}
+        retry_run = make_run(
+            self.root,
+            {variant: (input_pcm, retry_trace) for variant in ("overlap", "clean")},
         )
 
         output = self.root / "export"
@@ -618,11 +791,12 @@ class ReferenceExport(AudioFixture):
 
     def test_duplicate_complete_captures_are_rejected_before_export(self) -> None:
         input_pcm = make_input_pcm(8000)
-        run = self.make_run(
+        run = make_run(
+            self.root,
             {
                 variant: (input_pcm, make_session_trace(input_pcm))
                 for variant in ("overlap", "clean")
-            }
+            },
         )
         duplicate_run = self.root / "duplicate-run"
         shutil.copytree(run, duplicate_run)
@@ -640,7 +814,7 @@ class ReferenceExport(AudioFixture):
             output_sample_rate=24000,
             audio_deltas=[(0.1, make_constant_pcm(0.2, 24000))],
         )
-        run = self.make_run({v: (pcm, text) for v in ("overlap", "clean")})
+        run = make_run(self.root, {v: (pcm, text) for v in ("overlap", "clean")})
         before = {
             str(p): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in run.rglob("*")
@@ -678,7 +852,8 @@ class ReferenceExport(AudioFixture):
 
     def test_export_cli_accepts_valid_silence(self) -> None:
         pcm = make_input_pcm(8000)
-        run = self.make_run(
+        run = make_run(
+            self.root,
             {v: (pcm, make_session_trace(pcm)) for v in ("overlap", "clean")},
         )
         out = self.root / "export"

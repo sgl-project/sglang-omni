@@ -25,6 +25,7 @@ from websockets.asyncio.server import ServerConnection
 from benchmarks.duplex.client import TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.profiles import PROFILES, DuplexProfile
+from benchmarks.duplex.reference_audio import analyze_variant
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.duplex.v15_audio import TURN_BASED_BARGE_IN_CUT, reconstruct_output
@@ -108,8 +109,11 @@ class TurnBasedPeer:
     the input ends.
     """
 
-    def __init__(self, mode: PeerMode = "interrupt") -> None:
+    def __init__(
+        self, mode: PeerMode = "interrupt", *, reject_first: bool = False
+    ) -> None:
         self.mode = mode
+        self.reject_first = reject_first
         self.received: list[dict[str, JsonValue]] = []
         self.sent: list[dict[str, JsonValue]] = []
         self.pcm = bytearray()
@@ -265,6 +269,22 @@ class TurnBasedPeer:
             self.received.append(event)
             kind = event["type"]
             if kind == "session.update":
+                if self.reject_first:
+                    self.reject_first = False
+                    await self.send(
+                        websocket,
+                        {
+                            "type": "error",
+                            "sglang": {"fatal": False},
+                            "error": {
+                                "code": "admission_rejected",
+                                "event_id": event["event_id"],
+                            },
+                        },
+                    )
+                    continue
+                else:
+                    pass
                 session = event["session"]
                 if set(session) != {"output_modalities", "audio"}:
                     await self.send(
@@ -403,12 +423,16 @@ def test_profile_declares_the_turn_based_protocol() -> None:
     )
 
 
-def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
-    peer = TurnBasedPeer("interrupt")
+@pytest.mark.parametrize("reject_first", [False, True])
+def test_client_records_a_passing_turn_based_session(
+    tmp_path: Path, reject_first: bool
+) -> None:
+    peer = TurnBasedPeer("interrupt", reject_first=reject_first)
     records = asyncio.run(capture(peer, tmp_path / "continuous.jsonl"))
     result = evaluate_trace(records, profile=TURN_BASED)
 
     assert result["status"] == "pass", result
+    assert result["metrics"]["admission_denials"] == int(reject_first)
     assert bytes(peer.pcm) == FIXTURE_PCM
     assert [r["event"] for r in records if r["direction"] == "send"] == peer.received
     assert [r["event"] for r in records if r["direction"] == "receive"] == peer.sent
@@ -426,7 +450,7 @@ def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
         },
     }
     assert sent_types(records) == (
-        ["session.update"]
+        ["session.update"] * (1 + int(reject_first))
         + ["input_audio_buffer.append"] * FIXTURE_PACKETS
         + ["sglang.input_audio.end", "session.close"]
     )
@@ -451,6 +475,17 @@ def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
     transcript = json.loads((tmp_path / "transcript.json").read_text())
     assert transcript["provenance"].startswith("turn_based server transcript deltas")
     assert transcript["text"] == {"response.output_audio_transcript.delta": "hihi"}
+
+    (tmp_path / "input.pcm").write_bytes(FIXTURE_PCM)
+    exported, _, audio = analyze_variant(
+        tmp_path,
+        TraceFormat.TURN_BASED_PCM16,
+        hashlib.sha256(FIXTURE_PCM).hexdigest(),
+        receipts_required=True,
+    )
+    assert exported["window"]["valid"], exported["window"]["reasons"]
+    assert audio is not None and len(audio) == len(FIXTURE_PCM) // 2
+    assert len(exported["lifecycle"]["protocol_anomalies"]) == int(reject_first)
 
 
 def test_client_records_an_empty_turn(tmp_path: Path) -> None:

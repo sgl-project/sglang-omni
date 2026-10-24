@@ -14,6 +14,7 @@ import time
 import wave
 from http import HTTPStatus
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import websockets
@@ -21,7 +22,9 @@ from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 from websockets.http11 import Request, Response
 
+from benchmarks.duplex import client
 from benchmarks.duplex.client import (
+    ADMISSION_BACKOFF_S,
     ADMISSION_RETRIES,
     PACKET_MS,
     POST_CLOSE_SECONDS,
@@ -260,16 +263,213 @@ def test_client_fails_once_the_admission_budget_is_exhausted(tmp_path: Path) -> 
 
     assert [
         r["event"]["attempt"] for r in records if r["direction"] == "admission"
-    ] == (list(range(1, ADMISSION_RETRIES + 1)))
-    assert records[-1]["direction"] == "error"
-    assert (
-        records[-1]["event"]["message"]
-        == f"RuntimeError: admission denied {ADMISSION_RETRIES + 1} times with HTTP 503"
-    )
+    ] == (list(range(1, ADMISSION_RETRIES + 2)))
+    assert not [record for record in records if record["direction"] == "error"]
     assert not peer.sent
     result = evaluate_trace(records)
     assert result["status"] == "fail", result
-    assert result["metrics"]["admission_denials"] == ADMISSION_RETRIES
+    assert result["metrics"]["admission_denials"] == ADMISSION_RETRIES + 1
+    assert result["failure_kind"] == "admission_rejected"
+
+
+@pytest.mark.parametrize("denials", [1, ADMISSION_RETRIES + 1])
+def test_client_retries_session_admission_and_retains_rejections(
+    tmp_path: Path, denials: int
+) -> None:
+    """An initial admission rejection must not abort a recoverable recording."""
+    peer = DuplexPeer(admission_denials=denials)
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl", 5.0))
+    result = evaluate_trace(records, max_admission_attempts=ADMISSION_RETRIES)
+    updates = [
+        record
+        for record in records
+        if record["direction"] == "send" and record["event"]["type"] == "session.update"
+    ]
+    rejections = [
+        record
+        for record in records
+        if record["direction"] == "receive" and record["event"]["type"] == "error"
+    ]
+    assert len(updates) == min(denials + 1, ADMISSION_RETRIES + 1)
+    assert len(rejections) == denials
+    for rejection, retry in zip(rejections, updates[1:]):
+        assert retry["time_s"] - rejection["time_s"] >= ADMISSION_BACKOFF_S
+    assert result["metrics"]["admission_denials"] == denials
+    assert records[-1]["event"]["type"] == "session.closed"
+    assert not [record for record in records if record["direction"] == "error"]
+    if denials <= ADMISSION_RETRIES:
+        assert result["status"] == "pass", result
+        assert result["failure_kind"] is None
+        assert bytes(peer.pcm) == FIXTURE_PCM
+    else:
+        assert result["status"] == "fail", result
+        assert result["failure_kind"] == "admission_rejected"
+        assert not input_append_records(records)
+        assert not peer.pcm
+
+
+def test_handshake_and_session_admission_share_retry_budget(tmp_path: Path) -> None:
+    """Changing the rejection transport must not reset the retry budget."""
+    peer = DuplexPeer(admission_denials=ADMISSION_RETRIES)
+    records = asyncio.run(capture_with_denials(peer, 1, tmp_path / "trace.jsonl"))
+    result = evaluate_trace(records, max_admission_attempts=ADMISSION_RETRIES)
+    assert result["failure_kind"] == "admission_rejected", result
+    assert result["metrics"]["admission_denials"] == ADMISSION_RETRIES + 1
+    assert not input_append_records(records)
+
+
+@pytest.mark.parametrize(
+    "failure", ["fatal", "foreign", "other", "late", "missing_fatal"]
+)
+def test_client_does_not_retry_unrelated_or_unsafe_errors(
+    tmp_path: Path,
+    failure: Literal["fatal", "foreign", "other", "late", "missing_fatal"],
+) -> None:
+    """Only a nonfatal rejection of the pending initial update is retryable."""
+
+    class ErrorPeer(DuplexPeer):
+        async def send(
+            self, websocket: ServerConnection, event: dict[str, JsonValue]
+        ) -> None:
+            if event["type"] == "error":
+                error = event["error"]
+                assert isinstance(error, dict)
+                error["code"] = (
+                    "invalid_request" if failure == "other" else "admission_rejected"
+                )
+                if failure == "foreign":
+                    error["event_id"] = "unrelated_update"
+                elif failure == "fatal":
+                    event["sglang"] = {"fatal": True}
+                elif failure == "missing_fatal":
+                    event["sglang"] = {}
+                else:
+                    pass
+                await super().send(websocket, event)
+                if failure == "fatal":
+                    await self.close_session(websocket, "server_error", None)
+                else:
+                    pass
+            else:
+                await super().send(websocket, event)
+
+    peer = ErrorPeer(
+        "nonfatal_error" if failure == "late" else "healthy",
+        admission_denials=0 if failure == "late" else 1,
+    )
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
+    result = evaluate_trace(records)
+    assert result["failure_kind"] == "runtime", result
+    assert result["metrics"]["admission_denials"] == 0
+    assert sum(event["type"] == "session.update" for event in peer.received) == 1
+
+
+def test_admission_rejection_does_not_overwrite_an_unrelated_error(
+    tmp_path: Path,
+) -> None:
+    """A later admission rejection must not clear a preceding protocol failure."""
+
+    class ErrorPeer(DuplexPeer):
+        async def send(
+            self, websocket: ServerConnection, event: dict[str, JsonValue]
+        ) -> None:
+            if event["type"] == "error":
+                await super().send(
+                    websocket,
+                    {
+                        "type": "error",
+                        "sglang": {"fatal": False},
+                        "error": {
+                            "code": "invalid_request",
+                            "message": "invalid configuration",
+                        },
+                    },
+                )
+            else:
+                pass
+            await super().send(websocket, event)
+
+    peer = ErrorPeer(admission_denials=1)
+    records = asyncio.run(capture_session(peer, tmp_path / "trace.jsonl"))
+    assert evaluate_trace(records)["failure_kind"] == "runtime"
+    assert sum(event["type"] == "session.update" for event in peer.received) == 1
+    assert not input_append_records(records)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("handshake_denied", [False, True])
+def test_admission_backoff_obeys_deadline_and_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+    handshake_denied: bool,
+) -> None:
+    """Backoff must stay inside the session deadline and release every task/socket."""
+
+    async def capture() -> list[dict[str, JsonValue]]:
+        existing_tasks = asyncio.all_tasks()
+        backoff_started = asyncio.Event()
+        original_sleep = asyncio.sleep
+
+        async def pause_backoff(delay: float) -> None:
+            if delay == ADMISSION_BACKOFF_S:
+                backoff_started.set()
+                await asyncio.Event().wait()
+            else:
+                await original_sleep(delay)
+
+        monkeypatch.setattr(client.asyncio, "sleep", pause_backoff)
+        peer = DuplexPeer(admission_denials=1)
+        trace_path = tmp_path / "trace.jsonl"
+
+        def process_request(
+            connection: ServerConnection, request: Request
+        ) -> Response | None:
+            if handshake_denied:
+                return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "busy\n")
+            else:
+                return None
+
+        async with websockets.serve(
+            peer.handler, "127.0.0.1", 0, process_request=process_request
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            recording = asyncio.create_task(
+                run_session(
+                    f"ws://127.0.0.1:{port}/v1/realtime",
+                    FIXTURE_PCM,
+                    trace_path=trace_path,
+                    timeout_s=5.0 if cancel else 0.2,
+                )
+            )
+            await asyncio.wait_for(backoff_started.wait(), 2.0)
+            if cancel:
+                recording.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await recording
+            else:
+                await recording
+        assert asyncio.all_tasks() <= existing_tasks
+        assert not peer.pcm
+        assert sum(event["type"] == "session.update" for event in peer.received) == int(
+            not handshake_denied
+        )
+        assert json.loads((tmp_path / "input-send-receipts.json").read_text()) == {
+            "appends": []
+        }
+        return [json.loads(line) for line in trace_path.read_text().splitlines()]
+
+    records = asyncio.run(capture())
+    if not cancel:
+        assert "Session timeout" in records[-1]["event"]["message"]
+    else:
+        assert "Session cancelled" in records[-1]["event"]["message"]
+    assert (
+        evaluate_trace(records, max_admission_attempts=ADMISSION_RETRIES)[
+            "failure_kind"
+        ]
+        == "runtime"
+    )
 
 
 def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:

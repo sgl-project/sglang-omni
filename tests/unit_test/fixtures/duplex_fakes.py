@@ -252,8 +252,11 @@ PeerMode = Literal[
 
 
 class DuplexPeer:
-    def __init__(self, mode: PeerMode = "healthy") -> None:
+    def __init__(
+        self, mode: PeerMode = "healthy", *, admission_denials: int = 0
+    ) -> None:
         self.mode = mode
+        self.admission_denials = admission_denials
         self.received: list[dict[str, JsonValue]] = []
         self.sent: list[dict[str, JsonValue]] = []
         self.pcm = bytearray()
@@ -276,6 +279,12 @@ class DuplexPeer:
                 websocket,
                 {
                     "type": "response.created",
+                    "sglang": {
+                        "media_time": {
+                            "t_start_ms": self.frames * PACKET_MS,
+                            "duration_ms": PACKET_MS,
+                        },
+                    },
                     "response": {
                         "id": "response_0",
                         "object": "realtime.response",
@@ -421,6 +430,23 @@ class DuplexPeer:
             self.received.append(event)
             kind = event["type"]
             if kind == "session.update":
+                if self.admission_denials:
+                    self.admission_denials -= 1
+                    await self.send(
+                        websocket,
+                        {
+                            "type": "error",
+                            "sglang": {"fatal": False},
+                            "error": {
+                                "code": "admission_rejected",
+                                "message": "session capacity exhausted",
+                                "event_id": event["event_id"],
+                            },
+                        },
+                    )
+                    continue
+                else:
+                    pass
                 if self.mode == "close_without_update":
                     await self.close_session(
                         websocket, "client_closed", event["event_id"]
@@ -437,6 +463,9 @@ class DuplexPeer:
                             "type": "realtime",
                             "model": "fixture",
                             "output_modalities": ["audio"],
+                            "audio": {
+                                "output": {"format": GRANTED["output_audio_format"]}
+                            },
                             "sglang": {"granted": GRANTED},
                         },
                     },

@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=1,
         help="Maximum concurrent variants; excess connections may receive "
-        "HTTP 503 and fail if admission retries are exhausted",
+        "HTTP 503 or initial admission_rejected; bounded retries precede audio input",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(
