@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import math
 import tempfile
+import threading
 import warnings
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +29,7 @@ from sglang_omni.preprocessing.resource_connector import (
     global_thread_pool,
 )
 from sglang_omni.preprocessing.video import extract_audio_from_path
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 try:
     from decord import VideoReader, cpu
@@ -53,6 +57,109 @@ class TimedVideo:
     audio_segments: list[npt.NDArray[np.float32]] = field(default_factory=list)
     timestamps_seconds: list[float] = field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+def timed_video_size_bytes(video: TimedVideo) -> int:
+    return (
+        sum(
+            frame.width * frame.height * len(frame.getbands()) for frame in video.frames
+        )
+        + sum(segment.nbytes for segment in video.audio_segments)
+        + len(video.timestamps_seconds) * 8
+    )
+
+
+def copy_timed_video(video: TimedVideo) -> TimedVideo:
+    return TimedVideo(
+        frames=[frame.copy() for frame in video.frames],
+        audio_segments=[segment.copy() for segment in video.audio_segments],
+        timestamps_seconds=list(video.timestamps_seconds),
+        duration_seconds=video.duration_seconds,
+    )
+
+
+class VideoDecodeCache:
+    """Own decoded snapshots, bounded source reads, and shared in-flight decodes."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int,
+        max_bytes: int,
+        max_source_bytes: int,
+        max_inflight: int,
+    ) -> None:
+        if min(max_entries, max_bytes, max_source_bytes) < 0 or max_inflight < 1:
+            raise ValueError(
+                "Video decode cache budgets must be non-negative and concurrency positive"
+            )
+        else:
+            pass
+        self.max_source_bytes = max_source_bytes
+        self.enabled = max_entries > 0 and max_bytes > 0 and max_source_bytes > 0
+        self.cache = StageOutputCache[TimedVideo](
+            max_size=max_entries, max_bytes=max_bytes, size_fn=timed_video_size_bytes
+        )
+        self.lock = threading.Lock()
+        self.admission = threading.BoundedSemaphore(max_inflight)
+        self.pending: dict[str, Future[TimedVideo]] = {}
+
+    def load(self, video_path: Path, decoder: MiniCPMVideoIO) -> TimedVideo:
+        if not self.enabled or not self.admission.acquire(blocking=False):
+            return decoder.load_file(video_path)
+        else:
+            pass
+        try:
+            if video_path.stat().st_size > self.max_source_bytes:
+                return decoder.load_file(video_path)
+            else:
+                pass
+            with video_path.open("rb") as source:
+                contents = source.read(self.max_source_bytes + 1)
+            if len(contents) > self.max_source_bytes:
+                return decoder.load_file(video_path)
+            else:
+                pass
+            identity = hashlib.sha256(contents).hexdigest()
+            cache_key = (
+                f"{identity}|timed-v1|{decoder.use_audio}|{decoder.frames_per_second}|"
+                f"{decoder.maximum_frame_count}|{decoder.minimum_pixels_per_frame}|"
+                f"{decoder.maximum_pixels_per_frame}|{decoder.total_pixel_budget}"
+            )
+            with self.lock:
+                cached = self.cache.get(cache_key)
+                pending = self.pending.get(cache_key)
+                producer = cached is None and pending is None
+                if producer:
+                    pending = Future()
+                    self.pending[cache_key] = pending
+                else:
+                    pass
+            if cached is not None:
+                contents = b""
+                return copy_timed_video(cached)
+            else:
+                assert pending is not None
+            if producer:
+                try:
+                    decoded = decoder.load_bytes(contents)
+                    snapshot = copy_timed_video(decoded)
+                    decoded = None
+                    contents = b""
+                    self.cache.put(cache_key, snapshot)
+                    pending.set_result(snapshot)
+                except BaseException as error:
+                    pending.set_exception(error)
+                    raise
+                finally:
+                    with self.lock:
+                        self.pending.pop(cache_key)
+            else:
+                pass
+            contents = b""
+            return copy_timed_video(pending.result())
+        finally:
+            self.admission.release()
 
 
 class MiniCPMVideoIO(MediaIO[TimedVideo]):
@@ -251,6 +358,7 @@ async def load_timed_video(
     min_pixels: int | None = None,
     max_pixels: int | None = None,
     total_pixels: int | None = None,
+    decode_cache: VideoDecodeCache | None = None,
 ) -> TimedVideo:
     video_decoder = MiniCPMVideoIO(
         use_audio=use_audio,
@@ -265,9 +373,14 @@ async def load_timed_video(
         return await resource_connector.load_resource_async(media_url, video_decoder)
     else:
         video_path = Path(resource_connector.local_media_path(media_url))
-        decode_future = asyncio.get_running_loop().run_in_executor(
-            global_thread_pool, video_decoder.load_file, video_path
-        )
+        if decode_cache is None:
+            decode_future = asyncio.get_running_loop().run_in_executor(
+                global_thread_pool, video_decoder.load_file, video_path
+            )
+        else:
+            decode_future = asyncio.get_running_loop().run_in_executor(
+                global_thread_pool, decode_cache.load, video_path, video_decoder
+            )
 
         async def cleanup_video_decoder() -> None:
             await asyncio.gather(decode_future, return_exceptions=True)

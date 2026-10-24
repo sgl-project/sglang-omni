@@ -66,6 +66,12 @@ performs the final resize. video_max_frames limits the sampled frame count,
 while video_max_pixels and video_total_pixels resize frames after decoding.
 Those pixel options do not bound the initial native-resolution allocation.
 
+Timed videos loaded from bare local paths reuse decoded frames and source-audio segments within each preprocessing worker. The key hashes the complete source bytes and includes all sampling and pixel-budget options; each request still checks the local-media policy and receives independent copies. HTTP, data and file URLs retain their existing loading paths. This benefits repeated questions about the same video, not unique-video traffic.
+
+The preprocessing factory defaults to eight entries and 256 MiB of decoded payloads, admits source files up to 32 MiB, and allows four cache-managed operations at a time. Set `--preprocessing.factory.video_decode_cache_max_entries 0` to disable reuse. The corresponding `video_decode_cache_max_bytes`, `video_decode_cache_max_source_bytes` and `video_decode_cache_max_inflight` fields adjust these limits. Oversized files and excess concurrent work use the uncached loader. The decoded-payload budget is not a process-RSS limit: decoder scratch, source snapshots, returned copies and Python/Pillow overhead require additional host memory.
+
+With default nondeterministic inference, faster request admission can change dynamic batches and generated text even when decoded media is identical. Use the Thinker's supported deterministic-inference setting when batch-independent output repeatability is required; caching itself does not change model or sampling parameters.
+
 ## Native Full-Duplex Ability
 
 MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-minicpm-o).

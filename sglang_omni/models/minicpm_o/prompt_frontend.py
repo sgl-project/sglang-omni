@@ -11,7 +11,10 @@ import numpy.typing as npt
 import torch
 from PIL import Image
 
-from sglang_omni.models.minicpm_o.video_frontend import load_timed_video
+from sglang_omni.models.minicpm_o.video_frontend import (
+    VideoDecodeCache,
+    load_timed_video,
+)
 from sglang_omni.preprocessing.audio import ensure_audio_list_async
 from sglang_omni.preprocessing.image import ensure_image_list_async
 
@@ -167,6 +170,7 @@ async def render_ordered_chat(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+    video_decode_cache: VideoDecodeCache | None = None,
 ) -> RenderedChat:
     if not isinstance(messages, list):
         raise ValueError("Chat messages must be a list")
@@ -274,6 +278,11 @@ async def render_ordered_chat(
                         min_pixels=video_min_pixels,
                         max_pixels=video_max_pixels,
                         total_pixels=video_total_pixels,
+                        **(
+                            {"decode_cache": video_decode_cache}
+                            if video_decode_cache is not None
+                            else {}
+                        ),
                     )
                     rendered_chat.has_video = True
                     rendered_chat.has_interleaved_video_audio = (
