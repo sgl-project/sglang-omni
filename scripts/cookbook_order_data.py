@@ -40,26 +40,26 @@ ROADMAP_ORDER = [
 # for the affected models and adjust the counts (and docs/index.rst) if the
 # rank changed.
 DOWNLOADS_DESC = {
-    # Hugging Face download counts (descending), queried 2026-10-22.
-    "cookbook/qwen3_asr.md": 1_186_346,
-    "cookbook/minicpm_o.md": 436_065,
-    "cookbook/fun_asr.md": 158_663,
-    "cookbook/higgs_tts.md": 120_143,
-    "cookbook/moss_tts_local.md": 117_224,
-    "cookbook/nemotron_diarization.md": 102_844,
-    "cookbook/fishaudio_drama3.md": 11_795,
-    "cookbook/minimax_music3.md": 6_234,
-    "cookbook/ming_omni.md": 5_523,
-    "cookbook/auk.md": 2_415,
-    "cookbook/zonos2.md": 2_364,
-    "cookbook/arkasr.md": 2_347,
-    "cookbook/voxtral_tts.md": 1_589,
-    "cookbook/dots_tts.md": 767,
-    "cookbook/llada2_uni.md": 437,
-    "cookbook/ming_tts.md": 312,
-    "cookbook/ming3_asr.md": 35,
-    "cookbook/ming3_audio.md": 22,
-    "cookbook/ming3_tts.md": 20,
+    # Hugging Face download counts (descending), queried 2026-10-23.
+    "cookbook/qwen3_asr.md": 1_246_212,
+    "cookbook/minicpm_o.md": 397_260,
+    "cookbook/fun_asr.md": 157_836,
+    "cookbook/higgs_tts.md": 122_455,
+    "cookbook/nemotron_diarization.md": 120_820,
+    "cookbook/moss_tts_local.md": 114_703,
+    "cookbook/fishaudio_drama3.md": 17_017,
+    "cookbook/ming_omni.md": 6_048,
+    "cookbook/minimax_music3.md": 5_791,
+    "cookbook/zonos2.md": 2_306,
+    "cookbook/arkasr.md": 2_159,
+    "cookbook/auk.md": 2_022,
+    "cookbook/voxtral_tts.md": 1_569,
+    "cookbook/dots_tts.md": 756,
+    "cookbook/ming3_tts.md": 628,
+    "cookbook/llada2_uni.md": 445,
+    "cookbook/ming3_asr.md": 412,
+    "cookbook/ming3_audio.md": 400,
+    "cookbook/ming_tts.md": 323,
 }
 
 # Cookbook page -> Hugging Face repo id, used to look up download counts at
@@ -88,4 +88,4 @@ HF_REPO = {
 }
 
 # When DOWNLOADS_DESC was last checked against the HF API (maintained by hand).
-DOWNLOADS_QUERIED_AT = "2026-10-22"
+DOWNLOADS_QUERIED_AT = "2026-10-23"
