@@ -278,8 +278,6 @@ For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a refere
 
 The examples below use a sample clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). The `references` field accepts `audio_path` (a local path, file URL, data URL, or HTTP URL) and `text` (transcript of that audio).
 
-1. Non-streaming request
-
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
@@ -295,61 +293,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-2. Streaming
-
-Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
-requires both `"stream": true` and `"response_format": "pcm"`:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "fishaudio/s2-pro",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
-
-Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
-in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. Set `"stream_format": "sse"` to receive the same PCM as
-Server-Sent Events instead; `sse` streams even when `stream` is omitted. Each
-`speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends
-with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if
-generation fails mid-stream. The sample-rate headers are the same for both
-formats. `usage` reports the model's own token counts, so what `input_tokens`
-covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
-text tokens.
-
-
-For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
-`GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its
-`finish_reason` and `usage`. This generated speech ID is independent of the
-`X-Request-Id` correlation header. Behind a router, also echo the response's
-`X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
-Only the most recent outcomes are retained; missing outcomes do not establish
-a natural stop or a cap hit.
-
-The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
-Collection still consumes server resources during generation. Use
-`--no-collect-stream-outcomes` for an instrumentation control, and keep the setting
-identical between performance arms. The setting is saved with the results.
-Missing reasons remain unknown and are excluded from the observed-reason count;
-a cap hit does not by itself establish poor audio quality.
-
-When the client does not set `initial_codec_chunk_frames`,
-the model selects a continuity-safe first vocoder chunk. Set the field explicitly
-to override that default, or set it to `0` to use the model's steady chunk size
-from the start. Ming-Omni-TTS is the only model that rejects the field: its
-initial and steady cadence are the audio_decode stage's `factory` settings, so a
-request that sets it fails.
+For streaming synthesis, refer to [Streaming](#streaming).
 
 ### Batch Speech
 
@@ -578,8 +522,6 @@ REFERENCE_TEXT = "We asked over twenty different people, and they all said it wa
 SPEECH_INPUT = "Get the trust fund to the bank early."
 ```
 
-1. Non-streaming Request
-
 ```python
 import requests
 
@@ -597,41 +539,88 @@ with open("output.wav", "wb") as f:
     f.write(resp.content)
 ```
 
-2. Streaming Request
+For a Python example that saves streamed audio, refer to [Streaming](#streaming).
+
+## Streaming
+
+Use `/v1/audio/speech` to receive audio while generation is in progress. The examples below use Fish Speech S2-Pro with the server configuration in [Launch the Server](#launch-the-server), including the allowed media domains for the remote reference clip.
+
+For another streaming-capable model, set `model` to the served model identifier and use its required voice or reference fields. Refer to [Supported TTS Models](#supported-tts-models) and the model's cookbook for those requirements. Voxtral uses a preset `voice` and does not accept `references`; Qwen3-TTS Base requires reference audio.
+
+### Raw PCM
+
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio. The response has media type `audio/pcm` and reports its format in the `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` headers. The current HTTP speech endpoint returns 16-bit mono PCM. Use the response headers when saving or playing the audio because the sample rate depends on the model.
+
+**Use curl.**
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
+    }],
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
+```
+
+The `-N` flag disables curl's output buffering so bytes are written as they arrive. `output.pcm` contains raw samples without a WAV header.
+
+**Use Python.**
+
+This example requires the `requests` package and writes incoming PCM chunks to a WAV file using the response's audio metadata. The JSON field `"stream": true` enables server-side streaming; `stream=True` in `requests.post` lets the client read the response incrementally. The example saves audio without playing it; an interactive client can feed the chunks to an audio player as they arrive.
 
 ```python
 import wave
 
 import requests
 
-payload = {
+speech_request = {
     "model": "fishaudio/s2-pro",
     "voice": "default",
-    "input": SPEECH_INPUT,
-    "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+        "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+        "text": "We asked over twenty different people, and they all said it was his.",
+    }],
     "stream": True,
     "response_format": "pcm",
 }
 
-chunks = []
 with requests.post(
     "http://localhost:8000/v1/audio/speech",
-    json=payload,
+    json=speech_request,
     stream=True,
     timeout=600,
-) as stream:
-    stream.raise_for_status()
-    sample_rate = int(stream.headers.get("x-sample-rate", 24000))
-    for chunk in stream.iter_content(chunk_size=None):
-        if chunk:
-            chunks.append(chunk)
-
-with wave.open("output_stream.wav", "wb") as w:
-    w.setnchannels(1)
-    w.setsampwidth(2)
-    w.setframerate(sample_rate or 24000)
-    w.writeframes(b"".join(chunks))
+) as response:
+    response.raise_for_status()
+    with wave.open("output_stream.wav", "wb") as wave_file:
+        wave_file.setnchannels(int(response.headers["X-Channels"]))
+        wave_file.setsampwidth(int(response.headers["X-Bit-Depth"]) // 8)
+        wave_file.setframerate(int(response.headers["X-Sample-Rate"]))
+        for audio_chunk in response.iter_content(chunk_size=None):
+            wave_file.writeframesraw(audio_chunk)
 ```
+
+Raw PCM has no in-band JSON events, final usage event, or terminal sentinel. After the stream ends, use the response's `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{request_id}` to retrieve its `finish_reason` and `usage`. This generated speech ID is independent of the `X-Request-Id` correlation header. Behind a router, also echo the response's `X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET. Only the most recent outcomes are retained; missing outcomes do not establish a natural stop or a cap hit.
+
+The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool. Collection still consumes server resources during generation. Use `--no-collect-stream-outcomes` for an instrumentation control, and keep the setting identical between performance arms. The setting is saved with the results. Missing reasons remain unknown and are excluded from the observed-reason count; a cap hit does not by itself establish poor audio quality.
+
+### Server-Sent Events
+
+Set `"stream_format": "sse"` and `"response_format": "pcm"` to receive the same PCM as Server-Sent Events. `sse` streams even when `stream` is omitted. Each `speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if generation fails mid-stream. The audio metadata headers are the same for both formats. `usage` reports the model's own token counts, so what `input_tokens` covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not text tokens.
+
+For stateful text input over a persistent connection, refer to [WebSocket Speech Streaming](#websocket-speech-streaming).
+
+### First Chunk Size
+
+When the client does not set `initial_codec_chunk_frames`, the model selects a continuity-safe first vocoder chunk. Set the field explicitly to override that default, or set it to `0` to use the model's steady chunk size from the start. Ming-Omni-TTS rejects this field: its initial and steady cadence are the `audio_decode` stage's `factory` settings, so a request that sets it fails. Refer to the model's cookbook for its defaults and tuning constraints.
 
 ## Request Parameters
 

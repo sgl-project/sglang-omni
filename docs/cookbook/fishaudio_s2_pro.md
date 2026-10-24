@@ -28,8 +28,12 @@ hf download fishaudio/s2-pro
 sgl-omni serve \
   --model-path fishaudio/s2-pro \
   --config examples/configs/s2pro_tts.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
+
+The linked voice-cloning and streaming examples use a remote reference clip. The allowed media domains permit fetching that clip; omit these flags when using only text or references that do not require a remote download.
 
 Reference audio encoding runs on GPU 0 in the preprocessing process by default,
 using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU.
@@ -47,6 +51,8 @@ sgl-omni serve \
   --config examples/configs/s2pro_tts.yaml \
   --preprocessing.gpu null \
   --preprocessing.total_reserve_bytes null \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
 
@@ -71,7 +77,7 @@ See the [non-streaming Fish Speech voice cloning request](../basic_usage/tts.md#
 
 Streaming:
 
-See the [streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish-speech-voice-cloning).
+Refer to the shared [TTS streaming guide](../basic_usage/tts.md#streaming) for curl and Python examples using Fish Speech S2-Pro.
 
 ## Request Parameters
 

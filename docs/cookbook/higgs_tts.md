@@ -173,89 +173,9 @@ Reference output:
 
 ### Streaming
 
-Unlike a standard request where you wait for the full audio to be generated before receiving anything, streaming lets you start receiving and playing audio **while generation is still in progress**. This significantly reduces time-to-first-audio, which matters for real-time or interactive use cases.
+Refer to the shared [TTS streaming guide](../basic_usage/tts.md#streaming) for curl and Python examples and audio response formats. Set `model` to `bosonai/higgs-audio-v3-tts-4b` and use the local reference clip and transcript from [Voice Cloning](#voice-cloning) with the server configuration above.
 
-Higgs TTS implements streaming as raw PCM bytes. Your client can play or buffer
-each chunk as it arrives, rather than waiting for the full response.
-
-Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in
-the request body. During generation, the vocoder emits incremental audio chunks.
-The HTTP response returns `audio/pcm` bytes and exposes sample-rate metadata in
-headers.
-
-1. Use curl
-
-Set `"stream": true` and `"response_format": "pcm"` in your request body:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "docs/_static/audio/male-voice.wav",
-      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
-    }],
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
-
-The `-N` flag disables curl's output buffering so chunks are written as they arrive.
-
-Streaming returns `audio/pcm` 16-bit mono PCM bytes. It has no in-band JSON
-events, final usage event, or terminal sentinel. The response headers report the
-actual stream sample rate, channel count, and bit depth. Higgs defaults
-`initial_codec_chunk_frames` to `20`; with eight codebooks, the AR producer
-flushes the corresponding delayed-code rows at row 27. Clients can still set
-another value, including `0` to use the steady chunk size from the start. The
-producer and vocoder share the effective value, and it controls only the first
-chunk. Follow-up chunks return to the normal Higgs streaming window.
-
-2. Use Python
-
-This example writes streamed PCM bytes to a WAV file. In a real application, you
-would pipe the chunks directly to an audio player (e.g., via `pyaudio` or
-`sounddevice`).
-
-```python
-import wave
-
-import requests
-
-REFERENCE_AUDIO = "docs/_static/audio/male-voice.wav"
-REFERENCE_TEXT = "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time."
-SPEECH_INPUT = "Get the trust fund to the bank early."
-
-with requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "bosonai/higgs-audio-v3-tts-4b",
-        "voice": "default",
-        "input": SPEECH_INPUT,
-        "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
-        "stream": True,
-        "response_format": "pcm",
-    },
-    stream=True,
-) as resp:
-    resp.raise_for_status()
-    chunks = []
-    sample_rate = int(resp.headers.get("x-sample-rate", 24000))
-    for chunk in resp.iter_content(chunk_size=None):
-        if chunk:
-            chunks.append(chunk)
-            # In a real app: feed `chunk` to your audio player here
-
-with wave.open("output_streaming.wav", "wb") as f:
-    f.setnchannels(1)
-    f.setsampwidth(2)
-    f.setframerate(sample_rate)
-    f.writeframes(b"".join(chunks))
-```
+Higgs defaults `initial_codec_chunk_frames` to `20`; with eight codebooks, the AR producer flushes the corresponding delayed-code rows at row 27. Clients can still set another value, including `0` to use the steady chunk size from the start. The producer and vocoder share the effective value, and it controls only the first chunk. Follow-up chunks return to the normal Higgs streaming window.
 
 Reference output:
 
