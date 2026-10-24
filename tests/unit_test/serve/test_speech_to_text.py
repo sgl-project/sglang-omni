@@ -8,10 +8,12 @@ import struct
 import wave
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from fastapi import HTTPException
 
-from sglang_omni.serve import speech_to_text
+from sglang_omni.serve import speech_to_text, transcriptions
+from sglang_omni.serve.transcription_chunking import ChunkPlan, ChunkSpan
 
 
 def test_build_request_passes_a_set_repetition_penalty() -> None:
@@ -182,6 +184,42 @@ def test_verbose_response_uses_requested_task() -> None:
     )
 
     assert json.loads(response.body)["task"] == "translate"
+
+
+def test_text_response_drops_model_markers() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text='What was that?\n||{"wer": 0.0, "ins": 0}',
+        response_format="text",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=["MiniCPMO"],
+        duration_s=1.0,
+    )
+
+    assert response.body == b"What was that?"
+
+
+def test_chunked_text_response_drops_model_markers() -> None:
+    plan = ChunkPlan(
+        sample_rate=16000,
+        duration_s=1.0,
+        spans=[
+            ChunkSpan(index=0, start_sample=0, end_sample=16000, start_s=0.0, end_s=1.0)
+        ],
+        waveform=np.zeros(16000, dtype=np.float32),
+    )
+    response = transcriptions.assemble_chunked_response(
+        text='What was that?\n||{"wer": 0.0, "ins": 0}',
+        response_format="text",
+        language="en",
+        plan=plan,
+        chunk_texts=['What was that?\n||{"wer": 0.0, "ins": 0}'],
+        architectures=["MiniCPMO"],
+    )
+
+    assert response.body == b"What was that?"
 
 
 class Upload:

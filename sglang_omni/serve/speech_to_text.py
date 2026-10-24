@@ -422,12 +422,11 @@ def assemble_speech_to_text_response(
     )
     adapter = resolve_speech_to_text_adapter(architectures)
     raw_text = text
+    text = adapter.postprocess_text(raw_text)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text)
+        return PlainTextResponse(text)
     else:
         pass
-
-    text = adapter.postprocess_text(raw_text)
 
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS
