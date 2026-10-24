@@ -184,7 +184,11 @@ class Dialog(StreamComponent):
         ):
             self.delivered_ms = float(chunk.payload["audio_ms"])
             self.truncate()
-        elif control_type(chunk) == TRUNCATE and self.truncatable is not None:
+        elif (
+            control_type(chunk) == TRUNCATE
+            and self.truncatable is not None
+            and chunk.turn in (None, self.truncatable[0])
+        ):
             self.heard_ms = float(chunk.payload["t_ms"])
             self.truncate()
         else:

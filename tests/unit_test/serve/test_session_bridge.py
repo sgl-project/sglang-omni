@@ -207,6 +207,24 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
 
 
 @pytest.mark.asyncio
+async def test_a_truncate_carries_the_turn_of_the_item_it_names():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(TURN_STARTED, turn=4)
+    h.client.control(TURN_DONE, turn=4)
+    await settle()
+    await h.bridge.truncate("item_0", 4565.0)
+    await h.bridge.truncate("item_1", 300.0)
+    assert [(chunk.payload, chunk.turn) for chunk in h.client.appended] == [
+        ({"type": TRUNCATE, "t_ms": 4565.0}, 3),
+        ({"type": TRUNCATE, "t_ms": 300.0}, 4),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
     ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, TRUNCATE}))
     assert capabilities_of(ports).supports_truncate
@@ -255,8 +273,9 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
         assert event.format == SESSION_CONTROL and event.payload == {"type": INTERRUPT}
         assert event.t_start_ms == 200.0
         assert stages is None and should_preempt
-        await runtime.truncate(1234.5)
+        await runtime.truncate("item_unknown", 1234.5)
         assert h.client.appended[-1].payload == {"type": TRUNCATE, "t_ms": 1234.5}
+        assert h.client.appended[-1].turn is None
         assert await h.bridge.clear() == 0
     finally:
         await runtime.close("client_closed")

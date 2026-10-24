@@ -253,7 +253,7 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and its interrupt button also sends `response.cancel` while a reply is open, and it marks the heard part of the reply when the server sends `sglang.response.progress`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
 
 ### An OpenAI Realtime client or the Session API
 
@@ -295,7 +295,7 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 | `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
 | `error` | The request or the session failed. |
 
-`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise; a reply interrupted before its first boundary leaves an empty answer. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent.
+`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise; a reply interrupted before its first boundary leaves an empty answer. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply item named by `item_id` was heard, and cuts only that reply; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent.
 
 To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
 

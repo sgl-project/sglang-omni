@@ -297,6 +297,26 @@ async def test_progress_that_arrives_after_the_truncate_re_cuts_the_interrupted_
     assert not dialog.messages[2].uncertain
 
 
+@pytest.mark.asyncio
+async def test_a_truncate_cuts_only_the_reply_of_its_turn():
+    dialog = build({"kind": "dialog"})
+    await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            transcript_chunk("So.", True),
+            control_chunk(SPEECH_STARTED),
+            text_chunk("Sure.", 2),
+            control_chunk(TURN_DONE, turn=2),
+            control_chunk(TRUNCATE, t_ms=1500, turn=1),
+        ],
+    )
+    assert [message.content for message in dialog.messages[3:]] == ["So.", "Sure."]
+    await drain(dialog, [control_chunk(TRUNCATE, t_ms=0, turn=2)])
+    assert dialog.messages[4].content == ""
+
+
 def interrupted_dialog(*after: object) -> tuple[object, list[object]]:
     """A dialog whose reply REPLY was interrupted after its first two sentence ends arrived, with `after` fed next."""
     dialog = build({"kind": "dialog"})
@@ -1311,6 +1331,21 @@ async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_
     )
     assert [heard_frames(request) for request in requests] == [800 * 24, 300 * 24]
     assert spoken_progress(outputs) == [(19, 2000), (24, 2800), (24, 2300)]
+
+
+@pytest.mark.asyncio
+async def test_the_aligner_ignores_a_truncate_of_another_turn():
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("five", requests)),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2800),
+            control_chunk(TRUNCATE, t_ms=2300, turn=2),
+            control_chunk(TRUNCATE, t_ms=2500, turn=1),
+        ),
+    )
+    assert [heard_frames(request) for request in requests] == [800 * 24, 500 * 24]
+    assert spoken_progress(outputs) == [(19, 2000), (24, 2800), (24, 2500)]
 
 
 @pytest.mark.asyncio
