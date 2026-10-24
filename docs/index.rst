@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, Ming-3.0-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize, Ming-3.0-ASR), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, Ming-3.0-TTS, dots.tts, ZONOS2, CSM-1B), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize, Ming-3.0-ASR), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -58,6 +58,9 @@ Supported Models
    * - `Zyphra/zonos2 <https://huggingface.co/Zyphra/zonos2>`_
      - TTS
      - MoE TTS, 9 DAC codebooks, voice cloning
+   * - `eustlb/csm-1b <https://huggingface.co/eustlb/csm-1b>`_
+     - TTS
+     - Sesame CSM-1B; 24 kHz Mimi, optional context audio
    * - `MiniMaxAI/MiniMax-Music3 <https://huggingface.co/MiniMaxAI/MiniMax-Music3>`_
      - Music
      - Text-to-music; lyrics + caption → 32 kHz stereo song
@@ -141,6 +144,7 @@ Supported Models
    cookbook/ming_omni.md
    cookbook/auk.md
    cookbook/zonos2.md
+   cookbook/csm_tts.md
    cookbook/arkasr.md
    cookbook/voxtral_tts.md
    cookbook/dots_tts.md
