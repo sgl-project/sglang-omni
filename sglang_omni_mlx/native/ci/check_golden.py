@@ -23,6 +23,7 @@ from typing import Callable
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
 import music3_golden
+import qwen3_tts_golden
 import sortformer_golden
 import vad_golden
 import voxtral_golden
@@ -233,6 +234,14 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
         else:
             pass
+        if golden.get("kind") == "qwen3_tts":
+            failures = qwen3_tts_golden.validate_outputs(golden, outputs["clips"])
+            if failures:
+                raise SystemExit("; ".join(failures))
+            else:
+                pass
+        else:
+            pass
         if golden.get("kind") == "minimax_music3":
             failures = music3_golden.validate_outputs(golden, outputs["clips"])
             if failures:
@@ -285,6 +294,13 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(
             *sortformer_golden.check(golden, arguments.runtime_bin, arguments.data_root)
         )
+    elif golden.get("kind") == "qwen3_tts":
+        results = qwen3_tts_golden.synthesize_cases(
+            arguments.runtime_bin,
+            model_directory(arguments.data_root, golden["model"]),
+            golden["cases"],
+        )
+        metrics = {}
     elif golden.get("kind") == "voxtral_tts":
         results = voxtral_golden.synthesize_cases(
             arguments.runtime_bin,
@@ -329,7 +345,9 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         return
     else:
         pass
-    if golden.get("kind") == "voxtral_tts":
+    if golden.get("kind") == "qwen3_tts":
+        report(*qwen3_tts_golden.check(golden, device, results))
+    elif golden.get("kind") == "voxtral_tts":
         report(*voxtral_golden.check(golden, device, results))
     else:
         report(*check(golden, device, results, metrics))

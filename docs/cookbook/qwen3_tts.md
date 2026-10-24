@@ -2,6 +2,11 @@
 
 [Qwen3-TTS Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) clones voices from short reference clips and supports 10 languages. SGLang-Omni serves the 0.6B and 1.7B checkpoints through a `preprocessing → tts_engine → vocoder` pipeline, with 24 kHz streaming through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
+## Apple Silicon
+
+Use the separate [native C++ MLX server](../mlx/qwen3_tts.md) for Apple Silicon.
+It is under development and awaits native runtime and Mac golden qualification.
+
 ## Prerequisites
 
 Install **sglang-omni** by following [Installation](../get_started/installation.md).

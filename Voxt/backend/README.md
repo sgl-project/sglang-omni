@@ -118,3 +118,10 @@ the `.xctestrun` file.
 - The live preview decodes once a second, like Voxt's Swift session, but has
   neither its 0.2 s cadence right after an 8 s window boundary nor its
   agreement-based promotion of provisional text.
+
+## Native Qwen3-TTS
+
+`qwen3_tts_server` and `qwen3_tts_synthesize` implement speech generation in C++
+MLX. See the [native guide](../../docs/mlx/qwen3_tts.md) for presets, Base cloning,
+PCM streaming and the pending Mac qualification. Voxt application integration
+is not included.

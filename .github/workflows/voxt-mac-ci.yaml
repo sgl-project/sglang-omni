@@ -221,6 +221,17 @@ jobs:
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
             --exclude-model mlx-community/MiniMax-Music3-mxfp8
 
+      - name: Require Qwen3-TTS reference qualification
+        if: ${{ !cancelled() }}
+        run: |
+          golden=sglang_omni_mlx/native/ci/model_golden/qwen3-tts-0.6b-customvoice.json
+          if [ ! -s "$golden" ]; then
+            echo "::error::Qwen3-TTS needs independently qualified, populated Mac goldens before merge."
+            exit 1
+          else
+            :
+          fi
+
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ !cancelled() }}
         run: |
@@ -252,7 +263,7 @@ jobs:
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
-            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py -k 'not music3'
+            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py sglang_omni_mlx/native/ci/test_qwen3_tts_api.py -k 'not music3'
 
       - name: Archive tested native runtime
         if: success()

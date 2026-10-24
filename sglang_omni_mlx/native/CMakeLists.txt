@@ -46,11 +46,15 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+set_property(TARGET civetweb-c-library PROPERTY SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/civetweb_connection.c")
+target_include_directories(civetweb-c-library PRIVATE src "${civetweb_SOURCE_DIR}/src")
 
 add_library(common STATIC
   src/common/audio.cpp
   src/common/form.cpp
   src/common/layers.cpp
+  src/common/qwen3_decoder.cpp
   src/common/npz.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
@@ -63,7 +67,6 @@ set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-c
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_asr_model.cpp
-  src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
@@ -249,3 +252,24 @@ set_target_properties(music3_server music3_synthesize PROPERTIES
 install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt DESTINATION licenses)
+
+add_library(tts_service STATIC src/common/tts_service.cpp)
+target_link_libraries(tts_service PUBLIC omni_service)
+target_compile_options(tts_service PRIVATE -Wall -Wextra)
+
+add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_model.cpp
+  src/qwen3_tts/qwen3_tts_prompt.cpp src/qwen3_tts/qwen3_tts_request.cpp
+  src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_codec_checkpoint.cpp
+  src/qwen3_tts/qwen3_tts_reference.cpp)
+target_link_libraries(qwen3_tts PUBLIC common)
+target_compile_options(qwen3_tts PRIVATE -Wall -Wextra)
+add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_service.cpp)
+target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts tts_service)
+add_executable(qwen3_tts_synthesize tools/qwen3_tts_synthesize.cpp)
+target_link_libraries(qwen3_tts_synthesize PRIVATE qwen3_tts)
+set_target_properties(qwen3_tts_server qwen3_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
+
+install(FILES licenses/qwen3-tts-MIT.txt DESTINATION licenses)

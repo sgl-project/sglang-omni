@@ -113,6 +113,11 @@ std::vector<float> BuildPeriodicHannWindow() {
 } // namespace
 
 std::vector<float> DecodeWav(std::string_view wav_bytes) {
+  return DecodeWavAtRate(wav_bytes, kSampleRate);
+}
+
+std::vector<float> DecodeWavAtRate(std::string_view wav_bytes,
+                                   int expected_sample_rate) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
@@ -141,8 +146,11 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
       bits_per_sample = ReadU16(wav_bytes, body_offset + 14);
       have_format = true;
     } else if (chunk_id == "data") {
-      if (!have_format || channel_count != 1 || sample_rate != kSampleRate) {
-        throw std::invalid_argument("audio must be 16 kHz mono");
+      if (!have_format || channel_count != 1 ||
+          sample_rate != static_cast<uint32_t>(expected_sample_rate)) {
+        throw std::invalid_argument(
+            "audio must be " + std::to_string(expected_sample_rate / 1000) +
+            " kHz mono");
       } else if (audio_format == kWavFormatPcm && bits_per_sample == 16) {
         std::vector<float> samples(body_size / 2);
         for (size_t i = 0; i < samples.size(); ++i) {
@@ -323,6 +331,44 @@ bool PeakIsSilent(const float *samples, size_t sample_count,
     }
   }
   return true;
+}
+
+std::string Pcm16Bytes(const std::vector<float> &samples) {
+  std::string bytes;
+  bytes.reserve(samples.size() * 2);
+  for (const float sample : samples) {
+    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
+    // through and casting NaN to an integer is undefined.
+    const float bounded =
+        std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
+    const auto value = static_cast<int16_t>(bounded * 32767.0f);
+    bytes.push_back(static_cast<char>(value & 0xff));
+    bytes.push_back(static_cast<char>((value >> 8) & 0xff));
+  }
+  return bytes;
+}
+
+std::string WavBytes(const std::string &pcm, int sample_rate) {
+  std::string bytes;
+  const auto append = [&](uint32_t value, int size) {
+    for (int index = 0; index < size; ++index) {
+      bytes.push_back(static_cast<char>((value >> (8 * index)) & 0xff));
+    }
+  };
+  const auto data_size = static_cast<uint32_t>(pcm.size());
+  bytes += "RIFF";
+  append(36 + data_size, 4);
+  bytes += "WAVEfmt ";
+  append(16, 4);              // fmt chunk size
+  append(1, 2);               // PCM
+  append(1, 2);               // mono
+  append(sample_rate, 4);     // samples per second
+  append(sample_rate * 2, 4); // bytes per second
+  append(2, 2);               // bytes per sample frame
+  append(16, 2);              // bits per sample
+  bytes += "data";
+  append(data_size, 4);
+  return bytes + pcm;
 }
 
 } // namespace qwen3_asr

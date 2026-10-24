@@ -1,0 +1,31 @@
+{
+  "en_ryan": {
+    "input": "Please remember to bring your passport and boarding pass to the airport.",
+    "voice": "Ryan",
+    "language": "English",
+    "seed": 42,
+    "max_new_tokens": 256
+  },
+  "zh_vivian": {
+    "input": "你好，请记得带上护照和登机牌。",
+    "voice": "Vivian",
+    "language": "Chinese",
+    "seed": 43,
+    "max_new_tokens": 256
+  },
+  "mixed_auto": {
+    "input": "欢迎使用 native Qwen3-TTS，have a nice day!",
+    "voice": "Vivian",
+    "language": "auto",
+    "seed": 44,
+    "max_new_tokens": 256
+  },
+  "en_frame_cap": {
+    "input": "Please remember to bring your passport and boarding pass to the airport.",
+    "voice": "Ryan",
+    "language": "English",
+    "seed": 45,
+    "max_new_tokens": 4,
+    "temperature": 0
+  }
+}
