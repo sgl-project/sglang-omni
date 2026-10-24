@@ -11,7 +11,12 @@ import numpy as np
 import torch
 from sentencepiece import SentencePieceProcessor
 
-from sglang_omni.models.personaplex.architecture import MIMI_WEIGHTS_GLOB, SAMPLE_RATE
+from sglang_omni.models.personaplex.architecture import (
+    DEFAULT_AUDIO_TEMPERATURE,
+    DEFAULT_AUDIO_TOP_K,
+    MIMI_WEIGHTS_GLOB,
+    SAMPLE_RATE,
+)
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
     trim_to_caller,
@@ -43,6 +48,7 @@ from sglang_omni.models.personaplex.prompts import (
     tokenize_text_prompt,
 )
 from sglang_omni.models.personaplex.request_builders import stage_request_params
+from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.session_hooks import (
     FRAMES_PER_UNIT,
     Code2WavHooks,
@@ -263,6 +269,9 @@ def create_lm_executor(
         context_length=context_length,
         enable_async_decode=enable_async_decode,
         depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
+        depformer_cuda_graph_sampling=AudioSampling(
+            DEFAULT_AUDIO_TEMPERATURE, DEFAULT_AUDIO_TOP_K
+        ),
     )
     return builder.build(
         model_path,
@@ -277,6 +286,8 @@ def create_session_lm_executor(
     model_path: str,
     *,
     depformer_cuda_graph_batch_sizes: list[int],
+    audio_temperature: float,
+    audio_top_k: int,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -292,6 +303,7 @@ def create_session_lm_executor(
         # lookahead past it would only be discarded.
         enable_async_decode=False,
         depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
+        depformer_cuda_graph_sampling=AudioSampling(audio_temperature, audio_top_k),
     )
     return builder.build(
         model_path,

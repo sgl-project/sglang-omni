@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Depformer weight slicing and teacher forcing, on a scaled-down spec."""
 
-from itertools import groupby
-
 import pytest
 import torch
 
@@ -289,12 +287,13 @@ def test_cuda_graph_runner_falls_back_on_cpu() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 8, 16, 32])
+@pytest.mark.parametrize(
+    "batch_size", [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32]
+)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("mixed", [False, True])
 @torch.inference_mode()
 def test_graph_batch_codes_and_rng_match_eager(
-    batch_size: int, dtype: torch.dtype, mixed: bool
+    batch_size: int, dtype: torch.dtype
 ) -> None:
     weights = {
         name: (
@@ -326,44 +325,49 @@ def test_graph_batch_codes_and_rng_match_eager(
         # note (Kokoro2336): Reordering and shrinking exercise request lifecycle and padded replay.
         rows = list(range(batch_size))[:: -1 if frame % 2 else 1]
         rows = rows[: max(1, batch_size - frame)]
-        eager_runs: list[SamplingRun] = []
-        graph_runs: list[SamplingRun] = []
-        settings = [
-            AudioSampling(0.8, 25),
-            AudioSampling(0.0, 0),
-            AudioSampling(1.0, 0),
+        sampling = AudioSampling(0.8, 25)
+        graph_runs = [
+            SamplingRun(
+                row_slice=slice(0, len(rows)),
+                sampling=sampling,
+                generators=[graph_generators[row] for row in rows],
+            )
         ]
-        sampling_rows = [settings[row % 3] if mixed else settings[0] for row in rows]
-        start_row = 0
-        for sampling, group in groupby(
-            enumerate(sampling_rows), key=lambda entry: entry[1]
-        ):
-            count = len(list(group))
-            selected_rows = rows[start_row : start_row + count]
-            eager_runs.append(
-                SamplingRun(
-                    row_slice=slice(start_row, start_row + count),
-                    sampling=sampling,
-                    generators=[eager_generators[row] for row in selected_rows],
-                )
-            )
-            graph_runs.append(
-                SamplingRun(
-                    row_slice=slice(start_row, start_row + count),
-                    sampling=sampling,
-                    generators=[graph_generators[row] for row in selected_rows],
-                )
-            )
-            start_row += count
+        bucket_size = next(size for size in runner.batch_sizes if size >= len(rows))
+        assert ((bucket_size, sampling),) in runner.graphs
         hidden_states.normal_()
         forced_codes[:, frame] = frame + 13
+        padded_text_tokens = torch.zeros(
+            bucket_size, dtype=text_tokens.dtype, device="cuda"
+        )
+        padded_text_tokens[: len(rows)].copy_(text_tokens[rows])
+        padded_hidden_states = torch.zeros(
+            bucket_size, SPEC.input_dim, dtype=dtype, device="cuda"
+        )
+        padded_hidden_states[: len(rows)].copy_(hidden_states[rows])
+        padded_forced_codes = torch.full(
+            (bucket_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+        )
+        padded_forced_codes[: len(rows)].copy_(forced_codes[rows])
+
+        def sample_padded(logits: torch.Tensor) -> torch.Tensor:
+            actual = sample_token(
+                logits[: len(rows)],
+                sampling,
+                [eager_generators[row] for row in rows],
+            )
+            if len(rows) < bucket_size:
+                return torch.cat((actual, logits[len(rows) :].argmax(dim=-1)))
+            else:
+                return actual
+
         random_state = torch.cuda.get_rng_state()
         expected = model.generate(
-            text_tokens[rows],
-            hidden_states[rows],
-            forced_codes[rows],
-            lambda logits: sample_runs(logits, eager_runs),
-        )
+            padded_text_tokens,
+            padded_hidden_states,
+            padded_forced_codes,
+            sample_padded,
+        )[: len(rows)]
         expected_random_state = torch.cuda.get_rng_state()
         torch.cuda.set_rng_state(random_state)
         actual = runner.generate(

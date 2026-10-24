@@ -19,6 +19,10 @@ from sglang_omni.config.schema import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.personaplex.architecture import (
+    DEFAULT_AUDIO_TEMPERATURE,
+    DEFAULT_AUDIO_TOP_K,
+)
 from sglang_omni.models.personaplex.hf_config import PERSONAPLEX_ARCH
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.personaplex.stages"
@@ -279,6 +283,16 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         if stage_name == LM_STAGE:
             return {
+                "audio_temperature": (
+                    self.sampling.audio_temperature
+                    if self.sampling.audio_temperature is not None
+                    else DEFAULT_AUDIO_TEMPERATURE
+                ),
+                "audio_top_k": (
+                    self.sampling.audio_top_k
+                    if self.sampling.audio_top_k is not None
+                    else DEFAULT_AUDIO_TOP_K
+                ),
                 "server_args_overrides": {
                     "max_running_requests": self.lm_request_slots()
                 }

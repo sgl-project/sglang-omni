@@ -31,9 +31,14 @@ from sglang_omni.models.personaplex.hf_config import (
     build_backbone_config,
 )
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
+from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+
+DEFAULT_DEPFORMER_SAMPLING = AudioSampling(
+    DEFAULT_AUDIO_TEMPERATURE, DEFAULT_AUDIO_TOP_K
+)
 
 
 def write_checkpoint(root):
@@ -51,12 +56,15 @@ def test_builder_writes_backbone_config_and_links_only_lm_weights(
     source = write_checkpoint(tmp_path / "checkpoint")
     builder = (
         PersonaPlexEngineBuilder(
-            enable_async_decode=False, depformer_cuda_graph_batch_sizes=[]
+            enable_async_decode=False,
+            depformer_cuda_graph_batch_sizes=[],
+            depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
         )
         if context_length is None
         else PersonaPlexEngineBuilder(
             enable_async_decode=False,
             depformer_cuda_graph_batch_sizes=[],
+            depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
             context_length=context_length,
         )
     )
@@ -94,7 +102,9 @@ def test_shim_requires_the_lm_weights(tmp_path):
 def test_generation_defaults_keep_the_runner_assumptions(monkeypatch, is_cuda):
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     defaults = PersonaPlexEngineBuilder(
-        enable_async_decode=False, depformer_cuda_graph_batch_sizes=[]
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[],
+        depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
     ).generation_defaults(dtype="bfloat16")
     assert defaults["max_running_requests"] == 1
     assert defaults["chunked_prefill_size"] == -1
@@ -136,6 +146,7 @@ def test_depformer_graphs_capture_at_runner_build(
     builder = PersonaPlexEngineBuilder(
         enable_async_decode=False,
         depformer_cuda_graph_batch_sizes=batch_sizes,
+        depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
     )
 
     assert builder.make_model_runner(model_worker, Mock()) is runner
@@ -202,7 +213,9 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
     )
     monkeypatch.setattr(f"{module}.override_server_args", record_override)
     PersonaPlexEngineBuilder(
-        enable_async_decode=False, depformer_cuda_graph_batch_sizes=[]
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[],
+        depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
     ).customize_server_args(raw_server_args)
     if is_cuda_host and device == "cuda" and page_size == 1 and disable_radix_cache:
         assert declarations == []
@@ -217,6 +230,7 @@ def test_realtime_engine_serves_calls_through_streaming_sessions():
         context_length=4096,
         enable_async_decode=False,
         depformer_cuda_graph_batch_sizes=[1],
+        depformer_cuda_graph_sampling=AudioSampling(0.5, 7),
     )
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["enable_streaming_session"] is True

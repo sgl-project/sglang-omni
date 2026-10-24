@@ -142,10 +142,18 @@ class DepformerCudaGraphRunner:
     @torch.inference_mode()
     def capture_graphs(self, sampling: AudioSampling, *, max_batch_size: int) -> None:
         """Capture default-sampling buckets used by the configured concurrency."""
+        capture_limit = next(
+            (
+                batch_size
+                for batch_size in self.batch_sizes
+                if batch_size >= max_batch_size
+            ),
+            max_batch_size,
+        )
         batch_sizes = tuple(
             batch_size
             for batch_size in self.batch_sizes
-            if batch_size <= max_batch_size
+            if batch_size <= capture_limit
         )
         if not batch_sizes:
             return

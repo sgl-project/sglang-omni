@@ -18,8 +18,6 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import (
-    DEFAULT_AUDIO_TEMPERATURE,
-    DEFAULT_AUDIO_TOP_K,
     MOSHI_WEIGHTS_NAME,
     TEXT_CARD,
 )
@@ -95,6 +93,7 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         *,
         enable_async_decode: bool,
         depformer_cuda_graph_batch_sizes: list[int],
+        depformer_cuda_graph_sampling: AudioSampling,
         max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length: int | None = None,
     ) -> None:
@@ -103,6 +102,7 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         self.depformer_cuda_graph_batch_sizes: tuple[int, ...] = tuple(
             depformer_cuda_graph_batch_sizes
         )
+        self.depformer_cuda_graph_sampling = depformer_cuda_graph_sampling
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -180,7 +180,7 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
                 runner.model.depformer, self.depformer_cuda_graph_batch_sizes
             )
             graph_runner.capture_graphs(
-                AudioSampling(DEFAULT_AUDIO_TEMPERATURE, DEFAULT_AUDIO_TOP_K),
+                self.depformer_cuda_graph_sampling,
                 max_batch_size=server_args.max_running_requests,
             )
             runner.depformer_cuda_graph = graph_runner
@@ -219,11 +219,13 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         tokenizer: SentencePieceProcessor,
         enable_async_decode: bool,
         depformer_cuda_graph_batch_sizes: list[int],
+        depformer_cuda_graph_sampling: AudioSampling,
         context_length: int | None = None,
     ) -> None:
         super().__init__(
             enable_async_decode=enable_async_decode,
             depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
+            depformer_cuda_graph_sampling=depformer_cuda_graph_sampling,
             context_length=context_length,
         )
         self.tokenizer = tokenizer
