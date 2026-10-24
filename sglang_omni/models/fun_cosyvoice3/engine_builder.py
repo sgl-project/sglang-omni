@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.fun_cosyvoice3 import request_builders
@@ -25,6 +26,7 @@ from sglang_omni.models.fun_cosyvoice3.utils import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -63,6 +65,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         self.token_hop_len = hop
         self.checkpoint_root: str | None = None
         self.device: str | None = None
+        self.has_draft_model: bool = False
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
         # cap it at the host core count instead of trusting the default of 16.
@@ -121,12 +124,58 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            overrides.get("speculative_algorithm")
+        )
+        speculative_reserve_tokens = 0
+        if draft_model_path is None:
+            if not speculative_algorithm.is_none():
+                raise ValueError(
+                    "Fun-CosyVoice3 speculative decoding needs "
+                    "speculative_draft_model_path"
+                )
+            else:
+                pass
+        elif not (speculative_algorithm.is_none() or speculative_algorithm.is_dspark()):
+            raise ValueError("Fun-CosyVoice3 speculative decoding supports DSPARK")
+        else:
+            # note (wilsonzheng0327): the draft modules import Triton kernels, which
+            # a Torch MPS host of this builder cannot load.
+            from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
+                DRAFT_TOKENS_PER_STEP,
+                VERIFY_TOKENS_PER_STEP,
+                materialize_draft_checkpoint,
+            )
+
+            if overrides.get("speculative_dspark_block_size") not in (
+                None,
+                DRAFT_TOKENS_PER_STEP,
+            ):
+                raise ValueError(
+                    f"the published draft proposes {DRAFT_TOKENS_PER_STEP} tokens per step"
+                )
+            else:
+                pass
+            # note (wilsonzheng0327): SGLang reads the draft config while resolving
+            # the server args, so the stage-vocabulary copy must exist before that.
+            overrides["speculative_algorithm"] = SpeculativeAlgorithm.DSPARK.name
+            overrides["speculative_draft_model_path"] = materialize_draft_checkpoint(
+                draft_model_path, overrides.get("speculative_draft_model_revision")
+            )
+            overrides["speculative_draft_model_revision"] = None
+            overrides["speculative_dspark_block_size"] = DRAFT_TOKENS_PER_STEP
+            # note (wilsonzheng0327): matches the scheduler's per-decode reservation,
+            # two verify windows past each request's tokens, which the server args
+            # cannot report before they are resolved.
+            speculative_reserve_tokens = 2 * VERIFY_TOKENS_PER_STEP
+            self.has_draft_model = True
         # Note (Jiaxin Deng): the fraction alone sized a 62 GB pool on an
         # H100 that the running requests can never fill; the vocoder shares
         # the GPU and was left about 10 GB of dynamic-shape headroom.
         if overrides.get("max_total_tokens") is None:
-            overrides["max_total_tokens"] = (
-                overrides["max_running_requests"] * self.context_length
+            overrides["max_total_tokens"] = overrides["max_running_requests"] * (
+                self.context_length + speculative_reserve_tokens
             )
         else:
             pass
@@ -225,6 +274,20 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         # note (ratish): the vocoder shares this process and card on its own stream, and
         # at equal priority the AR's decode replays wait behind its kernels.
         return {"should_run_top_priority_stream": current_platform.is_cuda()}
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if not self.has_draft_model:
+            return {}
+        else:
+            pass
+        from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
+            FunCosyVoice3DSparkWorker,
+        )
+
+        return {
+            "supports_speculative_decoding": True,
+            "speculative_worker_class": FunCosyVoice3DSparkWorker,
+        }
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_cosyvoice3_request

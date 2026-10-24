@@ -47,6 +47,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     tp_worker: ModelWorker
     model: FunCosyVoice3SGLangModel
+    # The DSpark worker verifies against this runner's own sampler, penalty included.
+    speculative_verifies_repetition_penalty: bool = True
 
     def __init__(
         self,
@@ -358,9 +360,24 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 continue
             else:
                 pass
-            token = torch.tensor([token_id], dtype=torch.long)
-            sched_req.data.output_codes.append(token)
-            self.queue_or_emit_code_chunk(sched_req, token)
+            self.append_speech_code(sched_req, token_id)
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        # The stop token ends a request and is not a speech code.
+        for token_id in token_ids:
+            if token_id < VOCAB_SIZE:
+                self.append_speech_code(scheduler_request, token_id)
+            else:
+                pass
+
+    def append_speech_code(
+        self, scheduler_request: SchedulerRequest, token_id: int
+    ) -> None:
+        token = torch.tensor([token_id], dtype=torch.long)
+        scheduler_request.data.output_codes.append(token)
+        self.queue_or_emit_code_chunk(scheduler_request, token)
 
     def redraw_repeated_tokens(
         self,

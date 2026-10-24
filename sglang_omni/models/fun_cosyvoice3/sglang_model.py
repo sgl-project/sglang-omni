@@ -58,6 +58,11 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
     def get_input_embeddings(self) -> nn.Embedding:
         return self.speech_embedding
 
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        """Capture the residual stream after each named layer for a DSpark draft."""
+        self.capture_aux_hidden_states = True
+        self.model.layers_to_capture = [layer_id + 1 for layer_id in layer_ids]
+
     @torch.no_grad()
     def forward(
         self,
@@ -69,9 +74,8 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         pp_proxy_tensors: PPProxyTensors | None = None,
     ) -> LogitsProcessorOutput:
         fwd_mode = forward_batch.forward_mode
-        is_decode = fwd_mode.is_decode()
-
-        if is_decode:
+        # Decode and speculative verify feed sampled speech ids; prefill feeds embeds.
+        if fwd_mode.is_decode() or fwd_mode.is_target_verify():
             input_embeds = self.speech_embedding(input_ids)
         else:
             pass
@@ -83,8 +87,13 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             input_embeds,
             pp_proxy_tensors=pp_proxy_tensors,
         )
+        if self.capture_aux_hidden_states:
+            hidden_states, auxiliary_hidden_states = hidden_states
+            captured_hidden_states = torch.cat(auxiliary_hidden_states, dim=-1)
+        else:
+            captured_hidden_states = None
 
-        if fwd_mode.is_extend():
+        if fwd_mode.is_extend() and not fwd_mode.is_target_verify():
             extend_seq_lens = forward_batch.extend_seq_lens
             if extend_seq_lens is not None:
                 last_indices = (
@@ -108,7 +117,12 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         else:
             logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
-            next_token_logits=logits, hidden_states=hidden_states
+            next_token_logits=logits,
+            hidden_states=(
+                hidden_states
+                if captured_hidden_states is None
+                else captured_hidden_states
+            ),
         )
 
     def precompile_kernels_after_loading(self) -> None:
