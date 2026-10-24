@@ -50,6 +50,7 @@ class RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
         self.is_ragged = False
+        self.is_compiled = False
         self.build_modulations(
             torch.linspace(0, 1, FLOW_EULER_STEPS + 1), torch.float32
         )
