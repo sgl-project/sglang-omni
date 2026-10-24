@@ -691,6 +691,8 @@ An input written `{kind: control, source, event, preempt}` is a control edge. It
 
 An input of a stage node written `{source, capacity, overflow}` bounds its edge. The inputs naming one source are one edge into the node; it holds at most `capacity` chunks the node's own session has not accepted yet, by default the Session's `max_pending_chunks`. When the edge is full, `overflow: block`, the default, holds the producing node until the node takes a chunk, and rejects the client's append as a full queue; `overflow: drop_oldest` drops the edge's oldest chunk and lets the producer go on; on the client's edge the dropped input is confirmed to the client like a taken one, so a real-time node such as a full-duplex model hears the newest audio instead of a backlog. Two inputs of one source that declare different bounds fail the declaration.
 
+A chunk one node sends another may be larger than the Session's `max_chunk_bytes`, as the unit of a Qwen3-Omni turn longer than about 32 s is. It enters the reader in fragments within that bound: the first stage of the reader's route holds them and restores the chunk for a single append, so every stage of the route sees the chunk whole and once. The fragments of a turn interrupted on the way are dropped.
+
 The Session opens its nodes upstream first and closes them downstream first. A cycle of data edges between nodes must name the input that closes it with `feedback: true`, and that input must not block: two nodes each held on the other's full edge never wake. An undeclared cycle fails with `form a cycle of data edges`. A control edge holds no queue, so a cycle it closes needs no mark.
 
 ### Stream vocabulary

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import random
 from collections.abc import AsyncIterator
 from multiprocessing.queues import Queue
 from pathlib import Path
@@ -11,6 +13,8 @@ from typing import Protocol
 
 import pytest
 
+from sglang_omni.admission import QueueFullError
+from sglang_omni.models.qwen3_omni.payload_types import UNIT_FORMAT
 from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -18,8 +22,11 @@ from sglang_omni.proto.session import (
     DataEdge,
     OutputChunk,
     SessionGraph,
+    SessionIdentity,
+    SessionLimits,
     SessionNode,
     TimedChunk,
+    wire_size,
 )
 from sglang_omni.proto.streams import (
     AUDIO,
@@ -102,6 +109,65 @@ class SyntheticModel(SessionHooks):
         return payload
 
 
+class UtteranceDigestModel(SessionHooks):
+    """Answers a reply unit with the length and digest of the utterance audio it received."""
+
+    def open(self, session_identity, request) -> None:
+        pass
+
+    def close(self, session_identity) -> None:
+        pass
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        payload.data = {}
+        for event in (
+            TimedChunk(
+                CONTROL,
+                0,
+                0,
+                chunk.seq,
+                {"type": TURN_STARTED},
+                format=SESSION_CONTROL,
+                turn=chunk.turn,
+            ),
+            TimedChunk(
+                TEXT,
+                0,
+                0,
+                chunk.seq,
+                {"text": digest(chunk.payload["pcm"])},
+                format=TEXT_DELTA,
+                turn=chunk.turn,
+            ),
+            TimedChunk(
+                CONTROL,
+                0,
+                0,
+                chunk.seq,
+                {"type": TURN_DONE},
+                format=SESSION_CONTROL,
+                turn=chunk.turn,
+            ),
+        ):
+            context.emit(event)
+        return payload
+
+
+def create_long_utterance_stage(
+    name: str, events: Queue[StageEvent]
+) -> SessionScheduler:
+    if name == "dialog":
+        return SessionScheduler(
+            QwenInputHooks(
+                max_utterance_seconds=120, max_queued_turns=2, max_utterance_frames=4
+            )
+        )
+    else:
+        return SessionScheduler(UtteranceDigestModel())
+
+
 def create_graph_stage(name: str, events: Queue[StageEvent]) -> SessionScheduler:
     if name == "dialog":
         return SessionScheduler(
@@ -154,6 +220,78 @@ def control_chunk(
 ) -> TimedChunk:
     return TimedChunk(
         "control", 0, 0, sequence, {"type": event}, format=SESSION_CONTROL, turn=turn
+    )
+
+
+def digest(pcm: bytes) -> str:
+    return f"{len(pcm)} {hashlib.sha256(pcm).hexdigest()}"
+
+
+def utterance(size: int) -> bytes:
+    return random.Random(size).randbytes(size)
+
+
+# note (luojiaxuan): 16 kHz PCM16 is 32 bytes per ms; the client sends an utterance in pieces of at most this many bytes.
+PCM16_BYTES_PER_MS = 32
+CLIENT_CHUNK_BYTES = 65536
+
+
+async def append_when_taken(
+    coordinator, identity: SessionIdentity, chunk: TimedChunk
+) -> None:
+    """Append as a client does: a full edge keeps the chunk's seq, so retry it."""
+    while True:
+        try:
+            await coordinator.append_session(identity, chunk)
+            return
+        except QueueFullError:
+            await asyncio.sleep(0.01)
+
+
+async def say(
+    coordinator,
+    identity: SessionIdentity,
+    pcm: bytes,
+    *,
+    sequence: int,
+    start_ms: float,
+) -> tuple[int, float]:
+    """Append `pcm` as client audio and commit it as one turn; returns the next input seq and the audio end."""
+    for offset in range(0, len(pcm), CLIENT_CHUNK_BYTES):
+        piece = pcm[offset : offset + CLIENT_CHUNK_BYTES]
+        duration_ms = len(piece) / PCM16_BYTES_PER_MS
+        await append_when_taken(
+            coordinator,
+            identity,
+            TimedChunk(AUDIO, start_ms, duration_ms, sequence, piece, format=PCM16),
+        )
+        sequence += 1
+        start_ms += duration_ms
+    await append_when_taken(
+        coordinator, identity, control_chunk(COMMIT, sequence=sequence)
+    )
+    return sequence + 1, start_ms
+
+
+def unit_bytes(pcm: bytes, end_ms: float) -> int:
+    """The wire size of the dialog's unit for a first turn of `pcm` ending at `end_ms`, as the model node admits it."""
+    unit = TimedChunk(
+        CONTROL,
+        end_ms,
+        0.0,
+        0,
+        {"pcm": pcm, "images": [], "carried_turns": []},
+        format=UNIT_FORMAT,
+        turn=1,
+    )
+    return wire_size(unit.to_dict())
+
+
+def reply_text(received: list[OutputChunk], turn: int) -> str:
+    return "".join(
+        output.payload["text"]
+        for output in received
+        if output.format == TEXT_DELTA and output.turn == turn
     )
 
 
@@ -242,3 +380,73 @@ async def test_an_interrupt_fences_the_old_reply_and_the_next_turn_is_answered(
         assert not any(is_turn_done(output, 1) for output in received)
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+@pytest.mark.asyncio
+async def test_an_utterance_over_max_chunk_bytes_reaches_the_model_whole(
+    tmp_path: Path,
+) -> None:
+    factory = f"{__name__}.create_long_utterance_stage"
+    async with pipeline(
+        tmp_path,
+        names=["dialog", "model"],
+        factories={"dialog": factory, "model": factory},
+    ) as (coordinator, events, processes):
+        coordinator.session_graph = session_graph()
+        identity = await coordinator.open_session(OmniRequest(None))
+        outputs = coordinator.session_outputs(identity)
+        # note (luojiaxuan): 41.6 s of speech makes a unit of 1331333 bytes, over the default 1 MiB bound.
+        first = utterance(1_331_200)
+        second = utterance(1_600_000)
+        sequence, end_ms = await say(
+            coordinator, identity, first, sequence=0, start_ms=0.0
+        )
+        sequence, end_ms = await say(
+            coordinator, identity, second, sequence=sequence, start_ms=end_ms
+        )
+        received = await read_until(outputs, lambda output: is_turn_done(output, 2))
+        assert [reply_text(received, 1), reply_text(received, 2)] == [
+            digest(first),
+            digest(second),
+        ]
+        third = utterance(6400)
+        await say(coordinator, identity, third, sequence=sequence, start_ms=end_ms)
+        received = await read_until(outputs, lambda output: is_turn_done(output, 3))
+        assert reply_text(received, 3) == digest(third)
+        await outputs.aclose()
+        await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+@pytest.mark.asyncio
+async def test_a_unit_enters_whole_up_to_max_chunk_bytes_and_in_fragments_beyond(
+    tmp_path: Path,
+) -> None:
+    factory = f"{__name__}.create_long_utterance_stage"
+    pcm = utterance(262_144)
+    size = unit_bytes(pcm, len(pcm) / PCM16_BYTES_PER_MS)
+    async with pipeline(
+        tmp_path,
+        names=["dialog", "model"],
+        factories={"dialog": factory, "model": factory},
+    ) as (coordinator, events, processes):
+        coordinator.session_graph = session_graph()
+        for max_chunk_bytes, is_whole in (
+            (size + 1, True),
+            (size, True),
+            (size - 1, False),
+            (size // 3, False),
+        ):
+            identity = await coordinator.open_session(
+                OmniRequest(None),
+                limits=SessionLimits(max_chunk_bytes=max_chunk_bytes),
+            )
+            outputs = coordinator.session_outputs(identity)
+            await say(coordinator, identity, pcm, sequence=0, start_ms=0.0)
+            received = await read_until(outputs, lambda output: is_turn_done(output, 1))
+            assert reply_text(received, 1) == digest(pcm)
+            model_inputs = coordinator.sessions[f"{identity.id}:qwen_omni"].next_input
+            assert (model_inputs == 1) == is_whole
+            await outputs.aclose()
+            await wait_until(
+                lambda: not coordinator.sessions and not coordinator.graphs
+            )

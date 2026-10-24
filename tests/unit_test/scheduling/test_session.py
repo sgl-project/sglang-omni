@@ -4,7 +4,7 @@
 import queue
 import threading
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from types import MethodType, SimpleNamespace
 from typing import Literal
 from unittest.mock import Mock
@@ -17,11 +17,13 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
     OutputChunk,
     ResourceUsage,
     SessionIdentity,
     SessionOperation,
     TimedChunk,
+    fragment_chunk,
     wire_size,
 )
 from sglang_omni.scheduling.message import IncomingMessage
@@ -259,6 +261,96 @@ def test_binary_chunk_wire_size_matches_msgpack(size, monkeypatch):
     monkeypatch.setattr(msgpack, "packb", record)
     assert [wire_size(value) for value in values] == expected
     assert all(size == 0 for size in encoded_payloads)
+
+
+class RecordingHooks(Hooks):
+    """Records the chunk each append hands the hooks."""
+
+    def __init__(self) -> None:
+        super().__init__("source", queue.Queue())
+        self.appended: list[TimedChunk] = []
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.appended.append(chunk)
+        return payload
+
+
+def unit(turn: int, size: int) -> TimedChunk:
+    return TimedChunk(
+        "control",
+        0,
+        0,
+        0,
+        {"pcm": bytes(range(256)) * (size // 256), "carried_turns": []},
+        format="unit",
+        turn=turn,
+    )
+
+
+def run_operation(
+    scheduler: SessionScheduler, operation: str, chunk: TimedChunk | None = None
+) -> StagePayload:
+    request_id = f"{operation}-{chunk.seq if chunk is not None else 0}"
+    request = OmniRequest(
+        None, metadata=operation_metadata(operation, SessionIdentity("one"), chunk)
+    )
+    return compute_registered(scheduler, StagePayload(request_id, request, {}))
+
+
+def test_a_chunk_splits_into_fragments_within_max_chunk_bytes():
+    chunk = unit(1, 10_000)
+    fragments = list(fragment_chunk(chunk, 7, 1024))
+    assert [fragment.seq for fragment, _ in fragments] == list(
+        range(7, 7 + len(fragments))
+    )
+    assert [continues for _, continues in fragments] == [True] * (
+        len(fragments) - 1
+    ) + [False]
+    assert all(wire_size(fragment.to_dict()) <= 1024 for fragment, _ in fragments)
+    assert {fragment.turn for fragment, _ in fragments} == {1}
+    assert b"".join(fragment.payload for fragment, _ in fragments) == msgpack.packb(
+        chunk.to_dict(), use_bin_type=True
+    )
+
+
+def test_the_first_stage_restores_a_chunk_from_its_fragments_for_the_append():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    run_operation(scheduler, "open")
+    chunk = unit(1, 10_000)
+    *leading, (last, _) = fragment_chunk(chunk, 0, 1024)
+    for fragment, _ in leading:
+        run_operation(scheduler, "fragment", fragment)
+    assert hooks.appended == []
+    result = run_operation(scheduler, "append", last)
+    restored = replace(chunk, seq=last.seq)
+    assert hooks.appended == [restored]
+    # note (luojiaxuan): the stages after this one read the restored chunk from the operation the append carries.
+    carried = SessionOperation.from_dict(result.request.metadata[SESSION_METADATA_KEY])
+    assert carried.chunk == restored
+    small = replace(unit(2, 256), seq=last.seq + 1)
+    run_operation(scheduler, "append", small)
+    assert hooks.appended[-1] == small
+
+
+def test_fragments_an_interrupt_cut_short_give_way_to_the_next_turn():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    run_operation(scheduler, "open")
+    cut, _ = next(fragment_chunk(unit(1, 10_000), 0, 1024))
+    run_operation(scheduler, "fragment", cut)
+    plain = replace(unit(2, 256), seq=1)
+    run_operation(scheduler, "append", plain)
+    assert hooks.appended == [plain]
+    run_operation(scheduler, "fragment", replace(cut, seq=2))
+    chunk = unit(3, 10_000)
+    *leading, (last, _) = fragment_chunk(chunk, 3, 1024)
+    for fragment, _ in leading:
+        run_operation(scheduler, "fragment", fragment)
+    run_operation(scheduler, "append", last)
+    assert hooks.appended[-1] == replace(chunk, seq=last.seq)
 
 
 class BlockingHooks(Hooks):

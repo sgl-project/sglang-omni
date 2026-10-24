@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Literal, TypedDict
 
 import msgpack
@@ -62,7 +62,7 @@ class OutputChunkDict(TypedDict):
     kind: Literal["data", "input_done"]
 
 
-SessionOperationKind = Literal["open", "append", "close", "control", "read"]
+SessionOperationKind = Literal["open", "append", "fragment", "close", "control", "read"]
 
 
 class SessionOperationDict(TypedDict):
@@ -421,7 +421,10 @@ class SessionOperation:
     stage it reaches aborts them, dropping their results and anything they
     send it later. A read
     targets the terminal owner and stays open until the close answers it; the
-    chunks the stage emits outside an append stream on it.
+    chunks the stage emits outside an append stream on it. A fragment carries
+    one of the leading fragments of a chunk over max_chunk_bytes to the
+    route's first owner, which holds it; the append of the last fragment
+    restores the chunk there and carries it on along the route.
     """
 
     operation: SessionOperationKind
@@ -483,3 +486,33 @@ def wire_size(chunk_fields: TimedChunkDict | OutputChunkDict) -> int:
         return len(packed_without_payload) + payload_size + header_growth
     else:
         return len(msgpack.packb(chunk_fields, use_bin_type=True))
+
+
+def fragment_chunk(
+    chunk: TimedChunk, seq: int, max_chunk_bytes: int
+) -> Iterator[tuple[TimedChunk, bool]]:
+    """Split the msgpack encoding of `chunk` into fragments numbered from `seq`, each within max_chunk_bytes, with whether another follows.
+
+    A fragment keeps the chunk's fields but seq, so it travels with the
+    chunk's turn, and carries a piece of the encoding as its payload.
+    """
+    encoded = msgpack.packb(chunk.to_dict(), use_bin_type=True)
+    start = 0
+    while start < len(encoded):
+        fragment = replace(chunk, seq=seq, payload=b"")
+        end = (
+            start
+            + max_chunk_bytes
+            - wire_size(fragment.to_dict())
+            - MSGPACK_BIN32_HEADER_GROWTH
+        )
+        yield replace(fragment, payload=encoded[start:end]), end < len(encoded)
+        start = end
+        seq += 1
+
+
+def join_fragments(fragments: Sequence[TimedChunk]) -> TimedChunk:
+    """The chunk whose encoding `fragments` carry in order, at the seq of the last."""
+    encoded = b"".join(fragment.payload for fragment in fragments)
+    chunk = TimedChunk.from_dict(msgpack.unpackb(encoded, raw=False))
+    return replace(chunk, seq=fragments[-1].seq)
