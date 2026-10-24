@@ -2368,10 +2368,18 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self, batch, overlap=False
-        ):
-            result = self.draft_worker.forward_batch_generation(batch)
+        target_worker = self.tp_worker.speculative_target_worker
+        target_worker.verify_requests = [
+            SchedulerRequest(request_id=req.rid, data=req.omni_data)
+            for req in batch.reqs
+        ]
+        try:
+            with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self, batch, overlap=False
+            ):
+                result = self.draft_worker.forward_batch_generation(batch)
+        finally:
+            target_worker.verify_requests = []
         self.model_runner.after_speculative_step(
             batch,
             result,

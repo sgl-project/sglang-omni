@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o thinker runners: offline length penalty and the duplex unit sampler."""
+"""MiniCPM-o thinker runners: offline length penalty, speculative steps and the duplex unit sampler."""
 
 from __future__ import annotations
 
@@ -210,6 +210,98 @@ def test_missing_length_penalty_leaves_logits_unchanged() -> None:
     bare_runner().process_sampling_logits(logits_output, [scheduler_request({})])
 
     torch.testing.assert_close(logits_output.next_token_logits, original)
+
+
+def verify_request(
+    length_penalty: float, suppress_tokens: list[int] | None
+) -> SimpleNamespace:
+    request = penalized_request(length_penalty)
+    request.data.suppress_tokens = suppress_tokens
+    request.data.req = SimpleNamespace()
+    return request
+
+
+def test_each_verify_row_takes_its_request_length_penalty_and_suppress_set() -> None:
+    rows_per_request = 3
+    suppressed_token_id = 2
+    original = torch.tensor([[0.5, 2.0, -1.0, -4.0]]).repeat(2 * rows_per_request, 1)
+    logits_output = SimpleNamespace(next_token_logits=original.clone())
+
+    bare_runner().apply_speculative_verify_logits(
+        logits_output,
+        [verify_request(2.0, None), verify_request(1.0, [suppressed_token_id])],
+        rows_per_request,
+    )
+
+    penalized = original[0].clone()
+    penalized[EOS_TOKEN_IDS] = torch.tensor([2.0 / 2.0, -4.0 * 2.0])
+    suppressed = original[0].clone()
+    suppressed[suppressed_token_id] = float("-inf")
+    torch.testing.assert_close(
+        logits_output.next_token_logits[:rows_per_request],
+        penalized.expand(rows_per_request, -1),
+    )
+    torch.testing.assert_close(
+        logits_output.next_token_logits[rows_per_request:],
+        suppressed.expand(rows_per_request, -1),
+    )
+
+
+def speculative_runner(
+    hidden_rows: torch.Tensor, prefill_last_hidden: torch.Tensor | None
+) -> MiniCPMOThinkerModelRunner:
+    runner = bare_runner()
+    runner.hands_hidden_to_talker = True
+    runner.pending_hidden = {}
+    runner.speculative_hidden_queue = {}
+    runner.outer_model = SimpleNamespace(
+        speculative_hidden_rows=hidden_rows, prefill_last_hidden=prefill_last_hidden
+    )
+    return runner
+
+
+def committed_rows(runner: MiniCPMOThinkerModelRunner, request_id: str) -> torch.Tensor:
+    return torch.stack(runner.pending_hidden[request_id])
+
+
+def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() -> None:
+    num_draft_tokens = 4
+    block_rows = torch.arange(3 * num_draft_tokens * 2, dtype=torch.float32).reshape(
+        -1, 2
+    )
+    hidden_rows = torch.zeros(16, 2)
+    hidden_rows[: len(block_rows)] = block_rows
+    runner = speculative_runner(hidden_rows, None)
+    batch = SimpleNamespace(reqs=[SimpleNamespace(rid=rid) for rid in "abc"])
+
+    runner.after_speculative_step(
+        batch, None, is_prefill=False, num_draft_tokens=num_draft_tokens
+    )
+    hidden_rows.zero_()
+    runner.on_speculative_tokens(SimpleNamespace(request_id="c"), [PLAIN_TOKEN_ID])
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="b"),
+        [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, THIRD_TOKEN_ID],
+    )
+
+    torch.testing.assert_close(committed_rows(runner, "c"), block_rows[8:9])
+    torch.testing.assert_close(committed_rows(runner, "b"), block_rows[4:7])
+    assert (
+        "a" not in runner.pending_hidden
+    ), "a request with no committed tokens gets no rows"
+
+
+def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
+    prefill_last_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    runner = speculative_runner(torch.zeros(16, 2), prefill_last_hidden)
+    batch = SimpleNamespace(reqs=[SimpleNamespace(rid="a"), SimpleNamespace(rid="b")])
+
+    runner.after_speculative_step(batch, None, is_prefill=True, num_draft_tokens=4)
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [OTHER_TOKEN_ID])
+
+    torch.testing.assert_close(committed_rows(runner, "a"), prefill_last_hidden[0:1])
+    torch.testing.assert_close(committed_rows(runner, "b"), prefill_last_hidden[1:2])
 
 
 def duplex_tokenizer() -> Mock:
