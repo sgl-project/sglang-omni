@@ -295,7 +295,7 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
                 ),
                 "server_args_overrides": {
                     "max_running_requests": self.lm_request_slots()
-                }
+                },
             }
         else:
             return {"max_open_sessions": self.max_sessions}

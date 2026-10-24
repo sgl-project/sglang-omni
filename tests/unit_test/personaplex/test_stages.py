@@ -282,9 +282,7 @@ def test_every_realtime_stage_holds_max_sessions_calls():
     config = PersonaPlexSessionPipelineConfig(
         model_path="personaplex",
         max_sessions=3,
-        sampling=PersonaPlexSessionSampling(
-            audio_temperature=0.5, audio_top_k=7
-        ),
+        sampling=PersonaPlexSessionSampling(audio_temperature=0.5, audio_top_k=7),
     )
     for name in ["preprocessing", "mimi_encode", "code2wav"]:
         assert config.stage_factory_kwargs(name) == {"max_open_sessions": 3}
@@ -293,7 +291,7 @@ def test_every_realtime_stage_holds_max_sessions_calls():
         "audio_top_k": 7,
         "server_args_overrides": {
             "max_running_requests": 3 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
-        }
+        },
     }
 
 

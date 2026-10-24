@@ -17,10 +17,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.personaplex.architecture import (
-    MOSHI_WEIGHTS_NAME,
-    TEXT_CARD,
-)
+from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
 )

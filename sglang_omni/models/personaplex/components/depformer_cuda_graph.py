@@ -151,9 +151,7 @@ class DepformerCudaGraphRunner:
             max_batch_size,
         )
         batch_sizes = tuple(
-            batch_size
-            for batch_size in self.batch_sizes
-            if batch_size <= capture_limit
+            batch_size for batch_size in self.batch_sizes if batch_size <= capture_limit
         )
         if not batch_sizes:
             return

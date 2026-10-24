@@ -287,9 +287,7 @@ def test_cuda_graph_runner_falls_back_on_cpu() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize(
-    "batch_size", [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32]
-)
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @torch.inference_mode()
 def test_graph_batch_codes_and_rng_match_eager(
