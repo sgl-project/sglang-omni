@@ -15,8 +15,10 @@ import numpy as np
 import pytest
 import yaml
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -41,7 +43,8 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.proto.session import TimedChunk
+from sglang_omni.proto.request import OmniRequest
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -66,6 +69,7 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
@@ -1592,3 +1596,28 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.parametrize(
+    ("flags", "admitted"), [([], 16), (["--max_sessions", "24"], 24)]
+)
+def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
+    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-customvoice"))
+    config = manager.merge_config(manager.parse_extra_args(flags))
+    stages = {}
+    for name in ("vad", "dialog"):
+        stage = config.stage_named(name)
+        stages[name] = import_string(stage.factory_path)(
+            **resolve_stage_factory_args(stage, config)
+        )
+    assert stages["vad"].max_open_sessions == admitted
+    dialog = stages["dialog"]
+    sessions = [SessionIdentity(f"session-{index}") for index in range(admitted)]
+    try:
+        for session in sessions:
+            dialog.open_session(session, OmniRequest(None))
+        with pytest.raises(QueueFullError):
+            dialog.open_session(SessionIdentity("one-more"), OmniRequest(None))
+    finally:
+        for session in sessions:
+            dialog.close_session(session, dialog.open_sessions[session])

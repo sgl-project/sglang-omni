@@ -29,16 +29,19 @@ We provide two demonstrative config files.
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value |
+| `batch_sessions` | `true` | Perception and speech handle the ready second of every conversation in one call. `false` gives each conversation's second a call of its own, one call at a time; `max_sessions`, memory and startup stay the same, and the thinker and talker still batch conversations |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 5 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
+| `speech.enable_chunk_cuda_graph` | `true` | Replay the voice decoder's flow from the CUDA graphs described below; `false` decodes every chunk eagerly and skips their capture at startup |
+| `speech.gather_window_ms` | 22.5 | How long an idle speech stage waits for the other conversations' next second so it can decode them together; the wait ends once every open conversation has one. `0` decodes what is ready |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | see the config | Default sampling when a session does not set its own |
 | `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
 
-While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
+While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them. `speech.enable_chunk_cuda_graph: false` turns them off.
 
 Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --speech.n_timesteps 10`. Stage settings use `--speech.factory.<field>` or `--speech.process`. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
 
@@ -343,6 +346,7 @@ A setting comes from one of three places: the profile file, read at launch; comm
 | `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
 | `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
 | `unit_ms` | `200` | The length of the input audio units the server forwards into the session; reported as `native_unit_ms`. |
+| `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
 | `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
 | `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
 | `max_pending_output_bytes` | `33554432` | The same bound in bytes. |
@@ -415,7 +419,7 @@ What needs a restart and what does not:
 
 | Setting | Changes |
 | --- | --- |
-| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
+| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_sessions`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
 | Default node options and VAD defaults | Restart, or per session as above. |
 | Node options through `nodes` | When a `/v1/session` session opens, and later through `configure` for nodes that read `input`. |
 | `sglang.sampling` | When a realtime session opens. |
@@ -604,7 +608,7 @@ Each rule is followed by the error it raises.
 - `nodes` in `session.update` — `invalid session configuration`.
 - `response.create` — `manual turn commands are not granted`.
 - `response.cancel` in a profile where no node takes `interrupt` from `input` on a control edge — `no node takes the control 'interrupt' from 'input'`.
-- A new session beyond the 16 that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
+- A new session beyond the `max_sessions` (16 unless the profile or `--max_sessions` sets another) that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
 - A `session.update` that changes `instructions`, or a `configure` that changes a node, while the user is speaking, between `speech_started` and `speech_stopped` — the session fails with `cannot replace '<node>' while speech is in progress`.
 
 ### Rejected by the speech service

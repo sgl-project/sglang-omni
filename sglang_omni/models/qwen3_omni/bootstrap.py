@@ -34,6 +34,7 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    continuation_aware_admission: bool = True,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
@@ -135,6 +136,7 @@ def create_thinker_scheduler(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        continuation_aware_admission=continuation_aware_admission,
     )
 
 
@@ -157,6 +159,7 @@ def create_talker_scheduler(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
+    continuation_aware_admission: bool = True,
 ) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -320,6 +323,7 @@ def create_talker_scheduler(
         partial_start_min_chunks=partial_start_min_chunks,
         enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
+        continuation_aware_admission=continuation_aware_admission,
     )
 
     if session_adapter is not None:

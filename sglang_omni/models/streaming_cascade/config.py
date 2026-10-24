@@ -26,6 +26,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
+from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
     GRAPH_INPUT,
     ControlEdge,
@@ -48,6 +50,7 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     published_audio_port,
 )
+from sglang_omni.scheduling.session import NODE_STAGE_MAX_OPEN_SESSIONS
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 NODE_FIELDS = frozenset({"name", "inputs"})
@@ -491,6 +494,8 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         **Nemotron3_5ASRPipelineConfig.stage_config_types,
     }
     timeout_s: float = Field(default=120, gt=0, allow_inf_nan=False)
+    max_sessions: int = Field(default=NODE_STAGE_MAX_OPEN_SESSIONS, ge=1)
+    "Sessions that every component node, the VAD node and the turn detection node hold at once; a session beyond them is refused when it opens."
 
     @model_validator(mode="before")
     @classmethod
@@ -628,7 +633,10 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                 "name": stage_name,
                 "settings": self.component_graph().model_dump(mode="json"),
                 "timeout_s": self.timeout_s,
+                "max_open_sessions": self.max_sessions,
             }
+        elif stage_name in {VAD_STAGE, TURN_DETECTION_STAGE}:
+            return {"max_open_sessions": self.max_sessions}
         else:
             return super().stage_factory_kwargs(stage_name)
 
