@@ -2314,7 +2314,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
         """Submit a draft/verify round; stream_output emits the committed tokens."""
-        if batch.forward_mode.is_extend():
+        is_prefill = batch.forward_mode.is_extend()
+        if is_prefill:
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
@@ -2371,6 +2372,12 @@ class OmniScheduler(Generic[RequestDataT]):
             self, batch, overlap=False
         ):
             result = self.draft_worker.forward_batch_generation(batch)
+        self.model_runner.after_speculative_step(
+            batch,
+            result,
+            is_prefill=is_prefill,
+            num_draft_tokens=get_spec().speculative_num_draft_tokens,
+        )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
         if (

@@ -713,6 +713,17 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
 
+    def after_speculative_step(
+        self,
+        batch: ScheduleBatch,
+        result: GenerationBatchResult,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted."""
+        return None
+
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
