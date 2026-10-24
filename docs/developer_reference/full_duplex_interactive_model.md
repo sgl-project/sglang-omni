@@ -81,6 +81,14 @@ Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 au
 2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
 3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
 
+When the session ends, the server closes the WebSocket with one of these codes:
+
+| Close code | Meaning | Close reason |
+|---|---|---|
+| `1000` | Normal close | `client_closed`, `disconnect` |
+| `1008` | A server limit was reached | `session_update_timeout`, `context_exhausted` |
+| `1011` | Server error | For example `internal` or `cleanup_timeout` |
+
 For a Python client, see `warmup` in `playground/realtime/app.py`.
 
 Session settings go in the `sglang` field of `session.update`, before the first audio packet, and stay fixed for the session:
