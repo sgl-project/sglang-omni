@@ -34,6 +34,7 @@ def record_session(
     reply_audio_s: list[float] | None = None,
     reply_created_s: float | None = None,
     is_legacy: bool = False,
+    rejected_updates: int = 0,
 ) -> Path:
     """Write a paced 80 ms session whose unit k completes at unit_done_s[k].
 
@@ -81,6 +82,19 @@ def record_session(
             },
         }
 
+    for attempt in range(rejected_updates):
+        sent_s = START_S - 0.2 * (rejected_updates - attempt)
+        add(sent_s, "send", "session.update")
+        add(
+            sent_s + 0.1,
+            "receive",
+            "error",
+            sglang={"fatal": False},
+            error={
+                "code": "admission_rejected",
+                "event_id": records[-1]["event"]["event_id"],
+            },
+        )
     add(START_S + input_s, "send", "sglang.input_audio.end")
     for unit, done_s in enumerate(unit_done_s):
         add(
@@ -124,6 +138,7 @@ def record_run(
     admission_denials: int = 0,
     profile: str = PROFILE,
     reply_audio_s: list[float] | None = None,
+    rejected_updates: int = 0,
 ) -> Path:
     """Write a complete recording whose sessions are (status, unit_done_s) pairs."""
     samples = []
@@ -134,6 +149,7 @@ def record_run(
             unit_done_s,
             reply_audio_s=reply_audio_s,
             is_legacy=profile == TURN_BASED_PROFILE,
+            rejected_updates=rejected_updates,
         )
         samples.append(
             {"variants": {"input": {"directory": directory, "status": status}}}
@@ -273,6 +289,37 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
     assert level["real_time_factor"] is None
     assert level["unmet_targets"] == [
         "no failed sessions",
+        "unit miss rate at most 1%",
+    ]
+
+
+def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> None:
+    report = serving_report(
+        [
+            record_run(
+                tmp_path / "run",
+                2,
+                [("pass", ON_TIME), ("fail", [101.16])],
+                rejected_updates=2,
+            )
+        ],
+        PLAYBACK_RESERVE_S,
+    )
+    level = report["levels"][0]
+    header, _, row = benchmark_duplex_serving.format_table(report).splitlines()[:3]
+    cells = dict(
+        zip(
+            [cell.strip() for cell in header.split("|")],
+            [cell.strip() for cell in row.split("|")],
+        )
+    )
+
+    assert level["sessions_failed"] == 1
+    assert level["sessions_rejected"] == 2
+    assert cells["rejected"] == "2"
+    assert level["unmet_targets"] == [
+        "no failed sessions",
+        "no admission rejections",
         "unit miss rate at most 1%",
     ]
 

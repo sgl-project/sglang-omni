@@ -13,7 +13,12 @@ import numpy as np
 from pydantic import JsonValue
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, SEND_RECEIPTS_FILE
-from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
+from benchmarks.duplex.oracle_models import (
+    MediaTime,
+    TraceRecord,
+    WireEvent,
+    is_admission_rejection,
+)
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
@@ -226,6 +231,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         if variant_state["status"] in FAILED_STATUSES
     )
     trace_spans_s: list[tuple[float, float]] = []
+    sessions_rejected = 0
     for variant_state in attempted:
         variant_dir = run_dir / variant_state["directory"]
         trace_lines = (variant_dir / "continuous.jsonl").read_text().splitlines()
@@ -238,6 +244,9 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             )
         else:
             pass
+        sessions_rejected += any(
+            is_admission_rejection(json.loads(line)["event"]) for line in trace_lines
+        )
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
     sessions_failed = sum(
@@ -289,6 +298,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
         "admission_denials": load["variants_with_admission_denials"],
+        "sessions_rejected": sessions_rejected,
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
         "units_missed": units_missed,
@@ -317,6 +327,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             for target, is_unmet in (
                 ("no failed sessions", sessions_failed > 0),
                 ("no admission denials", load["variants_with_admission_denials"] > 0),
+                ("no admission rejections", sessions_rejected > 0),
                 ("no input pacing violations", load["input_pacing_violations"] > 0),
                 pacing_target,
             )

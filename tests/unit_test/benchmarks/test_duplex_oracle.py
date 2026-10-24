@@ -517,6 +517,60 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert "missing audio input" in result["violations"]
 
 
+def rejection(**error: JsonValue) -> dict[str, JsonValue]:
+    return {
+        "direction": "receive",
+        "time_s": 100.008,
+        "event": {
+            "type": "error",
+            "event_id": "rejection",
+            "sglang": {"fatal": False},
+            "error": {
+                "type": "invalid_request_error",
+                "code": "admission_rejected",
+                "message": "The request queue is full.",
+                "event_id": "rejected",
+                "param": None,
+                **error,
+            },
+        },
+    }
+
+
+def rejected_update() -> dict[str, JsonValue]:
+    return {
+        "direction": "send",
+        "time_s": 100.004,
+        "event": {
+            "type": "session.update",
+            "event_id": "rejected",
+            "session": {"output_modalities": ["audio"]},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("record", "violation"),
+    [
+        (rejection(), None),
+        (rejection(code="invalid_request"), "code=invalid_request"),
+    ],
+)
+def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
+    record: dict[str, JsonValue], violation: str | None
+) -> None:
+    trace = trace_fixture()
+    trace[1:1] = [rejected_update(), record]
+    result = evaluate_trace(trace)
+    if violation is None:
+        assert result["status"] == "pass", result
+        assert result["metrics"]["admission_rejections"] == 1
+    else:
+        assert result["status"] == "fail"
+        assert any(violation in item for item in result["violations"])
+        assert result["metrics"]["admission_rejections"] == 0
+
+
 @pytest.mark.parametrize(
     ("status", "reason", "violation"),
     [

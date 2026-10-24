@@ -19,6 +19,7 @@ from benchmarks.duplex.oracle_models import (
     StatusDetails,
     TraceRecord,
     WireEvent,
+    is_admission_rejection,
     turn_detection_type,
 )
 from benchmarks.duplex.profiles import (
@@ -168,7 +169,7 @@ def evaluate_trace(
     audio_times: list[float] = []
     units: list[tuple[int, float]] = []
     input_byte_count = output_byte_count = next_sequence = admissions = 0
-    speech_starts = interruptions = 0
+    admission_rejections = speech_starts = interruptions = 0
     session_id = requested_type = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
@@ -572,10 +573,22 @@ def evaluate_trace(
                     pass
             elif event_type == "error":
                 error = event.error or {}
-                violations.append(
-                    f"server error: code={error.get('code')} "
-                    f"fatal={event.sglang.fatal}: {error.get('message')}"
-                )
+                rejected_command = sent_commands.get(error.get("event_id"))
+                if (
+                    is_admission_rejection(record.event)
+                    and not updated
+                    and rejected_command is not None
+                    and rejected_command.event.type == "session.update"
+                ):
+                    admission_rejections += 1
+                    # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
+                    counts["send", "session.update"] -= 1
+                    sent_commands.pop(rejected_command.event.event_id)
+                else:
+                    violations.append(
+                        f"server error: code={error.get('code')} "
+                        f"fatal={event.sglang.fatal}: {error.get('message')}"
+                    )
             else:
                 violations.append(f"unsupported server event: {event_type}")
         except (ValidationError, ValueError, binascii.Error) as exc:
@@ -669,6 +682,7 @@ def evaluate_trace(
         "input_audio_s": input_byte_count / INPUT_BYTES_PER_S,
         "output_audio_s": output_byte_count / (profile_contract.output_sample_rate * 2),
         "admission_denials": admissions,
+        "admission_rejections": admission_rejections,
         "first_audio_packet_s": (
             audio_times[0] - input_times[0] if audio_times and input_times else None
         ),

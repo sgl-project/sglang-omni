@@ -288,7 +288,7 @@ Each level is one row:
 |---|---|
 | `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
 | `sessions failed` | Sessions whose protocol replay failed or that broke off |
-| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `503`, `rejected`, `pacing violations` | Sessions denied admission before the WebSocket upgrade, sessions whose `session.update` the server answered with `admission_rejected` (the recorder sends it again on the same socket up to `ADMISSION_RETRIES` times, which the manifest records as `config.transport.admission_retries`), and sessions whose input drifted more than one 80 ms packet from its schedule. A session still denied or rejected after its retries also counts in `sessions failed`. A pacing violation means the load generator fell behind, so the level does not measure the server |
 | `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
 | `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
@@ -297,7 +297,7 @@ Each level is one row:
 | `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
 | `meets targets` | `yes`, or the targets the level misses |
 
-A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+A level meets the targets when no session failed, no session was denied or rejected admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 
@@ -387,6 +387,7 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 | `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
 | `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
+| `admission rejected N times` in a session's violations | The server refused the session's `session.update` on every try (N is `ADMISSION_RETRIES` plus one); the `admission_rejected` errors before it in the trace give the reason, usually a pipeline stage that already holds its maximum sessions. In a serving sweep this is part of the level's result; otherwise lower `--concurrency` |
 | `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
 | `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
 | `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
