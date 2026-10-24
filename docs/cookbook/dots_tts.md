@@ -253,3 +253,21 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --transcribe-only --port 8000 \
   --output-dir results/dots-seedtts-en-c16
 ```
+
+## Apple Silicon (Native MLX)
+
+The native MLX runtime provides `dots_tts_server` on Apple Silicon. Build the
+runtime, download the pinned checkpoint, and start the server:
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download mlx-community/dots-tts-mlx-int4 \
+  --revision e85d04373ad6a401c628faf3b9c2aa0b29ef7ea6 \
+  --local-dir dots-tts-mlx-int4
+
+~/omni-runtime/bin/dots_tts_server --model-path dots-tts-mlx-int4 --port 8000
+```
+
+The server exposes `POST /v1/audio/speech` and returns WAV audio. The request
+examples above apply; native requests support one reference with base64 WAV

@@ -25,6 +25,7 @@ TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]
 import sortformer_golden
 import vad_golden
 import voxtral_golden
+import dots_tts_golden
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
@@ -269,6 +270,8 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             golden["cases"],
         )
         metrics = {}
+    elif golden.get("kind") == "dots_tts":
+        report(*dots_tts_golden.check(golden, arguments.runtime_bin, arguments.data_root))
     else:
         results = transcribe_corpus(
             arguments.runtime_bin, arguments.data_root, golden, manifest

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// The Qwen3 text decoder Qwen3-ASR and MOSS-Transcribe-Diarize share; only the
-// weight-name prefix differs. Voxtral TTS's Mistral decoder is the same
-// without the query/key norms and with traditional rotary embeddings.
+// The Qwen2/Qwen3 text decoder Qwen3-ASR, MOSS-Transcribe-Diarize, dots.tts
+// and Voxtral TTS share; only the weight-name prefix differs. qk_norm /
+// apply_final_norm select Qwen3 (qk-norm, caller applies the final norm) or
+// Qwen2 (no qk-norm, Forward returns the final RMSNorm). Voxtral's Mistral
+// decoder is the Qwen2 style without the qk-norms and with traditional rotary
+// embeddings.
 #pragma once
 
 #include <optional>
@@ -22,9 +25,16 @@ struct Qwen3DecoderConfig {
   int head_dim = 0;
   float rms_norm_eps = 0.0f;
   float rope_theta = 0.0f;
-  bool has_query_key_norm = true;
   // Rotates adjacent rather than half-split pairs of each head.
   bool traditional_rope = false;
+  // Qwen3 attention norms queries and keys. Qwen2 does not.
+  bool qk_norm = true;
+  // When set, Forward applies prefix.norm. Otherwise the caller does, as
+  // LastLogits does for Qwen3.
+  bool apply_final_norm = false;
+  // Promote every projection to fp32. The flow solver amplifies bf16 rounding
+  // into audible noise.
+  bool compute_float32 = false;
 
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };

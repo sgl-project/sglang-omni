@@ -1,0 +1,15 @@
+# Third-party model weights
+
+The served dots.tts checkpoint is prepared from Apache-2.0 sources:
+
+- dots-studio/dots.tts-soar (Apache-2.0; base dots-studio/dots.tts-base): the
+  TTS checkpoint the native runtime synthesizes with.
+- Qwen/Qwen2.5-1.5B-Instruct (Apache-2.0): the LLM backbone inside the
+  converted checkpoint (llm.model, eos_proj).
+
+The behavior reference is the sglang Python CUDA path under
+sglang_omni/models/dots_tts/ and the official dots_tts package. The served
+checkpoint is mlx-community/dots-tts-mlx-int4, the published 4-bit MLX
+conversion of dots-studio/dots.tts-soar (Apache-2.0; base
+dots-studio/dots.tts-base); its revisions and per-file SHA-256 are pinned in
+ci/model_pins.json.

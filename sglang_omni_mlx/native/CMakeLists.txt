@@ -49,6 +49,8 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
 
 add_library(common STATIC
   src/common/audio.cpp
+  src/common/base64.cpp
+  src/common/cli.cpp
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
@@ -230,3 +232,28 @@ set_target_properties(voxtral_tts_server voxtral_tts_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bin)
+
+# Note (guozhihao-224): dots.tts speech synthesis: dots_tts_server runs
+# asr_service's serve contract with the transcription API off and
+# /v1/audio/speech on, and dots_tts_speech is the parity tool.
+add_library(dots_tts STATIC
+  src/dots_tts/dots_tts_audio.cpp
+  src/dots_tts/dots_tts_audio_vae.cpp
+  src/dots_tts/dots_tts_checkpoint.cpp
+  src/dots_tts/dots_tts_flow.cpp
+  src/dots_tts/dots_tts_layers.cpp
+  src/dots_tts/dots_tts_model.cpp
+  src/dots_tts/dots_tts_speaker.cpp
+  src/dots_tts/dots_tts_tokenizer.cpp)
+target_link_libraries(dots_tts PUBLIC common qwen3_asr)
+target_compile_options(dots_tts PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(dots_tts_server
+  src/dots_tts/dots_tts_server.cpp
+  src/dots_tts/dots_tts_service.cpp)
+target_link_libraries(dots_tts_server PRIVATE dots_tts asr_service)
+add_executable(dots_tts_speech tools/dots_tts_speech.cpp)
+target_link_libraries(dots_tts_speech PRIVATE dots_tts)
+set_target_properties(dots_tts_server dots_tts_speech PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS dots_tts_server dots_tts_speech RUNTIME DESTINATION bin)

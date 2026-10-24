@@ -63,8 +63,8 @@ VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
            config.at("n_kv_heads").get<int>(), config.at("head_dim").get<int>(),
            config.at("norm_eps").get<float>(),
            config.at("rope_theta").get<float>(),
-           /*has_query_key_norm=*/false,
-           /*traditional_rope=*/true}),
+           /*traditional_rope=*/true,
+           /*qk_norm=*/false}),
       norm_eps_(config.at("norm_eps").get<float>()), codebook_offsets_(0),
       time_frequencies_(0.0f) {
   const nlohmann::json &audio = config.at("multimodal").at("audio_model_args");

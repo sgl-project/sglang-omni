@@ -15,12 +15,22 @@ constexpr int kKvCacheStepTokens = 256;
 
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
-  return {text_config.at("num_hidden_layers").get<int>(),
-          text_config.at("num_attention_heads").get<int>(),
-          text_config.at("num_key_value_heads").get<int>(),
-          text_config.at("head_dim").get<int>(),
-          text_config.at("rms_norm_eps").get<float>(),
-          text_config.at("rope_theta").get<float>()};
+  Qwen3DecoderConfig config;
+  config.num_hidden_layers = text_config.at("num_hidden_layers").get<int>();
+  config.num_attention_heads = text_config.at("num_attention_heads").get<int>();
+  config.num_key_value_heads = text_config.at("num_key_value_heads").get<int>();
+  config.head_dim = text_config.at("head_dim").get<int>();
+  config.rms_norm_eps = text_config.at("rms_norm_eps").get<float>();
+  config.rope_theta = text_config.at("rope_theta").get<float>();
+  // note (guozhihao-224): Qwen3 attention norms queries and keys; Qwen2 keeps
+  // the final RMSNorm inside Forward. Default to qwen3 when model_type is
+  // absent, so unknown Qwen-family backbones keep the historical behavior.
+  const std::string model_type =
+      text_config.value("model_type", std::string("qwen3"));
+  config.qk_norm = model_type != "qwen2" && model_type != "qwen2.5";
+  config.apply_final_norm = !config.qk_norm;
+  config.compute_float32 = false;
+  return config;
 }
 
 std::pair<mx::array, mx::array>
@@ -75,21 +85,37 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const int head_count = config_.num_attention_heads;
   const int kv_head_count = config_.num_key_value_heads;
   const int head_dim = config_.head_dim;
-  const mx::array normed =
-      checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
-  mx::array queries =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
-                  {batch, length, head_count, head_dim});
-  mx::array keys =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.k_proj"),
-                  {batch, length, kv_head_count, head_dim});
-  if (config_.has_query_key_norm) {
-    queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
-    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm", eps);
+const auto project = [&](const mx::array &x, const std::string &name) {
+    const mx::array y = checkpoint_.Linear(x, name);
+    if (config_.compute_float32) {
+      return mx::astype(y, mx::float32);
+    } else {
+      return y;
+    }
+  };
+  const auto norm = [&](const mx::array &x, const std::string &name) {
+    const mx::array y = checkpoint_.RmsNorm(x, name, eps);
+    if (config_.compute_float32) {
+      return mx::astype(y, mx::float32);
+    } else {
+      return y;
+    }
+  };
+  const mx::array normed = norm(x, prefix + ".input_layernorm");
+  mx::array queries = mx::reshape(project(normed, prefix + ".self_attn.q_proj"),
+                                  {batch, length, head_count, head_dim});
+  mx::array keys = mx::reshape(project(normed, prefix + ".self_attn.k_proj"),
+                               {batch, length, kv_head_count, head_dim});
+  // note (guozhihao-224): Qwen3 norms the queries and keys; Qwen2 does not.
+  // qk_norm is the single flag driving this (FromJson sets it from model_type,
+  // Voxtral constructs its config with it false).
+  if (config_.qk_norm) {
+    queries = norm(queries, prefix + ".self_attn.q_norm");
+    keys = norm(keys, prefix + ".self_attn.k_norm");
   } else {
   }
   const mx::array values =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
+      mx::reshape(project(normed, prefix + ".self_attn.v_proj"),
                   {batch, length, kv_head_count, head_dim});
   queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
                            config_.traditional_rope, config_.rope_theta, 1.0f,
@@ -103,19 +129,17 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
       length > 1 ? "causal" : "");
-  const mx::array hidden = mx::add(
-      x, checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                        {batch, length, -1}),
-                            prefix + ".self_attn.o_proj"));
+  const mx::array hidden =
+      mx::add(x, project(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                     {batch, length, -1}),
+                         prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
-      checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
+      norm(hidden, prefix + ".post_attention_layernorm");
   return mx::add(
       hidden,
-      checkpoint_.Linear(
-          mx::multiply(
-              Silu(checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj")),
-              checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
+      project(mx::multiply(Silu(project(mlp_input, prefix + ".mlp.gate_proj")),
+                           project(mlp_input, prefix + ".mlp.up_proj")),
+              prefix + ".mlp.down_proj"));
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
@@ -123,6 +147,15 @@ mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
   mx::array hidden = embeddings;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
     hidden = Layer(hidden, layer, caches[layer]);
+  }
+  if (config_.apply_final_norm) {
+    hidden =
+        checkpoint_.RmsNorm(hidden, prefix_ + ".norm", config_.rms_norm_eps);
+    if (config_.compute_float32) {
+      hidden = mx::astype(hidden, mx::float32);
+    } else {
+    }
+  } else {
   }
   return hidden;
 }

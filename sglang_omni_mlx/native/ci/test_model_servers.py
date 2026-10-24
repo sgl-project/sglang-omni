@@ -929,3 +929,150 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
     assert status == 400
     assert "overlap" in json.loads(body)["detail"]
+
+
+DOTS_TTS_REPO = "mlx-community/dots-tts-mlx-int4"
+# Text is required (the server rejects an empty input); references are optional
+# prompt material: audio_content (base64 WAV) and its transcript.
+DOTS_TTS_SPEECH = "/v1/audio/speech"
+
+
+def dots_tts_reference_wav() -> bytes:
+    writer = io.BytesIO()
+    with wave.open(writer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm16_frames(int(0.25 * 16000)))
+    return writer.getvalue()
+
+
+def dots_tts_zero_rate_reference_wav() -> bytes:
+    wav = dots_tts_reference_wav()
+    return wav[:24] + struct.pack("<I", 0) + wav[28:]
+
+
+def pcm16_frames(frame_count: int) -> bytes:
+    return b"".join(
+        struct.pack("<h", int(12000 * (0.5 if (i % 80) < 40 else -0.5)))
+        for i in range(frame_count)
+    )
+
+
+def synthesize(dots_tts_server: ModelServer, body: dict) -> tuple[int, bytes]:
+    payload = json.dumps(body).encode()
+    return dots_tts_server.request(
+        "POST",
+        DOTS_TTS_SPEECH,
+        payload,
+        {"Content-Type": "application/json"},
+    )
+
+
+@pytest.fixture(scope="module")
+def dots_tts_server() -> Iterator[ModelServer]:
+    running = ModelServer("dots_tts_server", "dots_tts", DOTS_TTS_REPO)
+    yield running
+    running.stop()
+
+
+def test_dots_tts_ready_event_names_a_loopback_endpoint(
+    dots_tts_server: ModelServer,
+) -> None:
+    assert dots_tts_server.ready["event"] == "ready"
+    assert dots_tts_server.ready["host"] == "127.0.0.1"
+    assert dots_tts_server.ready["server_pid"] == dots_tts_server.process.pid
+    assert dots_tts_server.ready["model_name"].startswith("voxt-dots_tts-")
+    status, body = dots_tts_server.request("GET", "/health")
+    assert status == 200
+    health = json.loads(body)
+    assert health["status"] == "healthy"
+    assert health["running"] is True
+    assert set(health["request_states"]) == {"running", "completed"}
+
+
+def test_dots_tts_synthesizes_wav(dots_tts_server: ModelServer) -> None:
+    status, body = synthesize(dots_tts_server, {"model": "dots_tts", "input": "你好"})
+    assert status == 200
+    with wave.open(io.BytesIO(body)) as reader:
+        assert reader.getframerate() == 48000
+        assert reader.getnchannels() == 1
+        assert reader.getnframes() > 0
+
+
+def test_dots_tts_with_reference_audio(
+    dots_tts_server: ModelServer,
+) -> None:
+    status, body = synthesize(
+        dots_tts_server,
+        {
+            "model": "dots_tts",
+            "input": "你好",
+            "references": [
+                {
+                    "audio_content": base64.b64encode(
+                        dots_tts_reference_wav()
+                    ).decode(),
+                    "text": "hello",
+                }
+            ],
+        },
+    )
+    assert status == 200
+    with wave.open(io.BytesIO(body)) as reader:
+        assert reader.getframerate() == 48000
+        assert reader.getnframes() > 0
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        ({"model": "dots_tts"}, "input"),
+        ({"model": "dots_tts", "input": "你好", "num_steps": 0}, "num_steps"),
+        (
+            {
+                "model": "dots_tts",
+                "input": "你好",
+                "references": [{"audio_content": "not-base64-!!"}],
+            },
+            "audio_content",
+        ),
+        (
+            {
+                "model": "dots_tts",
+                "input": "你好",
+                "references": [
+                    {
+                        "audio_content": base64.b64encode(
+                            dots_tts_reference_wav()
+                        ).decode()
+                        + "====",
+                        "text": "hello",
+                    }
+                ],
+            },
+            "base64",
+        ),
+        (
+            {
+                "model": "dots_tts",
+                "input": "你好",
+                "references": [
+                    {
+                        "audio_content": base64.b64encode(
+                            dots_tts_zero_rate_reference_wav()
+                        ).decode(),
+                        "text": "hello",
+                    }
+                ],
+            },
+            "sample rates must be positive",
+        ),
+    ],
+)
+def test_dots_tts_invalid_requests_are_rejected(
+    dots_tts_server: ModelServer, body: dict[str, str], needle: str
+) -> None:
+    status, response_body = synthesize(dots_tts_server, body)
+    assert status == 400
+    assert needle in json.loads(response_body)["detail"]

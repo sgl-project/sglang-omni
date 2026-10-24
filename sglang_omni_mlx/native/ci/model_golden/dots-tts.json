@@ -1,0 +1,25 @@
+{
+ "kind": "dots_tts",
+ "model": "mlx-community/dots-tts-mlx-int4",
+ "seed": 42,
+ "clips": [
+  "0001_en_short",
+  "0006_en_short",
+  "0152_zh_short"
+ ],
+ "tolerance": {
+  "min_identical": 0.8
+ },
+ "devices": {
+  "Apple M5": {
+   "0001_en_short": "e83419d00b83467e180648c354e88ca6c4755779e4155093c9fa12f82b4b4d8f",
+   "0006_en_short": "6a3801e2cc55e1159746df4eb8233283cf83b3c524697d26ac8e5fe62bc1ee80",
+   "0152_zh_short": "bbd24246cbb64557c6100cfd304afb2dcc6e7e420046fe4aa518abf36c95f7e9",
+   "clone": "87c9f7c2eff60a43932c905afbf077b2f5727bf532d191d1a3b951b94fbec070"
+  }
+ },
+ "clone": {
+  "prompt_id": "0001_en_short",
+  "text": "The cloned voice keeps its speaker throughout."
+ }
+}

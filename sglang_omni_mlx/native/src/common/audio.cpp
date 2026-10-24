@@ -116,7 +116,6 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
-  } else {
   }
   size_t offset = 12;
   bool have_format = false;
@@ -133,7 +132,6 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
     if (chunk_id == "fmt ") {
       if (body_size < 16) {
         throw std::invalid_argument("WAV fmt chunk is truncated");
-      } else {
       }
       audio_format = ReadU16(wav_bytes, body_offset);
       channel_count = ReadU16(wav_bytes, body_offset + 2);
@@ -152,19 +150,170 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
           samples[i] = static_cast<float>(value) / kPcm16FullScale;
         }
         return samples;
+      } else if (audio_format == kWavFormatPcm && bits_per_sample == 24) {
+        std::vector<float> samples(body_size / 3);
+        for (size_t i = 0; i < samples.size(); ++i) {
+          const uint32_t b0 =
+              static_cast<uint8_t>(wav_bytes[body_offset + 3 * i]);
+          const uint32_t b1 =
+              static_cast<uint8_t>(wav_bytes[body_offset + 3 * i + 1]);
+          const uint32_t b2 =
+              static_cast<uint8_t>(wav_bytes[body_offset + 3 * i + 2]);
+          const uint32_t raw = b0 | (b1 << 8) | (b2 << 16);
+          const int32_t value = static_cast<int32_t>(raw << 8) >> 8;
+          samples[i] = static_cast<float>(value) / 8388608.0f;
+        }
+        return samples;
       } else if (audio_format == kWavFormatFloat && bits_per_sample == 32) {
         std::vector<float> samples(body_size / 4);
         std::memcpy(samples.data(), wav_bytes.data() + body_offset,
                     samples.size() * 4);
         return samples;
       } else {
-        throw std::invalid_argument("audio must be PCM16 or float32 WAV");
+        throw std::invalid_argument(
+            "audio must be PCM16, PCM24 or float32 WAV");
       }
     } else {
     }
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+WavAudio DecodeWavAudio(std::string_view wav_bytes) {
+  if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
+      wav_bytes.substr(8, 4) != "WAVE") {
+    throw std::invalid_argument("audio must be a RIFF/WAVE file");
+  }
+  size_t offset = 12;
+  bool have_format = false;
+  uint16_t audio_format = 0;
+  uint16_t channel_count = 0;
+  uint32_t sample_rate = 0;
+  uint16_t bits_per_sample = 0;
+  size_t data_offset = 0;
+  size_t data_size = 0;
+  bool have_data = false;
+  while (offset + 8 <= wav_bytes.size()) {
+    const std::string_view chunk_id = wav_bytes.substr(offset, 4);
+    const uint32_t chunk_size = ReadU32(wav_bytes, offset + 4);
+    const size_t body_offset = offset + 8;
+    const size_t body_size =
+        std::min<size_t>(chunk_size, wav_bytes.size() - body_offset);
+    if (chunk_id == "fmt ") {
+      if (body_size < 16) {
+        throw std::invalid_argument("WAV fmt chunk is truncated");
+      }
+      audio_format = ReadU16(wav_bytes, body_offset);
+      channel_count = ReadU16(wav_bytes, body_offset + 2);
+      sample_rate = ReadU32(wav_bytes, body_offset + 4);
+      bits_per_sample = ReadU16(wav_bytes, body_offset + 14);
+      have_format = true;
+    } else if (chunk_id == "data") {
+      data_offset = body_offset;
+      data_size = body_size;
+      have_data = true;
+      break;
+    }
+    offset = body_offset + chunk_size + (chunk_size & 1u);
+  }
+  if (!have_format) {
+    throw std::invalid_argument("WAV file has no fmt chunk");
+  }
+  if (!have_data) {
+    throw std::invalid_argument("WAV file has no data chunk");
+  }
+  if (audio_format != kWavFormatPcm && audio_format != kWavFormatFloat) {
+    throw std::invalid_argument("audio must be PCM or IEEE-float WAV");
+  }
+  if ((bits_per_sample != 8 && bits_per_sample != 16 && bits_per_sample != 24 &&
+       bits_per_sample != 32) ||
+      (audio_format == kWavFormatFloat && bits_per_sample != 32)) {
+    throw std::invalid_argument("WAV bit depth is not 8, 16, 24 or 32");
+  }
+  if (channel_count == 0) {
+    throw std::invalid_argument("WAV has no channels");
+  }
+  const uint32_t bytes_per_sample = bits_per_sample / 8;
+  const uint32_t size_per_frame = bytes_per_sample * channel_count;
+  const size_t frame_count = data_size / size_per_frame;
+  std::vector<float> interleaved(frame_count * channel_count);
+  for (size_t i = 0; i < interleaved.size(); ++i) {
+    if (bits_per_sample == 8) {
+      const uint8_t sample = static_cast<uint8_t>(wav_bytes[data_offset + i]);
+      interleaved[i] = (static_cast<float>(sample) - 128.0f) / 128.0f;
+    } else if (bits_per_sample == 16) {
+      const int16_t sample =
+          static_cast<int16_t>(ReadU16(wav_bytes, data_offset + 2 * i));
+      interleaved[i] = static_cast<float>(sample) / kPcm16FullScale;
+    } else if (bits_per_sample == 24) {
+      const uint32_t b0 = static_cast<uint8_t>(wav_bytes[data_offset + 3 * i]);
+      const uint32_t b1 =
+          static_cast<uint8_t>(wav_bytes[data_offset + 3 * i + 1]);
+      const uint32_t b2 =
+          static_cast<uint8_t>(wav_bytes[data_offset + 3 * i + 2]);
+      const uint32_t raw = b0 | (b1 << 8) | (b2 << 16);
+      const int32_t sample = static_cast<int32_t>(raw << 8) >> 8;
+      interleaved[i] = static_cast<float>(sample) / 8388608.0f;
+    } else if (audio_format == kWavFormatFloat) {
+      float sample = 0.0f;
+      std::memcpy(&sample, wav_bytes.data() + data_offset + 4 * i,
+                  sizeof(sample));
+      interleaved[i] = sample;
+    } else {
+      const int32_t sample =
+          static_cast<int32_t>(ReadU32(wav_bytes, data_offset + 4 * i));
+      interleaved[i] = static_cast<float>(sample) / 2147483648.0f;
+    }
+  }
+  std::vector<float> mono(frame_count);
+  if (channel_count == 1) {
+    mono = std::move(interleaved);
+  } else {
+    for (size_t frame = 0; frame < frame_count; ++frame) {
+      float sum = 0.0f;
+      for (uint16_t channel = 0; channel < channel_count; ++channel) {
+        sum += interleaved[frame * channel_count + channel];
+      }
+      mono[frame] = sum / static_cast<float>(channel_count);
+    }
+  }
+  return WavAudio{std::move(mono), static_cast<int>(sample_rate)};
+}
+
+std::string EncodeWav(const std::vector<float> &samples, int sample_rate) {
+  const uint32_t data_bytes = static_cast<uint32_t>(samples.size()) * 2;
+  std::string out;
+  out.reserve(44 + data_bytes);
+  const auto push = [&](const void *bytes, size_t count) {
+    out.append(reinterpret_cast<const char *>(bytes), count);
+  };
+  const uint32_t total = 36 + data_bytes;
+  const uint16_t format = 1;
+  const uint16_t channels = 1;
+  const uint16_t bits = 16;
+  const uint32_t byte_rate = static_cast<uint32_t>(sample_rate) * 2;
+  const uint16_t block_align = 2;
+  push("RIFF", 4);
+  push(&total, 4);
+  push("WAVE", 4);
+  push("fmt ", 4);
+  const uint32_t fmt_size = 16;
+  push(&fmt_size, 4);
+  push(&format, 2);
+  push(&channels, 2);
+  push(&sample_rate, 4);
+  push(&byte_rate, 4);
+  push(&block_align, 2);
+  push(&bits, 2);
+  push("data", 4);
+  push(&data_bytes, 4);
+  for (const float sample : samples) {
+    const int16_t value = static_cast<int16_t>(
+        std::max(-1.0f, std::min(1.0f, sample)) * 32767.0f);
+    push(&value, 2);
+  }
+  return out;
 }
 
 const std::vector<float> &MelFilterBank(int mel_bin_count) {
