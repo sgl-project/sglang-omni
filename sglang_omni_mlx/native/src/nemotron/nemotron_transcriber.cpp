@@ -47,7 +47,7 @@ bool ContainsStandaloneSpace(const std::string &text) {
 
 sortformer::ProcessorConfig FrontEnd(const std::filesystem::path &directory) {
   const nlohmann::json config =
-      qwen3_asr::ReadJson(directory / "config.json").at("preprocessor");
+      omni_common::ReadJson(directory / "config.json").at("preprocessor");
   const int sample_rate = config.at("sample_rate").get<int>();
   sortformer::ProcessorConfig front_end;
   front_end.feature_size = config.at("features").get<int>();

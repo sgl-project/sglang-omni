@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 class Tokenizer {
 public:
@@ -45,4 +45,4 @@ private:
   std::unique_ptr<Pcre2Regex> split_pattern_;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_common

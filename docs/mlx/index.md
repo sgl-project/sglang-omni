@@ -50,6 +50,7 @@ agree on it with a maintainer first.
   (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
+- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
 - Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
   port. If your code duplicates something on `main`, move it into the shared
   file in the same PR.

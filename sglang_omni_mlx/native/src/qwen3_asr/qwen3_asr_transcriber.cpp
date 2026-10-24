@@ -277,10 +277,11 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   const int max_new_tokens =
       options.max_new_tokens.value_or(0) != 0
           ? *options.max_new_tokens
-          : std::max(kMinDefaultOutputTokens,
-                     static_cast<int>(
-                         std::ceil(static_cast<double>(samples.size()) /
-                                   kSampleRate * kOutputTokensPerAudioSecond)));
+          : std::max(
+                kMinDefaultOutputTokens,
+                static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
+                                           omni_common::kSampleRate *
+                                           kOutputTokensPerAudioSecond)));
   const auto is_stop = [&](int token_id) {
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);

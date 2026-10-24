@@ -306,7 +306,7 @@ qwen3_asr::TranscriptionResult
 ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
-  const double sample_rate = qwen3_asr::kSampleRate;
+  const double sample_rate = omni_common::kSampleRate;
   const double chunk_seconds =
       options.chunk_duration_seconds >= kWholeRecordingChunkSeconds
           ? kWholeRecordingChunkReplacementSeconds

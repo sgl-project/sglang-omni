@@ -42,7 +42,7 @@ struct SpeechTokenizer::Pcre2Regex {
 SpeechTokenizer::SpeechTokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
   const nlohmann::json tekken =
-      qwen3_asr::ReadJson(model_directory / "tekken.json");
+      omni_common::ReadJson(model_directory / "tekken.json");
   const nlohmann::json &config = tekken.at("config");
   special_token_count_ = config.at("default_num_special_tokens").get<int>();
   // Note (Minyi Tang): tekken.json lists more ranks than the model uses;

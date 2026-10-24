@@ -98,9 +98,9 @@ std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds) {
-  return {decode_interval_ms * kSampleRate / 1000,
-          first_decode_ms * kSampleRate / 1000,
-          static_cast<int>(max_segment_seconds * kSampleRate)};
+  return {decode_interval_ms * omni_common::kSampleRate / 1000,
+          first_decode_ms * omni_common::kSampleRate / 1000,
+          static_cast<int>(max_segment_seconds * omni_common::kSampleRate)};
 }
 
 std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
@@ -348,7 +348,7 @@ void RealtimeSession::MaybeStartRefresh() {
     const long end_sample = EndSample();
     samples = SegmentSamples(segment, end_sample);
     const bool silent =
-        PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
+        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
     // Note (Jiaxin Deng): leading silence keeps the early first decode for the
     // first audible audio.
     if (!(silent && segment.decode_count == 0)) {
@@ -432,7 +432,8 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
-    if (PeakIsSilent(samples.data(), samples.size(), kSilentPeak)) {
+    if (omni_common::PeakIsSilent(samples.data(), samples.size(),
+                                  kSilentPeak)) {
       text = std::string();
     } else {
       TranscriptionOptions options;

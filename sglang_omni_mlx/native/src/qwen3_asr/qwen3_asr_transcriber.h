@@ -95,7 +95,7 @@ private:
               const TranscriptionOptions &options) const;
 
   Qwen3ASR model_;
-  Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   int audio_pad_id_;
   int end_of_text_id_;
   int im_end_id_;

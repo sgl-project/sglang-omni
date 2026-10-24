@@ -14,7 +14,7 @@
 
 #include "nlohmann/json.hpp"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 namespace {
 
@@ -451,4 +451,4 @@ std::string Tokenizer::Decode(const std::vector<int> &ids,
   return FromUtf8Lossy(bytes);
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

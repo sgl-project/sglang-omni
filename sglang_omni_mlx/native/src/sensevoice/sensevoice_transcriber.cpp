@@ -220,7 +220,7 @@ std::vector<std::pair<size_t, size_t>> SplitRange(size_t start, size_t end,
 
 std::pair<size_t, size_t> ChunkSampleCounts(double max_chunk_seconds,
                                             double chunk_overlap_seconds) {
-  const double sample_rate = qwen3_asr::kSampleRate;
+  const double sample_rate = omni_common::kSampleRate;
   if (!(max_chunk_seconds * sample_rate >= 1.0) ||
       !(chunk_overlap_seconds >= 0.0)) {
     throw std::invalid_argument(

@@ -21,7 +21,7 @@ class AudioCodec {
 public:
   // weights are the checkpoint's audio_tokenizer.* entries; arguments are
   // config.json's multimodal.audio_tokenizer_args.
-  AudioCodec(qwen3_asr::WeightMap weights, const nlohmann::json &arguments);
+  AudioCodec(omni_common::WeightMap weights, const nlohmann::json &arguments);
 
   // Frames of model codes [frames, 1 + acoustic codebooks] to samples
   // [frames * samples_per_frame] in the decoder's dtype.
@@ -42,14 +42,15 @@ private:
   static std::vector<Block> BuildBlocks(const nlohmann::json &arguments);
   // The semantic codebook's embedding, and weight-normed kernels folded into
   // MLX convolution weights.
-  static qwen3_asr::WeightMap PrepareWeights(qwen3_asr::WeightMap weights,
-                                             const std::vector<Block> &blocks);
+  static omni_common::WeightMap
+  PrepareWeights(omni_common::WeightMap weights,
+                 const std::vector<Block> &blocks);
   mlx::core::array TransformerLayer(const mlx::core::array &x,
                                     const std::string &prefix,
                                     int window_frames) const;
 
   std::vector<Block> blocks_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   int dimension_;
   int head_count_;
   int head_dim_;

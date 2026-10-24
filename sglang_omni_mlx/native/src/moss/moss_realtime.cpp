@@ -9,7 +9,7 @@
 
 namespace moss {
 
-using qwen3_asr::kSampleRate;
+using omni_common::kSampleRate;
 using qwen3_asr::SpeakerSegment;
 using qwen3_asr::SpeakerSegmentsJson;
 using qwen3_asr::StripUnicodeWhitespace;
