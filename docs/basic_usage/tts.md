@@ -28,7 +28,7 @@ and letting it install that pin replaces the stack the rest of SGLang-Omni is
 built against; resolving `sox` normally pulls `numpy` past the ceiling
 `numba==0.65.1` imposes, which breaks `librosa` and with it `import qwen_tts`.
 SGLang-Omni shims the API differences between the two Transformers versions in
-`sglang_omni/models/qwen3_tts/compat.py`, so the pinned 5.12 stack is the
+`sglang_omni/models/qwen3_tts/compat.py`, so the project-pinned stack is the
 supported configuration — see the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md)
 for details.
 
@@ -103,6 +103,7 @@ sgl-omni serve \
   --config examples/configs/qwen3_tts_0_6b.yaml \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
   --port 8000
 ```
 

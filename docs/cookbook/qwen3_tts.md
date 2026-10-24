@@ -79,6 +79,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+**Consumer GPU startup:** On consumer GPUs such as RTX 4090, predictor graph capture may fail with `OutOfResources: shared memory`. If this occurs, add `--tts_engine.engine.max_running_requests 8 --tts_engine.engine.cuda_graph_max_bs 8` to the matching launch command. These starting limits were verified on RTX 4090; other GPU models were not tested. They are not a maximum-concurrency recommendation. This error concerns GPU shared memory, not VRAM or Docker's `/dev/shm`.
+
 ### Ascend NPU baseline
 
 All four NPU examples enable Talker graphs, asynchronous vocoder decoding, and
