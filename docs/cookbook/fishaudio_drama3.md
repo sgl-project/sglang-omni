@@ -197,12 +197,10 @@ Table 3 compares the two checkpoints on one H200 with the default server setting
 
 | Checkpoint | Weights | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | WER without samples above 50% |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `fishaudio/drama-3` (FP8 experts) | 37.0 GB | 1.235 s | 1.902 s | 0.281 | 6.47 | 1.99% | 1.32% |
-| `fishaudio/drama-3-int4` | 20.8 GB | 1.334 s | 2.178 s | 0.320 | 5.99 | 1.63% | 1.42% |
+| `fishaudio/drama-3` (FP8 experts) | 37.0 GB | 1.270 s | 2.045 s | 0.299 | 6.28 | 1.75% | 1.26% |
+| `fishaudio/drama-3-int4` | 20.8 GB | 1.234 s | 1.980 s | 0.294 | 6.47 | 1.62% | 1.32% |
 
-*Table 3. Drama 3 FP8 and int4 checkpoints on Seed-TTS English, concurrency 8, one H200.*
-
-The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level: the gap between the two is about as large as the run-to-run spread of one checkpoint (a second FP8 run measured 1.365 s mean latency and 2.02% WER).
+*Table 3. Drama 3 FP8 and int4 checkpoints on Seed-TTS English, concurrency 8, one H200. Each cell is the mean of two runs.*
 
 ## Deployment Performance
 
@@ -236,28 +234,28 @@ All numbers below were measured on NVIDIA H200 GPUs with streaming requests on S
 
 | Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 | RTF (mean) |
 |---:|---:|---:|---:|---:|
-| 1 | 166.7 | 88.9 ms | 90.8 ms | 0.131 |
-| 2 | 287.0 | 96.2 ms | 130.1 ms | 0.152 |
-| 4 | 467.6 | 108.2 ms | 156.4 ms | 0.186 |
-| 8 | 678.1 | 153.2 ms | 210.9 ms | 0.256 |
-| 16 | 927.6 | 210.1 ms | 287.2 ms | 0.373 |
-| 32 | 1,244.7 | 304.6 ms | 396.1 ms | 0.551 |
-| 64 | 1,687.3 | 450.9 ms | 1,020.1 ms | 0.801 |
+| 1 | 186.5 | 91.3 ms | 93.3 ms | 0.117 |
+| 2 | 317.4 | 102.8 ms | 142.2 ms | 0.138 |
+| 4 | 504.0 | 114.8 ms | 161.2 ms | 0.173 |
+| 8 | 725.7 | 158.5 ms | 214.0 ms | 0.240 |
+| 16 | 970.4 | 210.6 ms | 285.3 ms | 0.357 |
+| 32 | 1,273.8 | 310.5 ms | 399.9 ms | 0.537 |
+| 64 | 1,756.7 | 453.7 ms | 705.6 ms | 0.772 |
 
-*Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.*
+*Table 1. Drama 3 streaming performance on one H200 with the high-concurrency configuration above and default model parameters. Each cell is the mean of four runs of all 1,088 English samples.*
 
-A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder's default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
+A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.8× faster than it plays back, and at concurrency 64 mean RTF stays at 0.77. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 shows two vocoder placements at higher concurrency, with the vocoder's default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
 
 | Vocoder placement | Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 |
 |---|---:|---:|---:|---:|
-| Engine's GPU | 128 | 2,177 | 685 ms | 1,412 ms |
-| Engine's GPU | 256 | 2,422 | 3,403 ms | 4,255 ms |
+| Engine's GPU | 128 | 2,100 | 1,802 ms | 2,368 ms |
+| Engine's GPU | 256 | 2,088 | 7,518 ms | 8,270 ms |
 | Second GPU | 128 | 3,692 | 401 ms | 995 ms |
 | Second GPU | 256 | 4,160 | 2,146 ms | 2,469 ms |
 
-*Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts.*
+*Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts. Single-GPU measurements use default model parameters, with 13,054/13,056 requests completed. Second-GPU measurements use synchronous decode (`enable_async_decode=false`).*
 
-With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
+Moving the vocoder to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), lets it run independently of the engine. Use this layout when you need many concurrent streams and a short time to first audio together.
 
 ### Non-Streaming Requests
 
@@ -279,6 +277,7 @@ The limit does not count the memory the vocoder process holds outside PyTorch's 
 | Breakable prefill CUDA graph, up to 2048 tokens | Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size. | `--tts_engine.engine.cuda_graph_backend_prefill disabled`; the token cap with `--tts_engine.engine.cuda_graph_max_bs_prefill` |
 | First-frame CUDA graphs, up to 16 requests | Replays the step that samples each request's first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph's largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory. | `--tts_engine.factory.first_frame_cuda_graphs false`; the request cap with `--tts_engine.factory.first_frame_cuda_graph_max_requests` |
 | `prefill_decode_interval` 4 | After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding. | `--tts_engine.engine.prefill_decode_interval 0` schedules prefills without the wait |
+| Async decode (`enable_async_decode=true`) | Overlaps CPU result processing with the next GPU decode step. | `--tts_engine.factory.enable_async_decode false` |
 | Sampling: `temperature` 1.0, `top_p` 0.9, no `top_k` cap | Without a request `top_k`, the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads draw with top-k 30 at most whatever the request asks, since wider caps there cost speaker similarity. | The request's `temperature`, `top_p` and `top_k`; a request `top_k` caps the main token, and the codebook heads up to 30 |
 | Triton sampling | Samples each frame's main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p. | `--tts_engine.factory.triton_sampling false` |
 | Fused codebook tower layers, up to 16 rows | Runs the codebook tower layers of decode and first-frame steps of up to 16 rows as fused Triton kernels, eagerly or inside the CUDA graphs; larger steps and the tower's prefill keep the module path. The kernels add in a different order, so the tower's outputs can differ in the last bits and the sampled frames can differ. | `--tts_engine.factory.tower_fused_layers false` |
