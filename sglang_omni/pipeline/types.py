@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from sglang_omni.admission import QueueFullError
-
 
 class SessionIdleTimeoutError(TimeoutError):
     """A session received no input within its idle timeout."""
@@ -15,11 +13,11 @@ class SessionIdleTimeoutError(TimeoutError):
         super().__init__(f"no session input for {idle_timeout_s:g} s")
 
 
-class SessionOutputBudgetError(QueueFullError):
+class SessionOutputBudgetError(RuntimeError):
     """The session output queue is at capacity."""
 
     CODE = "output_budget_exhausted"
-    MESSAGE = f"{QueueFullError.MESSAGE} The session output budget is exhausted."
+    MESSAGE = "session output budget exhausted"
 
     def __init__(self) -> None:
         super().__init__(self.MESSAGE)
