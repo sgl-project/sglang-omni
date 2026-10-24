@@ -176,7 +176,7 @@ Then open the browser page and talk, as [Voice Conversation](#voice-conversation
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-One command starts everything: the profile's `services` are started in order and waited for, a service already answering on its port is reused, and the cascade starts once every service and the worker answer; stopping the server stops the services it started. The profile's `turn_detection` node ends a turn only when Smart Turn takes a pause for its end, so a pause in the middle of a sentence does not cut it, as [Turn Detection](#turn-detection) describes. When an interrupted reply is cut, the profile's aligner keeps the words the listener heard: the forced aligner's word ends for the sentences whose audio was complete, and its own recognizer's transcript of the delivered audio for the sentence it was cut in. The page sends the position it played with `conversation.item.truncate` and marks the heard part of the reply. [Profiles](#profiles) lists the other bundled profiles, such as `qwen3-asr-qwen3.8-27b-customvoice` with Qwen3.8-27B on two GPUs.
+One command starts everything: the profile's `services` are started in order and waited for, a service already answering on its port is reused, and the cascade starts once every service and the worker answer; stopping the server stops the services it started. The profile's `turn_detection` node ends a turn only when Smart Turn takes a pause for its end, so a pause in the middle of a sentence does not cut it, as [Turn Detection](#turn-detection) describes. When an interrupted reply is cut, the profile's aligner keeps the words the listener heard: the forced aligner's word ends for the sentences whose audio was complete, and its own recognizer's transcript of the delivered audio for the sentence it was cut in. The page sends the position it played with `conversation.item.truncate` and marks the heard part of the reply. [Profiles](#profiles) lists the other bundled profiles, such as `qwen3-asr-qwen3.8-27b-vivian` with Qwen3.8-27B on two GPUs.
 
 To use services you already run, drop their `services` entries and point the nodes' `base_url` at them; a command-line override such as `--session_nodes.llm.base_url http://127.0.0.1:9000/v1` changes one field without editing the file. The rest of this section lists every launch mode and what each profile needs started beforehand; [Configuration](#configuration), [Node Reference](#node-reference) and [Compatibility and Constraints](#compatibility-and-constraints) list every setting and the settings that cannot be combined.
 
@@ -185,7 +185,7 @@ To use services you already run, drop their `services` entries and point the nod
 The default CustomVoice cascade uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
 
 ```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-customvoice/launch.yaml --enable-realtime --port 8765
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
 ```
 
 `--enable-realtime` mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`; without it the server starts the cascade but serves none of them.
@@ -227,7 +227,7 @@ session_nodes:
 
 ### Several GPUs
 
-Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-customvoice` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
+Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
 
 ### The forced-alignment worker
 
@@ -265,13 +265,13 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 
 | Profile | Recognizer | Language model | Speech | GPUs | Nodes | Start beforehand |
 | --- | --- | --- | --- | --- | --- | --- |
-| `qwen3-asr-qwen3.8-27b-customvoice` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-CustomVoice on 8005, speaker `Vivian` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-customvoice` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-CustomVoice on 8005, speaker `Vivian` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 
-`qwen3-asr-qwen3-tts-customvoice` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
+`qwen3-asr-qwen3-tts-vivian` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
 
 ### Voice Conversation
 
@@ -380,7 +380,7 @@ The formats each kind consumes and produces:
 Any field of the profile can be overridden after `--config`, as `--<path> <value>` or `<path>=<value>`, one leaf value per flag. Paths start at the top of the profile, except stage settings, which start at the stage name:
 
 ```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-customvoice/launch.yaml --enable-realtime --port 8765 \
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765 \
   --session_nodes.llm.base_url http://127.0.0.1:9000/v1 \
   --session_nodes.llm.temperature 0.3 \
   --session_nodes.tts.language English \
@@ -485,6 +485,8 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 
 Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after `max_sentence_words` words, after Chinese end punctuation followed by more text, or at a line end.
 
+Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
+
 `openai_speech` sends each sentence without its emoji, asterisks and backticks, and a markdown link as its text alone, because a speech service reads them as stray sounds or a spelled-out URL. A sentence with no word left, such as one of only emoji or punctuation, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` without Chinese characters is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
 
 | Option | Type | Default | Effect |
@@ -511,7 +513,7 @@ Reports how far into the reply text the reply audio has reached, as `reply.progr
 | `heard_asr_model` | string | `""` | The `model` form field of those requests; set together with `heard_asr_url`. |
 | `timeout_s` | number > 0 | `2` | The limit for one worker or transcription request; a sentence whose request fails or times out keeps only its sentence end. |
 
-The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-customvoice`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`.
+The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-vivian`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`.
 
 `method: sentence` keeps the sentence ends, so a truncated reply keeps the sentences whose audio was played to the end and drops the sentence the listener was hearing. `method: forced` also sends each finished sentence and its audio to the worker at `alignment_url` and reports the word ends it returns, so the cut can fall inside a sentence that finished; when the worker fails or exceeds `timeout_s`, that sentence keeps its sentence end. A sentence that an interruption cuts off before its audio is complete gets no word ends and counts as unheard in both methods.
 
@@ -639,7 +641,7 @@ Every failure ends the realtime session with an `error` event.
 - `turn_detection: null` sent after the VAD has already reported speech in the session: the recognizer keeps waiting for speech boundaries, and each `input_audio_buffer.commit` then ends an empty turn (`empty_turn`). Turn detection off from the first `session.update` works as intended; `running_transcript` ends utterances at a commit either way.
 - `input_audio_buffer.commit` is granted in every profile (`client_commit: true`); with the VAD on, it also ends an open utterance.
 - `max_text_chars` at or above `max_history_chars` loads, and then every turn fails with `conversation exceeds max_history_chars`.
-- A reasoning language model that thinks by default speaks its reasoning unless `extra_body` turns thinking off, as `chat_template_kwargs: {enable_thinking: false}` does in `qwen3-asr-qwen3.8-27b-customvoice`.
+- A reasoning language model that thinks by default speaks its reasoning unless `extra_body` turns thinking off, as `chat_template_kwargs: {enable_thinking: false}` does in `qwen3-asr-qwen3.8-27b-vivian`.
 - A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is.
 - Speech always interrupts a running reply; `interrupt_response` does not change that.
 
@@ -655,7 +657,7 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
 
 ```json
 {
-  "model": "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-customvoice",
+  "model": "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian",
   "interaction": "turn_based",
   "turn_control": ["server_vad", null],
   "client_commit": true,
@@ -673,7 +675,7 @@ with further fields omitted here. `turn_control` is `[null]` for a profile witho
 
 ### Known Limitations
 
-- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content, so a model that thinks by default needs `enable_thinking: false` in the node's `extra_body` (as in `qwen3-asr-qwen3.8-27b-customvoice`), or its reasoning is synthesized.
+- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content, so a model that thinks by default needs `enable_thinking: false` in the node's `extra_body` (as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
 - **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
 - **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
 

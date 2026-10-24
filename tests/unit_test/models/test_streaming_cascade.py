@@ -74,8 +74,8 @@ PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
     "nemotron-qwen3-tts",
     "nemotron-stage-qwen3-tts",
-    "qwen3-asr-qwen3-tts-customvoice",
-    "qwen3-asr-qwen3.8-27b-customvoice",
+    "qwen3-asr-qwen3-tts-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
 CASCADE_PORTS = SessionPorts(
@@ -1021,7 +1021,7 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.nodes["dialog"].bound("tts").feedback
 
 
-ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-customvoice" / "launch.yaml"
+ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-vivian" / "launch.yaml"
 CHUNK_MS = 500
 SPOKEN = "One two three four. Five six."
 
@@ -1390,8 +1390,8 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
 @pytest.mark.parametrize(
     "profile",
     [
-        "qwen3-asr-qwen3-tts-customvoice",
-        "qwen3-asr-qwen3.8-27b-customvoice",
+        "qwen3-asr-qwen3-tts-vivian",
+        "qwen3-asr-qwen3.8-27b-vivian",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )

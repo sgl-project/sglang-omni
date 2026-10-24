@@ -1,6 +1,6 @@
-# Qwen3-ASR transcribes each utterance through its transcription endpoint, Qwen3.8-27B answers with thinking off and Qwen3-TTS CustomVoice speaks it with a built-in speaker, each a service of its own, with the VAD node beside the cascade.
+# Qwen3-ASR transcribes each utterance through its transcription endpoint, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned from its speaker embedding, each a service of its own, with the VAD node beside the cascade.
 config_cls: StreamingCascadePipelineConfig
-model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-customvoice
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian
 
 services:
   - name: chat
@@ -12,7 +12,7 @@ services:
     port: 8002
     env: {CUDA_VISIBLE_DEVICES: "1"}
   - name: tts
-    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice, --config, examples/configs/qwen3_tts_1_7b_customvoice.yaml, --port, "8005", --mem-fraction-static, "0.12"]
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --port, "8005", --mem-fraction-static, "0.12"]
     port: 8005
     env: {CUDA_VISIBLE_DEVICES: "1"}
 
@@ -55,8 +55,8 @@ session_nodes:
       - "input:session"
       - {kind: control, source: dialog, event: interrupt}
     base_url: "http://127.0.0.1:8005/v1"
-    model: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-    voice: Vivian
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    reference_audio_path: examples/streaming_cascade/voices/vivian.wav
     language: auto
   aligner:
     kind: alignment
