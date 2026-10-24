@@ -48,6 +48,8 @@ from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SPEECH_SETTINGS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+    DEFAULT_WINDOW_SETTINGS,
+    MiniCPMODuplexWindow,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import AudioMediaIO
@@ -426,8 +428,19 @@ def create_thinker_scheduler(
     server_args_overrides: dict[str, JsonValue] | None = None,
     total_gpu_memory_fraction: float | None = None,
     kv_cache_tokens: int | None = None,
+    sliding_window_mode: Literal[
+        "off", "basic"
+    ] = DEFAULT_WINDOW_SETTINGS.sliding_window_mode,
+    basic_window_high_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_high_tokens,
+    basic_window_low_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_low_tokens,
 ) -> OmniScheduler:
-    builder = MiniCPMOThinkerEngineBuilder()
+    builder = MiniCPMOThinkerEngineBuilder(
+        window=MiniCPMODuplexWindow(
+            sliding_window_mode=sliding_window_mode,
+            basic_window_high_tokens=basic_window_high_tokens,
+            basic_window_low_tokens=basic_window_low_tokens,
+        )
+    )
     if kv_cache_tokens is None:
         return builder.build(
             model_path,

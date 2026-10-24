@@ -14,7 +14,10 @@ import torch
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
-from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_WINDOW_SETTINGS,
+    MiniCPMODuplexSampling,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
 )
@@ -210,7 +213,14 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
             SimpleNamespace(req=Mock(tokenizer=tokenizer))
         )
     else:
-        special_tokens = ThinkerAdapter(tokenizer, VOCAB_SIZE).special
+        special_tokens = ThinkerAdapter(
+            tokenizer,
+            VOCAB_SIZE,
+            window=DEFAULT_WINDOW_SETTINGS,
+            rotary_embedding=SimpleNamespace(
+                head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
+            ),
+        ).special
         runner = duplex_runner(special_tokens)
     logits = unit_logits(
         {BAD_TOKEN_IDS[0]: 100.0, special_tokens.tts_pad: 99.0, PLAIN_TOKEN_ID: 0.0}
