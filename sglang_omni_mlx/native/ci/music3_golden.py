@@ -103,24 +103,26 @@ def check(
     outputs: Path | None,
     write_path: Path | None,
 ) -> tuple[list[str], list[str]]:
-    clips: dict[str, AudioDigest] = {}
+    waveforms: dict[str, AudioDigest] = {}
     failures: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="music3-golden-") as temporary:
-        directory = Path(temporary)
-        request_file = directory / "requests.jsonl"
+    with tempfile.TemporaryDirectory(prefix="music3-golden-") as temporary_path:
+        temporary_directory = Path(temporary_path)
+        request_file = temporary_directory / "requests.jsonl"
         request_file.write_text(
             "".join(
                 json.dumps(case, ensure_ascii=False) + "\n" for case in golden["cases"]
             )
         )
-        resident_clips: dict[str, AudioDigest] = {}
-        for mode, flags in (
+        resident_waveforms: dict[str, AudioDigest] = {}
+        for residency_mode, offload_flags in (
             ("resident", ()),
             ("offload", ("--stage-offload-components", "ar,dit")),
         ):
-            audio_directory = (outputs or directory) / f"music3-{mode}-audio"
-            clips = {}
-            completed = subprocess.run(
+            audio_directory = (
+                outputs or temporary_directory
+            ) / f"music3-{residency_mode}-audio"
+            waveforms = {}
+            process_result = subprocess.run(
                 [
                     str(runtime_bin / "music3_synthesize"),
                     "--model-path",
@@ -129,53 +131,53 @@ def check(
                     str(request_file),
                     "--output-directory",
                     str(audio_directory),
-                    *flags,
+                    *offload_flags,
                 ],  # fmt: skip
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if completed.returncode:
+            if process_result.returncode:
                 failures.append(
-                    f"{mode} music3_synthesize exited {completed.returncode}: {completed.stderr[-2000:]}"
+                    f"{residency_mode} music3_synthesize exited {process_result.returncode}: {process_result.stderr[-2000:]}"
                 )
             else:
-                for line in completed.stdout.splitlines():
-                    result = json.loads(line)
-                    identifier = result["id"]
-                    if identifier in clips:
-                        failures.append(f"{identifier}: duplicate native output")
+                for line in process_result.stdout.splitlines():
+                    synthesis_result = json.loads(line)
+                    case_id = synthesis_result["id"]
+                    if case_id in waveforms:
+                        failures.append(f"{case_id}: duplicate native output")
                         continue
                     else:
                         pass
-                    path = Path(result["file"])
-                    with wave.open(str(path)) as audio:
-                        sample_count = audio.getnframes()
-                        sample_rate = audio.getframerate()
-                        pcm = audio.readframes(sample_count)
+                    audio_path = Path(synthesis_result["file"])
+                    with wave.open(str(audio_path)) as audio_file:
+                        sample_count = audio_file.getnframes()
+                        sample_rate = audio_file.getframerate()
+                        pcm_bytes = audio_file.readframes(sample_count)
                         if (
-                            audio.getnchannels() != 2
-                            or audio.getsampwidth() != 2
-                            or len(pcm) != sample_count * 4
-                            or sample_count != result["sample_count"]
-                            or sample_rate != result["sample_rate"]
-                            or not np.any(np.frombuffer(pcm, dtype="<i2"))
+                            audio_file.getnchannels() != 2
+                            or audio_file.getsampwidth() != 2
+                            or len(pcm_bytes) != sample_count * 4
+                            or sample_count != synthesis_result["sample_count"]
+                            or sample_rate != synthesis_result["sample_rate"]
+                            or not np.any(np.frombuffer(pcm_bytes, dtype="<i2"))
                         ):
                             failures.append(
-                                f"{identifier}: invalid or silent stereo PCM16 WAV"
+                                f"{case_id}: invalid or silent stereo PCM16 WAV"
                             )
                         else:
                             pass
-                    clips[identifier] = {
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    waveforms[case_id] = {
+                        "sha256": hashlib.sha256(audio_path.read_bytes()).hexdigest(),
                         "sample_count": sample_count,
                         "sample_rate": sample_rate,
-                        "generated_frames": result["generated_frames"],
+                        "generated_frames": synthesis_result["generated_frames"],
                     }
-            failures.extend(validate_outputs(golden, clips))
-            if mode == "resident":
-                resident_clips = clips
-            elif clips != resident_clips:
+            failures.extend(validate_outputs(golden, waveforms))
+            if residency_mode == "resident":
+                resident_waveforms = waveforms
+            elif waveforms != resident_waveforms:
                 failures.append("Music3 offload differs from resident waveforms")
             else:
                 pass
@@ -187,7 +189,7 @@ def check(
                     "model": golden["model"],
                     "device": device,
                     "metrics": {},
-                    "clips": clips,
+                    "clips": waveforms,
                 },
                 ensure_ascii=False,
                 indent=1,
@@ -196,25 +198,25 @@ def check(
         )
     else:
         pass
-    lines = [
+    summary_lines = [
         f"### {golden['model']} on {device}",
         "",
-        f"Generated {len(clips)} music cases in resident and offload modes.",
+        f"Generated {len(waveforms)} music cases in resident and offload modes.",
     ]
     if write_path is not None and not failures:
-        golden["devices"][device] = {"metrics": {}, "clips": clips}
+        golden["devices"][device] = {"metrics": {}, "clips": waveforms}
         write_path.write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n")
-        lines.append(f"Recorded waveforms in {write_path}.")
+        summary_lines.append(f"Recorded waveforms in {write_path}.")
     elif device not in golden["devices"]:
         failures.append(
             "no Music3 golden for this chip; review and import the golden-outputs artifact"
         )
     else:
-        reference = golden["devices"][device]["clips"]
-        failures.extend(validate_outputs(golden, reference))
+        reference_waveforms = golden["devices"][device]["clips"]
+        failures.extend(validate_outputs(golden, reference_waveforms))
         failures.extend(
-            f"{identifier}: differs from this chip's golden waveform"
-            for identifier, result in clips.items()
-            if result != reference.get(identifier)
+            f"{case_id}: differs from this chip's golden waveform"
+            for case_id, waveform_digest in waveforms.items()
+            if waveform_digest != reference_waveforms.get(case_id)
         )
-    return lines, failures
+    return summary_lines, failures

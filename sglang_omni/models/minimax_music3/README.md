@@ -45,11 +45,7 @@ the model may end the song before reaching it.
 See [the cookbook](../../../docs/cookbook/minimax_music3.md) for the full
 request contract, the parameters this model rejects, and worked examples.
 
-Apple Silicon serving uses the native C++ `music3_server`. Pass
-`--stage-offload-components ar,dit` to load AR/RVQ and acoustic weights in
-sequence; omit it to keep both resident. See the cookbook's
-[native MLX instructions](../../../docs/cookbook/minimax_music3.md#apple-silicon-native-mlx)
-for the build and launch commands.
+Apple Silicon serving uses the native C++ `music3_server`. Pass `--stage-offload-components ar,dit` to load AR/RVQ and acoustic weights in sequence; omit it to keep both resident. See the cookbook's [native MLX instructions](../../../docs/cookbook/minimax_music3.md#apple-silicon-native-mlx) for the build and launch commands.
 
 ## Development
 

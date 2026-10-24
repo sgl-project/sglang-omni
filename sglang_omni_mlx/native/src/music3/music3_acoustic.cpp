@@ -185,25 +185,25 @@ Result Model::Synthesize(const Request &request,
                          const std::atomic<bool> &cancelled) const {
   try {
     CheckCancelled(cancelled);
-    if (serial_offload_) {
-      LoadStage(false);
+    if (is_serial_offload_enabled_) {
+      LoadStageWeights(false);
     } else {
     }
     const mx::array frames = GenerateFrames(request, cancelled);
     mx::eval(frames);
     CheckCancelled(cancelled);
-    if (serial_offload_) {
-      LoadStage(true);
+    if (is_serial_offload_enabled_) {
+      LoadStageWeights(true);
     } else {
     }
     Result result = DecodeFrames(frames, request, cancelled);
-    if (serial_offload_) {
+    if (is_serial_offload_enabled_) {
       ReleaseWeights();
     } else {
     }
     return result;
   } catch (...) {
-    if (serial_offload_) {
+    if (is_serial_offload_enabled_) {
       ReleaseWeights();
     } else {
     }

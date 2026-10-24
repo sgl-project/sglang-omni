@@ -8,11 +8,11 @@
 namespace music3 {
 
 SpeechService::SpeechService(const std::filesystem::path &directory,
-                             bool serial_offload) {
+                             bool is_serial_offload_enabled) {
   std::promise<void> loaded;
   auto ready = loaded.get_future();
-  thread_ = std::thread(&SpeechService::Run, this, directory, serial_offload,
-                        std::move(loaded));
+  thread_ = std::thread(&SpeechService::Run, this, directory,
+                        is_serial_offload_enabled, std::move(loaded));
   try {
     ready.get();
   } catch (...) {
@@ -35,9 +35,10 @@ SpeechService::~SpeechService() {
 }
 
 void SpeechService::Run(const std::filesystem::path &directory,
-                        bool serial_offload, std::promise<void> loaded) {
+                        bool is_serial_offload_enabled,
+                        std::promise<void> loaded) {
   try {
-    model_ = std::make_unique<Model>(directory, serial_offload);
+    model_ = std::make_unique<Model>(directory, is_serial_offload_enabled);
     loaded.set_value();
   } catch (...) {
     loaded.set_exception(std::current_exception());

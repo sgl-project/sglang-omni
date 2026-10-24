@@ -236,8 +236,8 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
 
 } // namespace
 
-bool ParseSerialOffload(const std::string &components) {
-  if (components != "ar,dit" && components != "dit,ar") {
+bool ParseSerialOffload(const std::string &offload_components) {
+  if (offload_components != "ar,dit" && offload_components != "dit,ar") {
     throw std::invalid_argument(
         "--stage-offload-components requires both ar,dit");
   } else {
@@ -245,15 +245,18 @@ bool ParseSerialOffload(const std::string &components) {
   }
 }
 
-Model::Model(const std::filesystem::path &directory, bool serial_offload)
-    : directory_(std::filesystem::canonical(directory)),
-      serial_offload_(serial_offload), config_(ReadConfig(directory_)),
-      checkpoint_(serial_offload ? omni_common::WeightMap{}
-                                 : LoadWeights(directory_, config_),
+Model::Model(const std::filesystem::path &directory,
+             bool is_serial_offload_enabled)
+    : checkpoint_directory_(std::filesystem::canonical(directory)),
+      is_serial_offload_enabled_(is_serial_offload_enabled),
+      config_(ReadConfig(checkpoint_directory_)),
+      checkpoint_(is_serial_offload_enabled
+                      ? omni_common::WeightMap{}
+                      : LoadWeights(checkpoint_directory_, config_),
                   config_),
       decoder_(checkpoint_, "language_model.model",
                qwen3_asr::Qwen3DecoderConfig::FromJson(config_)),
-      tokenizer_(directory_ / "tokenizer") {
+      tokenizer_(checkpoint_directory_ / "tokenizer") {
   const std::vector<std::pair<std::string, int>> special_tokens = {
       {"<|im_start|>", 151644},    {"<|im_end|>", 151645},
       {"<|audio_cfg|>", 151654},   {"<|audio_start|>", 151669},
@@ -275,21 +278,23 @@ void Model::ReleaseWeights() const {
   mx::clear_cache();
 }
 
-void Model::LoadStage(bool acoustic) const {
+void Model::LoadStageWeights(bool is_acoustic_stage) const {
   ReleaseWeights();
-  auto weights = LoadWeights(directory_, config_);
-  for (auto iterator = weights.begin(); iterator != weights.end();) {
-    const auto &name = iterator->first;
-    const bool is_acoustic = name.rfind("condition_encoder.", 0) == 0 ||
-                             name.rfind("transformer.", 0) == 0 ||
-                             name.rfind("vocoder.", 0) == 0;
-    if (is_acoustic != acoustic) {
-      iterator = weights.erase(iterator);
+  auto stage_weights = LoadWeights(checkpoint_directory_, config_);
+  for (auto iterator = stage_weights.begin();
+       iterator != stage_weights.end();) {
+    const auto &tensor_name = iterator->first;
+    const bool is_acoustic_weight =
+        tensor_name.rfind("condition_encoder.", 0) == 0 ||
+        tensor_name.rfind("transformer.", 0) == 0 ||
+        tensor_name.rfind("vocoder.", 0) == 0;
+    if (is_acoustic_weight != is_acoustic_stage) {
+      iterator = stage_weights.erase(iterator);
     } else {
       ++iterator;
     }
   }
-  checkpoint_ = omni_common::Checkpoint(std::move(weights), config_);
+  checkpoint_ = omni_common::Checkpoint(std::move(stage_weights), config_);
 }
 
 } // namespace music3

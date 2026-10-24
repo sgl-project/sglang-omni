@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
   try {
     std::filesystem::path directory, requests, output;
     bool prompt_only = false;
-    bool serial_offload = false;
+    bool is_serial_offload_enabled = false;
     for (int i = 1; i < argc; ++i) {
       const std::string flag = argv[i];
       if (flag == "--prompt-only") {
@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
       } else if (flag == "--model-path") {
         directory = argv[++i];
       } else if (flag == "--stage-offload-components") {
-        serial_offload = music3::ParseSerialOffload(argv[++i]);
+        is_serial_offload_enabled = music3::ParseSerialOffload(argv[++i]);
       } else if (flag == "--requests") {
         requests = argv[++i];
       } else if (flag == "--output-directory") {
@@ -47,7 +47,8 @@ int main(int argc, char **argv) {
       prompt_tokenizer =
           std::make_unique<omni_common::Tokenizer>(directory / "tokenizer");
     } else {
-      model = std::make_unique<music3::Model>(directory, serial_offload);
+      model =
+          std::make_unique<music3::Model>(directory, is_serial_offload_enabled);
       std::filesystem::create_directories(output);
     }
     std::ifstream input(requests);
