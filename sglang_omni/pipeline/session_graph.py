@@ -117,15 +117,15 @@ class SessionGraphRunner(CoordinatorSessions):
             inbox.wake.set()
             node = self.sessions[graph.nodes[target].id]
             kept = deque(
-                (chunk, size)
-                for chunk, size in node.pending
-                if chunk.turn != event.turn
-                or chunk.seq in graph.client_sequences[target]
+                pending
+                for pending in node.pending
+                if pending.chunk.turn != event.turn
+                or pending.chunk.seq in graph.client_sequences[target]
             )
             node.pending_count -= len(node.pending) - len(kept)
-            node.pending_bytes -= sum(size for _, size in node.pending) - sum(
-                size for _, size in kept
-            )
+            node.pending_bytes -= sum(
+                pending.encoded_bytes for pending in node.pending
+            ) - sum(pending.encoded_bytes for pending in kept)
             node.pending = kept
         else:
             pass

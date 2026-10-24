@@ -19,11 +19,14 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    SPEECH_STARTED,
+    SPEECH_STOPPED,
     TEXT_DELTA,
     TRUNCATE,
     TURN_DONE,
     TURN_EMPTY,
     TURN_INTERRUPTED,
+    TURN_QUEUED,
     TURN_STARTED,
     control_type,
 )
@@ -109,16 +112,17 @@ class Conversation:
                 self.changed.clear()
                 await self.changed.wait()
 
-    async def append(self, chunk):
-        sequence = self.sequence
-        self.sequence += 1
-        await self.coordinator.append_session(
-            self.identity, replace(chunk, seq=sequence)
-        )
-        await self.until(
-            lambda: any(
-                o.kind == "input_done" and o.input_seq == sequence for o in self.outputs
+    async def append(self, *chunks):
+        """Append the chunks back to back, then wait until each is confirmed."""
+        first = self.sequence
+        for chunk in chunks:
+            await self.coordinator.append_session(
+                self.identity, replace(chunk, seq=self.sequence)
             )
+            self.sequence += 1
+        await self.until(
+            lambda: set(range(first, self.sequence))
+            <= {o.input_seq for o in self.outputs if o.kind == "input_done"}
         )
 
     async def audio(self, eos=False):
@@ -202,6 +206,47 @@ async def test_interrupt_cancels_old_reply_and_next_turn_completes(backends):
             for o in session.outputs[interrupted_at:]
         )
         assert len(messages) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["slow_first"], indirect=True)
+@pytest.mark.parametrize(
+    "is_reply_open", [False, True], ids=["before_the_reply_opens", "before_its_audio"]
+)
+async def test_speech_that_resumes_before_the_reply_is_heard_interrupts_it(
+    backends, is_reply_open
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.command(SPEECH_STARTED, t_ms=session.clock)
+        await session.audio()
+        stopped = control_chunk(SPEECH_STOPPED, session.clock, t_ms=session.clock)
+        resumed = control_chunk(SPEECH_STARTED, session.clock, t_ms=session.clock)
+        if is_reply_open:
+            await session.append(stopped)
+            await session.until(
+                lambda: any(control_type(o) == TURN_STARTED for o in session.outputs)
+            )
+            await session.append(resumed)
+        else:
+            await session.append(stopped, resumed)
+        await session.audio()
+        await session.command(SPEECH_STOPPED, t_ms=session.clock)
+        await session.audio(eos=True)
+        assert [
+            control_type(o)
+            for o in session.outputs
+            if o.turn == 1 and o.kind == "data" and o.format != TEXT_DELTA
+        ] == [TURN_QUEUED, TURN_STARTED, TURN_INTERRUPTED]
+        assert any(o.turn == 2 and o.format == PCM_F32 for o in session.outputs)
+        assert any(
+            control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
+        )
+        assert messages[-1][-3:] == [
+            {"role": "user", "content": "test question"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "test question"},
+        ]
 
 
 @pytest.mark.asyncio

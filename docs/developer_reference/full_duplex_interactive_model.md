@@ -459,7 +459,7 @@ Turns the running text of the `asr` stage into utterances: partial transcripts w
 
 ### `dialog`
 
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; speech that starts during a reply interrupts it.
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |

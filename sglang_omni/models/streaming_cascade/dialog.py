@@ -18,11 +18,13 @@ from sglang_omni.models.streaming_cascade.base import (
 )
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
+    COMMIT,
     INTERRUPT,
     MAX_HISTORY_CHARS,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
     SPEECH_STARTED,
+    SPEECH_STOPPED,
     TEXT_DELTA,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -80,6 +82,10 @@ class Dialog(StreamComponent):
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
     settings apply at once and reach the next prompt.
+
+    Speech that started after an utterance ended and has not stopped when
+    the utterance's reply begins is speech over that reply, so the reply
+    ends as soon as it begins.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -100,6 +106,8 @@ class Dialog(StreamComponent):
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
+        # note (luojiaxuan): From a speech.started to the speech.stopped or commit that ends the utterance; the node that reports speech also stops it at the end of the input.
+        self.is_user_speaking = False
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, Dialog):
@@ -115,6 +123,7 @@ class Dialog(StreamComponent):
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
+            self.is_user_speaking = previous.is_user_speaking
         else:
             pass
 
@@ -175,8 +184,14 @@ class Dialog(StreamComponent):
             self.truncatable_text = reply
             self.delivered_ms = math.inf
             self.reply = None
-        elif control_type(chunk) == SPEECH_STARTED and self.reply is not None:
-            self.interrupt_reply()
+        elif control_type(chunk) == SPEECH_STARTED:
+            self.is_user_speaking = True
+            if self.reply is not None:
+                self.interrupt_reply()
+            else:
+                pass
+        elif control_type(chunk) in (SPEECH_STOPPED, COMMIT):
+            self.is_user_speaking = False
         elif (
             control_type(chunk) == REPLY_DELIVERED
             and self.truncatable is not None
@@ -208,6 +223,10 @@ class Dialog(StreamComponent):
         while self.reply is None and self.waiting:
             for output in self.respond(*self.waiting.popleft()):
                 self.emit(output)
+            if self.reply is not None and self.is_user_speaking:
+                self.interrupt_reply()
+            else:
+                pass
 
     def truncate(self) -> None:
         """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known."""

@@ -387,6 +387,82 @@ async def test_a_reply_that_finished_stays_whole_without_a_truncate():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resumed, heard",
+    [
+        ("before_the_reply_opens", ""),
+        ("before_its_audio", ""),
+        ("after_its_first_sentence", "One two."),
+    ],
+)
+async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_reply(
+    resumed, heard
+):
+    dialog = build({"kind": "dialog"})
+    question = transcript_chunk("Ten companies.", True)
+    speech = control_chunk(SPEECH_STARTED, t_ms=1800)
+    reply = {
+        "before_the_reply_opens": [speech, question],
+        "before_its_audio": [question, text_chunk(REPLY, 1), speech],
+        "after_its_first_sentence": [
+            question,
+            text_chunk(REPLY, 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+            speech,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1000),
+        ],
+    }[resumed]
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(SPEECH_STOPPED, t_ms=1000),
+            *reply,
+            control_chunk(SPEECH_STOPPED, t_ms=4000),
+            transcript_chunk("That let you teach English online.", True),
+        ],
+    )
+    assert [control_type(o) for o in outputs if o.turn == 1] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+        INTERRUPT,
+        TURN_INTERRUPTED,
+    ]
+    assert [control_type(o) for o in outputs if o.turn == 2] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+    ]
+    assert [(m.role, m.content) for m in messages_of(outputs[-1])] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "Ten companies."),
+        ("assistant", heard),
+        ("user", "That let you teach English online."),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", [SPEECH_STOPPED, COMMIT])
+async def test_a_reply_opens_once_the_speech_of_its_utterance_ended(end):
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(end, t_ms=1000),
+            transcript_chunk("question", True),
+            text_chunk("Hello world.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [control_type(o) for o in outputs] == [TURN_QUEUED, TURN_STARTED, None]
+    assert dialog.messages[-1].content == "Hello world."
+
+
+@pytest.mark.asyncio
 async def test_replies_forget_interrupted_turns_once_a_later_reply_starts():
     replies = Replies()
     for turn in (1, 2, 4):
