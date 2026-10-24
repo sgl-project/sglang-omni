@@ -940,39 +940,39 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
 
 @pytest.fixture(
     scope="module",
-    params=[(), ("--stage-offload-components", "ar,dit")],
+    params=[(), ("--stage-offload-components", "dit,ar")],
     ids=["resident", "offload"],
 )
 def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
-    running = ModelServer(
+    music3_process = ModelServer(
         "music3_server",
         "minimax_music3",
         "mlx-community/MiniMax-Music3-mxfp8",
         request.param,
     )
-    yield running
-    running.stop()
+    yield music3_process
+    music3_process.stop()
 
 
-@pytest.mark.parametrize("components", ["ar", "dit", "ar,dit,other", ""])
-@pytest.mark.parametrize("binary", ["music3_server", "music3_synthesize"])
-def test_music3_rejects_incomplete_offload_components(
-    tmp_path: Path, binary: str, components: str
+@pytest.mark.parametrize("offload_components", ["ar", "dit", "ar,dit,other", ""])
+@pytest.mark.parametrize("binary_name", ["music3_server", "music3_synthesize"])
+def test_music3_rejects_invalid_offload_components(
+    tmp_path: Path, binary_name: str, offload_components: str
 ) -> None:
-    completed = subprocess.run(
+    process_result = subprocess.run(
         [
-            str(Path(RUNTIME_BIN) / binary),
+            str(Path(RUNTIME_BIN) / binary_name),
             "--model-path",
             str(tmp_path),
             "--stage-offload-components",
-            components,
+            offload_components,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert completed.returncode != 0
-    assert "requires both ar,dit" in completed.stderr
+    assert process_result.returncode != 0
+    assert "requires both ar,dit" in process_result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1096,9 +1096,11 @@ def test_music3_rejects_invalid_requests_before_generation(
     assert json.loads(body)["request_states"] == {}
 
 
-def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
-    """A valid request returns audio instead of failing during token sampling."""
-    request = {
+def test_music3_seeded_wav_and_pcm_survive_rejected_request(
+    music3_server: ModelServer,
+) -> None:
+    """A rejected request must not change the next seeded waveform."""
+    synthesis_request = {
         "input": "[Verse]\nWalking through the morning light",
         "instructions": "Gentle acoustic folk",
         "max_new_tokens": 10,
@@ -1107,26 +1109,43 @@ def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
         # No --model-name was chosen, so an OpenAI client's model is accepted.
         "model": "tts-1",
     }
-    responses = []
-    for format_name in ["wav", "pcm", "wav"]:
-        status, body = music3_server.request(
+    audio_responses: list[bytes] = []
+    for response_format in ("wav", "pcm"):
+        status_code, response_body = music3_server.request(
             "POST",
             "/v1/audio/speech",
-            json.dumps({**request, "response_format": format_name}).encode(),
+            json.dumps(
+                {**synthesis_request, "response_format": response_format}
+            ).encode(),
             {"Content-Type": "application/json"},
         )
-        assert status == 200
-        responses.append(body)
-    assert responses[0] == responses[2]
-    with wave.open(io.BytesIO(responses[0])) as audio:
+        assert status_code == 200
+        audio_responses.append(response_body)
+    with wave.open(io.BytesIO(audio_responses[0])) as audio:
         assert (audio.getnchannels(), audio.getframerate(), audio.getsampwidth()) == (
             2,
             32000,
             2,
         )
-        pcm = audio.readframes(audio.getnframes())
-        assert pcm == responses[1]
-        assert any(pcm)
+        pcm_bytes = audio.readframes(audio.getnframes())
+        assert pcm_bytes == audio_responses[1]
+        assert any(pcm_bytes)
+    status_code, response_body = music3_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps({**synthesis_request, "seed": -1}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert status_code == 400
+    assert json.loads(response_body)["detail"]
+    status_code, response_body = music3_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps({**synthesis_request, "response_format": "wav"}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert status_code == 200
+    assert response_body == audio_responses[0]
 
 
 @pytest.mark.parametrize(
