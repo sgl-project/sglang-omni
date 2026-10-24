@@ -21,6 +21,7 @@ from multiprocessing.sharedctypes import Synchronized
 from multiprocessing.synchronize import Event
 from typing import Literal, Sequence
 
+import torch
 from sglang.srt.utils import kill_itself_when_parent_died
 from torch._dynamo.callback import CallbackArgs, callback_handler
 
@@ -704,6 +705,49 @@ def report_startup_progress(spec: StageWorkerProcessSpec) -> None:
         progress.value += 1
 
 
+# note (db-ol): held so torch cannot reset its CUDA IPC ref counter file mid export.
+_cuda_ipc_warm_shares: list[torch.Tensor] = []
+_cuda_ipc_warm_handles: list[str] = []
+
+
+def prewarm_cuda_ipc_export(spec: StageWorkerProcessSpec, log: logging.Logger) -> None:
+    """Hold one CUDA IPC share before constructing stages when this process has a GPU.
+
+    The ref counter file is process global, so the single threaded held slot keeps a
+    later export from being reset, up to the file rollover the relay pool never hits.
+    """
+    if not (current_platform.is_cuda() or current_platform.is_rocm()):
+        return
+    else:
+        pass
+    gpu_ids = stage_gpu_ids(host_owned_stage_specs(spec))
+    if not gpu_ids:
+        return
+    else:
+        pass
+    tensor = torch.empty(1, dtype=torch.uint8, device=f"cuda:{gpu_ids[0]}")
+    shared = (
+        tensor.untyped_storage()._share_cuda_()
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    _cuda_ipc_warm_shares.append(tensor)
+    _cuda_ipc_warm_handles.append(shared[4])
+    log.info(f"Warmed CUDA IPC on cuda:{gpu_ids[0]} before constructing stages")
+
+
+def release_cuda_ipc_warm_shares() -> None:
+    """Unlink the prewarm shares' ref counter files and drop the held tensors.
+
+    No receiver releases the prewarm slot, so ipc_collect and the teardown that
+    os._exit skips cannot remove its shared memory file. Unlink it here at shutdown,
+    before the final ipc_collect, so a worker restart does not leak one each time.
+    """
+    for handle in _cuda_ipc_warm_handles:
+        with suppress(OSError):
+            os.unlink(f"/dev/shm/{handle.lstrip('/')}")
+    _cuda_ipc_warm_handles.clear()
+    _cuda_ipc_warm_shares.clear()
+
+
 def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -762,6 +806,7 @@ def run_process(
                     pass
 
     try:
+        prewarm_cuda_ipc_export(spec, log)
         for stage_spec in spec.stage_specs:
             stages.append(
                 construct_stage(
@@ -780,6 +825,8 @@ def run_process(
             reason=f"stage process {spec.process_name} failure",
         )
         raise
+    finally:
+        release_cuda_ipc_warm_shares()
 
 
 def cleanup_constructed_stages(
