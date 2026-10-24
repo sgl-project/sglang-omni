@@ -21,13 +21,7 @@ MODEL_PATH="$(
 
 ### Ascend NPU graph execution
 
-Qwen3-ASR pre-LM encoding and language-model execution submit work on separate NPU streams. With encoder or decode graphs enabled, a shared Host task queue can couple those submission paths and cause stalls. Per-stream Host queues let each stream submit work independently; they do not replace device-stream synchronization.
-
-For normal pipeline launches, `PER_STREAM_QUEUE=1` is set by default before spawning the worker process. Leave `TASK_QUEUE_ENABLE` at its runtime default of `1` or set it to `2`, and leave `ASCEND_LAUNCH_BLOCKING` unset or set it to `0` to retain asynchronous launches. Existing shell and pipeline environment settings take precedence over the default.
-
-When pre-LM encoding and either encoder or decode graphs are enabled on NPU, startup rejects incompatible queue or launch-blocking settings instead of silently overriding them. This check does not apply when pre-LM encoding is disabled or both graphs are disabled. For direct engine construction outside the pipeline launcher, configure these variables before initializing the NPU runtime; the engine validates them but does not supply the pipeline's default.
-
-Use a torch_npu build that supports per-stream Host task queues. The feature is experimental, requires `TASK_QUEUE_ENABLE=1` or `2`, and does not support process-level online recovery. Additional queue threads and cross-stream event ordering may add overhead. See the [TorchNPU stream-level TaskQueue documentation](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md) for runtime constraints.
+See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
 
 <a id="apple-silicon-torch-mps"></a>
 

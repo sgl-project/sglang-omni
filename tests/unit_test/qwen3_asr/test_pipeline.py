@@ -129,20 +129,29 @@ def make_engine_builder(
 
 
 @pytest.mark.parametrize(
-    ("is_npu", "configured", "expected"),
+    ("is_npu", "configured_env_defaults", "expected_env_defaults"),
     [
         (True, {}, {"PER_STREAM_QUEUE": "1"}),
         (False, {}, {}),
         (True, {"PER_STREAM_QUEUE": "0"}, {"PER_STREAM_QUEUE": "0"}),
     ],
 )
-def test_per_stream_queue_env_defaults(monkeypatch, is_npu, configured, expected):
+def test_per_stream_queue_env_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    configured_env_defaults: dict[str, str],
+    expected_env_defaults: dict[str, str],
+) -> None:
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: is_npu)
-    config = Qwen3ASRPipelineConfig(model_path="test", env_defaults=configured)
-    assert config.resolved_env_defaults() == expected
-    assert config.env_defaults == configured
+    config = Qwen3ASRPipelineConfig(
+        model_path="test", env_defaults=configured_env_defaults
+    )
+    assert config.resolved_env_defaults() == expected_env_defaults
+    assert config.env_defaults == configured_env_defaults
     stage_env = config.resolved_stage_env_defaults("asr")
-    assert stage_env.get("PER_STREAM_QUEUE") == expected.get("PER_STREAM_QUEUE")
+    assert stage_env.get("PER_STREAM_QUEUE") == expected_env_defaults.get(
+        "PER_STREAM_QUEUE"
+    )
     assert stage_env["SGLANG_ENABLE_METADATA_GLUE_GRAPH"] == "1"
     config.stage_named("asr").env["PER_STREAM_QUEUE"] = "0"
     assert config.resolved_stage_env_defaults("asr")["PER_STREAM_QUEUE"] == "0"
@@ -151,42 +160,43 @@ def test_per_stream_queue_env_defaults(monkeypatch, is_npu, configured, expected
 @pytest.mark.parametrize(
     (
         "is_npu",
-        "pre_lm",
-        "encoder_graph",
-        "decode_graph",
-        "per_stream",
-        "task_queue",
-        "blocking",
-        "valid",
+        "enable_pre_lm_encoder",
+        "enable_encoder_cuda_graph",
+        "enable_decode_graph",
+        "per_stream_queue",
+        "task_queue_enable",
+        "launch_blocking",
+        "is_valid",
     ),
     [
         (True, True, True, True, "1", "1", "0", True),
-        (True, True, True, False, "1", "2", "0", True),
+        (True, True, True, False, "1", "2", "0", False),
         (True, True, False, True, "1", None, None, True),
+        (True, True, False, True, "1", "2", "0", False),
         (True, True, False, True, None, None, None, False),
-        (True, True, True, True, "0", "2", "0", False),
+        (True, True, True, True, "0", "1", "0", False),
         (True, True, True, True, "1", "0", "0", False),
-        (True, True, True, True, "1", "2", "1", False),
+        (True, True, True, True, "1", "1", "1", False),
         (True, True, False, False, None, None, None, True),
         (False, True, True, True, None, None, None, True),
         (True, False, True, True, None, None, None, True),
     ],
 )
 def test_npu_graph_startup_requires_per_stream_queues(
-    monkeypatch,
-    is_npu,
-    pre_lm,
-    encoder_graph,
-    decode_graph,
-    per_stream,
-    task_queue,
-    blocking,
-    valid,
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    enable_pre_lm_encoder: bool,
+    enable_encoder_cuda_graph: bool,
+    enable_decode_graph: bool,
+    per_stream_queue: str | None,
+    task_queue_enable: str | None,
+    launch_blocking: str | None,
+    is_valid: bool,
 ) -> None:
     for name, value in (
-        ("PER_STREAM_QUEUE", per_stream),
-        ("TASK_QUEUE_ENABLE", task_queue),
-        ("ASCEND_LAUNCH_BLOCKING", blocking),
+        ("PER_STREAM_QUEUE", per_stream_queue),
+        ("TASK_QUEUE_ENABLE", task_queue_enable),
+        ("ASCEND_LAUNCH_BLOCKING", launch_blocking),
     ):
         if value is None:
             monkeypatch.delenv(name, raising=False)
@@ -202,16 +212,18 @@ def test_npu_graph_startup_requires_per_stream_queues(
         qwen3_asr_builder.mrope_fast_path, "apply_asr_mrope_fast_path", lambda: None
     )
     builder = make_engine_builder()
-    builder.enable_pre_lm_encoder = pre_lm
-    builder.enable_encoder_cuda_graph = encoder_graph
+    builder.enable_pre_lm_encoder = enable_pre_lm_encoder
+    builder.enable_encoder_cuda_graph = enable_encoder_cuda_graph
     monkeypatch.setattr(builder, "uses_torch_mps", lambda: False)
     monkeypatch.setattr(builder, "log_memory_checkpoint", lambda checkpoint: None)
     server_args = SimpleNamespace(
-        disable_cuda_graph=not decode_graph,
+        disable_cuda_graph=not enable_decode_graph,
         cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=[1])),
     )
     expectation = (
-        nullcontext() if valid else pytest.raises(ValueError, match="PER_STREAM_QUEUE")
+        nullcontext()
+        if is_valid
+        else pytest.raises(ValueError, match="PER_STREAM_QUEUE")
     )
     with expectation:
         builder.validate_before_infrastructure(server_args)

@@ -117,8 +117,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang_omni.platforms import current_platform
-
         policy = super().resolved_audio_chunking
         if not current_platform.is_mps():
             return policy

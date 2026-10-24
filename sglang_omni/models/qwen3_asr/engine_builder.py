@@ -315,20 +315,20 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
-        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See docs/cookbook/qwen3_asr.md for further details.
+        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See docs/get_started/installation_npu.md for further details.
         if (
             current_platform.is_npu()
             and self.enable_pre_lm_encoder
             and (self.enable_encoder_cuda_graph or not cfg.disable_cuda_graph)
             and (
                 os.environ.get("PER_STREAM_QUEUE") != "1"
-                or os.environ.get("TASK_QUEUE_ENABLE", "1") not in {"1", "2"}
+                or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
                 or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
             )
         ):
             raise ValueError(
                 "Qwen3-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
-                "TASK_QUEUE_ENABLE unset, 1 or 2, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+                "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
                 "before starting the server"
             )
         else:
