@@ -35,6 +35,7 @@ FRAME_BYTES = 2048 * 2
 # A corpus clip to clone and its transcript.
 REFERENCE_CLIP = "0066_en_mid"
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
+TWO_SENTENCES = SENTENCE + " The museum opens at nine in the morning and closes at six."
 LONG_SENTENCE = " ".join([SENTENCE] * 8)
 # Minutes of speech: no Mac generates it within REQUEST_TIMEOUT_SECONDS.
 PASSAGE = " ".join([SENTENCE] * 50)
@@ -43,7 +44,7 @@ PASSAGE = " ".join([SENTENCE] * 50)
 MAX_WORD_ERRORS = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
-MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 # A cancelled generation stops at its next frame.
 CANCEL_SECONDS = 8.0
 
@@ -249,7 +250,14 @@ def test_fish_streams_pcm_while_it_speaks(
     connection.request(
         "POST",
         "/v1/audio/speech",
-        body=json.dumps({"input": SENTENCE, "response_format": "pcm", "stream": True}),
+        body=json.dumps(
+            {
+                "input": TWO_SENTENCES,
+                "response_format": "pcm",
+                "stream": True,
+                "seed": 3,
+            }
+        ),
     )
     response = connection.getresponse()
     assert response.status == 200
@@ -267,10 +275,11 @@ def test_fish_streams_pcm_while_it_speaks(
     finished_at = time.monotonic()
     pcm = b"".join(chunks)
     assert pcm and len(pcm) % FRAME_BYTES == 0
-    # The first chunk is 40 frames: it arrives well before the last.
+    # The first chunk is 40 frames of about 170: it arrives well before the
+    # last.
     assert first_audio_at - started_at < (finished_at - started_at) / 2
     heard = transcript_words(asr_server, pcm)
-    assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
+    assert word_errors(words(TWO_SENTENCES), heard) <= MAX_WORD_ERRORS, heard
 
 
 def test_fish_stops_at_max_new_tokens(fish_server: Server) -> None:
@@ -325,9 +334,12 @@ def test_fish_half_closed_client_counts_as_gone(fish_server: Server) -> None:
 
 
 def test_fish_refuses_requests_beyond_its_queue(fish_server: Server) -> None:
+    # A stream's 200 waits for its first audio, so the queued request is
+    # sent without waiting for its answer.
+    queued_body = {"input": LONG_SENTENCE, "response_format": "pcm", "stream": True}
     with (
         open_speech_stream(fish_server, LONG_SENTENCE) as running,
-        open_speech_stream(fish_server, LONG_SENTENCE),
+        send_speech_request(fish_server, queued_body),
     ):
         assert running.recv(65536)
         assert request_states(fish_server) == {
@@ -456,13 +468,23 @@ def test_fish_bounds_all_references_before_resampling(fish_server: Server) -> No
     )
 
 
-def test_fish_answers_a_prompt_too_long_with_400(fish_server: Server) -> None:
-    """A prompt past the model's 32768 positions was a 500."""
+@pytest.mark.parametrize(
+    "stream_fields",
+    [{}, {"stream": True, "response_format": "pcm"}],
+    ids=["file", "stream"],
+)
+def test_fish_answers_a_prompt_too_long_with_400(
+    fish_server: Server, stream_fields: dict
+) -> None:
+    """A prompt past the model's 32768 positions was a 500, and an empty 200
+    for a stream."""
     reference = {"vq_codes": [[1]] * 10, "text": "\u4f60" * 4096}
     status, response = fish_server.request(
         "POST",
         "/v1/audio/speech",
-        json.dumps({"input": "hi", "references": [reference] * 9}).encode(),
+        json.dumps(
+            {"input": "hi", "references": [reference] * 9, **stream_fields}
+        ).encode(),
     )
     assert status == 400
     assert json.loads(response)["detail"].startswith(
@@ -490,6 +512,45 @@ def test_fish_reads_reference_wavs_cuda_reads(fish_server: Server, wav: bytes) -
         },
     )
     assert status == 200
+
+
+def test_fish_answers_a_stream_with_unusable_audio_with_400(
+    fish_server: Server,
+) -> None:
+    """Reference audio decodes once the request is admitted; a stream whose
+    audio is not a WAV got an empty 200."""
+    status, response = fish_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps(
+            {
+                "input": "hi",
+                "ref_audio": "aGVsbG8=",
+                "stream": True,
+                "response_format": "pcm",
+            }
+        ).encode(),
+    )
+    assert (status, json.loads(response)) == (
+        400,
+        {"detail": "ref_audio: reference audio must be a RIFF/WAVE file"},
+    )
+
+
+def test_fish_clones_from_a_reference_at_the_cap(fish_server: Server) -> None:
+    """A 60 s reference is encoded in windows, within the server's memory."""
+    status, headers, _ = speak(
+        fish_server,
+        {
+            "input": "hi",
+            "ref_audio": wav_data_url(16000, 59.9),
+            "response_format": "pcm",
+            "max_new_tokens": 1,
+        },
+    )
+    assert status == 200
+    # About 21.5 frames a second of reference.
+    assert int(headers["X-Prompt-Tokens"]) > 59 * 21
 
 
 def test_fish_takes_reference_codes(fish_server: Server) -> None:
@@ -583,6 +644,7 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
             "repetition_penalty must be in (0, 2]",
         ),
         ({"input": "hi", "seed": "1"}, "seed must be an integer"),
+        ({"input": "hi", "seed": -1}, "seed must be greater than or equal to 0"),
         ({"input": "hi", "seed": 2**64 - 1}, "seed must be in [-2**63, 2**63 - 1]"),
         ({"input": "hi", "ref_text": "x" * 4097}, "ref_text must be at most 4096"),
         (
@@ -611,7 +673,11 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
         ),
         (
             {"input": "hi", "references": [{"vq_codes": [[4096]] * 10}]},
-            "references[0].vq_codes must be integers in [0, 4096)",
+            "references[0].vq_codes row 0 must be integers in [0, 4096)",
+        ),
+        (
+            {"input": "hi", "references": [{"vq_codes": [[5]] + [[1024]] * 9}]},
+            "references[0].vq_codes row 1 must be integers in [0, 1024)",
         ),
         (
             {"input": "hi", "references": [{"data": "", "text": 5}]},

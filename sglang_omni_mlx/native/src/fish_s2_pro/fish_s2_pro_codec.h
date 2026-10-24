@@ -13,6 +13,9 @@
 
 namespace fish_s2_pro {
 
+// Codes per residual codebook; the semantic codebook has the model's 4096.
+inline constexpr int kResidualCodebookSize = 1024;
+
 class AudioCodec {
 public:
   explicit AudioCodec(qwen3_asr::WeightMap weights);

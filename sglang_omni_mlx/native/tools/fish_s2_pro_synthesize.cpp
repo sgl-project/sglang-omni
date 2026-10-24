@@ -8,6 +8,7 @@
 //       [--ref-audio ref.wav [--ref-text TEXT]] [--seed N]
 //       [--temperature T] [--top-p P] [--top-k K] [--repetition-penalty R]
 //       [--max-new-tokens N] [--output out.wav] [--codes-output codes.json]
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -103,13 +104,20 @@ int main(int argc, char **argv) {
   std::vector<mlx::core::array> frames;
   nlohmann::json frame_codes = nlohmann::json::array();
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason = model.Generate(
-      prompt, max_frames, sampling, cancel, [&](const mlx::core::array &codes) {
-        const int32_t *values = codes.data<int32_t>();
-        frame_codes.push_back(
-            std::vector<int32_t>(values, values + codes.size()));
-        frames.push_back(codes);
-      });
+  // The server's limit: the frames stop where the prompt and its audio would
+  // outrun the model's positions.
+  const int clamped_frames =
+      std::min(max_frames, std::max(model.max_positions() - 1 -
+                                        static_cast<int>(prompt.ids.size()),
+                                    1));
+  const qwen3_asr::FinishReason finish_reason =
+      model.Generate(prompt, clamped_frames, sampling, cancel,
+                     [&](const mlx::core::array &codes) {
+                       const int32_t *values = codes.data<int32_t>();
+                       frame_codes.push_back(
+                           std::vector<int32_t>(values, values + codes.size()));
+                       frames.push_back(codes);
+                     });
   const double generate_seconds = SecondsSince(started);
   std::vector<float> samples;
   if (!frames.empty()) {
