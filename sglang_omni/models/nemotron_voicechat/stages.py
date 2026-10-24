@@ -180,7 +180,14 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    max_batch_size: int,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+) -> NemotronCode2WavScheduler:
     device = resolve_concrete_device(device, gpu_id)
     generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
@@ -214,7 +221,9 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
         )
         return payload
 
-    return NemotronCode2WavScheduler(decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        decoder, device, compute_fn=decode, max_batch_size=max_batch_size
+    )
 
 
 def create_decode_executor(model_path, **_):
