@@ -206,6 +206,7 @@ class PersonaPlexModelRunner(ModelRunner):
 
         return sample
 
+    @torch.no_grad()
     def spell_frames(
         self,
         requests: list[SchedulerRequest],
