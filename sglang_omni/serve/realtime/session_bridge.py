@@ -30,6 +30,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -53,6 +54,7 @@ from sglang_omni.serve.realtime.output import (
     InputTranscription,
     OutputEvent,
     ResponseFinished,
+    ResponseHeard,
     ResponseProgress,
     ResponseStarted,
     SpeechStarted,
@@ -186,6 +188,7 @@ class SessionBridge(InteractionAdapter):
             TURN_INTERRUPTED: partial(self.finish_response, "cancelled", "interrupted"),
             CONFIGURED: self.on_configured,
             REPLY_PROGRESS: self.on_progress,
+            REPLY_HEARD: self.on_heard,
         }
         self.session_identity: SessionIdentity | None = None
         self.output_sink: OutputSink | None = None
@@ -205,6 +208,8 @@ class SessionBridge(InteractionAdapter):
         self.response_id: str | None = None
         self.response_item_id = ""
         self.response_turn: int | None = None
+        # note (Haoling Pu): a truncate still cuts the last ended response (turn, response id, item id) until the next reply starts.
+        self.ended_response: tuple[int | None, str, str] | None = None
         self.response_text = ""
         self.has_audio = False
 
@@ -441,6 +446,13 @@ class SessionBridge(InteractionAdapter):
         else:
             return []
 
+    def on_heard(self, output: OutputChunk) -> list[OutputEvent]:
+        if self.ended_response is not None and output.turn == self.ended_response[0]:
+            _, response_id, item_id = self.ended_response
+            return [ResponseHeard(response_id, item_id, output.payload["text_end"])]
+        else:
+            return []
+
     def on_speech_started(self, output: OutputChunk) -> list[OutputEvent]:
         return [SpeechStarted(self.new_user_item(), output.payload["t_ms"])]
 
@@ -454,6 +466,7 @@ class SessionBridge(InteractionAdapter):
         return []
 
     def on_turn_started(self, output: OutputChunk) -> list[OutputEvent]:
+        self.ended_response = None
         return self.start_response(output.turn)
 
     def finish_response(
@@ -469,6 +482,7 @@ class SessionBridge(InteractionAdapter):
         events.append(
             ResponseFinished(*ids, self.response_text, self.has_audio, status, reason)
         )
+        self.ended_response = (self.response_turn, *ids)
         self.response_id = None
         return events
 

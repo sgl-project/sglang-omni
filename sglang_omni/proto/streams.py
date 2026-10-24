@@ -57,6 +57,8 @@ CONFIGURED = "configured"  # {"nodes": {name: kind}}
 REPLY_PROGRESS = "reply.progress"
 # {"audio_ms": float}; an interrupt stopped the reply after audio_ms of its audio reached the client
 REPLY_DELIVERED = "reply.delivered"
+# {"text_end": int}; after the client's truncate, the history keeps the cut reply's first text_end characters, sent again whenever the cut moves
+REPLY_HEARD = "reply.heard"
 # Controls between nodes; a graph delivers them to readers and control edges, never to the client.
 NODE_CONTROLS = frozenset({REPLY_DELIVERED})
 # Reports a node makes on its own output; the client hears a report only from a node whose output no node reads as data, the end of the route that builds it.
