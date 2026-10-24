@@ -52,6 +52,19 @@ Path("speech.wav").write_bytes(response.content)
 
 The response body is one complete 44.1 kHz waveform. The speech stage handles one request at a time. `ref_text` should be the words spoken in `reference.wav`. `seed` fixes the flow-matching noise.
 
+## Long-form Speech Synthesis (Opt-in)
+
+Long-form text segmentation is disabled by default. Enable it to clean supported Markdown and split speech text into bounded fragments:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-audio-flash \
+  --thinker.tp_size 2 \
+  --talker.factory.enable_text_segmentation true
+```
+
+Fragments are generated sequentially, then concatenated in input order; reference conditioning is reused within the request. The speech endpoint returns one completed WAV, not incremental audio per fragment. This feature is inspired by Ming's semantic text segmentation approach, but is not a direct copy or a claim of upstream implementation parity. With segmentation enabled, a fragment that exhausts its decode cap is rejected rather than returned as potentially incomplete speech. With segmentation disabled, the legacy one-shot control behavior is preserved.
+
 ## Audio chat
 
 `audios` entries are file paths or URLs that the server reads.
