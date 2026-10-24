@@ -824,7 +824,8 @@ def test_pd_rejects_state_not_carried_by_page_transfer(
     scheduler.token_to_kv_pool_allocator = KVAllocator()
     if pool_kind == "linear":
         scheduler.req_to_token_pool = object.__new__(HybridReqToTokenPool)
-        message = "linear-attention state"
+        scheduler.req_to_token_pool.enable_mamba_extra_buffer = True
+        message = "extra tracking buffers"
     else:
         allocator_type = (
             PureSWATokenToKVPoolAllocator

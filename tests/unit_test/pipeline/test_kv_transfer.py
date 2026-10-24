@@ -56,6 +56,7 @@ class PagedRelay(FakeRelay):
         super().__init__()
         self.tp_rank = tp_rank
         self.put_ops: list[FakeOp] = []
+        self.buffer_index_calls = []
         self.get_calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
         self.received_source_tp_ranks: list[int] = []
 
@@ -71,6 +72,7 @@ class PagedRelay(FakeRelay):
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, Any],
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
         transfer_id: str | None = None,
     ) -> FakeOp:
         del source_pool_id, destination_ref, transfer_id
@@ -93,9 +95,14 @@ class PagedRelay(FakeRelay):
         destination_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
+        destination_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
         request_id: str,
         transfer_id: str | None = None,
     ) -> FakeOp:
+        self.buffer_index_calls.append(
+            (source_buffer_page_indices, destination_buffer_page_indices)
+        )
         assert metadata["fake_kv"] is True
         self.received_source_tp_ranks.append(metadata["source_tp_rank"])
         self.get_calls.append(
@@ -168,6 +175,8 @@ class BlockingPagedRelay(PagedRelay):
         destination_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
+        destination_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
         request_id: str,
         transfer_id: str | None = None,
     ) -> FakeOp:
@@ -784,3 +793,57 @@ def test_kv_cleanup_aborts_reserved_destination() -> None:
     destination.cleanup("request")
 
     assert receiver.aborted == ["request"]
+
+
+def test_one_transfer_can_address_token_pages_and_request_state_separately():
+    pool = KVPool(
+        pool_id="hybrid",
+        layout_id="test",
+        page_size=1,
+        buffers=(
+            KVBufferRegion("tokens", torch.zeros(16, 4, dtype=torch.uint8), 4),
+            KVBufferRegion("state", torch.zeros(2, 8, dtype=torch.uint8), 8),
+        ),
+    )
+    pool.validate_page_indices((10, 11, 12), {"state": (1,)})
+    with pytest.raises(ValueError, match="state"):
+        pool.validate_page_indices((10, 11, 12))
+    with pytest.raises(ValueError, match="state"):
+        pool.validate_page_indices((10, 11, 12), {"state": (2,)})
+    with pytest.raises(ValueError, match="unknown"):
+        pool.validate_page_indices((10, 11, 12), {"other": (1,)})
+
+
+def test_buffer_indices_reach_relay_before_single_receiver_commit():
+    async def run():
+        relay, source, destination = await start_pair()
+        try:
+            source.register_kv_pool(make_pool("source_pool"))
+            destination.register_kv_pool(make_pool("destination_pool"))
+            receiver = Mock()
+            receiver.reserve.return_value = KVPageDestination(
+                "destination_pool", (0, 3), {"layer.0.kv": (2,)}
+            )
+            destination.register_kv_receiver("destination_pool", receiver)
+            lease = Mock()
+            await source.send_kv_pages(
+                request_id="request",
+                transfer_id="transfer",
+                source_pool_id="source_pool",
+                source_page_indices=(1, 4),
+                source_buffer_page_indices={"layer.0.kv": (5,)},
+                target_pool_id="destination_pool",
+                to_stage="destination",
+                lease=lease,
+            )
+            assert relay.buffer_index_calls == [
+                ({"layer.0.kv": (5,)}, {"layer.0.kv": (2,)})
+            ]
+            receiver.commit.assert_called_once()
+            receiver.abort.assert_not_called()
+            lease.release.assert_called_once()
+        finally:
+            await source.close()
+            await destination.close()
+
+    asyncio.run(run())

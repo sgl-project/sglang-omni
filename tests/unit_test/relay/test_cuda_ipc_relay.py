@@ -497,15 +497,20 @@ def assert_source_pool_unchanged(
 def assert_destination_mapping(
     pool: KVPool,
     backings: tuple[torch.Tensor, ...],
+    separate_state: bool = False,
 ) -> None:
-    source_for_destination = dict(
-        zip(
-            PAGED_DESTINATION_INDICES,
-            PAGED_SOURCE_INDICES,
-            strict=True,
-        )
-    )
     for buffer_index, region in enumerate(pool.buffers):
+        source_indices = (
+            (4,) if separate_state and region.name == "values" else PAGED_SOURCE_INDICES
+        )
+        destination_indices = (
+            (1,)
+            if separate_state and region.name == "values"
+            else PAGED_DESTINATION_INDICES
+        )
+        source_for_destination = dict(
+            zip(destination_indices, source_indices, strict=True)
+        )
         actual_pages = region.byte_view().view(
             PAGED_PAGE_COUNT,
             region.bytes_per_page,
@@ -515,7 +520,7 @@ def assert_destination_mapping(
             region.bytes_per_page,
             device=pool.device,
         ).view(PAGED_PAGE_COUNT, region.bytes_per_page)
-        selected_source_pages = source_pages[list(PAGED_SOURCE_INDICES)]
+        selected_source_pages = source_pages[list(source_indices)]
         for index, page in enumerate(selected_source_pages):
             for other_page in selected_source_pages[index + 1 :]:
                 assert not torch.equal(page, other_page)
@@ -573,7 +578,9 @@ def wait_for_receiver_close(
         raise RuntimeError(f"expected receiver cleanup message, received {kind!r}")
 
 
-def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_sender(
+    gpu: int, connection: Connection, result_q: mp.Queue, separate_state: bool = False
+) -> None:
     relay = None
     source_shared = False
     error: str | None = None
@@ -598,6 +605,7 @@ def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
             op = await relay.put_kv_pages(
                 source_pool_id=pool.pool_id,
                 source_page_indices=PAGED_SOURCE_INDICES,
+                source_buffer_page_indices={"values": (4,)} if separate_state else {},
                 destination_ref=destination_ref,
             )
             connection.send(("metadata", op.metadata))
@@ -636,7 +644,9 @@ def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
         )
 
 
-def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_receiver(
+    gpu: int, connection: Connection, result_q: mp.Queue, separate_state: bool = False
+) -> None:
     relay = None
     error: str | None = None
     try:
@@ -655,8 +665,10 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
         relay.register_kv_pool(pool)
         connection.send(("destination", relay.prepare_kv_destination(pool.pool_id)))
         metadata = recv_paged_message(connection, "metadata")
-        expected_size = len(PAGED_SOURCE_INDICES) * sum(
-            bytes_per_page for _, _, bytes_per_page, _, _ in PAGED_BUFFER_SPECS
+        expected_size = sum(
+            bytes_per_page
+            * (1 if separate_state and name == "values" else len(PAGED_SOURCE_INDICES))
+            for name, _, bytes_per_page, _, _ in PAGED_BUFFER_SPECS
         )
         assert metadata["transfer_info"]["size"] == expected_size
         storages = metadata["cuda_ipc_kv"]["storages"]
@@ -668,13 +680,17 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
                 metadata,
                 destination_pool_id=pool.pool_id,
                 source_page_indices=PAGED_SOURCE_INDICES,
+                source_buffer_page_indices={"values": (4,)} if separate_state else {},
                 destination_page_indices=PAGED_DESTINATION_INDICES,
+                destination_buffer_page_indices=(
+                    {"values": (1,)} if separate_state else {}
+                ),
                 request_id="paged-round-trip",
             )
             await op.wait_for_completion(timeout=PAGED_MESSAGE_TIMEOUT_S)
 
         asyncio.run(run())
-        assert_destination_mapping(pool, backings)
+        assert_destination_mapping(pool, backings, separate_state)
         connection.send(("ack", None))
         recv_paged_message(connection, "sender_done")
     except Exception:
@@ -698,7 +714,9 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
         )
 
 
-def run_paged_case(gpu: int) -> None:
+def run_paged_case(
+    gpu: int, *, separate_state: bool = False, destination_gpu: int | None = None
+) -> None:
     assert PAGED_SOURCE_INDICES != PAGED_DESTINATION_INDICES
     assert len(PAGED_SOURCE_INDICES) == len(PAGED_DESTINATION_INDICES)
     assert len(set(PAGED_SOURCE_INDICES)) == len(PAGED_SOURCE_INDICES)
@@ -710,11 +728,16 @@ def run_paged_case(gpu: int) -> None:
     result_q = ctx.Queue()
     sender = ctx.Process(
         target=paged_sender,
-        args=(gpu, sender_connection, result_q),
+        args=(gpu, sender_connection, result_q, separate_state),
     )
     receiver = ctx.Process(
         target=paged_receiver,
-        args=(gpu, receiver_connection, result_q),
+        args=(
+            gpu if destination_gpu is None else destination_gpu,
+            receiver_connection,
+            result_q,
+            separate_state,
+        ),
     )
     sender.start()
     receiver.start()
@@ -771,3 +794,13 @@ def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
 )
 def test_cuda_ipc_cross_gpu_round_trip() -> None:
     run_case(0, 1)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("destination_gpu", [0, 1], ids=["same_gpu", "cross_gpu"])
+def test_cuda_ipc_token_pages_and_state_slot_share_one_completion(destination_gpu):
+    if torch.cuda.device_count() <= destination_gpu:
+        pytest.skip("requires the selected CUDA GPUs")
+    else:
+        pass
+    run_paged_case(0, separate_state=True, destination_gpu=destination_gpu)
