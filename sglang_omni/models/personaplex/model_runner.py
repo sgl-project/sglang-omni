@@ -13,7 +13,7 @@ frame streamed to the codec.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import groupby
 from typing import Protocol
 
@@ -33,7 +33,11 @@ from sglang_omni.models.personaplex.architecture import (
     USER_STREAM_OFFSET,
 )
 from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
-from sglang_omni.models.personaplex.timeline import Timeline, output_frame
+from sglang_omni.models.personaplex.timeline import (
+    Timeline,
+    output_frame,
+    reserve_history_rows,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
 
@@ -49,6 +53,10 @@ class DecodeFeedback:
     text_token: torch.Tensor | None = None
     launched_frames: int = 0
     audio_rng_state: torch.Tensor | None = None
+    user_rows_storage: torch.Tensor = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.user_rows_storage = self.user_rows
 
 
 @dataclass(kw_only=True)
@@ -122,12 +130,13 @@ class PersonaPlexModelRunner(ModelRunner):
             inputs["decode_feedback"] = cached
         elif cached.user_rows.shape[0] < timeline.user_rows.shape[0]:
             num_copied = cached.user_rows.shape[0]
-            cached.user_rows = torch.cat(
-                [
-                    cached.user_rows,
-                    timeline.user_rows[num_copied:].to(self.model_device),
-                ]
+            required_rows = timeline.user_rows.shape[0]
+            storage = reserve_history_rows(
+                cached.user_rows_storage, num_copied, required_rows
             )
+            storage[num_copied:required_rows].copy_(timeline.user_rows[num_copied:])
+            cached.user_rows_storage = storage
+            cached.user_rows = storage[:required_rows]
         else:
             pass
         return cached

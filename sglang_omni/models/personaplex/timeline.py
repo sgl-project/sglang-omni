@@ -20,7 +20,7 @@ row f+1 exists: its first codebook lives at f, the rest at f+1.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -44,6 +44,19 @@ from sglang_omni.models.personaplex.architecture import (
 REFERENCE_CACHE_POSITIONS = MAX_DELAY + 3
 
 UNKNOWN = -1
+
+
+def reserve_history_rows(
+    storage: torch.Tensor, valid_rows: int, required_rows: int
+) -> torch.Tensor:
+    """Grow history geometrically, preserving only its valid prefix."""
+    if required_rows <= storage.shape[0]:
+        return storage
+    else:
+        capacity_rows = max(required_rows, 2 * storage.shape[0])
+        expanded = storage.new_empty((capacity_rows, *storage.shape[1:]))
+        expanded[:valid_rows].copy_(storage[:valid_rows])
+        return expanded
 
 
 def delay_stream(
@@ -163,6 +176,12 @@ class Timeline:
     user_rows: torch.Tensor
     num_prompt_positions: int
     num_frames: int
+    user_frames_storage: torch.Tensor = field(init=False, repr=False)
+    user_rows_storage: torch.Tensor = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.user_frames_storage = self.user_frames
+        self.user_rows_storage = self.user_rows
 
     def input_position(self, forward_index: int) -> int:
         """Position of the row forward j consumes (j = 0: last prefill row)."""
@@ -173,9 +192,38 @@ class Timeline:
 
         Rows already laid out are unchanged, so a copy of them stays valid.
         """
-        self.user_frames = torch.cat([self.user_frames, codes_FK.to(torch.long)])
-        self.user_rows = delay_user_frames(self.user_frames)
-        self.num_frames += int(codes_FK.shape[0])
+        if codes_FK.ndim != 2 or codes_FK.shape[1] != AUDIO_CODEBOOKS_PER_STREAM:
+            raise ValueError("caller codes must have shape [frames, 8]")
+        else:
+            pass
+        added_frames = int(codes_FK.shape[0])
+        if added_frames == 0:
+            return
+        else:
+            pass
+        valid_rows = self.user_frames.shape[0]
+        required_rows = valid_rows + added_frames
+        frames_storage = reserve_history_rows(
+            self.user_frames_storage, valid_rows, required_rows
+        )
+        rows_storage = reserve_history_rows(
+            self.user_rows_storage, valid_rows, required_rows
+        )
+        frames_storage[valid_rows:required_rows].copy_(codes_FK)
+        rows_storage[valid_rows:required_rows].fill_(AUDIO_INITIAL_ID)
+        for stream, delay in enumerate(DELAYS[USER_STREAM_OFFSET:]):
+            first_row = max(valid_rows, delay + 1)
+            if first_row < required_rows:
+                rows_storage[first_row:required_rows, stream].copy_(
+                    frames_storage[first_row - delay : required_rows - delay, stream]
+                )
+            else:
+                pass
+        self.user_frames_storage = frames_storage
+        self.user_rows_storage = rows_storage
+        self.user_frames = frames_storage[:required_rows]
+        self.user_rows = rows_storage[:required_rows]
+        self.num_frames += added_frames
 
 
 def delay_user_frames(user_frames_FK: torch.Tensor) -> torch.Tensor:
