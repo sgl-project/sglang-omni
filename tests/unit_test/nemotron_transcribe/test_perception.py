@@ -89,7 +89,6 @@ def test_frontend_stays_fp32_when_built_under_bfloat16() -> None:
 
     perception.encoder.to(torch.bfloat16)
     perception.proj.to(torch.bfloat16)
-    perception.preprocessor.float()
     mel, _ = perception.preprocessor(torch.zeros(1, 16000), torch.tensor([16000]))
 
     assert mel.dtype == torch.float32

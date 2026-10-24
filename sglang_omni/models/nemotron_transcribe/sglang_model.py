@@ -182,13 +182,10 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             )
         else:
             pass
-        # Keep waveform preprocessing and per-feature normalization in fp32,
-        # matching the NeMo reference path. The encoder and projection still
-        # run in the serving dtype after normalization. Float the frontend
-        # again so mel.to(fb.dtype) cannot return the serving dtype.
+        # The encoder and projection run in the serving dtype. These casts do
+        # not reach the frontend, which the float above already keeps in fp32.
         self.perception.encoder.to(PERCEPTION_DTYPE)
         self.perception.proj.to(PERCEPTION_DTYPE)
-        self.perception.preprocessor.float()
         self.perception.eval()
         logger.info(f"Loaded {len(perception_weights)} perception tensors")
 

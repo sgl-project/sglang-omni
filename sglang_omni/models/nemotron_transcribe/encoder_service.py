@@ -418,8 +418,6 @@ class NemotronTranscribePreLMEncoderService(
         batch = [first]
         solo_samples = SOLO_WAVEFORM_SECONDS * _SAMPLE_RATE
         if waveform_samples(first.item) > solo_samples:
-            # A long clip is its own batch. Leave later arrivals queued so a
-            # 30-minute upload does not pad every short clip to its length.
             return batch, False
         else:
             pass
