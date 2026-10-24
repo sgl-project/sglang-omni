@@ -35,6 +35,8 @@ htmlcov/
 !CMakeLists.txt
 # Frozen judge prompts are hashed benchmark assets.
 !benchmarks/duplex/semantic/*.txt
+# The alignment worker's virtual environment is created from this file.
+!examples/streaming_cascade/requirements-alignment-worker.txt
 output.wav
 
 # OS

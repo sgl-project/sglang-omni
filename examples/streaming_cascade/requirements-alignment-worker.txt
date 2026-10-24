@@ -1,0 +1,14 @@
+# Packages of examples/streaming_cascade/alignment_worker.py. qwen-asr pins its own
+# transformers release, so install this file in a virtual environment of its own.
+qwen-asr==0.0.6
+fastapi
+uvicorn
+# Imported by the worker or by the sglang_omni modules it shares with the server.
+httpx
+msgpack
+msgspec
+numpy
+pydantic
+torch
+typing-extensions
+websockets

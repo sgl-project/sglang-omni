@@ -66,7 +66,7 @@ With the full-duplex server running, start the demo page in another terminal:
 python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080
 ```
 
-Thanks to the OpenMoss team for the demo page.
+The page server needs `aiohttp`, which the core dependencies already install. Thanks to the OpenMoss team for the demo page.
 
 Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine. Open the page through `localhost`, or the browser will not grant microphone access.
 
@@ -231,9 +231,12 @@ Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-customvoice
 
 ### The forced-alignment worker
 
-An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy` and `pydantic` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. Create that environment from `examples/streaming_cascade/requirements-alignment-worker.txt`, which lists `qwen-asr`, `fastapi` and `uvicorn` together with the packages of the modules the worker shares with the server (`httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic`, `torch`, `typing-extensions` and `websockets`), then start the worker from the repository root before `sgl-omni serve`:
 
 ```bash
+uv venv .venv-aligner -p 3.12
+source .venv-aligner/bin/activate
+uv pip install -r examples/streaming_cascade/requirements-alignment-worker.txt
 PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
 ```
 
@@ -253,7 +256,7 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+It needs `aiohttp`, which the core dependencies already install, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
 
 ### An OpenAI Realtime client or the Session API
 
