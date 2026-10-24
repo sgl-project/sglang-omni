@@ -55,8 +55,6 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3ResultAdapter,
 )
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
-    PHILOX_SEED_MODULUS,
-    CodebookSampler,
     triton_sampling_unsupported_reason,
 )
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
@@ -274,10 +272,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         elif unsupported_reason is not None:
             logger.info(f"Drama 3 codebook sampling: PyTorch, {unsupported_reason}")
         else:
-            audio_decoder.sampler = CodebookSampler(
-                step=audio_decoder.sampling_step,
-                seed=torch.cuda.initial_seed() % PHILOX_SEED_MODULUS,
-            )
+            audio_decoder.use_triton_kernels = True
             logger.info("Drama 3 codebook sampling: Triton kernels")
         kv_pool = sglang_runner.token_to_kv_pool
         assert isinstance(kv_pool, HybridLinearKVPool)

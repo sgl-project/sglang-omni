@@ -22,7 +22,6 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.sampling import RAS_WINDOW_FRAMES
-from sglang_omni.models.fishaudio_drama3.sampling_kernels import CodebookSampler
 from sglang_omni.models.fishaudio_drama3.sglang_model import (
     Drama3ForCausalLM,
     Drama3TowerPrefill,
@@ -321,6 +320,7 @@ class GraphRecordingModel(Drama3ForCausalLM):
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         self.draw_column = 0
@@ -334,6 +334,7 @@ class GraphRecordingModel(Drama3ForCausalLM):
             temperature,
             top_k,
             top_p,
+            seeds,
             forward_batch,
         )
 
@@ -345,7 +346,9 @@ class TopKTopPSampler(Protocol):
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
-        sampler: CodebookSampler | None,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+        use_triton_kernels: bool,
         stream_id: int,
     ) -> torch.Tensor: ...
 
@@ -364,11 +367,20 @@ class DrawRecorder:
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
-        sampler: CodebookSampler | None,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+        use_triton_kernels: bool,
         stream_id: int,
     ) -> torch.Tensor:
         candidate_columns = self.sample(
-            logits, temperature, top_k, top_p, sampler, stream_id
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            seeds,
+            positions,
+            use_triton_kernels,
+            stream_id,
         )
         recording_buffers = self.model.recording_buffers
         column = self.model.draw_column

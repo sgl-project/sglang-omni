@@ -561,22 +561,16 @@ def generator_offset_problems(
     ]
 
 
-def sampling_step_problems(run: GraphEngineRun, is_triton_sampling: bool) -> list[str]:
-    steps_per_forward = 1 if is_triton_sampling else 0
-    sampler_problems = (
-        []
-        if run.facts.uses_triton_sampling == is_triton_sampling
-        else [
+def sampling_backend_problems(
+    run: GraphEngineRun, is_triton_sampling: bool
+) -> list[str]:
+    if run.facts.uses_triton_sampling == is_triton_sampling:
+        return []
+    else:
+        return [
             f"{run.kind} engine: uses_triton_sampling is "
             f"{run.facts.uses_triton_sampling}, expected {is_triton_sampling}"
         ]
-    )
-    return sampler_problems + [
-        f"{forward_name(record)}: sampling step {record.sampling_step}, expected "
-        f"{steps_per_forward * (record.forward_index + 1)}"
-        for record in run.forwards
-        if record.sampling_step != steps_per_forward * (record.forward_index + 1)
-    ]
 
 
 def fused_layer_problems(run: GraphEngineRun, is_fused: bool) -> list[str]:

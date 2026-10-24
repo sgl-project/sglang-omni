@@ -27,7 +27,6 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     sample_semantic_with_ras,
     sample_top_k_top_p,
 )
-from sglang_omni.models.fishaudio_drama3.sampling_kernels import CodebookSampler
 from sglang_omni.models.fishaudio_drama3.weights import (
     checkpoint_part,
     expected_parameter_shards,
@@ -454,6 +453,7 @@ def run_decoder(
         torch.ones(row_count, device=device),
         torch.tensor(top_k, device=device),
         torch.ones(row_count, device=device),
+        torch.arange(row_count, device=device),
         attention,
     )
     return positions_after_prefill, frames
@@ -618,7 +618,9 @@ def test_main_token_takes_the_request_top_k_and_codebook_heads_at_most_30(
         top_p: torch.Tensor,
         semantic_begin_id: int,
         codebook_size: int,
-        sampler: CodebookSampler | None,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+        use_triton_kernels: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         main_token_top_ks.append(top_k.tolist())
         return sample_semantic_with_ras(
@@ -630,7 +632,9 @@ def test_main_token_takes_the_request_top_k_and_codebook_heads_at_most_30(
             top_p,
             semantic_begin_id,
             codebook_size,
-            sampler,
+            seeds,
+            positions,
+            use_triton_kernels,
         )
 
     def recorded_codebook_draw(
@@ -638,11 +642,22 @@ def test_main_token_takes_the_request_top_k_and_codebook_heads_at_most_30(
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
-        sampler: CodebookSampler | None,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+        use_triton_kernels: bool,
         stream_id: int,
     ) -> torch.Tensor:
         codebook_top_ks.append(top_k.tolist())
-        return sample_top_k_top_p(logits, temperature, top_k, top_p, sampler, stream_id)
+        return sample_top_k_top_p(
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            seeds,
+            positions,
+            use_triton_kernels,
+            stream_id,
+        )
 
     monkeypatch.setattr(
         f"{AudioDecoder.__module__}.sample_semantic_with_ras", recorded_main_token_draw

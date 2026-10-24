@@ -122,6 +122,7 @@ class Drama3PipelineConfig(PipelineConfig):
             "top_p",
             "top_k",
             "repetition_penalty",
+            "seed",
             "stream_audio",
             "split_granularity",
         }

@@ -16,6 +16,7 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     RAS_TEMPERATURE,
     RAS_TOP_K,
     RAS_TOP_P,
+    philox_exponential_noise,
     sample_semantic_with_ras,
     sample_top_k_top_p,
 )
@@ -48,6 +49,11 @@ def request_parameters(
     )
 
 
+def draw_keys(rows: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Distinct seeds and one shared position, so each row draws its own noise."""
+    return torch.arange(rows, dtype=torch.int64), torch.zeros(rows, dtype=torch.int64)
+
+
 def semantic_bias() -> torch.Tensor:
     bias = torch.full((TEXT_VOCAB_SIZE,), float("-inf"))
     bias[SEMANTIC_BEGIN_ID : SEMANTIC_BEGIN_ID + CODEBOOK_SIZE] = 0.0
@@ -69,7 +75,11 @@ def test_top_k_one_takes_the_argmax() -> None:
     logits = torch.randn(64, 32)
 
     sampled = sample_top_k_top_p(
-        logits, *request_parameters(64, 1.0, 1, 1.0), None, FIRST_CODEBOOK_HEAD_STREAM
+        logits,
+        *request_parameters(64, 1.0, 1, 1.0),
+        *draw_keys(64),
+        False,
+        FIRST_CODEBOOK_HEAD_STREAM,
     )
 
     assert torch.equal(sampled, logits.argmax(dim=-1))
@@ -86,7 +96,8 @@ def test_top_p_drops_the_token_that_crosses_p(
     sampled = sample_top_k_top_p(
         logits,
         *request_parameters(DRAW_COUNT, 1.0, 3, top_p),
-        None,
+        *draw_keys(DRAW_COUNT),
+        False,
         FIRST_CODEBOOK_HEAD_STREAM,
     )
 
@@ -124,7 +135,8 @@ def test_semantic_nucleus_keeps_crossing_eos_without_exempting_it_from_top_p(
         *request_parameters(DRAW_COUNT, 1.0, 30, top_p),
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(DRAW_COUNT),
+        False,
     )
 
     expected_tokens = (
@@ -143,7 +155,8 @@ def test_top_k_and_temperature_limit_the_candidates() -> None:
     sampled = sample_top_k_top_p(
         logits,
         *request_parameters(DRAW_COUNT, 5.0, 2, 1.0),
-        None,
+        *draw_keys(DRAW_COUNT),
+        False,
         FIRST_CODEBOOK_HEAD_STREAM,
     )
 
@@ -157,7 +170,13 @@ def test_sampling_keeps_inputs_and_returns_int64_ids() -> None:
     originals = [tensor.clone() for tensor in (logits, temperature, top_k, top_p)]
 
     sampled = sample_top_k_top_p(
-        logits, temperature, top_k, top_p, None, FIRST_CODEBOOK_HEAD_STREAM
+        logits,
+        temperature,
+        top_k,
+        top_p,
+        *draw_keys(4),
+        False,
+        FIRST_CODEBOOK_HEAD_STREAM,
     )
 
     assert sampled.dtype == torch.int64
@@ -184,7 +203,6 @@ def test_candidate_columns_match_the_same_row_taken_from_the_full_vocabulary() -
     candidates = candidate_token_ids()
     window = torch.full((rows, 16), EMPTY_WINDOW_TOKEN)
     parameters = request_parameters(rows, 1.0, 30, 0.9)
-    torch.manual_seed(1)
     from_vocabulary, from_vocabulary_codes = sample_semantic_with_ras(
         logits,
         candidates,
@@ -192,9 +210,9 @@ def test_candidate_columns_match_the_same_row_taken_from_the_full_vocabulary() -
         *parameters,
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
-    torch.manual_seed(1)
     from_columns, from_column_codes = sample_semantic_with_ras(
         logits[:, candidates],
         candidates,
@@ -202,7 +220,8 @@ def test_candidate_columns_match_the_same_row_taken_from_the_full_vocabulary() -
         *parameters,
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
 
     assert torch.equal(from_vocabulary, from_columns)
@@ -216,14 +235,14 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
     temperature, top_k, top_p = request_parameters(rows, 1.0, 1, 1.0)
     candidates = candidate_token_ids()
     candidate_logits = logits[:, candidates]
-    torch.manual_seed(3)
     first_draw = candidates[
         sample_top_k_top_p(
             candidate_logits,
             temperature,
             top_k,
             top_p,
-            None,
+            *draw_keys(rows),
+            False,
             FIRST_DRAW_STREAM,
             keep_top_p_crossing_token=True,
         )
@@ -232,7 +251,8 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
         sample_top_k_top_p(
             candidate_logits,
             *request_parameters(rows, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P),
-            None,
+            *draw_keys(rows),
+            False,
             RAS_DRAW_STREAM,
             keep_top_p_crossing_token=True,
         )
@@ -241,7 +261,6 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
     window[::2, 7] = first_draw[::2]
     is_repeat = torch.tensor([True, False] * (rows // 2))
 
-    torch.manual_seed(3)
     main_tokens, codebook_zero = sample_semantic_with_ras(
         logits,
         candidate_token_ids(),
@@ -251,7 +270,8 @@ def test_ras_takes_the_second_draw_exactly_when_a_semantic_first_draw_repeats() 
         top_p,
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
 
     assert torch.equal(first_draw, torch.full((rows,), SEMANTIC_BEGIN_ID + 5))
@@ -281,14 +301,14 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
         sorted([eos_token_id, *range(SEMANTIC_BEGIN_ID, semantic_end_id + 1)])
     )
     candidate_logits = logits[:, candidates]
-    torch.manual_seed(3)
     first_draw = candidates[
         sample_top_k_top_p(
             candidate_logits,
             temperature,
             top_k,
             top_p,
-            None,
+            *draw_keys(rows),
+            False,
             FIRST_DRAW_STREAM,
             keep_top_p_crossing_token=True,
         )
@@ -297,7 +317,8 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
         sample_top_k_top_p(
             candidate_logits,
             *request_parameters(rows, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P),
-            None,
+            *draw_keys(rows),
+            False,
             RAS_DRAW_STREAM,
             keep_top_p_crossing_token=True,
         )
@@ -306,7 +327,6 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
     window[:, 3] = eos_token_id
     window[:, 9] = repeated_semantic_token
 
-    torch.manual_seed(3)
     main_tokens, codebook_zero = sample_semantic_with_ras(
         logits,
         candidates,
@@ -316,7 +336,8 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
         top_p,
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
 
     assert torch.equal(first_draw, top_token_ids)
@@ -328,27 +349,71 @@ def test_ras_keeps_repeated_eos_and_replaces_repeated_semantic(band_edge: str) -
     )
 
 
-def test_ras_draws_the_same_random_numbers_with_or_without_a_hit() -> None:
-    rows = 4
-    logits = ras_logits(rows)
-    parameters = request_parameters(rows, 1.0, 1, 1.0)
-    hit_window = torch.full((rows, 16), SEMANTIC_BEGIN_ID + 5)
-    miss_window = torch.full((rows, 16), EMPTY_WINDOW_TOKEN)
-    next_numbers = []
-    for window in (hit_window, miss_window):
-        torch.manual_seed(5)
-        sample_semantic_with_ras(
-            logits,
-            candidate_token_ids(),
-            window,
-            *parameters,
-            SEMANTIC_BEGIN_ID,
-            CODEBOOK_SIZE,
-            None,
-        )
-        next_numbers.append(torch.rand(3))
+def test_noise_follows_the_philox_known_answer() -> None:
+    """Philox-4x32-10 with an all-zero counter and key starts with 0x6627e8d5."""
+    noise = philox_exponential_noise(
+        torch.zeros(1, dtype=torch.int64), torch.zeros(1, dtype=torch.int64), 0, 1
+    )
 
-    assert torch.equal(next_numbers[0], next_numbers[1])
+    uniform_bits = float(torch.exp(-noise.double())[0, 0]) * (1 << 23) - 0.5
+    assert abs(uniform_bits - (0x6627E8D5 >> 9)) <= 1
+
+
+def test_a_row_draws_the_same_tokens_whatever_batch_it_is_in() -> None:
+    """Seed and position fix a row's draws, not its row index or its neighbours."""
+    rows = 6
+    logits = torch.randn(rows, 64)
+    parameters = request_parameters(rows, 1.0, 30, 0.9)
+    seeds = torch.arange(100, 100 + rows)
+    positions = torch.arange(7, 7 + rows)
+
+    batch_draws = sample_top_k_top_p(
+        logits, *parameters, seeds, positions, False, FIRST_CODEBOOK_HEAD_STREAM
+    )
+    order = torch.tensor([4, 1, 5, 0, 3, 2])
+    shuffled_draws = sample_top_k_top_p(
+        logits[order],
+        *(parameter[order] for parameter in parameters),
+        seeds[order],
+        positions[order],
+        False,
+        FIRST_CODEBOOK_HEAD_STREAM,
+    )
+    single_draw = sample_top_k_top_p(
+        logits[2:3],
+        *(parameter[2:3] for parameter in parameters),
+        seeds[2:3],
+        positions[2:3],
+        False,
+        FIRST_CODEBOOK_HEAD_STREAM,
+    )
+
+    assert torch.equal(shuffled_draws, batch_draws[order])
+    assert torch.equal(single_draw, batch_draws[2:3])
+
+
+def test_seed_position_and_stream_each_change_the_draws() -> None:
+    rows = 512
+    logits = torch.zeros(rows, 64)
+    parameters = request_parameters(rows, 1.0, 64, 1.0)
+    seeds = torch.full((rows,), 11)
+    positions = torch.zeros(rows, dtype=torch.int64)
+
+    def draw(seeds: torch.Tensor, positions: torch.Tensor, stream_id: int):
+        return sample_top_k_top_p(
+            logits, *parameters, seeds, positions, False, stream_id
+        )
+
+    baseline = draw(seeds, positions, FIRST_CODEBOOK_HEAD_STREAM)
+
+    assert torch.equal(baseline, draw(seeds, positions, FIRST_CODEBOOK_HEAD_STREAM))
+    assert not torch.equal(
+        baseline, draw(seeds + 1, positions, FIRST_CODEBOOK_HEAD_STREAM)
+    )
+    assert not torch.equal(
+        baseline, draw(seeds, positions + 1, FIRST_CODEBOOK_HEAD_STREAM)
+    )
+    assert not torch.equal(baseline, draw(seeds, positions, FIRST_DRAW_STREAM))
 
 
 def test_semantic_sampling_allows_only_the_band_and_eos() -> None:
@@ -365,7 +430,8 @@ def test_semantic_sampling_allows_only_the_band_and_eos() -> None:
         *request_parameters(rows, 1.0, TEXT_VOCAB_SIZE, 1.0),
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
     logits[:, EOS_TOKEN_ID] = 9.0
     eos_tokens, eos_codebook_zero = sample_semantic_with_ras(
@@ -375,7 +441,8 @@ def test_semantic_sampling_allows_only_the_band_and_eos() -> None:
         *request_parameters(rows, 1.0, 1, 1.0),
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
 
     allowed = set(range(SEMANTIC_BEGIN_ID, SEMANTIC_BEGIN_ID + CODEBOOK_SIZE)) | {
@@ -398,7 +465,8 @@ def test_ras_window_must_hold_sixteen_frames() -> None:
             *request_parameters(1, 1.0, 1, 1.0),
             SEMANTIC_BEGIN_ID,
             CODEBOOK_SIZE,
-            None,
+            *draw_keys(1),
+            False,
         )
 
 
@@ -415,13 +483,18 @@ def test_top_k_one_takes_the_token_the_biased_full_row_takes() -> None:
         *parameters,
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(rows),
+        False,
     )
 
     assert torch.equal(
         main_tokens,
         sample_top_k_top_p(
-            logits + semantic_bias(), *parameters, None, FIRST_DRAW_STREAM
+            logits + semantic_bias(),
+            *parameters,
+            *draw_keys(rows),
+            False,
+            FIRST_DRAW_STREAM,
         ),
     )
 
@@ -453,22 +526,26 @@ def test_tied_top_tokens_resolve_as_in_the_biased_full_row_on_the_device() -> No
     for token_id in (eos_token_id, semantic_begin_id + 5, semantic_begin_id + 900):
         logits[:, token_id] = top_logits
     parameters = tuple(
-        tensor.cuda() for tensor in request_parameters(rows, 1.0, 1, 1.0)
+        tensor.cuda()
+        for tensor in (*request_parameters(rows, 1.0, 1, 1.0), *draw_keys(rows))
     )
 
     main_tokens, _ = sample_semantic_with_ras(
         logits,
         candidates,
         torch.full((rows, 16), EMPTY_WINDOW_TOKEN, device="cuda"),
-        *parameters,
+        *parameters[:3],
         semantic_begin_id,
         codebook_size,
-        None,
+        *parameters[3:],
+        False,
     )
 
     assert torch.equal(
         main_tokens,
-        sample_top_k_top_p(logits.float() + bias, *parameters, None, FIRST_DRAW_STREAM),
+        sample_top_k_top_p(
+            logits.float() + bias, *parameters, False, FIRST_DRAW_STREAM
+        ),
     )
     assert set(main_tokens.tolist()) == {eos_token_id}
 
@@ -522,7 +599,8 @@ def test_semantic_draws_follow_the_top_k_top_p_rule(
         *request_parameters(draw_count, temperature, top_k, top_p),
         SEMANTIC_BEGIN_ID,
         CODEBOOK_SIZE,
-        None,
+        *draw_keys(draw_count),
+        False,
     )
 
     columns = torch.searchsorted(candidates, main_tokens)
@@ -573,7 +651,9 @@ def test_sampling_imports_and_samples_on_pytorch_without_triton() -> None:
                 head_codes = sampling.sample_top_k_top_p(
                     torch.randn(rows, 64),
                     *parameters,
-                    None,
+                    torch.arange(rows),
+                    torch.zeros(rows, dtype=torch.int64),
+                    False,
                     sampling_kernels.FIRST_CODEBOOK_HEAD_STREAM,
                 )
                 assert head_codes.dtype == torch.int64
@@ -586,7 +666,9 @@ def test_sampling_imports_and_samples_on_pytorch_without_triton() -> None:
                     *parameters,
                     8,
                     64,
-                    None,
+                    torch.arange(rows),
+                    torch.zeros(rows, dtype=torch.int64),
+                    False,
                 )
                 assert bool(torch.isin(main_tokens, candidates).all())
                 assert torch.equal(codebook_zero, (main_tokens - 8).clamp(0, 63))

@@ -432,6 +432,7 @@ def test_generation_field_given_a_value_reaches_the_params(
 SUPPORTED_SPEECH_FIELDS = frozenset(
     {"input", "voice", "response_format", "references", "temperature"}
 )
+SEEDED_SPEECH_FIELDS = SUPPORTED_SPEECH_FIELDS | {"seed"}
 REFUSED_SPEECH_FIELDS: dict[str, tuple[dict[str, object], str]] = {
     "unknown-null": ({"stage_sampling": None}, "stage_sampling"),
     "unknown-false": ({"infill": False}, "infill"),
@@ -467,6 +468,29 @@ def test_speech_fields_without_a_supported_set_keep_ignoring_extras() -> None:
     request = service.parse_raw_request({"input": "hello", "infill": False})
 
     assert request.input == "hello"
+
+
+def test_only_a_seed_declaring_pipeline_assigns_unseeded_seeds() -> None:
+    assert SpeechRequestValidator(
+        default_model="tts", supported_speech_fields=SEEDED_SPEECH_FIELDS
+    ).assigns_unseeded_seeds
+    assert not SpeechRequestValidator(
+        default_model="tts", supported_speech_fields=SUPPORTED_SPEECH_FIELDS
+    ).assigns_unseeded_seeds
+    assert not SpeechRequestValidator(default_model="tts").assigns_unseeded_seeds
+
+
+def test_preparing_a_speech_request_keeps_its_seed_as_given() -> None:
+    """The HTTP entry assigns missing seeds; shared preparation never does."""
+    service = SpeechRequestValidator(
+        default_model="tts", supported_speech_fields=SEEDED_SPEECH_FIELDS
+    )
+
+    assert (
+        service.parse_generation_request({"input": "hello", "seed": 7}).request.seed
+        == 7
+    )
+    assert service.parse_generation_request({"input": "hello"}).request.seed is None
 
 
 def test_supported_speech_fields_treat_null_protocol_fields_as_unset() -> None:

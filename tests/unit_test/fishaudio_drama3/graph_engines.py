@@ -305,6 +305,7 @@ class GraphSchedulerDriver:
                 temperature=request_spec.temperature,
                 top_k=request_spec.top_k,
                 top_p=request_spec.top_p,
+                seed=request_spec.seed,
             ),
         )
         self.scheduler.inbox.put(
@@ -493,7 +494,7 @@ def engine_facts(
         ),
         lean_attention_override=full_attention_backend.enable_lean_attention,
         startup_lean_choices=list(builder.lean_choice_recorder.choices),
-        uses_triton_sampling=model.audio_decoder.sampler is not None,
+        uses_triton_sampling=model.audio_decoder.use_triton_kernels,
         uses_fused_tower_layers=model.audio_decoder.fused_layers is not None,
         fused_max_rows=(
             None
@@ -544,10 +545,9 @@ def run_engine(spec: GraphEngineSpec) -> GraphEngineRun:
     assert isinstance(runner, GraphRecordingRunner)
     runner.abort_inbox = scheduler.inbox
     runner.lean_choice_recorder = builder.lean_choice_recorder
-    # Graph capture drew random numbers after the worker seeded them; both
-    # engines start serving from the same generator state.
+    # Sampling draws from request seeds, not this generator; reseeding it keeps
+    # any other random use in step across the two engines.
     torch.manual_seed(spec.random_seed)
-    model.audio_decoder.sampling_step.zero_()
     facts = engine_facts(scheduler, model, builder)
     logger.info(f"Drama 3 graph test engine ({spec.kind}): {facts}")
     driver = GraphSchedulerDriver(scheduler, runner, spec.prompts)

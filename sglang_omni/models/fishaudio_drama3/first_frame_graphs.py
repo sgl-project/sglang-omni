@@ -35,6 +35,7 @@ class FirstFrameSampler(Protocol):
         temperature: torch.Tensor,
         top_k: torch.Tensor,
         top_p: torch.Tensor,
+        seeds: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor: ...
 
@@ -49,6 +50,7 @@ class FirstFrameInputs:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    seeds: torch.Tensor
     request_pool_indices: torch.Tensor
     sequence_lengths: torch.Tensor
     cache_slots: torch.Tensor
@@ -139,6 +141,7 @@ class Drama3FirstFrameGraphs:
             ),
             top_k=torch.ones(max_request_count, dtype=torch.int64, device=device),
             top_p=torch.ones(max_request_count, dtype=torch.float32, device=device),
+            seeds=torch.zeros(max_request_count, dtype=torch.int64, device=device),
             request_pool_indices=torch.zeros(
                 max_request_count, dtype=torch.int64, device=device
             ),
@@ -190,6 +193,7 @@ class Drama3FirstFrameGraphs:
                     rows.temperature,
                     rows.top_k,
                     rows.top_p,
+                    rows.seeds,
                     forward_batch,
                 )
                 try:

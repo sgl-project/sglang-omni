@@ -86,6 +86,7 @@ from sglang_omni.http.admin_auth import (
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.session import SessionLimits
+from sglang_omni.sampling.seed import resolve_row_seed
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -1896,6 +1897,12 @@ def register_speech(app: FastAPI) -> None:
                 speech_service.parse_generation_request, payload
             )
             req = prepared.request
+            # Only this entry echoes the seed, so only it resolves one; batch items
+            # and WebSocket sentences keep a fresh seed per request.
+            if speech_service.assigns_unseeded_seeds:
+                req = req.model_copy(update={"seed": resolve_row_seed(req.seed)})
+            else:
+                pass
             gen_req = speech_service.build_generate_request(
                 req,
                 validate=False,
@@ -1911,7 +1918,7 @@ def register_speech(app: FastAPI) -> None:
 
         if req.stream:
             try:
-                return await speech_audio_response(
+                stream_response = await speech_audio_response(
                     request=request,
                     client=client,
                     gen_req=gen_req,
@@ -1928,6 +1935,11 @@ def register_speech(app: FastAPI) -> None:
                     exc,
                     unexpected_message="Error preparing speech stream for request %s",
                 )
+            if speech_service.assigns_unseeded_seeds:
+                stream_response.headers["X-Seed"] = str(req.seed)
+            else:
+                pass
+            return stream_response
         else:
             pass
 
@@ -1956,6 +1968,10 @@ def register_speech(app: FastAPI) -> None:
             # travels in the same X- header channel as usage.
             "X-Finish-Reason": result.finish_reason,
         }
+        if speech_service.assigns_unseeded_seeds:
+            headers["X-Seed"] = str(req.seed)
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {

@@ -27,6 +27,7 @@ class Drama3StepInputs:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    seeds: torch.Tensor
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -39,6 +40,7 @@ class Drama3DecodeBuffers:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    seeds: torch.Tensor
     sampled_frames: torch.Tensor
 
     @classmethod
@@ -58,6 +60,7 @@ class Drama3DecodeBuffers:
             temperature=torch.ones(row_count, dtype=torch.float32, device=device),
             top_k=torch.ones(row_count, dtype=torch.int64, device=device),
             top_p=torch.ones(row_count, dtype=torch.float32, device=device),
+            seeds=torch.zeros(row_count, dtype=torch.int64, device=device),
             sampled_frames=torch.zeros_like(frames),
         )
 

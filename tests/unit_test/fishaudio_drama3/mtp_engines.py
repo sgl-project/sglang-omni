@@ -256,6 +256,7 @@ class RecordingDrama3Model(Drama3ForCausalLM):
                 temperature=decode_buffers.temperature[:row_count].clone(),
                 top_k=decode_buffers.top_k[:row_count].clone(),
                 top_p=decode_buffers.top_p[:row_count].clone(),
+                seeds=decode_buffers.seeds[:row_count].clone(),
             )
             decode_buffers.ras_windows[:row_count].fill_(EMPTY_RAS_SLOT)
         # The staged frames carry the batch's tokens as their main tokens.
@@ -560,6 +561,7 @@ class SchedulerDriver:
                 temperature=SAMPLING_TEMPERATURE,
                 top_k=1,
                 top_p=1.0,
+                seed=0,
             ),
         )
         self.scheduler.inbox.put(

@@ -637,6 +637,7 @@ def test_the_frame_streamer_has_sent_every_window_when_the_vocoder_decodes_it(
         stage_payload=final_payload(frames, is_streaming=True),
         frame_rows=[[0] * (1 + NUM_CODEBOOKS)] * PROMPT_ROW_COUNT,
         prompt_row_count=PROMPT_ROW_COUNT,
+        seed=0,
     )
     streamed_counts: list[int] = []
     for chunk_id, frame_row in enumerate(frames.tolist()):
@@ -688,6 +689,7 @@ def vocoded_through_the_engine(
         stage_payload=payload,
         frame_rows=[[0] * (1 + NUM_CODEBOOKS)] * PROMPT_ROW_COUNT,
         prompt_row_count=PROMPT_ROW_COUNT,
+        seed=0,
     )
     eos_rows = [[STREAMER_EOS_TOKEN_ID] + [0] * NUM_CODEBOOKS] if ends_with_eos else []
     chunk_id = 0

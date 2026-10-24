@@ -994,6 +994,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["x-sglang-omni-output-tokens"] == "2"
     assert response.headers["x-sglang-omni-total-tokens"] == "7"
     assert response.headers["x-request-id"].startswith("speech-")
+    assert "x-seed" not in response.headers
     assert speech_client.speech_requests[0].model == "tts"
     assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
@@ -2072,6 +2073,51 @@ def test_supported_speech_fields_refuse_an_unknown_field_before_generation(
     assert response.json()["error"]["param"] == "stage_sampling"
     assert client_impl.generate_requests == []
     assert client_impl.speech_requests == []
+
+
+def test_speech_echoes_the_seed_it_generated_with() -> None:
+    """A pipeline that declares seed gets one for every request, given or not,
+    masked to the int31 the model samples with."""
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(
+        create_app(
+            speech_client,
+            model_name="tts",
+            supported_speech_fields=frozenset(
+                {"model", "input", "seed", "stream", "response_format"}
+            ),
+        )
+    )
+
+    given = client.post("/v1/audio/speech", json={"input": "hello", "seed": 42})
+    masked = client.post("/v1/audio/speech", json={"input": "hello", "seed": 2**40 + 5})
+    assigned = client.post("/v1/audio/speech", json={"input": "hello"})
+    streamed = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "stream": True, "response_format": "pcm"},
+    )
+
+    assert {given.status_code, masked.status_code, assigned.status_code} == {200}
+    assert streamed.status_code == 200
+    assert given.headers["x-seed"] == "42"
+    assert masked.headers["x-seed"] == "5"
+    assert [request.sampling.seed for request in speech_client.speech_requests] == [
+        42,
+        5,
+        int(assigned.headers["x-seed"]),
+    ]
+    assert speech_client.generate_requests[0].sampling.seed == int(
+        streamed.headers["x-seed"]
+    )
+
+
+def test_speech_without_a_seed_declaring_pipeline_echoes_no_seed() -> None:
+    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+
+    response = client.post("/v1/audio/speech", json={"input": "hello", "seed": 42})
+
+    assert response.status_code == 200
+    assert "x-seed" not in response.headers
 
 
 def test_speech_request_passes_only_the_set_sampling_fields() -> None:

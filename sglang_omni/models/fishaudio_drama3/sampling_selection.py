@@ -53,17 +53,16 @@ if HAS_TRITON:
     @triton.jit
     def exponential_noise(
         seed: tl.tensor,
-        step: tl.tensor,
-        row: tl.tensor,
+        position: tl.tensor,
         stream_id: tl.tensor,
         candidate_indices: tl.tensor,
     ) -> tl.tensor:
         random_bits, _, _, _ = tl.philox(
-            seed ^ ((step >> 32) << 32),
+            seed,
             candidate_indices.to(tl.uint32),
-            row,
+            0,
             stream_id,
-            (step & 0xFFFFFFFF).to(tl.uint32),
+            position.to(tl.uint32),
         )
         uniform = (
             (random_bits >> (32 - UNIFORM_MANTISSA_BITS)).to(tl.float32) + 0.5
@@ -206,14 +205,13 @@ if HAS_TRITON:
         selected_weights: tl.tensor,
         is_kept: tl.tensor,
         seed: tl.tensor,
-        step: tl.tensor,
-        row: tl.tensor,
+        position: tl.tensor,
         stream_id: tl.tensor,
     ) -> tl.tensor:
         race = tl.where(
             is_kept,
             selected_weights
-            / exponential_noise(seed, step, row, stream_id, selected_indices),
+            / exponential_noise(seed, position, stream_id, selected_indices),
             -1.0,
         )
         chosen_rank = tl.argmax(race, axis=0)
@@ -229,8 +227,7 @@ if HAS_TRITON:
         threshold_key: tl.tensor,
         top_key: tl.tensor,
         seed: tl.tensor,
-        step: tl.tensor,
-        row: tl.tensor,
+        position: tl.tensor,
         stream_id: tl.tensor,
         INDEX_BITS: tl.constexpr,
     ) -> tl.tensor:
@@ -240,7 +237,7 @@ if HAS_TRITON:
             main_is_kept,
             main_weights
             / exponential_noise(
-                seed, step, row, stream_id, key_indices(main_keys, INDEX_BITS)
+                seed, position, stream_id, key_indices(main_keys, INDEX_BITS)
             ),
             -1.0,
         )
@@ -248,7 +245,7 @@ if HAS_TRITON:
             tail_is_kept,
             tail_weights
             / exponential_noise(
-                seed, step, row, stream_id, key_indices(tail_keys, INDEX_BITS)
+                seed, position, stream_id, key_indices(tail_keys, INDEX_BITS)
             ),
             -1.0,
         )
@@ -271,8 +268,7 @@ if HAS_TRITON:
         top_k: tl.tensor,
         top_p: tl.tensor,
         seed: tl.tensor,
-        step: tl.tensor,
-        row: tl.tensor,
+        position: tl.tensor,
         stream_id: tl.tensor,
         INDEX_BITS: tl.constexpr,
         KEY_BITS: tl.constexpr,
@@ -291,7 +287,7 @@ if HAS_TRITON:
         )
         if holds_kept_set:
             chosen_index = race_selected(
-                selected_indices, selected_weights, is_kept, seed, step, row, stream_id
+                selected_indices, selected_weights, is_kept, seed, position, stream_id
             )
         else:
             threshold_key = search_threshold(
@@ -317,8 +313,7 @@ if HAS_TRITON:
                 threshold_key,
                 tl.max(top_keys, axis=0),
                 seed,
-                step,
-                row,
+                position,
                 stream_id,
                 INDEX_BITS,
             )

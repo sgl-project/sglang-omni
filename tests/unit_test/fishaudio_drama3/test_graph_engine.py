@@ -35,7 +35,7 @@ from tests.unit_test.fishaudio_drama3.graph_checks import (
     prompt_row_counts,
     replay_problems,
     resampled_choice_count,
-    sampling_step_problems,
+    sampling_backend_problems,
     schedule_problems,
     stray_write_problems,
     stream_problems,
@@ -715,7 +715,7 @@ def test_triton_sampling_engines_match_bit_for_bit_and_step_once_per_forward(
                 history_problems(run, pair.scenarios)
                 + finite_problems(run)
                 + outcome_problems(run)
-                + sampling_step_problems(run, is_on_validated_gpu(run))
+                + sampling_backend_problems(run, is_on_validated_gpu(run))
             )
         assert not problems, f"{name}:\n{first_problems(problems)}"
     eager_forwards = engine_runs.triton_main.eager.forwards
@@ -728,10 +728,12 @@ def test_triton_sampling_engines_match_bit_for_bit_and_step_once_per_forward(
     assert any(not record.is_extend for record in eager_forwards)
 
 
-def test_pytorch_sampling_engines_never_step(engine_runs: GraphEngineRuns) -> None:
+def test_pytorch_sampling_engines_use_no_triton_kernels(
+    engine_runs: GraphEngineRuns,
+) -> None:
     for name, pair in all_pairs(engine_runs).items():
         for run in (pair.eager, pair.graph):
-            problems = sampling_step_problems(run, False)
+            problems = sampling_backend_problems(run, False)
             assert not problems, f"{name} {run.kind}:\n{first_problems(problems)}"
 
 
