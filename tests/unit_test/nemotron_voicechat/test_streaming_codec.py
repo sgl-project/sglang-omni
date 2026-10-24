@@ -21,6 +21,7 @@ class FrameLocalDecoder:
     """
 
     samples_per_frame = SAMPLES_PER_FRAME
+    num_quantizers = NUM_QUANTIZERS
 
     def __init__(self):
         self.calls: list[int] = []
