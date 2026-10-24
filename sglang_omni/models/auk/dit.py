@@ -15,6 +15,8 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
+from sglang_omni.models.auk.seacache import SeaCacheState
+
 
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
@@ -653,6 +655,7 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        seacache: SeaCacheState | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
@@ -729,22 +732,56 @@ class AuKDit(nn.Module):
         else:
             pass
 
-        for block in self.transformer_blocks:
-            c, x = block(
-                x,
-                c,
-                t,
-                mask=audio_mask,
-                rope=rope_audio,
-                c_rope=rope_text,
-                c_mask=c_mask,
-                bias=joint_bias,
+        if seacache is not None:
+            if x.is_cuda:
+                filter_start, filter_end = (
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                )
+                filter_start.record()
+            lengths = (
+                audio_mask[:, prompt_len:].sum(dim=1)
+                if audio_mask is not None
+                else torch.full((x.shape[0],), seq_len - prompt_len, device=x.device)
             )
+            should_compute, _ = seacache.decide(x[:, prompt_len:], time[0], lengths)
+            if x.is_cuda:
+                filter_end.record()
+                seacache.timings.append(("filter", filter_start, filter_end))
+        else:
+            should_compute = True
 
-        x = torch.cat([c, x], dim=1)
-        rope = self.build_rope(text_len + seq_len, joint_positions)
-        for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+        if should_compute:
+            if seacache is not None and x.is_cuda:
+                blocks_start, blocks_end = (
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                )
+                blocks_start.record()
+            block_input = torch.cat([c, x], dim=1) if seacache is not None else None
+            for block in self.transformer_blocks:
+                c, x = block(
+                    x,
+                    c,
+                    t,
+                    mask=audio_mask,
+                    rope=rope_audio,
+                    c_rope=rope_text,
+                    c_mask=c_mask,
+                    bias=joint_bias,
+                )
+
+            x = torch.cat([c, x], dim=1)
+            rope = self.build_rope(text_len + seq_len, joint_positions)
+            for block in self.single_transformer_blocks:
+                x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+            if seacache is not None:
+                seacache.previous_residual = x - block_input
+                if x.is_cuda:
+                    blocks_end.record()
+                    seacache.timings.append(("dit", blocks_start, blocks_end))
+        else:
+            x = torch.cat([c, x], dim=1) + seacache.previous_residual
 
         x = x[:, text_len + prompt_len :]
         return self.proj_out(self.norm_out(x, t))
