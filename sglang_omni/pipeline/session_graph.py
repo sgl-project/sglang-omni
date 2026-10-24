@@ -531,12 +531,6 @@ class SessionGraphRunner(CoordinatorSessions):
             else:
                 pass
             if is_published and pacer is not None:
-                if output.turn in graph.reply_starts:
-                    pacer.reply_start_ms, pacer.reply_started_at = graph.reply_starts[
-                        output.turn
-                    ]
-                else:
-                    pass
                 size = self.reserve_graph_output(graph, name, output)
                 graph.output_bytes -= pacer.offer(output, size)
             elif is_published:
@@ -628,15 +622,6 @@ class SessionGraphRunner(CoordinatorSessions):
         elif event in (TURN_DONE, TURN_EMPTY, TURN_INTERRUPTED):
             graph.open_turns.discard(output.turn)
             graph.eos_wake.set()
-        else:
-            pass
-        if event == TURN_STARTED:
-            graph.reply_starts[output.turn] = (
-                output.t_start_ms,
-                asyncio.get_running_loop().time(),
-            )
-        elif event in (TURN_DONE, TURN_EMPTY, TURN_INTERRUPTED):
-            graph.reply_starts.pop(output.turn, None)
         else:
             pass
         published = replace(

@@ -190,7 +190,6 @@ class SessionGraphRuntime:
     output_end_ms: float = 0.0
     reply_start_ms: float = 0.0
     open_turns: set[int] = field(default_factory=set)
-    reply_starts: dict[int, tuple[float, float]] = field(default_factory=dict)
     eos_confirmed: set[str] = field(default_factory=set)
     eos_wake: asyncio.Event = field(default_factory=asyncio.Event)
     end_input: TimedChunk | None = None

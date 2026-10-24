@@ -167,7 +167,8 @@ class Coordinator(SessionGraphRunner):
                 caller names none; session_graph the node graph it is
                 instead. A pipeline declares one of them.
             max_output_lead_ms: How far ahead of real time, counted from
-                a reply's start, a Session delivers the reply's audio.
+                the release of a reply's first audio, a Session delivers the
+                reply's audio.
         """
         super().__init__(max_output_lead_ms)
         if session_route is not None and session_graph is not None:
