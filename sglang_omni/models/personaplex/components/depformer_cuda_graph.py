@@ -14,8 +14,9 @@ from sglang_omni.models.personaplex.components.depformer import Depformer
 from sglang_omni.models.personaplex.sampling import (
     AudioSampling,
     SamplingRun,
+    create_audio_token_sampler,
+    fill_batched_seeded_exponential_noises,
     fill_sampling_noise,
-    sample_runs,
     sample_token,
 )
 from sglang_omni.platforms import current_platform
@@ -39,6 +40,7 @@ class CapturedDepformerGraph:
     output_codes: torch.Tensor
     key_value_caches: list[torch.Tensor]
     sampling_noise: list[torch.Tensor]
+    counter_noise: torch.Tensor
 
 
 class DepformerCudaGraphRunner:
@@ -92,6 +94,16 @@ class DepformerCudaGraphRunner:
             )
             for rows, sampling in layout
         ]
+        max_candidate_count = max(
+            (noise.shape[2] for noise in sampling_noise), default=0
+        )
+        counter_noise = torch.ones(
+            self.model.spec.steps,
+            batch_size,
+            max_candidate_count,
+            dtype=torch.float32,
+            device=device,
+        )
 
         def generate_frame() -> None:
             noise_steps = iter(zip(*(noise.unbind(0) for noise in sampling_noise)))
@@ -137,6 +149,7 @@ class DepformerCudaGraphRunner:
             output_codes=output_codes,
             key_value_caches=key_value_caches,
             sampling_noise=sampling_noise,
+            counter_noise=counter_noise,
         )
 
     @torch.inference_mode()
@@ -228,17 +241,37 @@ class DepformerCudaGraphRunner:
                 text_tokens,
                 hidden_states,
                 forced_codes,
-                lambda logits: sample_runs(logits, runs),
+                create_audio_token_sampler(runs, self.model.spec.steps),
             )
         else:
             captured.text_tokens[:batch_size].copy_(text_tokens)
             captured.hidden_states[:batch_size].copy_(hidden_states)
             captured.forced_codes[:batch_size].copy_(forced_codes)
             # note (Kokoro2336): Preserve eager draw order and never draw for padded rows.
+            counter_run = next(
+                (run for run in runs if run.counter_seeds is not None), None
+            )
+            if counter_run is not None:
+                assert counter_run.counter_seeds is not None
+                assert counter_run.counter_frame_positions is not None
+                fill_batched_seeded_exponential_noises(
+                    captured.counter_noise,
+                    counter_run.counter_seeds,
+                    counter_run.counter_frame_positions,
+                )
+            else:
+                pass
             for step in range(self.model.spec.steps):
                 for run, noise in zip(runs, captured.sampling_noise, strict=True):
                     if run.sampling.greedy:
                         pass
+                    elif run.counter_seeds is not None:
+                        rows = len(run.generators)
+                        noise[step, :rows].copy_(
+                            captured.counter_noise[
+                                step, run.row_slice, : noise.shape[2]
+                            ]
+                        )
                     else:
                         rows = len(run.generators)
                         fill_sampling_noise(noise[step, :rows], run.generators)
