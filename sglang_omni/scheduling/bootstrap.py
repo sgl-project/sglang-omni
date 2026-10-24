@@ -124,6 +124,7 @@ def create_sglang_infrastructure(
     from sglang.srt.runtime_context import get_context, get_schedule, get_spec
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
+    from sglang_omni.model_runner.fa3_draft_width import install_fa3_draft_width
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
     from sglang_omni.model_runner.speculative_target_worker import (
         SpeculativeTargetWorker,
@@ -181,6 +182,10 @@ def create_sglang_infrastructure(
             "stage does not support speculative decoding"
         )
     else:
+        if speculative_algorithm.is_dspark():
+            install_fa3_draft_width()
+        else:
+            pass
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.
         target_worker = SpeculativeTargetWorker(model_worker)
