@@ -248,14 +248,14 @@ def test_each_verify_row_takes_its_request_length_penalty_and_suppress_set() -> 
 
 
 def speculative_runner(
-    hidden_rows: torch.Tensor, prefill_last_hidden: torch.Tensor | None
+    hidden_rows: torch.Tensor, prefill_hidden_rows: torch.Tensor | None
 ) -> MiniCPMOThinkerModelRunner:
     runner = bare_runner()
     runner.hands_hidden_to_talker = True
     runner.pending_hidden = {}
     runner.speculative_hidden_queue = {}
     runner.outer_model = SimpleNamespace(
-        speculative_hidden_rows=hidden_rows, prefill_last_hidden=prefill_last_hidden
+        speculative_hidden_rows=hidden_rows, prefill_hidden_rows=prefill_hidden_rows
     )
     return runner
 
@@ -292,16 +292,20 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
 
 
 def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
-    prefill_last_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    runner = speculative_runner(torch.zeros(16, 2), prefill_last_hidden)
-    batch = SimpleNamespace(reqs=[SimpleNamespace(rid="a"), SimpleNamespace(rid="b")])
+    extend_lens = [2, 3]
+    prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
+    runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
+    batch = SimpleNamespace(
+        reqs=[SimpleNamespace(rid="a"), SimpleNamespace(rid="b")],
+        extend_lens=extend_lens,
+    )
 
     runner.after_speculative_step(batch, None, is_prefill=True, num_draft_tokens=4)
     runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
     runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [OTHER_TOKEN_ID])
 
-    torch.testing.assert_close(committed_rows(runner, "a"), prefill_last_hidden[0:1])
-    torch.testing.assert_close(committed_rows(runner, "b"), prefill_last_hidden[1:2])
+    torch.testing.assert_close(committed_rows(runner, "a"), prefill_hidden_rows[1:2])
+    torch.testing.assert_close(committed_rows(runner, "b"), prefill_hidden_rows[4:5])
 
 
 def duplex_tokenizer() -> Mock:

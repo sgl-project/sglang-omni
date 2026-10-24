@@ -304,6 +304,7 @@ def test_speech_request_prefills_its_text() -> None:
 
     runner = object.__new__(MiniCPMOThinkerModelRunner)
     runner.pending_hidden = {}
+    runner.speculative_hidden_queue = {}
     thinker_request = SimpleNamespace(
         stage_payload=result,
         extra_model_outputs={},

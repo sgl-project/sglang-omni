@@ -171,13 +171,14 @@ def create_thinker_scheduler(
         speech_enabled
         and speculative
         and (
-            cfg.speculative_algorithm != "EAGLE3"
+            cfg.speculative_algorithm not in ("EAGLE3", "DFLASH", "DSPARK")
             or cfg.speculative_eagle_topk not in (None, 1)
         )
     ):
-        # note (0xtoward): the talker rows ride the EAGLE3 layer-capture hook.
+        # note (0xtoward): the talker rows ride the drafts' layer-capture hooks, and a
+        # linear verify block commits its leading rows.
         raise ValueError(
-            "speech output needs a chain EAGLE3 draft (topk 1), got "
+            "speech output needs an EAGLE3 chain (topk 1), DFLASH or DSPARK draft, got "
             f"{cfg.speculative_algorithm} topk={cfg.speculative_eagle_topk}"
         )
     else:

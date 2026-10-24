@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import torch
@@ -181,7 +182,11 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         if not self.hands_hidden_to_talker or model.speculative_hidden_rows is None:
             return
         elif is_prefill:
-            rows = model.prefill_last_hidden
+            last_rows = torch.tensor(
+                list(accumulate(batch.extend_lens)),
+                device=model.prefill_hidden_rows.device,
+            )
+            rows = model.prefill_hidden_rows[last_rows - 1]
             for index, req in enumerate(batch.reqs):
                 self.speculative_hidden_queue[req.rid] = rows[index : index + 1]
         else:

@@ -15,7 +15,7 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.minicpm_o.hf_config import derive_text_config
 
-# note (0xtoward): verify rows kept for the talker, room for every running request's block.
+# note (0xtoward): rows kept for the talker: every running request's verify block, or one prefill chunk.
 SPECULATIVE_HIDDEN_ROWS = 8192
 
 NON_TEXT_PREFIXES = (
@@ -45,7 +45,7 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             prefix=prefix,
         )
         self.speculative_hidden_rows: torch.Tensor | None = None
-        self.prefill_last_hidden: torch.Tensor | None = None
+        self.prefill_hidden_rows: torch.Tensor | None = None
 
     @property
     def thinker(self) -> "MiniCPMOThinkerForCausalLM":
@@ -73,23 +73,27 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         kwargs: dict[str, object],
         output: torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]],
     ) -> None:
-        """Keep every verify row, and the last row of each prefilled request."""
+        """Keep every verify row and every prefill row in fixed buffers."""
         forward_batch = args[2] if len(args) > 2 else kwargs["forward_batch"]
         hidden = output[0] if isinstance(output, tuple) else output
         forward_mode = forward_batch.forward_mode
         if forward_mode.is_target_verify():
             self.speculative_hidden_rows[: hidden.shape[0]].copy_(hidden)
         elif forward_mode.is_extend():
-            last_rows = (
-                forward_batch.extend_start_loc + forward_batch.extend_seq_lens - 1
-            )
-            self.prefill_last_hidden = hidden[last_rows.long()].clone()
+            self.prefill_hidden_rows[: hidden.shape[0]].copy_(hidden)
         else:
             pass
 
     def set_eagle3_layers_to_capture(self, layer_ids: list[int] | None = None) -> None:
         self.language_model.set_eagle3_layers_to_capture(layer_ids)
-        # note (0xtoward): the captured verify graph rewrites this fixed buffer on replay.
+        self.keep_hidden_rows_for_talker()
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        self.language_model.set_dflash_layers_to_capture(layer_ids)
+        self.keep_hidden_rows_for_talker()
+
+    def keep_hidden_rows_for_talker(self) -> None:
+        # note (0xtoward): captured verify and prefill graphs rewrite these fixed buffers on replay.
         head = self.language_model.lm_head.weight
         self.speculative_hidden_rows = torch.empty(
             SPECULATIVE_HIDDEN_ROWS,
@@ -97,12 +101,10 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             dtype=head.dtype,
             device=head.device,
         )
+        self.prefill_hidden_rows = torch.empty_like(self.speculative_hidden_rows)
         self.language_model.model.register_forward_hook(
             self.keep_speculative_hidden_rows, with_kwargs=True
         )
-
-    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
-        self.language_model.set_dflash_layers_to_capture(layer_ids)
 
     def forward(
         self,
