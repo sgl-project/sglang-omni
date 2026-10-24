@@ -32,7 +32,13 @@ FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
-FLOW_WARMUP_TOKENS = 32
+HIFT_WARMUP_TOKENS = 32
+# note (Dayuxiaoshui): Inductor autotunes each DiT kernel once, at the warmup shape.
+# At 2 CFG rows x 128 mel frames the launch configs tie and a fresh cache can keep
+# XBLOCK=1, about 4x slower at serving sizes; 8 rows x 900 frames (225 prompt plus
+# 225 speech tokens) ranks it last. Measured on H200.
+DIT_WARMUP_BATCH_SIZE = 4
+DIT_WARMUP_TOKENS = 225
 # note (0xtoward): dense Flow attention memory grows with rows x (reference + codec tokens)^2; a full batch of 16 rows up to 512 tokens stays one call.
 FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
 
@@ -163,10 +169,10 @@ class MiniCPMOCode2Wav(nn.Module):
                 )
             warmup_prompt = SpeakerPrompt(
                 prompt_tokens=torch.zeros(
-                    1, FLOW_WARMUP_TOKENS, dtype=torch.int32, device=resolved_device
+                    1, DIT_WARMUP_TOKENS, dtype=torch.int32, device=resolved_device
                 ),
                 prompt_token_lengths=torch.tensor(
-                    [FLOW_WARMUP_TOKENS], dtype=torch.int32, device=resolved_device
+                    [DIT_WARMUP_TOKENS], dtype=torch.int32, device=resolved_device
                 ),
                 speaker_embedding=torch.zeros(
                     1,
@@ -175,7 +181,7 @@ class MiniCPMOCode2Wav(nn.Module):
                 ),
                 prompt_mel=torch.zeros(
                     1,
-                    FLOW_WARMUP_TOKENS * flow.up_rate,
+                    DIT_WARMUP_TOKENS * flow.up_rate,
                     flow.output_size,
                     device=resolved_device,
                 ),
@@ -183,9 +189,19 @@ class MiniCPMOCode2Wav(nn.Module):
             # note (Dayuxiaoshui): trace once at startup so no request pays the compile.
             with self.device_context, torch.inference_mode():
                 self.flow_mel(
-                    warmup_prompt.prompt_tokens,
-                    warmup_prompt.prompt_token_lengths,
-                    [warmup_prompt],
+                    torch.zeros(
+                        DIT_WARMUP_BATCH_SIZE,
+                        DIT_WARMUP_TOKENS,
+                        dtype=torch.int32,
+                        device=resolved_device,
+                    ),
+                    torch.full(
+                        (DIT_WARMUP_BATCH_SIZE,),
+                        DIT_WARMUP_TOKENS,
+                        dtype=torch.int32,
+                        device=resolved_device,
+                    ),
+                    [warmup_prompt] * DIT_WARMUP_BATCH_SIZE,
                 )
         else:
             pass
@@ -196,7 +212,7 @@ class MiniCPMOCode2Wav(nn.Module):
                 hift.decode_body, dynamic=True, fullgraph=True
             )
             mel_bins = self.token2wav.flow.output_size
-            mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
+            mel_frames = HIFT_WARMUP_TOKENS * self.token2wav.flow.up_rate
             stft_frames = (
                 mel_frames * int(hift.f0_upsamp.scale_factor)
             ) // hift.istft_params["hop_len"] + 1
