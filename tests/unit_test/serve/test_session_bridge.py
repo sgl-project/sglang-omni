@@ -440,3 +440,44 @@ async def test_qwen3_omni_node_outputs_project_without_a_model_adapter():
         ResponseFinished("resp_1", "item_1", "Well", False, "cancelled", "interrupted"),
     ]
     await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_done_usage_reaches_response_done():
+    h = Harness()
+    await h.open()
+    usage = {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19}
+    h.client.control(TURN_STARTED, turn=1)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Hi"}, turn=1)
+    h.client.control(TURN_DONE, turn=1, usage=usage)
+    await settle()
+    finished = [e for e in h.published if isinstance(e, ResponseFinished)]
+    assert len(finished) == 1
+    assert finished[0].usage == usage
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_done_without_usage_keeps_response_done_usage_free():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=1)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Hi"}, turn=1)
+    h.client.control(TURN_DONE, turn=1)
+    await settle()
+    finished = [e for e in h.published if isinstance(e, ResponseFinished)]
+    assert len(finished) == 1
+    assert finished[0].usage is None
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_turn_never_fabricates_usage():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_EMPTY)
+    await settle()
+    finished = [e for e in h.published if isinstance(e, ResponseFinished)]
+    assert len(finished) == 1
+    assert finished[0].usage is None
+    await h.bridge.close()

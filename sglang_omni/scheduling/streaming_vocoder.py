@@ -422,7 +422,12 @@ class StreamingVocoderBase(
             messages.append(self.reply_progress_message(request_id, operation))
             if self.is_reply_unit(operation):
                 messages.append(
-                    self.session_control_message(request_id, operation, TURN_DONE)
+                    self.session_control_message(
+                        request_id,
+                        operation,
+                        TURN_DONE,
+                        extra_payload=self.turn_usage_payload(request_id),
+                    )
                 )
             else:
                 pass
@@ -730,14 +735,20 @@ class StreamingVocoderBase(
 
     @staticmethod
     def session_control_message(
-        request_id: str, operation: SessionOperation, event: str
+        request_id: str,
+        operation: SessionOperation,
+        event: str,
+        extra_payload: Mapping[str, object] | None = None,
     ) -> OutgoingMessage:
+        payload: dict[str, object] = {"type": event}
+        if extra_payload is not None:
+            payload.update(extra_payload)
         chunk = TimedChunk(
             CONTROL,
             0,
             0,
             operation.chunk.seq,
-            {"type": event},
+            payload,
             format=SESSION_CONTROL,
             turn=operation.chunk.turn,
         )
@@ -851,6 +862,10 @@ class StreamingVocoderBase(
     ) -> Mapping[str, object]:
         """Terminal ``result`` payload data (metadata-only or full audio)."""
 
+    def turn_usage_payload(self, request_id: str) -> dict[str, object] | None:
+        """Per-turn token usage attached to the TURN_DONE control message; None keeps turn.done usage-free."""
+        del request_id
+        return None
     def fallback_full_decode(
         self, request_id: str, payload: StagePayload, state: StreamStateT
     ) -> torch.Tensor | None:

@@ -456,6 +456,19 @@ class SessionBridge(InteractionAdapter):
     def on_turn_started(self, output: OutputChunk) -> list[OutputEvent]:
         return self.start_response(output.turn)
 
+    @staticmethod
+    def output_usage(output: OutputChunk) -> dict[str, int | float | None] | None:
+        """Usage dict carried by a terminal control chunk; None when the emitter sent none."""
+        payload = output.payload
+        if isinstance(payload, dict):
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+            else:
+                return None
+        else:
+            return None
+
     def finish_response(
         self, status: str, reason: str, output: OutputChunk
     ) -> list[OutputEvent]:
@@ -467,7 +480,14 @@ class SessionBridge(InteractionAdapter):
         else:
             pass
         events.append(
-            ResponseFinished(*ids, self.response_text, self.has_audio, status, reason)
+            ResponseFinished(
+                *ids,
+                self.response_text,
+                self.has_audio,
+                status,
+                reason,
+                usage=self.output_usage(output),
+            )
         )
         self.response_id = None
         return events
