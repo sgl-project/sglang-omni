@@ -19,6 +19,8 @@ Chat with speech output:
 python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000
 ```
 
+Code2Wav runs in its own process, and CUDA MPS (`mps: auto`) lets the stage processes on one GPU run their kernels at the same time. For one request at a time, `--mps off` is faster.
+
 Chat with text output only:
 
 ```bash
