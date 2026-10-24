@@ -273,6 +273,7 @@ def speech_append(
     *,
     codec_tokens: list[int],
     is_listen: bool,
+    end_of_turn: bool = False,
 ) -> SessionAppend:
     return SessionAppend(
         chunk=TimedChunk("text", 0, 1000, 0, None),
@@ -282,7 +283,7 @@ def speech_append(
                 codec_tokens=codec_tokens,
                 talker_conditions=[] if is_listen else [object()],
                 is_listen=is_listen,
-                end_of_turn=False,
+                end_of_turn=end_of_turn,
                 speech_turn_start=True,
             )
         ),
@@ -347,3 +348,33 @@ def test_speech_hooks_emit_one_voice_chunk_per_unit() -> None:
     assert voice.duration_ms == 1000
     assert len(voice.payload["pcm"]) == 2 * OUTPUT_SAMPLE_RATE
     assert runtime.token2wav.forward_sizes == [1]
+
+
+def test_speech_hooks_stamp_voice_chunks_with_the_reply_turn() -> None:
+    """A reply's chunks share one turn up to its end of turn; the next reply gets the next turn."""
+    hooks = SpeechHooks(open_runtime([]), b"voice")
+    session_identity = SessionIdentity("s")
+    hooks.open(session_identity, SimpleNamespace(params={}))
+    chunks: list[TimedChunk] = []
+    speaking_tokens = list(range(CODEC_CHUNK_SIZE))
+
+    for codec_tokens, is_listen, end_of_turn in (
+        ([], True, False),
+        (speaking_tokens, False, False),
+        (speaking_tokens, False, True),
+        ([], True, False),
+        (speaking_tokens, False, False),
+    ):
+        hooks.append_batch(
+            [
+                speech_append(
+                    session_identity,
+                    chunks,
+                    codec_tokens=codec_tokens,
+                    is_listen=is_listen,
+                    end_of_turn=end_of_turn,
+                )
+            ]
+        )
+
+    assert [chunk.turn for chunk in chunks] == [0, 0, 0, 1, 1]

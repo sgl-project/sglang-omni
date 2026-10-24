@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sglang_omni.client.client import Client
+from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    SAMPLE_RATE,
+    UNIT_SAMPLES,
+)
 from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexSampling,
@@ -14,12 +18,141 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks, SpeechHooks
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import SessionIdentity
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
-from sglang_omni.serve.realtime.schema import JsonObject
+from sglang_omni.serve.realtime.output import (
+    AudioDelta,
+    AudioFinished,
+    OutputEvent,
+    ResponseFinished,
+    ResponseStarted,
+    TextFinished,
+)
+from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
+from sglang_omni.serve.realtime.types import InteractionAdapter, Unit
+from tests.unit_test.fixtures.session_client import FakeSessionClient
 from tests.unit_test.serve.test_realtime_reference_audio import wav_reference
 
 REFERENCE = {"media_type": "audio/wav", "data": wav_reference()}
+SESSION_CONFIG: SessionConfiguration = {
+    "audio": {"input": {"format": {"type": "audio/pcm", "rate": SAMPLE_RATE}}}
+}
+FIRST_RESPONSE = "session-response-0"
+FIRST_ITEM = "session-response-0-message"
+SECOND_RESPONSE = "session-response-1"
+SECOND_ITEM = "session-response-1-message"
+
+
+def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
+    return dict(
+        text="",
+        pcm=pcm,
+        end_of_turn=end_of_turn,
+        is_listen=not pcm or end_of_turn,
+        model_end_of_turn=end_of_turn,
+    )
+
+
+class VoiceCoordinator(FakeSessionClient):
+    """Answers each unit with the scripted (turn, voice chunk) of its seq, then input_done."""
+
+    def __init__(self, voice_chunks: dict[int, tuple[int, dict[str, object]]]) -> None:
+        super().__init__()
+        self.voice_chunks = voice_chunks
+
+    async def append_session(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
+    ) -> int:
+        return await super().append_session(session_identity, chunk)
+
+    def answer(self, chunk: TimedChunk) -> None:
+        turn, payload = self.voice_chunks[chunk.seq]
+        self.emit("voice", None, payload, input_seq=chunk.seq, turn=turn)
+
+
+async def open_adapter(
+    coordinator: VoiceCoordinator,
+) -> tuple[InteractionAdapter, list[OutputEvent]]:
+    deployment = build_realtime_deployment(
+        Client(coordinator), MiniCPMODuplexPipelineConfig(model_path="unused")
+    )
+    adapter = deployment.adapter_factory()
+    events: list[OutputEvent] = []
+
+    async def record(event: OutputEvent, unit: Unit | None = None) -> None:
+        events.append(event)
+
+    await adapter.open("session", SESSION_CONFIG, record)
+    return adapter, events
+
+
+def unit(seq: int) -> Unit:
+    return Unit(seq, seq * UNIT_SAMPLES, b"\0\0" * UNIT_SAMPLES, UNIT_SAMPLES)
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_the_open_reply_and_drops_its_later_audio() -> None:
+    """A client stop interrupts the open reply's turn; audio of that turn after the stop is dropped, and the reply ends as cancelled when its turn ends."""
+    heard, unheard, tail, next_reply = (
+        b"\1\0" * 4,
+        b"\2\0" * 4,
+        b"\3\0" * 2,
+        b"\4\0" * 4,
+    )
+    coordinator = VoiceCoordinator(
+        {
+            0: (1, voice(heard)),
+            1: (1, voice(unheard)),
+            2: (1, voice(tail, end_of_turn=True)),
+            3: (2, voice(next_reply)),
+        }
+    )
+    adapter, events = await open_adapter(coordinator)
+
+    await adapter.process(unit(0))
+    await adapter.cancel()
+    for seq in (1, 2, 3):
+        await adapter.process(unit(seq))
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        (
+            TimedChunk(
+                CONTROL, 0, 0, 0, {"type": INTERRUPT}, format=SESSION_CONTROL, turn=1
+            ),
+            None,
+            False,
+        )
+    ]
+    assert events == [
+        ResponseStarted(FIRST_RESPONSE),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, heard),
+        TextFinished(FIRST_RESPONSE, FIRST_ITEM, ""),
+        AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
+        ResponseFinished(
+            FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
+        ),
+        ResponseStarted(SECOND_RESPONSE),
+        AudioDelta(SECOND_RESPONSE, SECOND_ITEM, next_reply),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_without_an_open_reply_sends_no_control() -> None:
+    coordinator = VoiceCoordinator({})
+    adapter, events = await open_adapter(coordinator)
+
+    await adapter.cancel()
+    await adapter.close()
+
+    assert coordinator.controlled == []
+    assert events == []
 
 
 async def open_session_params(
