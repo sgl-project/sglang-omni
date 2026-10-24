@@ -127,12 +127,18 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        capture = torch.npu.graph(npu_graph=graph, **kwargs)
-        with ExitStack() as stack:
-            # note (cocoa): NPU capture caches tensors updated outside inference mode.
-            with torch.inference_mode(False):
-                stack.enter_context(capture)
-            yield graph
+        # note : aclop ops cannot run during capture; disabling internal formats selects
+        # aclnn, and the default is restored afterwards.The option is process-global;
+        torch.npu.config.allow_internal_format = False
+        try:
+            capture = torch.npu.graph(npu_graph=graph, **kwargs)
+            with ExitStack() as stack:
+                # note (cocoa): NPU capture caches tensors updated outside inference mode.
+                with torch.inference_mode(False):
+                    stack.enter_context(capture)
+                yield graph
+        finally:
+            torch.npu.config.allow_internal_format = True
 
 
 class XpuDeviceGraphBackend:

@@ -32,6 +32,10 @@ class NPUOmniPlatform(OmniPlatform):
     def enable_code2wav_graph(self):
         return False
 
+    def enable_codec_decode_graph(self) -> bool:
+        """Capture Mimi streaming decode in NPU graphs."""
+        return True
+
     def enable_tts_predictor_graph(self) -> bool:
         return True
 

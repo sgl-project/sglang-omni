@@ -83,20 +83,41 @@ def test_npu_backend_records_into_an_npu_graph(
     monkeypatch, thread_local_errors
 ) -> None:
     module = recording_module("NPUGraph")
+    module.config = SimpleNamespace(allow_internal_format=True)
     monkeypatch.setattr(torch, "npu", module, raising=False)
     pool = object()
     stream = object()
+    seen_internal_format: list[bool] = []
 
     with NpuDeviceGraphBackend().capture(
         pool=pool, stream=stream, thread_local_errors=thread_local_errors
     ) as graph:
-        pass
+        seen_internal_format.append(module.config.allow_internal_format)
 
     assert isinstance(graph, module.NPUGraph)
     expected = {"npu_graph": graph, "pool": pool, "stream": stream}
     if thread_local_errors:
         expected["capture_error_mode"] = "thread_local"
     assert module.calls == [expected]
+    assert seen_internal_format == [False]
+    assert module.config.allow_internal_format is True
+
+
+def test_npu_backend_restores_internal_formats_after_a_failed_capture(
+    monkeypatch,
+) -> None:
+    module = recording_module("NPUGraph")
+    module.config = SimpleNamespace(allow_internal_format=True)
+    monkeypatch.setattr(torch, "npu", module, raising=False)
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        with NpuDeviceGraphBackend().capture(
+            pool=None, stream=None, thread_local_errors=False
+        ):
+            assert module.config.allow_internal_format is False
+            raise RuntimeError("capture failed")
+
+    assert module.config.allow_internal_format is True
 
 
 def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
@@ -132,6 +153,7 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
     module.graph = lambda **kwargs: Ctx()
     module.XPUGraph = module.CUDAGraph
     module.NPUGraph = module.CUDAGraph
+    module.config = SimpleNamespace(allow_internal_format=True)
     monkeypatch.setattr(torch, "cuda", module)
     monkeypatch.setattr(torch, "xpu", module)
     monkeypatch.setattr(torch, "npu", module, raising=False)
@@ -165,6 +187,7 @@ def test_a_graph_context_that_suppresses_is_honored(backend, monkeypatch) -> Non
     module.graph = lambda **kwargs: Ctx()
     module.XPUGraph = module.CUDAGraph
     module.NPUGraph = module.CUDAGraph
+    module.config = SimpleNamespace(allow_internal_format=True)
     monkeypatch.setattr(torch, "cuda", module)
     monkeypatch.setattr(torch, "xpu", module)
     monkeypatch.setattr(torch, "npu", module, raising=False)
@@ -227,6 +250,7 @@ def test_backend_opens_the_capture_outside_inference_mode(
 
     module = recording_module(graph_attr)
     module.graph = lambda **kwargs: CaptureContext()
+    module.config = SimpleNamespace(allow_internal_format=True)
     monkeypatch.setattr(torch, module_name, module, raising=False)
 
     with torch.inference_mode(inference_mode_enabled):

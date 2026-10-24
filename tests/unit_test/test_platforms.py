@@ -222,6 +222,12 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert isinstance(backend, backend_class), platform_class.__name__
 
 
+def test_npu_platform_opts_into_codec_decode_graphs() -> None:
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+
+    assert NPUOmniPlatform().enable_codec_decode_graph() is True
+
+
 def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     """A caller holding a tensor's device does not have to check that first."""
     platform = CUDAOmniPlatform()
