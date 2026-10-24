@@ -1,73 +1,100 @@
 from __future__ import annotations
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 NUM_ITER = 8
 
 
-def char_vocab_from_tokenizer(tokenizer) -> dict[str, int]:
-    vocab = tokenizer.get_vocab()
-    chars = sorted(
-        (token for token in vocab if len(token) == 1), key=lambda t: vocab[t]
+def char_vocab_from_tokenizer(tokenizer: PreTrainedTokenizerBase) -> dict[str, int]:
+    token_vocabulary = tokenizer.get_vocab()
+    characters = sorted(
+        (token for token in token_vocabulary if len(token) == 1),
+        key=lambda token: token_vocabulary[token],
     )
-    return {char: index for index, char in enumerate(chars)}
+    return {character: index for index, character in enumerate(characters)}
 
 
 class NemotronVoiceChatTalkerModelRunner(ModelRunner):
-    def __init__(self, tp_worker, output_processor):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         speech = self.model.config.nemotron_speech
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
             speech["tokenizer_name"],
             bos_token=speech.get("bos_token"),
             eos_token=speech.get("eos_token"),
             pad_token=speech.get("pad_token"),
         )
-        self.char_vocab = char_vocab_from_tokenizer(self.tokenizer)
-        self.char_padding_idx = len(self.char_vocab)
+        self.char_vocab: dict[str, int] = char_vocab_from_tokenizer(self.tokenizer)
+        self.char_padding_idx: int = len(self.char_vocab)
+        self.initialize_character_lookup()
         # From the checkpoint's names above: the tokenizer's own eos_token_id
         # is <SPECIAL_12>, the text channel's PAD, which means still speaking.
-        self.text_pad_id = int(self.tokenizer.pad_token_id)
-        self.text_eos_id = int(self.tokenizer.eos_token_id)
-        self.exponent = float(speech["tts_config"]["exponent"])
-        self.top_p = float(speech["inference_top_p_or_k"])
-        self.noise_scale = float(speech["inference_noise_scale"])
-        self.force_silence = bool(speech["inference_force_speech_silence_on_eos"])
-        self.speech_pad_id = int(speech["codec_config"]["codebook_size"])
-        self.warmup_rows = None
+        self.text_pad_id: int = int(self.tokenizer.pad_token_id)
+        self.text_eos_id: int = int(self.tokenizer.eos_token_id)
+        self.exponent: float = float(speech["tts_config"]["exponent"])
+        self.top_p: float = float(speech["inference_top_p_or_k"])
+        self.noise_scale: float = float(speech["inference_noise_scale"])
+        self.force_silence: bool = bool(speech["inference_force_speech_silence_on_eos"])
+        self.speech_pad_id: int = int(speech["codec_config"]["codebook_size"])
+        self.warmup_rows: torch.Tensor | None = None
 
     def fusion_device(self) -> torch.device:
         return self.model.fusion_buffer.device
 
-    def char_batch(self, token_ids: list[int]):
-        device = self.fusion_device()
-        sequences = [
-            [
-                self.char_vocab[c]
-                for c in (self.tokenizer.convert_ids_to_tokens(t) or "")
-                if c in self.char_vocab
-            ]
-            or [self.char_padding_idx]
-            for t in token_ids
+    def character_ids_for_token(self, token_id: int) -> list[int]:
+        return [
+            self.char_vocab[character]
+            for character in (self.tokenizer.convert_ids_to_tokens(token_id) or "")
+            if character in self.char_vocab
+        ] or [self.char_padding_idx]
+
+    def initialize_character_lookup(self) -> None:
+        token_id_count = max(self.tokenizer.get_vocab().values(), default=-1) + 1
+        self.character_ids_by_token: list[list[int]] = [
+            self.character_ids_for_token(token_id) for token_id in range(token_id_count)
         ]
-        width = max(len(s) for s in sequences)
-        char_ids = torch.full(
-            (len(sequences), width),
-            self.char_padding_idx,
+
+    def char_batch(
+        self, token_ids: list[int]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        character_sequences = [
+            (
+                self.character_ids_by_token[token_id]
+                if 0 <= token_id < len(self.character_ids_by_token)
+                else self.character_ids_for_token(token_id)
+            )
+            for token_id in token_ids
+        ]
+        character_lengths = [len(sequence) for sequence in character_sequences]
+        character_width = max(character_lengths)
+        padded_character_ids = [
+            character_id
+            for sequence in character_sequences
+            for character_id in sequence
+            + [self.char_padding_idx] * (character_width - len(sequence))
+        ]
+        batch_tensor = torch.tensor(
+            token_ids + character_lengths + padded_character_ids,
             dtype=torch.long,
-            device=device,
+            device=self.fusion_device(),
         )
-        for row, sequence in enumerate(sequences):
-            char_ids[row, : len(sequence)] = torch.tensor(sequence, device=device)
-        lengths = torch.tensor([len(s) for s in sequences], device=device)
-        return torch.tensor(token_ids, device=device), char_ids, lengths
+        batch_size = len(token_ids)
+        return (
+            batch_tensor[:batch_size],
+            batch_tensor[2 * batch_size :].view(batch_size, character_width),
+            batch_tensor[batch_size : 2 * batch_size],
+        )
 
     def warmup(self):
         if self.warmup_rows is None:
