@@ -98,7 +98,9 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
         assert kwargs["input_deepstack_embeds"] is None
         return torch.ones(1, 2)
 
-    def logits_processor(input_ids, hidden_states, lm_head, forward_batch):
+    def logits_processor(
+        input_ids, hidden_states, lm_head, forward_batch, aux_hidden_states=None
+    ):
         seen.append(get_forward_context().attn_backend)
         assert input_ids is forward_batch.input_ids
         assert lm_head == "lm_head"
@@ -122,3 +124,40 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
     )
 
     assert result.logits_output == "logits"
+
+
+def test_omni_forward_hands_a_draft_its_captures_and_the_composed_embeds() -> None:
+    """A draft reads the hidden layers the model captured and, for EAGLE3, the
+    prefill embeddings the runner composed."""
+    runner = ThinkerModelRunner.__new__(ThinkerModelRunner)
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            attn_backend=SimpleNamespace(init_forward_metadata=lambda batch: None)
+        )
+    )
+    runner.retain_prefill_input_embeds = True
+    hidden_states = torch.zeros(1, 2)
+    auxiliary_hidden_states = [torch.ones(1, 2), torch.full((1, 2), 2.0)]
+    seen: dict[str, torch.Tensor | list[torch.Tensor]] = {}
+
+    def logits_processor(input_ids, hidden, lm_head, forward_batch, auxiliary):
+        seen.update(hidden=hidden, auxiliary=auxiliary)
+        return "logits"
+
+    runner.outer_model = SimpleNamespace(
+        model=lambda **kwargs: (hidden_states, auxiliary_hidden_states),
+        logits_processor=logits_processor,
+        lm_head="lm_head",
+    )
+    forward_batch = SimpleNamespace(
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+        input_ids=torch.tensor([1]),
+    )
+    input_embeds = torch.ones(1, 2)
+
+    runner.forward_with_omni_embeds(forward_batch, input_embeds)
+
+    assert seen["hidden"] is hidden_states
+    assert seen["auxiliary"] is auxiliary_hidden_states
+    assert runner.retained_prefill_input_embeds is input_embeds
