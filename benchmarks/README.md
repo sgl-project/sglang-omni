@@ -192,6 +192,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | Script | Task | Model | API |
 |--------|------|-------|-----|
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
+| `eval/benchmark_tts_consistency.py` | TTS consistency (voice, pitch, rate) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni, MiniCPM-o | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
