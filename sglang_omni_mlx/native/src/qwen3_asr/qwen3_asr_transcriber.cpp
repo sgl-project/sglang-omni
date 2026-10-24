@@ -243,18 +243,25 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
   return {{}, ""};
 }
 
-TranscriptionResult
-Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
-                                const TranscriptionOptions &options,
-                                const std::atomic<bool> &cancel) const {
+TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, StreamingEncoder *encoder) const {
   if (cancel.load()) {
     throw TranscriptionCancelled();
   } else {
   }
-  const mx::array mel = LogMel(samples, options.layout);
-  const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
+  const auto [audio_features,
+              frame_count] = [&]() -> std::pair<mx::array, int> {
+    if (encoder != nullptr) {
+      encoder->Update(samples);
+      return {*encoder->Output(), encoder->FrameCount()};
+    } else {
+      const mx::array mel = LogMel(samples, options.layout);
+      return {model_.EncodeAudio(mel, options.layout), mel.shape(-1)};
+    }
+  }();
+  const int audio_token_count = TokenCount(frame_count, options.layout);
   const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
-  const mx::array audio_features = model_.EncodeAudio(mel, options.layout);
   const mx::array input_ids(
       prompt_ids.data(), {1, static_cast<int>(prompt_ids.size())}, mx::int32);
   mx::array embeddings = model_.EmbedTokens(input_ids);
@@ -358,6 +365,68 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
   } else {
   }
   return {text, language};
+}
+
+StreamingEncoder::StreamingEncoder(const Qwen3ASRTranscriber &transcriber,
+                                   AudioLayout layout)
+    : transcriber_(transcriber), layout_(layout),
+      window_frame_count_(transcriber.model_.EncoderWindowFrameCount()) {}
+
+void StreamingEncoder::Update(const std::vector<float> &segment_samples) {
+  // Frames whose window reaches into the end padding.
+  constexpr int unsettled_tail_frames =
+      (kFftSize / 2 + kHopLength - 1) / kHopLength;
+  const mx::array raw_log_mel = RawLogMel(segment_samples, layout_);
+  mx::array max_log_mel = mx::max(raw_log_mel);
+  const float max_value = max_log_mel.item<float>();
+  frame_count_ = raw_log_mel.shape(0);
+  // A segment shorter than one FFT window is zero filled, so none settles.
+  const int settled_frame_count =
+      segment_samples.size() < static_cast<size_t>(kFftSize)
+          ? 0
+          : frame_count_ - unsettled_tail_frames;
+  if (cached_max_ != max_value) {
+    cached_rows_.reset();
+    cached_frame_count_ = 0;
+  } else {
+  }
+  const mx::array mel = ApplyFloor(raw_log_mel, max_log_mel);
+  const int mel_bins = mel.shape(0);
+  const int settled_window_frames =
+      settled_frame_count / window_frame_count_ * window_frame_count_;
+  if (settled_window_frames > cached_frame_count_) {
+    const mx::array encoded = transcriber_.model_.EncodeAudio(
+        mx::slice(mel, {0, cached_frame_count_},
+                  {mel_bins, settled_window_frames}),
+        layout_);
+    cached_rows_ = cached_rows_.has_value()
+                       ? mx::concatenate({*cached_rows_, encoded}, 0)
+                       : encoded;
+    mx::eval(*cached_rows_);
+    cached_frame_count_ = settled_window_frames;
+  } else {
+  }
+  cached_max_ = max_value;
+  tail_mel_ =
+      mx::slice(mel, {0, cached_frame_count_}, {mel_bins, frame_count_});
+  mx::eval(*tail_mel_);
+}
+
+std::optional<mx::array> StreamingEncoder::Output() const {
+  if (!tail_mel_.has_value()) {
+    return std::nullopt;
+  } else {
+  }
+  // Once the segment has a full chunk, its encode pads a partial chunk to one.
+  const int min_chunk_frames =
+      frame_count_ >= kChunkFrameCount ? kChunkFrameCount : 0;
+  const mx::array tail_rows =
+      transcriber_.model_.EncodeAudio(*tail_mel_, layout_, min_chunk_frames);
+  if (cached_rows_.has_value()) {
+    return mx::concatenate({*cached_rows_, tail_rows}, 0);
+  } else {
+    return tail_rows;
+  }
 }
 
 } // namespace qwen3_asr

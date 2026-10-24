@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -93,6 +94,8 @@ private:
     int decode_count = 0;
     std::string transcript;
     std::string last_text;
+    // Encoder windows the segment's previews share; used on the worker only.
+    std::shared_ptr<StreamingEncoder> encoder;
   };
 
   void Append(const nlohmann::json &audio);
@@ -105,8 +108,9 @@ private:
                                     long end_sample) const;
   // Builds the request for a decode of segment and counts it.
   TranscriptionOptions DecodeOptions(Segment &segment);
-  Transcription Decode(std::vector<float> samples,
-                       TranscriptionOptions options) const;
+  // A preview passes its segment's encoder; a final decode encodes anew.
+  Transcription Decode(std::vector<float> samples, TranscriptionOptions options,
+                       std::shared_ptr<StreamingEncoder> encoder) const;
   void ApplyResult(Segment &segment, const TranscriptionResult &result);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);

@@ -6,6 +6,7 @@ Needs NATIVE_RUNTIME_BIN (the server's directory) and CI_DATA_ROOT (a provisione
 
 from __future__ import annotations
 
+import array
 import base64
 import http.client
 import io
@@ -305,6 +306,68 @@ def test_realtime_manual_session(server: Server) -> None:
     assert events[-1]["text"].startswith("Surely you are not thinking")
     indexes = [event["event_index"] for event in events]
     assert indexes == sorted(indexes)
+
+
+def test_realtime_preview_past_an_encoder_window_equals_a_fresh_transcription() -> None:
+    """The second preview reuses the 8 s encoder window the first one encoded, and
+    must match transcribing the same audio over HTTP."""
+    first_preview_ms, decode_interval_ms = 8500, 3500
+    # PCM16 at 16 kHz is 32 bytes per millisecond.
+    first_preview_bytes = first_preview_ms * 32
+    second_preview_bytes = (first_preview_ms + decode_interval_ms) * 32
+    samples = array.array("h", pcm16("0100_en_mid")[:second_preview_bytes])
+    # A quieter tail keeps the log-mel max of the first preview, so its window
+    # is reused rather than encoded anew.
+    for index in range(first_preview_bytes // 2, len(samples)):
+        samples[index] //= 4
+    pcm = samples.tobytes()
+    running = Server(
+        flags=(
+            "--first-decode-ms",
+            str(first_preview_ms),
+            "--decode-interval-ms",
+            str(decode_interval_ms),
+        )
+    )
+    try:
+        previews = []
+        with connect(f"ws://127.0.0.1:{running.port}/v1/realtime") as socket:
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {"turn_detection": None, "language": "en"},
+                    }
+                )
+            )
+            assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+            sent_bytes = 0
+            for preview_bytes in (first_preview_bytes, second_preview_bytes):
+                for start in range(sent_bytes, preview_bytes, 3200):
+                    socket.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(
+                                    pcm[start : start + 3200]
+                                ).decode(),
+                            }
+                        )
+                    )
+                sent_bytes = preview_bytes
+                previews.append(json.loads(socket.recv(timeout=60)))
+        wav = io.BytesIO()
+        with wave.open(wav, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(pcm)
+        status, body = running.post_form({"language": "en"}, wav.getvalue())
+    finally:
+        running.stop()
+    assert [event["is_final"] for event in previews] == [False, False]
+    assert status == 200
+    assert previews[1]["text"] == json.loads(body)["text"]
 
 
 def test_end_of_stdin_stops_the_server() -> None:

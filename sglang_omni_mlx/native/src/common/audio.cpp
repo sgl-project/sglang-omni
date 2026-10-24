@@ -187,6 +187,11 @@ const std::vector<float> &PeriodicHannWindow() {
 }
 
 mx::array LogMel(const std::vector<float> &samples, AudioLayout layout) {
+  const mx::array raw_log_mel = RawLogMel(samples, layout);
+  return ApplyFloor(raw_log_mel, mx::max(raw_log_mel));
+}
+
+mx::array RawLogMel(const std::vector<float> &samples, AudioLayout layout) {
   std::vector<float> padded_samples = samples;
   if (padded_samples.size() < static_cast<size_t>(kFftSize)) {
     // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
@@ -213,11 +218,14 @@ mx::array LogMel(const std::vector<float> &samples, AudioLayout layout) {
   }
   const mx::array filters(MelFilterBank().data(),
                           {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
-  mx::array log_spectrum = mx::log10(
+  return mx::log10(
       mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
-  log_spectrum =
-      mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
-                                             mx::array(kLogMelDynamicRange)));
+}
+
+mx::array ApplyFloor(const mx::array &raw_log_mel,
+                     const mx::array &max_log_mel) {
+  const mx::array log_spectrum = mx::maximum(
+      raw_log_mel, mx::subtract(max_log_mel, mx::array(kLogMelDynamicRange)));
   return mx::transpose(
       mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
 }
