@@ -524,7 +524,7 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
                              mx::array({true})),
                        slow_, slow_rotary_, caches);
       candidate_logits = candidates(hidden);
-      // Note (Jiaxin Deng): the next slow step runs on the GPU while on_frame
+      // Note (Minyi Tang): the decoder steps on the GPU while on_frame
       // handles this frame.
       mx::async_eval({frame_codes, candidate_logits});
     } else {

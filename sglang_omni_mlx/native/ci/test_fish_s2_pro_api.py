@@ -39,8 +39,8 @@ TWO_SENTENCES = SENTENCE + " The museum opens at nine in the morning and closes 
 LONG_SENTENCE = " ".join([SENTENCE] * 8)
 # Minutes of speech: no Mac generates it within REQUEST_TIMEOUT_SECONDS.
 PASSAGE = " ".join([SENTENCE] * 50)
-# Note (Jiaxin Deng): an unseeded request samples other codes every time; the
-# transcript may miss one word without the speech being wrong.
+# Note (Minyi Tang): generation samples, so the audio differs on every unseeded
+# request; the transcript may miss one word without the speech being wrong.
 MAX_WORD_ERRORS = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20

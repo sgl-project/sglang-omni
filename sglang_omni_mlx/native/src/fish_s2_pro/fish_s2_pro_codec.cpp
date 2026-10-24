@@ -757,7 +757,8 @@ std::string Pcm16Bytes(const std::vector<float> &samples) {
   std::string bytes;
   bytes.reserve(samples.size() * 2);
   for (const float sample : samples) {
-    // NaN becomes silence, since casting NaN to an integer is undefined.
+    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
+    // through and casting NaN to an integer is undefined.
     const float bounded =
         std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
     const auto value = static_cast<int16_t>(bounded * kPcm16FullScale);

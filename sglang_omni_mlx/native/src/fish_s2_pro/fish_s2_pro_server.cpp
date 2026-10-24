@@ -1008,8 +1008,8 @@ private:
                           }
                         });
     if (result.generated_token_count == 0) {
-      // Note (Jiaxin Deng): the CUDA vocoder raises on a request that ends
-      // before its first frame rather than answer silence.
+      // Note (Minyi Tang): the CUDA vocoder raises on an end of audio at the
+      // first frame rather than answer silence.
       throw std::runtime_error("Fish S2-Pro generated no audio codes");
     } else if (request.stream) {
       send(stream.Finish());
