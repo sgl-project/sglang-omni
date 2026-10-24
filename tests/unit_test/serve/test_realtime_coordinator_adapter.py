@@ -11,10 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.pipeline.errors import (
-    SessionIdleTimeoutError,
-    SessionOutputBudgetError,
-)
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk, SessionLimits, TimedChunk

@@ -10,10 +10,7 @@ import pytest
 from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.schema import replica_instance_name
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.pipeline.errors import (
-    SessionIdleTimeoutError,
-    SessionOutputBudgetError,
-)
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.messages import CompleteMessage
 from sglang_omni.proto.session import SessionLimits, TimedChunk

@@ -8,10 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
 from sglang_omni.admission import ContextExhaustedError
-from sglang_omni.pipeline.errors import (
-    SessionIdleTimeoutError,
-    SessionOutputBudgetError,
-)
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,

@@ -15,12 +15,9 @@ from typing import Literal, Protocol
 import msgpack
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.pipeline.errors import (
-    SessionIdleTimeoutError,
-    SessionOutputBudgetError,
-)
 from sglang_omni.pipeline.replicas import assign_replica_bindings
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import (
     emit_session_output_event,
     emit_session_unit_event,
