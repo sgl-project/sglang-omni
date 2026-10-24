@@ -1,4 +1,4 @@
-"""Realtime unit identity, adapter contracts and resource configuration."""
+"""Realtime unit identity, adapter contracts, session failures and resource configuration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
 from sglang_omni.admission import ContextExhaustedError
-from sglang_omni.pipeline.sessions import (
+from sglang_omni.pipeline.errors import (
     SessionIdleTimeoutError,
     SessionOutputBudgetError,
 )
@@ -18,7 +18,7 @@ from sglang_omni.proto.session import (
     DEFAULT_SESSION_UPDATE_TIMEOUT_S,
 )
 from sglang_omni.serve.realtime.control import ControlEvent
-from sglang_omni.serve.realtime.output import ContextLimitError, OutputEvent
+from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
     Interaction,
@@ -41,16 +41,33 @@ class ProtocolError(ValueError):
         super().__init__(message)
 
 
+class ContextLimitError(RuntimeError):
+    """A single response's text outgrew max_history_chars."""
+
+    CODE = "context_limit"
+    MESSAGE = "response text context limit"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
 class OutputBudgetError(RuntimeError):
     """Session output outgrew its bounded buffer."""
 
     CODE = "output_budget_exhausted"
+    MESSAGE = "outbound event budget exhausted"
+
+    def __init__(self, message: str = MESSAGE) -> None:
+        super().__init__(message)
 
 
 class SessionOpenTimeoutError(TimeoutError):
     """The backend did not finish opening a realtime session in time."""
 
     CODE = "session_open_timeout"
+
+    def __init__(self, open_timeout_s: float) -> None:
+        super().__init__(f"session open exceeded {open_timeout_s:g} s")
 
 
 def failure_code(exc: Exception) -> str:

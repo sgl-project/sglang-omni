@@ -564,7 +564,7 @@ def test_open_timeout_is_fatal_and_has_a_message(
     ]
     assert len(failure_records) == 1
     assert failure_records[0].levelno == logging.ERROR
-    assert failure_records[0].exc_info is None
+    assert not failure_records[0].exc_info
 
 
 @pytest.mark.parametrize(

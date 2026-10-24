@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.pipeline.sessions import (
+from sglang_omni.pipeline.errors import (
     SessionIdleTimeoutError,
     SessionOutputBudgetError,
 )

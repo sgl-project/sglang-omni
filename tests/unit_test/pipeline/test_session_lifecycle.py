@@ -10,7 +10,7 @@ import pytest
 from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.schema import replica_instance_name
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.pipeline.sessions import (
+from sglang_omni.pipeline.errors import (
     SessionIdleTimeoutError,
     SessionOutputBudgetError,
 )

@@ -284,16 +284,14 @@ class SessionRuntime:
             except Exception as cleanup_error:
                 self.abandon_admission(adapter, "admission cleanup failed", event_id)
                 raise RuntimeError("admission cleanup failed") from cleanup_error
-            if isinstance(exc, ProtocolError) or failure_code(exc) != "internal":
-                raise
-            elif QueueFullError.matches(exc):
+            if QueueFullError.matches(exc):
                 if self.expire_admission_if_due():
                     return False
                 else:
                     raise ProtocolError("admission_rejected", str(exc)) from exc
             elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
                 raise SessionOpenTimeoutError(
-                    str(exc) or "session open timed out"
+                    self.limits.cleanup_timeout_s
                 ) from exc
             else:
                 raise
@@ -628,12 +626,10 @@ class SessionRuntime:
             self.fail(str(exc), exc.code)
         except Exception as exc:
             code = failure_code(exc)
-            if code == "internal":
-                logger.exception(
-                    f"Realtime session {self.session_id} input pump failed"
-                )
-            else:
-                logger.error(f"Realtime session {self.session_id} closed: {exc}")
+            logger.error(
+                f"Realtime session {self.session_id} input pump failed: {exc}",
+                exc_info=code == "internal",
+            )
             self.fail(str(exc), code)
 
     async def watch_activity(self) -> None:

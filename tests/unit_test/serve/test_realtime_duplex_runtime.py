@@ -35,7 +35,6 @@ from sglang_omni.serve.realtime.manager import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
-    ContextLimitError,
     OutputEvent,
     ResponseFinished,
     ResponseProgress,
@@ -53,6 +52,7 @@ from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
 from sglang_omni.serve.realtime.types import (
     Capabilities,
+    ContextLimitError,
     Envelope,
     InteractionAdapter,
     OutputBudgetError,
@@ -474,12 +474,8 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
             False,
         ),
         (RuntimeError("talker step failed"), "internal", True),
-        (
-            OutputBudgetError("outbound event budget exhausted"),
-            "output_budget_exhausted",
-            False,
-        ),
-        (ContextLimitError("response text context limit"), "context_limit", False),
+        (OutputBudgetError(), "output_budget_exhausted", False),
+        (ContextLimitError(), "context_limit", False),
     ],
 )
 async def test_unit_failure_closes_session_and_logs_once(
@@ -506,7 +502,7 @@ async def test_unit_failure_closes_session_and_logs_once(
     ]
     assert len(runtime_records) == 1
     assert runtime_records[0].levelno == logging.ERROR
-    assert (runtime_records[0].exc_info is not None) == has_traceback
+    assert bool(runtime_records[0].exc_info) == has_traceback
 
 
 @pytest.mark.asyncio
@@ -630,7 +626,7 @@ async def test_client_that_stops_reading_fails_with_the_output_budget_code(
     ]
     assert len(protocol_records) == dispatch_errors
     assert all(record.levelno == logging.ERROR for record in protocol_records)
-    assert all(record.exc_info is None for record in protocol_records)
+    assert not any(record.exc_info for record in protocol_records)
 
 
 def test_output_budget_counts_outbound_events_only() -> None:

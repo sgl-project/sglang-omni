@@ -15,6 +15,10 @@ from typing import Literal, Protocol
 import msgpack
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.pipeline.errors import (
+    SessionIdleTimeoutError,
+    SessionOutputBudgetError,
+)
 from sglang_omni.pipeline.replicas import assign_replica_bindings
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.profiler.duplex_events import (
@@ -38,22 +42,6 @@ from sglang_omni.proto.session import (
 from sglang_omni.proto.streams import INTERRUPT, TURN_DONE, control_type
 
 logger = logging.getLogger(__name__)
-
-
-class SessionIdleTimeoutError(TimeoutError):
-    """A session received no input within its idle timeout."""
-
-    CODE = "session_idle_timeout"
-
-    def __init__(self, idle_timeout_s: float) -> None:
-        super().__init__(f"no session input for {idle_timeout_s:g} s")
-
-
-class SessionOutputBudgetError(QueueFullError):
-    """The session output queue is at capacity."""
-
-    CODE = "output_budget_exhausted"
-    MESSAGE = "The session output queue is full."
 
 
 class SessionStreamHandler(Protocol):
