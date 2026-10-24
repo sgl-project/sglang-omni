@@ -283,6 +283,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
     should_run_top_priority_stream: bool
+    request_build_admission_wait_s: float
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -314,6 +315,7 @@ class OmniScheduler(Generic[RequestDataT]):
     async_decode_resolve_before_prefill: bool = False
     draft_worker: BaseSpecWorker | None = None
     async_prefill: bool = False
+    request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
 
     def __init__(
         self,
@@ -346,6 +348,7 @@ class OmniScheduler(Generic[RequestDataT]):
         async_decode_resolve_before_prefill: bool = False,
         async_prefill: bool = False,
         should_run_top_priority_stream: bool = False,
+        request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
@@ -451,6 +454,11 @@ class OmniScheduler(Generic[RequestDataT]):
         # own (a vocoder) runs the loop on the device's top priority stream, so its
         # replays go first on the SMs. Only when the model asks.
         self.should_run_top_priority_stream = should_run_top_priority_stream
+        if request_build_admission_wait_s < 0:
+            raise ValueError("request_build_admission_wait_s must be nonnegative")
+        else:
+            pass
+        self.request_build_admission_wait_s = request_build_admission_wait_s
         if self.enable_overlap and self.enable_async_decode:
             raise ValueError(
                 "enable_overlap and enable_async_decode are mutually "
@@ -1329,14 +1337,18 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
-        if submitted_build and not self.async_prefill:
+        if (
+            submitted_build
+            and not self.async_prefill
+            and self.request_build_admission_wait_s > 0
+        ):
             # note (luojiaxuan): the drain admits from the head of the pending
             # builds and stops at the first unfinished one, so only the head
             # decides whether waiting admits anything.
             with self.request_admission_lock:
                 head = next(iter(self.pending_request_builds.values()), None)
             if head is not None:
-                wait_futures([head[2]], timeout=_REQUEST_BUILD_ADMISSION_WAIT_S)
+                wait_futures([head[2]], timeout=self.request_build_admission_wait_s)
             else:
                 pass
         else:
@@ -2170,7 +2182,7 @@ class OmniScheduler(Generic[RequestDataT]):
         iteration that submitted a build, which kept the scheduler asleep while
         decode had GPU work queued.
         """
-        if not self.waiting_queue:
+        if not self.waiting_queue or self.request_build_admission_wait_s == 0:
             return
         else:
             pass
@@ -2183,7 +2195,7 @@ class OmniScheduler(Generic[RequestDataT]):
         if build_futures:
             wait_futures(
                 build_futures,
-                timeout=_REQUEST_BUILD_ADMISSION_WAIT_S,
+                timeout=self.request_build_admission_wait_s,
                 return_when=FIRST_COMPLETED,
             )
         else:

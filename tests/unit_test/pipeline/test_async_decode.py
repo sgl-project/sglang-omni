@@ -1760,3 +1760,17 @@ def test_async_prefill_runs_prefill_hook_before_publishing_tokens():
         assert events == ["prefill", "publish"]
         runner.execute_resolve(step)
     assert events == ["prefill", "publish"]
+
+
+def test_zero_admission_wait_does_not_block_prefill_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model's zero wait must release its ready prefill without waiting on unfinished builds."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.request_build_admission_wait_s = 0.0
+    scheduler.waiting_queue = [mock.Mock()]
+    wait = mock.Mock(side_effect=AssertionError("prefill release waited on a build"))
+    monkeypatch.setattr(omni_scheduler, "wait_futures", wait)
+    scheduler.admit_imminent_request_builds()
+    wait.assert_not_called()
+    assert len(scheduler.waiting_queue) == 1

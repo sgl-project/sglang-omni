@@ -9,7 +9,7 @@ import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
-from sglang_omni.models.moss_transcribe_diarize import stages
+from sglang_omni.models.moss_transcribe_diarize import engine_builder, stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -55,14 +55,25 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
     )
 
 
-def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
+@pytest.mark.parametrize(
+    ("is_cuda", "expected_backend"), [(True, "full"), (False, "breakable")]
+)
+def test_moss_transcribe_diarize_prefill_backend_policy(
+    monkeypatch: pytest.MonkeyPatch, is_cuda: bool, expected_backend: str
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: is_cuda)
     builder = make_moss_engine_builder()
 
     assert type(builder).supports_breakable_prefill_cuda_graph is True
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["torch_compile_max_bs"] == 4
-    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    resolved = build_generation_batch_overrides(server_args_overrides=None, **defaults)
+    assert resolved["cuda_graph_backend_prefill"] == expected_backend
+    opted_out = build_generation_batch_overrides(
+        server_args_overrides={"disable_prefill_cuda_graph": True}, **defaults
+    )
+    assert opted_out["cuda_graph_backend_prefill"] == "disabled"
     assert defaults["cuda_graph_bs_prefill"] == [
         1,
         2,
@@ -245,6 +256,7 @@ def test_init_encoder_graphs_uses_platform_backend(
     model = SimpleNamespace(
         whisper_encoder=encoder,
         encoder_graph_runner=None,
+        encoder_is_unquantized=False,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
     )
 
@@ -498,3 +510,20 @@ def test_server_warmup_request_is_a_second_of_audio_to_transcribe() -> None:
 
     assert isinstance(request, TranscriptionWarmupRequest)
     assert (len(audio), sample_rate, request.max_new_tokens) == (16000, 16000, 8)
+
+
+def test_factory_preserves_trimmed_fbank_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured opt-out must reach the request builder instead of enabling the fast path."""
+    stub_factory_env(monkeypatch, want_cuda_graph=False)
+    adapters = Mock(return_value=(Mock(), Mock()))
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_scheduler_adapters",
+        adapters,
+    )
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize", enable_trimmed_fbank=False
+    )
+    assert adapters.call_args.kwargs["enable_trimmed_fbank"] is False
