@@ -187,48 +187,65 @@ def streamed(
     return codec, drained(vocoder)
 
 
-WINDOWS_TO_214 = [(0, 10), (10, 20), (20, 32), (32, 64), (64, 128), (128, 192)]
-WINDOWS_TO_300 = WINDOWS_TO_214 + [(192, 256)]
+WINDOWS_TO_214 = [(0, 4), (4, 14), (14, 26), (26, 58), (58, 122), (122, 186)]
+WINDOWS_TO_300 = WINDOWS_TO_214 + [(186, 250)]
+DECODED_TO_214 = [
+    (0, 4),
+    (0, 14),
+    (0, 26),
+    (0, 58),
+    (26, 122),
+    (90, 186),
+    (154, 214),
+]
+DECODED_TO_300 = [
+    (0, 4),
+    (0, 14),
+    (0, 26),
+    (0, 58),
+    (26, 122),
+    (90, 186),
+    (154, 250),
+    (218, 300),
+]
 FINAL_PAYLOAD_ONLY_CASE = pytest.param(
     300,
     [1] * 5,
-    WINDOWS_TO_300 + [(256, 300)],
-    [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
-    + [(224, 300)],
+    WINDOWS_TO_300 + [(250, 300)],
+    DECODED_TO_300,
     id="295-frames-only-in-the-final-payload",
 )
 STREAMING_CASES = [
     pytest.param(
         214,
         [1] * 214,
-        WINDOWS_TO_214 + [(192, 214)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 214)],
+        WINDOWS_TO_214 + [(186, 214)],
+        DECODED_TO_214,
         id="frame-by-frame",
     ),
     pytest.param(
         214,
         [1] * 5 + [150] + [1] * 59,
-        WINDOWS_TO_214 + [(192, 214)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 214)],
+        WINDOWS_TO_214 + [(186, 214)],
+        DECODED_TO_214,
         id="a-150-frame-chunk-midstream",
     ),
     pytest.param(
         300,
         [1] * 5 + [295],
-        WINDOWS_TO_300 + [(256, 300)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
-        + [(224, 300)],
+        WINDOWS_TO_300 + [(250, 300)],
+        DECODED_TO_300,
         id="a-295-frame-last-chunk",
     ),
     FINAL_PAYLOAD_ONLY_CASE,
     pytest.param(
-        128,
-        [1] * 128,
-        [(0, 10), (10, 20), (20, 32), (32, 64), (64, 128)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128)],
+        122,
+        [1] * 122,
+        [(0, 4), (4, 14), (14, 26), (26, 58), (58, 122)],
+        [(0, 4), (0, 14), (0, 26), (0, 58), (26, 122)],
         id="whole-windows-and-no-tail",
     ),
-    pytest.param(7, [1] * 7, [(0, 7)], [(0, 7)], id="only-a-tail"),
+    pytest.param(3, [1] * 3, [(0, 3)], [(0, 3)], id="only-a-tail"),
 ]
 
 
@@ -283,7 +300,7 @@ def test_streaming_emits_the_fixed_windows_however_frames_arrive(
         "window_frame_counts",
     ),
     [
-        pytest.param(10, (10, 12, 32), 64, 32, (10, 20, 32, 64, 96), id="defaults"),
+        pytest.param(4, (10, 12, 32), 64, 32, (4, 14, 26, 58, 96), id="defaults"),
         pytest.param(40, (), 45, 20, (40, 65), id="no-ramp"),
         pytest.param(10, (), 16, 40, (10, 26, 42, 56), id="context-fills-late"),
         pytest.param(10, (), 10, 0, (10,), id="no-context"),
@@ -319,7 +336,7 @@ def test_every_streamed_window_decodes_through_the_given_window_decoder() -> Non
         214, [1] * 214, is_done_first=False, codec=codec, decode_window=decode_window
     )
 
-    assert decoded_frame_counts == [10, 20, 32, 64, 96, 96, 54]
+    assert decoded_frame_counts == [4, 14, 26, 58, 96, 96, 60]
     np.testing.assert_array_equal(
         streamed_audio(messages),
         np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
