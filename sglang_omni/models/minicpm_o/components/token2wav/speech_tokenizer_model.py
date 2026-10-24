@@ -125,12 +125,12 @@ class FSQVectorQuantization(torch.nn.Module):
     def __init__(self, dim: int, codebook_size: int) -> None:
         super().__init__()
         assert 3**8 == codebook_size
-        self._codebook = FSQCodebook(dim=dim, level=3)
+        self.codebook = FSQCodebook(dim=dim, level=3)
         self.codebook_size = codebook_size
 
     @torch.inference_mode()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self._codebook.encode(x)
+        return self.codebook.encode(x)
 
 
 class FSMNMultiHeadAttention(nn.Module):
@@ -165,6 +165,8 @@ class FSMNMultiHeadAttention(nn.Module):
         inputs = inputs.view(b, t, -1)
         if mask is not None and mask.size(2) > 0:
             inputs = inputs * mask
+        else:
+            pass
         x = inputs.transpose(1, 2)
         x = self.pad_fn(x)
         x = self.fsmn_block(x)
@@ -188,6 +190,8 @@ class FSMNMultiHeadAttention(nn.Module):
         v = v.view(*v.shape[:2], self.n_head, -1)
         if freqs_cis is not None:
             q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+        else:
+            pass
         fsm_memory = self.forward_fsmn(v, mask_pad)
         q = q.permute(0, 2, 1, 3) * scale
         v = v.permute(0, 2, 1, 3)
@@ -196,6 +200,8 @@ class FSMNMultiHeadAttention(nn.Module):
             qk = q @ k
             if mask is not None:
                 qk = qk + mask
+            else:
+                pass
             qk = qk.float()
             w = torch.nn.functional.softmax(qk, dim=-1).to(q.dtype)
             return (

@@ -101,15 +101,20 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         )
     ]
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        env_defaults.setdefault("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+        return env_defaults
+
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
         from sglang_omni.platforms import current_platform
 
         policy = super().resolved_audio_chunking
-        if not current_platform.is_mps() or use_mlx():
+        if not current_platform.is_mps():
             return policy
+        else:
+            pass
 
         if policy.max_audio_clip_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:
             raise ValueError(
@@ -117,17 +122,21 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 "audio_chunking.max_audio_clip_s up to "
                 f"{QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:g}s"
             )
+        else:
+            pass
 
         # Note (yexiaodong): Torch MPS currently uses one clip shape for the
         # encoder path. Keep its native and whole-upload limits within the
         # qualified cap, while retaining the independently configurable chunk
-        # size for non-streaming scheduling. MLX retains the model-native cap.
+        # size for non-streaming scheduling.
         max_total_audio_s = policy.max_total_audio_s
         if (
             max_total_audio_s is None
             or max_total_audio_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
         ):
             max_total_audio_s = QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
+        else:
+            pass
         return replace(
             policy,
             max_native_clip_s=QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS,

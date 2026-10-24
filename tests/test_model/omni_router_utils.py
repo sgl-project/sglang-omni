@@ -5,28 +5,34 @@ from __future__ import annotations
 
 import os
 import signal
-import socket
 import subprocess
 import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
 import requests
+import torch
 
 from sglang_omni.utils import find_available_port
-from sglang_omni_router.python.launcher.config import LocalLauncherConfig
-from sglang_omni_router.python.launcher.local import LocalLauncher
 from tests.test_model.rust_router_config import CiRouterTopology, render_router_config
 from tests.utils import (
     disable_proxy,
     server_log_file,
     start_server_from_cmd,
     stop_server,
+)
+from tests.utils.managed_workers import (
+    ManagedWorkerProcess,
+    build_gpu_assignments,
+    port_is_available,
+    start_workers,
+    stop_managed_workers,
+    wait_for_workers,
 )
 
 RUST_ROUTER_BINARY_ENV = "SGLANG_OMNI_ROUTER_BIN"
@@ -44,7 +50,7 @@ class ManagedRouterHandle:
     log_file: Path | None
     router_config: Path | None = None
     cleanup_manifest: Path | None = None
-    worker_launcher: LocalLauncher | None = None
+    workers: list[ManagedWorkerProcess] = field(default_factory=list)
     is_router: bool = True
     router_ready_s: float | None = None
     stopped: bool = False
@@ -56,8 +62,8 @@ class ManagedRouterHandle:
             stop_server(self.proc)
         finally:
             try:
-                if self.worker_launcher is not None:
-                    self.worker_launcher.shutdown()
+                stop_managed_workers(self.workers)
+                self.workers.clear()
             finally:
                 if self.cleanup_manifest is not None:
                     cleanup_process_groups_from_manifest(self.cleanup_manifest)
@@ -111,31 +117,19 @@ def launch_managed_router(
     external_worker_urls: list[str] | None = None,
     worker_env: dict[str, str] | None = None,
     generation_streaming: bool = True,
+    named_voice: bool = False,
 ) -> Iterator[ManagedRouterHandle]:
     """Launch a Rust router over local or externally owned workers."""
-    router_binary = _rust_router_binary()
+    router_binary = rust_router_binary()
     cleanup_manifest = (
         tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
     )
-    worker_launcher: LocalLauncher | None = None
+    workers: list[ManagedWorkerProcess] = []
 
     if external_worker_urls is None:
-        worker_base_port = _find_available_port_range(num_workers)
+        worker_base_port = find_available_port_range(num_workers)
         worker_ports = [worker_base_port + offset for offset in range(num_workers)]
         worker_urls = [f"http://127.0.0.1:{port}" for port in worker_ports]
-        worker_launcher = LocalLauncher(
-            LocalLauncherConfig(
-                model_path=model_path,
-                model_name=model_name,
-                num_workers=num_workers,
-                num_gpus_per_worker=num_gpus_per_worker,
-                worker_host="127.0.0.1",
-                worker_base_port=worker_base_port,
-                worker_extra_args=worker_extra_args,
-                wait_timeout=wait_timeout,
-            ),
-            worker_env=worker_env,
-        )
     else:
         if len(external_worker_urls) != num_workers:
             raise ValueError(
@@ -143,16 +137,17 @@ def launch_managed_router(
                 f"{len(external_worker_urls)}"
             )
         worker_urls = list(external_worker_urls)
-        worker_ports = [_worker_port(url) for url in worker_urls]
+        worker_ports = [worker_port(url) for url in worker_urls]
 
-    router_port = _find_available_port_excluding(worker_ports)
-    router_config = _write_router_config(
+    router_port = find_available_port_excluding(worker_ports)
+    router_config = write_router_config(
         tmp_path_factory,
         topology=router_topology,
         router_port=router_port,
         worker_urls=worker_urls,
         model_name=model_name,
         generation_streaming=generation_streaming,
+        named_voice=named_voice,
     )
     router_log = (
         tmp_path_factory.mktemp(log_prefix) / "server.log"
@@ -174,13 +169,35 @@ def launch_managed_router(
             health_path="/live",
             health_body_contains=None,
         )
-        _record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
+        record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
 
-        if worker_launcher is not None:
-            worker_launcher.launch()
-            for worker in worker_launcher.workers:
-                _record_process_group(cleanup_manifest, worker.process_group_id)
-            worker_launcher.wait_ready()
+        if external_worker_urls is None:
+            visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            devices = [
+                device.strip()
+                for device in visible_devices.split(",")
+                if device.strip()
+            ]
+            if not devices:
+                devices = [str(index) for index in range(torch.cuda.device_count())]
+            else:
+                pass
+            workers = start_workers(
+                model_path=model_path,
+                model_name=model_name,
+                worker_host="127.0.0.1",
+                worker_ports=worker_ports,
+                worker_gpu_ids=build_gpu_assignments(
+                    devices, num_workers, num_gpus_per_worker
+                ),
+                worker_extra_args=worker_extra_args,
+                worker_env=worker_env,
+            )
+            for worker in workers:
+                record_process_group(cleanup_manifest, worker.process_group_id)
+            wait_for_workers(workers, wait_timeout)
+        else:
+            pass
 
         wait_for_all_router_workers(
             router_port,
@@ -200,7 +217,7 @@ def launch_managed_router(
             log_file=router_log,
             router_config=router_config,
             cleanup_manifest=cleanup_manifest,
-            worker_launcher=worker_launcher,
+            workers=workers,
             router_ready_s=router_ready_s,
         )
         yield handle
@@ -210,8 +227,7 @@ def launch_managed_router(
         else:
             if router_proc is not None:
                 stop_server(router_proc)
-            if worker_launcher is not None:
-                worker_launcher.shutdown()
+            stop_managed_workers(workers)
             cleanup_process_groups_from_manifest(cleanup_manifest)
 
 
@@ -292,13 +308,13 @@ def wait_for_router_quiescence(
     diagnostics: dict | None = None
     while time.monotonic() < deadline:
         diagnostics = router_get_json(port, "/diagnostics")
-        if _router_is_quiescent(diagnostics, expected_workers=expected_workers):
+        if router_is_quiescent(diagnostics, expected_workers=expected_workers):
             return diagnostics
         time.sleep(0.1)
     raise TimeoutError(f"router did not become healthy and quiescent: {diagnostics}")
 
 
-def _router_is_quiescent(diagnostics: dict, *, expected_workers: int) -> bool:
+def router_is_quiescent(diagnostics: dict, *, expected_workers: int) -> bool:
     workers = diagnostics.get("workers", [])
     resources = diagnostics.get("resources", {})
     return (
@@ -328,7 +344,7 @@ def print_router_snapshot(label: str, snapshot: dict) -> None:
             worker.get("worker_id"),
             worker.get("health"),
             worker.get("active_requests"),
-            sum(_dispatch_counts(worker).values()),
+            sum(dispatch_counts(worker).values()),
             worker.get("routable"),
             worker.get("voice_owner"),
         )
@@ -397,6 +413,7 @@ def assert_workers_served_requests_since(
     handle: ManagedRouterHandle,
     before_snapshot: dict,
     label: str,
+    expected_workers: int = 2,
     min_total_requests: int | None = None,
     min_worker_share: float = 0.10,
 ) -> dict:
@@ -405,6 +422,7 @@ def assert_workers_served_requests_since(
     print_router_snapshot(f"{label} /diagnostics delta", delta_snapshot)
     assert_workers_served_requests(
         delta_snapshot,
+        expected_workers=expected_workers,
         min_total_requests=min_total_requests,
         min_worker_share=min_worker_share,
     )
@@ -434,11 +452,11 @@ def cleanup_process_groups_from_manifest(manifest: Path) -> None:
         process_group_ids = {
             process_group_id
             for process_group_id in remaining
-            if _process_group_exists(process_group_id)
+            if process_group_exists(process_group_id)
         }
 
 
-def _rust_router_binary() -> Path:
+def rust_router_binary() -> Path:
     configured = os.environ.get(RUST_ROUTER_BINARY_ENV, "").strip()
     if not configured:
         raise RuntimeError(
@@ -450,7 +468,7 @@ def _rust_router_binary() -> Path:
     return resolved
 
 
-def _write_router_config(
+def write_router_config(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     topology: CiRouterTopology,
@@ -458,6 +476,7 @@ def _write_router_config(
     worker_urls: list[str],
     model_name: str,
     generation_streaming: bool = True,
+    named_voice: bool = False,
 ) -> Path:
     config_path = tmp_path_factory.mktemp("omni_router_config") / "router.toml"
     config_path.write_text(
@@ -467,18 +486,19 @@ def _write_router_config(
             worker_urls=worker_urls,
             model_name=model_name,
             generation_streaming=generation_streaming,
+            named_voice=named_voice,
         ),
         encoding="utf-8",
     )
     return config_path
 
 
-def _record_process_group(manifest: Path, process_group_id: int) -> None:
+def record_process_group(manifest: Path, process_group_id: int) -> None:
     with manifest.open("a", encoding="utf-8") as handle:
         handle.write(f"{process_group_id}\n")
 
 
-def _process_group_exists(process_group_id: int) -> bool:
+def process_group_exists(process_group_id: int) -> bool:
     try:
         os.killpg(process_group_id, 0)
         return True
@@ -486,7 +506,7 @@ def _process_group_exists(process_group_id: int) -> bool:
         return False
 
 
-def _find_available_port_excluding(excluded: list[int]) -> int:
+def find_available_port_excluding(excluded: list[int]) -> int:
     excluded_ports = set(excluded)
     while True:
         port = find_available_port()
@@ -494,33 +514,23 @@ def _find_available_port_excluding(excluded: list[int]) -> int:
             return port
 
 
-def _find_available_port_range(count: int) -> int:
+def find_available_port_range(count: int) -> int:
     for _ in range(100):
         base_port = find_available_port()
         candidates = [base_port + offset for offset in range(count)]
-        if all(_port_is_available(port) for port in candidates):
+        if all(port_is_available(port) for port in candidates):
             return base_port
     raise RuntimeError(f"failed to find {count} consecutive available ports")
 
 
-def _port_is_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
-
-
-def _worker_port(url: str) -> int:
+def worker_port(url: str) -> int:
     port = urlsplit(url).port
     if port is None:
         raise ValueError(f"worker URL has no explicit port: {url}")
     return port
 
 
-def _dispatch_counts(worker: dict) -> dict[str, int]:
+def dispatch_counts(worker: dict) -> dict[str, int]:
     return {
         str(entry["class"]): int(entry["requests"])
         for entry in worker.get("dispatches", [])
@@ -531,10 +541,10 @@ def worker_request_delta(before: dict, after: dict) -> dict:
     before_workers = {worker["worker_id"]: worker for worker in before["workers"]}
     delta_workers = []
     for worker in after["workers"]:
-        previous_counts = _dispatch_counts(before_workers.get(worker["worker_id"], {}))
+        previous_counts = dispatch_counts(before_workers.get(worker["worker_id"], {}))
         class_counts = {
             service_class: count - previous_counts.get(service_class, 0)
-            for service_class, count in _dispatch_counts(worker).items()
+            for service_class, count in dispatch_counts(worker).items()
         }
         delta_workers.append(
             {

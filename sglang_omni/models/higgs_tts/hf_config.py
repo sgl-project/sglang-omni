@@ -7,7 +7,7 @@ the discrete-audio-encoder branch and ignores the Whisper side.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 import transformers
 
@@ -17,14 +17,18 @@ import transformers
 _QWEN3_ROPE_THETA = 1_000_000
 
 
-def build_text_config(raw: Any) -> transformers.PretrainedConfig:
+def build_text_config(raw: object) -> transformers.PretrainedConfig:
     """Realise a text-backbone sub-config into a concrete ``PretrainedConfig``."""
     if isinstance(raw, transformers.PretrainedConfig):
         return raw
+    else:
+        pass
     cfg = dict(raw or {})
     model_type = cfg.get("model_type", "qwen3")
     if model_type == "qwen3" and cfg.get("rope_theta") is None:
         cfg["rope_theta"] = _QWEN3_ROPE_THETA
+    else:
+        pass
     try:
         cfg_cls = transformers.CONFIG_MAPPING[model_type]
     except KeyError as exc:
@@ -49,8 +53,8 @@ class HiggsMultimodalQwen3Config(transformers.PretrainedConfig):
 
     def __init__(
         self,
-        audio_encoder_config: dict[str, Any] | None = None,
-        text_config: dict[str, Any] | transformers.PretrainedConfig | None = None,
+        audio_encoder_config: Mapping[str, object] | None = None,
+        text_config: Mapping[str, object] | transformers.PretrainedConfig | None = None,
         audio_token_id: int = -100,
         mel_per_sample: int = 8,
         **kwargs,

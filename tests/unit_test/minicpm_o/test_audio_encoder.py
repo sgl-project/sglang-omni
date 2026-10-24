@@ -10,6 +10,7 @@ root; the test skips otherwise.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -18,18 +19,22 @@ import torch
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
-    MiniCPMWhisperEncoder,
     MultiModalProjector,
+    StreamingAudioChunk,
     chunked_causal_mask,
     feature_lens_after_pooling,
     fuse_qkv,
     min_mel_frames,
 )
+from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    AudioEncoderState,
+    MiniCPMWhisperEncoder,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _checkpoint_dir() -> Path | None:
+def checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     candidates = [Path(env)] if env else []
     candidates += [REPO_ROOT / "MiniCPM-o-4_6", REPO_ROOT / "MiniCPM-o-4_5"]
@@ -39,7 +44,7 @@ def _checkpoint_dir() -> Path | None:
     return None
 
 
-def _small_whisper_config():
+def small_whisper_config():
     from transformers import WhisperConfig
 
     return WhisperConfig(
@@ -53,17 +58,17 @@ def _small_whisper_config():
     )
 
 
-def _native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:
+def native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:
     return fuse_qkv(dict(encoder.state_dict()))
 
 
-def _build_remote_encoder(checkpoint: Path, config):
+def build_remote_encoder(checkpoint: Path, config):
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
     remote_cls = get_class_from_dynamic_module(
         "modeling_minicpmo.MiniCPMWhisperEncoder", str(checkpoint)
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "sdpa"  # noqa: leading-underscore  # production name
     remote = remote_cls(config).eval()
     # transformers v5 attention returns (out, weights); the remote layer
     # unpacks a v4-era 3-tuple. Pad the return for the golden run.
@@ -71,28 +76,28 @@ def _build_remote_encoder(checkpoint: Path, config):
         attn = layer.self_attn
         orig_forward = attn.forward
 
-        def _forward(*args, _orig=orig_forward, **kwargs):
+        def forward(*args, _orig=orig_forward, **kwargs):
             out = _orig(*args, **kwargs)
             if isinstance(out, tuple) and len(out) == 2:
                 return (*out, None)
             return out
 
-        attn.forward = _forward
+        attn.forward = forward
     return remote
 
 
 @pytest.mark.parametrize("lens", [[3000, 2000, 137], [700]])
 def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
-    checkpoint = _checkpoint_dir()
+    checkpoint = checkpoint_dir()
     if checkpoint is None:
         pytest.skip("no MiniCPM-o checkpoint with remote modeling files")
 
     torch.manual_seed(0)
-    config = _small_whisper_config()
-    remote = _build_remote_encoder(checkpoint, config)
+    config = small_whisper_config()
+    remote = build_remote_encoder(checkpoint, config)
 
     native = MiniCPMWhisperEncoder(config).eval()
-    native.load_state_dict(_native_state_from_hf(remote), strict=True)
+    native.load_state_dict(native_state_from_hf(remote), strict=True)
 
     batch = len(lens)
     max_mel = max(lens)
@@ -132,10 +137,10 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
         )
 
 
-def _tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
+def tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
     """A MiniCPMOAudioEncoder with random weights and no checkpoint I/O."""
     torch.manual_seed(0)
-    config = _small_whisper_config()
+    config = small_whisper_config()
     encoder = object.__new__(MiniCPMOAudioEncoder)
     torch.nn.Module.__init__(encoder)
     encoder.device = torch.device("cpu")
@@ -154,7 +159,7 @@ def _tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
 @pytest.mark.parametrize("padding", ["random", "nan"])
 def test_padding_content_does_not_change_valid_output(padding: str) -> None:
     """Padding must affect neither valid embeddings nor the caller's input."""
-    encoder = _tiny_audio_encoder()
+    encoder = tiny_audio_encoder()
     short_len, long_len = 137, 3000
 
     torch.manual_seed(1)
@@ -196,7 +201,7 @@ def test_padding_content_does_not_change_valid_output(padding: str) -> None:
 def test_short_audio_is_rejected_before_pooling() -> None:
     """A clip too short for one pooling window must raise a typed error."""
     pool_step = 5
-    encoder = _tiny_audio_encoder(pool_step=pool_step)
+    encoder = tiny_audio_encoder(pool_step=pool_step)
     too_short = min_mel_frames(pool_step) - 1
     mel = torch.randn(1, 80, too_short).to(encoder.dtype)
     lens = torch.tensor([too_short])
@@ -208,7 +213,7 @@ def test_short_audio_is_rejected_before_pooling() -> None:
 
 def test_sub_pooling_tail_keeps_long_audio_embeddings() -> None:
     """A partial final segment contributes no tokens without rejecting its clip."""
-    encoder = _tiny_audio_encoder(pool_step=5)
+    encoder = tiny_audio_encoder(pool_step=5)
     mel = torch.randn(2, 80, 3000)
     mel[1, :, 5:] = 0
 
@@ -226,7 +231,7 @@ def test_sub_pooling_tail_keeps_long_audio_embeddings() -> None:
 def test_minimum_length_audio_still_encodes() -> None:
     """The shortest accepted clip yields exactly one pooled frame."""
     pool_step = 5
-    encoder = _tiny_audio_encoder(pool_step=pool_step)
+    encoder = tiny_audio_encoder(pool_step=pool_step)
     shortest = min_mel_frames(pool_step)
     mel = torch.randn(1, 80, shortest).to(encoder.dtype)
     lens = torch.tensor([shortest])
@@ -235,3 +240,69 @@ def test_minimum_length_audio_still_encodes() -> None:
         out = encoder(audio_features=mel, audio_feature_lens=lens)
 
     assert out["audio_embeds"].shape[0] == 1
+
+
+STREAMING_MEL_FRAMES = 104
+
+
+def random_history(length: int, generator: torch.Generator) -> AudioEncoderState | None:
+    """A session's attention history of the given length, or none for a new session."""
+    config = small_whisper_config()
+    head_dim = config.d_model // config.encoder_attention_heads
+    if length == 0:
+        return None
+    else:
+        return AudioEncoderState(
+            key_value_states=torch.randn(
+                (
+                    config.encoder_layers,
+                    2,
+                    1,
+                    config.encoder_attention_heads,
+                    length,
+                    head_dim,
+                ),
+                generator=generator,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "history_lengths",
+    [(300,), (0, 50, 200), (0, 0, 0), (1480, 100, 0)],
+    ids=["single", "staggered", "all_empty", "reset_in_batch"],
+)
+def test_batched_streaming_matches_each_session_alone(
+    history_lengths: tuple[int, ...],
+) -> None:
+    """Each session in a batch gets its own result and owns exactly its own history."""
+    encoder = tiny_audio_encoder()
+    generator = torch.Generator().manual_seed(1)
+    chunks = [
+        StreamingAudioChunk(
+            audio_features=torch.randn(
+                1, 80, STREAMING_MEL_FRAMES, generator=generator
+            ),
+            state=random_history(length, generator),
+            prefix_extra_frames=2,
+            suffix_extra_frames=2,
+        )
+        for length in history_lengths
+    ]
+    batch_chunks = [dataclasses.replace(chunk) for chunk in chunks]
+    batched = encoder.forward_streaming_batch(batch_chunks)
+    assert all(chunk.state is None for chunk in batch_chunks)
+    for chunk, (embeds, state) in zip(chunks, batched, strict=True):
+        [(alone_embeds, alone_state)] = encoder.forward_streaming_batch([chunk])
+        torch.testing.assert_close(embeds, alone_embeds, rtol=1e-5, atol=1e-5)
+        assert state.past_length == alone_state.past_length
+        torch.testing.assert_close(
+            state.key_value_states,
+            alone_state.key_value_states,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert (
+            state.key_value_states.untyped_storage().nbytes()
+            == state.key_value_states.nbytes
+        )

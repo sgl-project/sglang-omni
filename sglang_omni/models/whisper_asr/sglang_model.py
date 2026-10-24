@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
@@ -30,6 +30,16 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import MultimodalDataItem
+else:
+    pass
+
+try:
+    from flash_attn.cute.interface import flash_attn_func
+except ImportError:
+    flash_attn_func = None
 
 try:
     from flashinfer.norm import layernorm as flashinfer_layer_norm
@@ -57,6 +67,8 @@ class WhisperDecoderLayerNorm(nn.LayerNorm):
             return flashinfer_layer_norm(
                 hidden_states, self.weight, self.bias, self.eps
             )
+        else:
+            pass
         return super().forward(hidden_states)
 
 
@@ -71,12 +83,54 @@ def load_projection_shard(
     default_weight_loader(target, loaded_weight)
 
 
+@torch.library.custom_op("sglang_omni::whisper_encoder_attention", mutates_args=())
+def whisper_encoder_attention(
+    query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, backend: str
+) -> torch.Tensor:
+    """Non-causal attention over [batch, frames, heads, head_dim] encoder states."""
+    if backend not in ("auto", "sdpa", "fa4"):
+        raise ValueError(f"Unknown Whisper encoder attention backend: {backend}")
+    else:
+        pass
+    can_use_fa4 = (
+        flash_attn_func is not None
+        and query.device.type == "cuda"
+        and query.dtype in (torch.float16, torch.bfloat16)
+        and query.shape[-1] == 64
+        and torch.cuda.get_device_capability(query.device)[0] >= 9
+    )
+    if backend == "fa4" and not can_use_fa4:
+        raise RuntimeError("FA4 requires an installed backend and eligible CUDA inputs")
+    elif backend != "sdpa" and can_use_fa4:
+        attention_output = flash_attn_func(query, key, value, causal=False)
+        if isinstance(attention_output, tuple):
+            return attention_output[0].contiguous()
+        else:
+            return attention_output.contiguous()
+    else:
+        return (
+            F.scaled_dot_product_attention(
+                query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2)
+            )
+            .transpose(1, 2)
+            .contiguous()
+        )
+
+
+@whisper_encoder_attention.register_fake
+def whisper_encoder_attention_shape(
+    query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, backend: str
+) -> torch.Tensor:
+    return torch.empty_like(query, memory_format=torch.contiguous_format)
+
+
 class WhisperEncoderAttention(nn.Module):
     def __init__(self, config: WhisperConfig) -> None:
         super().__init__()
         self.embed_dim = config.d_model
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
+        self.backend = config.to_dict().get("encoder_attention_backend", "auto")
         self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
         # Whisper K projections have no bias. The zero K shard preserves that
         # checkpoint structure while issuing one GEMM for all three projections.
@@ -86,23 +140,14 @@ class WhisperEncoderAttention(nn.Module):
 
     def shape(self, states: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = states.shape
-        return states.view(
-            batch_size, seq_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
+        return states.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
-        query = self.shape(query)
-        key = self.shape(key)
-        value = self.shape(value)
-        attn_output = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            dropout_p=0.0,
-            is_causal=False,
+        attn_output = whisper_encoder_attention(
+            self.shape(query), self.shape(key), self.shape(value), self.backend
         )
-        attn_output = attn_output.transpose(1, 2).reshape(
+        attn_output = attn_output.reshape(
             hidden_states.shape[0],
             hidden_states.shape[1],
             self.embed_dim,
@@ -412,7 +457,7 @@ class WhisperForConditionalGeneration(nn.Module):
         self.logits_processor = LogitsProcessor(config)
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
-        self._encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+        self.encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
 
     def init_encoder_graphs(
         self,
@@ -422,30 +467,36 @@ class WhisperForConditionalGeneration(nn.Module):
         """Capture fixed-shape Whisper encoder batches after model setup."""
         if not batch_buckets:
             return
-        self._encoder_graph_runner = WhisperEncoderCudaGraphRunner(
+        else:
+            pass
+        self.encoder_graph_runner = WhisperEncoderCudaGraphRunner(
             self.model.encoder,
             num_mel_bins=int(self.config.num_mel_bins),
             input_feature_len=int(input_feature_len),
         )
-        self._encoder_graph_runner.capture(batch_buckets)
+        self.encoder_graph_runner.capture(batch_buckets)
 
     def run_encoder(self, audio_features: torch.Tensor) -> torch.Tensor:
         """Run the Whisper encoder with CUDA-graph replay when available."""
-        if self._encoder_graph_runner is not None:
+        if self.encoder_graph_runner is not None:
             try:
-                return self._encoder_graph_runner.run(audio_features)
+                return self.encoder_graph_runner.run(audio_features)
             except Exception:
                 logger.exception(
                     "Whisper encoder CUDA graph replay failed; falling back to eager"
                 )
+        else:
+            pass
         return self.model.encoder(audio_features)
 
-    def encode_audio_features(self, items: list[Any]) -> torch.Tensor:
+    def encode_audio_features(self, items: list["MultimodalDataItem"]) -> torch.Tensor:
         """Batch-encode mel features into encoder states [B, T, H]."""
         if not items:
             raise ValueError(
                 "Whisper encode_audio_features requires at least one audio item"
             )
+        else:
+            pass
         features: list[torch.Tensor] = []
         reference = next(self.model.encoder.parameters())
         for item in items:
@@ -454,8 +505,12 @@ class WhisperForConditionalGeneration(nn.Module):
                 raise RuntimeError(
                     "Whisper audio item is missing mel features; cannot encode"
                 )
+            else:
+                pass
             if not isinstance(feature, torch.Tensor):
                 feature = torch.as_tensor(feature)
+            else:
+                pass
             features.append(feature.to(device=reference.device, dtype=reference.dtype))
         return self.run_encoder(torch.cat(features, dim=0))
 
@@ -465,22 +520,30 @@ class WhisperForConditionalGeneration(nn.Module):
     ) -> tuple[torch.Tensor | None, list[int] | None]:
         if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
             return None, None
+        else:
+            pass
 
         features: list[torch.Tensor] = []
         encoder_lens: list[int] = []
         for index, mm_input in enumerate(forward_batch.mm_inputs):
             if forward_batch.encoder_cached[index] or mm_input is None:
                 continue
+            else:
+                pass
             item_features = [
                 item.feature for item in mm_input.mm_items if item.feature is not None
             ]
             if not item_features:
                 continue
+            else:
+                pass
             features.append(torch.cat(item_features, dim=0))
             encoder_lens.append(int(forward_batch.encoder_lens[index].item()))
 
         if not features:
             return None, None
+        else:
+            pass
         return torch.cat(features, dim=0), encoder_lens
 
     def batch_precomputed_encoder_states(
@@ -490,27 +553,39 @@ class WhisperForConditionalGeneration(nn.Module):
         """Collect pre-LM encoder hiddens into a flat cross-attn tensor."""
         if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
             return None
+        else:
+            pass
 
         parts: list[torch.Tensor] = []
         for index, mm_input in enumerate(forward_batch.mm_inputs):
             if forward_batch.encoder_cached[index] or mm_input is None:
                 continue
+            else:
+                pass
             encoder_len = int(forward_batch.encoder_lens[index].item())
             for item in mm_input.mm_items:
                 embedding = item.precomputed_embeddings
                 if embedding is None:
                     continue
+                else:
+                    pass
                 if not isinstance(embedding, torch.Tensor):
                     embedding = torch.as_tensor(embedding)
+                else:
+                    pass
                 if embedding.dim() != 2 or embedding.shape[0] < encoder_len:
                     raise RuntimeError(
                         "Whisper precomputed encoder states "
                         f"{tuple(embedding.shape)} incompatible with "
                         f"encoder_len={encoder_len}"
                     )
+                else:
+                    pass
                 parts.append(embedding[:encoder_len])
         if not parts:
             return None
+        else:
+            pass
         return torch.cat(parts, dim=0)
 
     @staticmethod
@@ -538,8 +613,8 @@ class WhisperForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> LogitsProcessorOutput:
         del kwargs
 
         cross_attention_states = self.batch_precomputed_encoder_states(forward_batch)
@@ -551,12 +626,18 @@ class WhisperForConditionalGeneration(nn.Module):
                     encoder_states,
                     encoder_lens,
                 )
+            else:
+                pass
+        else:
+            pass
 
         if cross_attention_states is not None:
             self.model.cache_encoder_states(
                 cross_attention_states,
                 forward_batch.encoder_out_cache_loc,
             )
+        else:
+            pass
 
         input_embeds = self.model.decoder.embed_input_ids(input_ids, positions)
         hidden_states = self.model(
@@ -574,6 +655,8 @@ class WhisperForConditionalGeneration(nn.Module):
         for name, loaded_weight in weights:
             if name == "proj_out.weight":
                 name = "model.decoder.embed_tokens.weight"
+            else:
+                pass
             projection = name.rsplit(".", 2)[-2]
             if ".self_attn." in name and projection in _QKV_SHARDS:
                 target_name = name.replace(f".{projection}.", ".qkv_proj.", 1)
@@ -585,6 +668,8 @@ class WhisperForConditionalGeneration(nn.Module):
                     shard_size=self.config.d_model,
                 )
                 continue
+            else:
+                pass
             if ".encoder_attn." in name and projection in _KV_SHARDS:
                 target_name = name.replace(f".{projection}.", ".kv_proj.", 1)
                 param = params_dict[target_name]
@@ -595,8 +680,12 @@ class WhisperForConditionalGeneration(nn.Module):
                     shard_size=self.config.d_model,
                 )
                 continue
+            else:
+                pass
             if name not in params_dict:
                 continue
+            else:
+                pass
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)

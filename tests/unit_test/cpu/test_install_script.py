@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path("scripts/cpu/install_cpu.sh")
-_ORIGINAL_MARKER = "# ORIGINAL-CPU-MANIFEST"
+SCRIPT = Path("scripts/cpu/install_cpu.sh")
+ORIGINAL_MARKER = "# ORIGINAL-CPU-MANIFEST"
 
 
 @pytest.fixture
@@ -26,13 +26,13 @@ def repo(tmp_path: Path) -> Path:
     """A throwaway repo root holding just what the script touches."""
     root = tmp_path / "repo"
     (root / "scripts" / "cpu").mkdir(parents=True)
-    shutil.copy(_SCRIPT, root / "scripts" / "cpu" / "install_cpu.sh")
-    (root / "pyproject.toml").write_text(f'{_ORIGINAL_MARKER}\n[project]\nname = "x"\n')
+    shutil.copy(SCRIPT, root / "scripts" / "cpu" / "install_cpu.sh")
+    (root / "pyproject.toml").write_text(f'{ORIGINAL_MARKER}\n[project]\nname = "x"\n')
     (root / "pyproject_cpu.toml").write_text('[project]\nname = "x-cpu"\n')
     return root
 
 
-def _write_preflight_python(repo: Path) -> Path:
+def write_preflight_python(repo: Path) -> Path:
     """Return a fake interpreter that makes installer preflights deterministic."""
     python = repo / "preflight-python"
     python.write_text(
@@ -50,8 +50,8 @@ exit 0
     return python
 
 
-def _run(repo: Path) -> subprocess.CompletedProcess[str]:
-    python = _write_preflight_python(repo)
+def run(repo: Path) -> subprocess.CompletedProcess[str]:
+    python = write_preflight_python(repo)
     return subprocess.run(
         ["bash", "scripts/cpu/install_cpu.sh", "--check"],
         cwd=repo,
@@ -63,7 +63,7 @@ def _run(repo: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _write_signal_python(repo: Path) -> Path:
+def write_signal_python(repo: Path) -> Path:
     """Return a fake interpreter that terminates its installer parent."""
     python = repo / "signal-python"
     python.write_text(
@@ -95,10 +95,10 @@ def test_rerun_after_an_interrupted_swap_preserves_the_original(repo: Path) -> N
     shutil.copy(repo / "pyproject_cpu.toml", repo / "pyproject.toml")  # then swaps
     # <-- process killed here, before restore()
 
-    result = _run(repo)
+    result = run(repo)
 
     # The only copy of the user's manifest must survive the re-run untouched.
-    assert _ORIGINAL_MARKER in backup.read_text()
+    assert ORIGINAL_MARKER in backup.read_text()
     assert result.returncode != 0
     assert "leftover backup" in result.stderr
     # And the message must say how to get back.
@@ -110,10 +110,10 @@ def test_rerun_after_an_interrupted_swap_preserves_the_original(repo: Path) -> N
 
 def test_a_clean_tree_still_runs(repo: Path) -> None:
     """No backup present: the guard must not block the normal path."""
-    result = _run(repo)
+    result = run(repo)
 
     assert "leftover backup" not in result.stderr
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
+    assert (repo / "pyproject.toml").read_text().startswith(ORIGINAL_MARKER)
 
 
 def test_a_partial_staging_backup_is_discarded(repo: Path) -> None:
@@ -121,11 +121,11 @@ def test_a_partial_staging_backup_is_discarded(repo: Path) -> None:
     staging = repo / ".pyproject.cpu.bak.tmp"
     staging.write_text("partial backup")
 
-    result = _run(repo)
+    result = run(repo)
 
     assert result.returncode == 0
     assert not staging.exists()
-    assert _ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
+    assert ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
 
 
 def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
@@ -141,7 +141,7 @@ def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
         import time
 
         time.sleep(1)
-        result = _run(repo)
+        result = run(repo)
     finally:
         holder.kill()
         holder.wait()
@@ -149,13 +149,13 @@ def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:
     assert result.returncode != 0
     assert "holds" in result.stderr
     # The original manifest is untouched, and no backup was created.
-    assert _ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
+    assert ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
     assert not (repo / ".pyproject.cpu.bak").exists()
 
 
 def test_term_restores_the_manifest_and_exits(repo: Path) -> None:
     """TERM during installation must restore once and stop with signal status."""
-    python = _write_signal_python(repo)
+    python = write_signal_python(repo)
 
     result = subprocess.run(
         ["bash", "scripts/cpu/install_cpu.sh"],
@@ -168,6 +168,6 @@ def test_term_restores_the_manifest_and_exits(repo: Path) -> None:
     )
 
     assert result.returncode == 143
-    assert _ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
+    assert ORIGINAL_MARKER in (repo / "pyproject.toml").read_text()
     assert not (repo / ".pyproject.cpu.bak").exists()
     assert not (repo / ".pyproject.cpu.bak.tmp").exists()

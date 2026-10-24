@@ -5,15 +5,25 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
+        FishQwen3AudioDecoder,
+    )
+    from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
 def rematerialize_audio_decoder_buffers(
-    audio_decoder: torch.nn.Module, device: Any
+    audio_decoder: "FishQwen3AudioDecoder", device: str | torch.device | int | None
 ) -> None:
     """Recompute the audio decoder's non-persistent computed buffers.
 
@@ -47,6 +57,8 @@ def patch_fish_config_for_sglang() -> None:
 
     if hasattr(FishQwen3Config, "_sglang_patched"):
         return
+    else:
+        pass
 
     original_text_init = FishQwen3Config.__init__
 
@@ -59,9 +71,11 @@ def patch_fish_config_for_sglang() -> None:
         self.torch_dtype = torch.bfloat16
         if self.architectures is None:
             self.architectures = ["S2ProSGLangTextModel"]
+        else:
+            pass
 
     FishQwen3Config.__init__ = _patched_text_init
-    FishQwen3Config._sglang_patched = True
+    FishQwen3Config._sglang_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     original_omni_init = FishQwen3OmniConfig.__init__
 
@@ -69,6 +83,8 @@ def patch_fish_config_for_sglang() -> None:
         original_omni_init(self, *args, **kwargs)
         if self.architectures is None:
             self.architectures = ["S2ProSGLangTextModel"]
+        else:
+            pass
 
     FishQwen3OmniConfig.__init__ = _patched_omni_init
 
@@ -85,13 +101,15 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             if hasattr(module, "cos_sin_cache"):
                 cache = module.cos_sin_cache
                 cache.copy_(cache.to(torch.bfloat16).to(cache.dtype))
+            else:
+                pass
 
 
 def load_audio_decoder(
     checkpoint_dir: str,
     *,
     device: str,
-) -> tuple[torch.nn.Module, int, int, Any]:
+) -> "tuple[FishQwen3AudioDecoder, int, int, PreTrainedTokenizerFast]":
     """Load the Fish audio decoder and return it with metadata + tokenizer."""
     from transformers import PreTrainedTokenizerFast
 
@@ -109,6 +127,8 @@ def load_audio_decoder(
     config = FishQwen3OmniConfig.from_pretrained(checkpoint_dir)
     if config.audio_decoder_config is None:
         raise RuntimeError("Fish checkpoint config does not define an audio decoder")
+    else:
+        pass
 
     with torch.device("meta"):
         audio_decoder = FishQwen3AudioDecoder(config.audio_decoder_config)
@@ -133,6 +153,8 @@ def load_audio_decoder(
             torch.get_device_module(device).empty_cache()
         except (AttributeError, ModuleNotFoundError, RuntimeError) as exc:
             logger.warning("Cache reclaim failed for device %s: %s", device, exc)
+    else:
+        pass
 
     logger.info(
         "Fish audio decoder loaded in %.2fs (num_codebooks=%d, codebook_size=%d)",
@@ -145,8 +167,8 @@ def load_audio_decoder(
 
 def bootstrap_text_model_for_decode(
     *,
-    text_model: Any,
-    audio_decoder: torch.nn.Module,
+    text_model: "S2ProSGLangTextModel",
+    audio_decoder: "FishQwen3AudioDecoder",
     semantic_begin_id: int,
     semantic_end_id: int,
     im_end_token_id: int,

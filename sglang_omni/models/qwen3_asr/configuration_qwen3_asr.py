@@ -59,6 +59,10 @@ class Qwen3ASRProcessor(ProcessorMixin):
             inputs["input_features"] = audio_inputs["input_features"]
             if "attention_mask" in audio_inputs:
                 inputs["feature_attention_mask"] = audio_inputs["attention_mask"]
+            else:
+                pass
+        else:
+            pass
 
         if text is not None:
             text_inputs = self.tokenizer(
@@ -93,8 +97,12 @@ class Qwen3ASRProcessor(ProcessorMixin):
                 pad_id = self.tokenizer.pad_token_id or 0
                 padded = [s + [pad_id] * (max_len - len(s)) for s in expanded]
                 input_ids = torch.tensor(padded, dtype=torch.long)
+            else:
+                pass
 
             inputs["input_ids"] = input_ids
+        else:
+            pass
         return inputs
 
 
@@ -119,6 +127,8 @@ class Qwen3ASRThinkerConfig(PretrainedConfig):
             audio_config = Qwen3OmniMoeAudioEncoderConfig(**audio_config)
         elif audio_config is None:
             audio_config = Qwen3OmniMoeAudioEncoderConfig()
+        else:
+            pass
         self.audio_config = audio_config
 
         from transformers.models.qwen3.configuration_qwen3 import (
@@ -129,6 +139,8 @@ class Qwen3ASRThinkerConfig(PretrainedConfig):
             text_config = HFQwen3Config(**text_config)
         elif text_config is None:
             text_config = HFQwen3Config()
+        else:
+            pass
 
         self.text_config = text_config
 
@@ -151,6 +163,8 @@ class Qwen3ASRConfig(PretrainedConfig):
                 "thinker_config is None. "
                 "Initializing Qwen3-ASR thinker with default values"
             )
+        else:
+            pass
         if isinstance(thinker_config, dict):
             self.thinker_config = Qwen3ASRThinkerConfig(**thinker_config)
         else:
@@ -161,5 +175,7 @@ class Qwen3ASRConfig(PretrainedConfig):
         return self.thinker_config.text_config
 
 
-AutoConfig.register("qwen3_asr", Qwen3ASRConfig)
-AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig)
+# note (ratish): the installed transformers may map these types to its own
+# classes; the model reads this package's layout, so the mapping is replaced.
+AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
+AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig, exist_ok=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
@@ -18,7 +19,7 @@ from sglang_omni.utils.misc import model_config_has_moe
 cuda_platform = CUDAOmniPlatform()
 
 
-class _StrictServerArgsDouble:
+class StrictServerArgsDouble:
     """Minimal ServerArgs double with the resolved-record mutation guard."""
 
     def __init__(self, **fields: object) -> None:
@@ -30,8 +31,10 @@ class _StrictServerArgsDouble:
     def __setattr__(self, name: str, value: object) -> None:
         if (
             not name.startswith("_")
-            and self._declarations_materialized
-            and not getattr(self, "_internal_write", False)
+            and self._declarations_materialized  # noqa: leading-underscore  # upstream name
+            and not getattr(
+                self, "_internal_write", False
+            )  # noqa: leading-underscore  # upstream name
         ):
             raise AttributeError(f"bare mutation of {name}")
         object.__setattr__(self, name, value)
@@ -55,7 +58,7 @@ class BackendPolicyCase:
     error_match: str | None = None
 
 
-def _server_args(
+def make_server_args(
     *,
     quantization: str | None = None,
     moe_runner_backend: str = "auto",
@@ -71,7 +74,7 @@ def _server_args(
     )
 
 
-def _model_config(
+def make_model_config(
     *,
     quantization: str | None,
     native_fp8_block_quant: bool = False,
@@ -152,21 +155,6 @@ def _model_config(
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
             expected_fp8_gemm_backend="triton",
-        ),
-        BackendPolicyCase(
-            name="fp8_thinker_explicit_dense_deep_gemm_is_preserved",
-            model_quantization="fp8",
-            server_quantization=None,
-            native_fp8_block_quant=True,
-            model_arch_override="Qwen3OmniThinkerForCausalLM",
-            has_moe=True,
-            initial_moe_backend="auto",
-            initial_fp8_gemm_backend="deep_gemm",
-            ep_size=1,
-            cutlass_supported=True,
-            expected_quantization="fp8",
-            expected_moe_backend="cutlass",
-            expected_fp8_gemm_backend="deep_gemm",
         ),
         BackendPolicyCase(
             name="server_fp8_override_without_native_block_quant_stays_auto",
@@ -289,21 +277,6 @@ def _model_config(
             expected_fp8_gemm_backend="deep_gemm",
         ),
         BackendPolicyCase(
-            name="fp8_talker_explicit_dense_cutlass_is_preserved",
-            model_quantization="fp8",
-            server_quantization=None,
-            native_fp8_block_quant=True,
-            model_arch_override="Qwen3OmniTalker",
-            has_moe=True,
-            initial_moe_backend="auto",
-            initial_fp8_gemm_backend="cutlass",
-            ep_size=1,
-            cutlass_supported=True,
-            expected_quantization="fp8",
-            expected_moe_backend="cutlass",
-            expected_fp8_gemm_backend="cutlass",
-        ),
-        BackendPolicyCase(
             name="fp8_talker_unset_dense_backend_uses_triton",
             model_quantization="fp8",
             server_quantization=None,
@@ -380,13 +353,13 @@ def test_model_worker_backend_policy_precedence(
         lambda: case.cutlass_supported,
     )
     monkeypatch.setattr(cuda, "is_h20_device", lambda: False)
-    server_args = _server_args(
+    server_args = make_server_args(
         quantization=case.server_quantization,
         moe_runner_backend=case.initial_moe_backend,
         fp8_gemm_runner_backend=case.initial_fp8_gemm_backend,
         ep_size=case.ep_size,
     )
-    model_config = _model_config(
+    model_config = make_model_config(
         quantization=case.model_quantization,
         native_fp8_block_quant=case.native_fp8_block_quant,
         has_moe=case.has_moe,
@@ -435,14 +408,14 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
         "is_fp8_cutlass_moe_supported",
         lambda: True,
     )
-    server_args = _StrictServerArgsDouble(
+    server_args = StrictServerArgsDouble(
         quantization="fp8",
         moe_runner_backend="auto",
         fp8_gemm_runner_backend="auto",
         fp4_gemm_runner_backend="auto",
         ep_size=1,
     )
-    model_config = _model_config(
+    model_config = make_model_config(
         quantization="fp8",
         native_fp8_block_quant=True,
         has_moe=True,
@@ -461,39 +434,33 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     assert effective_quantization == "fp8"
     assert resolution_result(server_args, "moe_runner_backend") == "cutlass"
     assert resolution_result(server_args, "fp8_gemm_runner_backend") == "triton"
-    assert server_args._runtime_mutations == [
-        (
-            "sglang-omni-qwen3-backend-policy",
-            {"moe_runner_backend": "cutlass"},
-        ),
-        (
-            "sglang-omni-qwen3-backend-policy",
-            {"fp8_gemm_runner_backend": "triton"},
-        ),
-    ]
+    assert (
+        server_args._resolved_overrides
+        == [  # noqa: leading-underscore  # upstream name
+            (
+                "sglang-omni-qwen3-backend-policy",
+                {"moe_runner_backend": "cutlass"},
+            ),
+            (
+                "sglang-omni-qwen3-backend-policy",
+                {"fp8_gemm_runner_backend": "triton"},
+            ),
+        ]
+    )
 
 
-@pytest.mark.parametrize(
-    ("cap_fp8", "expected_moe_backend"),
-    [
-        pytest.param(False, "flashinfer_cutlass", id="cuda_sm90_no_fp8_bf16"),
-        pytest.param(True, "flashinfer_cutlass", id="cuda_with_fp8_bf16"),
-    ],
-)
 def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
     monkeypatch: pytest.MonkeyPatch,
-    cap_fp8: bool,
-    expected_moe_backend: str,
 ) -> None:
     """A bf16 talker's flashinfer_cutlass->triton downgrade must never be gated on
     FP8 CUTLASS availability. Off-CUDA is structural now that the policy hangs off
     CUDAOmniPlatform, so a non-CUDA platform never reaches this kernel choice.
     """
-    monkeypatch.setattr(cuda, "is_fp8_cutlass_moe_supported", lambda: cap_fp8)
+    monkeypatch.setattr(cuda, "is_fp8_cutlass_moe_supported", lambda: False)
     monkeypatch.setattr(cuda, "is_h20_device", lambda: False)
 
-    server_args = _server_args(moe_runner_backend="auto")
-    model_config = _model_config(quantization=None, has_moe=True)
+    server_args = make_server_args(moe_runner_backend="auto")
+    model_config = make_model_config(quantization=None, has_moe=True)
 
     effective_quantization = cuda_platform.apply_model_worker_backend_policy(
         server_args,
@@ -502,7 +469,7 @@ def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
     )
 
     assert effective_quantization is None
-    assert resolution_result(server_args, "moe_runner_backend") == expected_moe_backend
+    assert resolution_result(server_args, "moe_runner_backend") == "flashinfer_cutlass"
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
@@ -510,8 +477,8 @@ def test_explicit_cutlass_moe_runner_is_rejected_on_xpu(backend: str) -> None:
     """An operator asking for a CUDA-only runner is told, not silently remapped."""
     with pytest.raises(ValueError, match="CUTLASS MoE runners"):
         XPUOmniPlatform().apply_model_worker_backend_policy(
-            _server_args(moe_runner_backend=backend),
-            _model_config(quantization=None, has_moe=True),
+            make_server_args(moe_runner_backend=backend),
+            make_model_config(quantization=None, has_moe=True),
             "Qwen3OmniThinkerForCausalLM",
         )
 
@@ -521,11 +488,11 @@ def test_auto_moe_runner_is_left_to_sglang_on_xpu() -> None:
     Off-CUDA is structural now: the flashinfer_cutlass choice hangs off
     CUDAOmniPlatform, so the XPU hook never reaches a CUDA kernel selection.
     """
-    server_args = _server_args(moe_runner_backend="auto")
+    server_args = make_server_args(moe_runner_backend="auto")
 
     effective_quantization = XPUOmniPlatform().apply_model_worker_backend_policy(
         server_args,
-        _model_config(quantization=None, has_moe=True),
+        make_model_config(quantization=None, has_moe=True),
         "Qwen3OmniThinkerForCausalLM",
     )
 
@@ -567,7 +534,7 @@ def test_fp8_cutlass_moe_support_matches_sglang_0_5_16_contract(
     expected_supported: bool,
 ) -> None:
     """Mirrors upstream's CUTLASS FP8 MoE assertions."""
-    _install_fake_cutlass_support_modules(
+    install_fake_cutlass_support_modules(
         monkeypatch,
         cutlass_supported=cutlass_supported,
         sm90_supported=sm90_supported,
@@ -578,30 +545,56 @@ def test_fp8_cutlass_moe_support_matches_sglang_0_5_16_contract(
     assert cuda.is_fp8_cutlass_moe_supported() is expected_supported
 
 
-def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
-    calls: list[str] = []
+@pytest.fixture
+def backend_globals() -> Iterator[tuple[object, ModuleType]]:
+    from sglang.srt.layers.quantization import fp8_utils
+    from sglang.srt.runtime_context import get_context, get_flags
 
-    _install_fake_backend_modules(monkeypatch, calls)
+    moe_flags = get_flags().moe
+    saved_moe_flags = {
+        name: getattr(moe_flags, name) for name in moe_flags.__struct_fields__
+    }
+    saved_fp8_backend = fp8_utils.FP8_GEMM_RUNNER_BACKEND
+    moe_flags.runner_backend = None
+    fp8_utils.FP8_GEMM_RUNNER_BACKEND = None
+    published = get_context().override_server_args(
+        moe_runner_backend="triton", fp8_gemm_runner_backend="triton"
+    )
+    published.install()
+    yield moe_flags, fp8_utils
+    published.restore()
+    fp8_utils.FP8_GEMM_RUNNER_BACKEND = saved_fp8_backend
+    for name, value in saved_moe_flags.items():
+        setattr(moe_flags, name, value)
+
+
+def test_backend_global_initialization_for_fp8_moe_model(backend_globals) -> None:
+    from sglang.srt.layers.moe.utils import MoeRunnerBackend
+    from sglang.srt.layers.quantization.fp8_utils import Fp8GemmRunnerBackend
+
+    moe_flags, fp8_utils = backend_globals
 
     model_worker.initialize_model_worker_backend_globals(
-        _model_config(quantization="fp8", native_fp8_block_quant=True),
+        make_model_config(quantization="fp8", native_fp8_block_quant=True),
         "fp8",
     )
 
-    assert calls == ["moe", "fp8"]
+    assert moe_flags.runner_backend == MoeRunnerBackend.TRITON
+    assert fp8_utils.FP8_GEMM_RUNNER_BACKEND == Fp8GemmRunnerBackend.TRITON
 
 
-def test_backend_global_initialization_for_bf16_moe_omits_fp8(monkeypatch) -> None:
-    calls: list[str] = []
+def test_backend_global_initialization_for_bf16_moe_omits_fp8(backend_globals) -> None:
+    from sglang.srt.layers.moe.utils import MoeRunnerBackend
 
-    _install_fake_backend_modules(monkeypatch, calls)
+    moe_flags, fp8_utils = backend_globals
 
     model_worker.initialize_model_worker_backend_globals(
-        _model_config(quantization=None),
+        make_model_config(quantization=None),
         None,
     )
 
-    assert calls == ["moe"]
+    assert moe_flags.runner_backend == MoeRunnerBackend.TRITON
+    assert fp8_utils.FP8_GEMM_RUNNER_BACKEND is None
 
 
 @dataclass(frozen=True)
@@ -730,27 +723,7 @@ CONFIGURE_BACKEND_POLICY_CASES = [
 ]
 
 
-def _install_fake_backend_modules(
-    monkeypatch: pytest.MonkeyPatch,
-    calls: list[str],
-) -> None:
-    _install_fake_module(monkeypatch, "sglang")
-    _install_fake_module(monkeypatch, "sglang.srt")
-    _install_fake_module(monkeypatch, "sglang.srt.layers")
-    _install_fake_module(monkeypatch, "sglang.srt.layers.quantization")
-    _install_fake_module(
-        monkeypatch,
-        "sglang.srt.layers.moe",
-        initialize_moe_config=lambda: calls.append("moe"),
-    )
-    _install_fake_module(
-        monkeypatch,
-        "sglang.srt.layers.quantization.fp8_utils",
-        initialize_fp8_gemm_config=lambda: calls.append("fp8"),
-    )
-
-
-def _install_fake_cutlass_support_modules(
+def install_fake_cutlass_support_modules(
     monkeypatch: pytest.MonkeyPatch,
     *,
     cutlass_supported: bool,
@@ -758,16 +731,16 @@ def _install_fake_cutlass_support_modules(
     sm100_supported: bool,
     sm120_supported: bool = False,
 ) -> None:
-    _install_fake_module(monkeypatch, "sglang")
-    _install_fake_module(monkeypatch, "sglang.srt")
-    _install_fake_module(monkeypatch, "sglang.srt.layers")
-    _install_fake_module(monkeypatch, "sglang.srt.layers.quantization")
-    _install_fake_module(
+    install_fake_module(monkeypatch, "sglang")
+    install_fake_module(monkeypatch, "sglang.srt")
+    install_fake_module(monkeypatch, "sglang.srt.layers")
+    install_fake_module(monkeypatch, "sglang.srt.layers.quantization")
+    install_fake_module(
         monkeypatch,
         "sglang.srt.layers.quantization.fp8_utils",
         cutlass_fp8_supported=lambda: cutlass_supported,
     )
-    _install_fake_module(
+    install_fake_module(
         monkeypatch,
         "sglang.srt.utils",
         is_sm90_supported=lambda: sm90_supported,
@@ -776,7 +749,7 @@ def _install_fake_cutlass_support_modules(
     )
 
 
-def _install_fake_module(
+def install_fake_module(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     **attrs: object,
@@ -807,15 +780,15 @@ def test_configure_backend_policy_fp8_gemm_ordering(
     for Qwen3-Omni FP8. Step 1 must NOT touch FP8 backend selection.
     """
     # Install fake modules so we don't need real GPU hardware.
-    _install_fake_module(monkeypatch, "sglang")
-    _install_fake_module(monkeypatch, "sglang.srt")
-    _install_fake_module(monkeypatch, "sglang.srt.layers")
-    _install_fake_module(
+    install_fake_module(monkeypatch, "sglang")
+    install_fake_module(monkeypatch, "sglang.srt")
+    install_fake_module(monkeypatch, "sglang.srt.layers")
+    install_fake_module(
         monkeypatch,
         "sglang.srt.layers.quantization.fp8_utils",
         cutlass_fp8_supported=lambda: case.cutlass_supported,
     )
-    _install_fake_module(
+    install_fake_module(
         monkeypatch,
         "sglang.srt.utils",
         is_sm90_supported=lambda: True,

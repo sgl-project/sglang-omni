@@ -48,6 +48,8 @@ def pad1d(
         if length <= max_pad:
             extra_pad = max_pad - length + 1
             x = F.pad(x, (0, extra_pad))
+        else:
+            pass
         padded = F.pad(x, paddings, mode, value)
         end = padded.shape[-1] - extra_pad
         return padded[..., :end]
@@ -85,7 +87,10 @@ class CausalConvNet(nn.Module):
         extra_padding = get_extra_padding_for_conv1d(
             x, self.kernel_size, self.stride, pad
         )
-        x = pad1d(x, (pad, extra_padding), mode="constant", value=0)
+        if pad != 0 or extra_padding != 0:
+            x = pad1d(x, (pad, extra_padding), mode="constant", value=0)
+        else:
+            pass
         return self.conv(x).contiguous()
 
     def weight_norm(self, name="weight", dim=0):
@@ -182,11 +187,15 @@ class ConvNeXtBlock(nn.Module):
 
         if self.gamma is not None:
             x = self.gamma * x
+        else:
+            pass
 
         x = x.permute(0, 2, 1)  # (N, L, C) -> (N, C, L)
 
         if apply_residual:
             x = input + x
+        else:
+            pass
 
         return x
 
@@ -220,6 +229,8 @@ class DownsampleResidualVectorQuantize(nn.Module):
 
         if downsample_dims is None:
             downsample_dims = [input_dim for _ in range(len(downsample_factor))]
+        else:
+            pass
 
         all_dims = (input_dim,) + tuple(downsample_dims)
 
@@ -289,14 +300,10 @@ class DownsampleResidualVectorQuantize(nn.Module):
         if isinstance(m, (nn.Conv1d, nn.Linear)):
             nn.init.trunc_normal_(m.weight, std=0.02)
             nn.init.constant_(m.bias, 0)
+        else:
+            pass
 
-    def forward(
-        self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs
-    ):
-        # z: (B, D, T)
-        original_shape = z.shape
-        if semantic_len is None:
-            semantic_len = torch.LongTensor([z.shape[-1]])
+    def quantize_latents(self, z: torch.Tensor, n_quantizers: int | None) -> VQResult:
         z = self.downsample(z)
         z = self.pre_module(z)  # B, T, D
         (
@@ -315,12 +322,32 @@ class DownsampleResidualVectorQuantize(nn.Module):
         codebook_loss = codebook_loss + semantic_codebook_loss
         codes = torch.cat([semantic_codes, codes], dim=1)
         latents = torch.cat([semantic_latents, latents], dim=1)
-        z = self.post_module(z)
+        return VQResult(
+            z=z,
+            codes=codes,
+            latents=latents,
+            commitment_loss=commitment_loss,
+            codebook_loss=codebook_loss,
+        )
+
+    def encode_codes(
+        self, z: torch.Tensor, n_quantizers: int | None = None
+    ) -> torch.Tensor:
+        return self.quantize_latents(z, n_quantizers).codes
+
+    def forward(
+        self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs
+    ):
+        # z: (B, D, T)
+        original_shape = z.shape
+        if semantic_len is None:
+            semantic_len = torch.LongTensor([z.shape[-1]])
+        else:
+            pass
+        results = self.quantize_latents(z, n_quantizers)
+        z = self.post_module(results.z)
         z = self.upsample(z)
         # z: (B, D, T)
-
-        # semantic distillation (disabled here since only used in training)
-        # semantic_distill_z = self.semantic_predictor_module(semantic_z, semantic_len).mT  # wav2vec target is B, T, D
 
         # Pad or crop z to match original shape
         diff = original_shape[-1] - z.shape[-1]
@@ -331,15 +358,10 @@ class DownsampleResidualVectorQuantize(nn.Module):
             z = F.pad(z, (left, right))
         elif diff < 0:
             z = z[..., left:]
+        else:
+            pass
 
-        results = VQResult(
-            z=z,
-            codes=codes,
-            latents=latents,
-            commitment_loss=commitment_loss,
-            codebook_loss=codebook_loss,
-        )
-
+        results.z = z
         return results
 
     # def encode(self, z):
@@ -397,3 +419,5 @@ if __name__ == "__main__":
 
     assert torch.allclose(result.z[:, :, :40], result1.z, atol=1e-8)
     print("Success")
+else:
+    pass

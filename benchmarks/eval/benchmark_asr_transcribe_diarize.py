@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import math
 import mimetypes
 import sys
@@ -55,7 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import FinishReason, RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import (
     managed_omni_server,
@@ -73,6 +74,7 @@ from benchmarks.tasks.transcribe_diarize import (
     extract_prediction_text,
     load_movies800_samples,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 AISHELL4_REPO_ID: Final[str] = "zhaochenyang20/AISHELL4"
 GOOGLETIME_REPO_ID: Final[str] = "zhaochenyang20/googletime"
@@ -424,6 +426,11 @@ def main(
     *,
     default_dataset: str = "movies800times",
 ) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     try:
         args = parse_args(argv, default_dataset=default_dataset)
         if args.reuse_asr_results:
@@ -992,6 +999,10 @@ def _load_request_results(records: list[object]) -> list[RequestResult]:
         if not isinstance(record, Mapping):
             continue
         values = {key: record[key] for key in result_fields if key in record}
+        if "finish_reason" in values:
+            values["finish_reason"] = FinishReason(values["finish_reason"])
+        else:
+            pass
         outputs.append(RequestResult(**values))
     return outputs
 

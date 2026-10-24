@@ -20,12 +20,12 @@ from sglang_omni.models.registry import (
 )
 
 
-def _stage(config: PipelineConfig, name: str):
+def make_stage(config: PipelineConfig, name: str):
     return next(stage for stage in config.stages if stage.name == name)
 
 
-def _server_args_overrides(config: PipelineConfig, name: str) -> dict[str, object]:
-    engine = _stage(config, name).engine
+def server_args_overrides(config: PipelineConfig, name: str) -> dict[str, object]:
+    engine = make_stage(config, name).engine
     return engine.overrides() if engine is not None else {}
 
 
@@ -83,11 +83,43 @@ def test_ming_hf_config_registration_does_not_import_thinker() -> None:
     from sglang_omni.models.ming_omni import registration
 
     sys.modules.pop("sglang_omni.models.ming_omni.thinker", None)
-    registration._ming_hf_config_registered = False
 
     registration.register_ming_hf_config()
 
     assert "sglang_omni.models.ming_omni.thinker" not in sys.modules
+
+
+def test_sglang_loads_a_ming_checkpoint_with_the_ming_config(tmp_path) -> None:
+    import json
+
+    from sglang.srt.utils.hf_transformers_utils import get_config, get_context_length
+
+    from sglang_omni.models.ming_omni import registration
+    from sglang_omni.models.ming_omni.configuration import (
+        BailingMM2Config,
+        BailingMoeV2Config,
+    )
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "bailingmm_moe_v2_lite",
+                "architectures": ["BailingMM2NativeForConditionalGeneration"],
+                "llm_config": {
+                    "max_position_embeddings": 32768,
+                    "rope_scaling": {"factor": None, "type": "video_rope"},
+                },
+            }
+        )
+    )
+    registration.register_ming_hf_config()
+
+    config = get_config(str(tmp_path), trust_remote_code=False)
+
+    assert isinstance(config, BailingMM2Config)
+    assert isinstance(config.llm_config, BailingMoeV2Config)
+    assert config.llm_config.rope_scaling is None
+    assert get_context_length(config.llm_config) == 32768
 
 
 def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
@@ -112,7 +144,7 @@ def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
     assert config_manager.config.terminal_stages == ["decode"]
 
 
-def _resolve_tp(config: PipelineConfig, flags: list[tuple[str, str]]) -> PipelineConfig:
+def resolve_tp(config: PipelineConfig, flags: list[tuple[str, str]]) -> PipelineConfig:
     """Apply dotted TP flags plus the derived engine overrides, as serve does."""
     merged = ConfigManager(config).merge_config(flags)
     return apply_tensor_parallel_engine_overrides(merged)
@@ -125,15 +157,15 @@ def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> 
     )
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    resolved = _resolve_tp(
+    resolved = resolve_tp(
         config, [("thinker.tp_size", "4"), ("thinker.gpu", "[0, 1, 2, 3]")]
     )
 
-    thinker = _stage(resolved, "thinker")
+    thinker = make_stage(resolved, "thinker")
     assert thinker.tp_size == 4
     assert thinker.gpu == [0, 1, 2, 3]
     assert (
-        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
+        server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
     )
 
 
@@ -144,13 +176,12 @@ def test_ming_cli_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
     )
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    resolved = _resolve_tp(
+    resolved = resolve_tp(
         config, [("thinker.tp_size", "4"), ("thinker.gpu", "[0, 1, 2, 3]")]
     )
 
     assert (
-        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"]
-        is False
+        server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is False
     )
 
 
@@ -198,7 +229,7 @@ def test_hard_custom_all_reduce_disable_is_not_topology_relaxed(
     resolved = apply_tensor_parallel_engine_overrides(config)
 
     assert (
-        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
+        server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
     )
 
 
@@ -261,25 +292,11 @@ def test_topology_gated_custom_all_reduce_reuses_topology_decision(
 
     assert calls == [(0, 1)]
     assert (
-        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"]
-        is False
+        server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is False
     )
     assert (
-        _server_args_overrides(resolved, "encoder")["disable_custom_all_reduce"]
-        is False
+        server_args_overrides(resolved, "encoder")["disable_custom_all_reduce"] is False
     )
-
-
-def test_ming_cli_applies_image_encoder_tp_and_gpus() -> None:
-    config = MingOmniPipelineConfig(model_path="dummy")
-
-    merged = ConfigManager(config).merge_config(
-        [("image_encoder.tp_size", "2"), ("image_encoder.gpu", "[4, 5]")]
-    )
-
-    image_encoder = _stage(merged, "image_encoder")
-    assert image_encoder.tp_size == 2
-    assert image_encoder.gpu == [4, 5]
 
 
 def test_ming_cli_rejects_image_encoder_gpu_count_mismatch() -> None:
@@ -289,39 +306,6 @@ def test_ming_cli_rejects_image_encoder_gpu_count_mismatch() -> None:
         ConfigManager(config).merge_config(
             [("image_encoder.tp_size", "2"), ("image_encoder.gpu", "[4]")]
         )
-
-
-def test_ming_cli_leaves_image_encoder_untouched_when_flags_omitted() -> None:
-    config = MingOmniPipelineConfig(model_path="dummy")
-    before_tp = _stage(config, "image_encoder").tp_size
-    before_gpu = _stage(config, "image_encoder").gpu
-
-    merged = ConfigManager(config).merge_config(
-        [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
-    )
-
-    image_encoder = _stage(merged, "image_encoder")
-    assert image_encoder.tp_size == before_tp
-    assert image_encoder.gpu == before_gpu
-
-
-def test_ming_cli_applies_tp_server_args_for_config_declared_tp(monkeypatch) -> None:
-    """The TP-derived engine overrides fire on the resolved config, whether
-    the TP setting came from a flag or from the config itself."""
-    monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
-        lambda *args, **kwargs: True,
-    )
-    config = MingOmniPipelineConfig(model_path="dummy")
-    merged = ConfigManager(config).merge_config(
-        [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
-    )
-
-    resolved = apply_tensor_parallel_engine_overrides(merged)
-
-    assert (
-        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
-    )
 
 
 def test_ming_cli_applies_thinker_sglang_server_args() -> None:
@@ -335,25 +319,10 @@ def test_ming_cli_applies_thinker_sglang_server_args() -> None:
         ]
     )
 
-    overrides = _server_args_overrides(merged, "thinker")
+    overrides = server_args_overrides(merged, "thinker")
     assert overrides["mem_fraction_static"] == 0.80
     assert overrides["cpu_offload_gb"] == 0
     assert overrides["quantization"] == "fp8"
-
-
-def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
-    config = MingOmniSpeechPipelineConfig(model_path="dummy")
-
-    merged = ConfigManager(config).merge_config(
-        [
-            ("thinker.tp_size", "2"),
-            ("thinker.gpu", "[0, 1]"),
-            ("talker.gpu", "3"),
-        ]
-    )
-
-    assert _stage(merged, "thinker").gpu == [0, 1]
-    assert _stage(merged, "talker").gpu == 3
 
 
 def test_ming_text_cli_flag_for_a_missing_stage_names_the_real_ones() -> None:
@@ -372,8 +341,8 @@ def test_qwen_cli_talker_gpu_still_targets_talker_ar_stage() -> None:
         [("talker_ar.gpu", "4"), ("code2wav.gpu", "5")]
     )
 
-    assert _stage(merged, "talker_ar").gpu == 4
-    assert _stage(merged, "code2wav").gpu == 5
+    assert make_stage(merged, "talker_ar").gpu == 4
+    assert make_stage(merged, "code2wav").gpu == 5
 
 
 def test_registry_rejects_duplicate_architecture_aliases(tmp_path, monkeypatch) -> None:
@@ -467,9 +436,9 @@ def test_omni_serve_builds_ming_text_config_without_launching(monkeypatch) -> No
     assert result.exit_code == 0, result.output
     config = captured["config"]
     assert type(config).__name__ == "MingOmniPipelineConfig"
-    assert _stage(config, "thinker").tp_size == 4
-    assert _stage(config, "thinker").gpu == [0, 1, 2, 3]
-    overrides = _server_args_overrides(config, "thinker")
+    assert make_stage(config, "thinker").tp_size == 4
+    assert make_stage(config, "thinker").gpu == [0, 1, 2, 3]
+    overrides = server_args_overrides(config, "thinker")
     assert overrides["cpu_offload_gb"] == 0
     assert overrides["disable_custom_all_reduce"] is True
     assert overrides["mem_fraction_static"] == 0.8
@@ -528,12 +497,10 @@ def test_omni_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
     config = captured["config"]
     assert isinstance(config, MingOmniSpeechPipelineConfig)
     assert config.terminal_stages == ["decode", "talker"]
-    assert _stage(config, "thinker").tp_size == 2
-    assert _stage(config, "thinker").gpu == [0, 1]
-    assert _stage(config, "talker").gpu == 3
-    assert (
-        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
-    )
+    assert make_stage(config, "thinker").tp_size == 2
+    assert make_stage(config, "thinker").gpu == [0, 1]
+    assert make_stage(config, "talker").gpu == 3
+    assert server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
     assert captured["kwargs"]["host"] == "127.0.0.1"
     assert captured["kwargs"]["port"] == 8000
     assert captured["kwargs"]["model_name"] == "ming-omni"

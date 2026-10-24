@@ -4,18 +4,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
 
 from transformers import PretrainedConfig
 
-from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae import (
-    AudioVAEconfig,
-)
 from sglang_omni.models.ming_tts.payload_types import MING_TTS_SAMPLE_RATE
+from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 
 
 def resolve_ming_tts_audio_vae_config(
-    audio_config: AudioVAEconfig | PretrainedConfig | dict[str, Any],
+    audio_config: AudioVAEconfig | PretrainedConfig | dict[str, object],
     *,
     attn_implementation: str,
 ) -> AudioVAEconfig:
@@ -32,12 +29,20 @@ def resolve_ming_tts_audio_vae_config(
             "Ming-Omni-TTS AudioVAE config sample_rate must be "
             f"{MING_TTS_SAMPLE_RATE}, got {sample_rate}"
         )
+    else:
+        pass
     if not isinstance(config.enc_kwargs, dict):
         raise ValueError("Ming-Omni-TTS AudioVAE config is missing enc_kwargs")
+    else:
+        pass
     if not isinstance(config.dec_kwargs, dict):
         raise ValueError("Ming-Omni-TTS AudioVAE config is missing dec_kwargs")
+    else:
+        pass
     if int(getattr(config, "patch_size", -1)) <= 0:
         raise ValueError("Ming-Omni-TTS AudioVAE config is missing patch_size")
+    else:
+        pass
 
     for name, stage_kwargs in (
         ("enc_kwargs", config.enc_kwargs),
@@ -48,6 +53,8 @@ def resolve_ming_tts_audio_vae_config(
             raise ValueError(
                 f"Ming-Omni-TTS AudioVAE config {name}.backbone is missing"
             )
+        else:
+            pass
         backbone["_attn_implementation"] = attn_implementation
     return config
 

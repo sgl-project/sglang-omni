@@ -1,0 +1,25 @@
+name: Release Docker Images Nightly (NPU)
+
+# Pull requests build the image without publishing it. The image copies the
+# whole repository, so every pull request builds it.
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * *' # 17:00 Beijing time
+
+concurrency:
+  group: npu-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
+    uses: ./.github/workflows/release-docker-npu.yml
+    with:
+      image_tag: main
+      publish: ${{ github.event_name != 'pull_request' }}
+    secrets: inherit

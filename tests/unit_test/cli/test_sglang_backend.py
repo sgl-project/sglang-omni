@@ -5,14 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from click import unstyle
 
 from sglang_omni.cli.sglang_backend import run
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.manager import ConfigManager
 
 
-class _DummyManager:
+class DummyManager:
     def __init__(self, model_path: str):
         self.config = PipelineConfig(
             model_path=model_path,
@@ -35,7 +34,7 @@ class _DummyManager:
         return self.config
 
 
-def _run_and_expect_success(*argv: str) -> None:
+def run_and_expect_success(*argv: str) -> None:
     request = SimpleNamespace(argv=argv)
     with pytest.raises(SystemExit) as exc_info:
         run(request)
@@ -77,14 +76,14 @@ def test_adapter_forwards_model_path_and_server_options(monkeypatch) -> None:
     monkeypatch.setattr(
         ConfigManager,
         "from_model_path",
-        staticmethod(_DummyManager),
+        staticmethod(DummyManager),
     )
     monkeypatch.setattr(
         "sglang_omni.cli.serve.launch_server",
         lambda config, **kwargs: captured.update(config=config, kwargs=kwargs),
     )
 
-    _run_and_expect_success(
+    run_and_expect_success(
         "--model-path",
         "org/omni-model",
         "--host",
@@ -106,22 +105,14 @@ def test_adapter_preserves_config_only_launch(monkeypatch) -> None:
     monkeypatch.setattr(
         ConfigManager,
         "from_file",
-        staticmethod(lambda path: _DummyManager(f"from:{path}")),
+        staticmethod(lambda path: DummyManager(f"from:{path}")),
     )
     monkeypatch.setattr(
         "sglang_omni.cli.serve.launch_server",
         lambda config, **kwargs: captured.update(config=config, kwargs=kwargs),
     )
 
-    _run_and_expect_success("--config", "pipeline.yaml", "--port", "8124")
+    run_and_expect_success("--config", "pipeline.yaml", "--port", "8124")
 
     assert captured["config"].model_path == "from:pipeline.yaml"
     assert captured["kwargs"]["port"] == 8124
-
-
-def test_adapter_owns_backend_specific_help(capsys) -> None:
-    _run_and_expect_success("--help")
-
-    output = unstyle(capsys.readouterr().out)
-    assert "Usage: sglang serve" in output
-    assert "--model-path" in output

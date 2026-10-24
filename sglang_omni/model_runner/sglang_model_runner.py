@@ -2,19 +2,35 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any
 
+import torch
 from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
+from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.sampler import (
+    Sampler,
+    _SamplingMaskCapture,
+    _select_sampling_mask_rows,
+    register_sampler_backend,
+    top_k_top_p_min_p_sampling_from_probs_torch,
+)
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.model_runner_components.layer_setup import (
+    AttentionAndMoeLayers,
+)
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
-from sglang.srt.server_args import PortArgs, ServerArgs
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+from sglang.srt.server_args import ServerArgs
+from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
@@ -38,6 +54,8 @@ def install_prefill_runner_dispatch() -> None:
     with _PREFILL_RUNNER_DISPATCH_LOCK:
         if _PREFILL_RUNNER_DISPATCH_DEFAULT is not None:
             return
+        else:
+            pass
         default_cls = cuda_graph_setup.PrefillCudaGraphRunner
 
         def _dispatch_prefill_runner(model_runner):
@@ -49,25 +67,78 @@ def install_prefill_runner_dispatch() -> None:
         _PREFILL_RUNNER_DISPATCH_DEFAULT = default_cls
 
 
+class FlashInferSeededSampler(Sampler):
+    def _sample_from_probs(  # noqa: leading-underscore
+        self,
+        probs: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+        positions: torch.Tensor,
+        simple_sampling_case: bool,
+    ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
+        if simple_sampling_case or (
+            sampling_info.sampling_seed is None
+            and not sampling_info.need_min_p_sampling
+        ):
+            return super()._sample_from_probs(  # noqa: leading-underscore
+                probs, sampling_info, positions, simple_sampling_case
+            )
+        else:
+            pass
+        # note (ratish): FlashInfer seeds a batch from its first row's seed and each
+        # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
+        # row of the batch, so either batch takes the PyTorch backend's draw and mask.
+        capture_rows = sampling_info.sampling_mask_batch_indices
+        sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
+            probs,
+            sampling_info.top_ks,
+            sampling_info.top_ps,
+            sampling_info.min_ps,
+            sampling_info.need_min_p_sampling,
+            sampling_info.sampling_seed,
+            positions,
+            return_filtered_probs=capture_rows is not None,
+        )
+        if capture_rows is None:
+            return sample_result, None
+        else:
+            pass
+        batch_next_token_ids, filtered_probs, token_ids, selected_weight = sample_result
+        return batch_next_token_ids, _SamplingMaskCapture(
+            weights=_select_sampling_mask_rows(filtered_probs, capture_rows),
+            token_ids=_select_sampling_mask_rows(token_ids, capture_rows),
+            selected_weight=_select_sampling_mask_rows(selected_weight, capture_rows),
+            batch_rows=capture_rows,
+        )
+
+
+@functools.cache
+def register_flashinfer_seeded_sampler() -> None:
+    """Make the FlashInfer backend build FlashInferSeededSampler, once per process."""
+    register_sampler_backend("flashinfer", FlashInferSeededSampler)
+
+
 def filter_weights_by_prefix(
-    weights: Iterator[tuple[str, Any]],
+    weights: Iterator[tuple[str, torch.Tensor]],
     prefix: str | None,
-) -> Iterator[tuple[str, Any]]:
+) -> Iterator[tuple[str, torch.Tensor]]:
     """Filter weight iterator by prefix, stripping matched prefix from names."""
     if not prefix:
         yield from weights
         return
+    else:
+        pass
     for name, tensor in weights:
         if name.startswith(prefix):
             yield name[len(prefix) :], tensor
+        else:
+            pass
 
 
-def free_gpu_memory_bytes(device: Any, gpu_id: int) -> int:
+def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     """Currently free GPU memory in bytes, min-reduced across the world group."""
-    from sglang.srt.distributed.parallel_state import get_world_group
     from sglang.srt.utils.common import get_available_gpu_memory
 
-    world_group = get_world_group()
+    world_group = get_parallel().world_group
     free_gib = get_available_gpu_memory(
         device,
         gpu_id,
@@ -110,13 +181,17 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total GPU memory times that budget minus this stage's measured memory.
         NVML process accounting is preferred. If NVML cannot identify the
         current process, use the stage-local load delta measured inside
-        SGLang's serialized initialization window. Without a stage budget, keep
-        upstream SGLang profiling semantics for ordinary non-colocated AR
-        serving.
+        SGLang's serialized initialization window. A hybrid linear-attention
+        model then sizes its recurrent-state pool out of that headroom, as
+        upstream profiling does, and the KV pool gets the rest. Without a stage
+        budget, keep upstream SGLang profiling semantics for ordinary
+        non-colocated AR serving.
         """
         if self.kv_cache_bytes is not None:
             if self.kv_cache_bytes <= 0:
                 raise ValueError("kv_cache_bytes must be positive")
+            else:
+                pass
             if self.mambaish_config is not None:
                 # Note (Jiaxin Deng): the byte branch bypasses upstream's mamba
                 # cache derivation; refuse rather than boot with it unsized.
@@ -124,6 +199,8 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
                     "engine.kv_cache_bytes does not support "
                     "mamba/hybrid models yet; use fraction-based sizing"
                 )
+            else:
+                pass
             free_bytes = self.free_gpu_memory_bytes()
             if free_bytes < self.kv_cache_bytes:
                 raise ValueError(
@@ -135,6 +212,8 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
                     f"gpu_id={self.gpu_id}. Lower engine.kv_cache_bytes "
                     "or free memory on this GPU."
                 )
+            else:
+                pass
             logger.info(
                 f"SGLang AR memory profile: gpu_mem_accounting=kv_cache_bytes "
                 f"gpu_id={self.gpu_id} "
@@ -142,11 +221,15 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
                 f"free={format_bytes_gib(free_bytes)}"
             )
             return self.kv_cache_bytes
+        else:
+            pass
 
         if self.total_gpu_memory_fraction is None:
             return KVCacheConfigurator._profile_available_bytes(
                 self, pre_model_load_memory
             )
+        else:
+            pass
 
         process_memory = get_process_gpu_memory_bytes(self.gpu_id)
         device_info = get_gpu_device_info(self.gpu_id)
@@ -158,17 +241,45 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
                 f"gpu_id={self.gpu_id}. Check CUDA_VISIBLE_DEVICES and CUDA "
                 "device visibility."
             )
+        else:
+            pass
 
         if process_memory is None or process_memory <= 0:
-            return self.profile_available_bytes_from_stage_load_delta(
+            available_bytes = self.profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
                 total_memory,
             )
+        else:
+            available_bytes = self.profile_available_bytes_from_process_memory(
+                total_memory,
+                process_memory,
+            )
 
-        return self.profile_available_bytes_from_process_memory(
-            total_memory,
-            process_memory,
+        if self.mambaish_config is None:
+            return available_bytes
+        else:
+            pass
+        kv_bytes = int(
+            self._handle_max_mamba_cache(  # noqa: leading-underscore  # upstream name
+                available_bytes / (1 << 30)
+            )
+            * (1 << 30)
         )
+        state_bytes = available_bytes - kv_bytes
+        if kv_bytes <= 0:
+            raise RuntimeError(
+                "Colocated GPU memory budget leaves no KV-cache headroom after the "
+                f"hybrid state cache: state={format_bytes_gib(state_bytes)}, "
+                f"budget={format_bytes_gib(available_bytes)}. Raise the stage memory "
+                "fraction or lower max_running_requests."
+            )
+        else:
+            pass
+        logger.info(
+            f"SGLang AR memory profile: hybrid_state={format_bytes_gib(state_bytes)} "
+            f"available_for_kv={format_bytes_gib(kv_bytes)}"
+        )
+        return kv_bytes
 
     def free_gpu_memory_bytes(self) -> int:
         return free_gpu_memory_bytes(self.device, self.gpu_id)
@@ -179,10 +290,9 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total_memory: int,
     ) -> int:
         """Profile colocated KV headroom from this stage's load-time delta."""
-        from sglang.srt.distributed.parallel_state import get_world_group
         from sglang.srt.utils.common import get_available_gpu_memory
 
-        world_group = get_world_group()
+        world_group = get_parallel().world_group
         post_model_load_memory = get_available_gpu_memory(
             self.device,
             self.gpu_id,
@@ -241,69 +351,28 @@ class SGLModelRunner(ModelRunner):
         model_config: ModelConfig,
         server_args: ServerArgs,
         gpu_id: int,
-        tp_rank: int,
-        moe_ep_rank: int,
-        moe_ep_size: int,
-        pp_rank: int,
-        pp_size: int,
         nccl_port: int,
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
         total_gpu_memory_fraction: float | None = None,
         kv_cache_bytes: int | None = None,
     ) -> None:
-        self._weight_prefix = weight_prefix
-        self._total_gpu_memory_fraction = total_gpu_memory_fraction
-        self._kv_cache_bytes = kv_cache_bytes
-        self._model_arch_override = model_arch_override
-        self._weight_share_config = None
-        self._weight_share_record = None
-        self._weight_ipc_leader_monitor = None
+        self.weight_prefix = weight_prefix
+        self.total_gpu_memory_fraction = total_gpu_memory_fraction
+        self.kv_cache_bytes = kv_cache_bytes
+        self.model_arch_override = model_arch_override
+        self.weight_share_config = None
+        self.weight_share_record = None
+        self.weight_ipc_leader_monitor = None
+        self.extra_prefill_graph_attention_layers: list[RadixAttention] = []
+        self.prefill_graph_runner_class: type[PrefillCudaGraphRunner] | None = None
         self.register_omni_model()
-
-        port_args = PortArgs.init_new(server_args)
-        tp_size = get_parallel().tp_size
-        self.nccl_port = port_args.nccl_port
-
-        # model_config is already fully configured by ModelWorker._init_model_config()
-        # (architecture override, text_config swap, etc. are all done there)
-
-        attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-            compute_dp_attention_world_info(
-                get_parallel().enable_dp_attention,
-                tp_rank,
-                tp_size,
-                get_parallel().dp_size,
-                get_parallel().attn_cp_size,
-            )
-        )
-        ps = ParallelState(
-            tp_rank=tp_rank,
-            tp_size=tp_size,
-            pp_rank=pp_rank,
-            pp_size=pp_size,
-            dp_rank=None,
-            dp_size=get_parallel().dp_size,
-            attn_tp_rank=attn_tp_rank,
-            attn_tp_size=attn_tp_size,
-            attn_cp_rank=0,
-            attn_cp_size=get_parallel().attn_cp_size,
-            attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
-            attn_dp_rank=attn_dp_rank,
-            attn_dp_size=attn_dp_size,
-            moe_ep_rank=moe_ep_rank,
-            moe_ep_size=moe_ep_size,
-            moe_dp_rank=None,
-            moe_dp_size=get_parallel().moe_dp_size,
-            gpu_id=gpu_id,
-        )
+        register_flashinfer_seeded_sampler()
 
         super().__init__(
             model_config=model_config,
             mem_fraction_static=get_schedule().mem_fraction_static,
             gpu_id=gpu_id,
-            ps=ps,
             nccl_port=nccl_port,
             server_args=server_args,
         )
@@ -320,12 +389,16 @@ class SGLModelRunner(ModelRunner):
         prefill_inputs = get_omni_prefill_inputs(forward_batch)
         if prefill_inputs is None:
             return kwargs
+        else:
+            pass
 
         if "input_embeds" in kwargs:
             raise RuntimeError(
                 "Omni prefill sidecar conflicts with an upstream input_embeds "
                 "forward kwarg"
             )
+        else:
+            pass
 
         if prefill_inputs.input_embeds.dtype != self.dtype:
             raise RuntimeError(
@@ -333,12 +406,16 @@ class SGLModelRunner(ModelRunner):
                 f"{self.dtype}, got {prefill_inputs.input_embeds.dtype}; the "
                 "prefill graph slot copy would silently cast it"
             )
+        else:
+            pass
         kwargs["input_embeds"] = prefill_inputs.input_embeds
         kwargs["omni_prefill_rids"] = forward_batch.rids
         if prefill_inputs.input_embeds_are_projected is not None:
             kwargs["input_embeds_are_projected"] = (
                 prefill_inputs.input_embeds_are_projected
             )
+        else:
+            pass
         return kwargs
 
     def _resolve_draft_load_format(self) -> str | None:
@@ -353,6 +430,8 @@ class SGLModelRunner(ModelRunner):
         ws = ipc_weights.get_weight_share_config()
         if ws is not None and ws.role == "follower":
             return "dummy"
+        else:
+            pass
         return super()._resolve_draft_load_format()
 
     def load_model(self):
@@ -369,10 +448,12 @@ class SGLModelRunner(ModelRunner):
         from sglang_omni.utils import ipc_weights
 
         ws = ipc_weights.get_weight_share_config()
-        self._weight_share_config = ws
-        self._weight_share_record = None
+        self.weight_share_config = ws
+        self.weight_share_record = None
         if ws is None:
             return super().load_model()
+        else:
+            pass
 
         # Note (Jiaxin Deng): TP/PP ranks are separate processes inheriting the
         # env var, and their shards share names/shapes/dtypes across ranks, so
@@ -383,10 +464,12 @@ class SGLModelRunner(ModelRunner):
                 "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1, got "
                 f"tp={get_parallel().tp_size} pp={get_parallel().pp_size}"
             )
+        else:
+            pass
 
         architectures = (
-            [self._model_arch_override]
-            if self._model_arch_override is not None
+            [self.model_arch_override]
+            if self.model_arch_override is not None
             else self.model_config.hf_config.architectures
         )
         policy = ipc_weights.validate_weight_share_architecture(architectures)
@@ -399,10 +482,12 @@ class SGLModelRunner(ModelRunner):
                 "--max-total-tokens: post-alias memory profiling cannot derive "
                 "a stable KV budget"
             )
+        else:
+            pass
 
         if ws.role == "leader":
             super().load_model()
-            self._weight_share_record = ipc_weights.leader_export(
+            self.weight_share_record = ipc_weights.leader_export(
                 self.model,
                 ws.dir_path,
                 model_path=str(self.server_args.model_path),
@@ -411,6 +496,8 @@ class SGLModelRunner(ModelRunner):
                 private_names=policy.private_tensor_names,
             )
             return
+        else:
+            pass
 
         # Note (Jiaxin Deng): wait for the leader BEFORE allocating dummy
         # weights so we never hold a full transient dummy copy while blocked.
@@ -421,7 +508,7 @@ class SGLModelRunner(ModelRunner):
 
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
         super().load_model()
-        self._weight_share_record, self._weight_ipc_leader_monitor = (
+        self.weight_share_record, self.weight_ipc_leader_monitor = (
             ipc_weights.follower_attach(
                 self.model,
                 ws.dir_path,
@@ -437,6 +524,8 @@ class SGLModelRunner(ModelRunner):
         attached_hook = getattr(self.model, "on_weight_share_attached", None)
         if callable(attached_hook):
             attached_hook()
+        else:
+            pass
         # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
         # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()
@@ -457,11 +546,13 @@ class SGLModelRunner(ModelRunner):
         On XPU the capture is wrapped to pin SDPA, which the engines reach through
         model code SGLang's capture does not wrap.
         """
-        record = self._weight_share_record
+        record = self.weight_share_record
         if record is not None:
             from sglang_omni.utils import ipc_weights
 
             ipc_weights.verify_attachment(self.model, record)
+        else:
+            pass
         # Engine builders turn enable_torch_compile off on the exec bag after the
         # capture flags were seeded at publish; re-seed so capture honors that.
         from sglang.srt.runtime_context import get_exec, get_flags
@@ -474,9 +565,13 @@ class SGLModelRunner(ModelRunner):
         with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
+            else:
+                pass
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
         if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
+        else:
+            pass
         return result
 
     def post_capture_resize_kv_pool(self):
@@ -488,8 +583,10 @@ class SGLModelRunner(ModelRunner):
         budget is authoritative, so a shrink must fail loudly instead of
         serving with a silently clamped pool.
         """
-        if self._kv_cache_bytes is None:
+        if self.kv_cache_bytes is None:
             return super().post_capture_resize_kv_pool()
+        else:
+            pass
 
         tokens_before = self.max_total_num_tokens
         result = super().post_capture_resize_kv_pool()
@@ -497,7 +594,7 @@ class SGLModelRunner(ModelRunner):
             free_bytes = free_gpu_memory_bytes(self.device, self.gpu_id)
             raise RuntimeError(
                 "Post-capture KV sizing cannot honor the declared byte budget: "
-                f"kv_cache_bytes={format_bytes_gib(self._kv_cache_bytes)} sized "
+                f"kv_cache_bytes={format_bytes_gib(self.kv_cache_bytes)} sized "
                 f"the pool at {tokens_before} tokens, but free memory minus the "
                 f"post-capture headroom only backs {self.max_total_num_tokens} "
                 f"tokens (free={format_bytes_gib(free_bytes)}, "
@@ -505,29 +602,61 @@ class SGLModelRunner(ModelRunner):
                 "free memory on this GPU, or close a decode graph max_bs gap "
                 "below max_running_requests that raises the reserved headroom."
             )
+        else:
+            pass
         return result
 
-    def prefill_cuda_graph_runner_cls(self):
-        from sglang.srt.model_executor.cuda_graph_config import (
-            Backend as CudaGraphBackend,
-        )
-
+    def get_cuda_graph_layers(self, layer_model: nn.Module) -> AttentionAndMoeLayers:
+        layers = super().get_cuda_graph_layers(layer_model)
         if (
-            self._model_arch_override == "WhisperForConditionalGeneration"
-            and get_exec().graph.cuda_graph_config.prefill.backend
+            get_exec().graph.cuda_graph_config.prefill.backend
+            != CudaGraphBackend.BREAKABLE
+        ):
+            return layers
+        else:
+            extra_layers = self.extra_prefill_graph_attention_layers
+            if self.model_arch_override == "WhisperForConditionalGeneration":
+                extra_layers = [
+                    layer.encoder_attn.attn for layer in self.model.model.decoder.layers
+                ] + extra_layers
+            else:
+                pass
+            return AttentionAndMoeLayers(
+                attention_layers=[*layers.attention_layers, *extra_layers],
+                moe_layers=layers.moe_layers,
+                moe_fusions=layers.moe_fusions,
+                dsa_indexers=layers.dsa_indexers,
+                mha_companion_layers=[
+                    *layers.mha_companion_layers,
+                    *[None] * len(extra_layers),
+                ],
+            )
+
+    def prefill_cuda_graph_runner_cls(self) -> type[PrefillCudaGraphRunner] | None:
+        is_breakable = (
+            get_exec().graph.cuda_graph_config.prefill.backend
             == CudaGraphBackend.BREAKABLE
+        )
+        if is_breakable and self.prefill_graph_runner_class is not None:
+            return self.prefill_graph_runner_class
+        elif (
+            is_breakable
+            and self.model_arch_override == "WhisperForConditionalGeneration"
         ):
             from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
                 WhisperPrefillCudaGraphRunner,
             )
 
             return WhisperPrefillCudaGraphRunner
-        return None
+        else:
+            return None
 
     def weight_update_blocked_reason(self) -> str | None:
-        ws = self._weight_share_config
+        ws = self.weight_share_config
         if ws is None:
             return None
+        else:
+            pass
         return (
             f"weight updates are disabled while same-GPU weight sharing is "
             f"active (role={ws.role}): replicas alias the leader's storage, "
@@ -541,19 +670,44 @@ class SGLModelRunner(ModelRunner):
         reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
+        else:
+            pass
         return self.weight_updater.update_weights_from_disk(*args, **kwargs)
 
     def update_weights_from_tensor(self, *args, **kwargs):
         reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
+        else:
+            pass
         return self.weight_updater.update_weights_from_tensor(*args, **kwargs)
 
-    def update_weights_from_distributed(self, *args, **kwargs):
+    def update_weights_from_distributed(
+        self,
+        names: list[str],
+        dtypes: list[str],
+        shapes: list[list[int]],
+        group_name: str,
+        load_format: str | None = None,
+    ) -> tuple[bool, str]:
         reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
-        return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
+        else:
+            pass
+        try:
+            weights = self.weight_updater.receive_weights_from_distributed(
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=group_name,
+                load_format=load_format,
+            )
+        except Exception as error:
+            message = f"Failed to receive weights: {error}"
+            logger.error(message)
+            return False, message
+        return self.weight_updater.load_weights_from_distributed(weights)
 
     # Process-group lifecycle does not mutate weights, so it stays unguarded.
     def init_weights_update_group(self, *args, **kwargs):
@@ -590,6 +744,7 @@ class SGLModelRunner(ModelRunner):
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
+            "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
         }
         for arch, path in sglang_omni_models.items():
@@ -628,6 +783,6 @@ class SGLModelRunner(ModelRunner):
                 for field in dataclasses.fields(base)
                 if field.init
             },
-            total_gpu_memory_fraction=self._total_gpu_memory_fraction,
-            kv_cache_bytes=self._kv_cache_bytes,
+            total_gpu_memory_fraction=self.total_gpu_memory_fraction,
+            kv_cache_bytes=self.kv_cache_bytes,
         )

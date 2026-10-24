@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import xxhash
@@ -20,20 +21,24 @@ from sglang_omni.models.minicpm_o.routing import (
     payload_with_state,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
 
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
-def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
+def resolve_sampling_seed(params: Mapping[str, object]) -> int | None:
     for key in ("seed", "sampling_seed"):
         value = params.get(key)
         if value is not None:
             return int(value)
+        else:
+            pass
     return None
 
 
@@ -41,9 +46,9 @@ def resolve_sampling_seed(params: dict[str, Any]) -> int | None:
 class EncoderRequestData:
     """Prepared inputs for one encoder stage forward."""
 
-    model_inputs: dict[str, Any]
+    model_inputs: dict[str, object]
     cache_key: str | None = None
-    skip_result: dict[str, Any] | None = None
+    skip_result: dict[str, torch.Tensor] | None = None
 
 
 def build_encoder_request(
@@ -52,6 +57,8 @@ def build_encoder_request(
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(model_inputs={}, skip_result={})
+    else:
+        pass
     cache_key = inputs.get("cache_key")
     model_inputs = {
         k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
@@ -65,8 +72,8 @@ def build_encoder_request(
 def apply_mm_pad_values(
     input_ids: torch.Tensor,
     *,
-    mm_inputs: dict[str, Any],
-    model_inputs: dict[str, Any],
+    mm_inputs: Mapping[str, object],
+    model_inputs: dict[str, object],
     vocab_size: int,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
     """Replace shared placeholder ids with cache-key-derived modality ids."""
@@ -84,9 +91,13 @@ def apply_mm_pad_values(
         info = mm_inputs.get(modality)
         if not isinstance(info, dict):
             continue
+        else:
+            pass
         bounds = info.get("bounds")
         if bounds is None or bounds.numel() == 0:
             continue
+        else:
+            pass
         positions = torch.cat(
             [torch.arange(int(start), int(end)) for start, end in bounds]
         )
@@ -99,6 +110,8 @@ def apply_mm_pad_values(
         mm_positions[modality] = positions
     if not has_any:
         return input_ids, None
+    else:
+        pass
     model_inputs["pad_values"] = pad_values
     return input_ids, mm_positions
 
@@ -106,7 +119,7 @@ def apply_mm_pad_values(
 def build_sglang_thinker_request(
     state: MiniCPMOPipelineState,
     *,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     tokenizer: PreTrainedTokenizerBase,
     vocab_size: int,
     request_id: str | None = None,
@@ -115,10 +128,14 @@ def build_sglang_thinker_request(
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+    from sglang_omni.scheduling.sglang_backend.request_data import (
+        SGLangARRequestData,
+        validate_prompt_token_ids,
+    )
 
     prompt = state.prompt
     input_ids = prompt["input_ids"]
+    validate_prompt_token_ids(input_ids, vocab_size)
     attention_mask = prompt.get("attention_mask")
 
     thinker_inputs = state.thinker_inputs or {}
@@ -130,8 +147,17 @@ def build_sglang_thinker_request(
     else:
         model_inputs = dict(model_inputs)
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
-    temperature = params.get("temperature", 0.0)
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    max_new_tokens = (
+        1 if known_tts_output_ids is not None else params.get("max_new_tokens", 2048)
+    )
+    temperature = params.get("temperature", 1.0)
+    thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+    length_penalty = thinker_params.get("length_penalty", 1.0)
+    if not 0.0 < length_penalty:
+        raise ValueError(f"length_penalty must be positive, got {length_penalty}.")
+    else:
+        pass
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
@@ -156,6 +182,8 @@ def build_sglang_thinker_request(
             model_inputs=model_inputs,
             vocab_size=vocab_size,
         )
+    else:
+        pass
     req = Req(
         rid=request_id or "req-0",
         origin_input_text="",
@@ -163,12 +191,17 @@ def build_sglang_thinker_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
+    if known_tts_output_ids is not None:
+        # Avoid prefix hits: the talker needs the hidden state of every text row.
+        req.extra_key = f"minicpmo-known-tts:{uuid.uuid4().hex}"
+    else:
+        pass
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
-    req._omni_consumed = None
-    req._codec_suppress_tokens = None
-    req._omni_mm_positions = mm_positions
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._omni_mm_positions = mm_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangARRequestData(
         input_ids=input_ids,
@@ -191,7 +224,13 @@ def apply_thinker_result(
     stage_name: str,
     result: SGLangARRequestData,
 ) -> ThinkerOutput:
-    output_ids = list(result.output_ids)
+    prompt = state.prompt or {}
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    output_ids = (
+        list(known_tts_output_ids)
+        if known_tts_output_ids is not None
+        else list(result.output_ids)
+    )
     thinker_out: ThinkerOutput = {
         "output_ids": output_ids,
         "step": len(output_ids),
@@ -201,10 +240,16 @@ def apply_thinker_result(
 
     if result.finish_reason is not None:
         thinker_out["finish_reason"] = result.finish_reason
+    else:
+        pass
     if result.weight_version is not None:
         thinker_out["weight_version"] = result.weight_version
+    else:
+        pass
     if result.output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = result.output_token_logprobs
+    else:
+        pass
 
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
@@ -249,8 +294,12 @@ def build_thinker_stream_output(
     """Emit one token for streaming requests after a complete prefill or decode."""
     if req_data.req.inflight_middle_chunks > 0 or req_output.data is None:
         return []
+    else:
+        pass
     if not req_data.stage_payload.request.params.get("stream", False):
         return []
+    else:
+        pass
 
     token_id = int(req_output.data)
     # note (MayDomine): stream transport accepts tensors, not scalar ids.

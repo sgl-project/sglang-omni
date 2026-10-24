@@ -33,8 +33,7 @@ provenance and conflict detection stay per value.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any
+from collections.abc import Hashable, Iterable, Mapping
 
 import yaml
 from pydantic import ValidationError
@@ -48,6 +47,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError, SegmentKind
 from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.utils.json import JsonValue
 
 __all__ = [
     "dump_user_config",
@@ -69,11 +69,13 @@ class DuplicateKeyRefusingLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node, deep=False):  # type: ignore[override]
-        seen: set[Any] = set()
+        seen: set[Hashable] = set()
         for key_node, _value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
             if isinstance(key, (dict, list, set)):
                 continue  # unhashable; let SafeLoader produce its own error
+            else:
+                pass
             if key in seen:
                 raise yaml.constructor.ConstructorError(
                     None,
@@ -81,6 +83,8 @@ class DuplicateKeyRefusingLoader(yaml.SafeLoader):
                     f"duplicate mapping key {key!r}",
                     key_node.start_mark,
                 )
+            else:
+                pass
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 
@@ -111,7 +115,7 @@ _STAGES_LIST_GUIDANCE = (
 
 
 def patches_from_dotted_cli(
-    extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+    extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
     config: PipelineConfig,
     *,
     origin: str = "extra CLI args",
@@ -139,6 +143,8 @@ def patches_from_dotted_cli(
                 f"line; write --{rest}",
                 raw=str(key),
             )
+        else:
+            pass
         canonical = canonicalize_dotted_key(str(key), config)
         compiled = ConfigPath.parse(canonical, type(config))
         if (
@@ -155,6 +161,8 @@ def patches_from_dotted_cli(
                 f"write one field below it, e.g. --{key}.<field> <value>",
                 raw=str(key),
             )
+        else:
+            pass
         patchset.add(
             ConfigPatch.create(
                 compiled,
@@ -187,7 +195,7 @@ def patches_from_model_path_flag(
 
 
 def patches_from_shared_block(
-    shared_block: Any,
+    shared_block: object,
     config_cls: type[PipelineConfig],
     stage_names: Iterable[str],
     *,
@@ -216,6 +224,8 @@ def patches_from_shared_block(
             "shared must be a list of {select: ..., <settings>} "
             f"entries, got {type(shared_block).__name__}"
         )
+    else:
+        pass
 
     names = list(stage_names)
     patches = ConfigPatchSet()
@@ -223,9 +233,13 @@ def patches_from_shared_block(
         label = f"shared[{index}]"
         if not isinstance(entry, Mapping) or "select" not in entry:
             raise ValueError(f"{label} must be a mapping with a select: block")
+        else:
+            pass
         body = {key: value for key, value in entry.items() if key != "select"}
         if not body:
             raise ValueError(f"{label} selects stages but writes nothing")
+        else:
+            pass
         matched = select_stages(entry["select"], config_cls, names, label=label)
         source = ConfigSource(SourceKind.YAML_FILE, origin, detail=label)
         for stage_name in matched:
@@ -243,7 +257,7 @@ def patches_from_shared_block(
 
 
 def select_stages(
-    select: Any,
+    select: object,
     config_cls: type[PipelineConfig],
     stage_names: list[str],
     *,
@@ -252,12 +266,16 @@ def select_stages(
     """Resolve one ``select:`` block to the stage names it matches."""
     if not isinstance(select, Mapping) or not select:
         raise ValueError(f"{label}.select must be a non-empty mapping")
+    else:
+        pass
     unknown_keys = set(select) - {"stages", "engine", "exclude"}
     if unknown_keys:
         raise ValueError(
             f"{label}.select has unknown selector(s) {sorted(unknown_keys)}; "
             "supported: stages, engine, exclude"
         )
+    else:
+        pass
 
     matched = list(stage_names)
     if "stages" in select:
@@ -266,44 +284,62 @@ def select_stages(
             isinstance(name, str) for name in wanted
         ):
             raise ValueError(f"{label}.select.stages must be a list of names")
+        else:
+            pass
         missing = [name for name in wanted if name not in stage_names]
         if missing:
             raise ValueError(
                 f"{label}.select.stages names unknown stage(s) {missing}; "
                 f"this pipeline has: {', '.join(stage_names)}"
             )
+        else:
+            pass
         matched = [name for name in matched if name in wanted]
+    else:
+        pass
     if "engine" in select:
         engine = select["engine"]
         if not isinstance(engine, bool):
             raise ValueError(
                 f"{label}.select.engine must be true or false, got {engine!r}"
             )
+        else:
+            pass
         if engine:
             matched = [
                 name
                 for name in matched
                 if config_cls.stage_config_cls(name).engine_stage
             ]
+        else:
+            pass
+    else:
+        pass
     excluded = select.get("exclude") or []
     if not isinstance(excluded, list) or not all(
         isinstance(name, str) for name in excluded
     ):
         raise ValueError(f"{label}.select.exclude must be a list of names")
+    else:
+        pass
     missing_excluded = [name for name in excluded if name not in stage_names]
     if missing_excluded:
         raise ValueError(
             f"{label}.select.exclude names unknown stage(s) {missing_excluded}; "
             f"this pipeline has: {', '.join(stage_names)}"
         )
+    else:
+        pass
     matched = [name for name in matched if name not in excluded]
     if not matched:
         raise ValueError(f"{label}.select matches no stage of this pipeline")
+    else:
+        pass
     return matched
 
 
 def patches_from_stages_mapping(
-    stages_block: Any,
+    stages_block: object,
     config_cls: type[PipelineConfig],
     known_names: Iterable[str],
     *,
@@ -318,11 +354,15 @@ def patches_from_stages_mapping(
     """
     if isinstance(stages_block, list):
         raise ValueError(_STAGES_LIST_GUIDANCE)
+    else:
+        pass
     if not isinstance(stages_block, Mapping):
         raise ValueError(
             "stages must be a mapping from stage name to stage settings, "
             f"got {type(stages_block).__name__}"
         )
+    else:
+        pass
 
     known = list(known_names)
     source = ConfigSource(SourceKind.YAML_FILE, origin)
@@ -334,19 +374,27 @@ def patches_from_stages_mapping(
                 f"stages keys must be stage names written as strings, "
                 f"got {stage_name!r}"
             )
+        else:
+            pass
         if not isinstance(body, Mapping):
             raise ValueError(f"stages.{stage_name} must be a mapping")
+        else:
+            pass
         if "name" in body:
             raise ValueError(
                 f"stages.{stage_name} must not set name: the mapping key is "
                 "the stage's name"
             )
+        else:
+            pass
         if stage_name not in known:
             raise ValueError(
                 f"stages.{stage_name}: no stage named {stage_name!r} in "
                 f"{config_cls.__name__}; stage topology lives in the model's "
                 f"config class. This pipeline has: {', '.join(known)}"
             )
+        else:
+            pass
         prefix = f"stages.{stage_name}"
         for path, value in flatten(prefix, dict(body), config_cls):
             # coerce applies the same lossless-scalar contract as dotted CLI
@@ -383,16 +431,22 @@ def sources_from_config_file(
         raise ValueError(f"Config file {file_path!r} does not exist") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Config file {file_path!r} must contain a mapping")
+    else:
+        pass
 
     data = dict(data)
     for block, guidance in _REMOVED_TOP_LEVEL_BLOCKS.items():
         if block in data:
             raise ValueError(f"Config file {file_path!r}: {guidance}")
+        else:
+            pass
 
     if "config_cls" not in data:
         raise ValueError(
-            f"Config file {file_path!r} must name its pipeline class in " "config_cls"
+            f"Config file {file_path!r} must name its pipeline class in config_cls"
         )
+    else:
+        pass
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(data["config_cls"])
     stages_block = data.pop("stages", None)
     shared_block = data.pop("shared", None)
@@ -404,7 +458,7 @@ def sources_from_config_file(
     # file twice -- the baseline would already carry the value, so a diff
     # against it shows nothing and provenance calls the same value both the
     # model default and the file's write.
-    construction: dict[str, Any] = {}
+    construction: dict[str, object] = {}
     while True:
         try:
             config = config_cls(**construction)
@@ -417,6 +471,8 @@ def sources_from_config_file(
             ]
             if not missing:
                 raise
+            else:
+                pass
             for key in missing:
                 construction[key] = overrides[key]
 
@@ -439,6 +495,8 @@ def sources_from_config_file(
                 origin=str(file_path),
             )
         )
+    else:
+        pass
     if shared_block is not None:
         # Expanded against the settled stage list, so a selector can reach a
         # stage this same file added.
@@ -450,10 +508,12 @@ def sources_from_config_file(
                 origin=str(file_path),
             )
         )
+    else:
+        pass
     return config, patches
 
 
-def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
+def dump_user_config(config: PipelineConfig) -> dict[str, JsonValue]:
     """Dump a config in the shape a config file is written in.
 
     The internal stage list becomes the user-facing ``stages:`` mapping: the
@@ -465,12 +525,14 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
     """
     data = config.model_dump(mode="json")
     data.pop("entry_stage", None)
-    stages: dict[str, Any] = {}
+    stages: dict[str, dict[str, JsonValue]] = {}
     for stage in data.get("stages", []):
         body = dict(stage)
         body.pop("name", None)
         if body.get("engine") is None:
             body.pop("engine", None)
+        else:
+            pass
         stages[stage["name"]] = body
     data["stages"] = stages
     return data
@@ -478,16 +540,16 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
 
 def flatten(
     prefix: str,
-    value: dict[str, Any],
+    value: Mapping[str, object],
     root: type[PipelineConfig],
-) -> list[tuple[str, Any]]:
+) -> list[tuple[str, object]]:
     """Split a nested stage entry into one patch per leaf.
 
     Stopping at schema leaves keeps the by-name merge a merge (an omitted
     sibling keeps its default) while keeping provenance per value rather
     than per block.
     """
-    out: list[tuple[str, Any]] = []
+    out: list[tuple[str, object]] = []
     for key, child in value.items():
         path = f"{prefix}.{key}"
         if isinstance(child, dict) and not ConfigPath.parse(path, root).is_leaf:

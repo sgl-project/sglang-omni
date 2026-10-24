@@ -3,11 +3,17 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from enum import Enum
-from typing import Annotated, Any, NamedTuple, Optional
+from typing import Annotated, NamedTuple, Optional
 
 import typer
 import yaml
 
+from sglang_omni.cli.serve import (
+    apply_tensor_parallel_engine_overrides,
+    patches_from_broadcast_flags,
+    resolve_variant,
+    tensor_parallel_engine_writes,
+)
 from sglang_omni.config.compat import canonicalize_dotted_key
 from sglang_omni.config.manager import ConfigManager, resolve_config_cls_for_model_path
 from sglang_omni.config.patch import (
@@ -25,6 +31,8 @@ from sglang_omni.config.sources import (
     patches_from_model_path_flag,
     sources_from_config_file,
 )
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +41,14 @@ config_app = typer.Typer(help="Inspect, resolve and export the pipeline configur
 _MODEL_PATH_HELP = "The Hugging Face model ID or the path to the model directory."
 _CONFIG_HELP = "Path to a pipeline config file, as accepted by `sgl-omni serve`."
 _TEXT_ONLY_HELP = "Use the thinker-only pipeline, as `sgl-omni serve --text-only` does."
+VARIANT_HELP = "Use this pipeline variant, as `sgl-omni serve --variant` does."
 _MEM_FRACTION_HELP = (
     "Set engine.mem_fraction_static on every SGLang engine stage, as "
     "`sgl-omni serve --mem-fraction-static` does."
 )
 
 
-def dump_yaml(data: Any) -> str:
+def dump_yaml(data: object) -> str:
     return yaml.dump(
         data,
         sort_keys=False,  # preserve order
@@ -85,6 +94,8 @@ def export(
     # export config in a yaml file
     if output_path is None:
         output_path = f"./config_{config.name}.yaml"
+    else:
+        pass
 
     with open(output_path, "w") as f:
         f.write(dump_yaml(dump_user_config(config)))
@@ -118,6 +129,7 @@ def resolve_sources(
     model_path: str | None,
     config_file: str | None,
     text_only: bool,
+    variant: str | None,
     mem_fraction_static: float | None,
     argv: list[str],
 ) -> Resolution:
@@ -128,17 +140,13 @@ def resolve_sources(
     difference is that a launch throws the provenance away and this keeps it,
     which is what lets these commands answer *which source set this value*.
     """
-    # Local import: serve owns the broadcast flag's fan-out and the TP
-    # derivation; importing them here keeps the two commands building
-    # identical configurations.
-    from sglang_omni.cli.serve import (
-        apply_tensor_parallel_engine_overrides,
-        patches_from_broadcast_flags,
-        tensor_parallel_engine_writes,
-    )
-
     if config_file is None and model_path is None:
         raise typer.BadParameter("--model-path is required unless --config is set")
+    else:
+        pass
+    selected_variant = resolve_variant(
+        config=config_file, text_only=text_only, variant=variant
+    )
 
     try:
         if config_file:
@@ -149,9 +157,11 @@ def resolve_sources(
                 patches = patches.merge(
                     patches_from_model_path_flag(model_path, baseline)
                 )
+            else:
+                pass
         else:
             manager = ConfigManager.from_model_path(
-                str(model_path), variant="text" if text_only else None
+                str(model_path), variant=selected_variant
             )
             baseline, patches = manager.config, ConfigPatchSet()
 
@@ -165,6 +175,8 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
+        logical_plan, logical_stages = compile_logical_processes(resolved.config)
+        warn_replica_device_overrides(logical_stages, logical_plan)
         # The same post-merge derivation `serve` runs; it only fills engine
         # keys no source set, so the previewed config is the launched one.
         derivation_writes = tensor_parallel_engine_writes(resolved.config)
@@ -185,6 +197,8 @@ def resolve_sources(
         for path_text, value in derivation_writes.items():
             if resolved.provenance.touched(path_text):
                 continue
+            else:
+                pass
             derivation_patch = ConfigPatch.create(
                 path_text, value, derivation_source, root=type(baseline)
             )
@@ -212,6 +226,7 @@ def resolve(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -238,6 +253,7 @@ def resolve(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )
@@ -246,6 +262,8 @@ def resolve(
     if show is ResolveOutput.config:
         print(dump_yaml(dump_user_config(resolution.resolved.config)))
         return
+    else:
+        pass
 
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
@@ -254,13 +272,19 @@ def resolve(
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return
+        else:
+            pass
         for change in changes:
             print(f"{change.path}: {change.expected!r} -> {change.actual!r}")
         return
+    else:
+        pass
 
     if not provenance.paths():
         print("No configuration source touched the pipeline's defaults.")
         return
+    else:
+        pass
     print("\n\n".join(provenance.explain(path) for path in provenance.paths()))
 
 
@@ -293,6 +317,7 @@ def explain(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -306,6 +331,7 @@ def explain(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )
@@ -315,12 +341,16 @@ def explain(
         if not provenance.paths():
             print("No configuration source touched the pipeline's defaults.")
             return
+        else:
+            pass
         for touched in provenance.paths():
             winner = provenance.winner(touched)
             assert winner is not None  # a touched path always has a winner
             value = provenance.resolved_value(touched, winner.value)
             print(f"{touched} = {value!r}  <- {winner.source.describe()}")
         return
+    else:
+        pass
 
     try:
         canonical = canonicalize_dotted_key(path, resolution.baseline)
@@ -332,6 +362,8 @@ def explain(
     if provenance.touched(compiled.raw):
         print(provenance.explain(compiled.raw))
         return
+    else:
+        pass
     try:
         value = compiled.read(resolution.resolved.config)
     except ConfigPathError:

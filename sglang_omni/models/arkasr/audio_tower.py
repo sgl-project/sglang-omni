@@ -43,6 +43,8 @@ class ArkRotaryEmbedding(nn.Module):
         )  # [seq_len, dim/2, 2]
         if dtype in (torch.float16, torch.bfloat16):
             emb = emb.to(dtype)
+        else:
+            pass
         return emb
 
 
@@ -97,6 +99,8 @@ class WhisperRoPESdpaAttention(nn.Module):
         if rotary_pos_emb is not None:
             q = apply_rotary_pos_emb(q, rotary_pos_emb)
             k = apply_rotary_pos_emb(k, rotary_pos_emb)
+        else:
+            pass
         target_dtype = self.q_proj.weight.dtype
         q = q.to(target_dtype)
         k = k.to(target_dtype)
@@ -148,6 +152,8 @@ class WhisperSpecialEncoderLayer(WhisperEncoderLayer):
             hidden_states = torch.clamp(
                 hidden_states, min=-clamp_value, max=clamp_value
             )
+        else:
+            pass
         return (hidden_states, None, None)
 
 
@@ -161,7 +167,7 @@ class ArkAudioTower(nn.Module):
         super().__init__()
         wc = config.whisper_config
         embed_dim = wc.d_model
-        wc._attn_implementation = "sdpa"
+        wc._attn_implementation = "sdpa"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.conv1 = nn.Conv1d(wc.num_mel_bins, embed_dim, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1)
         self.embed_positions = nn.Embedding(wc.max_source_positions, embed_dim)
@@ -173,6 +179,8 @@ class ArkAudioTower(nn.Module):
         if self.use_rope:
             head_dim = embed_dim // wc.encoder_attention_heads
             self.rotary_embedding = ArkRotaryEmbedding(head_dim // 2)
+        else:
+            pass
         # checkpoint disables the tower's own final LayerNorm (Identity) and
         # applies a separate LayerNorm in the adapter instead.
         self.layer_norm = nn.Identity()
@@ -203,18 +211,24 @@ class ArkAudioTower(nn.Module):
                     f"{tuple(attention_mask.shape)} does not match mel frames "
                     f"{tuple(expected_shape)}"
                 )
+            else:
+                pass
             input_frame_mask = attention_mask.to(
                 device=input_features.device, dtype=torch.bool
             )
             input_features = input_features * input_frame_mask.unsqueeze(1).to(
                 dtype=input_features.dtype
             )
+        else:
+            pass
 
         inputs_embeds = F.gelu(self.conv1(input_features))
         if input_frame_mask is not None:
             inputs_embeds = inputs_embeds * input_frame_mask.unsqueeze(1).to(
                 dtype=inputs_embeds.dtype
             )
+        else:
+            pass
         inputs_embeds = F.gelu(self.conv2(inputs_embeds))
         inputs_embeds = inputs_embeds.permute(0, 2, 1)  # [B, T_down, D]
         frame_mask = None
@@ -226,6 +240,8 @@ class ArkAudioTower(nn.Module):
             inputs_embeds = inputs_embeds * frame_mask.unsqueeze(-1).to(
                 dtype=inputs_embeds.dtype
             )
+        else:
+            pass
         if self.use_rope:
             rope = self.rotary_embedding.get_emb(
                 inputs_embeds.shape[1], inputs_embeds.dtype, inputs_embeds.device
@@ -244,6 +260,8 @@ class ArkAudioTower(nn.Module):
                 hidden_states = hidden_states * frame_mask.unsqueeze(-1).to(
                     dtype=hidden_states.dtype
                 )
+            else:
+                pass
         return self.layer_norm(hidden_states)
 
 
@@ -282,6 +300,8 @@ class ArkAudioMLPAdapter(nn.Module):
             encoded = encoded * attention_mask[:, ::2].unsqueeze(-1).to(
                 dtype=encoded.dtype
             )
+        else:
+            pass
         seq_len = encoded.size(1)
         if seq_len % self.merge_factor != 0:
             target_len = (seq_len // self.merge_factor) * self.merge_factor
@@ -292,8 +312,12 @@ class ArkAudioMLPAdapter(nn.Module):
                         (bsz, target_len - seq_len, encoded.size(-1))
                     )
                     encoded = torch.cat([encoded, pad], dim=1)
+                else:
+                    pass
             else:
                 encoded = encoded[:, :target_len, :]
+        else:
+            pass
         encoded = encoded.reshape(bsz, -1, encoded.size(-1) * self.merge_factor)
         return self.adapting(encoded)  # (B, T/merge, hidden)
 

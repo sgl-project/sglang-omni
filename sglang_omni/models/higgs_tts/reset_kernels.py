@@ -71,10 +71,14 @@ def reset_sampler_row(
         or last_codes.stride(1) != 1
     ):
         return False
+    else:
+        pass
     # The kernel cannot bounds-check; keep the IndexError the tensor
     # indexing of the generic path would have raised.
     if not 0 <= row < delay_count.shape[0]:
         raise IndexError(f"row {row} out of range for {delay_count.shape[0]} rows")
+    else:
+        pass
 
     num_codebooks = last_codes.shape[1]
     block_size = triton.next_power_of_2(num_codebooks)

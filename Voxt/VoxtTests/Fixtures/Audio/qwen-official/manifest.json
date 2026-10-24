@@ -1,0 +1,78 @@
+{
+  "fixtures": [
+    {
+      "filename": "qwen3_asr_long_en.wav",
+      "source_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-ASR-Repo/asr_en.wav",
+      "origin": "Qwen3-ASR official demo asset",
+      "reference_kind": "official_demo_unlabeled",
+      "language": "en"
+    },
+    {
+      "filename": "qwen3_asr_long_zh.wav",
+      "source_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-ASR-Repo/asr_zh.wav",
+      "origin": "Qwen3-ASR official demo asset",
+      "reference_kind": "official_demo_unlabeled",
+      "language": "zh"
+    },
+    {
+      "filename": "qwen_audio_short_en.wav",
+      "source_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Audio/1272-128104-0000.flac",
+      "origin": "Qwen-Audio official sample",
+      "reference_kind": "exact",
+      "language": "en",
+      "reference_text": "mister quilter is the apostle of the middle classes and we are glad to welcome his gospel"
+    },
+    {
+      "filename": "qwen_audio_short_zh_chongqing.wav",
+      "source_url": "https://raw.githubusercontent.com/QwenLM/Qwen-Audio/main/assets/audio/example-%E9%87%8D%E5%BA%86%E8%AF%9D.wav",
+      "origin": "Qwen-Audio official sample",
+      "reference_kind": "exact",
+      "language": "zh",
+      "reference_text": "对了我还想提议我们可以租一些自行车骑行一下既锻炼身体又心情愉悦"
+    },
+    {
+      "filename": "qwen_audio_short_zh_relaxed.wav",
+      "source_url": "https://raw.githubusercontent.com/QwenLM/Qwen-Audio/main/assets/audio/%E4%BD%A0%E6%B2%A1%E4%BA%8B%E5%90%A7-%E8%BD%BB%E6%9D%BE.wav",
+      "origin": "Qwen-Audio official sample",
+      "reference_kind": "exact",
+      "language": "zh",
+      "reference_text": "你没事吧"
+    },
+    {
+      "filename": "qwen_audio_short_zh_negative.wav",
+      "source_url": "https://raw.githubusercontent.com/QwenLM/Qwen-Audio/main/assets/audio/%E4%BD%A0%E6%B2%A1%E4%BA%8B%E5%90%A7-%E6%B6%88%E6%9E%81.wav",
+      "origin": "Qwen-Audio official sample",
+      "reference_kind": "exact",
+      "language": "zh",
+      "reference_text": "你没事吧"
+    },
+    {
+      "filename": "qwen_audio_long_en_composite.wav",
+      "origin": "Composed locally from Qwen-Audio official samples",
+      "reference_kind": "composite_exact",
+      "language": "en",
+      "source_parts": [
+        "qwen_audio_short_en.wav",
+        "qwen_audio_short_en.wav",
+        "qwen_audio_short_en.wav",
+        "qwen_audio_short_en.wav",
+        "qwen_audio_short_en.wav",
+        "qwen_audio_short_en.wav"
+      ]
+    },
+    {
+      "filename": "qwen_audio_long_zh_composite.wav",
+      "origin": "Composed locally from Qwen-Audio official samples",
+      "reference_kind": "composite_exact",
+      "language": "zh",
+      "source_parts": [
+        "qwen_audio_short_zh_chongqing.wav",
+        "qwen_audio_short_zh_relaxed.wav",
+        "qwen_audio_short_zh_negative.wav",
+        "qwen_audio_short_zh_chongqing.wav",
+        "qwen_audio_short_zh_relaxed.wav",
+        "qwen_audio_short_zh_negative.wav"
+      ]
+    }
+  ]
+}

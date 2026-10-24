@@ -12,9 +12,9 @@ Three groups, each a function of the trace alone:
   - first_partial_latency_s: per segment, from the send time of the first
     packet whose cumulative audio reached ``segment_start + decode_interval``
     (the server's first refresh point) to the first non-final
-    transcription.segment for that segment. Segment start is
-    speech_started.audio_start_ms under server VAD, 0 for the first
-    segment without VAD, and unknown (skipped) otherwise.
+    transcription.segment for that segment. Segment start is the
+    audio_start_ms every transcription.segment carries, so segments opened
+    by a hard cut are measured from the cut, not from an earlier VAD start.
   - partial_interval_s: receive-time gaps between consecutive partials of
     the same segment.
   - final_latency_s: per segment, input_audio_buffer.committed to its
@@ -33,26 +33,26 @@ import statistics
 from collections import defaultdict
 from typing import Any
 
+from pydantic import JsonValue
+
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.realtime_asr.client import SAMPLE_RATE, SessionTrace
 from benchmarks.tasks.asr import apply_wer
 
 
 def check_invariants(trace: SessionTrace) -> list[str]:
-    """Return every protocol violation found in ``trace`` (empty means clean)."""
+    """Return every protocol violation found in trace (empty means clean)."""
     violations: list[str] = []
     if trace.error:
         violations.append(f"client error: {trace.error}")
+    else:
+        pass
 
-    for item in trace.events("error"):
-        violations.append(f"server error event: {item.event.get('error')}")
+    for record in trace.events("error"):
+        violations.append(f"server error event: {record.event.get('error')}")
 
-    indexes = [
-        item.event.get("event_index")
-        for item in trace.received
-        if "event_index" in item.event
-    ]
-    if any(not isinstance(index, int) for index in indexes):
+    indexes = [record.event.get("event_index") for record in trace.received]
+    if any(type(index) is not int for index in indexes):
         violations.append("event_index missing or non-integer on some events")
     else:
         for previous, current in zip(indexes, indexes[1:]):
@@ -61,30 +61,88 @@ def check_invariants(trace: SessionTrace) -> list[str]:
                     f"event_index not strictly increasing: {previous} -> {current}"
                 )
                 break
+            else:
+                pass
 
     committed_ids = [
-        item.event.get("segment_id")
-        for item in trace.events("input_audio_buffer.committed")
+        record.event.get("segment_id")
+        for record in trace.events("input_audio_buffer.committed")
     ]
-    final_ids = [item.event.get("segment_id") for item in trace.segments(is_final=True)]
+    final_ids = [
+        record.event.get("segment_id") for record in trace.segments(is_final=True)
+    ]
     if sorted(committed_ids, key=_sort_key) != sorted(final_ids, key=_sort_key):
         violations.append(
             f"committed segments {committed_ids} do not match final segments {final_ids}"
         )
+    else:
+        pass
     if len(set(final_ids)) != len(final_ids):
         violations.append(f"duplicate final segment ids: {final_ids}")
+    else:
+        pass
 
-    finalized: set[Any] = set()
-    for item in trace.events("transcription.segment"):
-        segment_id = item.event.get("segment_id")
-        if segment_id in finalized:
-            violations.append(f"segment {segment_id} updated after its final event")
-            break
-        if item.event.get("is_final"):
-            finalized.add(segment_id)
+    committed: set[JsonValue] = set()
+    finalized: set[JsonValue] = set()
+    starts_ms: dict[JsonValue, int] = {}
+    completed_count = 0
+    for record in trace.received:
+        if record.type == "input_audio_buffer.committed":
+            committed.add(record.event.get("segment_id"))
+        elif record.type == "transcription.completed":
+            completed_count += 1
+        elif record.type == "transcription.segment":
+            segment_id = record.event.get("segment_id")
+            if completed_count:
+                violations.append(
+                    f"segment {segment_id} emitted after transcription.completed"
+                )
+            else:
+                pass
+            if segment_id in finalized:
+                violations.append(f"segment {segment_id} updated after its final event")
+            else:
+                pass
+            start_ms = record.event.get("audio_start_ms")
+            end_ms = record.event.get("audio_end_ms")
+            if type(start_ms) is not int or type(end_ms) is not int:
+                violations.append(
+                    f"segment {segment_id} audio_start_ms or audio_end_ms "
+                    "missing or non-integer"
+                )
+            elif end_ms <= start_ms:
+                violations.append(
+                    f"segment {segment_id} audio_end_ms {end_ms} not after "
+                    f"audio_start_ms {start_ms}"
+                )
+            elif starts_ms.setdefault(segment_id, start_ms) != start_ms:
+                violations.append(
+                    f"segment {segment_id} audio_start_ms changed: "
+                    f"{starts_ms[segment_id]} -> {start_ms}"
+                )
+            else:
+                pass
+            if record.event.get("is_final"):
+                if segment_id not in committed:
+                    violations.append(
+                        f"segment {segment_id} finalized before its committed event"
+                    )
+                else:
+                    pass
+                finalized.add(segment_id)
+            else:
+                pass
+        else:
+            pass
 
-    if not trace.events("transcription.completed"):
+    if completed_count == 0:
         violations.append("no transcription.completed event")
+    elif completed_count > 1:
+        violations.append(
+            f"duplicate transcription.completed events: {completed_count}"
+        )
+    else:
+        pass
     return violations
 
 
@@ -93,15 +151,13 @@ def _sort_key(value: Any) -> tuple[int, str]:
 
 
 def _segment_starts_ms(trace: SessionTrace) -> dict[Any, float]:
-    """Audio offset (ms) at which each segment started, where knowable."""
+    """Audio offset (ms) at which each segment started, from its first event."""
     starts: dict[Any, float] = {}
-    for item in trace.events("input_audio_buffer.speech_started"):
+    for item in trace.events("transcription.segment"):
         segment_id = item.event.get("segment_id")
-        if segment_id not in starts:
-            starts[segment_id] = float(item.event.get("audio_start_ms", 0))
-    if not starts and trace.session.get("turn_detection") is None:
-        # Manual mode: the first segment starts with the first sample.
-        starts[0] = 0.0
+        start_ms = item.event.get("audio_start_ms")
+        if segment_id not in starts and isinstance(start_ms, (int, float)):
+            starts[segment_id] = float(start_ms)
     return starts
 
 

@@ -8,7 +8,7 @@ from sglang_omni.models.ming_omni.components.streaming_text import (
 )
 
 
-def _token_count(text: str) -> int:
+def token_count(text: str) -> int:
     return len(text.split())
 
 
@@ -25,7 +25,7 @@ def test_segmenter_flushes_on_punctuation_after_min_tokens():
             segment_max_tokens=10,
             first_segment_max_wait_ms=500,
         ),
-        token_count_fn=_token_count,
+        token_count_fn=token_count,
     )
 
     assert state.push("hello", now_ms=0) == []
@@ -43,7 +43,7 @@ def test_first_segment_max_wait_flushes_before_punctuation():
             first_segment_min_tokens=3,
             first_segment_max_wait_ms=400,
         ),
-        token_count_fn=_token_count,
+        token_count_fn=token_count,
     )
 
     assert state.push("one two three", now_ms=0) == []
@@ -61,7 +61,7 @@ def test_segmenter_caps_max_tokens_and_retains_overflow():
             first_segment_min_tokens=3,
             first_segment_max_wait_ms=9999,
         ),
-        token_count_fn=_token_count,
+        token_count_fn=token_count,
     )
 
     out = state.push("one two three four five", now_ms=0)

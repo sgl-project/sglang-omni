@@ -8,12 +8,52 @@ import pytest
 import torch
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.model_runner_components.cuda_graph_setup import (
+    has_standard_gqa_for_all_local_layers,
+    index_attention_layers_by_global_id,
+)
 from sglang.srt.runtime_context import get_context
+from transformers import WhisperConfig
 
 from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
+from sglang_omni.models.whisper_asr.sglang_model import WhisperDecoder
+
+
+def test_prefill_setup_recognizes_whisper_cross_attention_before_capture() -> None:
+    """Whisper graphs were skipped because the upstream guard saw only self-attention."""
+    decoder = WhisperDecoder(
+        WhisperConfig(
+            d_model=8,
+            decoder_layers=2,
+            decoder_attention_heads=2,
+            decoder_ffn_dim=16,
+            vocab_size=32,
+            pad_token_id=0,
+        )
+    )
+    runner = object.__new__(SGLModelRunner)
+    runner.model_arch_override = "WhisperForConditionalGeneration"
+    runner.model = SimpleNamespace(model=SimpleNamespace(decoder=decoder))
+    runner.extra_prefill_graph_attention_layers = []
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(), prefill=PhaseConfig(backend="breakable")
+        )
+    ):
+        layers = runner.get_cuda_graph_layers(decoder)
+    indexed, companions = index_attention_layers_by_global_id(
+        layers.attention_layers, layers.mha_companion_layers, decoder
+    )
+    assert has_standard_gqa_for_all_local_layers(
+        attention_layer_count=sum(layer is not None for layer in indexed),
+        start_layer=0,
+        end_layer=4,
+    )
+    assert [layer.layer_id for layer in indexed] == [0, 1, 2, 3]
+    assert len(companions) == len(indexed)
 
 
 @pytest.mark.parametrize("batch_size", [1])
@@ -132,7 +172,8 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
     expected: type[WhisperPrefillCudaGraphRunner] | None,
 ) -> None:
     runner = object.__new__(SGLModelRunner)
-    runner._model_arch_override = architecture
+    runner.model_arch_override = architecture
+    runner.prefill_graph_runner_class = None
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -142,7 +183,7 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
         assert runner.prefill_cuda_graph_runner_cls() is expected
 
 
-def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
+def install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
     from sglang.srt.model_executor.model_runner_components import cuda_graph_setup
     from sglang.srt.model_executor.runner import PrefillCudaGraphRunner as stock_cls
 
@@ -158,7 +199,7 @@ def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
 def test_prefill_runner_dispatch_selects_by_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cuda_graph_setup, stock_cls = _install_dispatch_for_test(monkeypatch)
+    cuda_graph_setup, stock_cls = install_dispatch_for_test(monkeypatch)
 
     constructed: list[tuple[type, object]] = []
     monkeypatch.setattr(
@@ -175,7 +216,8 @@ def test_prefill_runner_dispatch_selects_by_instance(
     )
 
     runner = object.__new__(SGLModelRunner)
-    runner._model_arch_override = "WhisperForConditionalGeneration"
+    runner.model_arch_override = "WhisperForConditionalGeneration"
+    runner.prefill_graph_runner_class = None
 
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -190,7 +232,7 @@ def test_prefill_runner_dispatch_selects_by_instance(
 def test_prefill_runner_dispatch_routes_selectorless_runner_to_stock_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cuda_graph_setup, stock_cls = _install_dispatch_for_test(monkeypatch)
+    cuda_graph_setup, stock_cls = install_dispatch_for_test(monkeypatch)
 
     constructed: list[object] = []
     monkeypatch.setattr(

@@ -24,7 +24,7 @@ REQUEST_TIMEOUT = 120
 pytestmark = pytest.mark.benchmark
 
 
-def _post_chat(
+def post_chat(
     port: int, payload: dict, timeout: int = REQUEST_TIMEOUT
 ) -> requests.Response:
     with disable_proxy():
@@ -35,7 +35,7 @@ def _post_chat(
         )
 
 
-def _assert_minicpmo_length_error(
+def assert_minicpmo_length_error(
     detail: str, *, max_new_tokens: int, overlong_prompt: bool
 ) -> None:
     match = re.search(
@@ -61,7 +61,7 @@ def test_overlong_prompt_returns_400(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
 ) -> None:
-    resp = _post_chat(
+    resp = post_chat(
         omni_ci_server.port,
         {
             "model": omni_ci_model.name,
@@ -79,7 +79,7 @@ def test_overlong_prompt_returns_400(
     assert resp.status_code == 400, resp.text
     body = resp.json()
     if omni_ci_model.name == "minicpmo":
-        _assert_minicpmo_length_error(
+        assert_minicpmo_length_error(
             body["detail"], max_new_tokens=16, overlong_prompt=True
         )
     else:
@@ -91,7 +91,7 @@ def test_total_token_overflow_returns_400(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
 ) -> None:
-    resp = _post_chat(
+    resp = post_chat(
         omni_ci_server.port,
         {
             "model": omni_ci_model.name,
@@ -104,7 +104,7 @@ def test_total_token_overflow_returns_400(
     assert resp.status_code == 400, resp.text
     body = resp.json()
     if omni_ci_model.name == "minicpmo":
-        _assert_minicpmo_length_error(
+        assert_minicpmo_length_error(
             body["detail"], max_new_tokens=200, overlong_prompt=False
         )
     else:
@@ -118,7 +118,7 @@ def test_length_finish_reason_is_preserved(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
 ) -> None:
-    resp = _post_chat(
+    resp = post_chat(
         omni_ci_server.port,
         {
             "model": omni_ci_model.name,

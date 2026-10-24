@@ -7,7 +7,7 @@ from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.pipeline.replicas import expand_replica_stages
 
 
-def _expanded_replica_stages():
+def expanded_replica_stages():
     config = S2ProPipelineConfig(
         model_path="model",
         processes={"pipeline": ProcessConfig(num_replicas=2, replica_devices=[1, 2])},
@@ -18,7 +18,7 @@ def _expanded_replica_stages():
 
 
 def test_engine_factory_forwards_each_process_replica_gpu_id() -> None:
-    config, by_name = _expanded_replica_stages()
+    config, by_name = expanded_replica_stages()
 
     gpu_ids = [
         resolve_stage_factory_args(
@@ -33,7 +33,7 @@ def test_engine_factory_forwards_each_process_replica_gpu_id() -> None:
 
 
 def test_vocoder_factory_accepts_each_process_replica_gpu_id() -> None:
-    config, by_name = _expanded_replica_stages()
+    config, by_name = expanded_replica_stages()
 
     gpu_ids = [
         resolve_stage_factory_args(

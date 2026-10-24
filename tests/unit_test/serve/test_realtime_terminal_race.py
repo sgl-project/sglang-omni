@@ -15,7 +15,7 @@ from sglang_omni.serve.realtime.session import RealtimeSession
 
 
 class FakeVAD:
-    def __init__(self, _config: object | None = None) -> None: ...
+    def __init__(self, config: object | None = None) -> None: ...
 
     def reset(self) -> None: ...
 
@@ -42,7 +42,7 @@ class StreamingClient:
         self.aborted: list[str] = []
 
     async def completion_stream(
-        self, _request: Any, *, request_id: str, audio_format: str = "wav"
+        self, request: Any, *, request_id: str, audio_format: str = "wav"
     ) -> AsyncIterator[CompletionStreamChunk]:
         del request_id, audio_format
         yield CompletionStreamChunk(

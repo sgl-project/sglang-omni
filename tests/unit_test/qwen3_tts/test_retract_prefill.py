@@ -5,28 +5,43 @@ from __future__ import annotations
 
 import contextlib
 from collections import deque
+from collections.abc import Iterator
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.disaggregation.utils import DisaggregationMode
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.managers.schedule_policy import PrefillAdder
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import EvictParams, MatchPrefixParams
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 
-class _TinyModel(torch.nn.Module):
+class TinyModel(torch.nn.Module):
     def __init__(self, hidden: int = 4) -> None:
         super().__init__()
         self.p = torch.nn.Parameter(torch.zeros(hidden))
 
 
-def _runner() -> Qwen3TTSModelRunner:
+def make_runner() -> Qwen3TTSModelRunner:
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    runner.model = _TinyModel()
+    runner.model = TinyModel()
     return runner
 
 
-def _sched_req(
+def make_sched_req(
     *,
     prompt: torch.Tensor,
     extend_len: int,
@@ -40,8 +55,8 @@ def _sched_req(
         data=SimpleNamespace(
             req=SimpleNamespace(
                 rid=rid,
-                prefix_indices=list(range(prefix_len)),
-                extend_range=SimpleNamespace(length=extend_len),
+                prefix_len=prefix_len,
+                extend_len=extend_len,
             ),
             prompt_input_embeds=prompt,
             prefill_input_embeds=prompt,
@@ -57,8 +72,9 @@ def _sched_req(
 def test_write_feedback_buffers_records_decode_input_history() -> None:
     embedding = torch.nn.Embedding(4, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
     sched_req = SimpleNamespace(
@@ -85,17 +101,18 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     assert list(sched_req.data.pending_text_queue) == []
 
 
-def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> None:
+def test_write_feedback_buffers_batches_text_and_pad_rows() -> None:
     embedding = torch.nn.Embedding(4, 2)
     with torch.no_grad():
         embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
 
-    def _data(feedback, text, pad):
+    def data(feedback, text, pad):
         return SimpleNamespace(
             pending_feedback_queue=deque(feedback),
             pending_text_queue=deque(text),
@@ -105,31 +122,46 @@ def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> Non
         )
 
     staged = SimpleNamespace(
-        data=_data(
+        data=data(
             [torch.tensor([1.0, 2.0])], [torch.tensor([20.0, 30.0])], torch.zeros(2)
         )
     )
     padded = SimpleNamespace(
-        data=_data([torch.tensor([3.0, 4.0])], [], torch.tensor([0.5, 0.5]))
+        data=data([torch.tensor([3.0, 4.0])], [], torch.tensor([0.5, 0.5]))
     )
-    first_step = SimpleNamespace(
-        data=_data([], [torch.tensor([40.0, 50.0])], torch.zeros(2))
-    )
-    forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9, 3], dtype=torch.long))
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9], dtype=torch.long))
 
-    runner.write_feedback_buffers(forward_batch, [staged, padded, first_step])
+    runner.write_feedback_buffers(forward_batch, [staged, padded])
 
-    expected = torch.tensor([[21.0, 32.0], [3.5, 4.5], [6.0, 7.0]])
-    assert torch.equal(embedding.weight[:3].detach(), expected)
-    for row_idx, sched_req in enumerate((staged, padded, first_step)):
+    expected = torch.tensor([[21.0, 32.0], [3.5, 4.5]])
+    assert torch.equal(embedding.weight[:2].detach(), expected)
+    for row_idx, sched_req in enumerate((staged, padded)):
         assert len(sched_req.data.decode_input_embeds) == 1
         assert torch.equal(sched_req.data.decode_input_embeds[0], expected[row_idx])
-    assert forward_batch.input_ids.tolist() == [0, 1, 2]
+    assert forward_batch.input_ids.tolist() == [0, 1]
     assert list(staged.data.pending_feedback_queue) == []
     assert list(staged.data.pending_text_queue) == []
     assert list(padded.data.pending_feedback_queue) == []
-    assert list(first_step.data.pending_feedback_queue) == []
-    assert len(first_step.data.pending_text_queue) == 1
+
+
+def test_write_feedback_buffers_rejects_a_row_without_queued_feedback() -> None:
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
+    runner.model = SimpleNamespace(decode_feedback_embedding=torch.nn.Embedding(4, 2))
+    sched_req = SimpleNamespace(
+        request_id="req",
+        data=SimpleNamespace(
+            pending_feedback_queue=deque(),
+            pending_text_queue=deque([torch.tensor([40.0, 50.0])]),
+            decode_input_embeds=[],
+            thinker_chunks_done=True,
+            tts_pad_embed=torch.zeros(2),
+        ),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([3], dtype=torch.long))
+
+    with pytest.raises(RuntimeError, match="no queued feedback"):
+        runner.write_feedback_buffers(forward_batch, [sched_req])
 
 
 def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
@@ -144,7 +176,7 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     ]
     leftover = torch.full((hidden,), 2000.0, dtype=torch.float32)
     extend_len = prompt_len + generated_len
-    sched_req = _sched_req(
+    sched_req = make_sched_req(
         prompt=prompt,
         extend_len=extend_len,
         history=history,
@@ -152,7 +184,7 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(extend_len, dtype=torch.long))
 
-    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
+    out = make_runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert out.shape[0] == extend_len
     assert torch.equal(out[:prompt_len], prompt)
@@ -177,7 +209,7 @@ def test_reprefill_restores_retained_repetition_penalty_history() -> None:
     )
     reqs = [retained_req, fresh_req, identity_req]
 
-    class _PenaltyOrchestrator:
+    class PenaltyOrchestrator:
         vocab_size = 8
         device = "cpu"
 
@@ -187,7 +219,7 @@ def test_reprefill_restores_retained_repetition_penalty_history() -> None:
         def reqs(self):
             return reqs
 
-    orchestrator = _PenaltyOrchestrator()
+    orchestrator = PenaltyOrchestrator()
     penalizer = BatchedRepetitionPenalizer(orchestrator)
     penalizer.prepare()
     orchestrator.penalizers[BatchedRepetitionPenalizer] = penalizer
@@ -201,15 +233,15 @@ def test_reprefill_restores_retained_repetition_penalty_history() -> None:
     expected = torch.ones(3, 8)
     expected[0, [2, 5]] = 1.05
 
-    class _ExecutionBridge:
+    class ExecutionBridge:
         def forward_context(self, batch, *, isolate_sampling):
             assert batch is schedule_batch
             assert isolate_sampling
             assert torch.equal(scaling, expected)
             return contextlib.nullcontext()
 
-    runner = _runner()
-    runner._execution_bridge = _ExecutionBridge()
+    runner = make_runner()
+    runner.execution_bridge = ExecutionBridge()
     with runner.execution_context(schedule_batch, isolate_sampling=True):
         pass
 
@@ -238,10 +270,12 @@ def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:
         torch.tensor([200.0, 201.0]),
         torch.tensor([300.0, 301.0]),
     ]
-    sched_req = _sched_req(prompt=prompt, prefix_len=8, extend_len=5, history=history)
+    sched_req = make_sched_req(
+        prompt=prompt, prefix_len=8, extend_len=5, history=history
+    )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
 
-    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
+    out = make_runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat([prompt[8:10], torch.stack(history)], dim=0)
     assert torch.equal(out, expected)
@@ -250,7 +284,7 @@ def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:
 def test_reprefill_drains_leftover_feedback_when_history_is_short() -> None:
     prompt = torch.arange(8, dtype=torch.float32).reshape(4, 2)
     history = [torch.tensor([10.0, 11.0])]
-    sched_req = _sched_req(
+    sched_req = make_sched_req(
         prompt=prompt,
         extend_len=6,
         history=history,
@@ -259,7 +293,7 @@ def test_reprefill_drains_leftover_feedback_when_history_is_short() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
 
-    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
+    out = make_runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat(
         [
@@ -276,11 +310,11 @@ def test_reprefill_drains_leftover_feedback_when_history_is_short() -> None:
 
 def test_reprefill_without_generated_history_fails_loudly() -> None:
     prompt = torch.randn(460, 4)
-    sched_req = _sched_req(prompt=prompt, extend_len=594)
+    sched_req = make_sched_req(prompt=prompt, extend_len=594)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(594, dtype=torch.long))
 
     with pytest.raises(RuntimeError, match="missing feedback/text input embeds"):
-        _runner().build_prefill_input_embeds(forward_batch, [sched_req])
+        make_runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
 
 def test_decode_then_retract_reprefill_roundtrip() -> None:
@@ -290,19 +324,20 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
         prompt_len, hidden
     )
 
-    class _Model(torch.nn.Module):
+    class Model(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self._decode_feedback_embedding = torch.nn.Embedding(8, hidden)
+            self.decode_feedback_embedding = torch.nn.Embedding(8, hidden)
             self.embed = torch.nn.Embedding(8, hidden)
 
         def get_input_embeddings(self):
             return self.embed
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    runner.model = _Model()
+    runner.row_ids_cache = None
+    runner.model = Model()
     generated = n_decode + 1
-    sched_req = _sched_req(prompt=prompt, extend_len=prompt_len)
+    sched_req = make_sched_req(prompt=prompt, extend_len=prompt_len)
     decode_batch = SimpleNamespace(input_ids=torch.tensor([99], dtype=torch.long))
     for step in range(n_decode):
         sched_req.data.pending_feedback_queue.append(
@@ -317,8 +352,8 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     assert len(sched_req.data.decode_input_embeds) == n_decode
     assert len(sched_req.data.pending_feedback_queue) == 1
 
-    sched_req.data.req.prefix_indices = []
-    sched_req.data.req.extend_range = SimpleNamespace(length=prompt_len + generated)
+    sched_req.data.req.prefix_len = 0
+    sched_req.data.req.extend_len = prompt_len + generated
     prefill_batch = SimpleNamespace(
         input_ids=torch.zeros(prompt_len + generated, dtype=torch.long)
     )
@@ -337,9 +372,163 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
 
 def test_fresh_prefill_still_uses_prompt_only_buffer() -> None:
     prompt = torch.arange(12, dtype=torch.float32).reshape(6, 2)
-    sched_req = _sched_req(prompt=prompt, prefix_len=1, extend_len=4)
+    sched_req = make_sched_req(prompt=prompt, prefix_len=1, extend_len=4)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(4, dtype=torch.long))
 
-    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
+    out = make_runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert torch.equal(out, prompt[1:5])
+
+
+@dataclass
+class RadixChunkState:
+    page_size: int
+    allocator: TokenToKVPoolAllocator | PagedTokenToKVPoolAllocator
+    req_to_token_pool: ReqToTokenPool
+    cache: RadixCache
+    scheduler: OmniScheduler
+
+
+@pytest.fixture(params=[1, 16])
+def radix_chunk_state(request: pytest.FixtureRequest) -> Iterator[RadixChunkState]:
+    page_size = request.param
+    with get_context().override_server_args(page_size=page_size):
+        kv_pool = MHATokenToKVPool(
+            size=128,
+            page_size=page_size,
+            dtype=torch.float16,
+            head_num=1,
+            head_dim=8,
+            layer_num=1,
+            device="cpu",
+            enable_memory_saver=False,
+        )
+        if page_size == 1:
+            allocator = TokenToKVPoolAllocator(
+                size=128,
+                dtype=torch.float16,
+                device="cpu",
+                kvcache=kv_pool,
+                need_sort=False,
+            )
+        else:
+            allocator = PagedTokenToKVPoolAllocator(
+                size=128,
+                page_size=page_size,
+                dtype=torch.float16,
+                device="cpu",
+                kvcache=kv_pool,
+                need_sort=False,
+            )
+        req_to_token_pool = ReqToTokenPool(
+            size=4, max_context_len=128, device="cpu", enable_memory_saver=False
+        )
+        cache = RadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=allocator,
+                page_size=page_size,
+            )
+        )
+        scheduler = object.__new__(OmniScheduler)
+        scheduler.disaggregation_mode = DisaggregationMode.NULL
+        scheduler.tree_cache = cache
+        scheduler.req_to_token_pool = req_to_token_pool
+        yield RadixChunkState(page_size, allocator, req_to_token_pool, cache, scheduler)
+
+
+def prompt_only_req(state: RadixChunkState, prompt_len: int) -> Req:
+    req = Req("chunk", "", list(range(prompt_len)), SamplingParams(max_new_tokens=40))
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore  # production name
+    OmniScheduler.normalize_req_token_arrays(req)
+    state.req_to_token_pool.alloc([req])
+    req.init_next_round_input(state.cache)
+    return req
+
+
+def write_slots(state: RadixChunkState, req: Req, start: int, end: int) -> None:
+    slots = state.allocator.alloc(
+        -(-(end - start) // state.page_size) * state.page_size
+    )
+    state.req_to_token_pool.write(
+        (req.kv.req_pool_idx, slice(start, end)), slots[: end - start]
+    )
+
+
+def compute_chunk(state: RadixChunkState, req: Req, start: int, end: int) -> None:
+    req.prefix_len = start
+    req.extend_end = end
+    req.kv.kv_committed_len = req.kv.kv_allocated_len = end
+
+
+def admit_next_chunk(state: RadixChunkState, req: Req) -> None:
+    adder = PrefillAdder(
+        page_size=state.page_size,
+        tree_cache=state.cache,
+        token_to_kv_pool_allocator=state.allocator,
+        running_batch=ScheduleBatch(reqs=[], batch_is_full=False),
+        new_token_ratio=1.0,
+        rem_input_tokens=64,
+        rem_chunk_tokens=32,
+    )
+    adder.add_chunked_req(req)
+
+
+def assert_every_slot_returns_once(state: RadixChunkState, total: int) -> None:
+    assert state.allocator.available_size() + state.cache.evictable_size() == total
+    state.cache.evict(EvictParams(num_tokens=total))
+    slots = state.allocator.alloc(total)
+    assert slots.unique().numel() == total
+
+
+@pytest.mark.parametrize("release_at_middle", [False, True])
+def test_a_retracted_reprefill_advances_past_its_private_chunk(
+    radix_chunk_state: RadixChunkState, release_at_middle: bool
+) -> None:
+    """A retracted re-prefill's next chunk starts after its private chunk, which stays out of the radix tree and frees once."""
+    state = radix_chunk_state
+    total = state.allocator.available_size()
+    req = prompt_only_req(state, prompt_len=20)
+    write_slots(state, req, 0, 16)
+    compute_chunk(state, req, 0, 16)
+    checkpoint_kv_cache(req, state.cache)
+    req.output_ids.extend(range(30, 51))
+    req.init_next_round_input()
+    req.skip_radix_cache_insert = True
+    write_slots(state, req, 16, 33 if release_at_middle else 41)
+    compute_chunk(state, req, 16, 33)
+
+    state.scheduler.stash_chunked_request(req)
+    admit_next_chunk(state, req)
+
+    assert (req.prefix_len, req.extend_end) == (33, 41)
+    assert req.kv.cache_protected_len == 16
+    if release_at_middle:
+        pass
+    else:
+        req.kv.kv_committed_len = req.kv.kv_allocated_len = 41
+    release_kv_cache(req, state.cache, checkpoint=True)
+    match = state.cache.match_prefix(
+        MatchPrefixParams(key=RadixKey(req.origin_input_ids + req.output_ids))
+    )
+    assert match.device_prefix_len == 16
+    assert_every_slot_returns_once(state, total)
+
+
+def test_a_fresh_prompt_chunk_enters_the_radix_tree(
+    radix_chunk_state: RadixChunkState,
+) -> None:
+    state = radix_chunk_state
+    total = state.allocator.available_size()
+    req = prompt_only_req(state, prompt_len=41)
+    write_slots(state, req, 0, 32)
+    compute_chunk(state, req, 0, 32)
+
+    state.scheduler.stash_chunked_request(req)
+    admit_next_chunk(state, req)
+
+    assert (req.prefix_len, req.extend_end) == (32, 41)
+    assert state.cache.total_size() == 32
+    release_kv_cache(req, state.cache, checkpoint=True)
+    assert_every_slot_returns_once(state, total)

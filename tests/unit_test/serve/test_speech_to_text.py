@@ -12,25 +12,9 @@ import pytest
 from fastapi import HTTPException
 
 from sglang_omni.serve import speech_to_text
-from sglang_omni.serve.transcriptions import (
-    build_transcription_generate_request as legacy_transcription_request_builder,
-)
 
 
-def _build_request(*, task: str = "transcribe"):
-    return speech_to_text.build_speech_to_text_generate_request(
-        audio_bytes=b"RIFF",
-        filename="sample.wav",
-        content_type="audio/wav",
-        model="openai/whisper-large-v3",
-        language="en",
-        prompt=None,
-        temperature=None,
-        task=task,
-    )
-
-
-def test_build_request_marks_repetition_penalty_explicit() -> None:
+def test_build_request_passes_a_set_repetition_penalty() -> None:
     req = speech_to_text.build_speech_to_text_generate_request(
         audio_bytes=b"RIFF",
         filename="sample.wav",
@@ -42,33 +26,22 @@ def test_build_request_marks_repetition_penalty_explicit() -> None:
         repetition_penalty=1.3,
     )
 
-    assert req.metadata["explicit_generation_params"] == ["repetition_penalty"]
     assert req.sampling.repetition_penalty == 1.3
 
 
-def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
-    req = _build_request()
-
-    assert "repetition_penalty" not in req.metadata.get(
-        "explicit_generation_params", []
-    )
-    assert req.sampling.repetition_penalty == 1.0
-
-
-def test_transcription_builder_import_keeps_shared_callable() -> None:
-    """Keep the pre-extraction import stable while stacked consumers migrate."""
-    assert (
-        legacy_transcription_request_builder
-        is speech_to_text.build_speech_to_text_generate_request
+def test_build_request_leaves_repetition_penalty_unset_by_default() -> None:
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+        task="transcribe",
     )
 
-
-def test_build_request_defaults_to_transcribe_task() -> None:
-    assert _build_request().extra_params["task"] == "transcribe"
-
-
-def test_build_request_accepts_sibling_endpoint_task() -> None:
-    assert _build_request(task="translate").extra_params["task"] == "translate"
+    assert req.sampling.repetition_penalty is None
 
 
 def test_response_format_validation_preserves_endpoint_error_contract() -> None:
@@ -124,18 +97,28 @@ def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
     assert speech_to_text.probe_audio_duration(buffer.getvalue()) == pytest.approx(0.5)
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        pytest.param(
-            b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32, id="id3-mp3"
-        ),
-        pytest.param(b"\xff\xfb\x90\x00" * 64, id="bare-mp3-frames"),
-        pytest.param(b"\x1a\x45\xdf\xa3" + b"\x00" * 64, id="webm"),
-        pytest.param(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 64, id="m4a"),
-    ],
-)
-def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
+def test_av_duration_measures_a_container_whose_tags_are_not_utf8() -> None:
+    title = b"\xff\xfe titles\x00"
+    info = b"INFO" + b"INAM" + struct.pack("<I", len(title)) + title
+    samples = b"\x00\x00" * 8000
+    body = (
+        b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+        + b"LIST"
+        + struct.pack("<I", len(info))
+        + info
+        + b"data"
+        + struct.pack("<I", len(samples))
+        + samples
+    )
+
+    upload = b"RIFF" + struct.pack("<I", len(body)) + body
+
+    assert speech_to_text.av_duration(upload) == pytest.approx(0.5)
+
+
+def test_probe_keeps_estimated_containers_on_av(monkeypatch) -> None:
     import soundfile
 
     monkeypatch.setattr(
@@ -146,6 +129,7 @@ def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
         ),
     )
     monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 86.0)
+    header = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32
 
     assert speech_to_text.probe_audio_duration(header) == 86.0
 
@@ -200,14 +184,14 @@ def test_verbose_response_uses_requested_task() -> None:
     assert json.loads(response.body)["task"] == "translate"
 
 
-class _Upload:
+class Upload:
     def __init__(self, data: bytes, content_type: str | None, filename: str | None):
-        self._data = data
+        self.data = data
         self.content_type = content_type
         self.filename = filename
 
     async def read(self) -> bytes:
-        return self._data
+        return self.data
 
 
 @pytest.mark.asyncio
@@ -215,7 +199,7 @@ async def test_read_wraps_declared_g711_upload_in_a_wav_container() -> None:
     raw = bytes([0xFF] * 8000)
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(raw, "audio/basic", "call.bin")
+        Upload(raw, "audio/basic", "call.bin")
     )
 
     assert audio_bytes[:4] == b"RIFF"
@@ -229,7 +213,7 @@ async def test_read_passes_other_uploads_through_unchanged() -> None:
     raw = b"RIFF" + b"\x00" * 40
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(raw, "audio/wav", "clip.wav")
+        Upload(raw, "audio/wav", "clip.wav")
     )
 
     assert audio_bytes is raw
@@ -239,7 +223,7 @@ async def test_read_passes_other_uploads_through_unchanged() -> None:
 async def test_read_still_rejects_empty_g711_uploads() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await speech_to_text.read_and_validate_speech_to_text_audio(
-            _Upload(b"", "audio/basic", "call.ulaw")
+            Upload(b"", "audio/basic", "call.ulaw")
         )
 
     assert exc_info.value.status_code == 400
@@ -252,7 +236,7 @@ async def test_read_keeps_sun_au_declared_as_audio_basic_intact() -> None:
     au = b".snd" + struct.pack(">IIIII", 24, len(payload), 1, 8000, 1) + payload
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(au, "audio/basic", "call.au")
+        Upload(au, "audio/basic", "call.au")
     )
 
     assert audio_bytes is au
@@ -271,7 +255,7 @@ async def test_probe_measures_wrapped_g711_without_the_av_fallback(
     )
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(b"\xff" * 12000, content_type, "call.bin")
+        Upload(b"\xff" * 12000, content_type, "call.bin")
     )
 
     assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.5)

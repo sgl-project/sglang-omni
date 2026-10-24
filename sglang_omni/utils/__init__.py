@@ -22,6 +22,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_nemo_config",
     ),
+    "try_resolve_ming3_dense_tts": (
+        "sglang_omni.utils.hf",
+        "try_resolve_ming3_dense_tts",
+    ),
     "try_resolve_arch_from_raw_config": (
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_raw_config",
@@ -33,6 +37,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "try_resolve_arch_from_auk_layout": (
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_auk_layout",
+    ),
+    "try_resolve_arch_from_personaplex_layout": (
+        "sglang_omni.utils.hf",
+        "try_resolve_arch_from_personaplex_layout",
     ),
     "import_string": ("sglang_omni.utils.imports", "import_string"),
     "get_layer_id": ("sglang_omni.utils.misc", "get_layer_id"),

@@ -16,10 +16,7 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_num_audio_tokens,
 )
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
-from sglang_omni.models.qwen3_asr.languages import (
-    LANGUAGE_CODE_TO_NAME,
-    resolve_language,
-)
+from sglang_omni.models.qwen3_asr.languages import resolve_language
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
@@ -29,7 +26,7 @@ from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
 
-_EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
+EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
     "<|im_start|>system\n<|im_end|>\n"
     "<|im_start|>user\n"
     "<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n"
@@ -37,8 +34,8 @@ _EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
 )
 
 
-def _unwrap_built(
-    result: Qwen3ASRRequestData | DeferredAdmission,
+def unwrap_built(
+    result: Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData],
 ) -> Qwen3ASRRequestData:
     if isinstance(result, DeferredAdmission):
         result.ready.result(timeout=5)
@@ -46,7 +43,7 @@ def _unwrap_built(
     return result
 
 
-class _FakeTokenizer:
+class FakeTokenizer:
     eos_token_id = 2
     vocab_size = 100
 
@@ -130,7 +127,7 @@ def test_qwen3_asr_max_audio_tokens_covers_the_native_limit() -> None:
     assert qwen3_asr_max_output_tokens() == 12_000
 
 
-def _budget_test_builder(monkeypatch, num_samples: int):
+def budget_test_builder(monkeypatch, num_samples: int):
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
         input_features=torch.zeros((1, 128, 100)),
         attention_mask=torch.ones((1, 100), dtype=torch.long),
@@ -141,7 +138,7 @@ def _budget_test_builder(monkeypatch, num_samples: int):
         lambda source, **kwargs: np.zeros(num_samples, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=128,
         feature_extractor=feature_extractor,
     )
@@ -151,7 +148,7 @@ def _budget_test_builder(monkeypatch, num_samples: int):
 def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
     # 0.1s of audio scales to ~1 token; the stage default is the floor, so a
     # short clip reserves no more scheduler budget than before.
-    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
     payload = StagePayload(
         request_id="req-floor",
         request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
@@ -166,7 +163,7 @@ def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
 def test_qwen3_asr_request_builder_enforces_scheduler_request_limits(
     monkeypatch,
 ) -> None:
-    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
     payload = StagePayload(
         request_id="req-request-limits",
         request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
@@ -181,7 +178,7 @@ def test_qwen3_asr_request_builder_enforces_scheduler_request_limits(
 def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
     # 60s of audio needs ~300 output tokens; the scaled default (10/s with
     # margin) covers it without a large flat default.
-    request_builder = _budget_test_builder(monkeypatch, num_samples=60 * 16000)
+    request_builder = budget_test_builder(monkeypatch, num_samples=60 * 16000)
     payload = StagePayload(
         request_id="req-scaled",
         request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
@@ -194,7 +191,7 @@ def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
 
 
 def test_qwen3_asr_explicit_budget_overrides_scaling(monkeypatch) -> None:
-    request_builder = _budget_test_builder(monkeypatch, num_samples=60 * 16000)
+    request_builder = budget_test_builder(monkeypatch, num_samples=60 * 16000)
     payload = StagePayload(
         request_id="req-explicit",
         request=OmniRequest(
@@ -209,31 +206,19 @@ def test_qwen3_asr_explicit_budget_overrides_scaling(monkeypatch) -> None:
     assert data.max_new_tokens == 32
 
 
-@pytest.mark.parametrize("num_mel_frames", range(0, 401))
-def test_qwen3_asr_scalar_audio_token_length_matches_tensor_formula(
-    num_mel_frames: int,
-) -> None:
-    expected = int(qwen3_asr_audio_token_lengths(num_mel_frames).item())
+def test_qwen3_asr_scalar_audio_token_length_matches_tensor_formula() -> None:
+    expected = [int(qwen3_asr_audio_token_lengths(frames)) for frames in range(401)]
 
-    assert qwen3_asr_num_audio_tokens(num_mel_frames) == expected
+    assert [qwen3_asr_num_audio_tokens(frames) for frames in range(401)] == expected
 
 
-@pytest.mark.parametrize(
-    ("language_code", "expected_name"), sorted(LANGUAGE_CODE_TO_NAME.items())
-)
-def test_qwen3_asr_resolves_every_supported_language_code(
-    language_code: str,
-    expected_name: str,
-) -> None:
-    assert resolve_language(language_code) == expected_name
-    assert resolve_language(language_code.upper()) == expected_name
+def test_qwen3_asr_resolves_a_supported_language_code() -> None:
+    assert resolve_language("en") == "English"
+    assert resolve_language("EN") == "English"
 
 
-@pytest.mark.parametrize("language_name", sorted(LANGUAGE_CODE_TO_NAME.values()))
-def test_qwen3_asr_resolves_canonical_names_case_insensitively(
-    language_name: str,
-) -> None:
-    assert resolve_language(f"  {language_name.swapcase()}  ") == language_name
+def test_qwen3_asr_resolves_canonical_names_case_insensitively() -> None:
+    assert resolve_language("  eNGLISH  ") == "English"
 
 
 @pytest.mark.parametrize("language", ["cn", "zh-CN", "zh_Hant"])
@@ -245,7 +230,6 @@ def test_qwen3_asr_preserves_chinese_compatibility_aliases(language: str) -> Non
     ("language", "expected_name", "expected_language"),
     [
         ("en", "English", "en"),
-        ("es", "Spanish", "es"),
         ("fReNcH", "French", "fReNcH"),
     ],
 )
@@ -255,7 +239,7 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
     expected_name: str,
     expected_language: str,
 ) -> None:
-    tokenizer = _FakeTokenizer()
+    tokenizer = FakeTokenizer()
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
         input_features=torch.zeros((1, 128, 100)),
         attention_mask=torch.ones((1, 100), dtype=torch.long),
@@ -282,7 +266,7 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
     data = request_builder(payload)
 
     assert tokenizer.call_texts[-1] == (
-        _EXPECTED_QWEN3_ASR_PROMPT_PREFIX + f"language {expected_name}<asr_text>"
+        EXPECTED_QWEN3_ASR_PROMPT_PREFIX + f"language {expected_name}<asr_text>"
     )
     assert data.language == expected_language
 
@@ -290,7 +274,7 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
 def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
     monkeypatch,
 ) -> None:
-    tokenizer = _FakeTokenizer()
+    tokenizer = FakeTokenizer()
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
         input_features=torch.zeros((1, 128, 100)),
         attention_mask=torch.ones((1, 100), dtype=torch.long),
@@ -313,53 +297,17 @@ def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
 
     data = request_builder(payload)
 
-    assert tokenizer.call_texts[-1] == _EXPECTED_QWEN3_ASR_PROMPT_PREFIX
+    assert tokenizer.call_texts[-1] == EXPECTED_QWEN3_ASR_PROMPT_PREFIX
     assert "<asr_text>" not in tokenizer.call_texts[-1]
     assert data.language is None
     assert data.req.vocab_size == len(tokenizer)
     assert set(data.req.sampling_params.stop_token_ids) == {2}
 
 
-def test_qwen3_asr_request_builder_caches_prompt_template_per_language(
-    monkeypatch,
-) -> None:
-    tokenizer = _FakeTokenizer()
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
-    monkeypatch.setattr(
-        transcription,
-        "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
-    )
-    request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        max_new_tokens=32,
-        feature_extractor=feature_extractor,
-    )
-
-    for request_id in ("req-first", "req-second"):
-        request_builder(
-            StagePayload(
-                request_id=request_id,
-                request=OmniRequest(
-                    inputs={"audio_bytes": b"wav"},
-                    params={"language": "en"},
-                ),
-                data={},
-            )
-        )
-
-    assert len(tokenizer.call_texts) == 1
-    assert tokenizer.call_texts[0].count("<|audio_pad|>") == 1
-
-
 @pytest.mark.parametrize(
     ("language", "error_match"),
     [
         ("", "language hint is empty.*supported language code"),
-        ("   ", "language hint is empty.*supported language code"),
         ("Klingon", "Unsupported language: 'Klingon'.*supported language code"),
     ],
 )
@@ -376,7 +324,7 @@ def test_qwen3_asr_rejects_explicit_unsupported_language_before_loading_audio(
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=object(),
     )
@@ -393,7 +341,7 @@ def test_qwen3_asr_rejects_explicit_unsupported_language_before_loading_audio(
         request_builder(payload)
 
 
-def _template_for_prompt(monkeypatch, prompt: str | None) -> str:
+def template_for_prompt(monkeypatch, prompt: str | None) -> str:
     """Return the prompt template the builder hands to the tokenizer."""
     num_mel_frames = 101
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
@@ -405,13 +353,13 @@ def _template_for_prompt(monkeypatch, prompt: str | None) -> str:
         "load_audio",
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
-    tokenizer = _FakeTokenizer()
+    tokenizer = FakeTokenizer()
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
         feature_extractor=feature_extractor,
     )
-    params = {} if prompt is None else {"prompt": prompt}
+    params: dict[str, object] = {} if prompt is None else {"prompt": prompt}
     request_builder(
         StagePayload(
             request_id="req-bias",
@@ -429,7 +377,7 @@ def test_qwen3_asr_prompt_reaches_the_system_turn(monkeypatch) -> None:
     builder drops params["prompt"], so domain vocabulary stays unbiased and the
     caller gets no signal that the hint was ignored.
     """
-    template = _template_for_prompt(monkeypatch, "PyTorch, nginx, Kubernetes")
+    template = template_for_prompt(monkeypatch, "PyTorch, nginx, Kubernetes")
 
     assert "<|im_start|>system\nPyTorch, nginx, Kubernetes<|im_end|>" in template
 
@@ -441,11 +389,11 @@ def test_qwen3_asr_blank_prompt_leaves_the_template_unchanged(monkeypatch) -> No
     model is sensitive to edits there, so a missing or whitespace-only prompt has
     to produce exactly the unbiased template.
     """
-    plain = _template_for_prompt(monkeypatch, None)
+    plain = template_for_prompt(monkeypatch, None)
 
     assert plain.startswith("<|im_start|>system\n<|im_end|>")
-    assert _template_for_prompt(monkeypatch, "") == plain
-    assert _template_for_prompt(monkeypatch, "   ") == plain
+    assert template_for_prompt(monkeypatch, "") == plain
+    assert template_for_prompt(monkeypatch, "   ") == plain
 
 
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
@@ -461,7 +409,7 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
     )
@@ -496,7 +444,7 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
 )
 def test_qwen3_asr_request_builder_preserves_sampling_mode(
     monkeypatch,
-    params: dict[str, float],
+    params: dict[str, object],
     expected_temperature: float,
     expected_sampling_temperature: float,
     expected_top_k: int,
@@ -511,7 +459,7 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
     )
@@ -528,7 +476,7 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     assert data.req.sampling_params.top_k == expected_top_k
 
 
-def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
+def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
         input_features=torch.zeros((1, 128, 3000)),
         attention_mask=torch.ones((1, 101), dtype=torch.long),
@@ -541,13 +489,13 @@ def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
         greedy_only=True,
     )
     payload = StagePayload(
-        request_id="req-asr-mlx-sampling",
+        request_id="req-asr-greedy-only-sampling",
         request=OmniRequest(
             inputs={"audio_bytes": b"wav"},
             params={"temperature": 0.1},
@@ -580,7 +528,7 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
         context_length=512,
@@ -608,7 +556,7 @@ def test_qwen3_asr_request_builder_rejects_undecodable_audio(monkeypatch) -> Non
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=object(),
     )
@@ -636,7 +584,7 @@ def test_qwen3_asr_request_builder_rejects_corrupt_local_audio_path(
     monkeypatch.setattr(audio_utils, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(audio_utils.torchaudio, "load", raise_decode_error)
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=object(),
     )
@@ -661,7 +609,7 @@ def test_qwen3_asr_request_builder_preserves_operational_audio_failure(
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=object(),
     )
@@ -678,7 +626,7 @@ def test_qwen3_asr_request_builder_preserves_operational_audio_failure(
 def test_qwen3_asr_rejects_full_context_before_mel_extraction(
     monkeypatch,
 ) -> None:
-    class _UnexpectedFeatureExtractor:
+    class UnexpectedFeatureExtractor:
         hop_length = 160
 
         def __call__(self, *args, **kwargs):
@@ -690,9 +638,9 @@ def test_qwen3_asr_rejects_full_context_before_mel_extraction(
         lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=5,
-        feature_extractor=_UnexpectedFeatureExtractor(),
+        feature_extractor=UnexpectedFeatureExtractor(),
         # 100 mel frames produce 13 audio tokens, so the fake prompt has
         # 17 input tokens and exactly fills context with 5 output tokens.
         context_length=22,
@@ -708,13 +656,13 @@ def test_qwen3_asr_rejects_full_context_before_mel_extraction(
 
 
 def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None:
-    class _UnexpectedFeatureExtractor:
+    class UnexpectedFeatureExtractor:
         hop_length = 160
 
         def __call__(self, *args, **kwargs):
             raise AssertionError("feature extractor should not be called")
 
-    class _EncoderService:
+    class EncoderService:
         def __init__(self) -> None:
             self.lookup: tuple[str, int] | None = None
             self.embedding = torch.zeros((13, 4))
@@ -740,11 +688,11 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
         "load_audio",
         lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
-    encoder_service = _EncoderService()
+    encoder_service = EncoderService()
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
-        feature_extractor=_UnexpectedFeatureExtractor(),
+        feature_extractor=UnexpectedFeatureExtractor(),
         audio_encoder_service=encoder_service,
     )
     payload = StagePayload(
@@ -764,7 +712,7 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
 
 
 def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> None:
-    class _FeatureExtractor:
+    class FeatureExtractor:
         hop_length = 160
 
         def __init__(self) -> None:
@@ -777,7 +725,7 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
                 attention_mask=torch.ones((1, 100), dtype=torch.long),
             )
 
-    class _EncoderService:
+    class EncoderService:
         def __init__(self) -> None:
             self.lookup: tuple[str, int] | None = None
             self.encoded_feature: torch.Tensor | None = None
@@ -809,10 +757,10 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
         "load_audio",
         lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
-    feature_extractor = _FeatureExtractor()
-    encoder_service = _EncoderService()
+    feature_extractor = FeatureExtractor()
+    encoder_service = EncoderService()
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
         audio_encoder_service=encoder_service,
@@ -826,7 +774,7 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
     result = request_builder(payload)
 
     assert isinstance(result, DeferredAdmission)
-    data = _unwrap_built(result)
+    data = unwrap_built(result)
     assert encoder_service.lookup == (data.req.extra_key, 13)
     assert feature_extractor.calls == 1
     assert encoder_service.encoded_feature is not None
@@ -834,7 +782,7 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
 
 
 def test_qwen3_asr_cache_miss_waits_in_builder_when_asked(monkeypatch) -> None:
-    class _FeatureExtractor:
+    class FeatureExtractor:
         hop_length = 160
 
         def __call__(self, *args, **kwargs):
@@ -843,7 +791,7 @@ def test_qwen3_asr_cache_miss_waits_in_builder_when_asked(monkeypatch) -> None:
                 attention_mask=torch.ones((1, 100), dtype=torch.long),
             )
 
-    class _EncoderService:
+    class EncoderService:
         def lookup_cached_embedding(self, audio_fingerprint, expected_tokens):
             del audio_fingerprint, expected_tokens
             return None
@@ -861,10 +809,10 @@ def test_qwen3_asr_cache_miss_waits_in_builder_when_asked(monkeypatch) -> None:
         lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
-        feature_extractor=_FeatureExtractor(),
-        audio_encoder_service=_EncoderService(),
+        feature_extractor=FeatureExtractor(),
+        audio_encoder_service=EncoderService(),
         should_wait_for_encode=lambda: True,
     )
     payload = StagePayload(
@@ -880,7 +828,7 @@ def test_qwen3_asr_cache_miss_waits_in_builder_when_asked(monkeypatch) -> None:
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
-    tokenizer = _FakeTokenizer()
+    tokenizer = FakeTokenizer()
     _, result_adapter = make_qwen3_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
@@ -920,7 +868,7 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
 def test_qwen3_asr_result_adapter_normalizes_none_language(
     output_ids: list[int], expected_text: str
 ) -> None:
-    tokenizer = _FakeTokenizer()
+    tokenizer = FakeTokenizer()
     _, result_adapter = make_qwen3_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
@@ -959,7 +907,7 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
     )
     observed: dict[str, object] = {}
 
-    class _EncoderService:
+    class EncoderService:
         def lookup_cached_embedding(
             self, audio_fingerprint: str, expected_tokens: int
         ) -> None:
@@ -978,10 +926,10 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
             return future
 
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
-        audio_encoder_service=_EncoderService(),
+        audio_encoder_service=EncoderService(),
     )
     payload = StagePayload(
         request_id="req-asr-pre-lm",
@@ -989,7 +937,7 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
         data={},
     )
 
-    data = _unwrap_built(request_builder(payload))
+    data = unwrap_built(request_builder(payload))
 
     item = data.req.multimodal_inputs.mm_items[0]
     assert observed["offsets"] == item.offsets

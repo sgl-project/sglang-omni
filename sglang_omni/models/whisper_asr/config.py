@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -24,7 +24,12 @@ WHISPER_MAX_INPUT_SECONDS = 30
 class WhisperASRFactoryArgs(FactoryArgs):
     """Whisper's own constructor knobs, typed like the shared ones."""
 
+    encoder_attention_backend: Literal["auto", "sdpa", "fa4"] = "auto"
     enable_encoder_cuda_graph: bool | None = None
+    enable_dense_prefill_cuda_graph: bool | None = None
+    stream_emit_interval_s: float | None = Field(default=None, ge=0)
+    pre_lm_pipeline_batches: bool | None = None
+    cpu_intra_op_threads: int | None = Field(default=None, ge=1)
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
@@ -69,7 +74,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
                 # execution.
                 enable_encoder_cuda_graph=True,
                 enable_async_decode=True,
-                async_decode_min_batch_size=2,
+                async_decode_min_batch_size=1,
                 request_build_max_workers=8,
                 request_build_max_pending=16,
                 prefill_coalesce_requests=2,

@@ -3,19 +3,169 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, ProcessConfig
 from sglang_omni.pipeline.mp_runner import (
+    apply_cpu_thread_plan,
     build_stage_groups,
     resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.stage_workers import (
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+    patched_spawn_env,
+)
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+@pytest.mark.parametrize(("process_count", "threads"), [(1, 72), (8, 18)])
+def test_cpu_thread_plan_caps_threads_at_the_bound_cpus(
+    monkeypatch: pytest.MonkeyPatch, process_count: int, threads: int
+) -> None:
+    near = frozenset(range(72))
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.effective_cpu_count", Mock(return_value=144)
+    )
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity", lambda _ids: near
+    )
+    specs = [
+        StageWorkerProcessSpec(f"p{i}", [StageLaunchConfig(f"s{i}", gpu_id=0)])
+        for i in range(process_count)
+    ]
+
+    apply_cpu_thread_plan([Mock(process_specs=specs)])
+
+    assert {(spec.cpu_threads, spec.cpu_affinity) for spec in specs} == {
+        (threads, near)
+    }
+
+
+def test_cpu_thread_plan_binds_cpu_only_processes_near_the_pipeline_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    near = frozenset(range(72))
+    asked = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity",
+        lambda ids: asked.append(list(ids)) or near,
+    )
+    cpu_only = StageWorkerProcessSpec("pre", [StageLaunchConfig("pre")])
+    gpu = StageWorkerProcessSpec("thinker", [StageLaunchConfig("thinker", gpu_id=1)])
+    no_gpu = StageWorkerProcessSpec("decode", [StageLaunchConfig("decode")])
+
+    apply_cpu_thread_plan([Mock(process_specs=[cpu_only, gpu])])
+    apply_cpu_thread_plan([Mock(process_specs=[no_gpu])])
+
+    assert asked == [[1], [1]]
+    assert (cpu_only.cpu_affinity, no_gpu.cpu_affinity) == (near, None)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [("derived", "72"), ("pipeline", "144"), ("stage", "144"), ("process", "144")],
+)
+def test_bound_process_caps_only_a_derived_thread_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, expected: str
+) -> None:
+    written = {"OMP_NUM_THREADS": "144"}
+
+    class DerivingConfig(PipelineConfig):
+        def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+            return {**written, **super().resolved_stage_env_defaults(stage_name)}
+
+    config = DerivingConfig(
+        model_path="model",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        env_defaults=written if source == "pipeline" else {},
+        stages=[
+            stage(
+                "preprocessing",
+                terminal=True,
+                env=written if source == "stage" else {},
+            )
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+    finally:
+        prep.runtime_dir.close()
+    spec = groups[0].process_specs[0]
+    spec.cpu_affinity = frozenset(range(72))
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    with patched_spawn_env(spec, extra_env=written if source == "process" else None):
+        assert os.environ["OMP_NUM_THREADS"] == expected
+
+
+def test_cpu_thread_plan_counts_final_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for replicas, process_count, threads in [(1, 4, 4), (2, 5, 3)]:
+        capacity = Mock(return_value=16)
+        monkeypatch.setattr(
+            "sglang_omni.pipeline.mp_runner.effective_cpu_count", capacity
+        )
+        config = PipelineConfig(
+            model_path="model",
+            env_defaults={"OMP_NUM_THREADS": "12", "PIPELINE_TEST_ENV": "1"},
+            endpoints=EndpointsConfig(base_path=str(tmp_path)),
+            stages=[
+                stage("preprocessing", process="preprocessing", next="thinker"),
+                stage(
+                    "thinker",
+                    process="thinker",
+                    next="talker",
+                    env={"OMP_NUM_THREADS": "6"},
+                ),
+                stage("talker", process="talker", next="code2wav"),
+                stage("code2wav", process="code2wav", terminal=True),
+            ],
+            processes={"thinker": ProcessConfig(num_replicas=replicas)},
+        )
+        prep = prepare_pipeline_runtime(config)
+        try:
+            groups = build_stage_groups(
+                config,
+                ctx=FakeMpContext(),
+                stages_cfg=prep.stages_cfg,
+                endpoints=prep.endpoints,
+                placement_plan=prep.placement_plan,
+                process_plan=prep.process_plan,
+                replica_topology=prep.replica_topology,
+            )
+            apply_cpu_thread_plan(groups)
+        finally:
+            prep.runtime_dir.close()
+
+        process_specs = [spec for group in groups for spec in group.process_specs]
+        capacity.assert_called_once_with()
+        assert len(process_specs) == process_count
+        assert all(spec.cpu_threads == threads for spec in process_specs)
+        for process_spec in process_specs:
+            for stage_spec in process_spec.stage_specs:
+                logical_name = prep.replica_topology.logical_name(stage_spec.stage_name)
+                assert stage_spec.env_defaults == {
+                    "OMP_NUM_THREADS": "6" if logical_name == "thinker" else "12",
+                    "PIPELINE_TEST_ENV": "1",
+                }
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
@@ -84,7 +234,7 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
         )
 
 
-class _KwargSeedingPipelineConfig(PipelineConfig):
+class KwargSeedingPipelineConfig(PipelineConfig):
     """Seeds an author constructor kwarg, so both channels appear in specs."""
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
@@ -95,7 +245,7 @@ class _KwargSeedingPipelineConfig(PipelineConfig):
 
 def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) -> None:
     """Preserves config-to-runtime wiring for routes, overrides, fan-in, and streams."""
-    config = _KwargSeedingPipelineConfig(
+    config = KwargSeedingPipelineConfig(
         model_path="global-model",
         name="contract",
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
@@ -331,50 +481,13 @@ def test_runner_specs_expose_process_total_in_construction_order(
     ] == pytest.approx(expected_fractions)
 
 
-def test_same_process_stages_compile_to_local_edges() -> None:
-    config = PipelineConfig(
-        model_path="model",
-        stages=[
-            stage("preprocess", next="encoder", process="frontend"),
-            stage("encoder", next="decode", gpu=0, process="frontend"),
-            stage("decode", terminal=True, process="decode"),
-        ],
-    )
-    prep = prepare_pipeline_runtime(config)
-
-    assert [stage_cfg.name for stage_cfg in prep.stages_cfg] == [
-        "preprocess",
-        "encoder",
-        "decode",
-    ]
-    assert prep.entry_stage == "preprocess"
-    assert prep.process_plan.stage_to_process["preprocess"] == (
-        prep.process_plan.stage_to_process["encoder"]
-    )
-    assert prep.process_plan.stage_to_process["decode"] != (
-        prep.process_plan.stage_to_process["encoder"]
-    )
-
-    groups = build_stage_groups(
-        config,
-        ctx=FakeMpContext(),
-        stages_cfg=prep.stages_cfg,
-        endpoints=prep.endpoints,
-        placement_plan=prep.placement_plan,
-        process_plan=prep.process_plan,
-    )
-    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
-
-    assert specs["preprocess"].same_process_targets == {"encoder"}
-    assert specs["encoder"].same_process_targets == set()
-
-
 def test_runner_specs_wire_same_process_stream_targets() -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
-            stage("thinker", next="decode", stream_to=["decode"]),
+            stage("thinker", next="decode", stream_to=["decode", "monitor"]),
             stage("decode", terminal=True, can_accept_stream_before_payload=True),
+            stage("monitor", terminal=True, can_accept_stream_before_payload=True),
         ],
     )
     prep = prepare_pipeline_runtime(config)
@@ -388,7 +501,7 @@ def test_runner_specs_wire_same_process_stream_targets() -> None:
     )
     specs = {spec.stage_name: spec for group in groups for spec in group.specs}
 
-    assert specs["thinker"].same_process_targets == {"decode"}
+    assert specs["thinker"].same_process_targets == {"decode", "monitor"}
 
 
 def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:

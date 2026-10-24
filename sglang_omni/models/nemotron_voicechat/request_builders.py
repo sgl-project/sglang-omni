@@ -8,7 +8,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,8 @@ def build_thinker_request(
         logger.warning(
             "Ignoring text temperature=%s; using temperature=0.", temperature
         )
+    else:
+        pass
     num_frames = NemotronVoiceChatState.from_dict(payload.data).num_frames
     opening = [*prompt_token_ids, pad_token_id]
     data = ar_request(
@@ -137,6 +139,8 @@ def talker_stream_output_builder(
     codes = data.talker_model_inputs.pop("stream_chunk", None)
     if codes is None:
         return []
+    else:
+        pass
     return [
         OutgoingMessage(
             request_id=request_id,

@@ -7,11 +7,11 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from omegaconf import OmegaConf
+from omegaconf import DictKeyType, OmegaConf
 
 from sglang_omni.models.auk import constants as C
+from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,9 @@ class AuKRuntimeConfig:
 
     model_path: str
     name: str = "AuK"
-    arch: dict[str, Any] = field(default_factory=dict)
-    vae: dict[str, Any] = field(default_factory=dict)
-    schedule: dict[str, Any] = field(default_factory=dict)
+    arch: dict[str, object] = field(default_factory=dict)
+    vae: dict[object, object] = field(default_factory=dict)
+    schedule: dict[str, object] = field(default_factory=dict)
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER
 
     @property
@@ -46,7 +46,7 @@ class AuKRuntimeConfig:
         return int(self.vae.get("latent_dim", C.LATENT_DIM))
 
     @property
-    def vae_init_kwargs(self) -> dict[str, Any]:
+    def vae_init_kwargs(self) -> dict[str, object]:
         kwargs = self.vae.get("model_init_kwargs") or {}
         return dict(kwargs)
 
@@ -57,12 +57,12 @@ class AuKRuntimeConfig:
         return frames * self.downsample_rate / self.sample_rate
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> dict[DictKeyType, object]:
     loaded = OmegaConf.to_container(OmegaConf.load(str(path)), resolve=True)
     return loaded if isinstance(loaded, dict) else {}
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def load_json(path: Path) -> JsonValue:
     import json
 
     with path.open("r", encoding="utf-8") as handle:
@@ -72,16 +72,20 @@ def load_json(path: Path) -> dict[str, Any]:
 def load_auk_config(model_path: str) -> AuKRuntimeConfig:
     """Read config.yaml or config.json from a checkpoint."""
     root = Path(model_path)
-    raw: dict[str, Any] = {}
+    raw: dict[DictKeyType, object] | JsonValue = {}
     for name in CONFIG_YAML_NAMES:
         candidate = root / name
         if candidate.is_file():
             raw = load_yaml(candidate)
             break
+        else:
+            pass
     else:
         config_json = root / "config.json"
         if config_json.is_file():
             raw = load_json(config_json)
+        else:
+            pass
 
     model = raw.get("model") if isinstance(raw.get("model"), dict) else raw
     model = model or {}
@@ -102,6 +106,8 @@ def load_auk_config(model_path: str) -> AuKRuntimeConfig:
             "AuK: no model.arch section under %s; falling back to architecture defaults",
             model_path,
         )
+    else:
+        pass
 
     return AuKRuntimeConfig(
         model_path=str(model_path),
@@ -124,4 +130,6 @@ def make_runtime_config(
     config = load_auk_config(model_path)
     if text_encoder_path:
         config.text_encoder_path = text_encoder_path
+    else:
+        pass
     return config

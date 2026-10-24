@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -62,6 +62,8 @@ def reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
     try:
         if not path.is_file():
             return None
+        else:
+            pass
         stat_result = path.stat()
         memo_key = (
             f"{path.resolve()}:"
@@ -83,9 +85,13 @@ def reference_path_sentinel(path: Path, file_size: int) -> str | None:
                 middle_offset = max((file_size - chunk_size) // 2, 0)
                 f.seek(middle_offset)
                 chunks.append(f.read(chunk_size))
+            else:
+                pass
             if file_size > 2 * _REF_PATH_HASH_SENTINEL_BYTES:
                 f.seek(max(file_size - chunk_size, 0))
                 chunks.append(f.read(chunk_size))
+            else:
+                pass
         return hash_bytes(b"".join(chunks) + f"|size:{file_size}".encode())
     except OSError:
         return None
@@ -96,10 +102,14 @@ def get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
         if cached is None:
             return None
+        else:
+            pass
         cached_sentinel, digest = cached
         if cached_sentinel != sentinel:
             _REF_PATH_HASH_MEMO.pop(memo_key, None)
             return None
+        else:
+            pass
         _REF_PATH_HASH_MEMO.move_to_end(memo_key)
         return digest
 
@@ -110,6 +120,8 @@ def get_reference_path_hash_by_memo_key(memo_key: str) -> str | None:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
         if cached is None:
             return None
+        else:
+            pass
         _REF_PATH_HASH_MEMO.move_to_end(memo_key)
         return cached[1]
 
@@ -134,21 +146,33 @@ def reference_path_cache_key(
     memo = reference_path_hash_memo_key(path)
     if memo is None:
         return None
+    else:
+        pass
     memo_key, file_size = memo
 
     if trust_stat:
         digest = get_reference_path_hash_by_memo_key(memo_key)
         if digest is not None:
             return f"file:{digest}"
+        else:
+            pass
+    else:
+        pass
 
     sentinel = reference_path_sentinel(path, file_size)
     if sentinel is None:
         return None
+    else:
+        pass
 
     if not trust_stat:
         digest = get_reference_path_hash(memo_key, sentinel)
         if digest is not None:
             return f"file:{digest}"
+        else:
+            pass
+    else:
+        pass
 
     try:
         digest = hash_bytes(path.read_bytes())
@@ -157,59 +181,89 @@ def reference_path_cache_key(
     if reference_path_hash_memo_key(path) == memo:
         # Always store the sentinel so default callers still validate this entry.
         put_reference_path_hash(memo_key, sentinel, digest)
+    else:
+        pass
     return f"file:{digest}"
 
 
-def hash_media_item(item: Any) -> str | None:
+def hash_media_item(item: object) -> str | None:
     """Generate hash for a single media item (unified logic for image/audio/video).
 
     Supported types:
-    - str/Path: local file -> sampled hash; URL -> string hash
+    - str/Path -> content hash of a data URL. Other strings are keyed by their
+      text, or by a sampled hash (size plus head and tail bytes) when they name
+      a local file, so an edit can keep the old key. Prefer loaded media.
     - PIL.Image: mode + size + content hash
     - numpy.ndarray: dtype + shape + content hash
     - torch.Tensor: dtype + shape + content hash
     - bytes/bytearray: content hash
 
-    Returns None for unsupported types (caller should skip caching).
+    Returns None for unsupported types and for http, https or file URLs, whose
+    bytes can change behind the same address (caller should skip caching).
     """
     # File path or URL
     if isinstance(item, (str, Path)):
         s = str(item)
         if is_url_like(s):
-            return f"url:{hash_bytes(s.encode())}"
+            # Only a data URL carries its bytes. Key other URLs after loading.
+            if urlparse(s).scheme == "data":
+                return f"url:{hash_bytes(s.encode())}"
+            else:
+                return None
+        else:
+            pass
         p = Path(s)
         if p.exists() and p.is_file():
             return f"file:{hash_file_sampled(p)}"
+        else:
+            pass
         return f"url:{hash_bytes(s.encode())}"
+    else:
+        pass
 
     # PIL Image
     if isinstance(item, Image.Image):
         meta = f"{item.mode}|{item.size}"
         content_hash = hash_bytes(item.tobytes())
         return f"pil:{meta}:{content_hash}"
+    else:
+        pass
 
     # numpy array
     if isinstance(item, np.ndarray):
         meta = f"{item.dtype}|{item.shape}"
         content_hash = hash_bytes(item.tobytes())
         return f"np:{meta}:{content_hash}"
+    else:
+        pass
 
     # torch Tensor
     if isinstance(item, torch.Tensor):
         cpu = item.detach().cpu()
         meta = f"{cpu.dtype}|{tuple(cpu.shape)}"
-        content_hash = hash_bytes(cpu.numpy().tobytes())
-        return f"pt:{meta}:{content_hash}"
+        # Hash a strided tensor, such as channels-last video, one frame at a
+        # time so only one frame is copied. The digest is the same as hashing
+        # the whole buffer. A tensor with more frames than values per frame is
+        # copied whole to keep the loop short.
+        by_frame = not cpu.is_contiguous() and cpu.shape[0] ** 2 <= cpu.numel()
+        state = xxhash.xxh3_64()
+        for frame in cpu if by_frame else [cpu]:
+            state.update(memoryview(frame.contiguous().numpy()))
+        return f"pt:{meta}:{state.hexdigest()}"
+    else:
+        pass
 
     # Raw bytes
     if isinstance(item, (bytes, bytearray, memoryview)):
         return f"bytes:{hash_bytes(item)}"
+    else:
+        pass
 
     # Unsupported type
     return None
 
 
-def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
+def compute_media_cache_key(items: object, *, prefix: str) -> str | None:
     """Compute cache key for media items (image/audio/video).
 
     Args:
@@ -221,15 +275,69 @@ def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
     """
     if items is None:
         return None
+    else:
+        pass
     seq = items if isinstance(items, list) else [items]
     if not seq:
         return None
+    else:
+        pass
 
     parts: list[str] = []
     for item in seq:
         part = hash_media_item(item)
         if part is None:
             return None
+        else:
+            pass
         parts.append(part)
 
     return f"{prefix}:{hash_joined(parts)}"
+
+
+# note (ratish): two polynomial lanes modulo the Mersenne prime 2**31 - 1 over the 16-bit
+# words of a row; a word times a weight stays below 2**47, so a row sums exactly in int64.
+PROMPT_ROW_KEY_MODULUS = 2**31 - 1
+PROMPT_ROW_KEY_BASES = (1_000_000_007, 998_244_353)
+PROMPT_ROW_KEY_MAX_WORDS = 2**16
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromptRowCacheKeys:
+    """Radix-cache token ids of prompt rows of one width, computed on the rows' device.
+
+    Equal rows get equal ids; rows that differ in one 16-bit word never share an id.
+    """
+
+    word_weights: torch.Tensor
+
+    @classmethod
+    def for_rows(cls, *, row_bytes: int, device: torch.device) -> PromptRowCacheKeys:
+        """Each base's powers modulo the prime, one per 16-bit word of a row."""
+        words_per_row = row_bytes // 2
+        assert row_bytes % 2 == 0 and 0 < words_per_row <= PROMPT_ROW_KEY_MAX_WORDS
+        return cls(
+            word_weights=torch.tensor(
+                [
+                    [
+                        pow(base, word, PROMPT_ROW_KEY_MODULUS)
+                        for word in range(words_per_row)
+                    ]
+                    for base in PROMPT_ROW_KEY_BASES
+                ],
+                dtype=torch.int64,
+                device=device,
+            )
+        )
+
+    def key_ids(self, rows: torch.Tensor) -> list[int]:
+        """One id in [0, 2**63) per row of rows (rows, width)."""
+        assert rows.ndim == 2
+        words = rows.detach().contiguous().view(torch.int16)
+        assert words.shape[1] == self.word_weights.shape[1]
+        lanes = (
+            (words.to(torch.int64).bitwise_and(0xFFFF).unsqueeze(1) * self.word_weights)
+            .sum(dim=2)
+            .remainder(PROMPT_ROW_KEY_MODULUS)
+        )
+        return ((lanes[:, 0] << 31) | lanes[:, 1]).tolist()

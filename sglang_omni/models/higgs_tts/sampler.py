@@ -42,6 +42,8 @@ def resolve_renorm_kernels():
         from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
 
         return top_k_renorm_prob, top_p_renorm_prob
+    else:
+        pass
     from sglang_omni.models.higgs_tts.npu_fallback import (
         top_k_renorm_prob,
         top_p_renorm_prob,
@@ -88,6 +90,8 @@ class HiggsBatchedSamplerState:
         self.num_codebooks = int(num_codebooks)
         if device is None:
             device = current_platform.device_type
+        else:
+            pass
         self.device = torch.device(device)
         self.delay_count = torch.zeros(
             self.max_batch_size, dtype=torch.int32, device=self.device
@@ -130,6 +134,8 @@ class HiggsBatchedSamplerState:
             NO_SEED,
         ):
             return
+        else:
+            pass
         self.delay_count[row] = 0
         self.eoc_countdown[row] = -1
         self.generation_done[row] = False
@@ -160,6 +166,8 @@ class HiggsBatchedSamplerState:
         self.generation_done[row] = state.generation_done
         if state.last_codes is not None:
             self.last_codes[row].copy_(state.last_codes.to(self.last_codes.dtype))
+        else:
+            pass
 
 
 _GREEDY_TEMP_THRESHOLD = 1e-5
@@ -175,6 +183,8 @@ def sample_independent(
     # Short-circuit greedy to dodge the inf/NaN from logits / tiny_temperature.
     if temperature <= _GREEDY_TEMP_THRESHOLD:
         return logits_NV.argmax(dim=-1)
+    else:
+        pass
 
     logits = logits_NV / temperature
 
@@ -182,6 +192,8 @@ def sample_independent(
         k = min(top_k, logits.size(-1))
         kth = logits.topk(k, dim=-1).values[:, -1:]
         logits = torch.where(logits < kth, float("-inf"), logits)
+    else:
+        pass
 
     if top_p is not None and top_p < 1.0:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
@@ -193,6 +205,8 @@ def sample_independent(
         scatter = torch.zeros_like(remove)
         scatter.scatter_(-1, sorted_indices, remove)
         logits = torch.where(scatter, float("-inf"), logits)
+    else:
+        pass
 
     probs = logits.softmax(dim=-1)
     return probs.multinomial(num_samples=1).squeeze(-1)
@@ -226,9 +240,13 @@ def step(
         raise ValueError(
             f"logits shape {tuple(logits_NV.shape)} incompatible with num_codebooks={N}"
         )
+    else:
+        pass
 
     if state.generation_done:
         return torch.full((N,), STOP_CODE, dtype=torch.long, device=logits_NV.device)
+    else:
+        pass
 
     codes_N = sample_independent(
         logits_NV,
@@ -241,19 +259,27 @@ def step(
         next_cb = state.delay_count + 1
         if next_cb < N:
             codes_N[next_cb:] = boc_id
+        else:
+            pass
         state.delay_count += 1
     elif state.eoc_countdown is not None:
         state.eoc_countdown -= 1
         if state.eoc_countdown <= 0:
             state.generation_done = True
+        else:
+            pass
     elif int(codes_N[0].item()) == eoc_id:
         if N <= 2:
             state.generation_done = True
         else:
             state.eoc_countdown = N - 2
+    else:
+        pass
 
     if not state.generation_done:
         state.last_codes = codes_N.clone()
+    else:
+        pass
 
     return codes_N
 
@@ -285,6 +311,8 @@ def sample_independent_batched(
     greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
     if top_k_buf is not None:
         greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+    else:
+        pass
     argmax_BN = logits_BNV.argmax(dim=-1)
 
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
@@ -306,9 +334,13 @@ def sample_independent_batched(
             .contiguous()
         )
         probs = _fused_top_k_renorm(probs, tk)
+    else:
+        pass
     if top_p is not None:
         tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
         probs = _fused_top_p_renorm(probs, tp)
+    else:
+        pass
 
     codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
     if seeds_B is not None:
@@ -322,6 +354,8 @@ def sample_independent_batched(
         ).squeeze(-1)
         has_seed = (seeds_B >= 0).view(B, 1).expand(B, N).reshape(B * N)
         codes_flat = torch.where(has_seed, seeded_flat, codes_flat)
+    else:
+        pass
     sampled_BN = codes_flat.view(B, N)
 
     return torch.where(greedy_B1, argmax_BN, sampled_BN).to(torch.long)
@@ -341,6 +375,8 @@ def selected_token_logprobs(
     greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
     if top_k_buf is not None:
         greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+    else:
+        pass
 
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     eff_temp = torch.where(

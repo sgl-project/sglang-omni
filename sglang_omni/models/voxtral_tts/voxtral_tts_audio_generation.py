@@ -137,6 +137,8 @@ class RMSNorm(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is not None:
             x = x + residual
+        else:
+            pass
         pre_norm = x  # keep the un-normalised value for the next residual
         out = self.norm(x).to(x.dtype) * self.scale
         return out, pre_norm
@@ -161,7 +163,7 @@ class RotaryPositionEmbedding(nn.Module):
         self.head_dim = head_dim
         self.max_positions = max_positions
         self.theta = theta
-        self._dtype = dtype
+        self.dtype = dtype
         self.materialise_cache()
 
     def materialise_cache(self) -> None:
@@ -171,10 +173,10 @@ class RotaryPositionEmbedding(nn.Module):
         positions = torch.arange(self.max_positions, dtype=torch.float32)
         # outer product → [max_positions, half]
         angles = torch.outer(positions, inv_freq)
-        cos_cache = angles.cos().to(self._dtype)
-        sin_cache = angles.sin().to(self._dtype)
-        self.register_buffer("_cos", cos_cache, persistent=False)
-        self.register_buffer("_sin", sin_cache, persistent=False)
+        cos_cache = angles.cos().to(self.dtype)
+        sin_cache = angles.sin().to(self.dtype)
+        self.register_buffer("cos", cos_cache, persistent=False)
+        self.register_buffer("sin", sin_cache, persistent=False)
 
     @staticmethod
     def rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -189,8 +191,8 @@ class RotaryPositionEmbedding(nn.Module):
         k: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         seq_len = positions.numel()
-        cos = self._cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
-        sin = self._sin[positions.flatten()].unsqueeze(1).to(q.dtype)
+        cos = self.cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
+        sin = self.sin[positions.flatten()].unsqueeze(1).to(q.dtype)
 
         q = self.rotate(q.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
         k = self.rotate(k.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
@@ -243,6 +245,8 @@ class CausalSelfAttention(nn.Module):
         if kv_cache is not None:
             k = torch.cat([kv_cache[0], k], dim=0)
             v = torch.cat([kv_cache[1], v], dim=0)
+        else:
+            pass
         updated_kv = (k, v)
 
         # SDPA expects [B, H, S, D]; batch dim is always 1 here
@@ -358,6 +362,8 @@ def remap_checkpoint_key(name: str) -> str | None:
     """
     if name in _GLOBAL_KEY_MAP:
         return _GLOBAL_KEY_MAP[name]
+    else:
+        pass
 
     # layers.<N>.<suffix> → blocks.<N>.<mapped_suffix>
     m = re.match(r"^layers\.(\d+)\.(.+)$", name)
@@ -366,6 +372,10 @@ def remap_checkpoint_key(name: str) -> str | None:
         mapped = _LAYER_KEY_MAP.get(suffix)
         if mapped is not None:
             return f"blocks.{layer_idx}.{mapped}"
+        else:
+            pass
+    else:
+        pass
     return None
 
 
@@ -481,6 +491,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
         shard_paths = sorted(glob.glob(os.path.join(checkpoint_dir, "*.safetensors")))
         if not shard_paths:
             raise FileNotFoundError(f"No .safetensors files found in {checkpoint_dir}")
+        else:
+            pass
 
         n_heads = self.n_heads
         n_kv_heads = self.n_kv_heads
@@ -514,8 +526,12 @@ class VoxtralTTSAudioGeneration(nn.Module):
         )
         if missing:
             logger.warning("Missing keys (first 5): %s", missing[:5])
+        else:
+            pass
         if unexpected:
             logger.warning("Unexpected keys (first 5): %s", unexpected[:5])
+        else:
+            pass
         logger.info(
             "Acoustic transformer: %d loaded | Audio embedding: %s",
             counters["acoustic"],
@@ -540,9 +556,13 @@ class VoxtralTTSAudioGeneration(nn.Module):
                 tensor = interleave_qk_weight(tensor, n_heads, head_dim)
             elif "attention.wk." in ckpt_key:
                 tensor = interleave_qk_weight(tensor, n_kv_heads, head_dim)
+            else:
+                pass
             llm_state[mapped] = tensor
             counters["llm"] += 1
             return
+        else:
+            pass
 
         # --- Acoustic transformer ---
         prefix = "acoustic_transformer."
@@ -551,6 +571,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
             self.acoustic_transformer.load_weight((param_name, tensor))
             counters["acoustic"] += 1
             return
+        else:
+            pass
 
         # --- Audio codebook embedding ---
         if ckpt_key == (
@@ -558,6 +580,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
         ):
             self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
             counters["embedding"] = True
+        else:
+            pass
 
     # ---- factory ----------------------------------------------------------
 
@@ -593,7 +617,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
         model.audio_token_embedding.rebuild_offsets()
 
         at = model.acoustic_transformer
-        at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
+        at.timesteps = torch.linspace(0, 1, at.acoustic_decode_iters)
         dim = at.acoustic_transformer_args.dim
         at.time_embedding.inv_freq = torch.exp(
             -math.log(10_000.0) * torch.arange(dim // 2).float() / (dim // 2)
@@ -624,10 +648,14 @@ class VoxtralTTSAudioGeneration(nn.Module):
                         weights_only=True,
                     )
                     voice_embeddings[name] = emb.to(dtype=torch.bfloat16)
+                else:
+                    pass
             logger.info(
                 "Loaded %d voice embeddings: %s",
                 len(voice_embeddings),
                 list(voice_embeddings.keys()),
             )
+        else:
+            pass
 
         return model, voice_embeddings, config

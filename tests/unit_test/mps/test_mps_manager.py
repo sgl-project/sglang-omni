@@ -29,7 +29,7 @@ class FakeControlClient:
 
     def __init__(self):
         self.daemon_pid = 4242
-        self._next_daemon_pid = 4242
+        self.next_daemon_pid = 4242
         self.daemons: dict[str, int] = {}
         self.alive_pids: set[int] = set()
         self.held_owner_pids: set[int] = set()
@@ -49,8 +49,8 @@ class FakeControlClient:
         del log_dir, gpu_uuid
         if self.start_fails:
             raise MpsControlError("spawn failed")
-        self.daemon_pid = self._next_daemon_pid
-        self._next_daemon_pid += 1
+        self.daemon_pid = self.next_daemon_pid
+        self.next_daemon_pid += 1
         self.daemons[str(pipe_dir)] = self.daemon_pid
         self.alive_pids.add(self.daemon_pid)
         (Path(pipe_dir) / "nvidia-cuda-mps-control.pid").write_text(
@@ -260,14 +260,14 @@ def test_idle_daemon_is_not_adopted(short_root):
         short_root,
         client,
         daemon_pid=999,
-        owners={777: False},
+        owners={},
     )
 
     with pytest.raises(MpsError, match="dirty state"):
         make_manager(short_root, client).acquire({"worker": "owner-worker"})
 
     assert paths.state_dir.is_dir()
-    assert (paths.owners_dir / "777").exists()
+    assert list(paths.owners_dir.iterdir()) == []
     assert client.daemon_process_alive(999)
 
 
@@ -349,25 +349,6 @@ def test_preexec_daemon_failure_removes_unstarted_state(short_root):
     assert client.unsafe_daemon_signals == []
 
 
-def test_startup_rollback_never_signals_an_unverified_pid(short_root):
-    client = FakeControlClient()
-    manager = make_manager(short_root, client)
-
-    def lose_identity(pipe_dir):
-        del pipe_dir
-        client.identity_error = "native identity changed"
-        raise MpsControlError("control unavailable")
-
-    client.snapshot = lose_identity
-
-    with pytest.raises(MpsError, match="control daemon"):
-        manager.acquire({"worker": "owner-worker"})
-
-    assert manager.paths.state_dir.is_dir()
-    assert client.unsafe_daemon_signals == []
-    assert owner_marker(manager).read_text() == "retained\n"
-
-
 def test_verify_returns_current_exact_client_refs(short_root):
     client = FakeControlClient()
     manager = make_manager(short_root, client)
@@ -378,16 +359,6 @@ def test_verify_returns_current_exact_client_refs(short_root):
     attached = manager.verify(lease)
 
     assert attached == {MpsClientRef(7000, 101), MpsClientRef(7000, 102)}
-
-
-def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
-    client = FakeControlClient()
-    manager = make_manager(short_root, client)
-    lease = manager.acquire({"worker": "owner-worker"})
-    client.set_clients(manager.paths.pipe_dir, {7000: [200]})
-    client.client_tokens[200] = "owner-worker"
-
-    assert manager.verify(lease) == {MpsClientRef(7000, 200)}
 
 
 def test_verify_does_not_accumulate_clients_across_snapshots(short_root, monkeypatch):

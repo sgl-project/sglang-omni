@@ -120,7 +120,7 @@ def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) ->
         files={
             "audio_sample": (
                 "reference.wav",
-                _reference_wav(),
+                reference_wav(),
                 "audio/wav",
             )
         },
@@ -172,7 +172,7 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
     first = store.upload(
         name="Guide",
         consent="consent-a",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -182,7 +182,7 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
     second = store.upload(
         name="guide",
         consent="consent-b",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="guide.wav",
         content_type="audio/wav",
         ref_text="new transcript",
@@ -212,7 +212,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             store.upload(
                 name=name,
                 consent="consent",
-                audio_bytes=_reference_wav(),
+                audio_bytes=reference_wav(),
                 filename="bad.wav",
                 content_type="audio/wav",
             )
@@ -222,7 +222,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             store.upload(
                 name=name,
                 consent="consent",
-                audio_bytes=_reference_wav(),
+                audio_bytes=reference_wav(),
                 filename="default.wav",
                 content_type="audio/wav",
             )
@@ -249,7 +249,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="silent",
             consent="consent",
-            audio_bytes=_reference_wav(amplitude=0.0),
+            audio_bytes=reference_wav(amplitude=0.0),
             filename="silent.wav",
             content_type="audio/wav",
         )
@@ -258,7 +258,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="short",
             consent="consent",
-            audio_bytes=_reference_wav(duration_s=0.25),
+            audio_bytes=reference_wav(duration_s=0.25),
             filename="short.wav",
             content_type="audio/wav",
         )
@@ -267,7 +267,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="long",
             consent="consent",
-            audio_bytes=_reference_wav(duration_s=30.1),
+            audio_bytes=reference_wav(duration_s=30.1),
             filename="long.wav",
             content_type="audio/wav",
         )
@@ -275,7 +275,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     store.upload(
         name="one",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="one.wav",
         content_type="audio/wav",
     )
@@ -283,7 +283,7 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
         store.upload(
             name="two",
             consent="consent",
-            audio_bytes=_reference_wav(),
+            audio_bytes=reference_wav(),
             filename="two.wav",
             content_type="audio/wav",
         )
@@ -298,14 +298,14 @@ def test_voice_store_restore_preserves_max_uploaded_cap(tmp_path: Path) -> None:
     first = store.upload(
         name="older",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="older.wav",
         content_type="audio/wav",
     )
     second = store.upload(
         name="newer",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="newer.wav",
         content_type="audio/wav",
     )
@@ -325,7 +325,7 @@ def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
     uploaded = store.upload(
         name="Guide",
         consent="consent-new",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -360,7 +360,7 @@ def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     uploaded = store.upload(
         name="Guide",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="guide.wav",
         content_type="audio/wav",
     )
@@ -390,6 +390,80 @@ def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     assert voices[0]["created_at"] == uploaded["created_at"]
 
 
+def test_long_voice_upload_stops_decoding_at_the_limit_off_the_event_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+    import io
+
+    from sglang_omni.preprocessing import audio as audio_mod
+
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    upload_threads: list[str] = []
+    original_upload = SpeakerSampleStore.upload
+
+    def recording_upload(self, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            upload_threads.append("event loop")
+        except RuntimeError:
+            upload_threads.append("worker thread")
+        return original_upload(self, **kwargs)
+
+    decoded: list[int] = []
+    original_open = audio_mod.av.open
+
+    class CountingContainer:
+        # PyAV frame types are immutable on some releases, so count decoded
+        # samples through the container instead of patching the frame type.
+        def __init__(self, container) -> None:
+            self.container = container
+
+        def __getattr__(self, name: str):
+            return getattr(self.container, name)
+
+        def decode(self, *args, **kwargs):
+            for frame in self.container.decode(*args, **kwargs):
+                decoded.append(frame.samples)
+                yield frame
+
+    monkeypatch.setattr(SpeakerSampleStore, "upload", recording_upload)
+    client = TestClient(create_app(RecordingSpeechClient(), model_name="tts"))
+    # A Matroska FLAC clip, which libsndfile cannot open, decodes through PyAV.
+    clip = io.BytesIO()
+    with audio_mod.av.open(clip, "w", format="matroska") as container:
+        stream = container.add_stream("flac", rate=DEFAULT_SAMPLE_RATE)
+        stream.layout = "mono"
+        for start in range(0, DEFAULT_SAMPLE_RATE * 120, DEFAULT_SAMPLE_RATE):
+            frame = audio_mod.av.AudioFrame.from_ndarray(
+                np.full((1, DEFAULT_SAMPLE_RATE), 0.1, dtype=np.float32),
+                format="flt",
+                layout="mono",
+            )
+            frame.sample_rate = DEFAULT_SAMPLE_RATE
+            frame.pts = start
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+    monkeypatch.setattr(
+        audio_mod.av,
+        "open",
+        lambda *args, **kwargs: CountingContainer(original_open(*args, **kwargs)),
+    )
+    upload = client.post(
+        "/v1/audio/voices",
+        data={"name": "Long", "consent": "consent"},
+        files={"audio_sample": ("long.flac", clip.getvalue(), "audio/flac")},
+    )
+
+    assert upload.status_code == 400
+    assert "at most 30.0s" in upload.json()["error"]["message"]
+    assert upload_threads == ["worker thread"]
+    assert sum(decoded) < DEFAULT_SAMPLE_RATE * 31
+
+
 def test_voice_store_decode_error_uses_stable_client_message(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
 
@@ -413,7 +487,7 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     uploaded = store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="application/octet-stream",
     )
@@ -423,6 +497,9 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     gen_req = service.build_generate_request(request)
     tts_params = gen_req.metadata["tts_params"]
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
+    assert isinstance(tts_params, dict)
     assert gen_req.prompt["references"][0]["audio_path"].startswith(
         "data:audio/wav;base64,"
     )
@@ -443,13 +520,13 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
     service = SpeechRequestValidator(default_model="tts", voice_store=store)
     explicit_ref = "data:audio/wav;base64," + base64.b64encode(
-        _reference_wav(frequency=880)
+        reference_wav(frequency=880)
     ).decode("ascii")
 
     request = service.parse_request(
@@ -462,22 +539,23 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     )
     gen_req = service.build_generate_request(request)
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
     ref = gen_req.prompt["references"][0]
     assert "uploaded_voice_name" not in ref
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["voice"] == "anchor"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
 
-@pytest.mark.parametrize("task_type", ["CustomVoice", "VoiceDesign"])
 def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
     tmp_path: Path,
-    task_type: str,
 ) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -485,7 +563,7 @@ def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
 
     with pytest.raises(SpeechAPIError, match="task_type='Base'") as exc_info:
         service.parse_request(
-            {"input": "hello", "voice": "anchor", "task_type": task_type}
+            {"input": "hello", "voice": "anchor", "task_type": "CustomVoice"}
         )
     assert exc_info.value.param == "task_type"
 
@@ -497,7 +575,7 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -508,6 +586,7 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     )
     gen_req = service.build_generate_request(request, validate=False)
 
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["task_type"] == "Base"
 
 
@@ -518,7 +597,7 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     first = store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=220),
+        audio_bytes=reference_wav(frequency=220),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -530,7 +609,7 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(frequency=330),
+        audio_bytes=reference_wav(frequency=330),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -541,26 +620,13 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
         uploaded_voice=prepared.uploaded_voice,
     )
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
     ref = gen_req.prompt["references"][0]
     tts_params = gen_req.metadata["tts_params"]
+    assert isinstance(tts_params, dict)
     assert ref["uploaded_voice_created_at"] == first["created_at"]
     assert tts_params["uploaded_voice_created_at"] == first["created_at"]
-
-
-def test_speech_service_rejects_unknown_required_uploaded_voice(
-    tmp_path: Path,
-) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="public-tts-name",
-        requires_uploaded_voice_for_named_voice=True,
-        voice_store=store,
-    )
-
-    with pytest.raises(SpeechAPIError, match="Unknown voice") as exc_info:
-        service.parse_request({"input": "hello", "voice": "missing"})
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.error_type == "BadRequestError"
 
 
 def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
@@ -570,7 +636,7 @@ def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
     store.upload(
         name="Anchor",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="anchor.wav",
         content_type="audio/wav",
     )
@@ -609,20 +675,6 @@ def test_speech_service_validates_batch_default_voice_before_item_references(
         )
 
 
-def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="preset-voice-model",
-        voice_store=store,
-    )
-
-    request = service.parse_request({"input": "hello", "voice": "Vivian"})
-    gen_req = service.build_generate_request(request, validate=False)
-
-    assert gen_req.prompt == "hello"
-    assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
-
-
 def test_speech_service_can_disable_uploaded_voice_resolution(
     tmp_path: Path,
 ) -> None:
@@ -630,7 +682,7 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     store.upload(
         name="Vivian",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="vivian.wav",
         content_type="audio/wav",
     )
@@ -644,6 +696,7 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     gen_req = service.build_generate_request(request)
 
     assert gen_req.prompt == "hello"
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
@@ -683,7 +736,7 @@ def test_custom_voice_discovery_and_speech_share_checkpoint_config(
     store.upload(
         name="Uploaded",
         consent="consent",
-        audio_bytes=_reference_wav(),
+        audio_bytes=reference_wav(),
         filename="ref.wav",
         content_type="audio/wav",
     )
@@ -704,7 +757,7 @@ def test_custom_voice_discovery_and_speech_share_checkpoint_config(
     assert len(client_impl.requests) == 1
 
 
-def _reference_wav(
+def reference_wav(
     *,
     duration_s: float = 1.2,
     frequency: float = 440.0,

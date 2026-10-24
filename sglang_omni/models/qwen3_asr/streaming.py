@@ -27,6 +27,8 @@ class Qwen3ASRStreamingStrategy:
     def state(state: object) -> Qwen3ASRStreamingState:
         if not isinstance(state, Qwen3ASRStreamingState):
             raise TypeError("Qwen3-ASR received incompatible streaming state")
+        else:
+            pass
         return state
 
     def build_decode_request(
@@ -78,6 +80,8 @@ class Qwen3ASRStreamingStrategy:
         qwen_state = self.state(state)
         if language:
             qwen_state.language = language
+        else:
+            pass
         qwen_state.transcript = generated_text
         qwen_state.chunk_id += 1
         return generated_text

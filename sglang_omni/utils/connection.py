@@ -28,6 +28,8 @@ def find_available_port(host: str = "0.0.0.0", port: int | None = None) -> int:
                 return port
         except OSError:
             logger.warning(f"Port {port} is already in use on {host}.")
+    else:
+        pass
 
     # find the available port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

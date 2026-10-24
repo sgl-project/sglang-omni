@@ -14,7 +14,7 @@ from sglang_omni.config.topology import (
     compile_logical_processes,
 )
 from sglang_omni.pipeline.replicas import expand_replica_stages
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
     FakeScheduler,

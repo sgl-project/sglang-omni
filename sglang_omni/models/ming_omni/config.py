@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -49,12 +49,20 @@ def stage_gpu_set(
         devices = process.replica_devices
         if devices is not None:
             return set(devices)
+        else:
+            pass
+    else:
+        pass
 
     gpu = stage.gpu
     if isinstance(gpu, list):
         return set(gpu)
+    else:
+        pass
     if gpu is None:
         return set()
+    else:
+        pass
     return {gpu}
 
 
@@ -68,12 +76,16 @@ def reject_thinker_talker_collision(
     talker = stage_by_name(stages, talker_stage_name)
     if thinker is None or talker is None:
         return
+    else:
+        pass
 
     thinker_gpus = stage_gpu_set(thinker, processes)
     talker_gpus = stage_gpu_set(talker, processes)
     collisions = thinker_gpus & talker_gpus
     if not collisions:
         return
+    else:
+        pass
 
     raise ValueError(
         f"Ming-Omni speech talker {talker_stage_name!r} GPU collides with "
@@ -170,6 +182,8 @@ def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfi
     }
     if speech_enabled:
         project_payload[TALKER_STAGE] = f"{_PKG}.stages.project_thinker_to_talker"
+    else:
+        pass
 
     return MingThinkerStageConfig(
         name=THINKER_STAGE,
@@ -316,7 +330,7 @@ class MingOmniPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_text_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         validate_ming_stage_tp_support(self.stages)
 
@@ -333,7 +347,7 @@ class MingOmniSpeechPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_speech_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         validate_ming_stage_tp_support(self.stages)
         self.validate_talker_gpu_not_in_thinker_tp_range()
@@ -361,7 +375,7 @@ class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=ming_streaming_speech_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         validate_ming_stage_tp_support(self.stages)
         self.validate_talker_stream_gpu_not_in_thinker_tp_range()

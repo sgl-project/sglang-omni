@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import random
 import time
@@ -45,6 +46,7 @@ from benchmarks.tts_serving.scenarios import Scenario, build_scenarios
 from benchmarks.tts_serving.sdk_client import run_sdk_scenario
 from benchmarks.tts_serving.spec import BenchmarkSpec, LoadStage, SpecError, load_spec
 from benchmarks.tts_serving.ws_client import run_ws_scenario
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 LOAD_GENERATOR_LAGGED_THRESHOLD_S = 1.0
 DEFAULT_SPEC_PATH = "/etc/benchmark/spec.json"
@@ -856,6 +858,11 @@ def _print_failure_summary(report: dict) -> None:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = _build_arg_parser().parse_args()
     harness_log: list[str] = []
     try:

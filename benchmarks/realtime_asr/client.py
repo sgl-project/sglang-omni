@@ -150,9 +150,10 @@ async def _sender(
 ) -> None:
     packet_s = packet_ms / 1000.0
     audio_end_samples = 0
+    encoded_packets = [base64.b64encode(packet).decode("ascii") for packet in packets]
     t0 = time.perf_counter()
     trace.first_send_s = t0
-    for index, packet in enumerate(packets):
+    for index, (packet, encoded_audio) in enumerate(zip(packets, encoded_packets)):
         if paced:
             # Absolute schedule: packet i leaves at t0 + i * packet_s, so
             # scheduler jitter does not accumulate into drift.
@@ -165,7 +166,7 @@ async def _sender(
             websocket,
             {
                 "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(packet).decode(),
+                "audio": encoded_audio,
             },
         )
         trace.sent.append(

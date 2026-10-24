@@ -18,7 +18,7 @@ from sglang_omni.models.whisper_asr.sglang_model import (
 )
 
 
-def _tiny_whisper_config() -> WhisperConfig:
+def tiny_whisper_config() -> WhisperConfig:
     return WhisperConfig(
         d_model=8,
         encoder_layers=1,
@@ -35,7 +35,7 @@ def _tiny_whisper_config() -> WhisperConfig:
 
 
 def test_whisper_model_exposes_decoder_body() -> None:
-    model = WhisperModel(_tiny_whisper_config())
+    model = WhisperModel(tiny_whisper_config())
 
     assert model.layers is model.decoder.layers
     assert "input_embeds" in inspect.signature(model.forward).parameters
@@ -44,7 +44,7 @@ def test_whisper_model_exposes_decoder_body() -> None:
 def test_whisper_cross_attention_caches_fused_encoder_kv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attention = WhisperSGLangCrossAttention(_tiny_whisper_config(), layer_id=1)
+    attention = WhisperSGLangCrossAttention(tiny_whisper_config(), layer_id=1)
     encoder_states = torch.randn(3, attention.embed_dim)
     cache_loc = torch.arange(3, dtype=torch.int64)
     writes: list[tuple[object, object, torch.Tensor, torch.Tensor]] = []
@@ -80,13 +80,13 @@ def test_whisper_cross_attention_caches_fused_encoder_kv(
 def test_whisper_attention_flattens_head_shaped_backend_output(
     attention_cls: type[torch.nn.Module],
 ) -> None:
-    class _HeadShapedAttention(torch.nn.Module):
+    class HeadShapedAttention(torch.nn.Module):
         def forward(self, query, key, value, forward_batch):
             del key, value, forward_batch
             return query
 
-    attention = attention_cls(_tiny_whisper_config(), layer_id=0)
-    attention.attn = _HeadShapedAttention()
+    attention = attention_cls(tiny_whisper_config(), layer_id=0)
+    attention.attn = HeadShapedAttention()
     attention.out_proj = torch.nn.Identity()
     hidden_states = torch.randn(3, attention.embed_dim)
 
@@ -100,7 +100,7 @@ def test_whisper_forward_caches_encoder_kv_before_decoder(
     monkeypatch: pytest.MonkeyPatch,
     use_precomputed_states: bool,
 ) -> None:
-    class _LogitsProcessor(torch.nn.Module):
+    class LogitsProcessor(torch.nn.Module):
         def forward(self, *args):
             calls.append("logits")
             return args[1]
@@ -109,9 +109,9 @@ def test_whisper_forward_caches_encoder_kv_before_decoder(
     monkeypatch.setattr(
         sglang_model,
         "LogitsProcessor",
-        lambda _config: _LogitsProcessor(),
+        lambda config: LogitsProcessor(),
     )
-    model = WhisperForConditionalGeneration(_tiny_whisper_config())
+    model = WhisperForConditionalGeneration(tiny_whisper_config())
     input_ids = torch.tensor([1, 2])
     positions = torch.tensor([0, 1])
     encoder_states = torch.randn(3, model.config.d_model)

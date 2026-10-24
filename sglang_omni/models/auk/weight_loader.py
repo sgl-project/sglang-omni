@@ -46,6 +46,8 @@ def first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
         candidate = root / name
         if candidate.is_file():
             return candidate
+        else:
+            pass
     return None
 
 
@@ -54,14 +56,20 @@ def resolve_weight_file(model_path: str) -> Path:
     root = Path(model_path)
     if root.is_file():
         return root
+    else:
+        pass
     found = first_existing(root, WEIGHT_FILE_CANDIDATES)
     if found is not None:
         return found
+    else:
+        pass
     globbed = sorted(root.glob("*.safetensors"))
     vae_names = set(VAE_FILE_CANDIDATES)
     globbed = [p for p in globbed if p.name not in vae_names]
     if not globbed:
         raise FileNotFoundError(f"No AuK weights found under {model_path}")
+    else:
+        pass
     return globbed[0]
 
 
@@ -69,6 +77,8 @@ def resolve_vae_file(model_path: str) -> Path | None:
     root = Path(model_path)
     if root.is_file():
         root = root.parent
+    else:
+        pass
     return first_existing(root, VAE_FILE_CANDIDATES)
 
 
@@ -82,6 +92,8 @@ def strip_prefix(key: str) -> str:
     for prefix in _STRIPPABLE_PREFIXES:
         if key.startswith(prefix):
             return key[len(prefix) :]
+        else:
+            pass
     return key
 
 
@@ -116,4 +128,6 @@ def load_vae_weights(
     vae_file = resolve_vae_file(model_path)
     if vae_file is None:
         raise FileNotFoundError(f"No AuK VAE weights found under {model_path}")
+    else:
+        pass
     return load_weights(vae, vae_file)

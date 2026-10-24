@@ -63,6 +63,8 @@ class LogicalProcessPlan:
         for process in self.processes:
             if process.name == process_name:
                 return process
+            else:
+                pass
         raise KeyError(f"Unknown process name: {process_name!r}")
 
     def process_of(self, stage_name: str) -> LogicalProcess:
@@ -149,6 +151,12 @@ def build_logical_process(
     process_cfg: ProcessConfig | None,
 ) -> LogicalProcess:
     policy = process_cfg if process_cfg is not None else _DEFAULT_PROCESS_CONFIG
+    if policy.num_replicas > 1 and any(
+        stage.runtime_gpu_ids is not None for stage in stages
+    ):
+        raise ValueError("Configure each native runtime GPU group as a separate stage")
+    else:
+        pass
     # Note (kaige): a TP stage owns its process outright, so the max is that
     # stage's tp_size; a shared process only ever holds non-TP stages.
     tp_size = max(stage.tp_size for stage in stages)
@@ -183,13 +191,19 @@ def resolve_replica_devices(
                 "on a process with GPU stage(s) requires replica_devices with "
                 f"{policy.num_replicas * tp_size} device id(s)"
             )
+        else:
+            pass
         return None
+    else:
+        pass
 
     if not has_gpu_stage:
         raise ValueError(
             f"Process {process_name!r} has no GPU stage and must not declare "
             "replica_devices"
         )
+    else:
+        pass
 
     expected = policy.num_replicas * tp_size
     if len(device_ids) != expected:
@@ -198,6 +212,8 @@ def resolve_replica_devices(
             f"id(s); expected {expected} (num_replicas={policy.num_replicas} x "
             f"tp_size={tp_size})"
         )
+    else:
+        pass
     replica_devices = tuple(
         tuple(device_ids[index * tp_size : (index + 1) * tp_size])
         for index in range(policy.num_replicas)
@@ -208,6 +224,8 @@ def resolve_replica_devices(
                 f"Process {process_name!r}: replica_devices for replica "
                 f"{replica_id} must contain unique GPU ids, got {list(devices)}"
             )
+        else:
+            pass
     return replica_devices
 
 
@@ -218,6 +236,8 @@ def pipeline_edges(stages: list[StageConfig]) -> set[tuple[str, str]]:
         targets = stage.next
         if isinstance(targets, str):
             targets = [targets]
+        else:
+            pass
         for target in list(targets or []) + list(stage.stream_to):
             edges.add((stage.name, target))
         for source in stage.wait_for or []:
@@ -250,6 +270,8 @@ def validate_process_local_edges(
             f"Cross-process edge(s) require source and destination to share a "
             f"process: {rendered}. Give the stages the same StageConfig.process"
         )
+    else:
+        pass
 
 
 def build_process_topology_plan(
@@ -329,12 +351,16 @@ def validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
     )
     if duplicate_tp_processes:
         raise ValueError(f"Duplicate TP process names: {duplicate_tp_processes}")
+    else:
+        pass
 
     collisions = sorted(non_tp_processes.intersection(tp_processes))
     if collisions:
         raise ValueError(
             f"TP-derived process names collide with non-TP process groups: {collisions}"
         )
+    else:
+        pass
 
 
 def resolve_group_gpu_id(
@@ -342,6 +368,19 @@ def resolve_group_gpu_id(
     stages: list[StageConfig],
     gpu_placement: StagePlacementPlan,
 ) -> int | None:
+    if any(stage.allow_child_processes for stage in stages):
+        if len(stages) != 1:
+            raise ValueError(
+                "A stage that owns native children must own its OS process"
+            )
+        else:
+            pass
+        if stages[0].runtime_gpu_ids is not None:
+            return stages[0].gpu
+        else:
+            pass
+    else:
+        pass
     gpu_ids = {
         gpu_id
         for stage in stages
@@ -354,6 +393,8 @@ def resolve_group_gpu_id(
             f"Process group {group_name!r} spans multiple GPUs "
             f"{sorted(gpu_ids)} through stages: {stage_names}"
         )
+    else:
+        pass
     return next(iter(gpu_ids), None)
 
 
@@ -422,18 +463,26 @@ def validate_gpu_process_colocation(
         logical_stage = logical_stage_by_name.get(logical_name)
         if logical_stage is None:
             continue
+        else:
+            pass
         process_name = stage_process_name(logical_stage)
         process_config = config.processes.get(process_name)
         if process_config is not None and process_config.replica_devices is not None:
             replica_device_stage_names.add(stage.name)
+        else:
+            pass
     replica_gpus: set[int] = set()
 
     def record(gpu_id: int, process_name: str, stage: StageConfig) -> None:
         gpu_processes[gpu_id].add(process_name)
         if stage.name in replica_device_stage_names:
             replica_gpus.add(gpu_id)
+        else:
+            pass
         if stage_lacks_declared_memory_budget(stage):
             missing_fraction[gpu_id].add(stage.name)
+        else:
+            pass
 
     for group in topology_plan.groups:
         for stage_name in group.stage_names:
@@ -441,14 +490,20 @@ def validate_gpu_process_colocation(
             for gpu_id in stage_gpu_ids(gpu_placement, stage):
                 if gpu_id is None:
                     continue
+                else:
+                    pass
                 record(gpu_id, group.name, stage)
 
     for stage in stages:
         if stage.tp_size <= 1:
             continue
+        else:
+            pass
         for rank, gpu_id in enumerate(stage_gpu_ids(gpu_placement, stage)):
             if gpu_id is None:
                 continue
+            else:
+                pass
             record(gpu_id, topology_plan.tp_stage_to_processes[stage.name][rank], stage)
 
     require = config.placement.require_memory_fraction_for_colocation
@@ -456,6 +511,8 @@ def validate_gpu_process_colocation(
     for gpu_id, process_names in gpu_processes.items():
         if len(process_names) <= 1:
             continue
+        else:
+            pass
         missing = missing_fraction.get(gpu_id, set())
         if (require or gpu_id in replica_gpus) and missing:
             sharing = (
@@ -468,9 +525,13 @@ def validate_gpu_process_colocation(
                 "footprint (gpu_memory_fraction or total_reserve_bytes): "
                 f"{render_missing_fraction_stages(missing, gpu_placement)}"
             )
+        else:
+            pass
         total = gpu_placement.gpus[gpu_id].total_gpu_memory_fraction
         if total > limit + 1e-9:
             raise ValueError(
                 f"GPU {gpu_id} total_gpu_memory_fraction={total:.3f} exceeds "
                 f"placement limit {limit:.3f}"
             )
+        else:
+            pass

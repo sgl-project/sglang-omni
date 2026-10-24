@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         MiniCPMOTalkerForCausalLM,
     )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
 def build_talker_request(
@@ -38,9 +40,28 @@ def build_talker_request(
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     output_ids = [int(t) for t in (thinker_out.get("output_ids") or [])]
     extra = thinker_out.get("extra_model_outputs") or {}
-    hidden_seq = extra.get("hidden_states_seq") or []
+    hidden_states = extra.get("hidden_states_seq")
+    if hidden_states is None:
+        hidden_states = torch.empty((0, 0))
+    elif isinstance(hidden_states, list):
+        hidden_states = (
+            torch.stack(hidden_states) if hidden_states else torch.empty((0, 0))
+        )
+    elif not isinstance(hidden_states, torch.Tensor):
+        raise TypeError("hidden_states_seq must be a Tensor or a list of tensors")
+    else:
+        pass
+    if hidden_states.ndim != 2:
+        raise ValueError("hidden_states_seq must have shape [tokens, hidden_size]")
+    else:
+        pass
 
-    full_sequence = [int(t) for t in prompt_ids] + output_ids
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    full_sequence = (
+        [int(t) for t in prompt_ids]
+        if known_tts_output_ids is not None
+        else [int(t) for t in prompt_ids] + output_ids
+    )
     prompt_len = len(prompt_ids)
 
     tts_bos_indices = [i for i, t in enumerate(full_sequence) if t == tts_bos_token_id]
@@ -48,6 +69,8 @@ def build_talker_request(
     if not tts_bos_indices:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
+    else:
+        pass
     start = tts_bos_indices[-1] + 1
     # Only an end marker inside the current segment may close the span: a
     # history turn's <|tts_eos|> sits before the last <|tts_bos|>, and slicing
@@ -56,19 +79,24 @@ def build_talker_request(
     end = segment_eos[0] if segment_eos else len(full_sequence)
 
     # note (MayDomine): the first captured hidden state is the last prompt position.
-    hidden_base = prompt_len - 1
+    # note (0xtoward): a speech request captures the rows of its text span only.
+    hidden_base = start if known_tts_output_ids is not None else prompt_len - 1
     if start < hidden_base:
         raise ValueError(
             f"tts span start {start} precedes first captured hidden position "
             f"{hidden_base}; prompt-side spans are not supported"
         )
-    end = min(end, hidden_base + len(hidden_seq))
+    else:
+        pass
+    end = min(end, hidden_base + hidden_states.shape[0])
     if end <= start:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
+    else:
+        pass
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
-    hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
+    hidden = hidden_states[start - hidden_base : end - hidden_base]
     return {"tts_token_ids": tokens, "tts_hidden": hidden}
 
 
@@ -77,6 +105,7 @@ class CodecTokenizer:
     """Supply the codec EOS id required by SGLang's minimum-length penalizer."""
 
     eos_token_id: int
+    bos_token_id: int | None = None
     additional_stop_token_ids: set[int] | None = None
 
 
@@ -88,7 +117,7 @@ def build_sglang_talker_request(
     codec_eos_id: int,
     tts_bos_token_id: int,
     tts_eos_token_id: int,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     request_id: str | None = None,
 ) -> SGLangARRequestData:
     """Build a codec request carrying speech-condition embeddings."""
@@ -109,11 +138,13 @@ def build_sglang_talker_request(
         # note (MayDomine): built requests cannot bypass the engine; discard this step.
         sampling_params = SamplingParams(max_new_tokens=1, temperature=0.0)
         rep_penalty = 1.0
+        min_new_tokens = 0
     else:
+        max_new_tokens = int(params.get("talker_max_new_tokens", 2048))
         # note (MayDomine): the runner applies a windowed penalty, not SGLang's penalty.
+        # note (0xtoward): kept out of SamplingParams, whose penalizer reads host history and would block async decode.
         sampling_params = SamplingParams(
-            max_new_tokens=int(params.get("talker_max_new_tokens", 2048)),
-            min_new_tokens=int(params.get("talker_min_new_tokens", 50)),
+            max_new_tokens=max_new_tokens,
             temperature=float(params.get("talker_temperature", 0.8)),
             top_p=float(params.get("talker_top_p", 0.85)),
             top_k=int(params.get("talker_top_k", 25)),
@@ -122,6 +153,15 @@ def build_sglang_talker_request(
             sampling_seed=resolve_sampling_seed(params),
         )
         rep_penalty = float(params.get("talker_repetition_penalty", 1.05))
+        min_new_tokens = min(
+            int(params.get("talker_min_new_tokens", 50)), max_new_tokens
+        )
+        if min_new_tokens < 0:
+            raise ValueError(
+                f"talker_min_new_tokens must be at least 0, got {min_new_tokens}"
+            )
+        else:
+            pass
     shim = CodecTokenizer(eos_token_id=int(codec_eos_id))
     sampling_params.normalize(shim)
     sampling_params.verify(codec_vocab_size)
@@ -137,13 +177,16 @@ def build_sglang_talker_request(
         vocab_size=codec_vocab_size,
     )
     req.tokenizer = shim
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangARRequestData(
         prefill_input_embeds=condition,
         input_embeds_are_projected=True,
-        talker_model_inputs={"rep_penalty": rep_penalty},
+        talker_model_inputs={
+            "rep_penalty": rep_penalty,
+            "min_new_tokens": min_new_tokens,
+        },
         max_new_tokens=int(sampling_params.max_new_tokens),
         output_ids=req.output_ids,
         req=req,
@@ -165,6 +208,7 @@ def make_talker_scheduler_adapters(
 ]:
     """Build StagePayload <-> scheduler adapters for the sglang talker."""
 
+    @torch.no_grad()
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         req_data = build_sglang_talker_request(

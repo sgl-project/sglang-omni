@@ -9,6 +9,8 @@ from sglang_omni.platforms.interface import OmniPlatform
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 
 class NPUOmniPlatform(OmniPlatform):
@@ -31,6 +33,9 @@ class NPUOmniPlatform(OmniPlatform):
         return False
 
     def enable_tts_predictor_graph(self) -> bool:
+        return True
+
+    def enable_tts_vocoder_fast_path(self) -> bool:
         return False
 
     def supports_torchaudio_resample(self) -> bool:

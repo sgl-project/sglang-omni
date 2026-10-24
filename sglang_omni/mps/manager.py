@@ -118,11 +118,15 @@ class MpsManager:
             raise MpsError(
                 "MPS acquisition requires one unique client token per process"
             )
+        else:
+            pass
         validate_control_socket(self.paths.control_socket)
         try:
             with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
                 if not self.paths.state_dir.exists():
                     return self.create_locked(tokens)
+                else:
+                    pass
                 return self.join_locked(tokens)
         except MpsError:
             raise
@@ -182,11 +186,19 @@ class MpsManager:
                         owner_fd,
                         identity_error,
                     )
+            else:
+                pass
             if lease is not None:
                 cleanup_error = self.rollback_create(lease)
+            else:
+                pass
             if cleanup_error is not None:
                 raise startup_error from cleanup_error
+            else:
+                pass
             raise startup_error
+        else:
+            pass
         assert lease is not None
         return lease
 
@@ -212,6 +224,8 @@ class MpsManager:
                 owner_fd=owner_fd,
                 client_tokens=client_tokens,
             )
+        else:
+            pass
         raise MpsError(self.dirty_state_report(state))
 
     def publish_owner(self) -> int:
@@ -239,9 +253,13 @@ class MpsManager:
     def write_owner_status(owner_fd: int, status: str) -> None:
         if status not in _OWNER_STATUSES:
             raise ValueError(f"invalid owner status {status!r}")
+        else:
+            pass
         value = f"{status}\n".encode()
         if os.pwrite(owner_fd, value, 0) != len(value):
             raise OSError("short write while updating MPS owner status")
+        else:
+            pass
         os.ftruncate(owner_fd, len(value))
         os.fsync(owner_fd)
 
@@ -255,15 +273,21 @@ class MpsManager:
             ) from exc
         if status not in _OWNER_STATUSES:
             raise MpsError(f"owner lease {owner_file} has invalid status {status!r}")
+        else:
+            pass
         return status
 
     def owner_files(self) -> dict[int, Path]:
         if not self.paths.owners_dir.is_dir():
             raise MpsError(f"owner lease directory is missing: {self.paths.owners_dir}")
+        else:
+            pass
         owners: dict[int, Path] = {}
         for entry in self.paths.owners_dir.iterdir():
             if not entry.name.isdigit() or int(entry.name) <= 0 or not entry.is_file():
                 raise MpsError(f"malformed owner lease entry: {entry}")
+            else:
+                pass
             owners[int(entry.name)] = entry
         return owners
 
@@ -347,6 +371,8 @@ class MpsManager:
                     f"{sorted(owned_clients)}; revalidate them against a fresh "
                     "snapshot before issuing terminate_client."
                 )
+            else:
+                pass
         elif actionable_clients:
             client_steps = (
                 "Run only these commands for clients proven to belong to this "
@@ -364,6 +390,8 @@ class MpsManager:
                 f" Other observed refs are not proven to belong to this lease: "
                 f"{sorted(foreign_clients)}. Do not terminate them from this report."
             )
+        else:
+            pass
 
         current_clients = "unavailable" if clients is None else repr(sorted(clients))
         prefix = (
@@ -429,6 +457,8 @@ class MpsManager:
                 if not missing:
                     lease.attachment_verified = True
                     return attached
+                else:
+                    pass
             except MpsControlError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
@@ -438,6 +468,8 @@ class MpsManager:
                     f"server (pipe dir {self.paths.pipe_dir}){detail}. State dir "
                     f"preserved for inspection: {self.paths.state_dir}"
                 )
+            else:
+                pass
             time.sleep(self.poll_interval)
 
     def retire_clients_for(
@@ -457,6 +489,8 @@ class MpsManager:
         token = lease.client_tokens.get(process_name)
         if token is None:
             return set()
+        else:
+            pass
         targets = {
             client
             for client in self.client.snapshot(self.paths.pipe_dir)
@@ -478,6 +512,8 @@ class MpsManager:
             return (
                 f"daemon identity changed from {lease.daemon_pid} " f"to {daemon_pid}"
             )
+        else:
+            pass
         try:
             self.client.snapshot(self.paths.pipe_dir)
         except MpsControlError as exc:
@@ -508,6 +544,8 @@ class MpsManager:
                 except BaseException as exc:
                     if lease.owner_fd >= 0:
                         raise self.persist_dirty_locked(lease, exc) from exc
+                    else:
+                        pass
                     raise
         except MpsDirtyStateError:
             raise
@@ -525,6 +563,8 @@ class MpsManager:
                     f"directory {self.paths.state_dir} is preserved. "
                     f"{self.cleanup_guidance(None, owned_clients=None)}"
                 ) from exc
+            else:
+                pass
             raise MpsError(
                 f"MPS control I/O failed during release: {exc}. State dir "
                 f"preserved for inspection: {self.paths.state_dir}"
@@ -538,6 +578,8 @@ class MpsManager:
     ) -> None:
         if clients_could_have_attached:
             self.wait_for_owned_clients_to_detach(lease)
+        else:
+            pass
 
         try:
             daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
@@ -549,6 +591,8 @@ class MpsManager:
                 f"MPS daemon identity changed from {lease.daemon_pid} to {daemon_pid}; "
                 "owner lease and shared state preserved"
             )
+        else:
+            pass
 
         if clients_could_have_attached:
             owned_clients, _, unknown_clients = self.classify_clients(
@@ -562,6 +606,10 @@ class MpsManager:
                     f"unattributable={sorted(unknown_clients)}. State preserved: "
                     f"{self.paths.state_dir}"
                 )
+            else:
+                pass
+        else:
+            pass
 
         remaining_owner_pids = {
             pid for pid, path in self.owner_files().items() if path != self.owner_file
@@ -579,6 +627,8 @@ class MpsManager:
                     f"clients. State preserved: "
                     f"{self.paths.state_dir}"
                 )
+            else:
+                pass
             self.drop_owner(lease)
             logger.info(
                 "Leaving shared MPS daemon on %s to owner markers %s",
@@ -586,15 +636,21 @@ class MpsManager:
                 sorted(remaining_owner_pids),
             )
             return
+        else:
+            pass
 
         if snapshot:
             snapshot = self.wait_for_no_clients()
+        else:
+            pass
         if snapshot:
             raise MpsError(
                 f"MPS clients {sorted(snapshot)} remain while releasing the last "
                 f"owner; refusing to release its lease or quit daemon "
                 f"{lease.daemon_pid}. State preserved: {self.paths.state_dir}"
             )
+        else:
+            pass
 
         try:
             self.client.quit_daemon(self.paths.pipe_dir)
@@ -604,6 +660,8 @@ class MpsManager:
             # sufficient commit point; a surviving daemon keeps the lease.
             if self.client.daemon_process_alive(lease.daemon_pid):
                 raise
+            else:
+                pass
         else:
             self.wait_for(
                 lambda: not self.client.daemon_process_alive(lease.daemon_pid),
@@ -634,6 +692,8 @@ class MpsManager:
             observed_daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
             if clients is None:
                 clients = self.client.snapshot(self.paths.pipe_dir)
+            else:
+                pass
             owned_clients, _, _ = self.classify_clients(clients, lease)
         except MpsControlError as exc:
             query_error = exc
@@ -693,6 +753,8 @@ class MpsManager:
             )
             if not owned_clients and not unknown_clients:
                 return
+            else:
+                pass
             if time.monotonic() >= deadline:
                 raise MpsError(
                     f"MPS clients prevent a proven clean release: owned="
@@ -700,6 +762,8 @@ class MpsManager:
                     f"unattributable={sorted(unknown_clients)}. State dir "
                     f"preserved for inspection: {self.paths.state_dir}"
                 )
+            else:
+                pass
             time.sleep(self.poll_interval)
 
     def wait_for_no_clients(self) -> set[MpsClientRef]:
@@ -708,6 +772,8 @@ class MpsManager:
             snapshot = self.client.snapshot(self.paths.pipe_dir)
             if not snapshot or time.monotonic() >= deadline:
                 return snapshot
+            else:
+                pass
             time.sleep(self.poll_interval)
 
     def classify_clients(
@@ -726,6 +792,8 @@ class MpsManager:
             elif token in expected_tokens:
                 owned.add(client)
                 observed_tokens.add(token)
+            else:
+                pass
         return owned, observed_tokens, unknown
 
     def require_live_lease(self, lease: MpsLease) -> None:
@@ -736,6 +804,8 @@ class MpsManager:
             raise MpsError("operation requires this manager's live MPS lease") from None
         if (fd_stat.st_dev, fd_stat.st_ino) != (owner_stat.st_dev, owner_stat.st_ino):
             raise MpsError("operation requires this manager's live MPS lease")
+        else:
+            pass
 
     def mark_retained_locked(self, lease: MpsLease) -> None:
         self.require_live_lease(lease)
@@ -781,6 +851,8 @@ class MpsManager:
             if time.monotonic() >= deadline:
                 detail = f": {last_error}" if last_error else ""
                 raise MpsError(f"{message}{detail}")
+            else:
+                pass
             time.sleep(self.poll_interval)
 
     def wait_for(self, predicate, timeout: float, message: str) -> None:
@@ -788,9 +860,13 @@ class MpsManager:
         while True:
             if predicate():
                 return
+            else:
+                pass
             if time.monotonic() >= deadline:
                 raise MpsError(
                     f"{message}. State dir preserved for inspection: "
                     f"{self.paths.state_dir}"
                 )
+            else:
+                pass
             time.sleep(self.poll_interval)

@@ -18,6 +18,10 @@ class TupleLinear(nn.Module):
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
 
+    @property
+    def weight(self) -> torch.Tensor:
+        return self.proj.weight
+
     def forward(self, hidden_states: torch.Tensor):
         return self.proj(hidden_states), None
 
@@ -51,36 +55,63 @@ def build_real_step_predictor_graph_talker(
     talker = object.__new__(Qwen3OmniTalker)
     talker.training = False
     talker.config = SimpleNamespace(num_code_groups=num_code_groups)
-    talker._predictor_input_buffer = torch.zeros(
+    talker.predictor_input_buffer = torch.zeros(
         max_batch_size,
         predictor_len,
         hidden_size,
         device=device,
     )
-    talker._output_codes = torch.zeros(
+    talker.output_codes = torch.zeros(
         max_batch_size,
         num_code_groups,
         dtype=torch.long,
         device=device,
     )
-    talker._output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
-    talker._predictor_positions = torch.arange(
+    talker.output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
+    talker.predictor_positions = torch.arange(
         predictor_len,
         device=device,
         dtype=torch.long,
     )
-    talker._predictor_k_cache = torch.zeros(
+    talker.predictor_k_cache = torch.zeros(
         1,
         max_batch_size,
-        num_kv_heads,
         predictor_len,
+        num_kv_heads,
         head_dim,
         device=device,
     )
-    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
-    talker._predictor_decode_graphs = {}
-    talker._predictor_decode_graph_disabled = set()
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_k_rows = [
+        layer.view(max_batch_size * predictor_len, -1)
+        for layer in talker.predictor_k_cache
+    ]
+    talker.predictor_v_rows = [
+        layer.view(max_batch_size * predictor_len, -1)
+        for layer in talker.predictor_v_cache
+    ]
+    talker.predictor_cache_slots = (
+        torch.arange(max_batch_size, device=device, dtype=torch.long)[None, :]
+        * predictor_len
+        + talker.predictor_positions[:, None]
+    ).contiguous()
+    talker.predictor_rope_stores_kv = False
+    talker.predictor_position_rows = (
+        talker.predictor_positions[:, None]
+        .expand(predictor_len, max_batch_size)
+        .contiguous()
+    )
+    talker.predictor_pair_positions = talker.predictor_positions[:2].repeat(
+        max_batch_size
+    )
+    talker.predictor_pair_cache_slots = (
+        talker.predictor_cache_slots[:2, :].t().reshape(-1).contiguous()
+    )
+    talker.predictor_exact_add_norm = False
+    talker.predictor_fused_layers = None
+    talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
+    talker.predictor_decode_graphs = {}
+    talker.predictor_decode_graph_disabled = set()
 
     layer = SimpleNamespace(
         input_layernorm=nn.Identity(),

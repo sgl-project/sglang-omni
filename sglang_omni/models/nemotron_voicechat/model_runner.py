@@ -26,14 +26,14 @@ class NemotronVoiceChatModelRunner(ModelRunner):
         self, forward_batch, schedule_batch, requests, *, is_lookahead: bool = False
     ) -> None:
         del forward_batch, schedule_batch, is_lookahead
-        buffer = self.model._fusion_buffer
+        buffer = self.model.fusion_buffer
         batch = len(requests)
         rows = [
             self.decode_row(request.data, buffer.device, buffer.dtype)
             for request in requests
         ]
         buffer[:batch] = torch.stack(rows, dim=0)
-        self.model._fusion_mask[:batch] = True
+        self.model.fusion_mask[:batch] = True
 
     @staticmethod
     def acoustic_frames(data) -> torch.Tensor:
@@ -78,7 +78,7 @@ class NemotronVoiceChatModelRunner(ModelRunner):
         return self.model.fusion(acoustic, text, function)
 
     def record_function_ids(self, requests) -> None:
-        sampled = self.model._function_ids[: len(requests)].tolist()
+        sampled = self.model.function_ids[: len(requests)].tolist()
         for request, token in zip(requests, sampled):
             request.data.extra_model_outputs.setdefault("function_ids", []).append(
                 token

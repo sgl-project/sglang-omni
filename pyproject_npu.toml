@@ -10,7 +10,8 @@ build-backend = "setuptools.build_meta"
 # installed manually before pip-installing sglang-omni.
 #
 # CUDA-only wheels (flashinfer, nixl-cu13, mooncake, flash-attn-4, cache-dit …)
-# are dropped; sglang is verified against v0.5.18 but cannot be pinned here --
+# are dropped; the supported SGLang version is in tool.sglang-omni.npu below,
+# not in project.dependencies --
 # every published wheel pulls CUDA torch.
 
 [project]
@@ -20,7 +21,7 @@ description = "Multi-stage pipeline framework for omni models (Ascend NPU build)
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # --- Core framework (device-agnostic) ----------------------------------
     "pyzmq>=25.0.0",
@@ -55,7 +56,7 @@ dependencies = [
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
-    "transformers==5.12.1",        # Match the pinned SGLang stack
+    "transformers==5.19.0",        # Match the pinned SGLang stack
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",
@@ -70,7 +71,7 @@ dependencies = [
     "openai==2.6.1",
     "openai-harmony==0.0.4",
     # /v1/realtime — server-side VAD
-    "silero-vad>=5.1",
+    "silero-vad==6.2.1",  # 6.2.2 requires torchaudio<2.10, downgrading the NPU stack
     "onnxruntime>=1.17",
 
     # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------
@@ -113,7 +114,6 @@ fun-cosyvoice3 = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -128,6 +128,12 @@ override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
 ]
 
+# Shared by the installer and image builds. This metadata does not install SGLang.
+[tool.sglang-omni.npu]
+sglang-version = "0.5.22"
+base-image-a3 = "lmsysorg/sglang:v0.5.22-cann9.1.0-a3@sha256:5f384cab0e16a4951ed0bdc54e1280f2108aeda6b8ede90ee527d8f4b5146443"
+base-image-950 = "lmsysorg/sglang:v0.5.22-cann9.1.0-950@sha256:5390aa7fdefbb6891a332e47a6165002366f34beefdcba05690eb373e695e394"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = [
@@ -141,8 +147,6 @@ where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
-    "sglang_omni_router.python",
-    "sglang_omni_router.python.*",
 ]
 namespaces = true
 

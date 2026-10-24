@@ -44,6 +44,8 @@ def explicit_cuda_gpu_ids(value) -> set[int]:
     if isinstance(value, str):
         match = _CUDA_DEVICE.fullmatch(value.strip())
         return {int(match.group(1))} if match is not None else set()
+    else:
+        pass
     if isinstance(value, Mapping):
         values = value.values()
     elif isinstance(value, (list, tuple, set, frozenset)):
@@ -87,6 +89,8 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             placement_by_process[name] = set()
             explicit_by_process[name] = set()
             contains_tp[name] = False
+        else:
+            pass
         placement_by_process[name].update(process_gpu_ids(process_spec))
         contains_tp[name] = contains_tp[name] or any(
             stage_spec.tp_size > 1 for stage_spec in process_spec.stage_specs
@@ -98,6 +102,8 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             explicit_by_process[name].update(
                 process_explicit_cuda_gpu_ids(process_spec)
             )
+        else:
+            pass
 
     return tuple(
         MpsProcessFact(

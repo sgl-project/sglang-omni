@@ -77,12 +77,16 @@ def plan_weight_share(
 
     if config.weight_share == "off":
         return None
+    else:
+        pass
 
     if os.name != "posix":
         raise WeightShareError(
             "weight_share=on requires a POSIX host: the handle store relies on "
             "flock leases and owner-only directory permissions"
         )
+    else:
+        pass
 
     reject_external_env(process_specs)
 
@@ -96,6 +100,8 @@ def plan_weight_share(
             "on one GPU; declare processes.<name>.num_replicas with repeated "
             "replica_devices entries, or use weight_share=off"
         )
+    else:
+        pass
 
     for logical_process, _, _ in candidates:
         validate_sharing_process(config, logical_process)
@@ -159,6 +165,8 @@ def reject_external_env(process_specs) -> None:
             f"{ENV_WEIGHT_SHARE}={external!r}; the runtime assigns roles itself, "
             "so unset it or use weight_share=off with the external supervisor"
         )
+    else:
+        pass
     for spec in process_specs:
         for stage_spec in spec.stage_specs:
             if (stage_spec.env_defaults or {}).get(ENV_WEIGHT_SHARE):
@@ -167,6 +175,8 @@ def reject_external_env(process_specs) -> None:
                     "its environment defaults; the runtime assigns weight-share "
                     "roles itself, so remove it"
                 )
+            else:
+                pass
 
 
 def collect_candidate_groups(
@@ -183,6 +193,8 @@ def collect_candidate_groups(
     for process in logical_process_plan.processes:
         if not process.is_replicated:
             continue
+        else:
+            pass
         if process.is_tensor_parallel:
             logger.info(
                 "Weight sharing skips tensor-parallel process %r: CUDA IPC "
@@ -190,16 +202,22 @@ def collect_candidate_groups(
                 process.name,
             )
             continue
+        else:
+            pass
         by_gpu: dict[int, list[int]] = {}
         for replica_id in range(process.num_replicas):
             process_name = replica_instance_name(process.name, replica_id)
             gpu_ids = gpu_ids_by_process.get(process_name, set())
             if len(gpu_ids) != 1:
                 continue
+            else:
+                pass
             by_gpu.setdefault(next(iter(gpu_ids)), []).append(replica_id)
         for gpu_id, replica_ids in sorted(by_gpu.items()):
             if len(replica_ids) < 2:
                 continue
+            else:
+                pass
             candidates.append((process, gpu_id, tuple(sorted(replica_ids))))
         if not by_gpu:
             logger.info(
@@ -207,6 +225,8 @@ def collect_candidate_groups(
                 "single GPU",
                 process.name,
             )
+        else:
+            pass
     return candidates
 
 
@@ -225,6 +245,8 @@ def validate_sharing_process(
             f"weight sharing needs exactly one SGLang engine stage in process "
             f"{process.name!r}, found {sorted(engine_stages)}"
         )
+    else:
+        pass
     stage_name = engine_stages[0]
     stage = next(stage for stage in config.stages if stage.name == stage_name)
     # Note (Jiaxin Deng): a follower frees its dummy weights before KV
@@ -237,6 +259,8 @@ def validate_sharing_process(
             "max_total_tokens): a follower attaches after its dummy weights are "
             "freed, so memory profiling cannot derive a stable KV budget"
         )
+    else:
+        pass
 
 
 def resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
@@ -251,11 +275,15 @@ def resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
     value = overrides.get("max_total_tokens")
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise WeightShareError(
             f"stage {stage.name!r} must define a positive integer "
             f"max_total_tokens for weight sharing, got {value!r}"
         )
+    else:
+        pass
     return value
 
 

@@ -20,6 +20,7 @@ from sglang_omni.models.arkasr.encoder_cuda_graph import (
     t_buckets_upto,
 )
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
 def test_batch_buckets_are_powers_of_two_plus_limit() -> None:
@@ -57,7 +58,7 @@ def test_t_buckets_upto_covers_working_set() -> None:
         assert t % 8 == 0
 
 
-def _tiny_config() -> ArkasrConfig:
+def tiny_config() -> ArkasrConfig:
     whisper = WhisperConfig(
         d_model=32,
         encoder_layers=2,
@@ -79,16 +80,16 @@ def _tiny_config() -> ArkasrConfig:
     )
 
 
-def _tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
+def tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
     model = ArkasrForConditionalGeneration.__new__(ArkasrForConditionalGeneration)
     nn.Module.__init__(model)
-    model.audio_encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
+    model.audio_encoder = ArkAudioMLPAdapter(tiny_config()).eval()
     model.encoder_max_batch_size = model.DEFAULT_ENCODER_MAX_BATCH_SIZE
     model.encoder_cuda_graph_runner = None
     return model
 
 
-def _item(num_frames: int) -> SimpleNamespace:
+def item(num_frames: int) -> SimpleNamespace:
     return SimpleNamespace(
         feature=torch.randn(1, 8, num_frames),
         feature_attention_mask=torch.ones(1, num_frames, dtype=torch.long),
@@ -98,7 +99,7 @@ def _item(num_frames: int) -> SimpleNamespace:
 def test_get_audio_feature_routes_through_graph_runner() -> None:
     observed: dict[str, object] = {}
 
-    class _Runner:
+    class Runner:
         def run(self, mel, lengths):
             observed["mel_shape"] = tuple(mel.shape)
             observed["lengths"] = list(lengths)
@@ -106,8 +107,8 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
             t_out = arkasr_num_audio_tokens(mel.shape[-1], 4)
             return torch.ones(batch, t_out, 48)
 
-    model = _tiny_ark_audio_mm_model()
-    model.encoder_cuda_graph_runner = _Runner()
+    model = tiny_ark_audio_mm_model()
+    model.encoder_cuda_graph_runner = Runner()
     calls: list[tuple] = []
 
     def record_call(_module, args, kwargs):
@@ -118,7 +119,7 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
         record_call, with_kwargs=True
     )
     try:
-        out = model.get_audio_feature([_item(17), _item(9)])
+        out = model.get_audio_feature([item(17), item(9)])
     finally:
         handle.remove()
 
@@ -130,13 +131,13 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
 
 
 def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
-    class _DecliningRunner:
+    class DecliningRunner:
         def run(self, mel, lengths):
             del mel, lengths
             return None
 
-    model = _tiny_ark_audio_mm_model()
-    model.encoder_cuda_graph_runner = _DecliningRunner()
+    model = tiny_ark_audio_mm_model()
+    model.encoder_cuda_graph_runner = DecliningRunner()
     calls: list[object] = []
 
     def record_call(_module, args, kwargs):
@@ -147,7 +148,7 @@ def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
         record_call, with_kwargs=True
     )
     try:
-        out = model.get_audio_feature([_item(17), _item(9)])
+        out = model.get_audio_feature([item(17), item(9)])
     finally:
         handle.remove()
 
@@ -157,7 +158,7 @@ def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
 
 
 def test_get_audio_feature_without_runner_keeps_unmasked_single_item() -> None:
-    model = _tiny_ark_audio_mm_model()
+    model = tiny_ark_audio_mm_model()
     calls: list[object] = []
 
     def record_call(_module, args, kwargs):
@@ -168,7 +169,7 @@ def test_get_audio_feature_without_runner_keeps_unmasked_single_item() -> None:
         record_call, with_kwargs=True
     )
     try:
-        out = model.get_audio_feature([_item(12)])
+        out = model.get_audio_feature([item(12)])
     finally:
         handle.remove()
 
@@ -177,7 +178,7 @@ def test_get_audio_feature_without_runner_keeps_unmasked_single_item() -> None:
 
 
 def test_run_returns_none_on_cpu_encoder() -> None:
-    encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval()
     runner = ArkasrEncoderCudaGraphRunner(encoder, min_free_gb=0.0)
     mel = torch.randn(1, 8, 40)
     assert runner.run(mel, [40]) is None
@@ -185,25 +186,25 @@ def test_run_returns_none_on_cpu_encoder() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_run_without_precapture_does_not_capture() -> None:
-    encoder = ArkAudioMLPAdapter(_tiny_config()).eval().cuda()
+    device = require_device_streams()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
     runner = ArkasrEncoderCudaGraphRunner(encoder, max_batch_size=4, min_free_gb=0.0)
-    mel = torch.randn(1, 8, 40, device="cuda", dtype=encoder.dtype)
+    mel = torch.randn(1, 8, 40, device=device, dtype=encoder.dtype)
     assert runner.run(mel, [40]) is None
     assert runner.captured_buckets == ()
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_graph_replay_matches_eager_masked_forward() -> None:
-    encoder = ArkAudioMLPAdapter(_tiny_config()).eval().cuda()
+    device = require_device_streams()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
     runner = ArkasrEncoderCudaGraphRunner(encoder, max_batch_size=4, min_free_gb=0.0)
     runner.capture_working_set(8, max_mel_frames=64)
     torch.manual_seed(0)
     real_t = 40
     lengths = [40, 17]
-    mel = torch.randn(2, 8, real_t, device="cuda", dtype=encoder.dtype)
+    mel = torch.randn(2, 8, real_t, device=device, dtype=encoder.dtype)
     mel[1, :, lengths[1] :] = 0
 
     graph_out = runner.run(mel, lengths)
@@ -211,50 +212,91 @@ def test_graph_replay_matches_eager_masked_forward() -> None:
     assert (2, 64) in runner.captured_buckets
 
     t_bucket = 64
-    padded = torch.zeros(2, 8, t_bucket, device="cuda", dtype=encoder.dtype)
+    padded = torch.zeros(2, 8, t_bucket, device=device, dtype=encoder.dtype)
     padded[:, :, :real_t] = mel
-    ilens = torch.tensor(lengths, device="cuda", dtype=torch.long)
-    mask = torch.arange(t_bucket, device="cuda").unsqueeze(0) < ilens.unsqueeze(1)
+    ilens = torch.tensor(lengths, device=device, dtype=torch.long)
+    mask = torch.arange(t_bucket, device=device).unsqueeze(0) < ilens.unsqueeze(1)
     with torch.no_grad():
         eager = encoder(padded, attention_mask=mask)
     torch.testing.assert_close(graph_out, eager, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_capture_working_set_fills_batch_and_t_buckets() -> None:
-    encoder = ArkAudioMLPAdapter(_tiny_config()).eval().cuda()
+    device = require_device_streams()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
     runner = ArkasrEncoderCudaGraphRunner(
         encoder, max_batch_size=2, max_mel_frames=128, min_free_gb=0.0
     )
     runner.capture_working_set(8, max_mel_frames=64)
     assert runner.captured_buckets == ((1, 64), (2, 64))
-    mel = torch.randn(1, 8, 40, device="cuda", dtype=encoder.dtype)
+    mel = torch.randn(1, 8, 40, device=device, dtype=encoder.dtype)
     out = runner.run(mel, [40])
     assert out is not None
     assert out.shape[0] == 1
-    overflow = torch.randn(1, 8, 80, device="cuda", dtype=encoder.dtype)
+    overflow = torch.randn(1, 8, 80, device=device, dtype=encoder.dtype)
     assert runner.run(overflow, [80]) is None
     assert runner.captured_buckets == ((1, 64), (2, 64))
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_replay_failure_sticks_to_eager() -> None:
-    encoder = ArkAudioMLPAdapter(_tiny_config()).eval().cuda()
+    device = require_device_streams()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
     runner = ArkasrEncoderCudaGraphRunner(
         encoder, max_batch_size=1, max_mel_frames=64, min_free_gb=0.0
     )
     runner.capture_working_set(8, max_mel_frames=64)
     assert runner.captured_buckets == ((1, 64),)
-    entry = runner._graphs[(1, 64)]
+    entry = runner.graphs[(1, 64)]
 
-    def _boom() -> None:
+    def boom() -> None:
         raise RuntimeError("replay boom")
 
-    entry.graph.replay = _boom  # type: ignore[method-assign]
-    mel = torch.randn(1, 8, 40, device="cuda", dtype=encoder.dtype)
+    entry.graph.replay = boom  # type: ignore[method-assign]
+    mel = torch.randn(1, 8, 40, device=device, dtype=encoder.dtype)
     assert runner.run(mel, [40]) is None
     assert runner.captured_buckets == ()
     assert runner.run(mel, [40]) is None
     assert runner.captured_buckets == ()
+
+
+@pytest.mark.accelerator
+def test_capture_exit_failure_restores_stream_and_stays_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed capture leaves the caller on its own stream and the bucket eager."""
+    device = require_device_streams()
+    device_module = torch.get_device_module(device)
+    graph_class = torch.xpu.XPUGraph if device.type == "xpu" else torch.cuda.CUDAGraph
+    real_capture_end = graph_class.capture_end
+
+    def capture_end_then_boom(graph: torch.cuda.CUDAGraph | torch.xpu.XPUGraph) -> None:
+        real_capture_end(graph)
+        raise RuntimeError("capture end boom")
+
+    monkeypatch.setattr(graph_class, "capture_end", capture_end_then_boom)
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
+    runner = ArkasrEncoderCudaGraphRunner(
+        encoder, max_batch_size=1, max_mel_frames=64, min_free_gb=0.0
+    )
+    entry_stream = device_module.current_stream(device)
+    runner.capture_working_set(8, max_mel_frames=64)
+    assert device_module.current_stream(device) == entry_stream
+    assert runner.captured_buckets == ()
+    mel = torch.randn(1, 8, 40, device=device, dtype=encoder.dtype)
+    assert runner.run(mel, [40]) is None
+
+
+@pytest.mark.accelerator
+def test_pinned_attention_limit_leaves_costlier_buckets_eager() -> None:
+    device = require_device_streams()
+    encoder = ArkAudioMLPAdapter(tiny_config()).eval().to(device)
+    runner = ArkasrEncoderCudaGraphRunner(encoder, max_batch_size=2, min_free_gb=0.0)
+    runner.pinned_attention_max_mel_frames = 64
+    runner.capture_working_set(8, max_mel_frames=64)
+    assert runner.captured_buckets == ((1, 64),)
+    single = torch.randn(1, 8, 40, device=device, dtype=encoder.dtype)
+    assert runner.run(single, [40]) is not None
+    pair = torch.randn(2, 8, 40, device=device, dtype=encoder.dtype)
+    assert runner.run(pair, [40, 40]) is None

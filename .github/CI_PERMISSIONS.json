@@ -4,6 +4,11 @@
         "can_rerun_failed_ci": true,
         "reason": "custom override"
     },
+    "CloudRipple": {
+        "can_tag_run_ci_label": true,
+        "can_rerun_failed_ci": true,
+        "reason": "custom override"
+    },
     "Ratish1": {
         "can_tag_run_ci_label": true,
         "can_rerun_failed_ci": true,

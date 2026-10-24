@@ -72,7 +72,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`. `ref_text` is currently unused by ZONOS2.
 
-#### Python
+**Python**
 
 ```python
 import requests

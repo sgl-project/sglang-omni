@@ -10,9 +10,14 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    NemotronVoiceChatDuplexPipelineConfig,
+    NemotronVoiceChatToolPipelineConfig,
+)
 
 # The ckpt is all saved in float32.
 MODEL_DTYPE = "float32"
+PREPROCESSING_MAX_CONCURRENCY = 4
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.nemotron_voicechat.stages"
 
@@ -23,6 +28,7 @@ def nemotron_voicechat_stages_factory() -> list[StageConfig]:
             name="preprocessing",
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_preprocessing_executor",
+            factory=FactoryArgs(max_concurrency=PREPROCESSING_MAX_CONCURRENCY),
             next="perception",
         ),
         StageConfig(
@@ -97,3 +103,7 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
 
 
 EntryClass = NemotronVoiceChatPipelineConfig
+Variants = {
+    "duplex": NemotronVoiceChatDuplexPipelineConfig,
+    "tool": NemotronVoiceChatToolPipelineConfig,
+}

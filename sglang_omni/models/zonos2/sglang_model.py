@@ -10,17 +10,21 @@ backbone hidden states and exposes the head via :meth:`compute_logits`.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.runtime_context import get_schedule
+from transformers import PretrainedConfig
 
 from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     RadixAttention,
@@ -113,6 +117,8 @@ class Zonos2SonicRouter(nn.Module):
         self.rmsnorm_eda = nn.Parameter(torch.empty(rd))
         if self.use_eda:
             self.router_states_scale = nn.Parameter(torch.empty(rd))
+        else:
+            pass
         self.register_buffer("balancing_biases", torch.zeros(e), persistent=True)
 
     def forward(
@@ -121,6 +127,8 @@ class Zonos2SonicRouter(nn.Module):
         h = self.down_proj(h)
         if self.use_eda and router_states is not None:
             h = h + router_states * self.router_states_scale
+        else:
+            pass
         rs_next = h.clone()
         h = F.rms_norm(h, (h.shape[-1],), self.rmsnorm_eda, self.eps)
         logits = self.router_mlp_4(
@@ -138,8 +146,11 @@ class Zonos2SonicRouter(nn.Module):
 
 class Zonos2MoEBlock(nn.Module):
     def __init__(
-        self, cfg: Zonos2Config, layer_id: int, quant_config: Optional[Any] = None
-    ):
+        self,
+        cfg: Zonos2Config,
+        layer_id: int,
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.router = Zonos2SonicRouter(cfg, layer_id)
         self.experts = get_moe_impl_class(None)(
@@ -161,8 +172,11 @@ class Zonos2MoEBlock(nn.Module):
 
 class Zonos2DecoderLayer(nn.Module):
     def __init__(
-        self, cfg: Zonos2Config, layer_id: int, quant_config: Optional[Any] = None
-    ):
+        self,
+        cfg: Zonos2Config,
+        layer_id: int,
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.eps = cfg.norm_eps
         self.attention = Zonos2Attention(cfg, layer_id)
@@ -203,8 +217,8 @@ class Zonos2SGLangModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
-        quant_config: Optional[Any] = None,
+        config: PretrainedConfig,
+        quant_config: QuantizationConfig | None = None,
         prefix: str = "",
     ) -> None:
         super().__init__()
@@ -238,24 +252,21 @@ class Zonos2SGLangModel(nn.Module):
             torch.empty(self.audio_vocab * self.n_codebooks, cfg.dim)
         )
 
-        try:
-            from sglang.srt.server_args import get_global_server_args
-
-            max_bs = int(get_global_server_args().max_running_requests or 1)
-        except Exception:
-            max_bs = 256
         w = self.embedders[0].weight
-        self._decode_input_embedding = nn.Embedding(
-            max_bs, cfg.dim, device=w.device, dtype=w.dtype
+        self.decode_input_embedding = nn.Embedding(
+            get_schedule().max_running_requests,
+            cfg.dim,
+            device=w.device,
+            dtype=w.dtype,
         )
-        self._decode_input_embedding.weight.requires_grad_(False)
+        self.decode_input_embedding.weight.requires_grad_(False)
         # note (Yue Yin): on-device per-request decode state (feedback + EOS +
         # rep-history ring) for the eager-tail RTF work. Allocated here so its
         # tensors get stable addresses before CUDA-graph capture; the runner
         # gathers/scatters it each frame instead of per-request Python deques.
         from sglang_omni.models.zonos2.state_pool import Zonos2DecodeStatePool
 
-        self._decode_state_pool = Zonos2DecodeStatePool(self)
+        self.decode_state_pool = Zonos2DecodeStatePool(self)
         self.requires_grad_(
             False
         )  # inference-only; sglang in-place ops reject grad tensors
@@ -264,13 +275,13 @@ class Zonos2SGLangModel(nn.Module):
         # per-frame tail (head GEMM + per-request sample + embed + radix hash) into
         # one replay per decode bucket, cutting host dispatch in the host-bound
         # decode loop. Built by capture_tail_graphs; empty -> eager runner path.
-        self._tail_buckets: list[int] = []
-        self._tail_graphs: dict[int, Any] = {}
-        self._tail_params: Optional[TTSSamplingParams] = None
-        self._tail_top_k_max: int = 0
-        self._tail_any_top_p: bool = False
-        self._tail_any_min_p: bool = False
-        self._cg: dict[str, torch.Tensor] = {}
+        self.tail_buckets: list[int] = []
+        self.tail_graphs: dict[int, ReplayableGraph] = {}
+        self.tail_params: Optional[TTSSamplingParams] = None
+        self.tail_top_k_max: int = 0
+        self.tail_any_top_p: bool = False
+        self.tail_any_min_p: bool = False
+        self.cg: dict[str, torch.Tensor] = {}
 
     @property
     def device(self) -> torch.device:
@@ -282,7 +293,7 @@ class Zonos2SGLangModel(nn.Module):
 
     def reset_request(self, rid: str) -> None:
         """Release decode state for a finished or aborted request."""
-        self._decode_state_pool.release_row(rid)
+        self.decode_state_pool.release_row(rid)
 
     def embed_frames(self, rows: torch.Tensor) -> torch.Tensor:
         """Sum the per-column embeddings of ``(T, frame_width)`` int rows."""
@@ -310,19 +321,23 @@ class Zonos2SGLangModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> LogitsProcessorOutput:
         # Prefill: the runner stages the summed (speaker-injected) embedding on
         # forward_batch. Decode: input_ids are row indices into the fixed feedback
         # buffer the runner wrote in-place, so the graph replays a stable input.
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
+        else:
+            pass
         if input_embeds is None:
             fm = getattr(forward_batch, "forward_mode", None)
             if fm is not None and fm.is_decode():
-                input_embeds = self._decode_input_embedding(input_ids)
+                input_embeds = self.decode_input_embedding(input_ids)
             else:
                 input_embeds = self.warmup_embed(input_ids)
+        else:
+            pass
         x = input_embeds
         x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
 
@@ -353,7 +368,7 @@ class Zonos2SGLangModel(nn.Module):
         """Graph-capturable per-frame tail over the first ``bs`` static rows: head
         GEMM -> break-mask -> per-request sample (torch.multinomial, capturable)
         -> embed -> radix hash. Reads/writes the ``_cg`` buffers in place."""
-        cg = self._cg
+        cg = self.cg
         logits = self.compute_logits(cg["hidden"][:bs]).float()
         logits[:, 0].add_(cg["break_mask"][:bs])
         codes = sample_tts(
@@ -363,10 +378,10 @@ class Zonos2SGLangModel(nn.Module):
             top_p=cg["top_p"][:bs],
             min_p=cg["min_p"][:bs],
             repetition_penalty=cg["rep_pen"][:bs],
-            top_k_max=self._tail_top_k_max,
+            top_k_max=self.tail_top_k_max,
             rep_token_ids=cg["rep_ids"][:bs],
-            any_top_p=self._tail_any_top_p,
-            any_min_p=self._tail_any_min_p,
+            any_top_p=self.tail_any_top_p,
+            any_min_p=self.tail_any_min_p,
         )
         text_col = torch.full(
             (bs, 1), self.config.text_vocab, device=codes.device, dtype=torch.long
@@ -378,7 +393,10 @@ class Zonos2SGLangModel(nn.Module):
 
     @torch.no_grad()
     def capture_tail_graphs(
-        self, buckets: list[int], params: TTSSamplingParams
+        self,
+        buckets: list[int],
+        params: TTSSamplingParams,
+        graph_backend: DeviceGraphBackend,
     ) -> None:
         """Allocate static buffers + bake the structural sampler flags, then
         capture one tail graph per batch bucket."""
@@ -387,7 +405,8 @@ class Zonos2SGLangModel(nn.Module):
         mb = max(buckets)
         dev, dt = self.device, self.dtype
         f32, i64 = torch.float32, torch.long
-        self._cg = {
+        device_module = torch.get_device_module(self.device)
+        self.cg = {
             "hidden": torch.zeros(mb, dim, device=dev, dtype=dt),
             "temperature": torch.full((mb,), params.temperature, device=dev, dtype=f32),
             "top_k": torch.full((mb,), params.top_k, device=dev, dtype=i64),
@@ -402,26 +421,28 @@ class Zonos2SGLangModel(nn.Module):
             "keys": torch.zeros(mb, device=dev, dtype=i64),
             "feedback": torch.zeros(mb, dim, device=dev, dtype=dt),
         }
-        self._tail_params = params
-        self._tail_top_k_max = params.top_k if 0 < params.top_k < V else 0
-        self._tail_any_top_p = 0.0 < params.top_p < 1.0
-        self._tail_any_min_p = params.min_p > 0.0
-        self._tail_buckets = sorted(buckets)
-        self._tail_graphs = {}
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
-            for bs in self._tail_buckets:
-                for _ in range(3):
+        self.tail_params = params
+        self.tail_top_k_max = params.top_k if 0 < params.top_k < V else 0
+        self.tail_any_top_p = 0.0 < params.top_p < 1.0
+        self.tail_any_min_p = params.min_p > 0.0
+        tail_buckets = sorted(buckets)
+        tail_graphs = {}
+        with device_module.device(self.device):
+            warmup_stream = device_module.Stream(device=self.device)
+            warmup_stream.wait_stream(device_module.current_stream(self.device))
+            with device_module.stream(warmup_stream):
+                for bs in tail_buckets:
+                    for _ in range(3):
+                        self.tail_compute(bs)
+            device_module.current_stream(self.device).wait_stream(warmup_stream)
+            device_module.synchronize(self.device)
+            for bs in tail_buckets:
+                with graph_backend.capture() as graph:
                     self.tail_compute(bs)
-        torch.cuda.current_stream().wait_stream(s)
-        torch.cuda.synchronize()
-        for bs in self._tail_buckets:
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
-                self.tail_compute(bs)
-            self._tail_graphs[bs] = g
-        torch.cuda.synchronize()
+                tail_graphs[bs] = graph
+            device_module.synchronize(self.device)
+        self.tail_graphs = tail_graphs
+        self.tail_buckets = tail_buckets
 
     @torch.no_grad()
     def run_tail_graph(
@@ -431,8 +452,8 @@ class Zonos2SGLangModel(nn.Module):
         up to the next bucket; extra rows compute on stale data and are ignored),
         and return views of (codes [bs,n], keys [bs], feedback [bs,dim])."""
         bs = hidden.shape[0]
-        bucket = next(g for g in self._tail_buckets if g >= bs)
-        cg = self._cg
+        bucket = next(g for g in self.tail_buckets if g >= bs)
+        cg = self.cg
         cg["hidden"][:bs].copy_(hidden)
         cg["temperature"][:bs].copy_(temperature)
         cg["top_k"][:bs].copy_(top_k)
@@ -441,7 +462,7 @@ class Zonos2SGLangModel(nn.Module):
         cg["rep_pen"][:bs].copy_(rep_pen)
         cg["rep_ids"][:bs].copy_(rep_ids)
         cg["break_mask"][:bs].copy_(break_mask)
-        self._tail_graphs[bucket].replay()
+        self.tail_graphs[bucket].replay()
         return cg["codes"][:bs], cg["keys"][:bs], cg["feedback"][:bs]
 
     @torch.no_grad()
@@ -456,8 +477,12 @@ class Zonos2SGLangModel(nn.Module):
         for k, v in sd.items():
             if ".router.ent_denom" in k or ".router.normalized_entropy" in k:
                 continue
+            else:
+                pass
             if ".parametrizations." in k and ".original" in k:
                 k = k.replace(".parametrizations.", ".").replace(".original", "")
+            else:
+                pass
             fixed[k] = v
         used: set[str] = set()
 
@@ -590,6 +615,8 @@ class Zonos2SGLangModel(nn.Module):
                         r.router_states_scale,
                         fixed[p + "feed_forward.router.router_states_scale"],
                     )
+                else:
+                    pass
                 r.balancing_biases.data.copy_(
                     fixed[p + "feed_forward.router.balancing_biases"].float()
                 )
@@ -609,6 +636,8 @@ class Zonos2SGLangModel(nn.Module):
         leftover = set(fixed) - used
         if leftover:
             raise RuntimeError(f"Unconsumed checkpoint keys: {sorted(leftover)[:12]}")
+        else:
+            pass
 
 
 EntryClass = Zonos2SGLangModel

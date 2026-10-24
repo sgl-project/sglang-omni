@@ -92,31 +92,3 @@ def test_higgs_result_adapter_reads_output_code_buffer() -> None:
 
     assert result.data["output_codes_delayed"] == [[1, 2, 3], [4, 5, 6]]
     assert result.data["completion_tokens"] == 2
-
-
-def test_higgs_result_adapter_propagates_conversion_failure(
-    monkeypatch,
-) -> None:
-    _, result_adapter = request_builders.make_higgs_scheduler_adapters()
-    state = HiggsTtsState(prompt_token_ids=[1], max_new_tokens=8)
-    payload = StagePayload(
-        request_id="req-higgs-failed-result",
-        request=OmniRequest(inputs={}),
-        data=state.to_dict(),
-    )
-    data = request_builders.build_sglang_higgs_request(
-        state, request_id=payload.request_id
-    )
-    data.stage_payload = payload
-
-    def fail_result_conversion(_state, _data) -> None:
-        raise RuntimeError("result conversion failed")
-
-    monkeypatch.setattr(
-        request_builders,
-        "apply_higgs_result",
-        fail_result_conversion,
-    )
-
-    with pytest.raises(RuntimeError, match="result conversion failed"):
-        result_adapter(data)

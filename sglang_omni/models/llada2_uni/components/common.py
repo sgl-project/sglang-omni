@@ -16,6 +16,8 @@ def resolve_local_model_dir(model_path: str) -> str:
     path = Path(model_path)
     if path.exists():
         return str(path)
+    else:
+        pass
 
     try:
         return str(resolve_model_path(model_path, local_files_only=True))

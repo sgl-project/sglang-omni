@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,42 +14,72 @@ import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
+from sglang_omni.models.registry import resolve_variant
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.utils.imports import import_string
 
-_MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
+MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
 
 # note (lennox): zonos2's preprocessing is CPU-only but declares gpu=0 to share
 # the pipeline process with tts_engine; qwen3_omni's mm_aggregate is an identity
 # stage placed on a GPU in the "text" topology for pure colocation.
-_CPU_ONLY_GPU_PLACED = {
+CPU_ONLY_GPU_PLACED = {
     ("qwen3_omni", "mm_aggregate"),
     ("zonos2", "preprocessing"),
 }
 
 
-def _iter_stages():
-    for config_path in sorted(_MODELS_DIR.glob("*/config.py")):
+def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    profiles = {
+        Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
+        StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
+    }
+    if config_cls in profiles:
+        profile = MODELS_DIR.parent.parent / profiles[config_cls]
+        return ConfigManager.from_file(str(profile)).config.model_copy(
+            update={"model_path": "unused"}
+        )
+    else:
+        return config_cls(model_path="unused")
+
+
+def iter_stages():
+    for config_path in sorted(MODELS_DIR.glob("*/config.py")):
         model = config_path.parent.name
         module = importlib.import_module(f"sglang_omni.models.{model}.config")
         topologies = {}
         if getattr(module, "EntryClass", None) is not None:
             topologies["default"] = module.EntryClass
         topologies.update(getattr(module, "Variants", None) or {})
-        for label, config_cls in topologies.items():
-            for stage in config_cls(model_path="unused").stages:
+        for label, variant in topologies.items():
+            config_cls = resolve_variant(variant)
+            for stage in pipeline_config(config_cls).stages:
                 yield model, label, stage
+
+
+def pipeline_wiring(model: str, label: str, stage_name: str) -> Mapping[str, object]:
+    module = importlib.import_module(f"sglang_omni.models.{model}.config")
+    config_cls = (
+        module.EntryClass
+        if label == "default"
+        else resolve_variant(module.Variants[label])
+    )
+    return pipeline_config(config_cls).stage_factory_kwargs(stage_name)
 
 
 # note (lennox): only device/gpu_id are asserted on below, but a non-literal
 # default elsewhere (a name, an arithmetic expr) would raise before reaching them.
-def _literal_default(node: ast.expr) -> object:
+def literal_default(node: ast.expr) -> object:
     try:
         return ast.literal_eval(node)
     except ValueError:
         return ...
 
 
-def _factory_parameters(dotted: str) -> dict[str, object]:
+def factory_parameters(dotted: str) -> dict[str, object]:
     try:
         return {
             name: (... if p.default is inspect.Parameter.empty else p.default)
@@ -58,44 +89,41 @@ def _factory_parameters(dotted: str) -> dict[str, object]:
         pass
     module_name, _, func_name = dotted.rpartition(".")
     source = (
-        _MODELS_DIR.parent.parent / (module_name.replace(".", "/") + ".py")
+        MODELS_DIR.parent.parent / (module_name.replace(".", "/") + ".py")
     ).read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.FunctionDef) and node.name == func_name:
             args = node.args
             positional = args.posonlyargs + args.args
             defaults = [...] * (len(positional) - len(args.defaults)) + [
-                _literal_default(d) for d in args.defaults
+                literal_default(d) for d in args.defaults
             ]
             params = dict(zip((a.arg for a in positional), defaults))
             for a, d in zip(args.kwonlyargs, args.kw_defaults):
-                params[a.arg] = ... if d is None else _literal_default(d)
+                params[a.arg] = ... if d is None else literal_default(d)
             return params
     raise AssertionError(f"factory {dotted} not found in {module_name}")
 
 
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
-_REQUIRES_REAL_ACCELERATOR = {
-    ("dots_tts", "reference_encode"),
-    ("dots_tts", "latent_engine"),
-    ("dots_tts", "vocoder"),
+REQUIRES_REAL_ACCELERATOR = {
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
 }
 
 
-def _gpu_stage_ids(*, mark_accelerator=False, include_exempt=False):
+def gpu_stage_ids(*, mark_accelerator=False, include_exempt=False):
     ids = []
-    for model, label, stage in _iter_stages():
+    for model, label, stage in iter_stages():
         if stage.gpu is None:
             continue
-        if not include_exempt and (model, stage.name) in _CPU_ONLY_GPU_PLACED:
+        if not include_exempt and (model, stage.name) in CPU_ONLY_GPU_PLACED:
             continue
         marks = (
             [pytest.mark.accelerator]
-            if mark_accelerator and (model, stage.name) in _REQUIRES_REAL_ACCELERATOR
+            if mark_accelerator and (model, stage.name) in REQUIRES_REAL_ACCELERATOR
             else []
         )
         ids.append(
@@ -108,9 +136,9 @@ def _gpu_stage_ids(*, mark_accelerator=False, include_exempt=False):
 
 # note (lennox): exempt colocation-only stages still take the parameters --
 # the launch-time gate injects gpu_id into every GPU-placed stage's factory.
-@pytest.mark.parametrize("model,label,stage", _gpu_stage_ids(include_exempt=True))
+@pytest.mark.parametrize("model,label,stage", gpu_stage_ids(include_exempt=True))
 def test_gpu_stage_factories_declare_device_and_gpu_id(model, label, stage):
-    params = _factory_parameters(stage.factory_path)
+    params = factory_parameters(stage.factory_path)
     assert "gpu_id" in params, (
         f"{stage.factory_path} is placed on a GPU (stage.gpu={stage.gpu}) but has "
         "no gpu_id parameter"
@@ -124,7 +152,7 @@ def test_gpu_stage_factories_declare_device_and_gpu_id(model, label, stage):
     ), f"{stage.factory_path}: device defaults to {params['device']!r}, should use None"
 
 
-def _device_is_set(stage) -> bool:
+def device_is_set(stage) -> bool:
     factory = stage.factory
     return "device" in factory.model_fields_set or "device" in (
         factory.model_extra or {}
@@ -133,10 +161,10 @@ def _device_is_set(stage) -> bool:
 
 @pytest.mark.parametrize(
     "model,label,stage",
-    [pytest.param(m, l, s, id=f"{m}-{l}-{s.name}") for m, l, s in _iter_stages()],
+    [pytest.param(m, l, s, id=f"{m}-{l}-{s.name}") for m, l, s in iter_stages()],
 )
 def test_config_device_never_carries_an_index(model, label, stage):
-    if not _device_is_set(stage):
+    if not device_is_set(stage):
         return
     device = stage.factory.device
     assert ":" not in str(device), (
@@ -145,20 +173,20 @@ def test_config_device_never_carries_an_index(model, label, stage):
     )
 
 
-class _Settled(Exception):
+class Settled(Exception):
     def __init__(self, device, index):
         self.device = device
         self.index = index
 
 
-def _arm_device_spec_resolvers(monkeypatch, factory_path: str | None = None):
+def arm_device_spec_resolvers(monkeypatch, factory_path: str | None = None):
     import sglang_omni.utils.device as device_mod
     from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
 
-    def _capture(device, index=None):
-        raise _Settled(device, index)
+    def capture(device, index=None):
+        raise Settled(device, index)
 
-    monkeypatch.setattr(device_mod, "resolve_concrete_device", _capture)
+    monkeypatch.setattr(device_mod, "resolve_concrete_device", capture)
     # note (lennox): a factory module that imports resolve_concrete_device at module
     # scope (rather than inside the factory body) binds its own name to the
     # pre-patch function, so patching device_mod alone is invisible to it -- patch
@@ -166,7 +194,7 @@ def _arm_device_spec_resolvers(monkeypatch, factory_path: str | None = None):
     if factory_path is not None:
         factory_module = importlib.import_module(factory_path.rsplit(".", 1)[0])
         if "resolve_concrete_device" in vars(factory_module):
-            monkeypatch.setattr(factory_module, "resolve_concrete_device", _capture)
+            monkeypatch.setattr(factory_module, "resolve_concrete_device", capture)
     # note (lennox): builders import lazily inside factory bodies, so patch each
     # known builder class directly; MRO bypasses a base-class-only patch.
     monkeypatch.setattr(
@@ -174,7 +202,7 @@ def _arm_device_spec_resolvers(monkeypatch, factory_path: str | None = None):
         "resolve_checkpoint",
         lambda self, model_path: model_path,
     )
-    for _, builder_module, builder_class in _ENGINE_FACTORIES.values():
+    for _, builder_module, builder_class in ENGINE_FACTORIES.values():
         try:
             builder = getattr(importlib.import_module(builder_module), builder_class)
         except ImportError:
@@ -184,7 +212,7 @@ def _arm_device_spec_resolvers(monkeypatch, factory_path: str | None = None):
         )
 
 
-@pytest.mark.parametrize("model,label,stage", _gpu_stage_ids(mark_accelerator=True))
+@pytest.mark.parametrize("model,label,stage", gpu_stage_ids(mark_accelerator=True))
 def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
     monkeypatch, model, label, stage
 ):
@@ -195,13 +223,21 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    _arm_device_spec_resolvers(monkeypatch, factory_path=stage.factory_path)
+    arm_device_spec_resolvers(monkeypatch, factory_path=stage.factory_path)
+    parameters = factory_parameters(stage.factory_path)
     kwargs: dict[str, object] = {"device": None, "gpu_id": 2}
-    if "model_path" in _factory_parameters(stage.factory_path):
+    if "model_path" in parameters:
         kwargs["model_path"] = "unused"
+    configured = {
+        **stage.factory.model_dump(),
+        **pipeline_wiring(model, label, stage.name),
+    }
+    for name, default in parameters.items():
+        if default is ... and name not in kwargs and name in configured:
+            kwargs[name] = configured[name]
     try:
         factory(**kwargs)
-    except _Settled as settled:
+    except Settled as settled:
         assert settled.index == 2, (
             f"{stage.factory_path} reached device-spec resolution but dropped gpu_id "
             f"(index={settled.index!r})"
@@ -231,7 +267,17 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
-_ENGINE_FACTORIES = {
+ENGINE_FACTORIES = {
+    "nemotron_voicechat_thinker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatEngineBuilder",
+    ),
+    "nemotron_voicechat_talker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_talker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatTalkerEngineBuilder",
+    ),
     "arkasr": (
         "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
         "sglang_omni.models.arkasr.engine_builder",
@@ -288,6 +334,11 @@ _ENGINE_FACTORIES = {
         "sglang_omni.models.fishaudio_s2_pro.engine_builder",
         "FishS2ProEngineBuilder",
     ),
+    "fishaudio_drama3": (
+        "sglang_omni.models.fishaudio_drama3.stages.create_tts_engine_executor",
+        "sglang_omni.models.fishaudio_drama3.engine_builder",
+        "Drama3EngineBuilder",
+    ),
     "higgs_tts": (
         "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.higgs_tts.engine_builder",
@@ -316,28 +367,28 @@ _ENGINE_FACTORIES = {
 }
 
 
-# note (lennox): same three CUDA-only models as _REQUIRES_REAL_ACCELERATOR,
+# note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-_ACCELERATOR_ONLY_ENGINE_MODELS = {"dots_tts", "minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
 
 
-def _engine_factory_ids():
+def engine_factory_ids():
     return [
         pytest.param(
             model,
             marks=(
                 [pytest.mark.accelerator]
-                if model in _ACCELERATOR_ONLY_ENGINE_MODELS
+                if model in ACCELERATOR_ONLY_ENGINE_MODELS
                 else []
             ),
         )
-        for model in sorted(_ENGINE_FACTORIES)
+        for model in sorted(ENGINE_FACTORIES)
     ]
 
 
-@pytest.mark.parametrize("model", _engine_factory_ids())
+@pytest.mark.parametrize("model", engine_factory_ids())
 def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
-    factory_path, builder_module, builder_class = _ENGINE_FACTORIES[model]
+    factory_path, builder_module, builder_class = ENGINE_FACTORIES[model]
     try:
         factory = import_string(factory_path)
         builder = getattr(importlib.import_module(builder_module), builder_class)
@@ -346,14 +397,14 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
 
     final: dict[str, object] = {}
 
-    class _Stop(Exception):
+    class Stop(Exception):
         pass
 
     def capture(self, checkpoint_dir):
         del checkpoint_dir
         final["device"] = self.device
         final["gpu_id"] = self.gpu_id
-        raise _Stop
+        raise Stop
 
     monkeypatch.setattr(
         builder, "resolve_checkpoint", lambda self, model_path: model_path
@@ -365,12 +416,12 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
         platforms.current_platform, "device_type", "cuda", raising=False
     )
 
-    with pytest.raises(_Stop):
+    with pytest.raises(Stop):
         factory(model_path="unused", device=None, gpu_id=2)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
     final.clear()
-    with pytest.raises(_Stop):
+    with pytest.raises(Stop):
         factory(model_path="unused", device="cuda", gpu_id=2)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
@@ -378,19 +429,24 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
 # note (lennox): these AR factories build ServerArgs themselves instead of going
 # through SGLangGenerationEngineBuilder.build(), so the builder-level test above
 # cannot see whether they pin the resolved device type into ServerArgs.
-_SELF_BUILT_SERVER_ARGS_FACTORIES = [
+SELF_BUILT_SERVER_ARGS_FACTORIES = [
     "sglang_omni.models.llada2_uni.stages.create_sglang_dllm_thinker_executor_from_config",
     "sglang_omni.models.ming_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config",
 ]
+REQUIRED_FACTORY_KWARGS = {
+    "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config": {
+        "max_running_requests": 32
+    },
+}
 
 
 @pytest.mark.parametrize(
     "factory_path",
     [
         pytest.param(p, id=p.split(".")[2] + "-" + p.rsplit(".", 1)[-1])
-        for p in _SELF_BUILT_SERVER_ARGS_FACTORIES
+        for p in SELF_BUILT_SERVER_ARGS_FACTORIES
     ],
 )
 def test_self_built_server_args_carry_the_resolved_device_type(
@@ -405,13 +461,13 @@ def test_self_built_server_args_carry_the_resolved_device_type(
 
     captured: dict[str, object] = {}
 
-    class _Stop(Exception):
+    class Stop(Exception):
         pass
 
     def fake_build(model_path, **kwargs):
         del model_path
         captured.update(kwargs)
-        raise _Stop
+        raise Stop
 
     monkeypatch.setattr(sglang_backend, "build_sglang_server_args", fake_build)
     factory_module = importlib.import_module(factory_path.rsplit(".", 1)[0])
@@ -422,17 +478,22 @@ def test_self_built_server_args_carry_the_resolved_device_type(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
 
-    with pytest.raises(_Stop):
-        factory("unused", device=None, gpu_id=2)
+    required = REQUIRED_FACTORY_KWARGS.get(factory_path, {})
+    with pytest.raises(Stop):
+        factory("unused", device=None, gpu_id=2, **required)
     assert captured["device"] == "cuda"
 
     with pytest.raises(ValueError, match="stage placement"):
         factory(
-            "unused", device=None, gpu_id=2, server_args_overrides={"device": "xpu"}
+            "unused",
+            device=None,
+            gpu_id=2,
+            server_args_overrides={"device": "xpu"},
+            **required,
         )
 
 
-_MODELS = sorted(p.parent.name for p in _MODELS_DIR.glob("*/config.py"))
+MODELS = sorted(p.parent.name for p in MODELS_DIR.glob("*/config.py"))
 
 
 @pytest.mark.parametrize("factory_name", ["image_encoder", "audio_encoder"])
@@ -444,7 +505,7 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
 
     built: dict[str, object] = {}
 
-    class _Encoder:
+    class Encoder:
         def __init__(
             self,
             *,
@@ -465,7 +526,7 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
         "image_encoder": "Qwen3OmniImageEncoder",
         "audio_encoder": "Qwen3OmniAudioEncoder",
     }[factory_name]
-    monkeypatch.setattr(stages, encoder_attr, _Encoder)
+    monkeypatch.setattr(stages, encoder_attr, Encoder)
     monkeypatch.setattr(
         simple_scheduler, "SimpleScheduler", lambda *a, **k: SimpleNamespace()
     )
@@ -487,10 +548,15 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
 def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import torch
+
     from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 
     model = SimpleNamespace(
-        total_upsample=1, config=SimpleNamespace(num_quantizers=4), eval=lambda: None
+        total_upsample=1,
+        config=SimpleNamespace(num_quantizers=4),
+        decoder=torch.nn.Module(),
+        eval=lambda: None,
     )
     model.eval = lambda: model
     monkeypatch.setattr(
@@ -499,11 +565,11 @@ def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler("unused", device=None)
 
-    assert scheduler._device.type == platforms.current_platform.device_type
+    assert scheduler.device.type == platforms.current_platform.device_type
     if platforms.current_platform.device_type != "cpu":
         # Placement was not requested, so the backend's current card is bound.
         # A cpu device correctly carries no index.
-        assert scheduler._device.index is not None
+        assert scheduler.device.index is not None
 
 
 def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
@@ -540,16 +606,16 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
 
 # note (lennox): this topology's own placement policy rejects process replicas
 # (models/qwen3_omni/placement.py).
-_REPLICA_REJECTED_TOPOLOGIES = {
+REPLICA_REJECTED_TOPOLOGIES = {
     ("qwen3_omni", "speech-colocated"),
 }
 
 
-def _config_with_one_replicated_process(config_cls, model):
+def config_with_one_replicated_process(config_cls, model):
     from sglang_omni.config.schema import ProcessConfig
     from sglang_omni.config.topology import stage_process_name
 
-    config = config_cls(model_path="unused")
+    config = pipeline_config(config_cls)
     by_process: dict[str, list] = {}
     for stage in config.stages:
         by_process.setdefault(stage_process_name(stage), []).append(stage)
@@ -559,7 +625,7 @@ def _config_with_one_replicated_process(config_cls, model):
             stage
             for stage in members
             if stage.gpu is not None
-            and (model, stage.name) not in _CPU_ONLY_GPU_PLACED
+            and (model, stage.name) not in CPU_ONLY_GPU_PLACED
             and stage.tp_size == 1
         ]
         if gpu_members and all(stage.tp_size == 1 for stage in members):
@@ -574,10 +640,11 @@ def _config_with_one_replicated_process(config_cls, model):
     )
     stages_cfg = list(config.stages)
     if len(gpu_members) > 1:
+        stage_memory_fraction = 0.9 / len(gpu_members)
         member_names = {stage.name for stage in gpu_members}
         stages_cfg = [
             (
-                stage.model_copy(update={"gpu_memory_fraction": 0.3})
+                stage.model_copy(update={"gpu_memory_fraction": stage_memory_fraction})
                 if stage.name in member_names
                 else stage
             )
@@ -599,7 +666,7 @@ def _config_with_one_replicated_process(config_cls, model):
 
 @pytest.mark.parametrize(
     "model,label",
-    sorted({(m, l) for m, l, _ in _iter_stages()}),
+    sorted({(m, l) for m, l, _ in iter_stages()}),
     ids=lambda v: v if isinstance(v, str) else None,
 )
 def test_every_model_routes_each_process_replica_to_its_own_gpu(
@@ -621,8 +688,8 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
     if getattr(module, "EntryClass", None) is not None:
         topologies["default"] = module.EntryClass
     topologies.update(getattr(module, "Variants", None) or {})
-    config, replicated_stages = _config_with_one_replicated_process(
-        topologies[label], model
+    config, replicated_stages = config_with_one_replicated_process(
+        resolve_variant(topologies[label]), model
     )
     if config is None:
         pytest.skip("no tp_size=1 GPU process to replicate")
@@ -633,10 +700,20 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
     # note (lennox): budget here is unrelated to gpu routing, set it only for local test run on Windows.
     monkeypatch.setattr(runtime_config, "_IPC_SUN_PATH_BUDGET", 10_000)
 
-    if (model, label) in _REPLICA_REJECTED_TOPOLOGIES:
+    if (model, label) in REPLICA_REJECTED_TOPOLOGIES:
         with pytest.raises(ValueError, match="does not support process replicas"):
             prepare_pipeline_runtime(config)
         return
+    elif any(
+        stage.http_routes for stage in config.stages if stage.name in replicated_stages
+    ):
+        # A stage that serves its own HTTP routes keeps route state in one
+        # instance, so its process refuses replicas.
+        with pytest.raises(ValueError, match="serves http_routes"):
+            prepare_pipeline_runtime(config)
+        return
+    else:
+        pass
 
     prep = prepare_pipeline_runtime(config)
     try:

@@ -12,7 +12,7 @@ import torch
 pytestmark = pytest.mark.accelerator
 
 
-def _capture(monkeypatch, obj, method, output, key, *, argument=False, first=False):
+def capture(monkeypatch, obj, method, output, key, *, argument=False, first=False):
     original = getattr(obj, method)
 
     def wrapped(*args, **kwargs):
@@ -68,7 +68,7 @@ def models():
     decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
-        return decode._fn(engine._fn(conditioning._fn(payload)))
+        return decode.fn(engine.fn(conditioning.fn(payload)))
 
     return upstream, generate, checkpoint, Path(source)
 
@@ -117,7 +117,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
 
     expected = {}
     actual = {}
-    _capture(
+    capture(
         monkeypatch,
         upstream.vae_model,
         "encoding_and_normalization",
@@ -125,10 +125,10 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         "reference",
         first=True,
     )
-    _capture(
+    capture(
         monkeypatch, upstream.model, "encode_text", expected, "conditioning", first=True
     )
-    _capture(
+    capture(
         monkeypatch,
         upstream.vae_model,
         "denormalize",
@@ -151,7 +151,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
 
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
-    _capture(monkeypatch, stages, "fuse_hidden_states", actual, "conditioning")
+    capture(monkeypatch, stages, "fuse_hidden_states", actual, "conditioning")
     torch.manual_seed(request.seed)
     expected["waveform"], sample_rate = upstream.generate(
         messages,

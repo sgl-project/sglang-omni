@@ -4,7 +4,7 @@
 #   docker build -f docker/cpu.Dockerfile -t sglang-omni:cpu .
 #   docker run -it --shm-size 32g --ipc host --network host sglang-omni:cpu
 
-ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.19-xeon@sha256:dec15decb555242b67471b984e51bd44e3faa44fc5c2b5258d46e5fa926e7cde
+ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.22-xeon@sha256:4e5c413ed9a31f38f74e18aa9b645d65a0b0a023d42f63edb4e2b412ea1a230f
 
 FROM ${SGLANG_IMAGE} AS runtime
 SHELL ["/bin/bash", "-c"]

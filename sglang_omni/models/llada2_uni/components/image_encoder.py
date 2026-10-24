@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -141,6 +140,8 @@ class VisionEmbeddings(nn.Module):
 
         if isinstance(lengths, list):
             lengths = torch.tensor(lengths, device=device, dtype=torch.long)
+        else:
+            pass
 
         orig_size = int(pos_w.shape[0] ** 0.5)
         pos_2d = (
@@ -307,6 +308,8 @@ class LLaDA2ImageEncoder(nn.Module):
         except (FileNotFoundError, OSError):
             if Path(model_path).exists():
                 raise
+            else:
+                pass
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
             raw_config = load_image_tokenizer_config(self.model_dir)
         vision_cfg = make_vision_config(raw_config)
@@ -333,7 +336,7 @@ class LLaDA2ImageEncoder(nn.Module):
     @torch.no_grad()
     def forward(
         self, pixel_values: torch.Tensor, image_grid_thw: torch.Tensor, **kwargs
-    ) -> dict[str, Any]:
+    ) -> dict[str, list[list[int]]]:
         """Run ViT encoder + VQ-VAE quantization.
 
         Args:

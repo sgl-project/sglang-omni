@@ -87,10 +87,14 @@ class MoGHead(nn.Module):
         if guidance_scale > 0:
             conditioned, unconditioned = hidden_TD.chunk(2, dim=0)
             hidden_TD = conditioned + guidance_scale * (conditioned - unconditioned)
+        else:
+            pass
 
         logits_TN = self.proj_logits(hidden_TD)
         if top_p is not None:
             logits_TN = self.nucleus(logits_TN, top_p)
+        else:
+            pass
         # Gumbel-max over the log-softmax draws one component per position.
         with torch.autocast(device_type=hidden_TD.device.type, enabled=False):
             gumbel = -torch.log(-torch.log(torch.rand_like(logits_TN.float())))

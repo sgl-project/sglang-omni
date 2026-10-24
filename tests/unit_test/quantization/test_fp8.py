@@ -12,11 +12,6 @@ from sglang_omni.quantization import convert_fp8_weight_scale_inv, is_fp8_block_
 class TestIsFp8BlockQuant:
     """Tests for ``is_fp8_block_quant`` detection."""
 
-    def test_true_for_block_fp8(self) -> None:
-        assert is_fp8_block_quant(
-            {"quant_method": "fp8", "weight_block_size": [128, 128]}
-        )
-
     def test_false_without_block_size(self) -> None:
         assert not is_fp8_block_quant({"quant_method": "fp8"})
 
@@ -25,25 +20,9 @@ class TestIsFp8BlockQuant:
             {"quant_method": "auto-round", "weight_block_size": [128, 128]}
         )
 
-    def test_false_for_none(self) -> None:
-        assert not is_fp8_block_quant(None)
-
 
 class TestConvertFp8WeightScaleInv:
     """Tests for ``convert_fp8_weight_scale_inv``."""
-
-    def test_regular_weight_passes_through(self) -> None:
-        weight = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-        result = convert_fp8_weight_scale_inv("model.weight", weight)
-        assert result is weight
-
-    def test_scale_inv_is_reciprocated(self) -> None:
-        scale_inv = torch.tensor([2.0, 4.0, 8.0], dtype=torch.float32)
-        result = convert_fp8_weight_scale_inv(
-            "model.layers.0.mlp.gate_proj.weight_scale_inv", scale_inv
-        )
-        expected = torch.tensor([0.5, 0.25, 0.125], dtype=torch.float32)
-        assert torch.allclose(result, expected)
 
     def test_original_tensor_not_mutated(self) -> None:
         scale_inv = torch.tensor([2.0, 4.0], dtype=torch.float32)

@@ -57,7 +57,11 @@ def has_sustained_repetition(text: str) -> bool:
                     period,
                 ):
                     continue
+                else:
+                    pass
                 return True
+            else:
+                pass
     return False
 
 
@@ -76,6 +80,8 @@ class WhisperTranscriptionAdapter(DefaultTranscriptionAdapter):
     ) -> str | None:
         if is_first_decoded_chunk:
             return caller_prompt
+        else:
+            pass
         return previous_text
 
     def should_retry_chunk_without_context(self, text: str) -> bool:

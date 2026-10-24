@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TypedDict
 
 import torch
 
@@ -15,15 +15,24 @@ from sglang_omni.models.auk.constants import NO_PROMPT_AUDIO_MARKER
 logger = logging.getLogger(__name__)
 
 
-def build_messages(instruction: str, has_reference_audio: bool) -> list[dict[str, Any]]:
+class ChatMessage(TypedDict):
+    role: str
+    content: list[dict[str, str | None]]
+
+
+def build_messages(instruction: str, has_reference_audio: bool) -> list[ChatMessage]:
     """Build the single-turn ChatML message list AuK is trained on."""
     text = instruction
     if not has_reference_audio and not text.endswith(NO_PROMPT_AUDIO_MARKER):
         text = text + NO_PROMPT_AUDIO_MARKER
+    else:
+        pass
 
-    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    content: list[dict[str, str | None]] = [{"type": "text", "text": text}]
     if has_reference_audio:
         content.append({"type": "audio", "audio": None})
+    else:
+        pass
     return [{"role": "user", "content": content}]
 
 
@@ -45,7 +54,7 @@ class AuKConditionEncoder:
         class AuKThinker(Qwen2_5OmniThinkerForConditionalGeneration):
             _keys_to_ignore_on_load_unexpected = [
                 *(
-                    Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected
+                    Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     or []
                 ),
                 r"^(talker|token2wav)\.",
@@ -86,6 +95,8 @@ class AuKConditionEncoder:
         references = [audio for audio in audios if audio is not None]
         if references:
             kwargs["audio"] = references
+        else:
+            pass
         inputs = self.processor(**kwargs)
         inputs = {k: v.to(self.device) for k, v in inputs.items() if torch.is_tensor(v)}
         outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
