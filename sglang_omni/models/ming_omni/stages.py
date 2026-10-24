@@ -378,7 +378,26 @@ def create_sglang_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     server_args_overrides: Mapping[str, object] | None = None,
     enable_streaming_tts: bool = False,
+    pd_role: Literal["prefill", "decode"] | None = None,
+    pd_stage_name: str | None = None,
+    pd_partner_stage: str | None = None,
+    max_inflight_handoffs: int | None = None,
 ):
+    if pd_role is not None:
+        if pd_role not in ("prefill", "decode") or not pd_stage_name:
+            raise ValueError(
+                "PD requires an explicit stage name and prefill/decode role"
+            )
+        elif pd_role == "prefill" and not pd_partner_stage:
+            raise ValueError("Prefill requires an explicit Decode partner stage")
+        elif tp_size != 1:
+            raise ValueError("PD thinker currently requires TP=1")
+        elif enable_streaming_tts:
+            raise ValueError("PD thinker currently supports text output only")
+        else:
+            pass
+    else:
+        pass
     validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)
 
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
@@ -406,6 +425,10 @@ def create_sglang_thinker_executor_from_config(
     )
     return create_thinker_scheduler(
         server_args,
+        pd_role=pd_role,
+        pd_stage_name=pd_stage_name,
+        pd_partner_stage=pd_partner_stage,
+        max_inflight_handoffs=max_inflight_handoffs,
         model_path=model_path,
         gpu_id=gpu_id,
         tp_rank=tp_rank,
