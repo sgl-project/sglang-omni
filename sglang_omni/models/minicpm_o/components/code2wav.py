@@ -17,6 +17,9 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SpeakerPrompt,
     Token2Wav,
@@ -58,6 +61,7 @@ class MiniCPMOCode2Wav(nn.Module):
         enable_flow_cuda_graph: bool,
         flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
         packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+        hift_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (),
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -193,7 +197,10 @@ class MiniCPMOCode2Wav(nn.Module):
             hift = self.token2wav.hift
             # note (0xtoward): STFT and iSTFT stay eager; the real-valued body compiles.
             hift.decode_body = torch.compile(
-                hift.decode_body, dynamic=True, fullgraph=True
+                hift.decode_body,
+                dynamic=True,
+                fullgraph=True,
+                options={"triton.cudagraphs": False},
             )
             mel_bins = self.token2wav.flow.output_size
             mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
@@ -220,6 +227,26 @@ class MiniCPMOCode2Wav(nn.Module):
                                 device=resolved_device,
                             ),
                         )
+        else:
+            pass
+
+        if hift_cuda_graph_capture_shapes and resolved_device.type == "cuda":
+            hift = self.token2wav.hift
+            runner = HiftBodyCudaGraphRunner(hift.decode_body)
+            with self.device_context:
+                self.decode_stream.wait_stream(
+                    torch.cuda.current_stream(resolved_device)
+                )
+            with self.device_context, torch.cuda.stream(self.decode_stream):
+                runner.capture(
+                    hift_cuda_graph_capture_shapes,
+                    device=self.token2wav.device,
+                    mel_channels=self.token2wav.flow.output_size,
+                    samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                    fft_samples=hift.istft_params["n_fft"],
+                    hop_samples=hift.istft_params["hop_len"],
+                )
+            hift.body_graph_runner = runner
         else:
             pass
 

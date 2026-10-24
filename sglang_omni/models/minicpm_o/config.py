@@ -118,8 +118,9 @@ def talker_stage(*, gpu: int, process: str) -> StageConfig:
 
 
 class MiniCPMOCode2WavFactoryArgs(FactoryArgs):
-    """Optional Flow execution settings for Code2Wav."""
+    """Optional Flow and HiFT execution settings for Code2Wav."""
 
+    hift_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = ()
     enable_flow_cuda_graph: bool = True
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = Field(
         default_factory=build_default_flow_cuda_graph_shapes
