@@ -20,13 +20,15 @@ constexpr int kResidualDilations[] = {1, 3, 9};
 constexpr int kQuantizerStageCount = 2;
 constexpr int kResidualCodebookCount = 9;
 constexpr int kSemanticCodebookSize = 4096;
-constexpr int kResidualCodebookSize = 1024;
 constexpr int kLatentDimension = 1024;
 constexpr int kTransformerHeadDim = 64;
-// The decoder's input runs at 4 latent frames per code frame, 512 samples each.
+// The encoder's output and the decoder's input run at 4 latent frames per
+// code frame, 512 samples each.
 constexpr int kSamplesPerLatentFrame = 512;
 constexpr int kDecoderWindowFrames = 256;
 constexpr int kDecoderContextFrames = 32;
+constexpr int kEncoderConvolutionWindowFrames = 256;
+constexpr int kEncoderConvolutionContextFrames = 32;
 constexpr int kQuantizerTransformerLayers = 8;
 constexpr int kQuantizerWindowFrames = 128;
 constexpr int kEncoderTransformerLayers = 4;
@@ -341,24 +343,40 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
       (length + kSamplesPerFrame - 1) / kSamplesPerFrame * kSamplesPerFrame;
   std::vector<float> padded(samples);
   padded.resize(padded_length, 0.0f);
-  mx::array x = mx::array(padded.data(), {1, 1, padded_length}, mx::float32);
+  const mx::array audio =
+      mx::array(padded.data(), {1, 1, padded_length}, mx::float32);
 
-  x = CausalConvolution(x, "encoder.block.0", 1, 1, 1);
-  for (int block = 1; block <= 4; ++block) {
-    const std::string prefix =
-        "encoder.block." + std::to_string(block) + ".block";
-    for (int unit = 0; unit < 3; ++unit) {
-      x = ResidualUnit(x, prefix + "." + std::to_string(unit),
-                       kResidualDilations[unit]);
+  // Note (Jiaxin Deng): the encoder's convolutions reach about 14 latent
+  // frames back, so they run in windows with that context, as the decoder's
+  // do; the transformer after them sees the whole reference.
+  const int latent_frames = padded_length / kSamplesPerLatentFrame;
+  std::vector<mx::array> windows;
+  for (int start = 0; start < latent_frames;
+       start += kEncoderConvolutionWindowFrames) {
+    const int context = std::min(start, kEncoderConvolutionContextFrames);
+    const int stop =
+        std::min(start + kEncoderConvolutionWindowFrames, latent_frames);
+    mx::array y = CausalConvolution(
+        mx::slice(audio, {0, 0, (start - context) * kSamplesPerLatentFrame},
+                  {1, 1, stop * kSamplesPerLatentFrame}),
+        "encoder.block.0", 1, 1, 1);
+    for (int block = 1; block <= 4; ++block) {
+      const std::string prefix =
+          "encoder.block." + std::to_string(block) + ".block";
+      for (int unit = 0; unit < 3; ++unit) {
+        y = ResidualUnit(y, prefix + "." + std::to_string(unit),
+                         kResidualDilations[unit]);
+      }
+      y = Snake(y, prefix + ".3");
+      y = CausalConvolution(y, prefix + ".4", kEncoderStrides[block - 1], 1, 1);
     }
-    x = Snake(x, prefix + ".3");
-    x = CausalConvolution(x, prefix + ".4", kEncoderStrides[block - 1], 1, 1);
-    if (block == 4) {
-      x = Transformer(x, prefix + ".5", kEncoderTransformerLayers,
-                      x.shape(1) / kTransformerHeadDim, kEncoderWindowFrames);
-    } else {
-    }
+    windows.push_back(
+        mx::slice(y, {0, 0, context}, {y.shape(0), y.shape(1), y.shape(2)}));
+    mx::eval(windows.back());
   }
+  mx::array x = mx::concatenate(windows, 2);
+  x = Transformer(x, "encoder.block.4.block.5", kEncoderTransformerLayers,
+                  x.shape(1) / kTransformerHeadDim, kEncoderWindowFrames);
   x = Snake(x, "encoder.block.5");
   x = CausalConvolution(x, "encoder.block.6", 1, 1, 1);
 

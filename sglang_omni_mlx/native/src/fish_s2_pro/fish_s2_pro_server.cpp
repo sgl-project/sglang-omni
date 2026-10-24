@@ -20,7 +20,7 @@
 // default) may wait; the rest get 503. A request not done S seconds (600 by
 // default) after it arrives is cancelled, with 504 or an early end to its
 // stream, and so is a request whose client disconnects. A request body over
-// 32 MiB gets 413.
+// 16 MiB gets 413.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -61,8 +61,9 @@ using omni_server::Json;
 using qwen3_asr::TranscriptionResult;
 
 constexpr size_t kMaxInputCharacters = 4096;
-// Room for 60 s of 48 kHz stereo float32 reference audio in base64.
-constexpr size_t kMaxRequestBodyBytes = 32 * 1024 * 1024;
+// Room for 60 s of 48 kHz stereo 16-bit reference audio in base64, while a
+// burst of requests read before admission stays small.
+constexpr size_t kMaxRequestBodyBytes = 16 * 1024 * 1024;
 constexpr double kMaxReferenceSeconds = 60.0;
 // Note (Jiaxin Deng): the CUDA server's defaults (stages.py) and its engine's
 // cap on max_new_tokens, which it applies without an error.
@@ -99,11 +100,13 @@ constexpr std::array<CollectionField, 1> kUnsupportedCollectionFields = {{
     {"stage_params", Json::value_t::object, "an object"},
 }};
 
-// A reference before its audio is encoded: decoded samples at the codec's
-// rate, or codes the client gave.
+// A reference as the request gives it: its audio still base64, decoded only
+// once the worker admits the request, or codes the client gave.
 struct PendingReference {
   std::string text;
-  std::vector<float> samples;
+  // The request field that held the audio, for error messages.
+  std::string audio_field;
+  std::string audio_base64;
   std::vector<int32_t> codes;
   int frame_count = 0;
 };
@@ -116,6 +119,15 @@ struct SpeechRequest {
   int max_frames = kDefaultMaxFrames;
   fish_s2_pro::SamplingOptions sampling;
   std::vector<PendingReference> references;
+  // Seconds of reference audio the references' codes hold.
+  double code_seconds = 0.0;
+};
+
+// A request error found once the worker decodes the request's audio; it is
+// answered with 400, as a request error found before admission is.
+class RejectedRequest : public std::invalid_argument {
+public:
+  using std::invalid_argument::invalid_argument;
 };
 
 // Audio one synthesis hands from the worker thread to its request's thread.
@@ -230,7 +242,7 @@ double NumberOr(const Json &body, const char *name, double fallback) {
 // before a reference past kMaxReferenceSeconds in all is resampled.
 void SpendReferenceSeconds(double seconds, double &remaining_seconds) {
   if (seconds > remaining_seconds) {
-    throw std::invalid_argument(
+    throw RejectedRequest(
         "the references are longer than " +
         std::to_string(static_cast<int>(kMaxReferenceSeconds)) + " s in all");
   } else {
@@ -238,20 +250,18 @@ void SpendReferenceSeconds(double seconds, double &remaining_seconds) {
   }
 }
 
-// The samples of a reference audio string at the codec's rate: a base64 WAV
-// or a data: URL of one. Paths and URLs are the CUDA server's and not read.
-std::vector<float> ReferenceSamples(const std::string &audio,
-                                    const std::string &field, int sample_rate,
-                                    double &remaining_seconds) {
-  std::string payload = audio;
+// The base64 payload of a reference audio string: a base64 WAV or a data:
+// URL of one. Paths and URLs are the CUDA server's and not read.
+std::string ReferencePayload(const std::string &audio,
+                             const std::string &field) {
   if (audio.rfind("data:", 0) == 0) {
     const size_t comma = audio.find(',');
     if (comma == std::string::npos ||
         audio.substr(0, comma).find(";base64") == std::string::npos) {
       throw std::invalid_argument(field + " must be a base64 data: URL");
     } else {
+      return audio.substr(comma + 1);
     }
-    payload = audio.substr(comma + 1);
   } else if (audio.rfind("http://", 0) == 0 ||
              audio.rfind("https://", 0) == 0 ||
              audio.rfind("file://", 0) == 0 || audio.rfind("/", 0) == 0 ||
@@ -261,11 +271,16 @@ std::vector<float> ReferenceSamples(const std::string &audio,
         field + " must be a WAV file as base64 or a data: URL; this server "
                 "reads no paths or URLs");
   } else {
+    return audio;
   }
+}
+
+// A reference's WAV, decoded at its own rate; throws RejectedRequest.
+fish_s2_pro::DecodedWav DecodeReference(const PendingReference &reference) {
   const std::optional<std::vector<uint8_t>> bytes =
-      qwen3_asr::DecodeBase64(payload);
+      qwen3_asr::DecodeBase64(reference.audio_base64);
   if (!bytes.has_value() || bytes->empty()) {
-    throw std::invalid_argument(field + " is not valid base64");
+    throw RejectedRequest(reference.audio_field + " is not valid base64");
   } else {
   }
   fish_s2_pro::DecodedWav wav;
@@ -273,23 +288,19 @@ std::vector<float> ReferenceSamples(const std::string &audio,
     wav = fish_s2_pro::DecodeAnyWav(std::string_view(
         reinterpret_cast<const char *>(bytes->data()), bytes->size()));
   } catch (const std::invalid_argument &error) {
-    throw std::invalid_argument(field + ": " + error.what());
+    throw RejectedRequest(reference.audio_field + ": " + error.what());
   }
   if (wav.samples.empty()) {
-    throw std::invalid_argument(field + " has no samples");
+    throw RejectedRequest(reference.audio_field + " has no samples");
   } else {
   }
-  SpendReferenceSeconds(static_cast<double>(wav.samples.size()) /
-                            wav.sample_rate,
-                        remaining_seconds);
-  return fish_s2_pro::Resample(wav.samples, wav.sample_rate, sample_rate);
+  return wav;
 }
 
 // A references item: {audio_path, ref_audio, audio, data, media_type, text,
 // vq_codes}, as CUDA's SpeechReference.
 PendingReference ParseReference(const Json &item, int index, int codebook_count,
-                                int codebook_size, int samples_per_frame,
-                                int sample_rate, double &remaining_seconds) {
+                                int codebook_size) {
   const std::string field = "references[" + std::to_string(index) + "]";
   if (!item.is_object()) {
     throw std::invalid_argument(field + " must be an object");
@@ -318,21 +329,22 @@ PendingReference ParseReference(const Json &item, int index, int codebook_count,
                                     std::to_string(codebook_count) + ", T)");
       } else {
       }
+      // The semantic codebook is the model's; the residual ones are the
+      // codec's.
+      const int64_t size =
+          codebook == 0 ? codebook_size : fish_s2_pro::kResidualCodebookSize;
       for (const Json &code : row) {
         if (!code.is_number_integer() || code.get<int64_t>() < 0 ||
-            code.get<int64_t>() >= codebook_size) {
-          throw std::invalid_argument(field +
-                                      ".vq_codes must be integers in [0, " +
-                                      std::to_string(codebook_size) + ")");
+            code.get<int64_t>() >= size) {
+          throw std::invalid_argument(
+              field + ".vq_codes row " + std::to_string(codebook) +
+              " must be integers in [0, " + std::to_string(size) + ")");
         } else {
         }
         reference.codes.push_back(code.get<int32_t>());
       }
     }
     reference.frame_count = static_cast<int>(codes.at(0).size());
-    SpendReferenceSeconds(static_cast<double>(reference.frame_count) *
-                              samples_per_frame / sample_rate,
-                          remaining_seconds);
     return reference;
   } else {
   }
@@ -344,9 +356,9 @@ PendingReference ParseReference(const Json &item, int index, int codebook_count,
   for (const char *name : {"data", "audio", "ref_audio"}) {
     const Json audio = FieldOr(item, name, Json());
     if (audio.is_string()) {
-      reference.samples =
-          ReferenceSamples(audio.get<std::string>(), field + "." + name,
-                           sample_rate, remaining_seconds);
+      reference.audio_field = field + "." + name;
+      reference.audio_base64 =
+          ReferencePayload(audio.get<std::string>(), reference.audio_field);
       return reference;
     } else if (!audio.is_null()) {
       throw std::invalid_argument(field + "." + name + " must be a string");
@@ -482,6 +494,9 @@ SpeechRequest ParseRequest(const Json &body,
     sampling.seed = static_cast<uint32_t>(generator()) & kSeedMask;
   } else if (IsAboveInt64(seed)) {
     throw std::invalid_argument("seed must be in [-2**63, 2**63 - 1]");
+  } else if (seed.is_number_integer() && seed.get<int64_t>() < 0) {
+    // Note (Jiaxin Deng): as the CUDA server's validate_non_negative_int.
+    throw std::invalid_argument("seed must be greater than or equal to 0");
   } else if (seed.is_number_integer()) {
     sampling.seed = static_cast<uint32_t>(
         static_cast<uint64_t>(seed.get<int64_t>()) & kSeedMask);
@@ -489,15 +504,17 @@ SpeechRequest ParseRequest(const Json &body,
     throw std::invalid_argument("seed must be an integer");
   }
 
-  const int sample_rate = model.codec().sample_rate();
   const Json references = FieldOr(body, "references", Json());
   double remaining_seconds = kMaxReferenceSeconds;
   if (references.is_array()) {
     for (size_t index = 0; index < references.size(); ++index) {
-      request.references.push_back(ParseReference(
-          references.at(index), static_cast<int>(index), model.codebook_count(),
-          model.codebook_size(), model.codec().samples_per_frame(), sample_rate,
-          remaining_seconds));
+      request.references.push_back(
+          ParseReference(references.at(index), static_cast<int>(index),
+                         model.codebook_count(), model.codebook_size()));
+      SpendReferenceSeconds(
+          static_cast<double>(request.references.back().frame_count) *
+              model.codec().samples_per_frame() / model.codec().sample_rate(),
+          remaining_seconds);
     }
   } else if (!references.is_null()) {
     throw std::invalid_argument("references must be a list");
@@ -514,14 +531,15 @@ SpeechRequest ParseRequest(const Json &body,
   if (reference_audio.is_string()) {
     request.references.push_back(
         {reference_text.is_string() ? reference_text.get<std::string>() : "",
-         ReferenceSamples(reference_audio.get<std::string>(), "ref_audio",
-                          sample_rate, remaining_seconds),
+         "ref_audio",
+         ReferencePayload(reference_audio.get<std::string>(), "ref_audio"),
          {},
          0});
   } else if (!reference_audio.is_null()) {
     throw std::invalid_argument("ref_audio must be a string");
   } else {
   }
+  request.code_seconds = kMaxReferenceSeconds - remaining_seconds;
   return request;
 }
 
@@ -629,9 +647,10 @@ bool ReachedDeadline(std::exception_ptr error) {
   }
 }
 
-// The detail of a request the model found too long, or nullopt for any other
-// error.
-std::optional<std::string> PromptTooLongDetail(std::exception_ptr error) {
+// The detail of a request error found after admission (a prompt the model
+// found too long, or reference audio it could not use), or nullopt for any
+// other error.
+std::optional<std::string> RequestErrorDetail(std::exception_ptr error) {
   if (!error) {
     return std::nullopt;
   } else {
@@ -640,6 +659,8 @@ std::optional<std::string> PromptTooLongDetail(std::exception_ptr error) {
     std::rethrow_exception(error);
   } catch (const fish_s2_pro::PromptTooLong &too_long) {
     return std::string(too_long.what());
+  } catch (const RejectedRequest &rejected) {
+    return std::string(rejected.what());
   } catch (...) {
     return std::nullopt;
   }
@@ -776,15 +797,19 @@ private:
           channel->ready.notify_all();
         });
     const SpeechRequest &speech = *shared_request;
-    if (speech.stream) {
+    // Note (Jiaxin Deng): a stream's 200 waits for its first audio, so a
+    // request error found once the worker builds the prompt, a timeout in the
+    // queue, or a generation with no audio still gets its own status.
+    bool stream_started = false;
+    const auto start_stream = [&]() {
       mg_printf(connection,
                 "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
                 "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
                 "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
                 "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
                 request_id.c_str(), request_id.c_str(), sample_rate);
-    } else {
-    }
+      stream_started = true;
+    };
 
     const int client_socket = ClientSocket(connection);
     std::vector<float> samples;
@@ -819,6 +844,10 @@ private:
       channel->chunks.pop_front();
       lock.unlock();
       if (speech.stream) {
+        if (!stream_started) {
+          start_stream();
+        } else {
+        }
         const std::string pcm = fish_s2_pro::Pcm16Bytes(chunk);
         // Note (Minyi Tang): a write fails once the peer is gone, which
         // cancels the generation that feeds it.
@@ -851,21 +880,24 @@ private:
       // reaches it.
       cancel->store(true);
       std::cerr << "speech generation timed out\n";
-    } else if (channel->error) {
+    } else if (channel->error && !RequestErrorDetail(channel->error)) {
       LogFailure(channel->error);
     } else {
     }
-    if (speech.stream) {
+    if (stream_started) {
       return 200;
     } else if (timed_out) {
       return omni_server::WriteJson(
           connection, 504, {{"detail", "Speech generation timed out."}});
     } else if (const std::optional<std::string> detail =
-                   PromptTooLongDetail(channel->error)) {
+                   RequestErrorDetail(channel->error)) {
       return omni_server::BadRequest(connection, *detail);
     } else if (channel->error) {
       return omni_server::WriteJson(connection, 500,
                                     {{"detail", "Speech generation failed."}});
+    } else if (speech.stream) {
+      start_stream();
+      return 200;
     } else {
     }
 
@@ -905,16 +937,41 @@ private:
       } else {
       }
     };
-    std::vector<fish_s2_pro::VoiceReference> references;
+    // Every reference's audio is decoded, and the total checked, before
+    // any is resampled.
+    double remaining_seconds = kMaxReferenceSeconds - request.code_seconds;
+    std::vector<fish_s2_pro::DecodedWav> wavs;
     for (const PendingReference &reference : request.references) {
+      if (reference.codes.empty()) {
+        wavs.push_back(DecodeReference(reference));
+        SpendReferenceSeconds(static_cast<double>(wavs.back().samples.size()) /
+                                  wavs.back().sample_rate,
+                              remaining_seconds);
+      } else {
+        wavs.emplace_back();
+      }
+    }
+    std::vector<fish_s2_pro::VoiceReference> references;
+    for (size_t index = 0; index < request.references.size(); ++index) {
       check_deadline();
-      references.push_back(
-          {reference.text, reference.codes.empty()
-                               ? model_.codec().Encode(reference.samples)
-                               : mlx::core::array(reference.codes.begin(),
-                                                  {model_.codebook_count(),
-                                                   reference.frame_count},
-                                                  mlx::core::int32)});
+      const PendingReference &reference = request.references[index];
+      if (reference.codes.empty()) {
+        std::vector<float> samples;
+        try {
+          samples = fish_s2_pro::Resample(wavs[index].samples,
+                                          wavs[index].sample_rate,
+                                          model_.codec().sample_rate());
+        } catch (const std::invalid_argument &error) {
+          throw RejectedRequest(error.what());
+        }
+        references.push_back({reference.text, model_.codec().Encode(samples)});
+      } else {
+        references.push_back(
+            {reference.text,
+             mlx::core::array(reference.codes.begin(),
+                              {model_.codebook_count(), reference.frame_count},
+                              mlx::core::int32)});
+      }
     }
     const fish_s2_pro::SpeechPrompt prompt =
         model_.BuildPrompt(request.text, references);

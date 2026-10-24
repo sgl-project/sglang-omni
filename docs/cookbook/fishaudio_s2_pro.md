@@ -109,7 +109,7 @@ See the [streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish
 
 ## Apple Silicon (Native MLX)
 
-`fish_s2_pro_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, from the 8-bit [`mlx-community/fish-audio-s2-pro-8bit`](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) checkpoint, as one C++ process without CUDA, PyTorch or Python. It needs 10 to 13 GB of memory, so a Mac with 16 GB or more.
+`fish_s2_pro_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, from the 8-bit [`mlx-community/fish-audio-s2-pro-8bit`](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) checkpoint, as one C++ process without CUDA, PyTorch or Python. It needs about 10 GB of memory, so a Mac with 16 GB or more.
 
 ```bash
 sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
@@ -130,9 +130,9 @@ Plain TTS works unchanged. The prompt, the semantic sampler (repetition penalty,
 - Errors are `{"detail": "..."}`, and every invalid field, including `top_k` outside `-1` or `1..30`, returns 400.
 - Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503, and `/health` shows the queue.
 - A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
-- A request body over 32 MiB returns 413.
+- A request body over 16 MiB returns 413; that fits 60 s of 48 kHz stereo 16-bit WAV as base64.
 
-Measured on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99 (it generates about 11 of the 21.5 frames in a second of audio, so streamed speech arrives slower than it plays), and 9.8 GB peak memory footprint: 10.1 GB for an 80 s utterance, 12.7 GB with a 60 s reference, which takes 5.2 s to encode. With the same seed and MLX build, its prompt ids, reference codes, audio codes and 16-bit PCM are bit-identical to mlx-audio's Fish Speech port on the same checkpoint, driven with the CUDA server's prompt and sampler. Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. Mac CI checks five seeded requests' codes (English, Chinese, Japanese, a cloned voice, and a `max_new_tokens` cap) against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`.
+Measured on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99 (it generates about 11 of the 21.5 frames in a second of audio, so streamed speech arrives slower than it plays), and 9.8 GB peak memory footprint: 10.1 GB for an 80 s utterance, 8.4 GB with a 60 s reference, which takes 4.4 s to encode. With the same seed and MLX build, its prompt ids, reference codes, audio codes and 16-bit PCM are bit-identical to mlx-audio's Fish Speech port on the same checkpoint, driven with the CUDA server's prompt and sampler. Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. Mac CI checks five seeded requests' reference codes, audio codes and PCM (English, Chinese, Japanese, a cloned voice, and a `max_new_tokens` cap) against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`.
 
 ## Known Limitations
 
