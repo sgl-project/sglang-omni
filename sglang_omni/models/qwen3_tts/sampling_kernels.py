@@ -13,9 +13,24 @@ from sglang_omni.models.qwen3_tts.predictor_kernels import (
 from sglang_omni.platforms import current_platform
 
 if current_platform.is_npu():
-    from sglang_omni.models.qwen3_tts.sampling_kernels_npu import murmur_hash32_npu
+    from sglang_omni.models.qwen3_tts.ascend_triton_kernels import murmur_hash32_npu
+    from sglang_omni.models.qwen3_tts.ascend_triton_kernels import (
+        sample_top_k_npu as sample_top_k,
+    )
+    from sglang_omni.models.qwen3_tts.ascend_triton_kernels import (
+        seeded_gumbel_argmax_npu,
+    )
 else:
-    pass
+
+    def sample_top_k(
+        sorted_scores: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        top_ks: torch.Tensor,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor | None:
+        return None
+
 
 if not current_platform.is_npu():
     try:
@@ -700,16 +715,12 @@ def fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
     return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
 
 
-def murmur_hash32_pytorch(
+def murmur_hash32_pytorch_impl(
     seeds: torch.Tensor,
     positions: torch.Tensor,
     num_cols: int,
 ) -> torch.Tensor:
-    """Vectorized MurmurHash32 with graph-safe Ascend integer arithmetic."""
-    if seeds.device.type == "npu":
-        return murmur_hash32_npu(seeds, positions, num_cols)
-    else:
-        pass
+    """Vectorized integer implementation; inputs may reside on CPU or device."""
 
     seeds = seeds.to(dtype=torch.int64).view(-1, 1)
     positions = positions.to(dtype=torch.int64).view(-1, 1)
@@ -723,6 +734,18 @@ def murmur_hash32_pytorch(
     hash_value = murmur3_mix_pytorch(hash_value, positions & _UINT32_MASK)
     hash_value = murmur3_mix_pytorch(hash_value, columns)
     return fmix32_pytorch(hash_value ^ 16)
+
+
+def murmur_hash32_pytorch(
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    num_cols: int,
+) -> torch.Tensor:
+    """Vectorized MurmurHash32 with graph-safe Ascend integer arithmetic."""
+    if seeds.device.type == "npu":
+        return murmur_hash32_npu(seeds, positions, num_cols)
+    else:
+        return murmur_hash32_pytorch_impl(seeds, positions, num_cols)
 
 
 def seeded_gumbel_argmax_float32(
@@ -744,6 +767,27 @@ def seeded_gumbel_argmax_float32(
         raise ValueError("logprobs must contain at least one column")
     else:
         pass
+    if logprobs.device.type == "npu":
+        return seeded_gumbel_argmax_npu(logprobs, seeds, positions)
+    else:
+        gumbel = seeded_gumbel_noise_float32(seeds, positions, num_cols)
+        return torch.argmax(logprobs.to(dtype=torch.float32) + gumbel, dim=1)
+
+
+def seeded_gumbel_noise_float32(
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    num_cols: int,
+) -> torch.Tensor:
+    """Build deterministic Gumbel noise without float64 device operations."""
+    if seeds.ndim != 1 or positions.shape != seeds.shape:
+        raise ValueError("seeds and positions must be one-dimensional and aligned")
+    else:
+        pass
+    if num_cols <= 0:
+        raise ValueError("num_cols must be positive")
+    else:
+        pass
 
     hashes = murmur_hash32_pytorch(seeds, positions, num_cols)
     uniform = hashes.to(dtype=torch.float32) / float(_UINT32_MASK)
@@ -753,8 +797,7 @@ def seeded_gumbel_argmax_float32(
         min=torch.finfo(torch.float32).tiny,
         max=1.0 - 2.0**-24,
     )
-    gumbel = -torch.log(-torch.log(uniform))
-    return torch.argmax(logprobs.to(dtype=torch.float32) + gumbel, dim=1)
+    return -torch.log(-torch.log(uniform))
 
 
 def sample_from_logprobs_with_seed_npu(
