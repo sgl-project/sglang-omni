@@ -14,6 +14,7 @@ from sglang.srt.utils import DynamicGradMode
 from torch._dynamo.utils import counters
 
 import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
@@ -509,4 +510,33 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
 
     assert torch.equal(
         result, torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.float32)
+    )
+
+
+def test_cosyvoice3_cuda_prefill_hands_its_embeddings_to_the_standard_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_runner_module,
+        "current_platform",
+        SimpleNamespace(is_cuda=lambda: True),
+    )
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.model = torch.nn.Linear(3, 3, bias=False).to(torch.bfloat16)
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(extend_len=2, prefix_len=1),
+                prompt_input_embeds=torch.arange(12, dtype=torch.float32).reshape(3, 4),
+            )
+        )
+    ]
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(2, dtype=torch.long), replace_embeds=None
+    )
+
+    assert runner.custom_prefill_forward(forward_batch, None, requests) is None
+    assert torch.equal(
+        get_omni_prefill_inputs(forward_batch).input_embeds,
+        torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.bfloat16),
     )
