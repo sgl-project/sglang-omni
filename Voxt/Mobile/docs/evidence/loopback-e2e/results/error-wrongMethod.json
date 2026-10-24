@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "Use POST."
+  },
+  "status": 405
+}

@@ -1,0 +1,6 @@
+// The Connector's bundle ID. Voxt trusts on its Connector socket only a Connector with this ID,
+// signed by Voxt's own team. Don't edit here: copy Signing.local.xcconfig.example to
+// Signing.local.xcconfig (not committed) and set your own ID there; tools/build-connector.py
+// and Voxt Omni Dev's stamp read the same setting.
+VOXT_CONNECTOR_BUNDLE_ID = com.voxt.VoxtConnector
+#include? "Signing.local.xcconfig"

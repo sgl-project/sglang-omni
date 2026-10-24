@@ -1,0 +1,53 @@
+name: VoxtConnector
+options:
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  VoxtConnectionKit:
+    path: ../VoxtConnectionKit
+targets:
+  VoxtConnector:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    configFiles:
+      Debug: Config/Signing.shared.xcconfig
+      Release: Config/Signing.shared.xcconfig
+    dependencies:
+      - package: VoxtConnectionKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_CONNECTOR_BUNDLE_ID)
+        PRODUCT_NAME: Voxt Connector
+        MARKETING_VERSION: "0.1.2"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        ENABLE_HARDENED_RUNTIME: NO
+  VoxtConnectorUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [UITests]
+    dependencies:
+      - target: VoxtConnector
+    configFiles:
+      Debug: Config/Signing.shared.xcconfig
+      Release: Config/Signing.shared.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_CONNECTOR_BUNDLE_ID).uitests
+        SWIFT_VERSION: "6.0"
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: VoxtConnector
+schemes:
+  VoxtConnector:
+    build:
+      targets:
+        VoxtConnector: all
+    test:
+      targets:
+        - VoxtConnectorUITests
+      gatherCoverageData: false

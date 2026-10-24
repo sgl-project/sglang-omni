@@ -7,6 +7,8 @@
 - Prompts: [English](Prompt.md) / [中文](Prompt.zh-CN.md)
 - Rewrite: [English](Rewrite.md) / [中文](Rewrite.zh-CN.md)
 - Meetings: [English](Meeting.md) / [中文](Meeting.zh-CN.md)
+- [Local API](LocalAPI.md): dictate through Voxt from scripts and other apps
+- [Voxt Mobile](Mobile.md): dictate on your iPhone with the models Voxt runs
 - [六步引导](OnboardingGuide.zh-CN.md) / [快捷键规则](HotkeyRules.zh-CN.md)
 
 ## 开发与维护 / Development

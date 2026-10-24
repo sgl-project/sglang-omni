@@ -40,6 +40,7 @@ struct EnhancementPromptResolver {
         let userOtherLanguagesPromptValue: String
         let dictionaryGlossary: String?
         let appEnhancementEnabled: Bool
+        var appendsLanguagePreservationRules = true
         let groups: [AppBranchGroup]
         let urlsByID: [UUID: String]
         let frontmostBundleID: String?
@@ -68,7 +69,8 @@ struct EnhancementPromptResolver {
                     template: fallbackPrompt,
                     rawTranscription: input.rawTranscription,
                     userMainLanguagePromptValue: input.userMainLanguagePromptValue,
-                    userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue
+                    userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue,
+                    appendsLanguagePreservationRules: input.appendsLanguagePreservationRules
                 ),
                 delivery: fallbackDelivery,
                 promptContext: PromptContext(
@@ -105,7 +107,8 @@ struct EnhancementPromptResolver {
                         template: match.prompt,
                         rawTranscription: input.rawTranscription,
                         userMainLanguagePromptValue: input.userMainLanguagePromptValue,
-                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue
+                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue,
+                        appendsLanguagePreservationRules: input.appendsLanguagePreservationRules
                     ),
                     delivery: .systemPrompt,
                     promptContext: PromptContext(
@@ -128,7 +131,8 @@ struct EnhancementPromptResolver {
                         template: fallbackPrompt,
                         rawTranscription: input.rawTranscription,
                         userMainLanguagePromptValue: input.userMainLanguagePromptValue,
-                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue
+                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue,
+                        appendsLanguagePreservationRules: input.appendsLanguagePreservationRules
                     ),
                     delivery: fallbackDelivery,
                     promptContext: PromptContext(
@@ -157,7 +161,8 @@ struct EnhancementPromptResolver {
                         template: prompt,
                         rawTranscription: input.rawTranscription,
                         userMainLanguagePromptValue: input.userMainLanguagePromptValue,
-                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue
+                        userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue,
+                        appendsLanguagePreservationRules: input.appendsLanguagePreservationRules
                     ),
                     delivery: .systemPrompt,
                     promptContext: PromptContext(
@@ -175,7 +180,8 @@ struct EnhancementPromptResolver {
                     template: fallbackPrompt,
                     rawTranscription: input.rawTranscription,
                     userMainLanguagePromptValue: input.userMainLanguagePromptValue,
-                    userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue
+                    userOtherLanguagesPromptValue: input.userOtherLanguagesPromptValue,
+                    appendsLanguagePreservationRules: input.appendsLanguagePreservationRules
                 ),
                 delivery: fallbackDelivery,
                 promptContext: PromptContext(
@@ -204,19 +210,20 @@ struct EnhancementPromptResolver {
         template: String,
         rawTranscription: String,
         userMainLanguagePromptValue: String,
-        userOtherLanguagesPromptValue: String
+        userOtherLanguagesPromptValue: String,
+        appendsLanguagePreservationRules: Bool
     ) -> String {
         let resolved = template
             .replacingOccurrences(of: rawTranscriptionTemplateVariable, with: rawTranscription)
             .replacingOccurrences(of: userMainLanguageTemplateVariable, with: userMainLanguagePromptValue)
-        return [
-            resolved,
-            enhancementLanguagePreservationRules(
+        let languageRules: String? = appendsLanguagePreservationRules
+            ? enhancementLanguagePreservationRules(
                 userMainLanguagePromptValue: userMainLanguagePromptValue,
                 userOtherLanguagesPromptValue: userOtherLanguagesPromptValue
             )
-        ]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            : nil
+        return [resolved, languageRules]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
     }

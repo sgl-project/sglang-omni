@@ -1,0 +1,7 @@
+// Copy to Signing.local.xcconfig (not committed).
+// Your Apple team ID (a free Personal Team works) and a prefix nobody else uses. The app's bundle
+// ID is the prefix, the keyboard's PREFIX.keyboard, the App Group group.PREFIX.shared.
+DEVELOPMENT_TEAM = ABCDE12345
+VOXT_MOBILE_ID_PREFIX = com.example.voxtmobile
+// Where Settings › About › Source code links to. Set it to the repository your build comes from.
+VOXT_SOURCE_URL = github.com/sgl-project/sglang-omni

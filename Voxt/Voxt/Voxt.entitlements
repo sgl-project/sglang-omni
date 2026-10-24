@@ -42,7 +42,7 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 
-	<!-- Local Native Omni runtime listens on a loopback HTTP port. -->
+	<!-- Incoming loopback connections: the Native Omni runtime's HTTP port and the Local API (off by default) -->
 	<key>com.apple.security.network.server</key>
 	<true/>
 
