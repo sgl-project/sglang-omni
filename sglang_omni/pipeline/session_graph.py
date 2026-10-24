@@ -131,6 +131,19 @@ class SessionGraphRunner(CoordinatorSessions):
             pass
         if control_type(event) == INTERRUPT and target in graph.pacers:
             graph.output_bytes -= graph.pacers[target].purge(event.turn)
+            # Note (ruoyu): Output in the client's queue is not delivered until the connection takes it, so the interrupt drops the turn there too.
+            unread_outputs = [
+                graph.outputs.get_nowait() for _ in range(graph.outputs.qsize())
+            ]
+            for output, size, name in unread_outputs:
+                if (
+                    name == target
+                    and event.turn is not None
+                    and is_interrupted_reply(output, event.turn)
+                ):
+                    graph.output_bytes -= size
+                else:
+                    graph.outputs.put_nowait((output, size, name))
             await self.report_delivered(graph, target, event.turn)
         elif control_type(event) is None and self.is_interrupted(graph, target, event):
             return
@@ -541,7 +554,7 @@ class SessionGraphRunner(CoordinatorSessions):
                 graph.output_bytes -= pacer.offer(output, size)
             elif is_published:
                 await self.publish_graph_output(
-                    graph, output, self.reserve_graph_output(graph, name, output)
+                    graph, name, output, self.reserve_graph_output(graph, name, output)
                 )
                 self.return_turn_end(graph.nodes[name], output)
             else:
@@ -606,8 +619,7 @@ class SessionGraphRunner(CoordinatorSessions):
                     continue
                 else:
                     pass
-                pacer.sent(output)
-                await self.publish_graph_output(graph, output, size)
+                await self.publish_graph_output(graph, name, output, size)
                 if control_type(output) == TURN_DONE:
                     for reader in graph.graph.reading_nodes(name, output.format):
                         await self.put_graph_inbox(
@@ -619,7 +631,7 @@ class SessionGraphRunner(CoordinatorSessions):
             await pacer.wait()
 
     async def publish_graph_output(
-        self, graph: SessionGraphRuntime, output: OutputChunk, size: int
+        self, graph: SessionGraphRuntime, name: str, output: OutputChunk, size: int
     ) -> None:
         """Hand a node output to the client, counted as `size` bytes of the output budget."""
         event = control_type(output)
@@ -646,7 +658,7 @@ class SessionGraphRunner(CoordinatorSessions):
             input_seq=max(graph.next_input - 1, 0),
         )
         graph.next_output += 1
-        await graph.outputs.put((published, size))
+        await graph.outputs.put((published, size, name))
 
     def reserve_graph_output(
         self, graph: SessionGraphRuntime, name: str, output: OutputChunk
@@ -732,7 +744,7 @@ class SessionGraphRunner(CoordinatorSessions):
             )
         else:
             graph.outputs.put_nowait(
-                (output, self.reserve_graph_output(graph, name, output))
+                (output, self.reserve_graph_output(graph, name, output), name)
             )
         graph.next_output += 1
 
@@ -745,8 +757,12 @@ class SessionGraphRunner(CoordinatorSessions):
             graph.has_output_consumer = True
         try:
             while (item := await graph.outputs.get()) is not None:
-                output, size = item
+                output, size, name = item
                 graph.output_bytes -= size
+                if name in graph.pacers:
+                    graph.pacers[name].sent(output)
+                else:
+                    pass
                 yield output
             if graph.error is not None:
                 raise graph.error

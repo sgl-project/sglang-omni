@@ -839,7 +839,7 @@ async def test_an_interrupt_drops_released_audio_still_waiting_for_the_client():
     assert graph.outputs.empty() and graph.output_bytes == 0
     graph.output_bytes += 10
     graph.output_bytes -= pacer.offer(reply("turn.interrupted", 1), 10)
-    delivered, _ = await asyncio.wait_for(graph.outputs.get(), OUTPUT_TIMEOUT_S)
+    delivered = (await asyncio.wait_for(graph.outputs.get(), OUTPUT_TIMEOUT_S))[0]
     await asyncio.sleep(0.05)
     delivery.cancel()
     await asyncio.gather(delivery, return_exceptions=True)
@@ -889,7 +889,8 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
         )
     runner = SessionGraphRunner()
     delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
-    await wait_until(lambda: graph.outputs.qsize() == 2)
+    outputs = runner.graph_outputs(graph)
+    await collect(outputs, 2)
     delivery.cancel()
     await asyncio.gather(delivery, return_exceptions=True)
     # Note (Junnan Li): The pacer joins turn 2's two chunks into one; only the latest turn keeps its count.
@@ -899,6 +900,92 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
     [(source, delivered, _)] = graph.inboxes["listener"].queued
     assert source == "speaker" and delivered.turn == 2
     assert delivered.payload == {"type": REPLY_DELIVERED, "audio_ms": 200}
+    await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_drops_the_turn_output_the_client_has_not_taken():
+    """Output of an interrupted turn still queued for a slow client reached it after the interrupt, and reply.delivered came from the queued audio, not from what the client took."""
+    identity = SessionIdentity("graph", 1)
+    nodes = {
+        "speaker": SessionNode(
+            ("speaker",), ("input",), controls=(ControlEdge("input", "interrupt"),)
+        ),
+        "writer": SessionNode(("writer",), ("input",)),
+        "listener": SessionNode(("listener",), ("speaker:session",)),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}", 1) for name in nodes}
+    runner = NodeOutputsRunner([])
+    runner.sessions[identities["speaker"].id] = Session(
+        session_identity=identities["speaker"],
+        request=OmniRequest(None),
+        stages=("speaker",),
+        bindings={},
+        limits=SessionLimits(),
+        is_node=True,
+    )
+    pacer = DeliveryPacer(250, asyncio.Event())
+    graph = SessionGraphRuntime(
+        session_identity=identity,
+        graph=SessionGraph(
+            nodes=nodes,
+            publish={"speaker": ("pcm16", "session"), "writer": ("text_delta",)},
+        ),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        pacers={"speaker": pacer},
+        client_sequences={name: {} for name in nodes},
+    )
+
+    def audio(turn: int, t_start_ms: float) -> OutputChunk:
+        return OutputChunk(
+            identities["speaker"],
+            0,
+            0,
+            "audio",
+            t_start_ms,
+            100,
+            bytes(3200),
+            "pcm16",
+            turn=turn,
+        )
+
+    async def route(name: str, node_outputs: list[OutputChunk]) -> None:
+        runner.node_outputs = node_outputs
+        await runner.route_graph_outputs(graph, name)
+        await wait_until(lambda: not pacer.items and not pacer.unsent)
+
+    heard_audio = audio(1, 0)
+    unheard_audio = audio(1, 100)
+    writer_text = reply_output("text_delta", {"text": "kept"}, 1)
+    speaker_end = reply_output("session", {"type": "turn.interrupted"}, 1)
+    next_turn_audio = audio(2, 200)
+    delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
+    outputs = runner.graph_outputs(graph)
+    await route("speaker", [heard_audio])
+    taken = await collect(outputs, 1)
+    await route("speaker", [unheard_audio])
+    await route("writer", [writer_text])
+    await route("speaker", [speaker_end, next_turn_audio])
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await runner.control_graph(graph, interrupt, None, False)
+    taken += await collect(outputs, 3)
+    delivery.cancel()
+    await asyncio.gather(delivery, return_exceptions=True)
+    assert [replace(item, seq=0) for item in taken] == [
+        replace(output, session_identity=identity)
+        for output in (heard_audio, writer_text, speaker_end, next_turn_audio)
+    ]
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["listener"].queued
+    ] == [
+        ("speaker", {"type": "turn.interrupted"}),
+        ("speaker", {"type": REPLY_DELIVERED, "audio_ms": 100}),
+    ]
+    assert graph.output_bytes == 0
+    await outputs.aclose()
 
 
 class TurnFront(SessionHooks):

@@ -180,7 +180,7 @@ class SessionGraphRuntime:
     nodes: dict[str, SessionIdentity]
     limits: SessionLimits
     inboxes: dict[str, NodeInbox]
-    outputs: asyncio.Queue[tuple[OutputChunk, int] | None]
+    outputs: asyncio.Queue[tuple[OutputChunk, int, str] | None]
     output_bytes: int = 0
     pacers: dict[str, DeliveryPacer] = field(default_factory=dict)
     # note (Junnan Li): Interrupted reply IDs remain fenced until the graph closes; late tools may outlive later replies.
