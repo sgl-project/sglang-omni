@@ -7,7 +7,6 @@ from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
-from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
@@ -80,8 +79,6 @@ def failure_code(exc: Exception) -> str:
         ),
     ):
         return exc.CODE
-    elif ContextExhaustedError.matches(exc):
-        return ContextExhaustedError.CODE
     else:
         return "internal"
 
