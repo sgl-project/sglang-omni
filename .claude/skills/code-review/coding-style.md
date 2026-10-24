@@ -43,7 +43,8 @@ section below is the rule.
 
 - English only: comments, docstrings, log strings, CLI help. (User-facing translatable
   strings go through i18n — not this rule's concern.) If the repo is non-English, match it.
-- A prose paragraph is one line. Break the line only when the paragraph ends, including in Markdown documentation. Do not wrap in the middle of a sentence.
+- Code comments and docstrings: one prose paragraph per line; break only when the paragraph ends. Do not wrap in the middle of a sentence.
+- Markdown documentation: follow the surrounding document's hard-wrap width (typically 80 columns); do not mix wrapping styles within one document.
 - Comments sparse, one-line, only for the genuinely non-obvious. Restating code is noise.
 - Comments must be self-contained and explain _why_, not _how_ or _what_. Don't narrate
   what a code block does or how it does it — the code already shows that. But only document

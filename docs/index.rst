@@ -12,8 +12,8 @@ Core features:
 
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
-- **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, Ming-3.0-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize, Ming-3.0-ASR), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), and LLaDA2.0-Uni.
+- **OpenAI-Compatible Server**: Drop-in ``/v1/images/generations``, ``/v1/images/edits``, ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, Ming-3.0-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize, Ming-3.0-ASR), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), image generation (SenseNova-U1.5), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -100,6 +100,9 @@ Supported Models
    * - `inclusionAI/LLaDA2.0-Uni <https://huggingface.co/inclusionAI/LLaDA2.0-Uni>`_
      - Multimodal
      - Text + image understanding and generation
+   * - SenseNova-U1.5-8B-MoT
+     - Image generation
+     - T2I/I2I through the Images API on the shared UMM pipeline; experimental Ascend NPU path
 
 
 .. toctree::
@@ -145,6 +148,7 @@ Supported Models
    cookbook/voxtral_tts.md
    cookbook/dots_tts.md
    cookbook/llada2_uni.md
+   cookbook/sensenova_u1.md
    cookbook/ming_tts.md
    cookbook/ming3_asr.md
    cookbook/ming3_audio.md

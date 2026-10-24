@@ -1,0 +1,13 @@
+# Two independent replicas, each sharded across two GPUs.
+config_cls: SenseNovaU1PipelineConfig
+model_path: sensenova/SenseNova-U1.5-8B-MoT
+stages:
+  generate:
+    tp_size: 2
+    gpu: [0, 1]
+    factory:
+      max_batch_size: 1
+processes:
+  sensenova_generate:
+    num_replicas: 2
+    replica_devices: [0, 1, 2, 3]

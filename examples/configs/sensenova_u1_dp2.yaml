@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# One complete SenseNova-U1.5 model replica on each of two GPUs.
+config_cls: SenseNovaU1PipelineConfig
+model_path: sensenova/SenseNova-U1.5-8B-MoT
+
+processes:
+  sensenova_generate:
+    num_replicas: 2
+    replica_devices: [0, 1]

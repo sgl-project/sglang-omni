@@ -694,6 +694,10 @@ async def run_server(
                 ] * num_replicas
             cl_kwargs = client_kwargs or {}
             client = Client(coordinator, **cl_kwargs)
+            registrar_path = type(pipeline_config).image_api_registrar
+            image_api_registrar = (
+                import_string(registrar_path) if registrar_path is not None else None
+            )
             deployment_factory = type(pipeline_config).realtime_deployment_factory
             if enable_realtime and deployment_factory is not None:
                 realtime_deployment: RealtimeDeployment | None = import_string(
@@ -705,6 +709,7 @@ async def run_server(
                 client,
                 model_name=model_name or pipeline_config.name,
                 supports_image_api=pipeline_config.supports_image_api,
+                image_api_registrar=image_api_registrar,
                 image_decode_mode=pipeline_config.image_decode_mode(),
                 image_decode_steps=pipeline_config.image_decode_steps(),
                 requires_uploaded_voice_for_named_voice=(

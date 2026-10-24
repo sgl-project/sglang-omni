@@ -212,6 +212,13 @@ class EngineArgs(BaseModel):
         }
 
 
+@dataclass(frozen=True, kw_only=True)
+class FactoryDefault:
+    """Fallback used only when neither author kwargs nor typed config supplies a value."""
+
+    value: str | int | float | bool | None
+
+
 class FactoryArgs(BaseModel):
     """Constructor kwargs for one stage's factory.
 
@@ -232,6 +239,7 @@ class FactoryArgs(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=1)
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
+    max_batch_cost: int | None = Field(default=None, ge=1)
     enable_async_decode: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
@@ -651,7 +659,8 @@ class CustomVoiceConfig:
 
 
 class SerializationFallback(Protocol):
-    def __call__(self, value: object, /) -> object: ...
+    def __call__(self, value: object, /) -> object:
+        """Convert an unsupported value into a serializable value."""
 
 
 class ModelDumpOptions(TypedDict, total=False):
@@ -727,6 +736,8 @@ class PipelineConfig(BaseModel):
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
     supports_image_api: ClassVar[bool] = False
+    # Import path of the function that mounts this model's Images API routes; None mounts none.
+    image_api_registrar: ClassVar[str | None] = None
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
