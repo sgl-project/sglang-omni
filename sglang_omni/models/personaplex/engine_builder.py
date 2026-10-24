@@ -14,6 +14,10 @@ from typing import Protocol
 import torch
 from sentencepiece import SentencePieceProcessor
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -32,6 +36,7 @@ from sglang_omni.models.personaplex.request_builders import (
     lm_stream_output_builder,
 )
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
+from sglang_omni.models.personaplex.warmup import PersonaPlexSessionScheduler
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
@@ -200,6 +205,35 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
             **super().generation_defaults(dtype=dtype),
             "enable_streaming_session": True,
         }
+
+    def make_scheduler(
+        self,
+        *,
+        model_worker: ModelWorker,
+        tree_cache: BasePrefixCache,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+        server_args: ServerArgs,
+        model_config: ModelConfig,
+        model_runner: PersonaPlexModelRunner,
+        request_builder: LMRequestBuilder | None,
+        result_adapter: LMResultBuilder | None,
+    ) -> PersonaPlexSessionScheduler:
+        return PersonaPlexSessionScheduler(
+            tp_worker=model_worker,
+            tree_cache=tree_cache,
+            req_to_token_pool=req_to_token_pool,
+            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            server_args=server_args,
+            model_config=model_config,
+            model_runner=model_runner,
+            request_builder=request_builder,
+            result_adapter=result_adapter,
+            abort_callback=self.make_abort_callback(),
+            request_finished_callback=self.make_request_finished_callback(),
+            **self.extra_scheduler_callbacks(),
+            **self.extra_scheduler_kwargs(),
+        )
 
     def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter]:
         # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
