@@ -3,8 +3,12 @@
 
 import logging
 
+import pytest
+import torch
+
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.models.nemotron_voicechat.request_builders import (
+    apply_thinker_result,
     build_talker_request,
     build_thinker_request,
     merge_for_talker,
@@ -15,39 +19,51 @@ from sglang_omni.proto.request import OmniRequest
 PROMPT_FRAMES = 37
 
 
-def make_payload(num_frames, params=None):
+def make_payload(
+    num_frames: int, params: dict[str, float] | None = None
+) -> StagePayload:
     return StagePayload(
         "r",
         request=OmniRequest(inputs={}, params=params or {}),
-        data=NemotronVoiceChatState(num_frames=num_frames).to_dict(),
+        data=NemotronVoiceChatState(
+            num_frames=num_frames,
+            acoustic_frames=torch.zeros(num_frames + 1, 4),
+        ).to_dict(),
     )
 
 
-def test_talker_decode_steps_match_thinker_tokens():
+@pytest.mark.parametrize("num_frames", [1, 2, PROMPT_FRAMES, 513])
+def test_talker_decode_steps_match_thinker_tokens(num_frames: int) -> None:
     """The prefill emits no codes, so the talker needs one extra generation step."""
-    payload = make_payload(1)
+    payload = make_payload(num_frames)
     thinker = build_thinker_request(
         payload, vocab_size=8, prompt_token_ids=[1, 2], pad_token_id=3
     )
     talker = build_talker_request(payload, vocab_size=8, prompt_frames=PROMPT_FRAMES)
 
-    assert thinker.max_new_tokens == 1
-    assert thinker.req.sampling_params.max_new_tokens == 1
-    assert talker.max_new_tokens == 2
-    assert talker.req.sampling_params.max_new_tokens == 2
+    assert thinker.max_new_tokens == num_frames
+    assert thinker.req.sampling_params.max_new_tokens == num_frames
+    assert talker.max_new_tokens == num_frames + 1
+    assert talker.req.sampling_params.max_new_tokens == num_frames + 1
     assert len(talker.input_ids) == PROMPT_FRAMES
 
 
-def test_thinker_prefill_carries_prompt_then_one_pad_position():
+def test_thinker_prefill_carries_prompt_then_one_pad_position() -> None:
     data = build_thinker_request(
         make_payload(4), vocab_size=8, prompt_token_ids=[1, 2, 5], pad_token_id=3
     )
     assert data.input_ids.tolist() == [1, 2, 5, 3]
     assert data.req.origin_input_ids == [1, 2, 5, 3]
     assert data.pending_stream_tokens == []
+    assert data.acoustic_frames is not None
+    assert data.acoustic_frames.shape == (5, 4)
+    assert data.stage_payload is not None
+    assert "acoustic_frames_bytes" not in data.stage_payload.data
 
 
-def test_thinker_is_greedy_and_warns_on_ignored_temperature(caplog):
+def test_thinker_is_greedy_and_warns_on_ignored_temperature(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     with caplog.at_level(logging.WARNING):
         data = build_thinker_request(
             make_payload(4, {"temperature": 0.7}),
@@ -61,7 +77,19 @@ def test_thinker_is_greedy_and_warns_on_ignored_temperature(caplog):
     assert any("temperature" in record.getMessage() for record in caplog.records)
 
 
-def test_merge_for_talker_keeps_only_the_frame_count():
+def test_thinker_result_releases_acoustic_frames() -> None:
+    data = build_thinker_request(
+        make_payload(4), vocab_size=8, prompt_token_ids=[1], pad_token_id=3
+    )
+    data.output_ids = [5, 6]
+
+    payload = apply_thinker_result(data)
+
+    assert data.acoustic_frames is None
+    assert NemotronVoiceChatState.from_dict(payload.data).text_ids == [5, 6]
+
+
+def test_merge_for_talker_keeps_only_the_frame_count() -> None:
     perception = make_payload(9)
     state = NemotronVoiceChatState.from_dict(perception.data)
     state.text_ids = [1, 2, 3]
