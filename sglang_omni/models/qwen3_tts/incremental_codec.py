@@ -862,6 +862,7 @@ class Qwen3TTSIncrementalDecoder:
             Callable[[torch.Tensor, Qwen3TTSIncrementalCodecState], torch.Tensor] | None
         ) = None
         self.compiled_shapes: set[tuple[int, int]] = set()
+        self.first_chunk_reach: dict[int, int] = {}
 
     @staticmethod
     def require_attrs(module: object, path: str, *names: str) -> None:
@@ -1078,6 +1079,25 @@ class Qwen3TTSIncrementalDecoder:
                 transconv.stride[0]
             )
         return samples
+
+    def first_chunk_reference_frames(self, emit_frames: int) -> int:
+        """How many frames before its last emit_frames a stream's first decode needs: its
+        emitted samples and kept state read the transformer outputs of the last
+        tail_frames(emit_frames) frames, each sliding-window layer reaches window - 1
+        frames further back, and pre_conv its padding before that."""
+        # note (ratish): the vocoder plans every stream's first chunk with this, and the
+        # module walk costs about 50 us a call, so each emit count is walked once.
+        if emit_frames not in self.first_chunk_reach:
+            transformer = self.decoder.pre_transformer
+            self.first_chunk_reach[emit_frames] = (
+                self.tail_frames(emit_frames)
+                - int(emit_frames)
+                + len(transformer.layers) * (int(transformer.window_size) - 1)
+                + int(self.decoder.pre_conv.padding)
+            )
+        else:
+            pass
+        return self.first_chunk_reach[emit_frames]
 
     @torch.no_grad()
     def decode_tail(

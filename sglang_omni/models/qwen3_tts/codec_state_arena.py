@@ -172,6 +172,10 @@ class Qwen3TTSCodecStateArena:
             else:
                 pass
 
+    def start_slot(self, slot: int, frame_position: int) -> None:
+        """Start an acquired slot's stream at frame_position instead of frame 0."""
+        self.storage.frame_positions[slot].fill_(frame_position)
+
     def _buffers(self, state: Qwen3TTSIncrementalCodecState) -> list[torch.Tensor]:
         return [
             *state.conv_histories.values(),
