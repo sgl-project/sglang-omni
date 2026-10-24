@@ -201,5 +201,15 @@
         "model.safetensors": "ee05a65d4472f089d55b5dfcd9e19f42e3245f4f19d612b90c04cb051a80105e"
       }
     }
+  },
+  "mlx-community/fish-audio-s2-pro-8bit": {
+    "revision": "c8d4481b3f7cbfe64d855c8b7cda7739502fc3ff",
+    "files": {
+      "config.json": "363895eff17c1f15a18e9bbc8ffddf3d5546219378cc37d96862892d4f93aace",
+      "tokenizer.json": "f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b",
+      "tokenizer_config.json": "b8d149343ae425b0da67e6708686aceb51be7815d9792f265fc12ff04d5e9856",
+      "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
+      "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
+    }
   }
 }
