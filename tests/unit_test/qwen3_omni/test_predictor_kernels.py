@@ -6,6 +6,7 @@ decode attention against fp32 over stale slots."""
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -31,13 +32,16 @@ from sglang_omni.utils import predictor_layers
 from sglang_omni.utils.predictor_layers import (
     HIDDEN_SIZE,
     MAX_FUSED_ROWS,
+    NUM_STAGES,
     PredictorLayerShape,
     add_rmsnorm_rounded,
     codebook_step,
     decode_attention,
+    pipeline_stages,
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
+    stages_at_max_rows,
     supports_exact_add_rmsnorm,
 )
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
@@ -576,6 +580,28 @@ def test_split_count_lands_the_program_count_nearest_the_sms() -> None:
     assert split_count(128, 8, 132) == 1
 
 
+@pytest.mark.parametrize(
+    ("shared_memory_per_block", "stages"),
+    [(101376, [3, 3, 2]), (166912, [3, 3, 3]), (232448, [3, 3, 3])],
+)
+def test_only_64_row_blocks_run_shallower_on_a_device_short_of_shared_memory(
+    shared_memory_per_block: int, stages: list[int]
+) -> None:
+    """Shared memory per block of SM 8.6, 8.9 and 12.0 (99 KiB), SM 8.0 (163 KiB) and
+    SM 9.0 and 10.0 (227 KiB); stages at BLOCK_M 16, 32 and 64."""
+    shape = PredictorLayerShape(
+        hidden_size=HIDDEN,
+        head_dim=HEAD_DIM,
+        num_q_heads=NUM_HEADS,
+        num_kv_heads=NUM_KV_HEADS,
+        intermediate_size=INTERMEDIATE,
+        split_qkv=1,
+        split_hidden=1,
+        max_rows_stages=stages_at_max_rows(shared_memory_per_block),
+    )
+    assert [pipeline_stages(shape, block_m) for block_m in (16, 32, 64)] == stages
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(
     not current_platform.is_cuda(),
@@ -683,6 +709,7 @@ def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
             intermediate_size=INTERMEDIATE,
             split_qkv=1,
             split_hidden=1,
+            max_rows_stages=NUM_STAGES,
         ),
     )
     queries = q.view(row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM).transpose(1, 2)
@@ -790,4 +817,23 @@ def test_fused_layers_match_without_programmatic_dependent_launch(
     monkeypatch.setattr(predictor_layers, "is_arch_support_pdl", lambda: False)
     without_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
     for expected, actual in zip(with_pdl, without_pdl, strict=True):
+        assert torch.equal(actual, expected)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+@pytest.mark.parametrize("batch_size", [32, 64])
+def test_fused_layers_match_at_a_shallower_pipeline(batch_size: int) -> None:
+    """A device short of shared memory runs the qkv and gate_up launches of 64-row
+    blocks shallower; those blocks hold the opening pair at batch 32 and the
+    single-token passes at 64."""
+    device = torch.device("cuda")
+    talker = fuse(build_talker(device, seed=26))
+    steps = predictor_inputs(device, batch_size=batch_size, seed=27)
+    default = run_sequence(talker, steps)
+    fused = talker.predictor_fused_layers
+    fused.shape = replace(fused.shape, max_rows_stages=1)
+    shallow = run_sequence(talker, steps)
+    for expected, actual in zip(default, shallow, strict=True):
         assert torch.equal(actual, expected)

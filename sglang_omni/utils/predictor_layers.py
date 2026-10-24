@@ -26,7 +26,9 @@ does not depend on the batch.
 
 One program covers a launch's rows, so the launch reads each weight once, as the GEMM it
 replaces does. FusedPredictorLayers owns the launches' buffers, runs the layer loop, and
-covers passes of up to MAX_FUSED_ROWS rows; larger passes keep the plain path.
+covers passes of up to MAX_FUSED_ROWS rows; larger passes keep the plain path. At
+BLOCK_M = MAX_FUSED_ROWS the qkv and gate_up launches run one stage fewer on a device
+whose shared memory per block is below LOW_SHARED_MEMORY_PER_BLOCK.
 
 On GPUs with programmatic dependent launch, each fused launch releases its dependents after
 its weight loop (decode_attention after its store), and a fused launch that follows one
@@ -87,6 +89,7 @@ NUM_WARPS = 4
 # note (ratish): the 16-row block runs faster on two warps; wider blocks spill there.
 QKV_SMALL_BLOCK_WARPS = 2
 NUM_STAGES = 3
+LOW_SHARED_MEMORY_PER_BLOCK = 128 * 1024
 
 
 if HAS_TRITON:
@@ -624,7 +627,8 @@ def add_rmsnorm_rounded(
 
 @dataclass(frozen=True)
 class PredictorLayerShape:
-    """The predictor layer's dimensions and the K split of its residual launches."""
+    """The predictor layer's dimensions, the K split of its residual launches and the
+    pipeline depth of its qkv and gate_up launches at BLOCK_M = MAX_FUSED_ROWS."""
 
     hidden_size: int
     head_dim: int
@@ -633,6 +637,7 @@ class PredictorLayerShape:
     intermediate_size: int
     split_qkv: int
     split_hidden: int
+    max_rows_stages: int
 
 
 def is_plain_bf16_linear(linear: torch.nn.Module) -> bool:
@@ -650,6 +655,13 @@ def split_count(output_tiles: int, k_blocks: int, sm_count: int) -> int:
     """The power-of-two K split whose program count lands nearest the SM count."""
     candidates = [split for split in (1, 2, 4, 8) if k_blocks % split == 0]
     return min(candidates, key=lambda split: abs(output_tiles * split - sm_count))
+
+
+def stages_at_max_rows(shared_memory_per_block: int) -> int:
+    if shared_memory_per_block < LOW_SHARED_MEMORY_PER_BLOCK:
+        return NUM_STAGES - 1
+    else:
+        return NUM_STAGES
 
 
 def resolve_predictor_layer_shape(
@@ -702,7 +714,8 @@ def resolve_predictor_layer_shape(
             return None
         else:
             pass
-    sm_count = torch.cuda.get_device_properties(device).multi_processor_count
+    properties = torch.cuda.get_device_properties(device)
+    sm_count = properties.multi_processor_count
     heads = attention.num_heads + 2 * attention.num_kv_heads
     split_hidden = min(
         split_count(hidden_size // BLOCK_N, attention.num_heads, sm_count),
@@ -716,11 +729,16 @@ def resolve_predictor_layer_shape(
         intermediate_size=intermediate_size,
         split_qkv=split_count(heads, hidden_size // BLOCK_K, sm_count),
         split_hidden=split_hidden,
+        max_rows_stages=stages_at_max_rows(properties.shared_memory_per_block_optin),
     )
 
 
 def block_rows(rows: int) -> int:
     return max(MIN_BLOCK_M, triton.next_power_of_2(rows))
+
+
+def pipeline_stages(shape: PredictorLayerShape, block_m: int) -> int:
+    return shape.max_rows_stages if block_m == MAX_FUSED_ROWS else NUM_STAGES
 
 
 def allocate_split_scratch(
@@ -803,7 +821,7 @@ def attention_inputs(
         BLOCK_K=BLOCK_K,
         USE_GDC=use_gdc,
         num_warps=QKV_SMALL_BLOCK_WARPS if block_m == MIN_BLOCK_M else NUM_WARPS,
-        num_stages=NUM_STAGES,
+        num_stages=pipeline_stages(shape, block_m),
         launch_pdl=use_gdc,
     )
 
@@ -898,6 +916,7 @@ def mlp_up(
     """activated = bf16(silu(bf16(normed @ gate.T)) * bf16(normed @ up.T)) with the
     normed residual, gate and up being the halves of the merged weight."""
     rows = residual.shape[0]
+    block_m = block_rows(rows)
     use_gdc = is_arch_support_pdl()
     norm_gate_up_silu_kernel[(shape.intermediate_size // BLOCK_N,)](
         residual,
@@ -911,12 +930,12 @@ def mlp_up(
         T=1,
         K=shape.hidden_size,
         INTERMEDIATE=shape.intermediate_size,
-        BLOCK_M=block_rows(rows),
+        BLOCK_M=block_m,
         BLOCK_N=BLOCK_N,
         BLOCK_K=MLP_BLOCK_K,
         USE_GDC=use_gdc,
         num_warps=NUM_WARPS,
-        num_stages=NUM_STAGES,
+        num_stages=pipeline_stages(shape, block_m),
         launch_pdl=use_gdc,
     )
 
