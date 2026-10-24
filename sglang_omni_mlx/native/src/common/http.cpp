@@ -20,6 +20,7 @@ int WriteJson(mg_connection *connection, int status, const Json &body) {
                 status == 200   ? "OK"
                 : status == 400 ? "Bad Request"
                 : status == 405 ? "Method Not Allowed"
+                : status == 413 ? "Content Too Large"
                                 : "Internal Server Error",
                 "application/json", body.dump());
   return status;
@@ -34,6 +35,36 @@ std::string ReadBody(mg_connection *connection) {
   char buffer[65536];
   int read = 0;
   while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
+    body.append(buffer, static_cast<size_t>(read));
+  }
+  return body;
+}
+
+std::optional<std::string> ReadBody(mg_connection *connection,
+                                    size_t max_bytes) {
+  const auto too_large = [&]() -> std::optional<std::string> {
+    WriteJson(connection, 413,
+              {{"detail", "request body must be at most " +
+                              std::to_string(max_bytes) + " bytes"}});
+    return std::nullopt;
+  };
+  // Note (Minyi Tang): civetweb reports -1 for a body without a length, such
+  // as a chunked one, which is then cut off as it is read.
+  const long long content_length =
+      mg_get_request_info(connection)->content_length;
+  if (content_length > 0 &&
+      static_cast<unsigned long long>(content_length) > max_bytes) {
+    return too_large();
+  } else {
+  }
+  std::string body;
+  char buffer[65536];
+  int read = 0;
+  while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
+    if (static_cast<size_t>(read) > max_bytes - body.size()) {
+      return too_large();
+    } else {
+    }
     body.append(buffer, static_cast<size_t>(read));
   }
   return body;
