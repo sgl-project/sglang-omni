@@ -103,8 +103,10 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  // Builds the request for a decode of segment and counts it.
-  TranscriptionOptions DecodeOptions(Segment &segment);
+  // Builds the request for a decode of segment and counts it. A final decode
+  // ignores the preview prefix.
+  TranscriptionOptions DecodeOptions(Segment &segment,
+                                     bool should_reuse_prefix);
   Transcription Decode(std::vector<float> samples,
                        TranscriptionOptions options) const;
   void ApplyResult(Segment &segment, const TranscriptionResult &result);
