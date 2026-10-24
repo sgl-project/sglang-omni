@@ -155,7 +155,7 @@ results for this checkpoint are not included in the short-clip validation.
 
 On 2026-10-15, the compiled profile above ran on one H100 80 GB with BF16,
 PyTorch 2.13.0+cu130, SGLang 0.5.21, Transformers 5.12.1, and FlashInfer 0.6.18.
-Decoder compilation was disabled, so the pinned SGLang 0.5.21 release is
+Decoder compilation was disabled, so the pinned SGLang release is
 sufficient for this launch. Both client concurrency levels used the same
 16-slot server.
 
