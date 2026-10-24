@@ -158,38 +158,64 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
 
     class Builder:
         def __init__(
-            self, *, max_running_requests, context_length, enable_async_decode
-        ):
+            self,
+            *,
+            max_running_requests: int,
+            context_length: int | None,
+            enable_async_decode: bool,
+            depformer_cuda_graph_batch_sizes: list[int],
+        ) -> None:
             built["context_length"] = context_length
+            built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
 
         def build(self, model_path, **kwargs):
             built["overrides"] = kwargs["server_args_overrides"]
 
     monkeypatch.setattr(stages, "PersonaPlexEngineBuilder", Builder)
     stages.create_lm_executor(
-        "m", enable_async_decode=False, server_args_overrides={"context_length": 16384}
+        "m",
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[1, 4],
+        server_args_overrides={"context_length": 16384},
     )
     assert built["context_length"] == 16384
     assert built["overrides"] == {"context_length": 16384}
 
-    stages.create_lm_executor("m", enable_async_decode=False, context_length=4096)
+    stages.create_lm_executor(
+        "m",
+        enable_async_decode=False,
+        context_length=4096,
+        depformer_cuda_graph_batch_sizes=[1, 4],
+    )
     assert built["context_length"] == 4096 and built["overrides"] is None
+    assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
 
 
 def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
     built = {}
 
     class Builder:
-        def __init__(self, *, tokenizer, context_length, enable_async_decode):
+        def __init__(
+            self,
+            *,
+            tokenizer,
+            context_length,
+            enable_async_decode,
+            depformer_cuda_graph_batch_sizes,
+        ):
             built["enable_async_decode"] = enable_async_decode
+            built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
 
         def build(self, model_path, **kwargs):
             pass
 
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "PersonaPlexSessionEngineBuilder", Builder)
-    stages.create_session_lm_executor(str(tmp_path))
+    stages.create_session_lm_executor(
+        str(tmp_path), depformer_cuda_graph_batch_sizes=[1, 4]
+    )
     assert built["enable_async_decode"] is False
+    assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
 
 
 def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially(
@@ -237,6 +263,7 @@ def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
         resolved.stage_named("code2wav"), resolved
     )
     assert "enable_async_decode" not in lm_args
+    assert lm_args["depformer_cuda_graph_batch_sizes"] == [1, 2, 4, 8, 16, 32]
     assert "chunk_ramp_frames" not in code2wav_args
 
 
