@@ -230,3 +230,14 @@ set_target_properties(voxtral_tts_server voxtral_tts_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bin)
+
+add_library(fun_cosyvoice3 STATIC src/fun_cosyvoice3/cosyvoice3_model.cpp)
+target_link_libraries(fun_cosyvoice3 PUBLIC qwen3_asr)
+target_compile_options(fun_cosyvoice3 PRIVATE -Wall -Wextra)
+add_executable(cosyvoice3_llm_probe tools/cosyvoice3_llm_probe.cpp)
+target_link_libraries(cosyvoice3_llm_probe PRIVATE fun_cosyvoice3)
+target_compile_options(cosyvoice3_llm_probe PRIVATE -Wall -Wextra)
+set_target_properties(cosyvoice3_llm_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS cosyvoice3_llm_probe RUNTIME DESTINATION bin)
