@@ -285,13 +285,6 @@ def test_cuda_graph_runner_falls_back_on_cpu() -> None:
     assert not runner.graphs
 
 
-def reset_captured_graphs(runner: DepformerCudaGraphRunner) -> None:
-    torch.cuda.synchronize()
-    for captured in runner.graphs.values():
-        captured.graph.reset()
-    runner.graphs.clear()
-
-
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32])
@@ -393,7 +386,6 @@ def test_graph_batch_codes_and_rng_match_eager(
     assert runner.graphs and all(graph is not None for graph in runner.graphs.values())
     for output, snapshot in old_outputs:
         torch.testing.assert_close(output, snapshot, atol=0, rtol=0)
-    reset_captured_graphs(runner)
 
 
 @pytest.mark.accelerator
@@ -432,4 +424,3 @@ def test_graph_supported_fallbacks(fallback: str) -> None:
     torch.cuda.manual_seed(81)
     actual = runner.generate(text_tokens, hidden_states, forced_codes, runs)
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-    reset_captured_graphs(runner)
