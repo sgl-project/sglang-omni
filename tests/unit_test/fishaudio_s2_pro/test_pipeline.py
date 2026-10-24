@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 import av
 import numpy as np
@@ -184,6 +185,89 @@ def test_fish_preprocessing_encodes_references_on_the_placement_device(
     assert loaded_on == [expected_device]
     assert warmups == ([] if expected_device == "cpu" else [(expected_device, 44100)])
     assert torch.backends.cudnn.allow_tf32 is expected_tf32
+
+
+class TinyReferenceCodec(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.encoder = torch.nn.Linear(2, 2)
+        self.quantizer = torch.nn.Linear(2, 2)
+        self.decoder = torch.nn.Linear(2, 2)
+
+
+@pytest.mark.parametrize("encode_only", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "cuda:7"])
+def test_load_codec_preserves_weights_and_prunes_before_device_transfer(
+    tmp_path: Path, encode_only: bool, device: str
+) -> None:
+    source = TinyReferenceCodec()
+    with torch.no_grad():
+        for index, parameter in enumerate(source.parameters(), start=1):
+            parameter.fill_(index / 8)
+    checkpoint_path = tmp_path / "codec.pth"
+    torch.save(source.state_dict(), checkpoint_path)
+    codec = TinyReferenceCodec()
+    original_load = torch.load
+    original_eval = codec.eval
+    loaded_weights: dict[str, torch.Tensor] = {}
+
+    def load_checkpoint(
+        path: str, *, map_location: str, mmap: bool, weights_only: bool
+    ) -> dict[str, torch.Tensor]:
+        assert path == str(checkpoint_path)
+        assert map_location == ("cpu" if encode_only else device)
+        assert mmap is True
+        assert weights_only is True
+        loaded_weights.update(
+            original_load(
+                path, map_location="cpu", mmap=mmap, weights_only=weights_only
+            )
+        )
+        return loaded_weights
+
+    def evaluate() -> TinyReferenceCodec:
+        assert (codec.decoder is None) is encode_only
+        for name, parameter in codec.state_dict().items():
+            assert torch.equal(parameter, source.state_dict()[name])
+            assert parameter.data_ptr() == loaded_weights[name].data_ptr()
+        return original_eval()
+
+    def move_to_device(target_device: str) -> TinyReferenceCodec:
+        assert target_device == device
+        assert not codec.training
+        assert (codec.decoder is None) is encode_only
+        assert not codec.encoder.training
+        assert not codec.quantizer.training
+        return codec
+
+    with (
+        patch("hydra.utils.instantiate", return_value=codec) as instantiate,
+        patch("omegaconf.OmegaConf.load", return_value={}) as load_config,
+        patch.object(torch, "load", side_effect=load_checkpoint) as load_weights,
+        patch.object(codec, "eval", side_effect=evaluate) as evaluate_codec,
+        patch.object(codec, "to", side_effect=move_to_device) as move_codec,
+        patch.object(codec, "load_state_dict", wraps=codec.load_state_dict) as assign,
+    ):
+        if encode_only:
+            loaded_codec = s2pro_stages.load_codec(
+                str(tmp_path), device, encode_only=True
+            )
+        else:
+            loaded_codec = s2pro_stages.load_codec(str(tmp_path), device)
+
+    assert loaded_codec is codec
+    instantiate.assert_called_once_with({})
+    assert Path(load_config.call_args.args[0]).name == "modded_dac_vq.yaml"
+    load_weights.assert_called_once()
+    assign.assert_called_once_with(loaded_weights, strict=False, assign=True)
+    evaluate_codec.assert_called_once_with()
+    move_codec.assert_called_once_with(device)
+    assert torch.equal(codec.encoder.weight, source.encoder.weight)
+    assert torch.equal(codec.quantizer.weight, source.quantizer.weight)
+    if encode_only:
+        assert codec.decoder is None
+    else:
+        assert torch.equal(codec.decoder.weight, source.decoder.weight)
 
 
 def test_fish_gpu_preprocessing_rejects_a_shared_process() -> None:

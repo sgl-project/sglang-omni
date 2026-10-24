@@ -175,7 +175,7 @@ def resolve_s2pro_model_buffer_bs(model: "S2ProSGLangTextModel") -> int:
     )
 
 
-def load_codec(checkpoint_dir: str, device: str) -> "DAC":
+def load_codec(checkpoint_dir: str, device: str, *, encode_only: bool = False) -> "DAC":
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
 
@@ -190,9 +190,16 @@ def load_codec(checkpoint_dir: str, device: str) -> "DAC":
     cfg = OmegaConf.load(os.path.join(configs_dir, "modded_dac_vq.yaml"))
     codec = instantiate(cfg)
     state_dict = torch.load(
-        codec_path, map_location=device, mmap=True, weights_only=True
+        codec_path,
+        map_location="cpu" if encode_only else device,
+        mmap=True,
+        weights_only=True,
     )
     codec.load_state_dict(state_dict, strict=False, assign=True)
+    if encode_only:
+        codec.decoder = None
+    else:
+        pass
     codec.eval().to(device)
     return codec
 
