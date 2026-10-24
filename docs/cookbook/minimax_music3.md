@@ -69,8 +69,8 @@ Set `MUSIC3_DATA`, `MUSIC3_RUNTIME` and `MUSIC3_BUILD` to separate local
 directories. Serving needs neither Python nor SGLang's CUDA package. Model
 provisioning uses the existing CI Python requirements. The converted weights
 occupy about 14 GB; allow additional unified memory for the KV cache and
-acoustic activations. Both stages stay resident, with MLX's free buffer cache
-limited to 1 GiB.
+acoustic activations. Both stages stay resident by default, with MLX's free
+buffer cache limited to 1 GiB.
 
 This path includes Qwen3/RVQ decoding, condition fusion, Euler Flow/DiT,
 stereo DAV decoding, overlap crops, and Hann sinc conversion from 44.1 to
@@ -88,6 +88,38 @@ client's generation releases the worker when computation finishes. Supervisor
 shutdown cancels between frames, acoustic windows and Euler steps. Voxt's
 `--supervised` lifecycle, `/health` and `/v1/models` are supported; this does
 not add a Music3 interface to Voxt.
+
+### Native MLX stage offload
+
+Pass both components to the native server to load one stage at a time:
+
+```bash
+"$MUSIC3_RUNTIME/bin/music3_server" \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --model-name MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --stage-offload-components ar,dit
+```
+
+Startup loads configuration and the tokenizer; weights load on the first
+accepted request. The checkpoint directory is resolved once at startup. Keep
+its contents unchanged while the server runs. Each request loads AR/RVQ
+weights, evaluates the hidden-state handoff, synchronizes and releases AR,
+then loads condition fusion, DiT and DAV weights. Acoustic weights stay loaded
+across all windows and are released after completion, cancellation or failure.
+No second host weight copy is retained. Reloading weights adds disk I/O and
+latency; file-backed pages can remain in the operating system's cache.
+
+The existing single-request worker owns both stages and returns 429 for
+concurrent submissions. Omitting the flag keeps both stages resident. This
+option belongs to the native executable; CUDA continues to use the
+`sgl-omni serve` option described below.
+
+`music3_synthesize` accepts the same flag. The Mac golden harness runs its
+short and cross-window cases in separate resident and offload processes and
+requires identical waveform digests and metadata. The HTTP suite exercises
+both modes, including repeated requests and busy responses. These are
+validation checks to run on the target Mac; the earlier resident validation
+record below does not establish offload memory or latency results.
 
 ### Reference parity and Mac CI
 

@@ -236,12 +236,24 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
 
 } // namespace
 
-Model::Model(const std::filesystem::path &directory)
-    : config_(ReadConfig(directory)),
-      checkpoint_(LoadWeights(directory, config_), config_),
+bool ParseSerialOffload(const std::string &components) {
+  if (components != "ar,dit" && components != "dit,ar") {
+    throw std::invalid_argument(
+        "--stage-offload-components requires both ar,dit");
+  } else {
+    return true;
+  }
+}
+
+Model::Model(const std::filesystem::path &directory, bool serial_offload)
+    : directory_(std::filesystem::canonical(directory)),
+      serial_offload_(serial_offload), config_(ReadConfig(directory_)),
+      checkpoint_(serial_offload ? omni_common::WeightMap{}
+                                 : LoadWeights(directory_, config_),
+                  config_),
       decoder_(checkpoint_, "language_model.model",
                qwen3_asr::Qwen3DecoderConfig::FromJson(config_)),
-      tokenizer_(directory / "tokenizer") {
+      tokenizer_(directory_ / "tokenizer") {
   const std::vector<std::pair<std::string, int>> special_tokens = {
       {"<|im_start|>", 151644},    {"<|im_end|>", 151645},
       {"<|audio_cfg|>", 151654},   {"<|audio_start|>", 151669},
@@ -254,6 +266,30 @@ Model::Model(const std::filesystem::path &directory)
     } else {
     }
   }
+}
+
+void Model::ReleaseWeights() const {
+  mx::synchronize();
+  // Note (Akazaakane): The decoder keeps a reference to this checkpoint object.
+  checkpoint_ = omni_common::Checkpoint({}, config_);
+  mx::clear_cache();
+}
+
+void Model::LoadStage(bool acoustic) const {
+  ReleaseWeights();
+  auto weights = LoadWeights(directory_, config_);
+  for (auto iterator = weights.begin(); iterator != weights.end();) {
+    const auto &name = iterator->first;
+    const bool is_acoustic = name.rfind("condition_encoder.", 0) == 0 ||
+                             name.rfind("transformer.", 0) == 0 ||
+                             name.rfind("vocoder.", 0) == 0;
+    if (is_acoustic != acoustic) {
+      iterator = weights.erase(iterator);
+    } else {
+      ++iterator;
+    }
+  }
+  checkpoint_ = omni_common::Checkpoint(std::move(weights), config_);
 }
 
 } // namespace music3

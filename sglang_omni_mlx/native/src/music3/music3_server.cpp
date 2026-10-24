@@ -2,13 +2,18 @@
 #include "music3/music3_service.h"
 
 int main(int argc, char **argv) {
+  bool serial_offload = false;
   mlx::core::set_cache_limit(1024ULL * 1024 * 1024);
   return omni_server::Serve(argc, argv,
                             {{"minimax_music3",
-                              [](const std::filesystem::path &directory) {
+                              [&](const std::filesystem::path &directory) {
                                 return std::make_unique<music3::SpeechService>(
-                                    directory);
+                                    directory, serial_offload);
                               },
-                              {},
+                              {{"--stage-offload-components",
+                                [&](const std::string &components) {
+                                  serial_offload =
+                                      music3::ParseSerialOffload(components);
+                                }}},
                               {}}});
 }

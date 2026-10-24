@@ -113,59 +113,72 @@ def check(
                 json.dumps(case, ensure_ascii=False) + "\n" for case in golden["cases"]
             )
         )
-        audio_directory = outputs / "music3-audio" if outputs else directory / "audio"
-        completed = subprocess.run(
-            [
-                str(runtime_bin / "music3_synthesize"),
-                "--model-path",
-                str(data_root / "models" / golden["model"].replace("/", "_")),
-                "--requests",
-                str(request_file),
-                "--output-directory",
-                str(audio_directory),
-            ],  # fmt: skip
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode:
-            failures.append(
-                f"music3_synthesize exited {completed.returncode}: {completed.stderr[-2000:]}"
+        resident_clips: dict[str, AudioDigest] = {}
+        for mode, flags in (
+            ("resident", ()),
+            ("offload", ("--stage-offload-components", "ar,dit")),
+        ):
+            audio_directory = (outputs or directory) / f"music3-{mode}-audio"
+            clips = {}
+            completed = subprocess.run(
+                [
+                    str(runtime_bin / "music3_synthesize"),
+                    "--model-path",
+                    str(data_root / "models" / golden["model"].replace("/", "_")),
+                    "--requests",
+                    str(request_file),
+                    "--output-directory",
+                    str(audio_directory),
+                    *flags,
+                ],  # fmt: skip
+                capture_output=True,
+                text=True,
+                check=False,
             )
-        else:
-            for line in completed.stdout.splitlines():
-                result = json.loads(line)
-                identifier = result["id"]
-                if identifier in clips:
-                    failures.append(f"{identifier}: duplicate native output")
-                    continue
-                else:
-                    pass
-                path = Path(result["file"])
-                with wave.open(str(path)) as audio:
-                    sample_count = audio.getnframes()
-                    sample_rate = audio.getframerate()
-                    pcm = audio.readframes(sample_count)
-                    if (
-                        audio.getnchannels() != 2
-                        or audio.getsampwidth() != 2
-                        or len(pcm) != sample_count * 4
-                        or sample_count != result["sample_count"]
-                        or sample_rate != result["sample_rate"]
-                        or not np.any(np.frombuffer(pcm, dtype="<i2"))
-                    ):
-                        failures.append(
-                            f"{identifier}: invalid or silent stereo PCM16 WAV"
-                        )
+            if completed.returncode:
+                failures.append(
+                    f"{mode} music3_synthesize exited {completed.returncode}: {completed.stderr[-2000:]}"
+                )
+            else:
+                for line in completed.stdout.splitlines():
+                    result = json.loads(line)
+                    identifier = result["id"]
+                    if identifier in clips:
+                        failures.append(f"{identifier}: duplicate native output")
+                        continue
                     else:
                         pass
-                clips[identifier] = {
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                    "sample_count": sample_count,
-                    "sample_rate": sample_rate,
-                    "generated_frames": result["generated_frames"],
-                }
-    failures.extend(validate_outputs(golden, clips))
+                    path = Path(result["file"])
+                    with wave.open(str(path)) as audio:
+                        sample_count = audio.getnframes()
+                        sample_rate = audio.getframerate()
+                        pcm = audio.readframes(sample_count)
+                        if (
+                            audio.getnchannels() != 2
+                            or audio.getsampwidth() != 2
+                            or len(pcm) != sample_count * 4
+                            or sample_count != result["sample_count"]
+                            or sample_rate != result["sample_rate"]
+                            or not np.any(np.frombuffer(pcm, dtype="<i2"))
+                        ):
+                            failures.append(
+                                f"{identifier}: invalid or silent stereo PCM16 WAV"
+                            )
+                        else:
+                            pass
+                    clips[identifier] = {
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "sample_count": sample_count,
+                        "sample_rate": sample_rate,
+                        "generated_frames": result["generated_frames"],
+                    }
+            failures.extend(validate_outputs(golden, clips))
+            if mode == "resident":
+                resident_clips = clips
+            elif clips != resident_clips:
+                failures.append("Music3 offload differs from resident waveforms")
+            else:
+                pass
     if outputs is not None:
         outputs.mkdir(parents=True, exist_ok=True)
         (outputs / "minimax-music3.json").write_text(
@@ -186,7 +199,7 @@ def check(
     lines = [
         f"### {golden['model']} on {device}",
         "",
-        f"Generated {len(clips)} music cases.",
+        f"Generated {len(clips)} music cases in resident and offload modes.",
     ]
     if write_path is not None and not failures:
         golden["devices"][device] = {"metrics": {}, "clips": clips}

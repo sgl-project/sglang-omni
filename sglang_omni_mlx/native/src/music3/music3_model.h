@@ -50,11 +50,13 @@ Request ParseRequest(const nlohmann::json &body,
                      const std::string &model_name, int context_tokens);
 std::string EncodeAudio(const std::vector<float> &samples, bool pcm);
 uint64_t AcousticSeed(uint64_t seed, int chunk_index);
+bool ParseSerialOffload(const std::string &components);
 std::vector<float> ResampleStereo(const mlx::core::array &waveform);
 
 class Model {
 public:
-  explicit Model(const std::filesystem::path &directory);
+  explicit Model(const std::filesystem::path &directory,
+                 bool serial_offload = false);
   Result Synthesize(const Request &request,
                     const std::atomic<bool> &cancelled) const;
   const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
@@ -63,6 +65,10 @@ public:
   }
 
 private:
+  void ReleaseWeights() const;
+  void LoadStage(bool acoustic) const;
+  Result DecodeFrames(const mlx::core::array &frames, const Request &request,
+                      const std::atomic<bool> &cancelled) const;
   mlx::core::array GenerateFrames(const Request &request,
                                   const std::atomic<bool> &cancelled) const;
   mlx::core::array Depth(const mlx::core::array &embeddings) const;
@@ -77,8 +83,10 @@ private:
   mlx::core::array Snake(const mlx::core::array &hidden_states,
                          const std::string &prefix) const;
 
+  std::filesystem::path directory_;
+  bool serial_offload_;
   nlohmann::json config_;
-  omni_common::Checkpoint checkpoint_;
+  mutable omni_common::Checkpoint checkpoint_;
   qwen3_asr::Qwen3Decoder decoder_;
   omni_common::Tokenizer tokenizer_;
 };

@@ -13,6 +13,7 @@ int main(int argc, char **argv) {
   try {
     std::filesystem::path directory, requests, output;
     bool prompt_only = false;
+    bool serial_offload = false;
     for (int i = 1; i < argc; ++i) {
       const std::string flag = argv[i];
       if (flag == "--prompt-only") {
@@ -21,6 +22,8 @@ int main(int argc, char **argv) {
         throw std::invalid_argument(flag + " needs a value");
       } else if (flag == "--model-path") {
         directory = argv[++i];
+      } else if (flag == "--stage-offload-components") {
+        serial_offload = music3::ParseSerialOffload(argv[++i]);
       } else if (flag == "--requests") {
         requests = argv[++i];
       } else if (flag == "--output-directory") {
@@ -33,7 +36,8 @@ int main(int argc, char **argv) {
         (!prompt_only && output.empty())) {
       throw std::invalid_argument(
           "usage: music3_synthesize --model-path DIR "
-          "--requests JSONL [--prompt-only | --output-directory DIR]");
+          "--requests JSONL [--prompt-only | --output-directory DIR] "
+          "[--stage-offload-components ar,dit]");
     } else {
     }
     mlx::core::set_cache_limit(1024ULL * 1024 * 1024);
@@ -43,7 +47,7 @@ int main(int argc, char **argv) {
       prompt_tokenizer =
           std::make_unique<omni_common::Tokenizer>(directory / "tokenizer");
     } else {
-      model = std::make_unique<music3::Model>(directory);
+      model = std::make_unique<music3::Model>(directory, serial_offload);
       std::filesystem::create_directories(output);
     }
     std::ifstream input(requests);

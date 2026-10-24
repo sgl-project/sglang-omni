@@ -70,9 +70,14 @@ SENSEVOICE_VAD_FIELDS = {
 class ModelServer(Server):
     """Another model's server binary, started and spoken to as qwen3_asr_server is."""
 
-    def __init__(self, binary: str, model_kind: str, repo: str) -> None:
+    def __init__(
+        self, binary: str, model_kind: str, repo: str, flags: tuple[str, ...] = ()
+    ) -> None:
         super().__init__(
-            binary, model_kind, Path(DATA_ROOT) / "models" / repo.replace("/", "_")
+            binary,
+            model_kind,
+            Path(DATA_ROOT) / "models" / repo.replace("/", "_"),
+            flags,
         )
 
 
@@ -933,13 +938,41 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     assert "overlap" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def music3_server() -> Iterator[ModelServer]:
+@pytest.fixture(
+    scope="module",
+    params=[(), ("--stage-offload-components", "ar,dit")],
+    ids=["resident", "offload"],
+)
+def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
     running = ModelServer(
-        "music3_server", "minimax_music3", "mlx-community/MiniMax-Music3-mxfp8"
+        "music3_server",
+        "minimax_music3",
+        "mlx-community/MiniMax-Music3-mxfp8",
+        request.param,
     )
     yield running
     running.stop()
+
+
+@pytest.mark.parametrize("components", ["ar", "dit", "ar,dit,other", ""])
+@pytest.mark.parametrize("binary", ["music3_server", "music3_synthesize"])
+def test_music3_rejects_incomplete_offload_components(
+    tmp_path: Path, binary: str, components: str
+) -> None:
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / binary),
+            "--model-path",
+            str(tmp_path),
+            "--stage-offload-components",
+            components,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "requires both ar,dit" in completed.stderr
 
 
 @pytest.mark.parametrize(
