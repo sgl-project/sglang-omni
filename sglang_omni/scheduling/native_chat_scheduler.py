@@ -27,6 +27,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.serve.openai_errors import generation_error_status_code
+from sglang_omni.utils.checkpoint import resolve_checkpoint, split_checkpoint_revision
 
 if TYPE_CHECKING:
     from sglang import Engine
@@ -616,6 +617,16 @@ def native_chat_server_kwargs(
         pass
     if kwargs.get("reasoning_parser") or kwargs.get("tool_call_parser"):
         raise ValueError("The Omni text result requires native text output")
+    else:
+        pass
+    model_path, revision = split_checkpoint_revision(model_path, kwargs.get("revision"))
+    if revision is not None and not os.path.isdir(model_path):
+        kwargs.setdefault("served_model_name", model_path)
+        model_path = resolve_checkpoint(f"{model_path}@{revision}")
+    else:
+        pass
+    if revision is not None:
+        kwargs["revision"] = revision
     else:
         pass
     kwargs.update(
