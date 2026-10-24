@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Single source of truth for the Cookbook sidebar order (PR sgl-project/sglang-omni#2876).
+
+Everything the lint needs is data, not logic. When the rules change, edit this
+file; scripts/check_cookbook_order.py does not need to change.
+
+  * If the #1081 roadmap changes (sgl-project/sglang-omni#1081): update
+    ROADMAP_ORDER to the new **Focus -> Supporting** order.
+  * If Hugging Face download counts change: re-query the HF API by hand
+    (https://huggingface.co/api/models/{repo}), update DOWNLOADS_DESC below
+    (keep it in descending order), and update docs/index.rst if the rank
+    changed.
+  * New model: add the page to ROADMAP_ORDER (roadmap model, at its #1081
+    position) or to HF_REPO + DOWNLOADS_DESC (non-roadmap model, with its HF
+    download count), then place the docs/index.rst entry where the count
+    implies. `--print-expected` prints the full expected order.
+"""
+
+# Models listed under **Focus -> Supporting** in sgl-project/sglang-omni#1081,
+# in that exact order. Qwen3-TTS Base and CustomVoice share one cookbook page;
+# MOSS-TTS-Nano-100M has no cookbook page yet. MiniCPM-o and LLaDA2.0-Uni are
+# no longer in the #1081 priority list and live in the download-sorted section.
+ROADMAP_ORDER = [
+    "cookbook/qwen3_tts.md",
+    "cookbook/moss_tts.md",
+    "cookbook/whisper_asr.md",
+    "cookbook/nemotron3_5_asr.md",
+    "cookbook/moss_transcribe_diarize.md",
+    "cookbook/fishaudio_s2_pro.md",
+    "cookbook/fun_cosyvoice3.md",
+    "cookbook/nemotron_voicechat.md",
+    "cookbook/personaplex.md",
+    "cookbook/cosmos3_nano.md",
+    "cookbook/qwen3_omni.md",
+]
+
+# Hugging Face download counts for every non-roadmap cookbook entry, in
+# descending order. Maintain by hand: re-query
+#   https://huggingface.co/api/models/{repo}
+# for the affected models and adjust the counts (and docs/index.rst) if the
+# rank changed.
+DOWNLOADS_DESC = {
+    # Hugging Face download counts (descending), queried 2026-10-23.
+    "cookbook/qwen3_asr.md": 1_246_212,
+    "cookbook/minicpm_o.md": 397_260,
+    "cookbook/fun_asr.md": 157_836,
+    "cookbook/higgs_tts.md": 122_455,
+    "cookbook/nemotron_diarization.md": 120_820,
+    "cookbook/moss_tts_local.md": 114_703,
+    "cookbook/fishaudio_drama3.md": 17_017,
+    "cookbook/ming_omni.md": 6_048,
+    "cookbook/minimax_music3.md": 5_791,
+    "cookbook/zonos2.md": 2_306,
+    "cookbook/arkasr.md": 2_159,
+    "cookbook/auk.md": 2_022,
+    "cookbook/voxtral_tts.md": 1_569,
+    "cookbook/dots_tts.md": 756,
+    "cookbook/ming3_tts.md": 628,
+    "cookbook/llada2_uni.md": 445,
+    "cookbook/ming3_asr.md": 412,
+    "cookbook/ming3_audio.md": 400,
+    "cookbook/ming_tts.md": 323,
+}
+
+# Cookbook page -> Hugging Face repo id, used to look up download counts at
+# https://huggingface.co/api/models/{repo}. For a new non-roadmap model, add
+# the page here and its count to DOWNLOADS_DESC.
+HF_REPO = {
+    "cookbook/qwen3_asr.md": "Qwen/Qwen3-ASR-1.7B",
+    "cookbook/minicpm_o.md": "openbmb/MiniCPM-o-4_5",
+    "cookbook/fun_asr.md": "FunAudioLLM/Fun-ASR-Nano-2512-hf",
+    "cookbook/higgs_tts.md": "bosonai/higgs-audio-v3-tts-4b",
+    "cookbook/moss_tts_local.md": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    "cookbook/nemotron_diarization.md": "nvidia/Nemotron-3-Diarization",
+    "cookbook/minimax_music3.md": "MiniMaxAI/MiniMax-Music3",
+    "cookbook/fishaudio_drama3.md": "fishaudio/drama-3",
+    "cookbook/ming_omni.md": "inclusionAI/Ming-flash-omni-2.0",
+    "cookbook/auk.md": "tencent/AuK",
+    "cookbook/arkasr.md": "AutoArk-AI/ARK-ASR-3B",
+    "cookbook/zonos2.md": "Zyphra/zonos2",
+    "cookbook/voxtral_tts.md": "mistralai/Voxtral-4B-TTS-2603",
+    "cookbook/dots_tts.md": "dots-studio/dots.tts-mf",
+    "cookbook/llada2_uni.md": "inclusionAI/LLaDA2.0-Uni",
+    "cookbook/ming_tts.md": "inclusionAI/Ming-omni-tts-16.8B-A3B",
+    "cookbook/ming3_audio.md": "inclusionAI/Ming-3.0-audio-flash",
+    "cookbook/ming3_tts.md": "inclusionAI/Ming-3.0-tts-tiny",
+    "cookbook/ming3_asr.md": "inclusionAI/Ming-3.0-asr-tiny",
+}
+
+# When DOWNLOADS_DESC was last checked against the HF API (maintained by hand).
+DOWNLOADS_QUERIED_AT = "2026-10-23"
