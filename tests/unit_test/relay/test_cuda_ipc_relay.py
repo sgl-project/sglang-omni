@@ -22,11 +22,11 @@ import torch
 
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
-    ContiguousSlotAllocator,
     CudaIpcGetOperation,
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
+from sglang_omni.relay.slot_pool import ContiguousSlotAllocator
 
 N = 1024 * 1024  # 1 MiB payload
 PAGED_PAGE_COUNT = 9

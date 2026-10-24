@@ -122,6 +122,39 @@ def parse_memory_bytes(field_name: str, value: int | str | None) -> int | None:
     return quantity * unit_multipliers[match.group(2)]
 
 
+LEVEL_ZERO_IPC_SLOT_SIZE_KB = 64
+# note (siju): the pool only stages payloads in flight; 64 MB is unseen on 24 GB.
+LEVEL_ZERO_IPC_POOL_SIZE_MB = 64
+# note (siju): below 1 MiB shm is as fast, and small chunks were slower over L0.
+LEVEL_ZERO_IPC_MIN_TRANSFER_KB = 1024
+
+
+def check_level_zero_ipc_sizes(
+    *, slot_size_kb: int, pool_size_mb: int, min_transfer_kb: int
+) -> None:
+    """Refuse Level-Zero sizes the router could not route by."""
+    if slot_size_kb <= 0:
+        raise ValueError(
+            f"level_zero_ipc_slot_size_kb must be positive, got {slot_size_kb}"
+        )
+    elif pool_size_mb <= 0:
+        raise ValueError(
+            f"level_zero_ipc_pool_size_mb must be positive, got {pool_size_mb}"
+        )
+    elif min_transfer_kb < 0:
+        raise ValueError(
+            f"level_zero_ipc_min_transfer_kb must not be negative, got "
+            f"{min_transfer_kb}"
+        )
+    elif pool_size_mb * 1024 < slot_size_kb:
+        raise ValueError(
+            f"level_zero_ipc_pool_size_mb ({pool_size_mb}) must hold at least one "
+            f"level_zero_ipc_slot_size_kb ({slot_size_kb}) slot"
+        )
+    else:
+        pass
+
+
 class CommConfig(BaseModel):
     """Per-stage communication buffer and Mooncake options.
 
@@ -135,9 +168,23 @@ class CommConfig(BaseModel):
     credits: int = 2
     cuda_ipc_slot_size_kb: int = 64
     cuda_ipc_pool_size_mb: int | None = None
+    level_zero_ipc_slot_size_kb: int = Field(default=LEVEL_ZERO_IPC_SLOT_SIZE_KB, gt=0)
+    level_zero_ipc_pool_size_mb: int = Field(default=LEVEL_ZERO_IPC_POOL_SIZE_MB, gt=0)
+    level_zero_ipc_min_transfer_kb: int = Field(
+        default=LEVEL_ZERO_IPC_MIN_TRANSFER_KB, ge=0
+    )
     mooncake_protocol: str = "rdma"
     mooncake_hostname: str | None = None
     mooncake_device_name: str = ""
+
+    @model_validator(mode="after")
+    def check_level_zero_ipc_pool_holds_a_slot(self) -> CommConfig:
+        check_level_zero_ipc_sizes(
+            slot_size_kb=self.level_zero_ipc_slot_size_kb,
+            pool_size_mb=self.level_zero_ipc_pool_size_mb,
+            min_transfer_kb=self.level_zero_ipc_min_transfer_kb,
+        )
+        return self
 
 
 class EndpointsConfig(BaseModel):
