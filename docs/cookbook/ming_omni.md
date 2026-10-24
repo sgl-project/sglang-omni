@@ -519,3 +519,15 @@ Intelligibility is fully preserved; streaming and non-streaming are close but no
 - **Text streaming is not token-by-token today.** In the current Ming path, text-only `stream=true` currently emits an aggregate text chunk. Use streaming speech when you need audio chunks.
 - **Streaming speech is optimized for low client concurrency.** It improves first-audio latency at c=1 but can be slower than non-streaming for multi-client workloads.
 - **Long-form speech can drift.** For long narration, split text into smaller turns or run a voice/drift audit for your target voice and language.
+
+## Experimental Thinker PD
+
+The `pd` variant declares separate Prefill and Decode Thinker stages and retains the existing preprocessing, encoders, multimodal aggregation and text detokenizer. Start it with `sgl-omni serve --config examples/configs/ming_omni_pd.yaml` after sizing the placement for your checkpoint. This configuration is a candidate for validation; no end-to-end GPU result is established for this adapter.
+
+The first scope is Thinker text output from text, image, audio and video prompts. Prefill injects media embeddings through the existing Ming runner. The handoff retains prompt token IDs, request parameters, stream state and the generic continuation; raw media and encoder tensors stay on Prefill. Decode emits the transferred first token through the existing text callback before the terminal result. Speech generation and streaming TTS are unsupported in this variant.
+
+Both Thinker stages currently require TP=1, page size 1, disabled radix cache and no speculative decoding. Each stage loads its own Thinker weights. Confirm that the checkpoint fits on each selected device with KV headroom before reserving GPUs; the example's memory fractions are not evidence that Ming-flash-omni-2.0 fits on a particular card. A checkpoint that requires TP>1 cannot use this variant yet.
+
+Before measuring performance, compare against the existing text pipeline with the same checkpoint and sampling settings. Cover text/image/audio/video inputs, multiple Prefill chunks, streaming and non-streaming output, one-token and stop-token termination, concurrent requests, cancellation and a successful request after cancellation. Check transcript/token usage parity, first-token ordering and return of request/KV capacity. Run the generic PD lifecycle and stream-failure suites alongside `tests/unit_test/pipeline/test_pd_ming.py`. GPU validation remains required even when CPU contracts pass.
+
+Measure equal-GPU goodput and token gaps under mixed prompt lengths only after those checks pass. Separate encoder time from LM Prefill time; extra encoder placement alone does not demonstrate a PD benefit.

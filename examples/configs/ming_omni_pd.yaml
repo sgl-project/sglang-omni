@@ -1,0 +1,20 @@
+config_cls: MingOmniPDPipelineConfig
+model_path: inclusionAI/Ming-flash-omni-2.0
+name: ming-omni-pd
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.06
+  audio_encoder:
+    gpu_memory_fraction: 0.04
+  thinker:
+    gpu_memory_fraction: 0.65
+    factory:
+      max_inflight_handoffs: 2
+    engine:
+      max_running_requests: 8
+      cuda_graph_max_bs: 8
+  thinker_decode:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
