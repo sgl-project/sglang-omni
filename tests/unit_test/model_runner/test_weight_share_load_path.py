@@ -104,13 +104,14 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
 
 def test_distributed_update_reports_a_receive_without_an_update_group():
     runner = bare_runner()
+    runner.model = SmallModel(fill=1.0)
     runner.weight_updater = WeightUpdater(
         tp_rank=0,
         device="cpu",
         gpu_id=0,
         model_config=SimpleNamespace(),
         custom_weight_loaders={},
-        get_model=lambda: SmallModel(fill=1.0),
+        get_model=lambda: runner.model,
         update_model_fields=lambda **fields: None,
         recapture_cuda_graph=lambda: None,
         get_model_runner=lambda: runner,
@@ -396,3 +397,67 @@ def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
         ok, message = method(*args)
         assert ok is False
         assert "weight sharing" in message
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "update_weights_from_disk",
+        "update_weights_from_tensor",
+    ],
+)
+@pytest.mark.parametrize("blocked", [False, True])
+def test_model_update_policy_runs_before_the_updater(
+    method_name: str, blocked: bool
+) -> None:
+    runner = bare_runner()
+    runner.model = SmallModel(fill=1.0)
+    reason = "Cached execution is immutable; restart the worker"
+    if blocked:
+        runner.model.weight_update_blocked_reason = reason
+    updater = mock.Mock(return_value=(True, "updated"))
+    runner.weight_updater = SimpleNamespace(**{method_name: updater})
+    result = getattr(runner, method_name)("replacement", load_format="direct")
+    if blocked:
+        assert result == (False, reason)
+        updater.assert_not_called()
+    else:
+        assert result == (True, "updated")
+        updater.assert_called_once_with("replacement", load_format="direct")
+    assert torch.all(runner.model.linear.weight == 1.0)
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_model_update_policy_runs_before_distributed_receive(blocked: bool) -> None:
+    runner = bare_runner()
+    runner.model = SmallModel(fill=1.0)
+    reason = "Cached execution is immutable; restart the worker"
+    if blocked:
+        runner.model.weight_update_blocked_reason = reason
+    else:
+        pass
+    weights = [("linear.weight", torch.ones(2, 3))]
+    updater = mock.Mock()
+    updater.receive_weights_from_distributed.return_value = weights
+    updater.load_weights_from_distributed.return_value = (True, "updated")
+    runner.weight_updater = updater
+
+    result = runner.update_weights_from_distributed(
+        ["linear.weight"], ["float32"], [[2, 3]], "group", load_format="direct"
+    )
+
+    if blocked:
+        assert result == (False, reason)
+        updater.receive_weights_from_distributed.assert_not_called()
+        updater.load_weights_from_distributed.assert_not_called()
+    else:
+        assert result == (True, "updated")
+        updater.receive_weights_from_distributed.assert_called_once_with(
+            names=["linear.weight"],
+            dtypes=["float32"],
+            shapes=[[2, 3]],
+            group_name="group",
+            load_format="direct",
+        )
+        updater.load_weights_from_distributed.assert_called_once_with(weights)
+    assert torch.all(runner.model.linear.weight == 1.0)

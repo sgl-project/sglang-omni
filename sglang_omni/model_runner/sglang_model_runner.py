@@ -654,7 +654,7 @@ class SGLModelRunner(ModelRunner):
     def weight_update_blocked_reason(self) -> str | None:
         ws = self.weight_share_config
         if ws is None:
-            return None
+            return getattr(self.model, "weight_update_blocked_reason", None)
         else:
             pass
         return (
@@ -741,6 +741,7 @@ class SGLModelRunner(ModelRunner):
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
+            "FireRedTTS3ForConditionalGeneration": "sglang_omni.models.firered_tts3.sglang_model:FireRedTTS3SGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",

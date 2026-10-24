@@ -731,6 +731,15 @@ class PipelineConfig(BaseModel):
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
+    # Speech task_type values whose requests may carry an empty input (the
+    # content rides the reference audio instead — e.g. speech editing).
+    speech_empty_input_task_types: ClassVar[frozenset[str]] = frozenset()
+    # The model consumes the speed field itself (native instruction control),
+    # so the serving layer must not re-apply it as an encode-time post-process.
+    speech_native_speed_control: ClassVar[bool] = False
+    # The checkpoint supports the dual-stream decode form (interleaved
+    # text/audio feeding), exposed as the extra_params.dual_stream opt-in.
+    speech_dual_stream_supported: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None

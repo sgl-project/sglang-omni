@@ -30,6 +30,7 @@ from contextlib import aclosing, suppress
 from dataclasses import asdict, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
+from urllib.parse import quote
 
 from fastapi import (
     Depends,
@@ -229,6 +230,9 @@ def create_app(
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
+    speech_empty_input_task_types: frozenset[str] = frozenset(),
+    speech_native_speed_control: bool = False,
+    speech_dual_stream_supported: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
     max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     supported_speech_fields: frozenset[str] | None = None,
@@ -266,6 +270,14 @@ def create_app(
             a transcript.
         speech_reference_text_excludes_instructions: Whether a reference
             transcript and style instructions are mutually exclusive.
+        speech_empty_input_task_types: task_type values whose requests may
+            carry an empty input (edit tasks; the content rides the reference
+            audio).
+        speech_native_speed_control: Whether the model consumes the speed
+            field natively (the serving layer then skips the encode-time
+            speed post-process).
+        speech_dual_stream_supported: Whether the deployed checkpoint accepts
+            the extra_params.dual_stream decode-form opt-in.
         additional_speech_languages: Pipeline-specific accepted languages.
         max_speech_input_chars: Maximum accepted input characters, or ``None``
             to defer length validation to model-specific context checks.
@@ -340,6 +352,9 @@ def create_app(
         speech_reference_text_excludes_instructions=(
             speech_reference_text_excludes_instructions
         ),
+        speech_empty_input_task_types=speech_empty_input_task_types,
+        speech_native_speed_control=speech_native_speed_control,
+        speech_dual_stream_supported=speech_dual_stream_supported,
         additional_speech_languages=additional_speech_languages,
         max_speech_input_chars=max_speech_input_chars,
         supported_speech_fields=supported_speech_fields,
@@ -1916,7 +1931,7 @@ def register_speech(app: FastAPI) -> None:
                     client=client,
                     gen_req=gen_req,
                     request_id=request_id,
-                    speed=req.speed,
+                    speed=speech_service.resolve_encode_speed(req),
                     speech_stream_outcomes=app.state.speech_stream_outcomes,
                     stream_format=req.stream_format,
                 )
@@ -1938,7 +1953,7 @@ def register_speech(app: FastAPI) -> None:
                 gen_req=gen_req,
                 request_id=request_id,
                 response_format=req.response_format,
-                speed=req.speed,
+                speed=speech_service.resolve_encode_speed(req),
             )
         except ClientError as exc:
             return speech_generation_failure_response(request_id, exc)
@@ -1956,6 +1971,10 @@ def register_speech(app: FastAPI) -> None:
             # travels in the same X- header channel as usage.
             "X-Finish-Reason": result.finish_reason,
         }
+        if result.text:
+            headers["X-Gen-Text"] = quote(result.text)
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {

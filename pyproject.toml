@@ -102,6 +102,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+firered-tts3 = [
+    "nvidia-cudnn-frontend==1.28.0; sys_platform == 'linux'",
+]
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",

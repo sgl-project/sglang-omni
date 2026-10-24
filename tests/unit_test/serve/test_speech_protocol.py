@@ -1148,3 +1148,103 @@ def test_reference_list_rejects_outside_allowlist_bare_path(tmp_path: Path) -> N
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "references.audio_path"
+
+
+def test_reference_audio_rejects_oversized_bare_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": str(audio_path)})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_rejects_missing_bare_path(tmp_path: Path) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    missing_path = tmp_path / "missing.wav"
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": str(missing_path)})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_zero_required_references_rejects_any_reference(tmp_path: Path) -> None:
+    """required_speech_reference_count=0 models (speaker-token variants) take
+    text-only requests; a supplied reference is a 400."""
+    service = SpeechRequestValidator(
+        default_model="tts", required_speech_reference_count=0
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": f"data:audio/wav;base64,{ref_audio}"}
+        )
+    assert exc_info.value.status_code == 400
+    assert "does not accept speech references" in exc_info.value.message
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "references": [{"audio_path": "ref.wav"}]}
+        )
+    assert exc_info.value.status_code == 400
+
+    # Text-only requests pass.
+    service.parse_request({"input": "hello"})
+
+
+def test_dual_stream_gated_on_checkpoint_capability() -> None:
+    unsupported = SpeechRequestValidator(default_model="tts")
+    supported = SpeechRequestValidator(
+        default_model="tts", speech_dual_stream_supported=True
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        unsupported.parse_request(
+            {"input": "hello", "extra_params": {"dual_stream": True}}
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "extra_params"
+
+    request = supported.parse_request(
+        {"input": "hello", "extra_params": {"dual_stream": True, "style": "calm"}}
+    )
+    assert request.extra_params == {"dual_stream": True, "style": "calm"}
+
+    with pytest.raises(SpeechAPIError):
+        supported.parse_request(
+            {"input": "hello", "extra_params": {"dual_stream": "yes"}}
+        )
+    with pytest.raises(SpeechAPIError):
+        supported.parse_request({"input": "hello", "extra_params": {"style": 3}})
+    with pytest.raises(SpeechAPIError):
+        supported.parse_request({"input": "hello", "extra_params": [1]})
+
+
+def test_extra_params_ride_the_generate_request() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts", speech_dual_stream_supported=True
+    )
+    prepared = service.parse_generation_request(
+        {
+            "input": "hello",
+            "extra_params": {"dual_stream": True, "style": "calm"},
+            "initial_codec_chunk_frames": 8,
+        }
+    )
+    generate_request = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+    assert generate_request.extra_params["dual_stream"] is True
+    assert generate_request.extra_params["style"] == "calm"
+    assert generate_request.extra_params["initial_codec_chunk_frames"] == 8
