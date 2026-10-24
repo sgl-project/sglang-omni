@@ -14,6 +14,8 @@ from sglang.srt.model_executor.forward_batch_info import (
     ForwardBatch,
     PPProxyTensors,
 )
+from sglang.srt.runtime_context import get_spec
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -39,6 +41,9 @@ class SpeculativeTargetWorker:
         if omni_runner.tp_worker is not self.model_worker:
             raise ValueError("the speculative target runner must use the target worker")
         else:
+            omni_runner.retain_prefill_input_embeds = SpeculativeAlgorithm.from_string(
+                get_spec().speculative_algorithm
+            ).is_eagle()
             self.omni_runner = omni_runner
 
     def get_memory_pool(self) -> tuple[ReqToTokenPool, BaseTokenToKVPoolAllocator]:
@@ -90,6 +95,13 @@ class SpeculativeTargetWorker:
             batch_result = omni_runner.prepare_and_forward(
                 forward_batch, batch, requests, is_prefill=True
             )
+            if omni_runner.retain_prefill_input_embeds:
+                batch_result.logits_output.mm_input_embeds = (
+                    omni_runner.retained_prefill_input_embeds
+                )
+                omni_runner.retained_prefill_input_embeds = None
+            else:
+                pass
             if batch.is_prefill_only:
                 batch_result.next_token_ids = torch.zeros(
                     len(forward_batch.seq_lens),

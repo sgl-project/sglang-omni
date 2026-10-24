@@ -150,3 +150,43 @@ Current limits:
 - `instructions` cannot change after the first user turn is processed; open a new session instead.
 
 See [Session Graph](../developer_reference/full_duplex_interactive_model.md#session-graph) for the shared routing and delivery contracts.
+
+## Speculative Decoding
+
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio).
+
+```bash
+# DFlash: one 8-token block per step
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_num_draft_tokens 8 \
+  --port 8000
+
+# EAGLE3: a 3-step chain
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --thinker.engine.speculative_algorithm EAGLE3 \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio \
+  --thinker.engine.speculative_num_steps 3 \
+  --thinker.engine.speculative_eagle_topk 1 \
+  --thinker.engine.speculative_num_draft_tokens 4 \
+  --port 8000
+```
+
+- **Context.** The thinker serves within the draft's context (8,192 tokens for both drafts), and a request whose prompt plus `max_tokens` exceeds it, less a few tokens each step reserves, is rejected with an error. Setting `--preprocessing.factory.max_seq_len 8192` rejects most of them before the thinker.
+- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers apply penalties once per verify block, drop `min_p`, and skip the sampler that records logprobs. Rollout `/generate` requests default to `return_logprob: true`, so they must send `false`.
+- **Scheduling.** Async decode is turned off, and setting `enable_mixed_chunk` is rejected. EAGLE3 also runs prefill without CUDA graphs, since its draft extends on the composed multimodal embeddings. Sessions and weight updates are refused while a draft is loaded.
+
+Text-only ASR on LibriSpeech test-clean (`--text-only`, thinker on one H200 141GB with FA3 and SGLang 0.5.22, greedy, `max_tokens 200`), in requests per second; concurrency 1 over all 2,620 utterances, concurrency 4 and 8 over the two halves, each on a server that has not seen them:
+
+| Concurrency | Baseline | DFlash | EAGLE3 |
+|---|---|---|---|
+| 1 | 7.56 | 12.56 (1.66x) | 7.69 (1.02x) |
+| 4 | 16.45 | 24.41 (1.48x) | 12.06 (0.73x) |
+| 8 | 24.00 | 36.17 (1.51x) | 18.05 (0.75x) |
+
+DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. EAGLE3 trails at concurrency 4 and 8 because its draft runs prefill without CUDA graphs. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.
+
+With speech output (Seed-TTS-Eval English, 1,088 prompts, concurrency 16, streaming; thinker on one H200, talker and code2wav on a second), DFlash raises throughput from 23.4 to 24.3 req/s (1.04x) and cuts mean latency from 0.68 to 0.66 s and time to first audio from 0.22 to 0.20 s, with WER unchanged (1.70% → 1.71%). The gain is smaller because the talker and code2wav, which the draft does not speed up, produce the audio.

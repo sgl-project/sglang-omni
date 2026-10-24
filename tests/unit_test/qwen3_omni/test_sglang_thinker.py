@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 
@@ -26,6 +27,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
+from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.models.qwen3_omni.components import (
@@ -295,6 +297,7 @@ def run_forward(
     ("forward_mode", "out_cache_loc", "expected_live_rows"),
     [
         (ForwardMode.DECODE, [7, 3, 0, 0], [True, True, False, False]),
+        (ForwardMode.TARGET_VERIFY, [7, 8, 3, 4, 0, 0], [True] * 4 + [False] * 2),
         (ForwardMode.DECODE, [7], None),
         (ForwardMode.EXTEND, [7, 3, 0, 0], None),
     ],
@@ -314,6 +317,79 @@ def test_thinker_forward_marks_decode_rows_by_their_kv_slot(
     else:
         assert seen_mask.tolist() == expected_live_rows
     assert wrapper.decode_live_rows.is_live_row is None
+
+
+class LayerCaptureSetter(Protocol):
+    def __call__(
+        self, thinker: Qwen3OmniThinkerForCausalLM, layer_ids: list[int]
+    ) -> None: ...
+
+
+class CapturingTextModel(torch.nn.Module):
+    """Text model that records capture layers through the real setters."""
+
+    set_dflash_layers_to_capture = Qwen3MoeLLMModel.set_dflash_layers_to_capture
+    set_eagle3_layers_to_capture = Qwen3MoeLLMModel.set_eagle3_layers_to_capture
+
+    def __init__(
+        self, hidden_states: torch.Tensor, auxiliary_hidden_states: list[torch.Tensor]
+    ) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList(torch.nn.Identity() for _ in range(48))
+        self.layers_to_capture: list[int] = []
+        self.hidden_states = hidden_states
+        self.auxiliary_hidden_states = auxiliary_hidden_states
+
+    def forward(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: SimpleNamespace,
+        input_embeds: torch.Tensor | None,
+        pp_proxy_tensors: None,
+        input_deepstack_embeds: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return self.hidden_states, self.auxiliary_hidden_states
+
+
+@pytest.mark.parametrize(
+    "set_layers_to_capture",
+    [
+        Qwen3OmniThinkerForCausalLM.set_dflash_layers_to_capture,
+        Qwen3OmniThinkerForCausalLM.set_eagle3_layers_to_capture,
+    ],
+)
+def test_speculative_capture_hands_the_named_layers_to_the_logits_processor(
+    set_layers_to_capture: LayerCaptureSetter,
+) -> None:
+    wrapper = make_bare_wrapper()
+    hidden_states = torch.zeros(2, 3)
+    auxiliary_hidden_states = [torch.ones(2, 3), torch.full((2, 3), 2.0)]
+    wrapper.model = CapturingTextModel(hidden_states, auxiliary_hidden_states)
+    seen: dict[str, torch.Tensor | list[torch.Tensor]] = {}
+
+    def logits_processor(input_ids, hidden, lm_head, forward_batch, auxiliary):
+        seen.update(hidden=hidden, auxiliary=auxiliary)
+        return "logits"
+
+    wrapper.logits_processor = logits_processor
+    set_layers_to_capture(wrapper, [1, 12, 23])
+    result = wrapper.forward(
+        input_ids=torch.ones(2, dtype=torch.long),
+        positions=torch.zeros(2, dtype=torch.long),
+        forward_batch=SimpleNamespace(
+            mrope_positions=None,
+            forward_mode=ForwardMode.EXTEND,
+            out_cache_loc=torch.tensor([5, 6]),
+        ),
+    )
+
+    # A draft's target layer id i reads the stream after layer i.
+    assert wrapper.model.layers_to_capture == [2, 13, 24]
+    assert result == "logits"
+    assert seen["hidden"] is hidden_states
+    assert seen["auxiliary"] is auxiliary_hidden_states
 
 
 def test_decode_mask_is_cleared_when_the_model_call_fails() -> None:

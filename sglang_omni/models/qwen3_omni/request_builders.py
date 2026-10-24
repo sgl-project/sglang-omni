@@ -1103,6 +1103,7 @@ def make_thinker_scheduler_adapters(
     vocab_size: int,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     stage_name: str = "thinker",
+    is_speculative: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1121,6 +1122,15 @@ def make_thinker_scheduler_adapters(
             thinker_config=thinker_config,
         )
         req_data.stage_payload = payload
+        multimodal_inputs = req_data.req.multimodal_inputs
+        if is_speculative and multimodal_inputs is not None:
+            # note (wilsonzheng0327): verify adds the delta to integer positions without
+            # the truncation decode applies, so it is truncated here the same way.
+            multimodal_inputs.mrope_position_delta = (
+                multimodal_inputs.mrope_position_delta.long()
+            )
+        else:
+            pass
         return req_data
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:

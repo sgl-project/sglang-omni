@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 import torch
 import torch.nn.functional as F
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import AutoConfig
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
@@ -1247,6 +1249,47 @@ def create_sglang_thinker_executor_from_config(
     overrides["tp_size"] = tp_size
     if execution_mode == "session":
         overrides["enable_streaming_session"] = True
+    else:
+        pass
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    if draft_model_path is not None:
+        # note (wilsonzheng0327): the draft worker drives a synchronous loop that
+        # verifies whole blocks, so mixed prefill tails and the lookahead stay off.
+        if speculative_algorithm.is_none():
+            raise ValueError(
+                "speculative_draft_model_path needs a speculative_algorithm"
+            )
+        elif (server_args_overrides or {}).get("enable_mixed_chunk"):
+            raise ValueError(
+                "speculative thinker decoding needs enable_mixed_chunk off"
+            )
+        else:
+            pass
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+        # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
+        # prefill embeddings, which a captured draft prefill graph would ignore.
+        if speculative_algorithm.is_eagle():
+            overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
+        else:
+            pass
+        # The draft has its own positional capacity; the target serves within it.
+        draft_context_length = int(
+            AutoConfig.from_pretrained(
+                draft_model_path,
+                revision=overrides.get("speculative_draft_model_revision"),
+            ).max_position_embeddings
+        )
+        if max_seq_len is not None and max_seq_len > draft_context_length:
+            raise ValueError(
+                f"max_seq_len={max_seq_len} exceeds the draft's "
+                f"{draft_context_length}-token context"
+            )
+        else:
+            max_seq_len = max_seq_len or draft_context_length
     else:
         pass
 
