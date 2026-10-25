@@ -2,9 +2,6 @@
 // Provides Meeting Segment Transcribing for meeting transcript processing.
 
 import Foundation
-@preconcurrency import MLX
-import MLXAudioCore
-import MLXAudioSTT
 
 protocol MeetingSegmentTranscribing {
     func transcribe(chunk: BufferedMeetingChunk) async -> MeetingTranscriptSegment?

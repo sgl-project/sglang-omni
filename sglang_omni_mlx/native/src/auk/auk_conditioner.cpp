@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "qwen3_asr/qwen3_audio.h"
 
 namespace auk {
 
@@ -16,7 +17,7 @@ namespace {
 
 constexpr const char *kNoPromptAudio = "|<no_prompt_audio>|";
 
-qwen3_asr::WeightMap
+omni_common::WeightMap
 LoadConditionerWeights(const std::filesystem::path &directory,
                        mx::Dtype dtype) {
   if (dtype != mx::bfloat16 && dtype != mx::float32) {
@@ -24,8 +25,8 @@ LoadConditionerWeights(const std::filesystem::path &directory,
         "AuK conditioning requires bfloat16 or float32");
   } else {
   }
-  auto loaded = qwen3_asr::LoadSafetensors(directory);
-  qwen3_asr::WeightMap weights;
+  auto loaded = omni_common::LoadSafetensors(directory);
+  omni_common::WeightMap weights;
   for (auto &[name, weight] : loaded) {
     const std::string normalized =
         name.starts_with("thinker.") ? name.substr(8) : name;
@@ -64,7 +65,7 @@ LoadConditionerWeights(const std::filesystem::path &directory,
   return weights;
 }
 
-void RequireWeight(const qwen3_asr::Checkpoint &checkpoint,
+void RequireWeight(const omni_common::Checkpoint &checkpoint,
                    const std::string &name, const mx::Shape &shape) {
   if (checkpoint.Weight(name).shape() != shape) {
     throw std::invalid_argument("invalid AuK conditioner weight shape: " +
@@ -87,12 +88,12 @@ mx::array HalfRoPE(const mx::array &value, const mx::array &cosine,
 
 Conditioner::Config
 Conditioner::Config::Read(const std::filesystem::path &directory) {
-  const auto root = qwen3_asr::ReadJson(directory / "config.json");
+  const auto root = omni_common::ReadJson(directory / "config.json");
   const auto &thinker = root.at("thinker_config");
   const auto &text = thinker.at("text_config");
   const auto &audio = thinker.at("audio_config");
   const auto processor =
-      qwen3_asr::ReadJson(directory / "preprocessor_config.json");
+      omni_common::ReadJson(directory / "preprocessor_config.json");
   const auto rope = text.value(
       "rope_parameters", text.value("rope_scaling", nlohmann::json::object()));
   Config config;
@@ -122,12 +123,12 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
       rope.value("rope_type", rope.value("type", std::string("default"))) !=
           "default" ||
       audio.at("activation_function") != "gelu" ||
-      audio.at("num_mel_bins") != qwen3_asr::kMelBinCount ||
+      audio.at("num_mel_bins") != omni_common::kMelBinCount ||
       audio.at("output_dim") != config.hidden_size ||
-      processor.at("sampling_rate") != qwen3_asr::kSampleRate ||
-      processor.at("feature_size") != qwen3_asr::kMelBinCount ||
-      processor.at("n_fft") != qwen3_asr::kFftSize ||
-      processor.at("hop_length") != qwen3_asr::kHopLength ||
+      processor.at("sampling_rate") != omni_common::kSampleRate ||
+      processor.at("feature_size") != omni_common::kMelBinCount ||
+      processor.at("n_fft") != omni_common::kFftSize ||
+      processor.at("hop_length") != omni_common::kHopLength ||
       processor.at("padding_side") != "right" ||
       audio.value("num_hidden_layers", config.audio_layer_count) !=
           config.audio_layer_count ||
@@ -142,7 +143,7 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
              config.audio_head_count <= 0 ||
              config.audio_intermediate_size <= 0 ||
              config.audio_window_frames <= 0 ||
-             config.max_audio_samples < qwen3_asr::kFftSize ||
+             config.max_audio_samples < omni_common::kFftSize ||
              !(config.rms_norm_epsilon > 0) || !(config.rope_theta > 0) ||
              !std::isfinite(config.rms_norm_epsilon) ||
              !std::isfinite(config.rope_theta)) {
@@ -153,7 +154,7 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
              config.audio_hidden_size % config.audio_head_count != 0 ||
              config.audio_hidden_size % 2 != 0 ||
              config.audio_window_frames % 2 != 0 ||
-             config.max_audio_samples % qwen3_asr::kHopLength != 0) {
+             config.max_audio_samples % omni_common::kHopLength != 0) {
     throw std::invalid_argument(
         "incompatible AuK conditioner attention dimensions");
   } else {
@@ -189,9 +190,9 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
       checkpoint_(LoadConditionerWeights(directory, dtype),
                   nlohmann::json::object()),
       tokenizer_(directory) {
-  RequireWeight(checkpoint_, "frontend.hann_window", {qwen3_asr::kFftSize});
+  RequireWeight(checkpoint_, "frontend.hann_window", {omni_common::kFftSize});
   RequireWeight(checkpoint_, "frontend.mel_filters",
-                {qwen3_asr::kFftSize / 2 + 1, qwen3_asr::kMelBinCount});
+                {omni_common::kFftSize / 2 + 1, omni_common::kMelBinCount});
   const int hidden = config_.hidden_size;
   const int head_size = hidden / config_.text_head_count;
   const int key_width = config_.text_kv_head_count * head_size;
@@ -223,7 +224,7 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
   }
   const int audio_hidden = config_.audio_hidden_size;
   RequireWeight(checkpoint_, "audio_tower.conv1.weight",
-                {audio_hidden, 3, qwen3_asr::kMelBinCount});
+                {audio_hidden, 3, omni_common::kMelBinCount});
   RequireWeight(checkpoint_, "audio_tower.conv2.weight",
                 {audio_hidden, 3, audio_hidden});
   for (const std::string name : {"conv1", "conv2", "ln_post"}) {
@@ -271,7 +272,7 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
 std::vector<int> Conditioner::Tokenize(const std::string &instruction,
                                        int audio_frame_count) const {
   if (instruction.empty() || audio_frame_count < 0 ||
-      audio_frame_count > config_.max_audio_samples / qwen3_asr::kHopLength) {
+      audio_frame_count > config_.max_audio_samples / omni_common::kHopLength) {
     throw std::invalid_argument(
         "invalid AuK conditioning instruction or audio length");
   } else {
@@ -304,7 +305,7 @@ mx::array Conditioner::Encode(
     const std::optional<std::vector<float>> &reference_audio) const {
   std::optional<mx::array> features;
   if (reference_audio.has_value()) {
-    if (reference_audio->size() < qwen3_asr::kFftSize ||
+    if (reference_audio->size() < omni_common::kFftSize ||
         reference_audio->size() >
             static_cast<size_t>(config_.max_audio_samples) ||
         !std::all_of(reference_audio->begin(), reference_audio->end(),
@@ -317,18 +318,18 @@ mx::array Conditioner::Encode(
     // processor's BF16 inputs; padding only needs to cover the final window.
     mx::StreamContext cpu(mx::Device::cpu);
     std::vector<float> padded = *reference_audio;
-    const int frames =
-        static_cast<int>((reference_audio->size() + qwen3_asr::kHopLength - 1) /
-                         qwen3_asr::kHopLength);
+    const int frames = static_cast<int>(
+        (reference_audio->size() + omni_common::kHopLength - 1) /
+        omni_common::kHopLength);
     padded.resize(
         std::min(config_.max_audio_samples,
-                 frames * qwen3_asr::kHopLength + qwen3_asr::kFftSize),
+                 frames * omni_common::kHopLength + omni_common::kFftSize),
         0.0f);
     const mx::array full =
         qwen3_asr::LogMel(padded, qwen3_asr::AudioLayout::kReference,
                           checkpoint_.Weight("frontend.hann_window"),
                           checkpoint_.Weight("frontend.mel_filters"));
-    features = mx::slice(full, {0, 0}, {qwen3_asr::kMelBinCount, frames});
+    features = mx::slice(full, {0, 0}, {omni_common::kMelBinCount, frames});
     mx::eval(*features);
   } else {
   }
@@ -377,7 +378,7 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
   return mx::add(
       residual,
       checkpoint_.Linear(
-          mx::multiply(qwen3_asr::Silu(checkpoint_.Linear(
+          mx::multiply(omni_common::Silu(checkpoint_.Linear(
                            mlp_input, prefix + ".mlp.gate_proj")),
                        checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
           prefix + ".mlp.down_proj"));

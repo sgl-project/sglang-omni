@@ -79,6 +79,9 @@ class SamplingConfig(TypedDict, total=False):
     talker_top_k: Annotated[int, Field(ge=-1)]
     talker_top_p: Annotated[float, Field(gt=0, le=1)]
     talker_max_new_tokens: Annotated[int, Field(ge=1)]
+    min_p: Annotated[float, Field(ge=0, le=1)]
+    audio_temperature: Annotated[float, Field(ge=0, le=2)]
+    audio_top_k: Annotated[int, Field(ge=-1)]
     max_new_tokens: Annotated[int, Field(ge=1)]
     seed: Annotated[int, Field(ge=0)]
 
@@ -113,6 +116,7 @@ class SessionExtension(TypedDict, total=False):
     tail_policy: TailPolicy
     timebase: TimebaseConfig
     sampling: SamplingConfig
+    voice: str
     reference_audio: AudioReference
     tts_reference_audio: AudioReference
     max_slice_nums: Annotated[int, Field(ge=1)]
@@ -157,6 +161,7 @@ class GrantedCapabilities(TypedDict, total=False):
     strict_order: bool
     sampling_parameters: list[str]
     supports_reference_audio: bool
+    voices: list[str]
     limits: dict[str, int | float]
     rejections: list[Rejection]
 

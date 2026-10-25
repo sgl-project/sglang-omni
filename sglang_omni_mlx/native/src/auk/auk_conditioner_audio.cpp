@@ -13,9 +13,9 @@ namespace auk {
 namespace mx = mlx::core;
 
 mx::array Conditioner::EncodeAudio(const mx::array &features) const {
-  if (features.ndim() != 2 || features.shape(0) != qwen3_asr::kMelBinCount ||
+  if (features.ndim() != 2 || features.shape(0) != omni_common::kMelBinCount ||
       features.shape(1) < 3 ||
-      features.shape(1) > config_.max_audio_samples / qwen3_asr::kHopLength) {
+      features.shape(1) > config_.max_audio_samples / omni_common::kHopLength) {
     throw std::invalid_argument(
         "AuK audio features must contain valid mel frames");
   } else {
@@ -28,7 +28,7 @@ mx::array Conditioner::EncodeAudio(const mx::array &features) const {
   for (int start = 0; start < frame_count; start += window) {
     const int frames = std::min(window, frame_count - start);
     const mx::array chunk = mx::transpose(mx::slice(
-        features, {0, start}, {qwen3_asr::kMelBinCount, start + frames}));
+        features, {0, start}, {omni_common::kMelBinCount, start + frames}));
     chunks.push_back(mx::pad(chunk, {{0, maximum_frames - frames}, {0, 0}}));
     chunk_frames.push_back(frames);
   }
@@ -38,12 +38,12 @@ mx::array Conditioner::EncodeAudio(const mx::array &features) const {
   const auto dtype = checkpoint_.Weight("audio_tower.conv1.weight").dtype();
   mx::array hidden = mx::astype(mx::stack(chunks), dtype);
   hidden = mx::multiply(
-      qwen3_asr::Gelu(mx::add(
+      omni_common::Gelu(mx::add(
           mx::conv1d(hidden, checkpoint_.Weight("audio_tower.conv1.weight"), 1,
                      1),
           checkpoint_.Weight("audio_tower.conv1.bias"))),
       mx::expand_dims(valid, -1));
-  hidden = qwen3_asr::Gelu(mx::add(
+  hidden = omni_common::Gelu(mx::add(
       mx::conv1d(hidden, checkpoint_.Weight("audio_tower.conv2.weight"), 2, 1),
       checkpoint_.Weight("audio_tower.conv2.bias")));
   const int encoded_frames = hidden.shape(1);
@@ -87,7 +87,7 @@ mx::array Conditioner::EncodeAudio(const mx::array &features) const {
             prefix + ".self_attn.out_proj"));
     hidden = mx::add(
         hidden,
-        checkpoint_.Linear(qwen3_asr::Gelu(checkpoint_.Linear(
+        checkpoint_.Linear(omni_common::Gelu(checkpoint_.Linear(
                                checkpoint_.LayerNorm(
                                    hidden, prefix + ".final_layer_norm", 1e-5f),
                                prefix + ".fc1")),

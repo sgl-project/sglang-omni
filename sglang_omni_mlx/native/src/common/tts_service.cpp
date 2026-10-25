@@ -145,7 +145,7 @@ void AudioResponse::WritePcm(std::string_view pcm, int sample_rate,
   std::string_view body = pcm;
   const char *content_type = "audio/pcm";
   if (format_ == AudioFormat::Wav || format_ == AudioFormat::JsonWav) {
-    encoded = qwen3_asr::EncodeWavPcm16(pcm, sample_rate, channels);
+    encoded = omni_common::EncodeWavPcm16(pcm, sample_rate, channels);
     content_type = "audio/wav";
     if (format_ == AudioFormat::JsonWav) {
       std::string base64(4 * ((encoded.size() + 2) / 3) + 1, '\0');

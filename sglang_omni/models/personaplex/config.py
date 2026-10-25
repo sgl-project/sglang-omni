@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The PersonaPlex pipeline: five stages on one GPU, the LM under SGLang."""
+"""The PersonaPlex pipelines on one GPU, the LM under SGLang.
+
+The default pipeline answers a whole recording; the session variant holds
+full-duplex sessions over /v1/realtime.
+"""
 
 from collections.abc import Mapping
 from typing import Annotated, ClassVar
 
-from pydantic import Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
+from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
@@ -14,22 +19,39 @@ from sglang_omni.config.schema import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.models.personaplex.architecture import (
+    DEFAULT_AUDIO_TEMPERATURE,
+    DEFAULT_AUDIO_TOP_K,
+)
 from sglang_omni.models.personaplex.hf_config import PERSONAPLEX_ARCH
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.personaplex.stages"
 PREPROCESSING_STAGE = "preprocessing"
+MIMI_ENCODE_STAGE = "mimi_encode"
 LM_STAGE = "lm"
 CODE2WAV_STAGE = "code2wav"
 # The LM's concurrency when lm.engine.max_running_requests is unset.
 DEFAULT_LM_MAX_RUNNING_REQUESTS = 1
 
 
-class PersonaPlexLMFactoryArgs(FactoryArgs):
+class PersonaPlexDepformerFactoryArgs(FactoryArgs):
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+    )
+
+
+class PersonaPlexLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
     enable_async_decode: bool = False
 
 
 class PersonaPlexLMStageConfig(EngineStageConfig):
     factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
+
+
+class PersonaPlexSessionLMStageConfig(EngineStageConfig):
+    factory: PersonaPlexDepformerFactoryArgs = Field(
+        default_factory=PersonaPlexDepformerFactoryArgs
+    )
 
 
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
@@ -60,10 +82,10 @@ def personaplex_stages_factory() -> list[StageConfig]:
             name=PREPROCESSING_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_preprocessing_executor",
-            next="mimi_encode",
+            next=MIMI_ENCODE_STAGE,
         ),
         StageConfig(
-            name="mimi_encode",
+            name=MIMI_ENCODE_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_mimi_encode_executor",
             gpu=0,
@@ -93,6 +115,41 @@ def personaplex_stages_factory() -> list[StageConfig]:
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
+        ),
+    ]
+
+
+def personaplex_session_stages_factory() -> list[StageConfig]:
+    """One linear route, the only shape a session unit takes."""
+    return [
+        StageConfig(
+            name=PREPROCESSING_STAGE,
+            process="pipeline",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_preprocessing_executor",
+            next=MIMI_ENCODE_STAGE,
+        ),
+        StageConfig(
+            name=MIMI_ENCODE_STAGE,
+            process="pipeline",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_mimi_encode_executor",
+            gpu=0,
+            next=LM_STAGE,
+        ),
+        PersonaPlexSessionLMStageConfig(
+            name=LM_STAGE,
+            process="lm",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_lm_executor",
+            factory=PersonaPlexDepformerFactoryArgs(dtype="bfloat16"),
+            gpu=0,
+            engine=EngineArgs(mem_fraction_static=0.3),
+            next=CODE2WAV_STAGE,
+        ),
+        StageConfig(
+            name=CODE2WAV_STAGE,
+            process="lm",
+            factory_path=f"{MODEL_STAGES_PREFIX}.create_session_code2wav_executor",
+            gpu=0,
+            terminal=True,
         ),
     ]
 
@@ -163,4 +220,90 @@ class PersonaPlexPipelineConfig(PipelineConfig):
         return next((stage for stage in self.stages if stage.name == stage_name), None)
 
 
+class PersonaPlexSessionSampling(BaseModel):
+    """Deployment sampling for sessions; unset fields keep the offline defaults,
+    and a session may override any field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float | None = Field(default=None, ge=0)
+    top_k: int | None = Field(default=None, ge=-1)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    min_p: float | None = Field(default=None, ge=0, le=1)
+    repetition_penalty: float | None = Field(default=None, gt=0)
+    audio_temperature: float | None = Field(default=None, ge=0)
+    audio_top_k: int | None = Field(default=None, ge=-1)
+    seed: int | None = None
+
+
+class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
+    realtime_deployment_factory: ClassVar[str | None] = (
+        "sglang_omni.models.personaplex.realtime.create_realtime_deployment"
+    )
+    is_realtime_only: ClassVar[bool] = True
+    # Note (wilsonzheng0327): Async LM decode and offline code2wav factory fields
+    # have no session counterpart.
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        LM_STAGE: PersonaPlexSessionLMStageConfig
+    }
+
+    max_sessions: int = Field(default=1, ge=1)
+    # Note (Junnan Li): None keeps the offline default voice and role prompt.
+    voice: str | None = None
+    instructions: str | None = None
+    sampling: PersonaPlexSessionSampling = Field(
+        default_factory=PersonaPlexSessionSampling
+    )
+    stages: list[StageConfig] = Field(
+        default_factory=personaplex_session_stages_factory
+    )
+
+    def model_post_init(self, __context: object = None) -> None:
+        super().model_post_init(__context)
+        lm_max_running = self.lm_max_running_requests()
+        if lm_max_running < self.lm_request_slots():
+            raise ValueError(
+                f"{LM_STAGE}.engine.max_running_requests={lm_max_running} is below "
+                f"max_sessions + {REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV}"
+                f"={self.lm_request_slots()}: the session bridge admits a session's "
+                "first unit only while a slot stays free for sessions holding KV."
+            )
+        else:
+            pass
+
+    def lm_request_slots(self) -> int:
+        return self.max_sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+
+    def lm_max_running_requests(self) -> int:
+        """The LM's concurrency: its engine setting, else the session slots."""
+        engine = self.stage_named(LM_STAGE).engine
+        value = engine.max_running_requests
+        return int(value) if value is not None else self.lm_request_slots()
+
+    def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
+        if stage_name == LM_STAGE:
+            return {
+                "audio_temperature": (
+                    self.sampling.audio_temperature
+                    if self.sampling.audio_temperature is not None
+                    else DEFAULT_AUDIO_TEMPERATURE
+                ),
+                "audio_top_k": (
+                    self.sampling.audio_top_k
+                    if self.sampling.audio_top_k is not None
+                    else DEFAULT_AUDIO_TOP_K
+                ),
+                "server_args_overrides": {
+                    "max_running_requests": self.lm_request_slots()
+                },
+            }
+        else:
+            return {"max_open_sessions": self.max_sessions}
+
+
 EntryClass = PersonaPlexPipelineConfig
+
+Variants = {
+    "offline": PersonaPlexPipelineConfig,
+    "session": PersonaPlexSessionPipelineConfig,
+}

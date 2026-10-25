@@ -6,7 +6,7 @@
 
 #include "soxr.h"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 std::vector<float> ResampleAudio(const std::vector<float> &samples,
                                  int source_sample_rate,
@@ -37,4 +37,4 @@ std::vector<float> ResampleAudio(const std::vector<float> &samples,
   }
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

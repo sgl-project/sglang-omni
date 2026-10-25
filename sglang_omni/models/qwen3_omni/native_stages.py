@@ -110,6 +110,9 @@ def create_encoder_scheduler(
             dtype=dtype,
             enable_layer_cuda_graph=enable_layer_cuda_graph,
         )
+    # note (db-ol): The audio encoder is not thread safe, so overlapping units could return another session's embeddings.
     return SessionScheduler(
-        QwenEncoderHooks(model, stage_name), max_open_sessions=max_open_sessions
+        QwenEncoderHooks(model, stage_name),
+        max_open_sessions=max_open_sessions,
+        max_concurrency=1,
     )

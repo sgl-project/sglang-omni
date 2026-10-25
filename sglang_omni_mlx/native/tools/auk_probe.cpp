@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     }
     const auto options = options_path.empty()
                              ? nlohmann::json::object()
-                             : qwen3_asr::ReadJson(options_path);
+                             : omni_common::ReadJson(options_path);
     if (dtype_name.empty()) {
       dtype_name = options.value("dtype", std::string("float32"));
     } else {
@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     const mx::Dtype dtype =
         dtype_name == "float32" ? mx::float32 : mx::bfloat16;
     const auto [inputs, metadata] = mx::load_safetensors(input_path.string());
-    qwen3_asr::WeightMap outputs;
+    omni_common::WeightMap outputs;
     if (component == "vae") {
       const auk::VAE model(model_path / "vae");
       const auto posterior = model.Posterior(inputs.at("waveform"));

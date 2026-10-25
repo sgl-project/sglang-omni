@@ -6,6 +6,57 @@ import XCTest
 
 @MainActor
 final class ModelDebugSupportTests: XCTestCase {
+    func testDebugCatalogUsesInstallationAndPlatformGatesForNewNativeASR() throws {
+        let repos: Set<String> = [
+            "mlx-community/parakeet-tdt-0.6b-v3",
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+            "mlx-community/SenseVoiceSmall"
+        ]
+        for installedRepos in [Set<String>(), repos] {
+            let options = ModelDebugCatalog.availableASRModels(
+                downloadedMLXRepos: installedRepos,
+                remoteASRConfigurations: [:]
+            )
+            for repo in repos {
+                let option = try XCTUnwrap(options.first { $0.id == "mlx:\(repo)" })
+                let isInstalled = installedRepos.contains(repo)
+                let reason = OmniASRBackend.unavailabilityReason(for: repo)
+                    ?? (isInstalled ? nil : AppLocalization.localizedString("Install this model in Model settings first."))
+                XCTAssertEqual(option.isInstalled, isInstalled)
+                XCTAssertEqual(option.isSelectable, isInstalled && OmniASRBackend.isAppleSilicon)
+                XCTAssertEqual(option.disabledReason, reason)
+                XCTAssertEqual(option.selectorEntry.isSelectable, isInstalled && OmniASRBackend.isAppleSilicon)
+                XCTAssertEqual(option.selectorEntry.disabledReason, reason)
+            }
+        }
+    }
+
+    func testDebugNativeASRAliasUsesPlatformGateWhileConfiguredRemoteStaysSelectable() throws {
+        let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+        let configuration = TestFactories.makeRemoteConfiguration(
+            providerID: RemoteASRProvider.openAIWhisper.rawValue,
+            model: "whisper-1",
+            endpoint: "https://example.com/v1/audio/transcriptions",
+            apiKey: "test-token"
+        )
+        let options = ModelDebugCatalog.availableASRModels(
+            downloadedMLXRepos: ["mlx-community/GLM-ASR-Nano-4bit"],
+            remoteASRConfigurations: [RemoteASRProvider.openAIWhisper.rawValue: configuration]
+        )
+        let local = try XCTUnwrap(options.first { $0.id == "mlx:\(repo)" })
+        XCTAssertTrue(local.isInstalled)
+#if arch(arm64)
+        XCTAssertTrue(local.selectorEntry.isSelectable)
+        XCTAssertNil(local.disabledReason)
+#else
+        XCTAssertFalse(local.selectorEntry.isSelectable)
+        XCTAssertEqual(local.disabledReason, OmniASRBackend.unavailabilityReason(for: repo))
+#endif
+        let remote = try XCTUnwrap(options.first { $0.id == "remote-asr:\(RemoteASRProvider.openAIWhisper.rawValue)" })
+        XCTAssertTrue(remote.selectorEntry.isSelectable)
+        XCTAssertNil(remote.disabledReason)
+    }
+
     private func withEphemeralDefaults(
         _ body: (UserDefaults) throws -> Void
     ) rethrows {

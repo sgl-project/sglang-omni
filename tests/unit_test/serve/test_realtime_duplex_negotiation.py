@@ -167,6 +167,22 @@ def test_a_port_may_declare_talker_sampling_beyond_the_duplex_defaults() -> None
     assert exc_info.value.code == "not_applicable"
 
 
+def test_a_session_picks_only_a_voice_the_deployment_lists() -> None:
+    capabilities = Capabilities(voices=("NATF2", "NATM1"))
+    config, granted = build_negotiation(capabilities).negotiate(
+        {}, "CREATED", {"sglang": {"voice": "NATM1"}}
+    )
+    assert config["sglang"]["voice"] == "NATM1"
+    assert granted["voices"] == ["NATF2", "NATM1"]
+    for negotiation in (build_negotiation(capabilities), build_negotiation()):
+        with pytest.raises(ProtocolError) as exc_info:
+            negotiation.negotiate({}, "CREATED", {"sglang": {"voice": "/etc/hosts"}})
+        assert (exc_info.value.code, exc_info.value.param) == (
+            "not_applicable",
+            "session.sglang.voice",
+        )
+
+
 def test_open_session_merges_patch_into_current_configuration() -> None:
     negotiation = build_negotiation(Capabilities(output_modalities=("text", "audio")))
     current = open_session(negotiation)

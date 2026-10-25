@@ -15,6 +15,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
     ProfilerStartMessage,
@@ -37,6 +38,7 @@ ControlMessage = (
     | CompleteMessage
     | StreamMessage
     | ShutdownMessage
+    | FreezeGCMessage
     | SubmitMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
@@ -320,6 +322,7 @@ class StageControlPlane:
         | DataReadyMessage
         | SubmitMessage
         | ShutdownMessage
+        | FreezeGCMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
     ):
@@ -336,6 +339,7 @@ class StageControlPlane:
                 DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
+                FreezeGCMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
                 AdminMessage,
@@ -442,7 +446,7 @@ class CoordinatorControlPlane:
         self,
         stage_name: str,
         stage_endpoint: str,
-        msg: SubmitMessage | AdminMessage | ShutdownMessage,
+        msg: SubmitMessage | AdminMessage | ShutdownMessage | FreezeGCMessage,
     ) -> None:
         """Submit a request to a stage."""
         if stage_name not in self.stage_sockets:

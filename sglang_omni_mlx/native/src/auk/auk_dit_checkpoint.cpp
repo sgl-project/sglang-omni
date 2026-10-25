@@ -10,13 +10,13 @@
 
 namespace auk {
 namespace mx = mlx::core;
-using qwen3_asr::Checkpoint;
+using omni_common::Checkpoint;
 
 namespace {
 
-qwen3_asr::WeightMap LoadWeights(const std::filesystem::path &directory,
-                                 mx::Dtype dtype) {
-  auto weights = qwen3_asr::LoadSafetensors(directory);
+omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
+                                   mx::Dtype dtype) {
+  auto weights = omni_common::LoadSafetensors(directory);
   for (auto &[name, weight] : weights) {
     const bool preserve_float = name == "layer_weights" ||
                                 name == "layer_scale" ||
@@ -83,7 +83,7 @@ void RequireBlock(const Checkpoint &checkpoint, const std::string &prefix,
 } // namespace
 
 DiT::DiT(const std::filesystem::path &model_directory, mx::Dtype dtype)
-    : config_(qwen3_asr::ReadJson(model_directory / "config.json")),
+    : config_(omni_common::ReadJson(model_directory / "config.json")),
       checkpoint_(LoadWeights(model_directory, dtype), config_), dtype_(dtype),
       head_count_(config_.at("arch").at("heads").get<int>()),
       joint_layer_count_(config_.at("arch").at("num_layers").get<int>()),

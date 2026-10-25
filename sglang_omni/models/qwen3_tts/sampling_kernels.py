@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import torch
+from sglang.kernels.jit.utils import is_arch_support_pdl
 
+from sglang_omni.models.qwen3_tts.predictor_kernels import (
+    codec_gather_projected_size,
+    gather_codec_embedding_row_and_add,
+)
 from sglang_omni.platforms import current_platform
 
 if current_platform.is_npu():
@@ -36,6 +41,12 @@ TOP_K_MERGE_KEYS_PER_WARP = 64
 
 def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
+
+
+if has_triton_runtime() and current_platform.is_cuda():
+    from triton.language.extra.cuda import gdc_launch_dependents
+else:
+    gdc_launch_dependents = None
 
 
 if has_triton_runtime():
@@ -387,7 +398,6 @@ if has_triton_runtime():
         top_ps,
         seeds,
         positions,
-        out,
         block_k: tl.constexpr,
         has_top_p: tl.constexpr,
     ):
@@ -427,7 +437,7 @@ if has_triton_runtime():
         max_sampled_score = tl.max(sampled_scores, axis=0)
         candidates = tl.where(sampled_scores == max_sampled_score, ranks, block_k)
         sampled_rank = tl.min(candidates, axis=0)
-        token = tl.max(
+        return tl.max(
             tl.where(
                 ranks == sampled_rank,
                 sorted_token_ids.to(tl.int64),
@@ -435,7 +445,6 @@ if has_triton_runtime():
             ),
             axis=0,
         )
-        tl.store(out + row, token)
 
     @triton.jit
     def seeded_top_k_top_p_sample_kernel(
@@ -515,7 +524,7 @@ if has_triton_runtime():
         else:
             pass
 
-        sample_sorted_top_k(
+        token = sample_sorted_top_k(
             sorted_scores,
             sorted_token_ids,
             row,
@@ -523,10 +532,10 @@ if has_triton_runtime():
             top_ps,
             seeds,
             positions,
-            out,
             block_k,
             has_top_p,
         )
+        tl.store(out + row, token)
 
     @triton.jit
     def seeded_top_k_chunk_kernel(
@@ -562,11 +571,25 @@ if has_triton_runtime():
         seeds,
         positions,
         out,
+        out_stride,
+        embedding_weight,
+        gathered,
+        accumulated,
+        projected_weight,
+        projected,
+        embedding_stride,
+        gathered_stride,
+        accumulated_stride,
+        projected_stride,
         num_candidates: tl.constexpr,
         block_k: tl.constexpr,
         log2_num_candidates: tl.constexpr,
         log2_block_k: tl.constexpr,
         has_top_p: tl.constexpr,
+        hidden_size: tl.constexpr,
+        hidden_block: tl.constexpr,
+        projected_size: tl.constexpr,
+        use_gdc: tl.constexpr,
     ):
         # note (ratish): the keys are unique, so the top block_k of the chunks'
         # top block_k sets is the row's top block_k in the same order.
@@ -601,7 +624,7 @@ if has_triton_runtime():
         sorted_scores, sorted_token_ids = unpack_top_keys(
             tl.reshape(candidates, [block_k]), block_k
         )
-        sample_sorted_top_k(
+        token = sample_sorted_top_k(
             sorted_scores,
             sorted_token_ids,
             row,
@@ -609,10 +632,35 @@ if has_triton_runtime():
             top_ps,
             seeds,
             positions,
-            out,
             block_k,
             has_top_p,
         )
+        tl.store(out + row * out_stride, token)
+        # note (ratish): with a codec table, the code's embedding row is gathered
+        # and added to the row's sum here, as the standalone gather kernel does.
+        if hidden_size > 0:
+            gather_codec_embedding_row_and_add(
+                token,
+                row,
+                tl.arange(0, hidden_block),
+                embedding_weight,
+                gathered,
+                accumulated,
+                projected_weight,
+                projected,
+                embedding_stride,
+                gathered_stride,
+                accumulated_stride,
+                projected_stride,
+                hidden_size,
+                projected_size,
+            )
+        else:
+            pass
+        if use_gdc:
+            gdc_launch_dependents()
+        else:
+            pass
 
 else:
     seeded_gumbel_sample_sorted_kernel = None
@@ -833,6 +881,209 @@ def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     return next_power_of_2(max_top_k)
 
 
+def fused_sampler_block_k(
+    logits: torch.Tensor,
+    row_tensors: tuple[torch.Tensor, ...],
+    max_top_k: int,
+) -> int | None:
+    """The fused sampler's selection width, or None when the logits or the per-row
+    temperatures, top_ks, top_ps, seeds and positions do not fit its contract."""
+    block_k = fused_raw_logit_block_k(int(max_top_k))
+    if (
+        seeded_top_k_top_p_sample_kernel is None
+        or not _TRITON_GATHER_SUPPORTED
+        or block_k is None
+        or not logits.is_cuda
+        or logits.ndim != 2
+        or logits.shape[1] != FUSED_SAMPLER_VOCAB_SIZE
+        or logits.dtype is not torch.bfloat16
+        or not logits.is_contiguous()
+    ):
+        return None
+    else:
+        pass
+
+    batch_size = int(logits.shape[0])
+    if any(
+        tensor.device != logits.device
+        or tensor.ndim != 1
+        or tensor.shape[0] != batch_size
+        or not tensor.is_contiguous()
+        for tensor in row_tensors
+    ):
+        return None
+    else:
+        pass
+    temperatures, top_ks, top_ps, seeds, positions = row_tensors
+    if (
+        temperatures.dtype is not torch.float32
+        or top_ks.dtype is not torch.long
+        or top_ps.dtype is not torch.float32
+        or seeds.dtype is not torch.long
+        or positions.dtype is not torch.long
+    ):
+        return None
+    else:
+        pass
+    return block_k
+
+
+def uses_split_top_k(logits: torch.Tensor, max_top_k: int, block_k: int) -> bool:
+    # note (ratish): the split launch is measured on sm_90 only; other devices keep
+    # the single kernel. Each chunk holds at least two runs, so it runs a halving round.
+    return (
+        max_top_k > 32
+        and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE
+        and torch.version.hip is None
+        and torch.cuda.get_device_capability(logits.device) == (9, 0)
+    )
+
+
+def launch_split_top_k_sample(
+    logits: torch.Tensor,
+    row_tensors: tuple[torch.Tensor, ...],
+    out: torch.Tensor,
+    *,
+    block_k: int,
+    has_top_p: bool,
+    embedding_weight: torch.Tensor | None = None,
+    gathered: torch.Tensor | None = None,
+    accumulated: torch.Tensor | None = None,
+    projected_weight: torch.Tensor | None = None,
+    projected: torch.Tensor | None = None,
+) -> None:
+    """Sample each row's code into the int64 view out through the chunk and merge
+    kernels; with embedding_weight, the merge kernel also gathers the code's rows
+    into gathered, accumulated and projected. The caller has checked every contract."""
+    temperatures, top_ks, top_ps, seeds, positions = row_tensors
+    batch_size = int(logits.shape[0])
+    num_candidates = TOP_K_CHUNKS * block_k
+    chunk_keys = torch.empty(
+        (batch_size, num_candidates),
+        device=logits.device,
+        dtype=torch.int64,
+    )
+    seeded_top_k_chunk_kernel[(batch_size, TOP_K_CHUNKS)](
+        logits,
+        temperatures,
+        chunk_keys,
+        logits.stride(0),
+        FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
+        int(block_k),
+        num_warps=TOP_K_CHUNK_WARPS,
+    )
+    if embedding_weight is None:
+        codec_gather_args = (out,) * 5 + (0,) * 4
+        hidden_size = 0
+        projected_size = 0
+    else:
+        if projected_weight is None:
+            projected_weight = embedding_weight
+            projected = gathered
+            projected_size = 0
+        else:
+            projected_size = projected_weight.shape[1]
+        codec_gather_args = (
+            embedding_weight,
+            gathered,
+            accumulated,
+            projected_weight,
+            projected,
+            embedding_weight.stride(0),
+            gathered.stride(0),
+            accumulated.stride(0),
+            projected.stride(0),
+        )
+        hidden_size = embedding_weight.shape[1]
+    seeded_top_k_merge_sample_kernel[(batch_size,)](
+        chunk_keys,
+        top_ks,
+        top_ps,
+        seeds,
+        positions,
+        out,
+        out.stride(0),
+        *codec_gather_args,
+        num_candidates,
+        block_k,
+        num_candidates.bit_length() - 1,
+        block_k.bit_length() - 1,
+        bool(has_top_p),
+        hidden_size,
+        next_power_of_2(hidden_size) if hidden_size > 0 else 1,
+        projected_size,
+        # note (ratish): the gathered rows are the next predictor pass's input, so
+        # the merge releases that pass's first layer.
+        hidden_size > 0 and is_arch_support_pdl(),
+        num_warps=block_k // TOP_K_MERGE_KEYS_PER_WARP,
+    )
+
+
+def sample_codes_and_gather_codec_embedding(
+    logits: torch.Tensor,
+    temperatures: torch.Tensor,
+    top_ks: torch.Tensor,
+    top_ps: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    max_top_k: int,
+    has_top_p: bool,
+    codes: torch.Tensor,
+    embedding_weight: torch.Tensor,
+    gathered: torch.Tensor,
+    accumulated: torch.Tensor,
+    projected_weight: torch.Tensor | None = None,
+    projected: torch.Tensor | None = None,
+) -> bool:
+    """Sample codes as sample_from_logits_with_seed_top_k_top_p does into the int64
+    view codes and gather their rows as gather_codec_embedding_and_add does, in the
+    split sampler's last launch. Return False without writes when either does not fit.
+    """
+    row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
+    block_k = fused_sampler_block_k(logits, row_tensors, max_top_k)
+    if block_k is None or not uses_split_top_k(logits, max_top_k, block_k):
+        return False
+    else:
+        pass
+    batch_size = int(logits.shape[0])
+    if not (
+        codes.ndim == 1
+        and codes.shape[0] == batch_size
+        and codes.dtype is torch.long
+        and codes.device == logits.device
+    ):
+        return False
+    else:
+        pass
+    projected_size = codec_gather_projected_size(
+        batch_size,
+        logits.device,
+        embedding_weight,
+        gathered,
+        accumulated,
+        projected_weight,
+        projected,
+    )
+    if projected_size is None:
+        return False
+    else:
+        pass
+    launch_split_top_k_sample(
+        logits,
+        row_tensors,
+        codes,
+        block_k=block_k,
+        has_top_p=has_top_p,
+        embedding_weight=embedding_weight,
+        gathered=gathered,
+        accumulated=accumulated,
+        projected_weight=projected_weight,
+        projected=projected,
+    )
+    return True
+
+
 def sample_from_logits_with_seed_top_k_top_p(
     logits: torch.Tensor,
     temperatures: torch.Tensor,
@@ -851,17 +1102,9 @@ def sample_from_logits_with_seed_top_k_top_p(
     remains the fallback. It does not inspect device values because that would
     introduce a host synchronization during CUDA graph replay.
     """
-    block_k = fused_raw_logit_block_k(int(max_top_k))
-    if (
-        seeded_top_k_top_p_sample_kernel is None
-        or not _TRITON_GATHER_SUPPORTED
-        or block_k is None
-        or not logits.is_cuda
-        or logits.ndim != 2
-        or logits.shape[1] != FUSED_SAMPLER_VOCAB_SIZE
-        or logits.dtype is not torch.bfloat16
-        or not logits.is_contiguous()
-    ):
+    row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
+    block_k = fused_sampler_block_k(logits, row_tensors, max_top_k)
+    if block_k is None:
         return None
     else:
         pass
@@ -872,65 +1115,10 @@ def sample_from_logits_with_seed_top_k_top_p(
     else:
         pass
 
-    row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
-    if any(
-        tensor.device != logits.device
-        or tensor.ndim != 1
-        or tensor.shape[0] != batch_size
-        or not tensor.is_contiguous()
-        for tensor in row_tensors
-    ):
-        return None
-    else:
-        pass
-    if (
-        temperatures.dtype is not torch.float32
-        or top_ks.dtype is not torch.long
-        or top_ps.dtype is not torch.float32
-        or seeds.dtype is not torch.long
-        or positions.dtype is not torch.long
-    ):
-        return None
-    else:
-        pass
-
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    # note (ratish): the split launch is measured on sm_90 only; other devices keep
-    # the single kernel. Each chunk holds at least two runs, so it runs a halving round.
-    if (
-        max_top_k > 32
-        and TOP_K_CHUNKS * block_k < FUSED_SAMPLER_VOCAB_SIZE
-        and torch.version.hip is None
-        and torch.cuda.get_device_capability(logits.device) == (9, 0)
-    ):
-        num_candidates = TOP_K_CHUNKS * block_k
-        chunk_keys = torch.empty(
-            (batch_size, num_candidates),
-            device=logits.device,
-            dtype=torch.int64,
-        )
-        seeded_top_k_chunk_kernel[(batch_size, TOP_K_CHUNKS)](
-            logits,
-            temperatures,
-            chunk_keys,
-            logits.stride(0),
-            FUSED_SAMPLER_VOCAB_SIZE // TOP_K_CHUNKS,
-            int(block_k),
-            num_warps=TOP_K_CHUNK_WARPS,
-        )
-        seeded_top_k_merge_sample_kernel[(batch_size,)](
-            chunk_keys,
-            top_ks,
-            top_ps,
-            seeds,
-            positions,
-            out,
-            num_candidates,
-            block_k,
-            num_candidates.bit_length() - 1,
-            block_k.bit_length() - 1,
-            bool(has_top_p),
-            num_warps=block_k // TOP_K_MERGE_KEYS_PER_WARP,
+    if uses_split_top_k(logits, max_top_k, block_k):
+        launch_split_top_k_sample(
+            logits, row_tensors, out, block_k=block_k, has_top_p=has_top_p
         )
     else:
         seeded_top_k_top_p_sample_kernel[(batch_size,)](

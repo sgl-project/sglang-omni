@@ -8,8 +8,19 @@ import logging
 import uuid
 
 from pydantic import ValidationError
+from starlette.status import (
+    WS_1000_NORMAL_CLOSURE,
+    WS_1008_POLICY_VIOLATION,
+    WS_1011_INTERNAL_ERROR,
+)
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.serve.realtime.constants import (
+    CLOSE_REASON_CLIENT_CLOSED,
+    CLOSE_REASON_DISCONNECT,
+    CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+)
 from sglang_omni.serve.realtime.control import ControlEvent, Failure
 from sglang_omni.serve.realtime.projection import project_control, project_output
 from sglang_omni.serve.realtime.runtime import SessionRuntime
@@ -24,6 +35,11 @@ from sglang_omni.serve.realtime.schema import (
 from sglang_omni.serve.realtime.types import ProtocolError
 
 logger = logging.getLogger(__name__)
+
+MAX_CLOSE_REASON_BYTES = 123
+POLICY_CLOSE_REASONS = frozenset(
+    {CLOSE_REASON_SESSION_UPDATE_TIMEOUT, ContextExhaustedError.CODE}
+)
 
 
 def reject_nonfinite_number(constant: str) -> float:
@@ -52,7 +68,7 @@ class SharedRealtimeSession:
                     has_client_left = True
                 is_disconnected = is_disconnected or has_client_left
         finally:
-            await self.runtime.close("disconnect")
+            await self.runtime.close(CLOSE_REASON_DISCONNECT)
             if not is_disconnected and not sender.done():
                 try:
                     await asyncio.wait_for(
@@ -67,7 +83,7 @@ class SharedRealtimeSession:
             await asyncio.gather(reader, sender, return_exceptions=True)
 
     async def teardown(self) -> None:
-        await self.runtime.close("disconnect")
+        await self.runtime.close(CLOSE_REASON_DISCONNECT)
 
     async def send(self) -> None:
         async for envelope in self.runtime.outputs():
@@ -99,7 +115,18 @@ class SharedRealtimeSession:
             self.runtime.output_buffer.before_send(envelope)
             await self.websocket.send_text(json.dumps(server_event, allow_nan=False))
             self.runtime.output_buffer.sent(envelope)
-        await self.websocket.close()
+        close_reason = self.runtime.close_reason
+        assert close_reason is not None
+        if close_reason in (CLOSE_REASON_CLIENT_CLOSED, CLOSE_REASON_DISCONNECT):
+            close_code = WS_1000_NORMAL_CLOSURE
+        elif close_reason in POLICY_CLOSE_REASONS:
+            close_code = WS_1008_POLICY_VIOLATION
+        else:
+            close_code = WS_1011_INTERNAL_ERROR
+        close_reason = close_reason.encode("utf-8")[:MAX_CLOSE_REASON_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        await self.websocket.close(close_code, close_reason)
 
     async def read(self) -> bool:
         """Returns whether the client disconnected."""
@@ -209,7 +236,7 @@ class SharedRealtimeSession:
         elif event.type == "sglang.input_audio.end":
             await self.runtime.end(event.event_id)
         elif event.type == "session.close":
-            await self.runtime.close("client_closed", event.event_id)
+            await self.runtime.close(CLOSE_REASON_CLIENT_CLOSED, event.event_id)
         else:
             self.runtime.require_open()
             raise ProtocolError(

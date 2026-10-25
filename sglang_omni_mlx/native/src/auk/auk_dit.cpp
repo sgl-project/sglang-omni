@@ -9,8 +9,8 @@
 
 namespace auk {
 namespace mx = mlx::core;
-using qwen3_asr::Checkpoint;
-using qwen3_asr::Silu;
+using omni_common::Checkpoint;
+using omni_common::Silu;
 
 namespace {
 

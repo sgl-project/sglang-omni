@@ -70,6 +70,7 @@ class Capabilities:
     max_image_bytes: int = 512 * 1024
     sampling_parameters: tuple[str, ...] = ()
     supports_reference_audio: bool = False
+    voices: tuple[str, ...] = ()
     supports_instruction_updates: bool = False
     supports_truncate: bool = False
     supports_client_commit: bool = False
@@ -139,6 +140,10 @@ class Capabilities:
             supports_reference_audio=self.supports_reference_audio,
         )
 
+        if self.voices:
+            granted["voices"] = list(self.voices)
+        else:
+            pass
         if "image" in self.input_modalities:
             granted["input_image_format"] = dict(
                 types=["image/jpeg", "image/png"],

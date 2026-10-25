@@ -2,7 +2,6 @@
 #include "common/http.h"
 
 #include <cstring>
-#include <stdexcept>
 
 namespace omni_server {
 
@@ -27,16 +26,42 @@ int BadRequest(mg_connection *connection, const std::string &detail) {
   return WriteJson(connection, 400, {{"detail", detail}});
 }
 
-std::string ReadBody(mg_connection *connection, size_t maximum_bytes) {
+std::string ReadBody(mg_connection *connection) {
   std::string body;
   char buffer[65536];
   int read = 0;
   while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
     body.append(buffer, static_cast<size_t>(read));
-    if (maximum_bytes != 0 && body.size() > maximum_bytes) {
-      throw std::length_error("request body exceeds size limit");
+  }
+  return body;
+}
+
+std::optional<std::string> ReadBody(mg_connection *connection,
+                                    size_t max_bytes) {
+  const auto too_large = [&]() -> std::optional<std::string> {
+    WriteJson(connection, 413,
+              {{"detail", "request body must be at most " +
+                              std::to_string(max_bytes) + " bytes"}});
+    return std::nullopt;
+  };
+  // Note (Minyi Tang): civetweb reports -1 for a body without a length, such
+  // as a chunked one, which is then cut off as it is read.
+  const long long content_length =
+      mg_get_request_info(connection)->content_length;
+  if (content_length > 0 &&
+      static_cast<unsigned long long>(content_length) > max_bytes) {
+    return too_large();
+  } else {
+  }
+  std::string body;
+  char buffer[65536];
+  int read = 0;
+  while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
+    if (static_cast<size_t>(read) > max_bytes - body.size()) {
+      return too_large();
     } else {
     }
+    body.append(buffer, static_cast<size_t>(read));
   }
   return body;
 }
@@ -47,7 +72,7 @@ bool IsPost(mg_connection *connection) {
 }
 
 std::optional<std::string>
-Field(const std::map<std::string, qwen3_asr::FormField> &form,
+Field(const std::map<std::string, omni_common::FormField> &form,
       const std::string &name) {
   const auto found = form.find(name);
   if (found == form.end()) {

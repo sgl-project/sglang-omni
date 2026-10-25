@@ -162,7 +162,7 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
     } else {
     }
     bytes.resize(length - 1);
-    auto audio = qwen3_asr::DecodeAudioWav(bytes);
+    auto audio = omni_common::DecodeAudioWav(bytes);
     if (audio.samples.size() <
             static_cast<size_t>((audio.sample_rate * 3 + 99) / 100) ||
         audio.samples.size() >

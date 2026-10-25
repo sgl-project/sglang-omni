@@ -23,7 +23,7 @@ constexpr int LATENT_CHANNELS = 64;
 Model::SamplingRecipe
 Model::ReadSamplingRecipe(const std::filesystem::path &directory,
                           mx::Dtype dtype, float max_seconds) {
-  const auto config = qwen3_asr::ReadJson(directory / "config.json");
+  const auto config = omni_common::ReadJson(directory / "config.json");
   if (config.value("model_type", std::string()) != "auk" ||
       (config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
       config.at("sample_rate") != SAMPLE_RATE ||
@@ -106,9 +106,9 @@ Model::Synthesize(const SynthesisRequest &request,
   std::optional<std::vector<float>> conditioner_audio;
   int reference_length = 0;
   if (!request.reference_audio.empty()) {
-    const auto reference_audio = qwen3_asr::ResampleAudio(
+    const auto reference_audio = omni_common::ResampleAudio(
         request.reference_audio, request.reference_sample_rate, SAMPLE_RATE);
-    conditioner_audio = qwen3_asr::ResampleAudio(
+    conditioner_audio = omni_common::ResampleAudio(
         request.reference_audio, request.reference_sample_rate, 16000);
     reference_length = static_cast<int>(reference_audio.size()) / vae.HopSize();
     const auto waveform = mx::array(reference_audio.data(),

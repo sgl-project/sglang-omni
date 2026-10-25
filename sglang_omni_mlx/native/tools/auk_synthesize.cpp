@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         }
         const std::string wav_bytes(std::istreambuf_iterator<char>{reference},
                                     {});
-        auto audio = qwen3_asr::DecodeAudioWav(wav_bytes);
+        auto audio = omni_common::DecodeAudioWav(wav_bytes);
         synthesis.reference_audio = std::move(audio.samples);
         synthesis.reference_sample_rate = audio.sample_rate;
       } else {
@@ -108,7 +108,7 @@ int main(int argc, char **argv) {
       const auto output_path =
           arguments.output_directory / (request_id + ".wav");
       const std::string wav_bytes =
-          qwen3_asr::EncodeWavPcm16(result.samples, result.sample_rate);
+          omni_common::EncodeWavPcm16(result.samples, result.sample_rate);
       std::ofstream output(output_path, std::ios::binary);
       output.write(wav_bytes.data(), wav_bytes.size());
       output.close();

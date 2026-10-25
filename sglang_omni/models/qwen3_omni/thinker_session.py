@@ -256,6 +256,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             tokenizer=self.tokenizer,
             vocab_size=self.vocab_size,
             request_id=payload.request_id,
+            capture_prompt_hidden_states=False,
         )
         request_data.stage_payload = payload
         # Note (Junnan Li): The preprocessor sees one turn; the scheduler checks the context once the retained turns precede it.

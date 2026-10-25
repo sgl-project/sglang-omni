@@ -15,6 +15,13 @@ from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
 )
+from sglang_omni.serve.realtime.constants import (
+    CLOSE_REASON_CLEANUP_TIMEOUT,
+    CLOSE_REASON_CLIENT_CLOSED,
+    CLOSE_REASON_DISCONNECT,
+    CLOSE_REASON_INTERNAL,
+    CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+)
 from sglang_omni.serve.realtime.control import (
     Accepted,
     Cleared,
@@ -93,6 +100,7 @@ class SessionRuntime:
         self.pump_task: asyncio.Task[None] | None = None
         self.update_deadline_task: asyncio.Task[None] | None = None
         self.close_task: asyncio.Task[None] | None = None
+        self.close_reason: str | None = None
         self.processing_unit: ContextVar[Unit | None] = ContextVar(
             "realtime_unit", default=None
         )
@@ -139,7 +147,7 @@ class SessionRuntime:
                 self.state = "CLOSING"
                 self.fail(
                     f"session not opened within {self.limits.session_update_timeout_s:g} s",
-                    "session_update_timeout",
+                    CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
                 )
             else:
                 pass
@@ -189,22 +197,12 @@ class SessionRuntime:
                 adapter = self.adapter_factory()
                 adapter.set_limits(self.limits)
                 try:
-                    await asyncio.wait_for(
-                        adapter.open(self.session_id, candidate, self.emit),
-                        self.limits.cleanup_timeout_s,
+                    await self.open_adapter(adapter, candidate, event_id)
+                except asyncio.CancelledError:
+                    self.abandon_admission(
+                        adapter, "session admission cancelled", event_id
                     )
-                except Exception as exc:
-                    logger.exception(
-                        f"Realtime session {self.session_id} admission failed"
-                    )
-                    try:
-                        await asyncio.wait_for(
-                            adapter.close(), self.limits.cleanup_timeout_s
-                        )
-                    except Exception:
-                        self.adapter = adapter
-                        raise RuntimeError("admission cleanup failed") from exc
-                    raise ProtocolError("admission_rejected", str(exc)) from exc
+                    raise
                 self.adapter = adapter
                 if self.close_task is not None:
                     # Note (Junnan Li): Admission cleanup belongs to the closing owner; do not publish OPEN here.
@@ -239,6 +237,35 @@ class SessionRuntime:
                     copy.deepcopy(public_config),
                 )
             )
+
+    async def open_adapter(
+        self,
+        adapter: InteractionAdapter,
+        candidate: SessionConfiguration,
+        event_id: str,
+    ) -> None:
+        """Open the adapter; on failure close it again and reject the update."""
+        try:
+            await asyncio.wait_for(
+                adapter.open(self.session_id, candidate, self.emit),
+                self.limits.cleanup_timeout_s,
+            )
+        except Exception as exc:
+            logger.exception(f"Realtime session {self.session_id} admission failed")
+            try:
+                await asyncio.wait_for(adapter.close(), self.limits.cleanup_timeout_s)
+            except Exception:
+                self.abandon_admission(adapter, "admission cleanup failed", event_id)
+                raise RuntimeError("admission cleanup failed") from exc
+            raise ProtocolError("admission_rejected", str(exc)) from exc
+
+    def abandon_admission(
+        self, adapter: InteractionAdapter, message: str, event_id: str
+    ) -> None:
+        """Hand a half-opened adapter to the close task, which releases it."""
+        self.adapter = adapter
+        self.state = "CLOSING"
+        self.fail(message, event_id=event_id)
 
     async def append(
         self, pcm: bytes, sequence: int, t_start_ms: float | None, event_id: str
@@ -534,6 +561,14 @@ class SessionRuntime:
                         )
                     )
                     return
+        except asyncio.CancelledError:
+            if self.close_task is None:
+                logger.error(f"Realtime session {self.session_id} input pump cancelled")
+                self.state = "CLOSING"
+                self.fail("input processing cancelled")
+            else:
+                pass
+            raise
         except ProtocolError as exc:
             self.fail(str(exc), exc.code)
         except Exception as exc:
@@ -544,11 +579,14 @@ class SessionRuntime:
                 logger.exception(
                     f"Realtime session {self.session_id} input pump failed"
                 )
-                failure_code = "internal"
+                failure_code = CLOSE_REASON_INTERNAL
             self.fail(str(exc), failure_code)
 
     def fail(
-        self, message: str, code: str = "internal", event_id: str | None = None
+        self,
+        message: str,
+        code: str = CLOSE_REASON_INTERNAL,
+        event_id: str | None = None,
     ) -> None:
         if self.close_task is None:
             self.output_buffer.enqueue_terminal(
@@ -566,6 +604,7 @@ class SessionRuntime:
         await asyncio.shield(self.close_task)
 
     async def run_close(self, reason: str, event_id: str | None = None) -> None:
+        self.close_reason = reason
         # Note (Junnan Li): Set CLOSING under the command lock, then release it: adapter
         # teardown can run a VAD callback that must observe CLOSING.
         async with self.command_lock:
@@ -595,10 +634,11 @@ class SessionRuntime:
                 cleanup_error = cleanup_error or exc
         try:
             if cleanup_error is not None:
+                self.close_reason = CLOSE_REASON_CLEANUP_TIMEOUT
                 self.output_buffer.clear()
                 self.output_buffer.enqueue_terminal(
                     Failure(
-                        "cleanup_timeout",
+                        CLOSE_REASON_CLEANUP_TIMEOUT,
                         str(cleanup_error)[:MAX_FAILURE_MESSAGE_CHARS],
                         True,
                         event_id,
@@ -607,7 +647,7 @@ class SessionRuntime:
             else:
                 status: ResponseStatus = (
                     "cancelled"
-                    if reason in ("client_closed", "disconnect")
+                    if reason in (CLOSE_REASON_CLIENT_CLOSED, CLOSE_REASON_DISCONNECT)
                     else "failed"
                 )
                 self.output_buffer.finish_responses(status, reason)

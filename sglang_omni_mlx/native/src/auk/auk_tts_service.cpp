@@ -47,14 +47,16 @@ int SpeechService::Handle(mg_connection *connection, bool raw_instruction) {
                                   {{"detail", "Method Not Allowed"}});
   } else {
   }
+  const std::optional<std::string> body =
+      omni_server::ReadBody(connection, kMaximumBodyBytes);
+  if (!body.has_value()) {
+    return 413;
+  } else {
+  }
   ParsedRequest parsed;
   try {
-    const std::string body =
-        omni_server::ReadBody(connection, kMaximumBodyBytes);
-    parsed = ParseRequest(Json::parse(body), raw_instruction, max_seconds_,
+    parsed = ParseRequest(Json::parse(*body), raw_instruction, max_seconds_,
                           model_name_);
-  } catch (const std::length_error &) {
-    return omni_server::BadRequest(connection, "request body exceeds 16 MiB");
   } catch (const Json::exception &) {
     return omni_server::BadRequest(connection,
                                    "invalid request JSON or field type");
@@ -62,12 +64,12 @@ int SpeechService::Handle(mg_connection *connection, bool raw_instruction) {
     return omni_server::BadRequest(connection, error.what());
   }
   auto job = std::make_shared<
-      tts_service::SynthesisWorker::Job<qwen3_asr::DecodedAudio>>();
+      tts_service::SynthesisWorker::Job<omni_common::DecodedAudio>>();
   job->synthesize = [this, request = std::move(parsed.synthesis)](
                         const std::function<void()> &check_cancelled) {
     auto result = model_->Synthesize(request, check_cancelled);
-    return qwen3_asr::DecodedAudio{std::move(result.samples),
-                                   result.sample_rate};
+    return omni_common::DecodedAudio{std::move(result.samples),
+                                     result.sample_rate};
   };
   const auto format = raw_instruction ? tts_service::AudioFormat::JsonWav
                       : parsed.pcm    ? tts_service::AudioFormat::Pcm
@@ -75,8 +77,8 @@ int SpeechService::Handle(mg_connection *connection, bool raw_instruction) {
   tts_service::AudioResponse response(connection, format);
   return response.SubmitAndRespond(
       worker_, job,
-      [&](qwen3_asr::DecodedAudio result) {
-        response.WritePcm(qwen3_asr::EncodePcm16(result.samples),
+      [&](omni_common::DecodedAudio result) {
+        response.WritePcm(omni_common::EncodePcm16(result.samples),
                           result.sample_rate, 1);
       },
       "AuK is busy");

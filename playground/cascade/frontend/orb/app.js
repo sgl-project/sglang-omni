@@ -1,6 +1,7 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
 import { DuplexSession } from "./session.js";
 import { Orb } from "./orb.js";
+import { Settings } from "./settings.js";
 
 const JITTER_MS = 300;
 const STATUS_POLL_MS = 5000;
@@ -20,7 +21,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -66,6 +67,12 @@ let lastModelLoudAt = -Infinity;
 let lastMicLoudAt = -Infinity;
 let warnTimer = null;
 const orb = new Orb(ui.orbCanvas);
+const capabilitiesUrl = window.DEMO_CAPABILITIES_URL || (window.DEMO_WS_URL || "").replace(/^ws/, "http").replace(/\/v1\/realtime.*$/, "/v1/realtime/capabilities");
+// Note (ruoyu): an empty field is not sent, so a fresh page sends only output_modalities and the profile's prompt and
+// turn detection apply; filled fields are kept per deployment model in this browser until Reset to defaults. No text-only
+// replies: the captions and conversation.item.truncate follow audio playback, so without audio the caption stays faint
+// and a barge-in truncates at 0 ms.
+const settings = new Settings(ui, { capabilitiesUrl, defaultInstructions: window.DEMO_INSTRUCTIONS || "", offersTextOnly: false });
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
 
 // Deployment-specific text comes from config.js, so one page serves any duplex model.
@@ -113,6 +120,7 @@ function setButtons() {
   ui.muteBtn.title = muted ? "Unmute microphone" : "Mute microphone";
   ui.micOn.hidden = muted;
   ui.micOff.hidden = !muted;
+  settings.lock(call);
 }
 
 // Level (0..1) from an analyser's current time-domain window.
@@ -370,9 +378,14 @@ async function connect() {
     await ensurePlayback(playbackRate);
     activeSocket = new WebSocket(wsUrl());
     socket = activeSocket;
+    const options = settings.sessionOptions();
     const activeSession = new DuplexSession({
       transport: (event) => activeSocket.send(JSON.stringify(event)),
       now: () => performance.now(),
+      outputModalities: options.outputModalities,
+      instructions: options.instructions,
+      extension: options.extension,
+      turnDetection: options.turnDetection,
       listeners: sessionListeners(),
     });
     session = activeSession;
@@ -433,7 +446,9 @@ async function startMic() {
   let pendingContext = null;
   const stale = () => generation !== micGeneration || socket !== activeSocket || !isReady();
   try {
-    pendingStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    pendingStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...settings.micConstraint() }, video: false });
+    // Note (ruoyu): device names are only visible once the microphone permission is granted.
+    settings.refreshDevices().catch(() => {});
     if (stale()) throw new Error("the session changed while the microphone permission was pending");
     pendingContext = new AudioContext({ latencyHint: "interactive" });
     await pendingContext.audioWorklet.addModule("worklet.js");
@@ -513,8 +528,18 @@ ui.themeBtn.addEventListener("click", () => {
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem("theme", next); } catch {}
 });
+function setPanel(open) {
+  ui.settingsPanel.dataset.open = String(open);
+  ui.settingsBtn.setAttribute("aria-expanded", String(open));
+  if (open) setSheet(false);
+}
+ui.settingsBtn.addEventListener("click", () => setPanel(ui.settingsPanel.dataset.open !== "true"));
+ui.settingsClose.addEventListener("click", () => setPanel(false));
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") setSheet(false);
+  if (event.key === "Escape") {
+    setSheet(false);
+    setPanel(false);
+  }
 });
 try {
   const saved = localStorage.getItem("theme");
@@ -527,6 +552,7 @@ pollStatus();
 setButtons();
 tick();
 requestAnimationFrame(render);
+settings.init().catch((error) => warn(`Settings: ${error.message}`));
 
 ui.traceBtn.addEventListener("click", () => {
   if (!lastSession) return;

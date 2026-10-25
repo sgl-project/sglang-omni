@@ -58,7 +58,7 @@ private:
                            bool classifier_free_guidance) const;
 
   nlohmann::json config_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   mlx::core::Dtype dtype_;
   int head_count_;
   int joint_layer_count_;

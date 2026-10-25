@@ -19,8 +19,8 @@ constexpr int kActivationFilterSize = 12;
 constexpr float kSnakeEpsilon = 1e-9f;
 constexpr int kEncoderResidualStacks = 6;
 
-qwen3_asr::WeightMap LoadVAEWeights(const std::filesystem::path &directory) {
-  auto weights = qwen3_asr::LoadSafetensors(directory);
+omni_common::WeightMap LoadVAEWeights(const std::filesystem::path &directory) {
+  auto weights = omni_common::LoadSafetensors(directory);
   for (auto &[name, weight] : weights) {
     weight = mx::astype(weight, mx::float32);
   }
@@ -35,7 +35,7 @@ mx::array LeakyRelu(const mx::array &hidden_states, float negative_slope) {
 
 VAE::VAE(const std::filesystem::path &vae_directory)
     : checkpoint_(LoadVAEWeights(vae_directory), nlohmann::json::object()) {
-  const auto config = qwen3_asr::ReadJson(vae_directory / "config.json");
+  const auto config = omni_common::ReadJson(vae_directory / "config.json");
   latent_dimension_ = config.at("latent_dim").get<int>();
   causal_ = config.at("causal").get<bool>();
   activation_causal_ = config.at("act_causal").get<bool>();

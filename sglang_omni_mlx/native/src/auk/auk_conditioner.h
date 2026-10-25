@@ -68,8 +68,8 @@ private:
                              const mlx::core::array &sine) const;
 
   Config config_;
-  qwen3_asr::Checkpoint checkpoint_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Checkpoint checkpoint_;
+  omni_common::Tokenizer tokenizer_;
 };
 
 } // namespace auk

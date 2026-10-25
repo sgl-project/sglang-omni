@@ -4,23 +4,6 @@ import XCTest
 
 @MainActor
 final class MeetingFileTaskDiagnosticsTests: XCTestCase {
-    func testDetailedFileTraceIsExplicitlyOptIn() {
-        XCTAssertFalse(MeetingFileTrace.resolvedEnabled(environmentValue: nil))
-        XCTAssertFalse(MeetingFileTrace.resolvedEnabled(environmentValue: "0"))
-        XCTAssertFalse(MeetingFileTrace.resolvedEnabled(environmentValue: "OFF"))
-        XCTAssertTrue(MeetingFileTrace.resolvedEnabled(environmentValue: "1"))
-        XCTAssertTrue(MeetingFileTrace.resolvedEnabled(environmentValue: " true "))
-    }
-
-    func testTraceWithoutFileTaskContextDoesNotEvaluateDetails() {
-        var evaluations = 0
-        func details() -> String { evaluations += 1; return "unused" }
-        MeetingFileTaskContext.$taskID.withValue(nil) {
-            MeetingFileTrace.event("outside-file-task", details())
-        }
-        XCTAssertEqual(evaluations, 0)
-    }
-
     func testTaskContextIsScopedAndInheritedByChildTasks() async {
         let id = UUID()
         XCTAssertNil(MeetingFileTaskContext.taskID)

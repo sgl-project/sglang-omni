@@ -15,8 +15,10 @@ import numpy as np
 import pytest
 import yaml
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -41,7 +43,8 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.proto.session import TimedChunk
+from sglang_omni.proto.request import OmniRequest
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -51,6 +54,7 @@ from sglang_omni.proto.streams import (
     PCM16,
     PCM_F32,
     REPLY_DELIVERED,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -66,6 +70,7 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
@@ -74,8 +79,8 @@ PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
     "nemotron-qwen3-tts",
     "nemotron-stage-qwen3-tts",
-    "qwen3-asr-qwen3-tts-customvoice",
-    "qwen3-asr-qwen3.8-27b-customvoice",
+    "qwen3-asr-qwen3-tts-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
 CASCADE_PORTS = SessionPorts(
@@ -295,6 +300,29 @@ async def test_progress_that_arrives_after_the_truncate_re_cuts_the_interrupted_
     )
     assert dialog.messages[2].content == "One two."
     assert not dialog.messages[2].uncertain
+
+
+@pytest.mark.asyncio
+async def test_each_cut_after_the_client_truncate_is_reported_as_reply_heard():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("A question?", True),
+            text_chunk(REPLY, 1),
+            control_chunk(SPEECH_STARTED, t_ms=900),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+            control_chunk(TRUNCATE, t_ms=1000),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+        ],
+    )
+    assert [
+        (o.turn, o.payload["text_end"])
+        for o in outputs
+        if control_type(o) == REPLY_HEARD
+    ] == [(1, 0), (1, 8)]
 
 
 def interrupted_dialog(*after: object) -> tuple[object, list[object]]:
@@ -1021,7 +1049,7 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.nodes["dialog"].bound("tts").feedback
 
 
-ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-customvoice" / "launch.yaml"
+ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-vivian" / "launch.yaml"
 CHUNK_MS = 500
 SPOKEN = "One two three four. Five six."
 
@@ -1390,8 +1418,8 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
 @pytest.mark.parametrize(
     "profile",
     [
-        "qwen3-asr-qwen3-tts-customvoice",
-        "qwen3-asr-qwen3.8-27b-customvoice",
+        "qwen3-asr-qwen3-tts-vivian",
+        "qwen3-asr-qwen3.8-27b-vivian",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -1592,3 +1620,28 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.parametrize(
+    ("flags", "admitted"), [([], 16), (["--max_sessions", "24"], 24)]
+)
+def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
+    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian"))
+    config = manager.merge_config(manager.parse_extra_args(flags))
+    stages = {}
+    for name in ("vad", "dialog"):
+        stage = config.stage_named(name)
+        stages[name] = import_string(stage.factory_path)(
+            **resolve_stage_factory_args(stage, config)
+        )
+    assert stages["vad"].max_open_sessions == admitted
+    dialog = stages["dialog"]
+    sessions = [SessionIdentity(f"session-{index}") for index in range(admitted)]
+    try:
+        for session in sessions:
+            dialog.open_session(session, OmniRequest(None))
+        with pytest.raises(QueueFullError):
+            dialog.open_session(SessionIdentity("one-more"), OmniRequest(None))
+    finally:
+        for session in sessions:
+            dialog.close_session(session, dialog.open_sessions[session])

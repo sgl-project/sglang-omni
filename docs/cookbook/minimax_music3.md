@@ -49,6 +49,124 @@ Default optimizations that are on without further flags: backbone decode device 
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
+## Apple Silicon: native MLX
+
+The standalone `music3_server` runs entirely in C++ under
+`sglang_omni_mlx/native/`; it uses the same HTTP request fields as the examples
+below. Download the pinned converted checkpoint, then build with the native
+runtime's existing MLX 0.32.3 toolchain:
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$MUSIC3_DATA" \
+  --model mlx-community/MiniMax-Music3-mxfp8
+sglang_omni_mlx/native/scripts/build_runtime.sh "$MUSIC3_RUNTIME" "$MUSIC3_BUILD"
+"$MUSIC3_RUNTIME/bin/music3_server" \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --model-name MiniMaxAI/MiniMax-Music3 --port 8000
+```
+
+Set `MUSIC3_DATA`, `MUSIC3_RUNTIME` and `MUSIC3_BUILD` to separate local
+directories. Serving needs neither Python nor SGLang's CUDA package. Model
+provisioning uses the existing CI Python requirements. The converted weights
+occupy about 14 GB; allow additional unified memory for the KV cache and
+acoustic activations. Both stages stay resident, with MLX's free buffer cache
+limited to 1 GiB.
+
+This path includes Qwen3/RVQ decoding, condition fusion, Euler Flow/DiT,
+stereo DAV decoding, overlap crops, and Hann sinc conversion from 44.1 to
+32 kHz. AR guidance is fixed at 1.5 and top-k at 50. `max_new_tokens` defaults
+to 750 frames and accepts 1–9000, subject to the 10,240-token context and
+5000-token prompt limit. Before cleanup, `input` and `instructions` are each
+limited to 64 KiB of UTF-8. `seed` accepts integers in `[0, 2**63)` and defaults
+to zero. Optional `dit_steps` accepts 1–100 (default 30), and `dit_cfg_scale`
+accepts finite nonnegative values (default 1.7).
+
+Responses are complete stereo PCM16 `wav` or raw interleaved `pcm` at
+32 kHz. `stream=true`, other formats and speed changes return 400. Only one
+song is generated at a time; a concurrent request returns 429. A disconnected
+client's generation releases the worker when computation finishes. Supervisor
+shutdown cancels between frames, acoustic windows and Euler steps. Voxt's
+`--supervised` lifecycle, `/health` and `/v1/models` are supported; this does
+not add a Music3 interface to Voxt.
+
+### Reference parity and Mac CI
+
+The numerical reference is [PR #1990](https://github.com/sgl-project/sglang-omni/pull/1990)
+at `195e4e9058e13af605f13f5c55a26efe651805a6`. Reference source hashes are in
+`native/ci/music3_reference.json`; checkpoint hashes and revision are in
+`native/ci/model_pins.json`. The first feedback frame and FP16 hidden-state
+handoff follow that reference. The server lifecycle extraction follows
+[PR #2870](https://github.com/sgl-project/sglang-omni/pull/2870).
+
+For an independent waveform comparison, use a separate Python reference
+environment with MLX 0.32.3, mlx-lm 0.31.3, Transformers 5.12.1, NumPy
+2.3.5 and SoundFile 0.13.1. The validated Mac environment used Torch 2.13.0
+and TorchAudio 2.11.0 for CPU resampling. Python is used only for this check:
+
+```bash
+python sglang_omni_mlx/native/ci/generate_music3_reference.py \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --runtime-bin "$MUSIC3_RUNTIME/bin" --output-directory "$MUSIC3_PARITY"
+```
+
+It downloads only hash-verified reference source, generates both fixed cases
+with each implementation, and compares waveform length, peak error (at most
+0.001) and RMS error (at most 0.0001). Retain `parity.json`, the reference pin
+and both sets of WAVs for review; these tolerances are acceptance thresholds,
+not measured results.
+
+Add `--prompt-only` to the same command to compare native prompt text and token
+IDs with the frozen Python reference without loading model weights or generating
+audio. It covers nested Markdown bullets, Unicode whitespace and line separators,
+multilingual tag casing, malformed tags, and both waveform cases. The results
+are saved in `prompt-parity.json`.
+
+Mac CI runs the Music3 HTTP checks and includes
+`native/ci/model_golden/minimax-music3.json` in its existing golden loop. Its
+cases cover English and Chinese, including a 250-frame acoustic overlap.
+Music3 HTTP tests run in a separate pytest process so the module-scoped ASR
+servers release their weights first. The runner logs its unified memory size.
+Apple M5 outputs are recorded after comparison with the frozen reference.
+For another chip, review and import the runner's
+`golden-outputs/minimax-music3.json` artifact using the existing workflow:
+
+```bash
+python sglang_omni_mlx/native/ci/check_model_golden.py \
+  --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+  --import "$MUSIC3_GOLDEN_OUTPUT"
+```
+
+Exact PCM digests are checked per Apple chip; an unrecorded chip fails and
+uploads its WAVs and metadata for review.
+
+Local validation on 2026-10-18 used an Apple M5 with 24 GiB of unified memory,
+macOS 26.6.2 and MLX 0.32.3. The native CMake build, 21 selected Music3 tests,
+seven golden-harness tests, six server model-kind checks and two existing
+Whisper supervisor lifecycle checks passed. The Music3 tests cover WAV/PCM
+responses, exact seeded repeats, invalid requests and a concurrent request
+returning 429.
+
+| Reference case | Frames | Samples per channel | Peak PCM error | RMS PCM error |
+| --- | ---: | ---: | ---: | ---: |
+| English short | 50 | 63,902 | 3.052e-5 | 1.207e-7 |
+| Chinese acoustic overlap | 250 | 319,879 | 3.052e-5 | 2.443e-7 |
+
+Both outputs are finite, non-silent 32 kHz stereo. The errors above compare
+normalized PCM16 samples against the frozen Python reference; the maximum
+is one PCM16 level. The original acceptance thresholds were unchanged.
+A fresh native process reproduced both recorded golden hashes exactly.
+These checks cover fixed-input waveform parity.
+
+To rerun the real-checkpoint HTTP and per-chip golden checks:
+
+```bash
+NATIVE_RUNTIME_BIN="$MUSIC3_RUNTIME/bin" CI_DATA_ROOT="$MUSIC3_DATA" \
+  python -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
+python sglang_omni_mlx/native/ci/check_model_golden.py \
+  --runtime-bin "$MUSIC3_RUNTIME/bin" --data-root "$MUSIC3_DATA" \
+  --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+  --outputs "$MUSIC3_GOLDEN_OUTPUTS"
+```
 ### Serial weight offload
 
 To alternate AR and DIT/DAV weights on one GPU, enable both offload components:

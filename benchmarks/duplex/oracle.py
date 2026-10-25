@@ -443,9 +443,13 @@ def evaluate_trace(
                         "invalid created response status",
                     )
                     response_states[event.response.id] = ResponseState()
-            elif turn_based and event_type == "sglang.response.progress":
+            elif turn_based and event_type in (
+                "sglang.response.progress",
+                "sglang.response.heard",
+            ):
                 # note (luojiaxuan): a server with an alignment node reports how far
                 # a reply's delivered audio covers its text; it changes no state.
+                # note (Haoling Pu): sglang.response.heard, sent after a truncate, changes no state either.
                 check(
                     event.response_id in response_states,
                     f"{event_type}: unknown response",

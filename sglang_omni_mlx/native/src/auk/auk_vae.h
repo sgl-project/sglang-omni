@@ -40,7 +40,7 @@ private:
                                  const std::string &prefix,
                                  const std::vector<int> &dilations) const;
 
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   int hop_size_ = 1;
   int latent_dimension_ = 0;
   bool causal_ = false;
