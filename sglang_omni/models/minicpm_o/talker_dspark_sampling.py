@@ -159,6 +159,8 @@ def target_probabilities(
         eos_masked=eos_masked.reshape(-1),
         eos_id=state.eos_id,
     )
+    # note (0xtoward): the plain talker rounds penalized logits back to the head's dtype.
+    shaped = shaped.to(target_logits.dtype).float()
     return nucleus(
         shaped,
         temperatures=state.temperatures.repeat_interleave(rows),
