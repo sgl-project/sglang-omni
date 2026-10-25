@@ -12,9 +12,9 @@ int main(int argc, char **argv) {
                               },
                               {{"--stage-offload-components",
                                 [&](const std::string &offload_components) {
-                                  is_serial_offload_enabled =
-                                      music3::ParseSerialOffload(
-                                          offload_components);
+                                  music3::ValidateSerialOffload(
+                                      offload_components);
+                                  is_serial_offload_enabled = true;
                                 }}},
                               {}}});
 }

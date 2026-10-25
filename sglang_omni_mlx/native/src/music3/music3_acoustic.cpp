@@ -182,7 +182,8 @@ mx::array Model::Vocoder(const mx::array &latents) const {
 }
 
 Result Model::Synthesize(const Request &request,
-                         const std::atomic<bool> &cancelled) const {
+                         const std::atomic<bool> &cancelled,
+                         const std::function<void()> &on_ar_complete) {
   try {
     CheckCancelled(cancelled);
     if (is_serial_offload_enabled_) {
@@ -191,6 +192,10 @@ Result Model::Synthesize(const Request &request,
     }
     const mx::array frames = GenerateFrames(request, cancelled);
     mx::eval(frames);
+    if (on_ar_complete) {
+      on_ar_complete();
+    } else {
+    }
     CheckCancelled(cancelled);
     if (is_serial_offload_enabled_) {
       LoadStageWeights(true);

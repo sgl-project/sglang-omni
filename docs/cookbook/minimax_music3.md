@@ -95,13 +95,13 @@ Pass both components to the native server to load one stage at a time:
   --stage-offload-components ar,dit
 ```
 
-Startup loads configuration and the tokenizer. Each accepted request loads AR/RVQ weights, evaluates the hidden-state handoff, synchronizes and releases AR, then loads condition fusion, DiT and DAV weights. Acoustic weights stay loaded across all windows and are released after completion, cancellation or failure.
+Startup loads configuration and the tokenizer and validates checkpoint shapes and stage ownership without evaluating the weights. Every tensor must belong to exactly one stage: AR/RVQ uses language_model and rvq_depth_decoder; the acoustic stage uses condition_encoder, transformer and vocoder. Each accepted request loads AR/RVQ weights, evaluates the hidden-state handoff, synchronizes and releases AR, then loads the acoustic weights. Acoustic weights stay loaded across all windows and are released after completion, cancellation or failure.
 
 The checkpoint directory is resolved once at startup; keep its contents unchanged while the server runs. No second host weight copy is retained. Reloading weights adds disk I/O and latency; file-backed pages can remain in the operating system's cache.
 
-The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
+The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
 
-`music3_synthesize` accepts the same flag. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. The HTTP suite exercises both modes, including seeded repeats after a rejected request and busy responses. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.
+`music3_synthesize` accepts the same flag and reports per-request elapsed time, AR elapsed time and peak active MLX allocation in bytes. Its diagnostic `--check-cancellation` flag cancels at the fully evaluated AR handoff before synthesizing a retry, and reports active MLX allocation before and after cancellation. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. HTTP seeded-repeat and busy cases run in both modes; the remaining HTTP cases run resident. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.
 
 ### Reference parity and Mac CI
 
