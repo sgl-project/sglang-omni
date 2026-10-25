@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import groupby
-from typing import Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
@@ -32,14 +31,17 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
+from sglang_omni.models.personaplex.sampling import (
+    AudioTokenSampler,
+    SamplingRun,
+    sample_runs,
+)
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
-
-
-class AudioTokenSampler(Protocol):
-    def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass(kw_only=True)
@@ -58,16 +60,9 @@ class PersonaPlexFrameBatch:
     audio_rng_states: list[torch.Tensor | None]
 
 
-@dataclass(frozen=True, kw_only=True)
-class SamplingRun:
-    """Adjacent batch rows that share one sample_token call."""
-
-    row_slice: slice
-    sampling: AudioSampling
-    generators: list[torch.Generator | None]
-
-
 class PersonaPlexModelRunner(ModelRunner):
+    depformer_cuda_graph: DepformerCudaGraphRunner | None = None
+
     def sample_before_post_prefill(
         self,
         forward_batch: ForwardBatch,
@@ -174,7 +169,9 @@ class PersonaPlexModelRunner(ModelRunner):
             pass
         return generator
 
-    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+    def audio_sampling_runs(
+        self, requests: list[SchedulerRequest]
+    ) -> list[SamplingRun]:
         """Sample row i with requests[i]'s audio settings and generator."""
         runs: list[SamplingRun] = []
         start_row = 0
@@ -197,14 +194,11 @@ class PersonaPlexModelRunner(ModelRunner):
             )
             start_row = end_row
 
-        def sample(logits: torch.Tensor) -> torch.Tensor:
-            picks = [
-                sample_token(logits[run.row_slice], run.sampling, run.generators)
-                for run in runs
-            ]
-            return picks[0] if len(picks) == 1 else torch.cat(picks)
+        return runs
 
-        return sample
+    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+        runs = self.audio_sampling_runs(requests)
+        return lambda logits: sample_runs(logits, runs)
 
     def spell_frames(
         self,
@@ -219,12 +213,20 @@ class PersonaPlexModelRunner(ModelRunner):
         Row i of text_token_B and forced_BK belongs to requests[i].
         """
         batch_size = len(requests)
-        codes_BK = self.model.depformer.generate(
-            text_token_B[:batch_size],
-            self.model.hidden_out[:batch_size],
-            forced_BK,
-            self.audio_sampler(requests),
-        )
+        if self.depformer_cuda_graph is None:
+            codes_BK = self.model.depformer.generate(
+                text_token_B[:batch_size],
+                self.model.hidden_out[:batch_size],
+                forced_BK,
+                self.audio_sampler(requests),
+            )
+        else:
+            codes_BK = self.depformer_cuda_graph.generate(
+                text_token_B[:batch_size],
+                self.model.hidden_out[:batch_size],
+                forced_BK,
+                self.audio_sampling_runs(requests),
+            )
         # Note (edwardzh): Sampling buffers can be reused before host results commit.
         text_tokens = text_token_B[:batch_size].clone()
         frames = []

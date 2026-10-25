@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -204,4 +204,4 @@ LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
   return {mx::multiply(output_gate, mx::tanh(cell)), cell};
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

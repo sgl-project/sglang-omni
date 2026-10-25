@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import check_golden
+import music3_golden
 import pytest
 import voxtral_golden
 
@@ -75,6 +76,39 @@ def test_a_pending_baseline_reports_no_delta() -> None:
     lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
     assert failures == []
     assert "| wer_en | pending | 3.00% | n/a |" in lines
+
+
+def test_music3_golden_requires_complete_stereo_waveform_metadata() -> None:
+    reference: music3_golden.Golden = {
+        "model": "music3",
+        "kind": "minimax_music3",
+        "reference": "pinned Python MLX",
+        "cases": [
+            {
+                "id": "cross_chunk",
+                "input": "lyrics",
+                "instructions": "caption",
+                "seed": 42,
+                "max_new_tokens": 250,
+                "dit_steps": 30,
+            }
+        ],
+        "devices": {},
+    }
+    waveform: music3_golden.AudioDigest = {
+        "sha256": "a" * 64,
+        "generated_frames": 250,
+        "sample_count": 319879,
+        "sample_rate": 32000,
+    }
+    assert music3_golden.validate_outputs(reference, {"cross_chunk": waveform}) == []
+    assert music3_golden.validate_outputs(reference, {})
+    assert music3_golden.validate_outputs(
+        reference, {"cross_chunk": {**waveform, "sample_rate": 44100}}
+    )
+    assert music3_golden.validate_outputs(
+        reference, {"cross_chunk": {**waveform, "generated_frames": 251}}
+    )
 
 
 def speech_golden(case_ids: tuple[str, ...] = ("en", "fr")) -> dict:

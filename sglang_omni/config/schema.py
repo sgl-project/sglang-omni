@@ -771,7 +771,7 @@ class PipelineConfig(BaseModel):
     session_publish: dict[str, list[str]] = Field(default_factory=dict)
     "Per node of the graph, the chunk formats that reach the client."
     max_output_lead_ms: float = Field(default=DEFAULT_MAX_OUTPUT_LEAD_MS, gt=0)
-    "How far ahead of real time, counted from a reply's start, a Session delivers the reply's audio; an interruption cannot take back audio already delivered."
+    "How far ahead of real time, counted from the release of a reply's first audio, a Session delivers the reply's audio; an interruption cannot take back audio already delivered."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 

@@ -24,6 +24,7 @@ from sglang_omni.proto.streams import (
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
+    REPLY_DELIVERED,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -53,9 +54,12 @@ class QwenInputState:
     frames: deque[tuple[float, bytes]] = field(default_factory=deque)
     waiting: deque[PendingUtterance] = field(default_factory=deque)
     turn_count: int = 0
+    # note (luojiaxuan): The unit being answered, holding every utterance it asks, so an interruption that asks it again keeps them all.
     answering: PendingUtterance | None = None
     # Note (Junnan Li): Utterances interrupted before any of their reply reached the client; the next unit asks them again.
     carried: list[PendingUtterance] = field(default_factory=list)
+    # note (luojiaxuan): An utterance whose reply was interrupted after its turn.started, until the model node reports how much of its audio reached the client.
+    interrupted: PendingUtterance | None = None
     # The reply a truncate refers to: the latest one whose turn.started the model node published.
     reply_turn: int | None = None
     input_end_ms: float = 0
@@ -90,11 +94,15 @@ class QwenInputHooks(SessionHooks):
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         state = self.states[session_identity]
-        held = [*state.waiting, *state.carried]
-        if state.answering is not None:
-            held.append(state.answering)
-        else:
-            pass
+        held = [
+            *state.waiting,
+            *state.carried,
+            *(
+                turn
+                for turn in (state.answering, state.interrupted)
+                if turn is not None
+            ),
+        ]
         return ResourceUsage(
             bytes=len(state.utterance or b"")
             + sum(len(frame) for _, frame in state.frames)
@@ -114,6 +122,21 @@ class QwenInputHooks(SessionHooks):
             )
         )
 
+    def emit_truncate(
+        self, state: QwenInputState, turn: int, audio_end_ms: float
+    ) -> None:
+        # Note (Junnan Li): The truncate names its reply in the payload; a chunk of an interrupted turn would not pass the model node's edge.
+        state.emit(
+            TimedChunk(
+                CONTROL,
+                state.input_end_ms,
+                0,
+                0,
+                {"turn": turn, "t_ms": audio_end_ms},
+                format=TRUNCATE_FORMAT,
+            )
+        )
+
     def drop_unreachable_frames(self, state: QwenInputState) -> None:
         """Keep the frames an utterance can still take: from the open one's start, else from the oldest audio the segmenter holds."""
         if state.utterance is not None and state.utterance_start_ms is not None:
@@ -126,13 +149,21 @@ class QwenInputHooks(SessionHooks):
             state.frames.popleft()
 
     def start_next(self, state: QwenInputState) -> None:
-        if state.answering is not None or not state.waiting:
+        if (
+            state.answering is not None
+            or state.interrupted is not None
+            or not state.waiting
+        ):
             return
         else:
             utterance = state.waiting.popleft()
-        state.answering = utterance
         asked = [*state.carried, utterance]
         state.carried = []
+        state.answering = PendingUtterance(
+            turn=utterance.turn,
+            pcm=b"".join(turn.pcm for turn in asked),
+            frames=tuple(frame for turn in asked for frame in turn.frames),
+        )
         state.emit(
             TimedChunk(
                 CONTROL,
@@ -140,8 +171,8 @@ class QwenInputHooks(SessionHooks):
                 0,
                 0,
                 {
-                    "pcm": b"".join(turn.pcm for turn in asked),
-                    "images": [frame for turn in asked for frame in turn.frames],
+                    "pcm": state.answering.pcm,
+                    "images": list(state.answering.frames),
                     "carried_turns": [turn.turn for turn in asked[:-1]],
                 },
                 format=UNIT_FORMAT,
@@ -157,8 +188,19 @@ class QwenInputHooks(SessionHooks):
         if state.reply_turn != utterance.turn:
             state.carried.append(utterance)
         else:
-            pass
+            state.interrupted = utterance
         state.answering = None
+        self.start_next(state)
+
+    def settle_interrupted(self, state: QwenInputState, audio_ms: float) -> None:
+        """Ask the interrupted utterance again when none of its reply's audio reached the client, else cut the reply at the delivered audio."""
+        utterance = state.interrupted
+        assert utterance is not None
+        state.interrupted = None
+        if audio_ms > 0:
+            self.emit_truncate(state, utterance.turn, audio_ms)
+        else:
+            state.carried.append(utterance)
         self.start_next(state)
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
@@ -189,22 +231,20 @@ class QwenInputHooks(SessionHooks):
             return payload
         elif event_type == TRUNCATE:
             if state.reply_turn is not None:
-                # Note (Junnan Li): The truncate names its reply in the payload; a chunk of an interrupted turn would not pass the model node's edge.
-                state.emit(
-                    TimedChunk(
-                        CONTROL,
-                        state.input_end_ms,
-                        0,
-                        0,
-                        {
-                            "turn": state.reply_turn,
-                            "t_ms": float(chunk.payload["t_ms"]),
-                        },
-                        format=TRUNCATE_FORMAT,
-                    )
+                self.emit_truncate(
+                    state, state.reply_turn, float(chunk.payload["t_ms"])
                 )
             else:
                 pass
+            return payload
+        elif event_type == REPLY_DELIVERED:
+            # Note (ruoyu): The thinker keeps the smaller cut, so the delivered and the client truncate combine in either order.
+            if state.interrupted is not None and chunk.turn == state.interrupted.turn:
+                self.settle_interrupted(state, float(chunk.payload["audio_ms"]))
+            elif chunk.turn is None:
+                pass
+            else:
+                self.emit_truncate(state, chunk.turn, float(chunk.payload["audio_ms"]))
             return payload
         elif event_type == SPEECH_STARTED and state.answering is not None:
             self.interrupt(state)

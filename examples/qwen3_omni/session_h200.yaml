@@ -52,8 +52,9 @@ session_nodes:
       - "vad:session"
       - {kind: control, source: input, event: interrupt, preempt: true}
       # A reply publishes three controls (turn.started, reply.progress, turn.done) and the dialog
-      # starts the next reply only once it took turn.done, so with an interrupted reply leaving at
-      # most two behind, the default capacity of 16 never drops one.
+      # starts the next reply only once it took turn.done, or the reply.delivered of an interrupted
+      # one, so with an interrupted reply leaving at most three behind, the default capacity of 16
+      # never drops one.
       - {source: "qwen_omni:session", feedback: true, overflow: drop_oldest}
 
 session_publish:

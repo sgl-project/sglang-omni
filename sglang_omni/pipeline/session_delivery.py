@@ -14,7 +14,6 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     TURN_DONE,
     TURN_INTERRUPTED,
-    TURN_STARTED,
     control_type,
     is_interrupted_reply,
 )
@@ -68,9 +67,10 @@ class DeliveryPacer:
         self.wake = wake
         self.items: deque[Budgeted] = deque()
         self.unsent: deque[Budgeted] = deque()
+        # note (luojiaxuan): The client plays a reply from its first audio, so the release of a turn's first audio starts the reply's real time; audio before any turn's is not paced.
         self.reply_start_ms = 0.0
-        # Note (Junnan Li): Before the first turn.started nothing waits; the horizon is infinite.
         self.reply_started_at = -math.inf
+        self.clock_turn: int | None = None
         self.is_input_ended = False
         # Note (Junnan Li): The audio of the latest turn handed to the client, so an interrupt can say how much of its reply left the server.
         self.sent_turn: int | None = None
@@ -140,6 +140,12 @@ class DeliveryPacer:
             if held and (is_reply_audio or control_type(output) == TURN_DONE):
                 held.append((output, size))
             elif is_reply_audio and not self.is_input_ended:
+                if output.turn != self.clock_turn:
+                    self.clock_turn = output.turn
+                    self.reply_start_ms = output.t_start_ms
+                    self.reply_started_at = now
+                else:
+                    pass
                 horizon_ms = self.horizon_ms(now)
                 if output.t_start_ms >= horizon_ms:
                     held.append((output, size))
@@ -156,10 +162,6 @@ class DeliveryPacer:
                         held.append(tail)
                 else:
                     released.append((output, size))
-            elif control_type(output) == TURN_STARTED:
-                self.reply_start_ms = output.t_start_ms
-                self.reply_started_at = now
-                released.append((output, size))
             else:
                 released.append((output, size))
         self.items = held

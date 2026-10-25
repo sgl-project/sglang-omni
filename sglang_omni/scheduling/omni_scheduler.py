@@ -291,6 +291,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_workers: int
     request_build_max_pending: int | None
     shutdown_callback: Callable[[], None] | None
+    continuation_aware_admission: bool
 
 
 class OmniScheduler(Generic[RequestDataT]):
@@ -306,6 +307,13 @@ class OmniScheduler(Generic[RequestDataT]):
         instance as ``self``.  Methods we override (``recv_requests``,
         ``process_input_requests``, ``run_batch``, ``send_to_tokenizer``)
         are defined directly on this class and take precedence.
+
+    Session admission:
+        A queued session unit whose retained KV holds a request row reuses
+        that row, so a prefill batch admits it beyond the free rows.
+        ``continuation_aware_admission=False`` counts such units against the
+        free rows like any other request; the KV is still retained and the
+        row still reused.
     """
 
     session_bridge: ARSessionBridge | None = None
@@ -354,6 +362,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        continuation_aware_admission: bool = True,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -362,6 +371,7 @@ class OmniScheduler(Generic[RequestDataT]):
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self.session_adapter = session_adapter
         self.session_bridge: ARSessionBridge | None = None
+        self.continuation_aware_admission = continuation_aware_admission
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
         else:
@@ -2031,7 +2041,11 @@ class OmniScheduler(Generic[RequestDataT]):
             self, running_bs, beam_width=beam_width, running_batch=running_batch
         )
         bridge = self.session_bridge
-        if bridge is None or beam_width is not None:
+        if (
+            bridge is None
+            or beam_width is not None
+            or not self.continuation_aware_admission
+        ):
             return free_request_rows
         else:
             # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.

@@ -2994,8 +2994,12 @@ class FakeIncrementalQwen3TTSDecoder:
         self.decoder = decoder
         self.channels_last_weights = None
         self.fail_on_call = fail_on_call
+        self.first_chunk_reach = 64
         self.decode_inputs: list[torch.Tensor] = []
         self.decode_positions: list[list[int]] = []
+
+    def first_chunk_reference_frames(self, emit_frames: int) -> int:
+        return self.first_chunk_reach
 
     def state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
         return Qwen3TTSIncrementalCodecStateSpec(
@@ -3390,6 +3394,34 @@ def test_qwen3_tts_reference_bootstraps_replay_windows_across_requests(
     assert long.emitted_generated_frames == 1
     assert short.emitted_generated_frames == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 0
+
+
+def test_qwen3_tts_long_reference_first_chunk_starts_at_its_reach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental, runner = windowed_scheduler(monkeypatch)
+    incremental.first_chunk_reach = 2
+    state = admit_reference_stream(
+        scheduler,
+        "request",
+        torch.tensor([[10, 1], [20, 2], [30, 3], [40, 4], [50, 5]], dtype=torch.long),
+        ref_code_len=4,
+    )
+
+    scheduler.run_initial_batch([("request", state)])
+
+    assert runner.calls == [
+        ((1, 2, 2), [state.codec_slot]),
+        ((1, 2, 1), [state.codec_slot]),
+    ]
+    assert incremental.decode_positions == [[2], [4]]
+    assert [item[:, 0].tolist() for item in incremental.decode_inputs] == [
+        [[30, 40]],
+        [[50]],
+    ]
+    assert int(scheduler.codec_arena.storage.frame_positions[state.codec_slot]) == 5
+    assert state.codec_frame_position == 5
+    assert state.emitted_generated_frames == 1
 
 
 def test_qwen3_tts_window_remainder_carries_the_emitted_frame(

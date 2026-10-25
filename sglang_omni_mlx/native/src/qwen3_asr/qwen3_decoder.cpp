@@ -58,8 +58,8 @@ KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
           mx::slice(*values_, {0, 0, 0, 0}, fetched)};
 }
 
-Qwen3Decoder::Qwen3Decoder(const Checkpoint &checkpoint, std::string prefix,
-                           Qwen3DecoderConfig config)
+Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
+                           std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
 
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
@@ -112,9 +112,9 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   return mx::add(
       hidden,
       checkpoint_.Linear(
-          mx::multiply(
-              Silu(checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj")),
-              checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+          mx::multiply(omni_common::Silu(checkpoint_.Linear(
+                           mlp_input, prefix + ".mlp.gate_proj")),
+                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
           prefix + ".mlp.down_proj"));
 }
 

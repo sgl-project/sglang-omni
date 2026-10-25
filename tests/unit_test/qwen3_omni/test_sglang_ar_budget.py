@@ -507,6 +507,34 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     assert "encoder_mem_reserve=0.0" in caplog.text
 
 
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+def test_session_thinker_hands_continuation_aware_admission_to_its_scheduler(
+    monkeypatch, continuation_aware_admission: bool
+) -> None:
+    patch_thinker_startup(monkeypatch)
+    scheduler_kwargs: list[dict[str, object]] = []
+
+    def create_thinker_scheduler(server_args, gpu_id, **kwargs):
+        scheduler_kwargs.append(kwargs)
+        return publish_for(server_args)
+
+    monkeypatch.setattr(
+        qwen_stages, "create_thinker_scheduler", create_thinker_scheduler
+    )
+
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        execution_mode="session",
+        total_gpu_memory_fraction=0.75,
+        continuation_aware_admission=continuation_aware_admission,
+    )
+
+    assert (
+        scheduler_kwargs[-1]["continuation_aware_admission"]
+        is continuation_aware_admission
+    )
+
+
 def test_qwen_thinker_threads_explicit_generation_batch_policy(monkeypatch) -> None:
     build_calls: list[dict[str, object]] = []
     validation_calls: list[tuple[str, object]] = []

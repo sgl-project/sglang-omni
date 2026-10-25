@@ -19,6 +19,7 @@ import uuid
 import wave
 import zipfile
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -289,6 +290,7 @@ def test_whisper_shutdown_reports_stopped() -> None:
         ("nemotron_asr_server", "qwen3_asr"),
         ("parakeet_server", "cohere_transcribe"),
         ("sensevoice_server", "cohere_transcribe"),
+        ("music3_server", "qwen3_asr"),
     ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
@@ -929,3 +931,227 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
     assert status == 400
     assert "overlap" in json.loads(body)["detail"]
+
+
+@pytest.fixture(scope="module")
+def music3_server() -> Iterator[ModelServer]:
+    running = ModelServer(
+        "music3_server", "minimax_music3", "mlx-community/MiniMax-Music3-mxfp8"
+    )
+    yield running
+    running.stop()
+
+
+@pytest.mark.parametrize(
+    ("section", "replacement", "error"),
+    [
+        ("pre_tokenizer", {"type": "ByteLevel"}, "requires NFC and byte-level BPE"),
+        ("model", {"type": "WordPiece"}, "requires NFC and byte-level BPE"),
+        (
+            "model",
+            {"type": "BPE", "continuing_subword_prefix": "##"},
+            "requires NFC and byte-level BPE",
+        ),
+        (
+            "model",
+            {"type": "BPE", "end_of_word_suffix": "</w>"},
+            "requires NFC and byte-level BPE",
+        ),
+        (
+            "added_tokens",
+            [
+                {
+                    "id": 151643,
+                    "content": "<|endoftext|>",
+                    "single_word": False,
+                    "lstrip": False,
+                    "rstrip": False,
+                    "normalized": True,
+                    "special": True,
+                }
+            ],
+            "unsupported added token matching rules",
+        ),
+    ],
+)
+def test_music3_rejects_unsupported_tokenizer_rules(
+    tmp_path: Path,
+    section: str,
+    replacement: dict[str, str] | list[dict[str, str | int | bool]],
+    error: str,
+) -> None:
+    source = (
+        Path(DATA_ROOT)
+        / "models/mlx-community_MiniMax-Music3-mxfp8/tokenizer/tokenizer.json"
+    )
+    tokenizer = json.loads(source.read_text())
+    tokenizer[section] = replacement
+    (tmp_path / "tokenizer").mkdir()
+    (tmp_path / "tokenizer/tokenizer.json").write_text(json.dumps(tokenizer))
+    requests = tmp_path / "requests.jsonl"
+    requests.write_text(
+        json.dumps({"id": "prompt", "input": "Hello", "instructions": "Folk"}) + "\n"
+    )
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "music3_synthesize"),
+            "--model-path",
+            str(tmp_path),
+            "--requests",
+            str(requests),
+            "--prompt-only",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert error in completed.stderr
+
+
+def test_music3_health_and_models(music3_server: ModelServer) -> None:
+    assert music3_server.ready["event"] == "ready"
+    status, body = music3_server.request("GET", "/health")
+    assert status == 200
+    assert json.loads(body)["request_states"] == {}
+    status, body = music3_server.request("GET", "/v1/models")
+    assert status == 200
+    assert json.loads(body)["data"][0]["id"] == music3_server.ready["model_name"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input": ""},
+        {"instructions": ""},
+        {"input": None},
+        {"max_new_tokens": 0},
+        {"max_new_tokens": True},
+        {"max_new_tokens": 9001},
+        {"max_new_tokens": 1.5},
+        {"seed": -1},
+        {"seed": True},
+        {"seed": 2**63},
+        {"dit_steps": 0},
+        {"dit_cfg_scale": -1},
+        {"dit_cfg_scale": True},
+        {"response_format": "mp3"},
+        {"stream": True},
+        {"input": "hello " * 5100},
+        {"input": "x" * (64 * 1024 + 1)},
+        {"instructions": "x" * (64 * 1024 + 1)},
+        {"input": "[ab" * 13000},
+    ],
+)
+def test_music3_rejects_invalid_requests_before_generation(
+    music3_server: ModelServer, fields: dict[str, str | int | float | bool | None]
+) -> None:
+    request = {
+        "input": "[Verse]\nHello, morning light",
+        "instructions": "Acoustic folk",
+        **fields,
+    }
+    status, body = music3_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps(request).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert status == 400
+    assert json.loads(body)["detail"]
+    status, body = music3_server.request("GET", "/health")
+    assert json.loads(body)["request_states"] == {}
+
+
+def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
+    """A valid request returns audio instead of failing during token sampling."""
+    request = {
+        "input": "[Verse]\nWalking through the morning light",
+        "instructions": "Gentle acoustic folk",
+        "max_new_tokens": 10,
+        "dit_steps": 2,
+        "seed": 42,
+        # No --model-name was chosen, so an OpenAI client's model is accepted.
+        "model": "tts-1",
+    }
+    responses = []
+    for format_name in ["wav", "pcm", "wav"]:
+        status, body = music3_server.request(
+            "POST",
+            "/v1/audio/speech",
+            json.dumps({**request, "response_format": format_name}).encode(),
+            {"Content-Type": "application/json"},
+        )
+        assert status == 200
+        responses.append(body)
+    assert responses[0] == responses[2]
+    with wave.open(io.BytesIO(responses[0])) as audio:
+        assert (audio.getnchannels(), audio.getframerate(), audio.getsampwidth()) == (
+            2,
+            32000,
+            2,
+        )
+        pcm = audio.readframes(audio.getnframes())
+        assert pcm == responses[1]
+        assert any(pcm)
+
+
+@pytest.mark.parametrize(
+    ("uppercase_tag", "lowercase_tag"),
+    [("CHŒUR", "chœur"), ("ΟΣ", "ος"), ("İNTRO", "i\u0307ntro")],
+)
+def test_music3_unicode_tag_case_preserves_seeded_audio(
+    music3_server: ModelServer, uppercase_tag: str, lowercase_tag: str
+) -> None:
+    """Non-ASCII uppercase section tags must normalize to the same audio."""
+    responses = []
+    for tag in [uppercase_tag, lowercase_tag]:
+        request = {
+            "input": f"[{tag}]\nWalking through the morning light",
+            "instructions": "Gentle acoustic folk",
+            "max_new_tokens": 10,
+            "dit_steps": 2,
+            "seed": 42,
+        }
+        status, body = music3_server.request(
+            "POST",
+            "/v1/audio/speech",
+            json.dumps(request).encode(),
+            {"Content-Type": "application/json"},
+        )
+        assert status == 200
+        responses.append(body)
+    assert responses[0] == responses[1]
+
+
+def test_music3_busy_request_returns_429(music3_server: ModelServer) -> None:
+    request = json.dumps(
+        {
+            "input": "[Verse]\nWalking through the morning light",
+            "instructions": "Gentle acoustic folk",
+            "max_new_tokens": 50,
+            "dit_steps": 2,
+            "seed": 42,
+        }
+    ).encode()
+    headers = {"Content-Type": "application/json"}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            music3_server.request, "POST", "/v1/audio/speech", request, headers
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, body = music3_server.request("GET", "/health")
+            if json.loads(body)["request_states"].get("running") == 1:
+                break
+            else:
+                time.sleep(0.02)
+        else:
+            pytest.fail("Music3 did not enter the running state")
+        for busy_request in (request, b"{invalid JSON"):
+            status, body = music3_server.request(
+                "POST", "/v1/audio/speech", busy_request, headers
+            )
+            assert status == 429
+            assert json.loads(body)["detail"] == "Music3 is busy"
+        assert pending.result(timeout=120)[0] == 200

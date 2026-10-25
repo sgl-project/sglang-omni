@@ -34,9 +34,11 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    continuation_aware_admission: bool = True,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
+    from sglang.srt.arg_groups.model_override_base import resolved_view
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -50,7 +52,10 @@ def create_thinker_scheduler(
     from sglang_omni.models.qwen3_omni.thinker_session_runner import (
         QwenSessionThinkerModelRunner,
     )
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.bootstrap import (
+        create_sglang_infrastructure,
+        init_sglang_cuda_graphs,
+    )
     from sglang_omni.scheduling.generation_batch_policy import (
         CudaGraphBackend,
         get_prefill_cuda_graph_backend,
@@ -58,19 +63,61 @@ def create_thinker_scheduler(
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
+    from sglang_omni.vendor.sglang.server_args import override_server_args
 
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
 
-    infrastructure = create_sglang_infrastructure(
-        server_args,
-        gpu_id,
-        tp_rank=tp_rank,
-        nccl_port=nccl_port,
-        model_arch_override="Qwen3OmniThinkerForCausalLM",
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        enable_prefill_input_embeds=enable_prefill_input_embeds,
+    # note (ratish): a session turn's prefill does not write its rows to the prompt hidden store,
+    # so its talker keeps zeros at multimodal prompt rows.
+    capture_prompt_hidden_states = speech_enabled and execution_mode == "request"
+    # note (ratish): a batch capturing hidden states cannot replay graphs captured at NULL, so a
+    # capturing thinker captures its graphs at FULL with the talker's layer, as MiniCPM-o's does.
+    resolved_server_args = resolved_view(server_args)
+    defer_cuda_graph_capture = (
+        capture_prompt_hidden_states and not resolved_server_args.disable_cuda_graph
     )
+    if defer_cuda_graph_capture:
+        saved_return_hidden_states = resolved_server_args.enable_return_hidden_states
+        saved_return_hidden_states_mode = resolved_server_args.return_hidden_states_mode
+        override_server_args(
+            server_args,
+            "sglang_omni.qwen3_omni.capture_prompt_hidden_states",
+            enable_return_hidden_states=True,
+            return_hidden_states_mode="full",
+        )
+    else:
+        pass
+
+    try:
+        infrastructure = create_sglang_infrastructure(
+            server_args,
+            gpu_id,
+            tp_rank=tp_rank,
+            nccl_port=nccl_port,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            enable_prefill_input_embeds=enable_prefill_input_embeds,
+            defer_cuda_graph_capture=defer_cuda_graph_capture,
+        )
+        if capture_prompt_hidden_states:
+            infrastructure[0].model_runner.model.set_talker_layers_to_capture()
+        else:
+            pass
+        if defer_cuda_graph_capture:
+            init_sglang_cuda_graphs(infrastructure[0])
+        else:
+            pass
+    finally:
+        if defer_cuda_graph_capture:
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_omni.restore_return_hidden_states",
+                enable_return_hidden_states=saved_return_hidden_states,
+                return_hidden_states_mode=saved_return_hidden_states_mode,
+            )
+        else:
+            pass
 
     (
         model_worker,
@@ -91,11 +138,21 @@ def create_thinker_scheduler(
     output_proc = SGLangOutputProcessor()
 
     if execution_mode == "session":
-        model_runner = QwenSessionThinkerModelRunner(model_worker, output_proc)
+        model_runner = QwenSessionThinkerModelRunner(
+            model_worker, output_proc, capture_prompt_hidden_states=False
+        )
     elif speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
-        model_runner = ThinkerModelRunner(model_worker, output_proc)
+        model_runner = ThinkerModelRunner(
+            model_worker,
+            output_proc,
+            capture_prompt_hidden_states=capture_prompt_hidden_states,
+        )
     else:
-        model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
+        model_runner = Qwen3OmniThinkerModelRunner(
+            model_worker,
+            output_proc,
+            capture_prompt_hidden_states=capture_prompt_hidden_states,
+        )
 
     tokenizer = get_tokenizer(
         model_config.model_path,
@@ -106,10 +163,12 @@ def create_thinker_scheduler(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
+        capture_prompt_hidden_states=capture_prompt_hidden_states,
     )
     # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
     stream_output_builder = make_thinker_stream_output_builder(
-        speech_enabled=speech_enabled
+        speech_enabled=speech_enabled,
+        prompt_hidden_store=model_runner.prompt_hidden_store,
     )
     if execution_mode == "request":
         session_adapter = None
@@ -135,6 +194,12 @@ def create_thinker_scheduler(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        shutdown_callback=(
+            model_runner.prompt_hidden_store.destroy
+            if model_runner.prompt_hidden_store is not None
+            else None
+        ),
+        continuation_aware_admission=continuation_aware_admission,
     )
 
 
@@ -157,6 +222,7 @@ def create_talker_scheduler(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
+    continuation_aware_admission: bool = True,
 ) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -320,6 +386,7 @@ def create_talker_scheduler(
         partial_start_min_chunks=partial_start_min_chunks,
         enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
+        continuation_aware_admission=continuation_aware_admission,
     )
 
     if session_adapter is not None:

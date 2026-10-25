@@ -18,6 +18,7 @@ from sglang_omni.proto.session import (
     DataEdge,
     OutputChunk,
     SessionGraph,
+    SessionIdentity,
     SessionNode,
     TimedChunk,
 )
@@ -44,13 +45,18 @@ from tests.unit_test.fixtures.session_pipeline import StageEvent, pipeline, wait
 
 
 class SyntheticModel(SessionHooks):
-    """Answers a reply unit with turn.started, a text delta, audio and turn.done, as the route's terminal owner does."""
+    """Answers a reply unit with turn.started, a text delta naming the turns it asks again, audio after audio_after_s and turn.done, as the route's terminal owner does."""
+
+    def __init__(self) -> None:
+        self.audio_after_s: dict[SessionIdentity, float] = {}
 
     def open(self, session_identity, request) -> None:
-        pass
+        self.audio_after_s[session_identity] = float(
+            request.params.get("audio_after_s", 0)
+        )
 
     def close(self, session_identity) -> None:
-        pass
+        self.audio_after_s.pop(session_identity)
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
@@ -60,6 +66,10 @@ class SyntheticModel(SessionHooks):
             return payload
         else:
             pass
+        carried_turns = chunk.payload["carried_turns"]
+        text = f"reply {chunk.turn}" + (
+            f" after {carried_turns}" if carried_turns else ""
+        )
         for event in (
             TimedChunk(
                 CONTROL,
@@ -75,15 +85,20 @@ class SyntheticModel(SessionHooks):
                 0,
                 0,
                 chunk.seq,
-                {"text": f"reply {chunk.turn}"},
+                {"text": text},
                 format=TEXT_DELTA,
                 turn=chunk.turn,
             ),
-            TimedChunk(
-                AUDIO, 0, 10, chunk.seq, bytes(960), format=PCM_F32, turn=chunk.turn
-            ),
         ):
             context.emit(event)
+        if context.cancelled.wait(self.audio_after_s[context.session_identity]):
+            return payload
+        else:
+            context.emit(
+                TimedChunk(
+                    AUDIO, 0, 10, chunk.seq, bytes(960), format=PCM_F32, turn=chunk.turn
+                )
+            )
         # The reply's audio keeps playing for a while; an interrupt in that window cancels its turn.done.
         if context.cancelled.wait(0.5):
             return payload
@@ -174,6 +189,14 @@ async def read_until(
             pass
 
 
+def texts_of(received: list[OutputChunk], turn: int) -> list[str]:
+    return [
+        output.payload["text"]
+        for output in received
+        if output.format == TEXT_DELTA and output.turn == turn
+    ]
+
+
 def is_turn_done(output: OutputChunk, turn: int) -> bool:
     return (
         output.kind == "data"
@@ -240,5 +263,40 @@ async def test_an_interrupt_fences_the_old_reply_and_the_next_turn_is_answered(
         received = await read_until(outputs, lambda output: is_turn_done(output, 2))
         assert any(output.format == PCM_F32 and output.turn == 2 for output in received)
         assert not any(is_turn_done(output, 1) for output in received)
+        assert texts_of(received, 2) == ["reply 2"]
+        await outputs.aclose()
+        await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt_turn", [None, 1], ids=["open-reply", "named-turn"])
+async def test_a_reply_interrupted_before_any_of_its_audio_left_is_asked_again(
+    tmp_path: Path, interrupt_turn: int | None
+) -> None:
+    """A reply whose text but none of whose audio reached the client stayed in the history when it was interrupted; a client interrupt naming the turn also fenced the dialog's own interrupt and the delivered report, so no later reply started."""
+    factory = f"{__name__}.create_graph_stage"
+    async with pipeline(
+        tmp_path,
+        names=["dialog", "model"],
+        factories={"dialog": factory, "model": factory},
+    ) as (coordinator, events, processes):
+        coordinator.session_graph = session_graph()
+        identity = await coordinator.open_session(
+            OmniRequest(None, {"audio_after_s": 1})
+        )
+        outputs = coordinator.session_outputs(identity)
+        await coordinator.append_session(identity, audio_chunk(0))
+        await coordinator.append_session(identity, control_chunk(COMMIT, sequence=1))
+        await read_until(outputs, lambda output: output.format == TEXT_DELTA)
+        await coordinator.control_session(
+            identity, control_chunk(INTERRUPT, turn=interrupt_turn)
+        )
+        await coordinator.append_session(identity, audio_chunk(2))
+        await coordinator.append_session(identity, control_chunk(COMMIT, sequence=3))
+        received = await read_until(outputs, lambda output: is_turn_done(output, 2))
+        assert texts_of(received, 2) == ["reply 2 after [1]"]
+        assert not any(
+            output.format == PCM_F32 and output.turn == 1 for output in received
+        )
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)

@@ -51,7 +51,7 @@ mx::array CausalConvolution(const mx::array &x, const mx::array &weight,
 
 } // namespace
 
-AudioCodec::AudioCodec(qwen3_asr::WeightMap weights,
+AudioCodec::AudioCodec(omni_common::WeightMap weights,
                        const nlohmann::json &arguments)
     : blocks_(BuildBlocks(arguments)),
       checkpoint_(PrepareWeights(std::move(weights), blocks_),
@@ -120,8 +120,8 @@ AudioCodec::BuildBlocks(const nlohmann::json &arguments) {
   return blocks;
 }
 
-qwen3_asr::WeightMap
-AudioCodec::PrepareWeights(qwen3_asr::WeightMap weights,
+omni_common::WeightMap
+AudioCodec::PrepareWeights(omni_common::WeightMap weights,
                            const std::vector<Block> &blocks) {
   const std::string prefix = kCodecPrefix;
   const std::string codebook = prefix + ".quantizer.semantic_codebook.";
@@ -270,7 +270,7 @@ mx::array AudioCodec::TransformerLayer(const mx::array &x,
                   checkpoint_.Weight(prefix + ".ffn_scale"),
                   checkpoint_.Linear(
                       mx::multiply(
-                          qwen3_asr::Silu(checkpoint_.Linear(
+                          omni_common::Silu(checkpoint_.Linear(
                               feed_forward_input, prefix + ".feed_forward.w1")),
                           checkpoint_.Linear(feed_forward_input,
                                              prefix + ".feed_forward.w3")),
@@ -339,8 +339,11 @@ std::string Pcm16Bytes(const std::vector<float> &samples) {
   std::string bytes;
   bytes.reserve(samples.size() * 2);
   for (const float sample : samples) {
-    const auto value =
-        static_cast<int16_t>(std::clamp(sample, -1.0f, 1.0f) * kPcm16FullScale);
+    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
+    // through and casting NaN to an integer is undefined.
+    const float bounded =
+        std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
+    const auto value = static_cast<int16_t>(bounded * kPcm16FullScale);
     bytes.push_back(static_cast<char>(value & 0xff));
     bytes.push_back(static_cast<char>((value >> 8) & 0xff));
   }

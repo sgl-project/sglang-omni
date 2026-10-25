@@ -1127,6 +1127,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             if window_frames
             else None
         )
+        tail_emit_frames = self.default_initial_chunk_frames or self.stream_stride
         tail = (
             Qwen3TTSIncrementalCodecCudaGraphRunner(
                 self.incremental_decoder,
@@ -1134,13 +1135,21 @@ class Qwen3TTSStreamingVocoderScheduler(
                 dtype=dtype,
                 num_quantizers=num_quantizers,
                 mode="tail",
-                fresh_frames=QWEN3_TTS_TAIL_GRAPH_FRAMES,
+                # note (ratish): every first chunk of a reference past the first decode's
+                # reach decodes this many frames, so they share one width.
+                fresh_frames=(
+                    *QWEN3_TTS_TAIL_GRAPH_FRAMES,
+                    self.incremental_decoder.first_chunk_reference_frames(
+                        tail_emit_frames
+                    )
+                    + tail_emit_frames,
+                ),
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
                 arena=self.codec_arena,
                 graph_pool=initial_graph_pool,
-                emit_frames=self.default_initial_chunk_frames or self.stream_stride,
+                emit_frames=tail_emit_frames,
             )
             if has_reference_prefixed_first_chunks
             else None
@@ -1736,6 +1745,18 @@ class Qwen3TTSStreamingVocoderScheduler(
             generated_frames = min(generated_frames, max_generated_frames)
         else:
             pass
+        if state.decoded_chunks:
+            expected_consumed_frames = state.ref_frames + state.emitted_generated_frames
+        else:
+            # note (ratish): a first decode's emitted frames and kept state read no
+            # frame before this one, so a long reference starts its stream here.
+            expected_consumed_frames = max(
+                0,
+                state.ref_frames
+                - self.incremental_decoder.first_chunk_reference_frames(
+                    generated_frames
+                ),
+            )
         arena = self.codec_arena
         assert arena is not None
         if state.codec_slot is None:
@@ -1754,12 +1775,17 @@ class Qwen3TTSStreamingVocoderScheduler(
             state.codec_frame_position = 0
         else:
             pass
+        # note (ratish): an unlaunched first decode keeps its slot, and its next plan
+        # may hold more frames, so the start is set on every first plan.
+        if (
+            state.decoded_chunks
+            or state.codec_frame_position == expected_consumed_frames
+        ):
+            pass
+        else:
+            state.codec_frame_position = expected_consumed_frames
+            arena.start_slot(state.codec_slot, expected_consumed_frames)
         consumed_frames = state.codec_frame_position
-        expected_consumed_frames = (
-            state.ref_frames + state.emitted_generated_frames
-            if state.decoded_chunks
-            else 0
-        )
         if consumed_frames != expected_consumed_frames:
             raise RuntimeError(
                 "Qwen3-TTS incremental codec position does not match emitted frames"

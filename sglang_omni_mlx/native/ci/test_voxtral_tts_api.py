@@ -40,6 +40,7 @@ PASSAGE = " ".join([SENTENCE] * 50)
 MAX_WORD_ERRORS = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
 # A cancelled generation stops within two 25-frame chunks.
 CANCEL_SECONDS = 8.0
 
@@ -450,6 +451,53 @@ def test_voxtral_rejects_invalid_requests(
     )
     assert status == 400
     assert json.loads(response)["detail"].startswith(detail)
+
+
+def test_voxtral_refuses_a_declared_body_too_large_without_reading_it(
+    voxtral_server: Server,
+) -> None:
+    # Note (Minyi Tang): the body is never sent, so a server that waits to
+    # read it never answers.
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", voxtral_server.port, timeout=10
+    )
+    connection.putrequest("POST", "/v1/audio/speech")
+    connection.putheader("Content-Length", str(MAX_REQUEST_BODY_BYTES + 1))
+    connection.endheaders()
+    response = connection.getresponse()
+    assert (response.status, json.loads(response.read())) == (
+        413,
+        {"detail": f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes"},
+    )
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    ("body_bytes", "status", "detail"),
+    [
+        (MAX_REQUEST_BODY_BYTES, 400, "input must be at most 4096 characters"),
+        (
+            MAX_REQUEST_BODY_BYTES + 1,
+            413,
+            f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes",
+        ),
+    ],
+)
+def test_voxtral_caps_a_chunked_body_it_cannot_size_in_advance(
+    voxtral_server: Server, body_bytes: int, status: int, detail: str
+) -> None:
+    body = json.dumps({"input": "x" * (body_bytes - len('{"input": ""}'))}).encode()
+    assert len(body) == body_bytes
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", voxtral_server.port, timeout=60
+    )
+    # Note (Minyi Tang): a body of one chunk is read to its end before the
+    # answer, so the socket closes with nothing unread and is not reset.
+    connection.request("POST", "/v1/audio/speech", body=[body])
+    response = connection.getresponse()
+    assert response.status == status
+    assert json.loads(response.read())["detail"].startswith(detail)
+    connection.close()
 
 
 def test_voxtral_server_serves_no_transcriptions(voxtral_server: Server) -> None:

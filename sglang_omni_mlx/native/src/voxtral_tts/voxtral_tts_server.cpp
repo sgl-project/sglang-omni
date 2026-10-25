@@ -15,7 +15,7 @@
 // (1 only). One request runs at a time and N more (2 by default) may wait; the
 // rest get 503. A request not done S seconds (600 by default) after it
 // arrives is cancelled, with 504 or an early end to its stream, and so is a
-// request whose client disconnects.
+// request whose client disconnects. A request body over 1 MiB gets 413.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -43,6 +43,7 @@
 
 #include "civetweb.h"
 #include "common/http.h"
+#include "common/text.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "voxtral_tts/voxtral_tts_model.h"
@@ -54,6 +55,9 @@ using qwen3_asr::TranscriptionResult;
 
 constexpr const char *kDefaultVoice = "cheerful_female";
 constexpr size_t kMaxInputCharacters = 4096;
+// Far above the largest valid request: kMaxInputCharacters characters, each
+// JSON-escaped as a 12-byte surrogate pair, take 48 KiB.
+constexpr size_t kMaxRequestBodyBytes = 1024 * 1024;
 constexpr int kMaxAudioFrames = 4096;
 constexpr int kRequestIdHexDigits = 32;
 constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
@@ -174,7 +178,7 @@ SpeechRequest ParseRequest(const Json &body,
   RejectUnsupportedFields(body);
   const Json input = FieldOr(body, "input", Json());
   if (!input.is_string() ||
-      qwen3_asr::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
+      omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
     throw std::invalid_argument("input must be a non-empty string");
   } else {
   }
@@ -226,8 +230,8 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
   // Note (Minyi Tang): as CUDA's response_format.strip().lower().
-  for (const char character :
-       qwen3_asr::StripUnicodeWhitespace(response_format.get<std::string>())) {
+  for (const char character : omni_common::StripUnicodeWhitespace(
+           response_format.get<std::string>())) {
     request.response_format.push_back(
         static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
   }
@@ -357,6 +361,25 @@ bool ClientLeft(int client_socket) {
   return false;
 }
 
+// Thrown by a generation that reaches its request's deadline; a cancellation,
+// so it is never logged as a failure.
+class DeadlineReached : public qwen3_asr::TranscriptionCancelled {};
+
+// Whether error is a generation stopping at its request's deadline.
+bool ReachedDeadline(std::exception_ptr error) {
+  if (!error) {
+    return false;
+  } else {
+  }
+  try {
+    std::rethrow_exception(error);
+  } catch (const DeadlineReached &) {
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
@@ -415,8 +438,13 @@ private:
                                     {{"detail", "Method Not Allowed"}});
     } else {
     }
-    const Json body =
-        Json::parse(omni_server::ReadBody(connection), nullptr, false);
+    const std::optional<std::string> raw_body =
+        omni_server::ReadBody(connection, kMaxRequestBodyBytes);
+    if (!raw_body.has_value()) {
+      return 413;
+    } else {
+    }
+    const Json body = Json::parse(*raw_body, nullptr, false);
     if (body.is_discarded()) {
       return omni_server::BadRequest(connection,
                                      "speech request body must be valid JSON");
@@ -539,9 +567,9 @@ private:
     } else {
     }
     // Note (Minyi Tang): the generation stops at the deadline itself, and may
-    // report that before this thread's wait reaches the deadline.
-    if (!timed_out && channel->error &&
-        std::chrono::steady_clock::now() >= deadline) {
+    // report that before this thread's wait reaches the deadline. Any other
+    // error is a failure, even one that arrives after the deadline.
+    if (!timed_out && ReachedDeadline(channel->error)) {
       timed_out = true;
     } else {
     }
@@ -610,7 +638,7 @@ private:
                           // deadline, since the request's thread may be blocked
                           // writing to a slow client.
                           if (std::chrono::steady_clock::now() >= deadline) {
-                            throw qwen3_asr::TranscriptionCancelled();
+                            throw DeadlineReached();
                           } else {
                           }
                           ++result.generated_token_count;
