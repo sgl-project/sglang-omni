@@ -104,4 +104,4 @@ sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant speech \
   --talker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-talker-DSpark
 ```
 
-The draft and target use the same codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. Rejection sampling verifies the proposed tokens against the target distribution. The block size comes from the draft checkpoint. This path supports non-streaming speech requests, not native full-duplex sessions.
+Rejection sampling preserves the target's codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. The block size comes from the draft checkpoint. Sampled verification does not support a request seed. This path supports non-streaming speech requests, not native full-duplex sessions.
