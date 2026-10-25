@@ -51,6 +51,7 @@ from sglang_omni.proto.streams import (
     PCM16,
     PCM_F32,
     REPLY_DELIVERED,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -295,6 +296,29 @@ async def test_progress_that_arrives_after_the_truncate_re_cuts_the_interrupted_
     )
     assert dialog.messages[2].content == "One two."
     assert not dialog.messages[2].uncertain
+
+
+@pytest.mark.asyncio
+async def test_each_cut_after_the_client_truncate_is_reported_as_reply_heard():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("A question?", True),
+            text_chunk(REPLY, 1),
+            control_chunk(SPEECH_STARTED, t_ms=900),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+            control_chunk(TRUNCATE, t_ms=1000),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+        ],
+    )
+    assert [
+        (o.turn, o.payload["text_end"])
+        for o in outputs
+        if control_type(o) == REPLY_HEARD
+    ] == [(1, 0), (1, 8)]
 
 
 def interrupted_dialog(*after: object) -> tuple[object, list[object]]:

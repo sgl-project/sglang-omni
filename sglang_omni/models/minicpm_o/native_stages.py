@@ -267,6 +267,7 @@ class PerceptionHooks(BatchedSessionHooks):
 class SpeechState:
     session_id: str
     clock_ms: float = 0
+    turn: int = 0
 
 
 def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
@@ -346,9 +347,14 @@ class SpeechHooks(BatchedSessionHooks):
                         model_end_of_turn=talker_result["end_of_turn"],
                     ),
                     eos=chunk.eos,
+                    turn=state.turn,
                 )
             )
             state.clock_ms += duration_ms
+            if is_turn_end[index]:
+                state.turn += 1
+            else:
+                pass
             payload.data = None
 
         speaking = set(speaking_indices)

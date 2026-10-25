@@ -16,9 +16,12 @@ from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve.realtime.control import Closed, Drained, Failure, UnitCompleted
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
+    AudioFinished,
     OutputEvent,
     ResponseFinished,
+    ResponseProgress,
     ResponseStarted,
+    TextDelta,
 )
 from sglang_omni.serve.realtime.output_buffer import (
     ENVELOPE_BYTES,
@@ -43,6 +46,8 @@ NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
 UPDATE_DEADLINE_S = 600.0
+CANCELLED_RESPONSE_ID = "resp_1"
+CANCELLED_ITEM_ID = "item_1"
 TEST_WAIT_TIMEOUT_SECONDS = 5.0
 
 
@@ -390,6 +395,56 @@ def test_output_budget_counts_outbound_events_only() -> None:
         buffer.enqueue(completed)
     assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
     assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]
+
+
+def test_a_cancelled_response_drops_only_its_queued_audio() -> None:
+    """A socket slower than the reply still held two audio deltas of a cancelled reply, and both left after the cancel. They are dropped at the cancelled response.done, while the reply's text, progress and audio done, an earlier reply's queued audio and the terminals stay in order with the byte count exact."""
+    buffer = OutputBuffer(RuntimeLimits())
+    earlier_audio = AudioDelta("resp_0", "item_0", bytes(UNIT_BYTES))
+    earlier_finished = ResponseFinished(
+        "resp_0", "item_0", "earlier", True, "completed", "stop"
+    )
+    cancelled_text = TextDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, "unheard")
+    cancelled_progress = ResponseProgress(
+        CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, 7, 40.0
+    )
+    cancelled_audio_done = AudioFinished(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID)
+    cancelled_finished = ResponseFinished(
+        CANCELLED_RESPONSE_ID,
+        CANCELLED_ITEM_ID,
+        "unheard",
+        True,
+        "cancelled",
+        "interrupted",
+    )
+    for event in (
+        ResponseStarted("resp_0"),
+        earlier_audio,
+        earlier_finished,
+        ResponseStarted(CANCELLED_RESPONSE_ID),
+        AudioDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, bytes(UNIT_BYTES)),
+        cancelled_text,
+        AudioDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, bytes(UNIT_BYTES)),
+        cancelled_progress,
+        cancelled_audio_done,
+        cancelled_finished,
+    ):
+        buffer.emit(event, None, ("text", "audio"))
+
+    assert buffer.queued_bytes == 256 + 1112 + 263 + 256 + 263 + 256 + 256 + 263
+    drained_events: list[OutputEvent] = []
+    while (envelope := buffer.dequeue()) is not None:
+        drained_events.append(envelope.event)
+    assert drained_events == [
+        ResponseStarted("resp_0"),
+        earlier_audio,
+        earlier_finished,
+        ResponseStarted(CANCELLED_RESPONSE_ID),
+        cancelled_text,
+        cancelled_progress,
+        cancelled_audio_done,
+        cancelled_finished,
+    ]
 
 
 @pytest.mark.asyncio

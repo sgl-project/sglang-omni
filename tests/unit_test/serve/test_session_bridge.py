@@ -20,6 +20,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -43,6 +44,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     ResponseFinished,
+    ResponseHeard,
     ResponseProgress,
     ResponseStarted,
     SpeechStarted,
@@ -202,6 +204,28 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     await settle()
     assert [event for event in h.published if isinstance(event, ResponseProgress)] == [
         ResponseProgress("resp_0", "item_0", 4, 500.0)
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_reply_heard_maps_to_the_ended_response_of_its_turn():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "One, two."}, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=4)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=5)
+    h.client.control(REPLY_HEARD, turn=2, text_end=9)
+    h.client.control(TURN_EMPTY, turn=4)
+    h.client.control(REPLY_HEARD, turn=3, text_end=6)
+    h.client.control(TURN_STARTED, turn=5)
+    h.client.control(REPLY_HEARD, turn=3, text_end=9)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseHeard)] == [
+        ResponseHeard("resp_0", "item_0", 5),
+        ResponseHeard("resp_0", "item_0", 6),
     ]
     await h.bridge.close()
 

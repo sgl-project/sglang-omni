@@ -21,6 +21,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     MAX_HISTORY_CHARS,
     REPLY_DELIVERED,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SPEECH_STARTED,
     TEXT_DELTA,
@@ -75,7 +76,8 @@ class Dialog(StreamComponent):
     the synthesizer tell it how much of the reply was spoken. The interrupted
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` moves the
-    cut back to what the listener heard. The language the recognizer last
+    cut back to what the listener heard; from then on each cut is
+    published as reply.heard. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
@@ -210,9 +212,9 @@ class Dialog(StreamComponent):
                 self.emit(output)
 
     def truncate(self) -> None:
-        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known."""
-        assert self.truncatable is not None
-        _, index = self.truncatable
+        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known. Once the client's truncate arrived, every cut is reported as reply.heard so the client's caption matches the history."""
+        assert self.emit is not None and self.truncatable is not None
+        turn, index = self.truncatable
         heard_ms = min(
             (ms for ms in (self.heard_ms, self.delivered_ms) if ms is not None),
             default=0.0,
@@ -224,7 +226,7 @@ class Dialog(StreamComponent):
             text_end, uncertain = heard_prefix(self.progress, heard_ms, content)
             logger.info(
                 "truncate turn %d at %.0f ms (client %s, delivered %s) keeps %d of %d chars (uncertain=%s, %d progress points)",
-                self.truncatable[0],
+                turn,
                 heard_ms,
                 self.heard_ms,
                 self.delivered_ms,
@@ -238,6 +240,10 @@ class Dialog(StreamComponent):
                 content=content[:text_end].rstrip(),
                 uncertain=uncertain,
             )
+            if self.heard_ms is not None:
+                self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
+            else:
+                pass
 
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)

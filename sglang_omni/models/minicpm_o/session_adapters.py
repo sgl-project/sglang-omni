@@ -28,6 +28,7 @@ from sglang_omni.models.minicpm_o.thinker_state import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import OutputChunk, SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, control_type
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -38,6 +39,7 @@ from sglang_omni.serve.realtime.output import (
     OutputEvent,
     ResponseFinished,
     ResponseStarted,
+    ResponseStatus,
     TextDelta,
     TextFinished,
 )
@@ -66,6 +68,12 @@ class ThinkerAdapter(ARSessionAdapter):
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity, None)
 
+    def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
+        if control_type(event) == INTERRUPT:
+            self.states[session_identity].is_interrupt_pending = True
+        else:
+            pass
+
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
     ) -> StagePayload:
@@ -82,8 +90,15 @@ class ThinkerAdapter(ARSessionAdapter):
     ) -> DuplexUnitRequestData:
         state = self.states[session_identity]
         plan: PerceptionStepPlan = payload.data
+        is_interrupted = state.is_interrupt_pending
+        state.is_interrupt_pending = False
         prefix = [] if state.is_prefix_pending else [self.special.unit_end]
-        token_ids = [*prefix, *plan["token_ids"]]
+        if is_interrupted and not state.is_turn_ended:
+            # note (ruoyu): Without turn_eos the model reads the stop as a pause in its own turn.
+            suffix = [self.special.turn_eos]
+        else:
+            suffix = []
+        token_ids = [*prefix, *plan["token_ids"], *suffix]
         spans = [
             EmbeddingSpan(
                 start=span["token_start"] + len(prefix),
@@ -122,7 +137,9 @@ class ThinkerAdapter(ARSessionAdapter):
             stage_payload=payload,
             thinker_state=state,
             unit_embedding_spans=spans,
-            is_listen_forced=state.force_listen_counter < sampling.force_listen_count,
+            is_listen_forced=is_interrupted
+            or state.force_listen_counter < sampling.force_listen_count,
+            is_interrupted=is_interrupted,
         )
 
     def result(
@@ -130,6 +147,11 @@ class ThinkerAdapter(ARSessionAdapter):
     ) -> StagePayload:
         state = self.states[session_identity]
         state.is_prefix_pending = False
+        if data.is_interrupted:
+            # note (ruoyu): Without the ended turn, the next sampled listen is rewritten into speech and the stopped reply resumes.
+            state.is_turn_ended = True
+        else:
+            pass
         output_token_ids = [int(token_id) for token_id in data.output_ids]
         data.stage_payload.data = dict(
             talker_conditions=data.talker_conditions,
@@ -139,7 +161,8 @@ class ThinkerAdapter(ARSessionAdapter):
             is_listen=bool(
                 output_token_ids and output_token_ids[0] == self.special.listen
             ),
-            end_of_turn=self.special.turn_eos in output_token_ids
+            end_of_turn=data.is_interrupted
+            or self.special.turn_eos in output_token_ids
             or any(ends_turn for _, _, ends_turn in data.talker_conditions),
         )
         return data.stage_payload
@@ -149,14 +172,30 @@ class OutputConverter:
     def __init__(self) -> None:
         self.response_id: str | None = None
         self.item_id: str | None = None
+        self.turn: int | None = None
+        self.cancelled_turn: int | None = None
         self.text: str = ""
         self.audio: bool = False
         self.serial: int = 0
+
+    def cancel(self) -> int | None:
+        """Mark the open reply cancelled and return its turn; None when no reply is open or it is already cancelled."""
+        if self.response_id is None or self.cancelled_turn is not None:
+            return None
+        else:
+            self.cancelled_turn = self.turn
+            return self.turn
 
     def finish(self) -> list[OutputEvent]:
         if self.response_id is None:
             return []
         else:
+            if self.cancelled_turn is not None:
+                status: ResponseStatus = "cancelled"
+                reason = "interrupted"
+            else:
+                status = "completed"
+                reason = "stop"
             events: list[OutputEvent] = [
                 TextFinished(self.response_id, self.item_id, self.text)
             ]
@@ -170,11 +209,12 @@ class OutputConverter:
                     self.item_id,
                     self.text,
                     self.audio,
-                    "completed",
-                    "stop",
+                    status,
+                    reason,
                 )
             )
             self.response_id = None
+            self.cancelled_turn = None
             self.text = ""
             self.audio = False
             return events
@@ -182,12 +222,16 @@ class OutputConverter:
     def __call__(self, output: OutputChunk) -> list[OutputEvent]:
         value = output.payload
         events: list[OutputEvent] = []
-        if value["text"] or value["pcm"]:
+        if self.cancelled_turn is not None and output.turn == self.cancelled_turn:
+            # note (ruoyu): The client stopped this reply, so what the pipeline still produces for its turn is not played.
+            pass
+        elif value["text"] or value["pcm"]:
             if self.response_id is None:
                 self.response_id = (
                     f"{output.session_identity.id}-response-{self.serial}"
                 )
                 self.item_id = self.response_id + "-message"
+                self.turn = output.turn
                 self.serial += 1
                 events.append(ResponseStarted(self.response_id))
             else:
@@ -211,12 +255,38 @@ class OutputConverter:
         return events
 
 
+class RealtimeAdapter(CoordinatorAdapter):
+    """The coordinator adapter with the client stop of a native duplex reply."""
+
+    output_converter: OutputConverter
+
+    async def cancel(self) -> None:
+        """Interrupt the open reply's turn: the thinker listens for the next unit, and the turn's later audio is dropped."""
+        assert self.session_identity is not None
+        cancelled_turn = self.output_converter.cancel()
+        if cancelled_turn is None:
+            pass
+        else:
+            await self.client.control_session(
+                self.session_identity,
+                TimedChunk(
+                    CONTROL,
+                    0,
+                    0,
+                    0,
+                    {"type": INTERRUPT},
+                    format=SESSION_CONTROL,
+                    turn=cancelled_turn,
+                ),
+            )
+
+
 def build_realtime_deployment(
     client: Client, config: MiniCPMODuplexPipelineConfig
 ) -> RealtimeDeployment:
 
-    def factory() -> CoordinatorAdapter:
-        return CoordinatorAdapter(
+    def factory() -> RealtimeAdapter:
+        return RealtimeAdapter(
             client,
             request_builder=lambda session: OmniRequest(
                 None,

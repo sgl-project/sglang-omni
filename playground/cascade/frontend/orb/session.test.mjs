@@ -22,15 +22,15 @@ test("the heard text is the largest text_end whose audio has played, stepwise", 
   }
 });
 
-function openSession() {
+function openSession(text = "One, two, three.", progress = PROGRESS) {
   const sent = [];
   const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
   session.handle({ type: "session.created", session: { id: "s" } });
   session.handle({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, supports_truncate: true } } } });
   session.handle({ type: "response.created", response: { id: "resp_0" } });
-  session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_0", delta: "One, two, three." });
+  session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_0", delta: text });
   session.handle({ type: "response.output_audio.delta", response_id: "resp_0", item_id: "item_0", delta: "" });
-  for (const point of PROGRESS) {
+  for (const point of progress) {
     session.handle({ type: "sglang.response.progress", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: point.textEnd, audio_ms: point.audioMs });
   }
   return { session, sent };
@@ -59,7 +59,7 @@ test("a reply played to its end sends no truncate and is heard in full", () => {
 test("a reply that ends cut keeps only its heard prefix, nothing when none of it played", () => {
   const { session } = openSession();
   session.played("resp_0", 950, true);
-  assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "two, three." });
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "" });
   session.handle({ type: "response.done", response: { id: "resp_0", status: "cancelled" } });
   assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "" });
 
@@ -67,6 +67,62 @@ test("a reply that ends cut keeps only its heard prefix, nothing when none of it
   silent.played("resp_0", 0, true);
   silent.handle({ type: "response.done", response: { id: "resp_0", status: "cancelled" } });
   assert.deepEqual(silent.captionParts("resp_0"), { heard: "", pending: "" });
+});
+
+// The interrupted replies below come from a recorded session of the qwen3-asr-qwen3-tts-customvoice profile.
+const STOCK_REPLY = "I cannot access live stock market data, but I can explain trading basics or discuss recent market trends.";
+const MODEL_REPLY = "I’m Qwen, a large language model independently developed by Alibaba Group’s Tongyi Lab.";
+
+function interrupt(session, playedMs) {
+  session.played("resp_0", playedMs, true);
+  session.handle({ type: "response.done", response: { id: "resp_0", status: "cancelled" } });
+}
+
+// The characters of the cut reply the server's history kept, sent again whenever the cut moves.
+function heard(session, textEnd) {
+  session.handle({ type: "sglang.response.heard", response_id: "resp_0", item_id: "item_0", text_end: textEnd });
+}
+
+test("a reply cut before any progress does not show its unplayed text as heard", () => {
+  const { session } = openSession(STOCK_REPLY, []);
+  interrupt(session, 128);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "", pending: "" });
+  heard(session, 1);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "I", pending: "" });
+});
+
+test("a reply cut inside its first sentence keeps the prefix the history kept", () => {
+  const { session } = openSession(MODEL_REPLY, [{ textEnd: 87, audioMs: 6560 }]);
+  interrupt(session, 2352);
+  heard(session, 3);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "I’m", pending: "" });
+});
+
+test("a completed reply the player stops keeps the prefix the history kept", () => {
+  const { session } = openSession(MODEL_REPLY, [{ textEnd: 87, audioMs: 6560 }]);
+  session.handle({ type: "response.done", response: { id: "resp_0", status: "completed" } });
+  session.played("resp_0", 2352, true);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "", pending: "" });
+  heard(session, 3);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "I’m", pending: "" });
+});
+
+test("text_end counts code points, so a character outside the BMP is kept whole", () => {
+  const { session } = openSession("A𠮷B", [{ textEnd: 2, audioMs: 400 }]);
+  session.played("resp_0", 500, false);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "A𠮷", pending: "B" });
+  interrupt(session, 500);
+  heard(session, 3);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "A𠮷B", pending: "" });
+});
+
+test("late updates after a cut neither erase the heard text nor restore cancelled text", () => {
+  const { session } = openSession(MODEL_REPLY, [{ textEnd: 87, audioMs: 6560 }]);
+  interrupt(session, 2352);
+  heard(session, 3);
+  session.handle({ type: "sglang.response.progress", response_id: "resp_0", item_id: "item_0", text_end: 40, audio_ms: 3000 });
+  session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_0", delta: " More." });
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "I’m", pending: "" });
 });
 
 test("a completed reply keeps the heard part and the rest", () => {

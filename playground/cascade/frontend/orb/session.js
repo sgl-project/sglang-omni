@@ -32,6 +32,18 @@ export function heardTextEnd(progress, playedMs) {
   return textEnd;
 }
 
+// note (Haoling Pu): the server counts text_end in code points, while String.slice counts UTF-16 code units.
+function codeUnitOffset(text, codePoints) {
+  let offset = 0;
+  let count = 0;
+  for (const char of text) {
+    if (count === codePoints) break;
+    offset += char.length;
+    count += 1;
+  }
+  return offset;
+}
+
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
   constructor({ transport, now, outputModalities = ["audio"], listeners = {} }) {
@@ -77,14 +89,24 @@ export class DuplexSession {
   }
 
   // What the caption shows of a reply: the heard part and the part still to play. A reply that ended
-  // other than completed keeps only what was heard, nothing when none of its audio played; without
-  // progress from the server a reply is shown whole unless none of it played.
+  // other than completed, or that the player stopped, keeps only what was heard: the prefix the
+  // server's history kept once it reports one, else the progress the player passed, and nothing when
+  // none of its audio played. A reply without progress from the server is shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
-    const cut = reply.status !== null && reply.status !== "completed";
+    const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
     if (cut && reply.playedMs <= 0) return { heard: "", pending: "" };
-    const end = reply.progress.length ? this.heardEnd(responseId) : reply.text.length;
+    let end;
+    if (cut && reply.keptEnd !== null) {
+      end = codeUnitOffset(reply.text, reply.keptEnd);
+    } else if (reply.progress.length) {
+      end = codeUnitOffset(reply.text, this.heardEnd(responseId));
+    } else if (cut) {
+      end = 0;
+    } else {
+      end = reply.text.length;
+    }
     return { heard: reply.text.slice(0, end), pending: cut ? "" : reply.text.slice(end) };
   }
 
@@ -254,7 +276,7 @@ export class DuplexSession {
       case "response.created":
         this.responseOpen = true;
         this.responseId = (event.response && event.response.id) || null;
-        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null });
+        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null });
         this.lastReplyId = this.responseId;
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
@@ -277,6 +299,12 @@ export class DuplexSession {
       case "sglang.response.progress": {
         const reply = this.reply(event.response_id);
         if (reply) reply.progress.push({ textEnd: event.text_end, audioMs: event.audio_ms });
+        this.emit("progress", event.response_id);
+        break;
+      }
+      case "sglang.response.heard": {
+        const reply = this.reply(event.response_id);
+        if (reply) reply.keptEnd = event.text_end;
         this.emit("progress", event.response_id);
         break;
       }
