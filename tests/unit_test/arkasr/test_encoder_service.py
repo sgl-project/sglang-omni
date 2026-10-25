@@ -266,6 +266,153 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
+def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
+    model = StubModel()
+    service = make_service(model)
+    item = make_item(11, 3)
+    service.encode_item(item)
+
+    cached = service.lookup_cached_embedding(item.audio_fingerprint, 3)
+
+    assert cached is not None
+    assert torch.equal(cached, item.precomputed_embeddings.cpu())
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+
+    second = make_item(11, 3, with_feature=False)
+    service.submit_cached_item(second, cached).result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 1
+    assert stats["early_hits"] == 1
+
+    assert service.lookup_cached_embedding(item.audio_fingerprint, 4) is None
+    assert len(service.cache) == 0
+
+
+def test_submit_cached_item_preserves_submission_counters() -> None:
+    model = StubModel()
+    service = make_service(model)
+    first = make_item(11, 3)
+    service.encode_item(first)
+    cached = service.lookup_cached_embedding(first.audio_fingerprint, 3)
+    assert cached is not None
+    second = make_item(11, 3, with_feature=False)
+
+    future = service.submit_cached_item(second, cached)
+
+    assert future.result(timeout=1) is cached
+    assert second.precomputed_embeddings is not None
+    assert second.feature is None
+    stats = service.stats()
+    assert stats["hits"] == 1
+    assert stats["early_hits"] == 1
+    assert stats["submitted"] == 2
+    assert stats["pending"] == 0
+
+
+def test_cached_attachment_oom_is_tracked_and_recovered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = StubModel()
+    service = make_service(model)
+    first = make_item(11, 3)
+    service.encode_item(first)
+    cached = service.lookup_cached_embedding(first.audio_fingerprint, 3)
+    assert cached is not None
+    recovered: list[Exception] = []
+
+    def fail_attach(item: MultimodalDataItem, embedding: torch.Tensor) -> None:
+        raise torch.OutOfMemoryError("cached attachment OOM")
+
+    monkeypatch.setattr(service, "attach_embedding", fail_attach)
+    monkeypatch.setattr(service, "recover_after_failure", recovered.append)
+
+    future = service.submit_cached_item(make_item(11, 3, with_feature=False), cached)
+
+    with pytest.raises(torch.OutOfMemoryError, match="cached attachment OOM"):
+        future.result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+    assert stats["submitted"] == 2
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+    assert isinstance(recovered[0], torch.OutOfMemoryError)
+
+
+def test_late_cache_hit_attachment_oom_uses_failure_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = StubModel()
+    service = make_service(model)
+    first = make_item(11, 3)
+    service.encode_item(first)
+    recovered: list[Exception] = []
+
+    monkeypatch.setattr(service, "lookup_cached_embedding", lambda *_args: None)
+
+    def fail_attach(item: MultimodalDataItem, embedding: torch.Tensor) -> None:
+        raise torch.OutOfMemoryError("late cache attachment OOM")
+
+    monkeypatch.setattr(service, "attach_embedding", fail_attach)
+    monkeypatch.setattr(service, "recover_after_failure", recovered.append)
+
+    future = service.submit_item(make_item(11, 3))
+
+    with pytest.raises(torch.OutOfMemoryError, match="late cache attachment OOM"):
+        future.result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+    assert stats["submitted"] == 2
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+    assert isinstance(recovered[0], torch.OutOfMemoryError)
+
+
+def test_follower_attachment_oom_uses_failure_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = StubModel()
+    encode_gate = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = threading.Event()
+    service = make_service(model)
+    leader_item = make_item(22, 3)
+    follower_item = make_item(22, 3)
+    original_attach = service.attach_embedding
+    recovered: list[Exception] = []
+
+    def attach(item: MultimodalDataItem, embedding: torch.Tensor) -> None:
+        if item is follower_item:
+            raise torch.OutOfMemoryError("follower attachment OOM")
+        else:
+            original_attach(item, embedding)
+
+    monkeypatch.setattr(service, "attach_embedding", attach)
+    monkeypatch.setattr(service, "recover_after_failure", recovered.append)
+
+    leader = service.submit_item(leader_item)
+    assert model.encode_started.wait(timeout=5)
+    follower = service.submit_item(follower_item)
+    accounting_finished = threading.Event()
+    follower.add_done_callback(lambda completed: accounting_finished.set())
+    encode_gate.set()
+
+    assert leader.result(timeout=5) is not None
+    with pytest.raises(torch.OutOfMemoryError, match="follower attachment OOM"):
+        follower.result(timeout=5)
+    assert accounting_finished.wait(timeout=1)
+    stats = service.stats()
+    assert stats["merged"] == 1
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+
+
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     model = StubModel()
     service = make_service(model)

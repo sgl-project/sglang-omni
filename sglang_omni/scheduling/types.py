@@ -103,6 +103,9 @@ class ARRequestData:
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    prefill_coalesce_after_build_drain_hint: bool | None = field(
+        default=None, kw_only=True
+    )
     # note(ratish): the scheduler clears both on every request it finishes and
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None

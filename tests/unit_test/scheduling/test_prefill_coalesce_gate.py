@@ -12,8 +12,10 @@ patched to a sentinel.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from concurrent.futures import Future
+from enum import Enum, auto
 from types import SimpleNamespace, TracebackType
 from unittest import mock
 
@@ -25,18 +27,41 @@ from sglang.srt.managers.schedule_batch import NextBatchPlan  # noqa: E402
 
 from sglang_omni.scheduling import omni_scheduler  # noqa: E402
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler  # noqa: E402
+from sglang_omni.scheduling.types import ARRequestData  # noqa: E402
 
 UPSTREAM_BATCH = object()
 
 
-def make_req(enqueue_t: float | None):
+class HintUnset(Enum):
+    VALUE = auto()
+
+
+HINT_UNSET = HintUnset.VALUE
+
+
+def make_req(
+    enqueue_t: float | None,
+    after_build_drain_hint: bool | None | HintUnset = HINT_UNSET,
+) -> SimpleNamespace:
     if enqueue_t is None:
-        return SimpleNamespace()
-    return SimpleNamespace(_coalesce_enqueue_t=enqueue_t)
+        request = SimpleNamespace()
+    else:
+        request = SimpleNamespace(_coalesce_enqueue_t=enqueue_t)
+    if after_build_drain_hint is HINT_UNSET:
+        pass
+    else:
+        request.omni_data = SimpleNamespace(
+            prefill_coalesce_after_build_drain_hint=after_build_drain_hint
+        )
+    return request
 
 
 class StubScheduler:
     """The attribute surface get_new_batch_prefill touches."""
+
+    waiting_requests_allow_after_build_drain_hold = staticmethod(
+        OmniScheduler.waiting_requests_allow_after_build_drain_hold
+    )
 
     def __init__(
         self,
@@ -95,6 +120,35 @@ def clock():
     with mock.patch.object(omni_scheduler.time, "perf_counter") as patched:
         patched.return_value = 100.0
         yield patched
+
+
+def test_hint_field_is_keyword_only() -> None:
+    parameter = inspect.signature(ARRequestData).parameters[
+        "prefill_coalesce_after_build_drain_hint"
+    ]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize(
+    ("hints", "expected"),
+    [
+        ([HINT_UNSET], True),
+        ([None], True),
+        ([False], False),
+        ([False, None], False),
+        ([True], True),
+        ([True, False, None], True),
+    ],
+)
+def test_after_build_drain_hint_truth_table(
+    hints: list[bool | None | HintUnset], expected: bool
+) -> None:
+    waiting = [make_req(100.0, hint) for hint in hints]
+
+    assert (
+        OmniScheduler.waiting_requests_allow_after_build_drain_hold(waiting) is expected
+    )
 
 
 def test_disabled_gate_passes_through(upstream):
@@ -256,6 +310,54 @@ def test_decode_can_coalesce_after_build_work_drains(upstream, clock):
 
     clock.return_value = 100.001
     assert sched.get_new_batch_prefill() is None
+
+
+def test_all_miss_wave_releases_after_build_work_drains(upstream, clock) -> None:
+    sched = StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    sched.waiting_queue = [make_req(100.0, False), make_req(100.0, False)]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
+
+
+def test_pending_build_still_holds_all_miss_wave(upstream, clock) -> None:
+    sched = StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    sched.waiting_queue = [make_req(100.0, False)]
+    sched.pending_request_builds["building"] = object()
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+
+def test_any_cache_hit_keeps_mixed_wave_coalescing(upstream, clock) -> None:
+    sched = StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    cache_miss = make_req(100.0, False)
+    cache_hit = make_req(100.0, True)
+    sched.waiting_queue = [cache_miss, cache_hit]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+    sched.waiting_queue = [cache_miss]
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
 def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
@@ -439,6 +541,34 @@ class DecodingStubScheduler(StubScheduler):
         self, running_request_count: int, running_batch: SimpleNamespace
     ) -> int:
         return 4
+
+
+@pytest.mark.parametrize(
+    ("after_build_drain_hint", "expected_hold"),
+    [
+        (HINT_UNSET, True),
+        (None, True),
+        (False, False),
+        (True, True),
+    ],
+)
+def test_prefill_prediction_and_execution_share_hint_policy(
+    upstream: mock.MagicMock,
+    clock: mock.MagicMock,
+    after_build_drain_hint: bool | None | HintUnset,
+    expected_hold: bool,
+) -> None:
+    sched = DecodingStubScheduler(request_admission_lock=CountingLock())
+    sched.prefill_coalesce_after_builds_during_decode = True
+    sched.pending_request_builds.clear()
+    sched.waiting_queue = [make_req(100.0, after_build_drain_hint)]
+    clock.return_value = 100.001
+
+    is_prefill_expected = OmniScheduler.is_prefill_expected(sched)
+    plan = OmniScheduler.get_new_batch_prefill(sched, sched.running_batch)
+
+    assert is_prefill_expected is not expected_hold
+    assert (plan.batch_to_run is None) is expected_hold
 
 
 def test_the_prefill_expectation_reads_the_clock_before_the_pending_builds(
