@@ -380,6 +380,35 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     ), "a request with no committed tokens gets no rows"
 
 
+def test_a_compact_verify_hands_each_request_its_packed_rows() -> None:
+    num_draft_tokens = 4
+    # Requests a and b verified 2 and 3 rows, packed back to back and padded to a tier of 8.
+    packed = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
+    hidden_rows = torch.zeros(16, 2)
+    hidden_rows[:8] = packed
+    runner = speculative_runner(hidden_rows, None)
+    layout = SimpleNamespace(
+        extend_start_loc=torch.tensor([0, 2], dtype=torch.int32),
+        verify_lens=torch.tensor([2, 3], dtype=torch.int32),
+    )
+    batch = SimpleNamespace(reqs=[speculative_request(rid) for rid in "ab"])
+
+    runner.after_speculative_step(
+        batch,
+        is_prefill=False,
+        num_draft_tokens=num_draft_tokens,
+        verify_layout=layout,
+    )
+    hidden_rows.zero_()
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID])
+
+    torch.testing.assert_close(committed_rows(runner, "b"), packed[2:4])
+    torch.testing.assert_close(committed_rows(runner, "a"), packed[0:1])
+
+
 def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     extend_lens = [2, 3]
     prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
@@ -456,9 +485,15 @@ def test_speculative_known_text_keeps_prefill_rows_across_chunks(
     assert request.rid not in runner.speculative_hidden_queue
 
 
-@pytest.mark.parametrize("mode", ["compact", "cap-accept"])
-def test_thinker_rejects_nonstatic_verify_before_model_loading(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+@pytest.mark.parametrize(
+    ("mode", "error", "message"),
+    [
+        ("compact", AssertionError, "reached model loading"),
+        ("cap-accept", ValueError, "requires static or compact verify"),
+    ],
+)
+def test_thinker_admits_only_static_and_compact_verify_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, mode: str, error: type[Exception], message: str
 ) -> None:
     server_args = SimpleNamespace(
         disable_cuda_graph=False, speculative_algorithm="DSPARK"
@@ -468,11 +503,11 @@ def test_thinker_rejects_nonstatic_verify_before_model_loading(
     )
     monkeypatch.setattr(
         "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
-        Mock(side_effect=AssertionError("unsupported verify reached model loading")),
+        Mock(side_effect=AssertionError("verify reached model loading")),
     )
 
     with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
-        with pytest.raises(ValueError, match="requires static verify"):
+        with pytest.raises(error, match=message):
             bootstrap_module.create_thinker_scheduler(server_args)
 
 

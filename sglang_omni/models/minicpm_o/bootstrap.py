@@ -184,12 +184,12 @@ def create_thinker_scheduler(
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
     speculative_algorithm = SpeculativeAlgorithm.from_string(cfg.speculative_algorithm)
     speculative = not speculative_algorithm.is_none()
-    if (
-        speculative_algorithm.is_dspark()
-        and read_ragged_verify_mode() != RaggedVerifyMode.STATIC
+    if speculative_algorithm.is_dspark() and read_ragged_verify_mode() not in (
+        RaggedVerifyMode.STATIC,
+        RaggedVerifyMode.COMPACT,
     ):
         raise ValueError(
-            "MiniCPM-o thinker speculative decoding requires static verify"
+            "MiniCPM-o thinker speculative decoding requires static or compact verify"
         )
     else:
         pass
