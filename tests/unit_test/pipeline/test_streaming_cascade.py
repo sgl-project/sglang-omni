@@ -242,11 +242,10 @@ async def test_speech_that_resumes_before_the_reply_is_heard_interrupts_it(
         assert any(
             control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
         )
-        assert messages[-1][-3:] == [
-            {"role": "user", "content": "test question"},
-            {"role": "assistant", "content": ""},
-            {"role": "user", "content": "test question"},
-        ]
+        assert messages[-1][-1] == {
+            "role": "user",
+            "content": "test question test question",
+        }
 
 
 @pytest.mark.asyncio

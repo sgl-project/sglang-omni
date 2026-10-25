@@ -590,15 +590,28 @@ async def test_a_reply_that_finished_stays_whole_without_a_truncate():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "resumed, heard",
+    "resumed, history",
     [
-        ("before_the_reply_opens", ""),
-        ("before_its_audio", ""),
-        ("after_its_first_sentence", "One two."),
+        (
+            "before_the_reply_opens",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "before_its_audio",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "after_its_first_sentence",
+            [
+                ("user", "Ten companies."),
+                ("assistant", "One two."),
+                ("user", "That let you teach English online."),
+            ],
+        ),
     ],
 )
 async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_reply(
-    resumed, heard
+    resumed, history
 ):
     dialog = build({"kind": "dialog"})
     question = transcript_chunk("Ten companies.", True)
@@ -640,9 +653,7 @@ async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_repl
     ]
     assert [(m.role, m.content) for m in messages_of(outputs[-1])] == [
         ("system", dialog.config.system_prompt),
-        ("user", "Ten companies."),
-        ("assistant", heard),
-        ("user", "That let you teach English online."),
+        *history,
     ]
 
 
