@@ -333,7 +333,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Streaming returns `audio/pcm` 16-bit mono PCM with sample-rate metadata in the headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming) for a full Python raw PCM consumer.
+Refer to the shared [TTS streaming guide](../basic_usage/tts.md#streaming) for a Python raw PCM consumer that saves audio using the response headers.
 
 All three task types (Base/reference-cloning, CustomVoice, VoiceDesign) use true incremental codec and vocoder streaming on both this HTTP endpoint and `/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`. Pass `"stream_codec_output": false` per request, or launch with `--preprocessing.factory.stream_codec_output false`, to restore whole-utterance decoding.
 
