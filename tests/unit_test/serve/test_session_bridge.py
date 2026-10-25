@@ -265,9 +265,9 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
             "instructions": "Be verbose.",
             "turn_detection": {"silence_duration_ms": 800},
         }
-        sampling = {**runtime.config, "sglang": {"sampling": {"temperature": 0.7}}}
-        await h.bridge.update(sampling)
-        await h.bridge.update(sampling)
+        sampling = {"sglang": {"sampling": {"temperature": 0.7}}}
+        await runtime.update(sampling, "sampling")
+        await runtime.update(sampling, "sampling repeated")
         assert len(h.client.appended) == 3
         assert h.client.appended[-1].payload == {
             "type": CONFIGURE,

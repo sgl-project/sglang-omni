@@ -27,7 +27,7 @@ std::optional<std::string> ReadBody(mg_connection *connection,
                                     size_t max_bytes);
 bool IsPost(mg_connection *connection);
 std::optional<std::string>
-Field(const std::map<std::string, qwen3_asr::FormField> &form,
+Field(const std::map<std::string, omni_common::FormField> &form,
       const std::string &name);
 
 } // namespace omni_server

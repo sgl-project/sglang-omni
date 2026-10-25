@@ -6,7 +6,7 @@
 
 Install **sglang-omni** by following [Installation](../get_started/installation.md).
 
-Qwen3-TTS Base depends on the upstream `qwen-tts` package. When installing, **you must use `--no-deps`** to avoid changing SGLang-Omni’s dependency versions:
+Qwen3-TTS Base depends on the upstream `qwen-tts` package. When installing, **you must use** `--no-deps` to avoid changing SGLang-Omni’s dependency versions:
 
 ```bash
 apt-get update && apt-get install -y sox

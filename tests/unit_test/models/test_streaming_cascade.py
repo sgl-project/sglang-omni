@@ -372,19 +372,193 @@ async def test_a_later_truncate_moves_the_cut_back_but_never_past_the_delivered_
     assert dialog.messages[2].content == "One two.\nThree four."
 
 
+def history(dialog) -> list[tuple[str, str]]:
+    return [(message.role, message.content) for message in dialog.messages]
+
+
+def prompts(outputs: list[TimedChunk]) -> list[list[tuple[str, str]]]:
+    """The history of each messages chunk the dialog sent to the language model."""
+    return [
+        [(message.role, message.content) for message in messages_of(o)]
+        for o in outputs
+        if o.format == MESSAGES
+    ]
+
+
 @pytest.mark.asyncio
-async def test_a_reply_interrupted_in_its_first_sentence_leaves_an_empty_answer_between_the_questions():
+async def test_a_reply_interrupted_in_its_first_sentence_leaves_no_answer_and_joins_the_questions():
     dialog, inputs = interrupted_dialog(
         control_chunk(REPLY_DELIVERED, turn=1, audio_ms=600),
+        control_chunk(SPEECH_STOPPED),
         transcript_chunk("wait, what?", True),
     )
     outputs = await drain(dialog, inputs)
-    prompt = messages_of([o for o in outputs if o.format == MESSAGES][-1])
-    assert [(m.role, m.content) for m in prompt] == [
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question wait, what?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_interrupted_before_any_audio_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("I tried several times,", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("and this is my fourth attempt.", True),
+            text_chunk("Sorry to hear that.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "I tried several times, and this is my fourth attempt."),
+    ]
+    assert history(dialog)[1:] == [
+        ("user", "I tried several times, and this is my fourth attempt."),
+        ("assistant", "Sorry to hear that."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_truncated_to_nothing_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TRUNCATE, t_ms=0),
+            transcript_chunk("hello?", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question hello?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_finished_without_text_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("are you there?", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question are you there?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_partly_heard_reply_keeps_its_heard_prefix_between_the_questions():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+    )
+    outputs = await drain(dialog, inputs)
+    assert prompts(outputs)[-1] == [
         ("system", dialog.config.system_prompt),
         ("user", "question"),
-        ("assistant", ""),
+        ("assistant", "One two.\nThree four."),
         ("user", "wait, what?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_utterances_over_unheard_replies_in_a_row_join_one_user_message():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("first", True),
+            text_chunk("Reply one.", 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=10, audio_ms=1000)
+            ),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("second", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=2, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("third", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=3, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("fourth", True),
+            text_chunk("Reply four.", 4),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=4, text_end=11, audio_ms=1000)
+            ),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=4, audio_ms=1000),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("fifth", True),
+        ],
+    )
+    system = ("system", dialog.config.system_prompt)
+    assert prompts(outputs) == [
+        [system, ("user", "first")],
+        [system, ("user", "first"), ("assistant", "Reply one."), ("user", "second")],
+        [
+            system,
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third"),
+        ],
+        [
+            system,
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third fourth"),
+        ],
+        [
+            system,
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third fourth"),
+            ("assistant", "Reply four."),
+            ("user", "fifth"),
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_next_request_to_the_language_model_has_no_empty_answer():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(TRUNCATE, t_ms=0),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+    )
+    prompt = [o for o in await drain(dialog, inputs) if o.format == MESSAGES][-1]
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        events = [
+            {"choices": [{"delta": {"content": "Sure."}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return httpx.Response(200, text=f"{stream}data: [DONE]\n\n")
+
+    generator = build({"kind": "openai_chat", **HTTP_SERVICE})
+    generator.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(generator, [prompt])
+    assert bodies[0]["messages"] == [
+        {"role": "system", "content": dialog.config.system_prompt},
+        {"role": "user", "content": "question wait, what?"},
     ]
 
 
@@ -412,6 +586,93 @@ async def test_a_reply_that_finished_stays_whole_without_a_truncate():
         ],
     )
     assert dialog.messages[2].content == REPLY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resumed, history",
+    [
+        (
+            "before_the_reply_opens",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "before_its_audio",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "after_its_first_sentence",
+            [
+                ("user", "Ten companies."),
+                ("assistant", "One two."),
+                ("user", "That let you teach English online."),
+            ],
+        ),
+    ],
+)
+async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_reply(
+    resumed, history
+):
+    dialog = build({"kind": "dialog"})
+    question = transcript_chunk("Ten companies.", True)
+    speech = control_chunk(SPEECH_STARTED, t_ms=1800)
+    reply = {
+        "before_the_reply_opens": [speech, question],
+        "before_its_audio": [question, text_chunk(REPLY, 1), speech],
+        "after_its_first_sentence": [
+            question,
+            text_chunk(REPLY, 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+            speech,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1000),
+        ],
+    }[resumed]
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(SPEECH_STOPPED, t_ms=1000),
+            *reply,
+            control_chunk(SPEECH_STOPPED, t_ms=4000),
+            transcript_chunk("That let you teach English online.", True),
+        ],
+    )
+    assert [control_type(o) for o in outputs if o.turn == 1] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+        INTERRUPT,
+        TURN_INTERRUPTED,
+    ]
+    assert [control_type(o) for o in outputs if o.turn == 2] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+    ]
+    assert [(m.role, m.content) for m in messages_of(outputs[-1])] == [
+        ("system", dialog.config.system_prompt),
+        *history,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", [SPEECH_STOPPED, COMMIT])
+async def test_a_reply_opens_once_the_speech_of_its_utterance_ended(end):
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(end, t_ms=1000),
+            transcript_chunk("question", True),
+            text_chunk("Hello world.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [control_type(o) for o in outputs] == [TURN_QUEUED, TURN_STARTED, None]
+    assert dialog.messages[-1].content == "Hello world."
 
 
 @pytest.mark.asyncio

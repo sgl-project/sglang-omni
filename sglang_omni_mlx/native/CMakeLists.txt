@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
@@ -62,6 +63,7 @@ target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
+  src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
   src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
@@ -75,7 +77,7 @@ add_library(silero_vad STATIC src/silero_vad/silero_vad.cpp src/silero_vad/speec
 # it was built with as part of cohere_asr.
 set_source_files_properties(src/silero_vad/speech_segments.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 target_include_directories(silero_vad PUBLIC src)
-target_link_libraries(silero_vad PUBLIC qwen3_asr)
+target_link_libraries(silero_vad PUBLIC common)
 target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(sortformer STATIC
@@ -84,7 +86,7 @@ add_library(sortformer STATIC
   src/sortformer/sortformer_features.cpp
   src/sortformer/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
-target_link_libraries(sortformer PUBLIC qwen3_asr)
+target_link_libraries(sortformer PUBLIC common)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
@@ -100,10 +102,10 @@ add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_va
 target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
-target_link_libraries(silero_vad_probe PRIVATE silero_vad qwen3_asr)
+target_link_libraries(silero_vad_probe PRIVATE silero_vad)
 
 add_executable(sortformer_probe tools/sortformer_probe.cpp)
-target_link_libraries(sortformer_probe PRIVATE sortformer qwen3_asr)
+target_link_libraries(sortformer_probe PRIVATE sortformer)
 
 add_executable(qwen3_asr_transcribe tools/qwen3_asr_transcribe.cpp)
 target_link_libraries(qwen3_asr_transcribe PRIVATE qwen3_asr)

@@ -21,6 +21,7 @@ from multiprocessing.sharedctypes import Synchronized
 from multiprocessing.synchronize import Event
 from typing import Literal, Sequence
 
+import torch
 from sglang.srt.utils import kill_itself_when_parent_died
 from torch._dynamo.callback import CallbackArgs, callback_handler
 
@@ -49,7 +50,10 @@ from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
-from sglang_omni.utils.process import exit_without_teardown
+from sglang_omni.utils.process import (
+    exit_without_teardown,
+    register_prewarm_cuda_ipc_handle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -704,6 +708,34 @@ def report_startup_progress(spec: StageWorkerProcessSpec) -> None:
         progress.value += 1
 
 
+# note (db-ol): held so torch cannot reset its CUDA IPC ref counter file mid export.
+_cuda_ipc_warm_shares: list[torch.Tensor] = []
+
+
+def prewarm_cuda_ipc_export(spec: StageWorkerProcessSpec, log: logging.Logger) -> None:
+    """Hold one CUDA IPC share before constructing stages when this process has a GPU.
+
+    The ref counter file is process global, so the single threaded held slot keeps a
+    later export from being reset, up to the file rollover the relay pool never hits.
+    """
+    if not (current_platform.is_cuda() or current_platform.is_rocm()):
+        return
+    else:
+        pass
+    gpu_ids = stage_gpu_ids(host_owned_stage_specs(spec))
+    if not gpu_ids:
+        return
+    else:
+        pass
+    tensor = torch.empty(1, dtype=torch.uint8, device=f"cuda:{gpu_ids[0]}")
+    shared = (
+        tensor.untyped_storage()._share_cuda_()
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    _cuda_ipc_warm_shares.append(tensor)
+    register_prewarm_cuda_ipc_handle(shared[4])
+    log.info(f"Warmed CUDA IPC on cuda:{gpu_ids[0]} before constructing stages")
+
+
 def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -762,6 +794,7 @@ def run_process(
                     pass
 
     try:
+        prewarm_cuda_ipc_export(spec, log)
         for stage_spec in spec.stage_specs:
             stages.append(
                 construct_stage(

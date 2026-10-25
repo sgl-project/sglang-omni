@@ -399,8 +399,9 @@ class SessionGraphRunner(CoordinatorSessions):
     def is_interrupted(
         self, graph: SessionGraphRuntime, target: str, chunk: TimedChunk
     ) -> bool:
-        return chunk.turn is not None and chunk.turn in graph.interrupted_turns.get(
-            target, ()
+        return any(
+            is_interrupted_reply(chunk, turn)
+            for turn in graph.interrupted_turns.get(target, ())
         )
 
     async def put_graph_inbox(

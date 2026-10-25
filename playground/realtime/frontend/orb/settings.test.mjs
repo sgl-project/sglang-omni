@@ -45,8 +45,8 @@ class Option {
   constructor(text, value) { this.text = text; this.value = value; }
 }
 
-// The settings module in a page whose server answers the given capabilities and the MiniCPM-o presets.
-async function createSettings(capabilities, { storage = new Map() } = {}) {
+// The settings module in a page whose server answers the given capabilities and the MiniCPM-o presets; pageOptions are the page's own constructor options.
+async function createSettings(capabilities, { storage = new Map(), pageOptions = {} } = {}) {
   const ui = Object.fromEntries(UI_IDS.map((id) => [id, new FakeElement(id)]));
   const requests = [];
   const context = vm.createContext({
@@ -66,7 +66,7 @@ async function createSettings(capabilities, { storage = new Map() } = {}) {
   });
   vm.runInContext(settingsSource, context);
   const Settings = vm.runInContext("Settings", context);
-  const settings = new Settings(ui, { capabilitiesUrl: CAPABILITIES_URL, defaultInstructions: "" });
+  const settings = new Settings(ui, { capabilitiesUrl: CAPABILITIES_URL, defaultInstructions: "", ...pageOptions });
   await settings.init();
   return { settings, ui, requests, storage };
 }
@@ -263,6 +263,18 @@ test("PersonaPlex offers its packaged voices by name and its own sampling knobs"
     output_modalities: ["audio"],
     instructions: "You are a travel agent.",
     sglang: { voice: "NATM1", sampling: { min_p: 0.05, audio_top_k: 250, seed: 3 } },
+  });
+});
+
+test("a page that offers no text-only replies hides the choice and sends audio even with a stored text output", async () => {
+  const storage = new Map([[`orb.settings.v4:${CAPABILITIES.streaming_cascade.model}`, JSON.stringify({ output: "text" })]]);
+  const { settings, ui } = await createSettings(CAPABILITIES.streaming_cascade, { storage, pageOptions: { offersTextOnly: false } });
+  assert.equal(ui.outputRow.hidden, true);
+  assert.deepEqual(sessionUpdate(settings), { output_modalities: ["audio"] });
+  await choose(ui, "setTurnType", "server_vad");
+  assert.deepEqual(sessionUpdate(settings), {
+    output_modalities: ["audio"],
+    audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 800 } } },
   });
 });
 

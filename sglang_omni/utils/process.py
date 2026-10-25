@@ -8,7 +8,16 @@ import os
 import sys
 import threading
 import traceback
+from contextlib import suppress
 from typing import NoReturn
+
+# note (db-ol): ref counter files of prewarm CUDA IPC shares, which no consumer releases.
+_prewarm_cuda_ipc_handles: list[bytes] = []
+
+
+def register_prewarm_cuda_ipc_handle(handle: bytes) -> None:
+    """Unlink this CUDA IPC ref counter file when the process exits without teardown."""
+    _prewarm_cuda_ipc_handles.append(handle)
 
 
 def exit_without_teardown(code: int) -> NoReturn:
@@ -47,6 +56,12 @@ def release_cuda_ipc_file() -> None:
     the C++ teardown that os._exit skips removes it once no consumer holds a
     sent tensor. A process that never initialized CUDA has no such file.
     """
+    # note (db-ol): a prewarm share holds its slot to the end, so its file is unlinked
+    # here. A normal exit never reaches this, and its teardown removes the file itself.
+    for handle in _prewarm_cuda_ipc_handles:
+        with suppress(OSError):
+            os.unlink(b"/dev/shm/" + handle.lstrip(b"/"))
+    _prewarm_cuda_ipc_handles.clear()
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_initialized():
         return

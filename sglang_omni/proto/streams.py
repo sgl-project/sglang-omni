@@ -91,8 +91,12 @@ def edge_event(chunk: TimedChunk) -> str | None:
 
 
 def is_interrupted_reply(chunk: TimedChunk | OutputChunk, turn: int | None) -> bool:
-    """A chunk of the interrupted reply other than the turn.interrupted that ends it."""
-    return chunk.turn == turn and control_type(chunk) != TURN_INTERRUPTED
+    """A chunk of the interrupted reply other than the controls about the interruption: the interrupt, the turn.interrupted that ends the reply and the reply.delivered that reports its audio."""
+    return chunk.turn == turn and control_type(chunk) not in (
+        INTERRUPT,
+        TURN_INTERRUPTED,
+        REPLY_DELIVERED,
+    )
 
 
 def holds_turn_end(

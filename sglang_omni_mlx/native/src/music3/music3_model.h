@@ -46,7 +46,7 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics);
 // An empty model_name accepts any model field, as the server does when no
 // --model-name was chosen and clients cannot know the generated one.
 Request ParseRequest(const nlohmann::json &body,
-                     const qwen3_asr::Tokenizer &tokenizer,
+                     const omni_common::Tokenizer &tokenizer,
                      const std::string &model_name, int context_tokens);
 std::string EncodeAudio(const std::vector<float> &samples, bool pcm);
 uint64_t AcousticSeed(uint64_t seed, int chunk_index);
@@ -57,7 +57,7 @@ public:
   explicit Model(const std::filesystem::path &directory);
   Result Synthesize(const Request &request,
                     const std::atomic<bool> &cancelled) const;
-  const qwen3_asr::Tokenizer &tokenizer() const { return tokenizer_; }
+  const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
   int context_tokens() const {
     return config_.at("max_position_embeddings").get<int>();
   }
@@ -78,9 +78,9 @@ private:
                          const std::string &prefix) const;
 
   nlohmann::json config_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   qwen3_asr::Qwen3Decoder decoder_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
 };
 
 } // namespace music3

@@ -59,7 +59,7 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
 ```
 
 The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.
@@ -276,7 +276,7 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`; a cut reply then shows the part the history kept, from `sglang.response.heard`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as [Session settings](#session-settings) describes. When a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`; a cut reply then shows the part the history kept, from `sglang.response.heard`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
 
 ### An OpenAI Realtime client or the Session API
 
@@ -319,11 +319,11 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 | `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
 | `error` | The request or the session failed. |
 
-`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise; a reply interrupted before its first boundary leaves an empty answer. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent.
+`response.cancel` interrupts the reply from the client side. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking.
 
 To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
 
-Instructions and turn detection can change with a later `session.update` and apply from the next turn; sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) is set by the first one. [Session settings](#session-settings) lists every field.
+Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. [Session settings](#session-settings) lists every field.
 
 ### Turn Detection
 
@@ -423,8 +423,8 @@ A realtime client sends its settings in `session.update`. The first `session.upd
 | Field | Reaches | When it can change |
 | --- | --- | --- |
 | `instructions` | `system_prompt` of every node that has it (the `dialog`) | Any time; applies to the next prompt. At most 65536 characters, else `instructions exceed context or have invalid type`. |
-| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | First `session.update` only. |
-| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | First `session.update` only. |
+| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | Any time; applies to the next reply, a reply in progress keeps its value. |
+| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | Any time; applies to the next reply, a reply in progress keeps its value. |
 | `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see [Allowed, with consequences](#allowed-with-consequences)). `interrupt_response` is accepted and has no effect. |
 | `output_modalities` | `["text", "audio"]` or `["text"]` | Any time. |
 
@@ -484,7 +484,7 @@ Turns the running text of the `asr` stage into utterances: partial transcripts w
 
 ### `dialog`
 
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; speech that starts during a reply interrupts it.
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -623,7 +623,7 @@ Each rule is followed by the error it raises.
 ### Rejected in a realtime session
 
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
-- `sglang.sampling` or another non-hot field changed after the first `session.update` — `session field is frozen`.
+- A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
 - `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
 - A `model` other than the deployment's — `model differs from deployment`.
 - An audio format other than 16 kHz input or 24 kHz output PCM — `unsupported PCM format or sample rate`.
@@ -658,7 +658,7 @@ Every failure ends the realtime session with an `error` event.
 - Without an `alignment` node, the dialog's `reply.progress` control edge comes from `tts`, which reports sentence ends, so an interrupted reply is cut at the end of the last sentence heard in full.
 - `method: sentence`: the same sentence-level cut. With `forced`, the cut can fall between words of a finished sentence; a sentence cut off before its audio is complete counts as unheard in both methods unless `heard_asr_url` is set.
 - With `heard_asr_url`, a transcript that leaves out, repeats or changes the first words of the sentence at the cut keeps none of it.
-- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves an empty assistant entry in the history.
+- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves no assistant entry in the history, so the next utterance joins the user message the reply answered.
 - An aligner that does not read `tts:session` loads but receives no sentence ends and reports nothing.
 - `sglang.response.progress` reaches the client only from a node that publishes `session` and whose `session` no other node reads: the aligner when it is published, never `tts` while the dialog or an aligner reads it.
 - A client that sends no `conversation.item.truncate`: the history keeps an interrupted reply up to the audio the server had delivered, which is ahead of what was played by up to `max_output_lead_ms`. With `truncate`, the cut moves back to the client's `audio_end_ms`, never past the delivered audio.
@@ -692,11 +692,13 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
   "native_unit_ms": 200,
   "supports_truncate": true,
   "sampling_parameters": ["temperature", "max_new_tokens_per_unit"],
+  "supports_instruction_updates": true,
+  "supports_sampling_updates": true,
   "limits": {"max_input_bytes": 1920000, "max_output_bytes": 33554432, "max_history_chars": 65536, "cleanup_timeout_s": 30}
 }
 ```
 
-with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, and `sampling_parameters` is empty when no node takes `temperature` or `max_tokens`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
+with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
 
 ### Known Limitations
 
@@ -746,13 +748,13 @@ End-of-turn detection is a stage node beside the VAD: `sglang_omni.models.turn_d
 
 ### Interruption
 
-An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client, except the `turn.interrupted` that ends the turn. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
+An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client. The controls about the interruption pass both ways: the node's `interrupt` and `turn.interrupted` of that turn, and the `reply.delivered` that reports its audio, so a node the client interrupts by turn still stops the nodes it controls and hears what was delivered. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
 
 ### Delivery pacing
 
 A Session delivers reply audio in real time. For every node of the Session that publishes audio, an audio chunk leaves at most `max_output_lead_ms` ahead of the wall clock since the reply's first audio left, cut at that horizon, so the client never holds more than `max_output_lead_ms` of a reply however long its first audio took; the node's later audio and its `turn.done` wait behind it, and its other chunks, such as transcripts, reply text, speech boundaries and the confirmation of each input append, pass, so the client keeps appending while the reply plays. Once the input has ended everything leaves at once. Audio leaving together, at the input's end or when delivery catches up, is joined per turn into contiguous chunks of at most `max_output_lead_ms`, so a held 40 s reply reaches the client as about 40 chunks rather than one per generated chunk. A Session that is one stage route paces its output the same way. `max_output_lead_ms` is a field of the pipeline config (default 1000); an interruption cannot take back audio the client already holds, so it bounds how long the client may keep speaking after the user started.
 
-When the Session releases a node's `turn.done`, it delivers it to the nodes reading it and returns it to the node itself as a `control`, so a node can keep its reply open, and interruptible, until the reply's audio has left. A `turn.interrupted` the node publishes, or an `interrupt` control naming a turn, drops what the Session still holds of that turn, its `turn.done` included. Held audio counts against the Session's `max_output_bytes`. A `reply.progress` reaches the client only from a node that publishes `session` and whose `session` no node reads, the end of the route that builds the progress: with an aligner reading the speech node's `session`, the client hears the aligner's progress and not the speech node's, and without one it hears none.
+A node's `turn.done` leaves once the wall clock reaches the end of the turn's audio, when the client has played it, and not when its last audio left. When the Session releases a node's `turn.done`, it delivers it to the nodes reading it and returns it to the node itself as a `control`, so a node can keep its reply open, and interruptible, until the client has played the reply's audio: a user who starts speaking during its last `max_output_lead_ms` still interrupts it. A `turn.interrupted` the node publishes, or an `interrupt` control naming a turn, drops what the Session still holds of that turn, its `turn.done` included. Held audio counts against the Session's `max_output_bytes`. A `reply.progress` reaches the client only from a node that publishes `session` and whose `session` no node reads, the end of the route that builds the progress: with an aligner reading the speech node's `session`, the client hears the aligner's progress and not the speech node's, and without one it hears none.
 
 ### Session API
 

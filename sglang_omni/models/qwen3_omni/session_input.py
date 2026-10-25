@@ -20,6 +20,7 @@ from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
+    CONFIGURE,
     CONTROL,
     IMAGE_FRAME,
     INTERRUPT,
@@ -54,9 +55,12 @@ class QwenInputState:
     frames: deque[tuple[float, bytes]] = field(default_factory=deque)
     waiting: deque[PendingUtterance] = field(default_factory=deque)
     turn_count: int = 0
+    # note (luojiaxuan): The unit being answered, holding every utterance it asks, so an interruption that asks it again keeps them all.
     answering: PendingUtterance | None = None
     # Note (Junnan Li): Utterances interrupted before any of their reply reached the client; the next unit asks them again.
     carried: list[PendingUtterance] = field(default_factory=list)
+    # note (luojiaxuan): An utterance whose reply was interrupted after its turn.started, until the model node reports how much of its audio reached the client.
+    interrupted: PendingUtterance | None = None
     # The reply a truncate refers to: the latest one whose turn.started the model node published.
     reply_turn: int | None = None
     input_end_ms: float = 0
@@ -91,11 +95,15 @@ class QwenInputHooks(SessionHooks):
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         state = self.states[session_identity]
-        held = [*state.waiting, *state.carried]
-        if state.answering is not None:
-            held.append(state.answering)
-        else:
-            pass
+        held = [
+            *state.waiting,
+            *state.carried,
+            *(
+                turn
+                for turn in (state.answering, state.interrupted)
+                if turn is not None
+            ),
+        ]
         return ResourceUsage(
             bytes=len(state.utterance or b"")
             + sum(len(frame) for _, frame in state.frames)
@@ -142,13 +150,21 @@ class QwenInputHooks(SessionHooks):
             state.frames.popleft()
 
     def start_next(self, state: QwenInputState) -> None:
-        if state.answering is not None or not state.waiting:
+        if (
+            state.answering is not None
+            or state.interrupted is not None
+            or not state.waiting
+        ):
             return
         else:
             utterance = state.waiting.popleft()
-        state.answering = utterance
         asked = [*state.carried, utterance]
         state.carried = []
+        state.answering = PendingUtterance(
+            turn=utterance.turn,
+            pcm=b"".join(turn.pcm for turn in asked),
+            frames=tuple(frame for turn in asked for frame in turn.frames),
+        )
         state.emit(
             TimedChunk(
                 CONTROL,
@@ -156,8 +172,8 @@ class QwenInputHooks(SessionHooks):
                 0,
                 0,
                 {
-                    "pcm": b"".join(turn.pcm for turn in asked),
-                    "images": [frame for turn in asked for frame in turn.frames],
+                    "pcm": state.answering.pcm,
+                    "images": list(state.answering.frames),
                     "carried_turns": [turn.turn for turn in asked[:-1]],
                 },
                 format=UNIT_FORMAT,
@@ -173,8 +189,19 @@ class QwenInputHooks(SessionHooks):
         if state.reply_turn != utterance.turn:
             state.carried.append(utterance)
         else:
-            pass
+            state.interrupted = utterance
         state.answering = None
+        self.start_next(state)
+
+    def settle_interrupted(self, state: QwenInputState, audio_ms: float) -> None:
+        """Ask the interrupted utterance again when none of its reply's audio reached the client, else cut the reply at the delivered audio."""
+        utterance = state.interrupted
+        assert utterance is not None
+        state.interrupted = None
+        if audio_ms > 0:
+            self.emit_truncate(state, utterance.turn, audio_ms)
+        else:
+            state.carried.append(utterance)
         self.start_next(state)
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
@@ -211,9 +238,24 @@ class QwenInputHooks(SessionHooks):
             else:
                 pass
             return payload
+        elif event_type == CONFIGURE:
+            # Note (ruoyu): A client's appended configure reaches only the readers of input:session, so the dialog hands it to the model node's control edge.
+            state.emit(
+                TimedChunk(
+                    CONTROL,
+                    state.input_end_ms,
+                    0,
+                    0,
+                    chunk.payload,
+                    format=SESSION_CONTROL,
+                )
+            )
+            return payload
         elif event_type == REPLY_DELIVERED:
             # Note (ruoyu): The thinker keeps the smaller cut, so the delivered and the client truncate combine in either order.
-            if chunk.turn is None:
+            if state.interrupted is not None and chunk.turn == state.interrupted.turn:
+                self.settle_interrupted(state, float(chunk.payload["audio_ms"]))
+            elif chunk.turn is None:
                 pass
             else:
                 self.emit_truncate(state, chunk.turn, float(chunk.payload["audio_ms"]))

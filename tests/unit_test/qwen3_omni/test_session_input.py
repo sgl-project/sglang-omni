@@ -10,11 +10,13 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     COMMIT,
+    CONFIGURE,
     IMAGE,
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TRUNCATE,
@@ -71,11 +73,10 @@ def test_speech_during_a_reply_interrupts_it_and_the_next_turn_follows(dialog) -
     append(hooks, context, control_chunk(COMMIT))
     append(hooks, context, control_chunk(TURN_STARTED, turn=1))
     append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=40))
-    assert events(outputs)[3:] == [
-        (INTERRUPT, 1),
-        (TURN_INTERRUPTED, 1),
-        ("qwen.unit", 2),
-    ]
+    assert events(outputs)[3:] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=320.0))
+    assert events(outputs)[5:] == [(TRUNCATE_FORMAT, None), ("qwen.unit", 2)]
+    assert outputs[5].payload == {"turn": 1, "t_ms": 320.0}
     assert outputs[-1].payload["carried_turns"] == []
     append(hooks, context, control_chunk(TRUNCATE, t_ms=250))
     truncate = outputs[-1]
@@ -98,6 +99,45 @@ def test_the_delivered_audio_of_an_interrupted_reply_reaches_the_model_as_a_trun
     assert delivered.turn is None and delivered.payload == {"turn": 1, "t_ms": 500.0}
 
 
+def test_a_reply_none_of_whose_audio_reached_the_client_is_asked_again(dialog) -> None:
+    """A reply interrupted after its turn.started but before any of its audio reached the client stayed in the history and its utterance was not asked again."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(20))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, control_chunk(TURN_STARTED, turn=1))
+    append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=40))
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0.0))
+    assert events(outputs)[3:] == [
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        ("qwen.unit", 2),
+    ]
+    unit = outputs[-1]
+    assert unit.payload["carried_turns"] == [1]
+    assert len(unit.payload["pcm"]) == 2 * 640
+
+
+def test_two_unheard_interruptions_ask_both_utterances_again(dialog) -> None:
+    """A unit that asked a carried utterance again kept only its newest utterance when it was interrupted unheard too, so the next unit lost the first."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(20))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(40))
+    append(hooks, context, control_chunk(COMMIT))
+    for turn, t_ms in ((1, 60), (2, 80)):
+        append(hooks, context, control_chunk(TURN_STARTED, turn=turn))
+        append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=t_ms))
+        append(hooks, context, control_chunk(REPLY_DELIVERED, turn=turn, audio_ms=0.0))
+    unit = outputs[-1]
+    assert unit.format == UNIT_FORMAT and unit.turn == 3
+    assert unit.payload["carried_turns"] == [2]
+    assert len(unit.payload["pcm"]) == 3 * 640
+
+
 def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:
     hooks, outputs, context = dialog
     append(hooks, context, audio(0))
@@ -109,6 +149,19 @@ def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:
     assert events(outputs)[2:] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
     append(hooks, context, control_chunk(TRUNCATE, t_ms=100))
     assert outputs[-1].format == TRUNCATE_FORMAT and outputs[-1].payload["turn"] == 1
+
+
+def test_a_client_configure_is_forwarded_to_the_model_node(dialog) -> None:
+    """A configure appended with the audio used to stop at the dialog, so a realtime sampling update never reached the model."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(CONFIGURE, sampling={"max_new_tokens": 16}))
+    assert events(outputs) == [(CONFIGURE, None)]
+    assert outputs[-1].payload == {
+        "type": CONFIGURE,
+        "sampling": {"max_new_tokens": 16},
+    }
+    assert (outputs[-1].format, outputs[-1].t_start_ms) == (SESSION_CONTROL, 20.0)
 
 
 def test_an_empty_commit_and_an_overlong_utterance(dialog) -> None:
@@ -154,6 +207,7 @@ def test_an_utterance_interrupted_before_its_reply_is_asked_again_with_the_next(
     append(hooks, context, audio(0))
     append(hooks, context, control_chunk(COMMIT))
     hooks.control(IDENTITY, control_chunk(INTERRUPT))
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0.0))
     append(hooks, context, audio(20))
     append(hooks, context, control_chunk(COMMIT))
     unit = outputs[-1]

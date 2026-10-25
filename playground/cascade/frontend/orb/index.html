@@ -102,6 +102,33 @@
     .note { max-width: 440px; margin: 0; color: var(--faint); font-size: .76rem; line-height: 1.55; text-align: center; }
     .hint { color: var(--faint); font-size: .76rem; min-height: 1em; }
 
+    /* Settings panel */
+    .panel {
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 100%); display: flex; flex-direction: column;
+      background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow); z-index: 6;
+      transform: translateX(105%); visibility: hidden; transition: transform 300ms cubic-bezier(.2, .8, .2, 1), visibility 0s 300ms;
+    }
+    .panel[data-open="true"] { transform: none; visibility: visible; transition-delay: 0s; }
+    .panel header { display: flex; align-items: center; justify-content: space-between; padding: max(16px, env(safe-area-inset-top)) 12px 8px 22px; font-size: .95rem; font-weight: 600; }
+    .panel form { flex: 1; overflow-y: auto; padding: 4px 22px max(22px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 6px; font-size: .82rem; color: var(--muted); }
+    .field.inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+    .field select, .field textarea, .field input[type="number"] {
+      font: inherit; font-size: .88rem; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; width: 100%;
+    }
+    .field.inline input[type="number"] { width: 110px; }
+    .field textarea { resize: vertical; min-height: 96px; line-height: 1.5; }
+    .field .hint { color: var(--faint); font-size: .74rem; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row select { flex: 1; }
+    .text-btn { border: 1px solid var(--border); background: var(--btn); color: var(--text); border-radius: 10px; padding: 7px 12px; font-size: .82rem; cursor: pointer; white-space: nowrap; }
+    .text-btn:hover:not(:disabled) { background: var(--btn-hover); }
+    .panel details summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+    .panel details[open] summary { margin-bottom: 10px; }
+    .panel details > div { display: flex; flex-direction: column; gap: 10px; }
+    .locked-note { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--btn); color: var(--muted); font-size: .78rem; }
+    .panel :disabled { opacity: .55; cursor: not-allowed; }
+
     /* Transcript sheet */
     .sheet {
       position: fixed; left: 50%; bottom: 0; transform: translate(-50%, 105%); width: min(640px, 100%); max-height: 68dvh;
@@ -126,6 +153,9 @@
     <div class="brand"><span id="brandName" class="brand-name">Voice</span><span>full duplex · sglang-omni</span></div>
     <div id="statusPill" class="status" data-state="idle" role="status" aria-live="polite"><i></i><span id="statusText">checking…</span></div>
     <div class="top-actions">
+      <button id="settingsBtn" class="icon-btn" type="button" title="Settings" aria-label="Settings" aria-controls="settingsPanel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
       <button id="transcriptBtn" class="icon-btn" type="button" title="Transcript" aria-label="Show transcript" aria-controls="sheet" aria-expanded="false" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
       </button>
@@ -167,6 +197,43 @@
     <p id="note" class="note">It listens while it speaks, so you can cut in just by talking. Use headphones and Chrome.</p>
 
   </footer>
+
+  <aside id="settingsPanel" class="panel" data-open="false" aria-label="Settings">
+    <header>
+      <span>Settings</span>
+      <button id="settingsClose" class="icon-btn" type="button" aria-label="Close settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <form id="settingsForm" onsubmit="return false">
+      <p id="settingsLocked" class="locked-note" hidden>Settings apply when the next conversation starts.</p>
+      <label id="presetRow" class="field">Preset<select id="setPreset"></select></label>
+      <label class="field">System prompt<textarea id="setPrompt" rows="4" spellcheck="false"></textarea></label>
+      <div id="voiceRow" class="field">Voice
+        <div class="row"><select id="setVoice" aria-label="Voice"></select><button id="voicePreview" class="text-btn" type="button">Play</button></div>
+        <span id="voiceInfo" class="hint"></span>
+        <input id="voiceFile" type="file" accept="audio/*" hidden>
+      </div>
+      <label id="voiceNameRow" class="field">Voice<select id="setVoiceName"></select></label>
+      <label id="outputRow" class="field">Reply as<select id="setOutput"><option value="audio">Voice and text</option><option value="text">Text only</option></select></label>
+      <label class="field">Microphone<select id="setMic"></select></label>
+      <div id="turnRow" class="field">Turn detection
+        <select id="setTurnType" aria-label="Turn detection"></select>
+        <label id="silenceRow" class="field inline"><span>Silence that ends a turn (ms)</span><input id="setSilence" type="number" step="10" min="0" placeholder="default"></label>
+        <label id="eagernessRow" class="field inline"><span>Eagerness</span><select id="setEagerness"><option value="">Deployment default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+      </div>
+      <details id="advanced">
+        <summary>Advanced</summary>
+        <div>
+          <label id="greedyRow" class="field inline"><span>Greedy decoding</span><input id="setGreedy" type="checkbox"></label>
+          <div id="samplingFields" style="display:flex;flex-direction:column;gap:10px"></div>
+          <label id="sliceRow" class="field">Camera detail (image slices)<select id="setSlices"></select></label>
+          <span class="hint">Empty fields keep the deployment's defaults.</span>
+        </div>
+      </details>
+      <button id="settingsReset" class="text-btn" type="button">Reset to defaults</button>
+    </form>
+  </aside>
 
   <section id="sheet" class="sheet" data-open="false" aria-label="Transcript">
     <header>

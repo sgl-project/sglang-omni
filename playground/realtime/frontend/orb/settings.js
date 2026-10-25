@@ -94,11 +94,12 @@ function load(storeKey) {
 }
 
 export class Settings {
-  constructor(ui, { capabilitiesUrl, defaultInstructions, editableInstructions = true }) {
+  constructor(ui, { capabilitiesUrl, defaultInstructions, editableInstructions = true, offersTextOnly = true }) {
     this.ui = ui;
     this.capabilitiesUrl = capabilitiesUrl;
     this.defaultInstructions = defaultInstructions;
     this.editableInstructions = editableInstructions;
+    this.offersTextOnly = offersTextOnly;
     this.capabilities = null;
     this.storeKey = null;
     this.presets = [];
@@ -241,7 +242,7 @@ export class Settings {
     if (voice) extension.reference_audio = referenceWav(decodeFloat32(voice.data));
     const image = this.capabilities && this.capabilities.input_image_format;
     if (image && this.state.sliceNums) extension.max_slice_nums = Math.min(parseInt(this.state.sliceNums, 10), image.max_slice_nums || 1);
-    const textOnly = this.state.output === "text" && this.capabilities && (this.capabilities.output_modalities || []).includes("text");
+    const textOnly = this.offersTextOnly && this.state.output === "text" && this.capabilities && (this.capabilities.output_modalities || []).includes("text");
     return {
       instructions: this.editableInstructions ? (this.state.prompt || "").trim() : "",
       outputModalities: textOnly ? ["text"] : ["audio"],
@@ -292,7 +293,7 @@ export class Settings {
     ui.setVoiceName.replaceChildren(new Option("Deployment default", ""), ...this.voiceNames.map((name) => new Option(name, name)));
     ui.setVoiceName.value = this.voiceNames.includes(this.state.voiceName) ? this.state.voiceName : "";
     const outputs = (this.capabilities && this.capabilities.output_modalities) || ["audio"];
-    ui.outputRow.hidden = !outputs.includes("text");
+    ui.outputRow.hidden = !this.offersTextOnly || !outputs.includes("text");
     ui.setOutput.value = this.state.output;
     const turnTypes = this.turnTypes;
     const turnType = turnTypes.includes(this.state.turn.type) ? this.state.turn.type : "";

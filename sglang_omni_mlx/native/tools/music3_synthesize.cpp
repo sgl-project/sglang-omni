@@ -38,10 +38,10 @@ int main(int argc, char **argv) {
     }
     mlx::core::set_cache_limit(1024ULL * 1024 * 1024);
     std::unique_ptr<music3::Model> model;
-    std::unique_ptr<qwen3_asr::Tokenizer> prompt_tokenizer;
+    std::unique_ptr<omni_common::Tokenizer> prompt_tokenizer;
     if (prompt_only) {
       prompt_tokenizer =
-          std::make_unique<qwen3_asr::Tokenizer>(directory / "tokenizer");
+          std::make_unique<omni_common::Tokenizer>(directory / "tokenizer");
     } else {
       model = std::make_unique<music3::Model>(directory);
       std::filesystem::create_directories(output);

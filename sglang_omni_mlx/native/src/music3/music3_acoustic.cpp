@@ -74,7 +74,7 @@ mx::array Model::Velocity(const mx::array &latents, float sigma,
       timestep * mx::array(static_cast<float>(2 * M_PI), timestep.dtype()),
       mx::transpose(checkpoint_.Weight("transformer.time_proj.weight")));
   const mx::array time_embedding = checkpoint_.Linear(
-      qwen3_asr::Silu(checkpoint_.Linear(
+      omni_common::Silu(checkpoint_.Linear(
           mx::concatenate({mx::cos(angles), mx::sin(angles)}, -1),
           "transformer.time_embed.linear_1")),
       "transformer.time_embed.linear_2");
@@ -132,7 +132,7 @@ mx::array Model::Velocity(const mx::array &latents, float sigma,
                       prefix + ".ff_in"),
                   2, -1);
     hidden = hidden + checkpoint_.Linear(feed_forward[0] *
-                                             qwen3_asr::Silu(feed_forward[1]),
+                                             omni_common::Silu(feed_forward[1]),
                                          prefix + ".ff_out");
   }
   hidden = checkpoint_.Linear(mx::slice(hidden, {0, 1, 0}, hidden.shape()),

@@ -20,7 +20,7 @@ struct mg_context;
 
 namespace asr_service {
 
-using FormFields = std::map<std::string, qwen3_asr::FormField>;
+using FormFields = std::map<std::string, omni_common::FormField>;
 using qwen3_asr::Transcription;
 
 // A loaded checkpoint of the served kind.

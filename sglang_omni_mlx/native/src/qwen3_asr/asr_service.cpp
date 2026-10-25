@@ -81,7 +81,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   } else {
   }
   const char *content_type = mg_get_header(connection, "Content-Type");
-  const auto form = qwen3_asr::ParseMultipartForm(
+  const auto form = omni_common::ParseMultipartForm(
       content_type ? content_type : "", ReadBody(connection));
   if (!form.has_value() || form->count("file") == 0 ||
       !form->at("file").filename.has_value()) {
@@ -91,15 +91,15 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   Transcription transcription;
   try {
     transcription = state->model->Prepare(
-        qwen3_asr::DecodeWav(form->at("file").value), *form);
+        omni_common::DecodeWav(form->at("file").value), *form);
   } catch (const std::invalid_argument &error) {
     return BadRequest(connection, error.what());
   } catch (const std::out_of_range &) {
     return BadRequest(connection, "a numeric field is out of range");
   }
-  const bool stream = qwen3_asr::FormFlag(TextField(*form, "stream"));
+  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
   const bool include_generation_metadata =
-      qwen3_asr::FormFlag(TextField(*form, "include_generation_metadata"));
+      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
   if (include_generation_metadata && !stream) {
     return BadRequest(connection,
                       "include_generation_metadata requires stream=true");

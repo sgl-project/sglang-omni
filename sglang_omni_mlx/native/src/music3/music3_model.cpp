@@ -10,7 +10,7 @@ namespace mx = mlx::core;
 namespace {
 
 nlohmann::json ReadConfig(const std::filesystem::path &directory) {
-  const auto config = qwen3_asr::ReadJson(directory / "config.json");
+  const auto config = omni_common::ReadJson(directory / "config.json");
   const nlohmann::json expected = {{"model_type", "minimax_music3"},
                                    {"num_codebooks", 8},
                                    {"num_condition_layers", 8},
@@ -82,9 +82,9 @@ nlohmann::json ReadConfig(const std::filesystem::path &directory) {
   return config;
 }
 
-qwen3_asr::WeightMap LoadWeights(const std::filesystem::path &directory,
-                                 const nlohmann::json &config) {
-  auto weights = qwen3_asr::LoadSafetensors(directory);
+omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
+                                   const nlohmann::json &config) {
+  auto weights = omni_common::LoadSafetensors(directory);
   const auto shape = [&](const std::string &name, const mx::Shape &expected) {
     const auto found = weights.find(name);
     if (found == weights.end() || found->second.shape() != expected) {

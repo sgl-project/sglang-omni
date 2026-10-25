@@ -72,7 +72,7 @@ bool IsPost(mg_connection *connection) {
 }
 
 std::optional<std::string>
-Field(const std::map<std::string, qwen3_asr::FormField> &form,
+Field(const std::map<std::string, omni_common::FormField> &form,
       const std::string &name) {
   const auto found = form.find(name);
   if (found == form.end()) {

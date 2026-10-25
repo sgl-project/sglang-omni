@@ -119,6 +119,7 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         input_modalities=ports.input_modalities,
         sampling_parameters=ports.sampling_parameters,
         supports_instruction_updates="instructions" in ports.hot_settings,
+        supports_sampling_updates="sampling" in ports.hot_settings,
         supports_truncate=TRUNCATE in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
     )
