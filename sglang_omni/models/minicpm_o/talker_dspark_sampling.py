@@ -17,6 +17,8 @@ import torch
 
 from sglang_omni.models.minicpm_o.talker_model_runner import REP_PENALTY_WINDOW
 
+PROPOSAL_LOG_PROBABILITY_GAP = 3.0
+
 
 @dataclass(kw_only=True)
 class TalkerSamplingState:
@@ -121,6 +123,11 @@ def sample_draft_block(
             eos_masked=(state.generated + step) < state.min_new_tokens,
             eos_id=state.eos_id,
         )
+        # note (0xtoward): verification must use the distribution that drew the proposal.
+        cutoff = step_logits.amax(dim=-1, keepdim=True) - (
+            PROPOSAL_LOG_PROBABILITY_GAP * state.temperatures.unsqueeze(1)
+        )
+        step_logits = step_logits.masked_fill(step_logits < cutoff, float("-inf"))
         sampled = torch.argmax(
             step_logits / state.temperatures.unsqueeze(1)
             - torch.log(exponential_noise[:, step]),

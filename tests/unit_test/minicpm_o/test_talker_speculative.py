@@ -187,6 +187,38 @@ def talker_distribution(
     ]
 
 
+def test_proposal_filter_keeps_sampling_and_verify_probabilities_aligned() -> None:
+    state = make_state(
+        [[3], [5]],
+        temperatures=torch.tensor([0.5, 1.0]),
+        penalties=torch.ones(2),
+        min_new_tokens=torch.zeros(2, dtype=torch.long),
+    )
+    logits = torch.full((2, 1, VOCAB_SIZE), -100.0)
+    logits[:, 0, :4] = torch.tensor([0.0, -1.0, -2.0, -4.0])
+    noise = torch.ones_like(logits)
+    noise[:, :, 3] = 1e-20
+    expected_probabilities = torch.zeros_like(logits)
+    expected_probabilities[0, 0, :2] = torch.tensor([1.0, 0.135335283])
+    expected_probabilities[1, 0, :3] = torch.tensor([1.0, 0.367879441, 0.135335283])
+    expected_probabilities /= expected_probabilities.sum(dim=-1, keepdim=True)
+
+    tokens, proposal_logits = sample_draft_block(
+        logits,
+        torch.tensor([3, 5]),
+        torch.zeros(VOCAB_SIZE, 4),
+        torch.zeros(VOCAB_SIZE, 4),
+        state,
+        noise,
+    )
+    probabilities = torch.softmax(
+        proposal_logits / state.temperatures[:, None, None], dim=-1
+    )
+
+    assert torch.equal(tokens, torch.zeros(2, 1, dtype=torch.long))
+    torch.testing.assert_close(probabilities, expected_probabilities)
+
+
 def test_speculative_step_reproduces_talker_sampling() -> None:
     torch.manual_seed(2)
     trials, history = 400_000, [3, 5, 3, 7]
@@ -200,12 +232,14 @@ def test_speculative_step_reproduces_talker_sampling() -> None:
     first_sigma = (first_target * (1 - first_target) / trials).sqrt().clamp_min(1e-9)
     assert ((first_observed - first_target).abs() / first_sigma).max() < 4.5
 
-    # Once the likeliest token is committed as an accepted draft, the step's second
-    # token, accepted or drawn, follows the talker's distribution after it.
-    likeliest = int(first_target.argmax())
-    picked = (accepted >= 1) & (first == likeliest)
+    # note (0xtoward): target modes outside the proposal support cannot condition an accepted prefix.
+    accepted_first_token = int(
+        torch.bincount(first[accepted >= 1], minlength=VOCAB_SIZE).argmax()
+    )
+    picked = (accepted >= 1) & (first == accepted_first_token)
+    assert picked.sum() >= 1000
     second_target = talker_distribution(
-        position_logits, token_logits, history + [likeliest], 1
+        position_logits, token_logits, history + [accepted_first_token], 1
     )
     second_observed = (
         torch.bincount(committed[picked, 1], minlength=VOCAB_SIZE).float()
