@@ -20,7 +20,7 @@
 // default) may wait; the rest get 503. A request not done S seconds (600 by
 // default) after it arrives is cancelled, with 504 or an early end to its
 // stream, and so is a request whose client disconnects. A request body over
-// 16 MiB gets 413.
+// 16 MiB gets 413, and so does one over 1 MiB without ref_audio or references.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -61,9 +61,14 @@ using omni_server::Json;
 using qwen3_asr::TranscriptionResult;
 
 constexpr size_t kMaxInputCharacters = 4096;
-// Room for 60 s of 48 kHz stereo 16-bit reference audio in base64, while a
-// burst of requests read before admission stays small.
+// Bodies are read and parsed before admission, on any of civetweb's threads,
+// so each stays small: 1 MiB, as Voxtral's, unless it carries reference
+// audio, which 16 MiB holds for 60 s of 48 kHz stereo 16-bit WAV in base64.
 constexpr size_t kMaxRequestBodyBytes = 16 * 1024 * 1024;
+constexpr size_t kMaxRequestBodyBytesWithoutReferences = 1024 * 1024;
+// Far above a valid request's JSON values (60 s of vq_codes are 12,920), so
+// a body of millions of small values cannot build a large document.
+constexpr size_t kMaxRequestJsonValues = 65536;
 constexpr double kMaxReferenceSeconds = 60.0;
 // Note (Jiaxin Deng): the CUDA server's defaults (stages.py) and its engine's
 // cap on max_new_tokens, which it applies without an error.
@@ -735,7 +740,36 @@ private:
       return 413;
     } else {
     }
-    const Json body = Json::parse(*raw_body, nullptr, false);
+    if (raw_body->size() > kMaxRequestBodyBytesWithoutReferences &&
+        raw_body->find("\"ref_audio\"") == std::string::npos &&
+        raw_body->find("\"references\"") == std::string::npos) {
+      return omni_server::WriteJson(
+          connection, 413,
+          {{"detail",
+            "request body must be at most " +
+                std::to_string(kMaxRequestBodyBytesWithoutReferences) +
+                " bytes without ref_audio or references"}});
+    } else {
+    }
+    size_t value_count = 0;
+    const Json::parser_callback_t count_values =
+        [&value_count](int, Json::parse_event_t event, Json &) {
+          if (event == Json::parse_event_t::value &&
+              ++value_count > kMaxRequestJsonValues) {
+            throw std::length_error("too many JSON values");
+          } else {
+          }
+          return true;
+        };
+    Json body;
+    try {
+      body = Json::parse(*raw_body, count_values, false);
+    } catch (const std::length_error &) {
+      return omni_server::BadRequest(connection,
+                                     "speech request body must hold at most " +
+                                         std::to_string(kMaxRequestJsonValues) +
+                                         " JSON values");
+    }
     if (body.is_discarded()) {
       return omni_server::BadRequest(connection,
                                      "speech request body must be valid JSON");
@@ -954,6 +988,10 @@ private:
     std::vector<fish_s2_pro::VoiceReference> references;
     for (size_t index = 0; index < request.references.size(); ++index) {
       check_deadline();
+      if (cancel.load()) {
+        throw qwen3_asr::TranscriptionCancelled();
+      } else {
+      }
       const PendingReference &reference = request.references[index];
       if (reference.codes.empty()) {
         std::vector<float> samples;

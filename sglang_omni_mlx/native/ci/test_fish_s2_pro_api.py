@@ -45,6 +45,7 @@ MAX_WORD_ERRORS = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
+PLAIN_BODY_BYTES = 1024 * 1024
 # A cancelled generation stops at its next frame.
 CANCEL_SECONDS = 8.0
 
@@ -736,20 +737,35 @@ def test_fish_refuses_a_declared_body_too_large_without_reading_it(
 
 
 @pytest.mark.parametrize(
-    ("body_bytes", "status", "detail"),
+    ("body_bytes", "with_references", "status", "detail"),
     [
-        (MAX_REQUEST_BODY_BYTES, 400, "input must be at most 4096 characters"),
+        (PLAIN_BODY_BYTES, False, 400, "input must be at most 4096 characters"),
+        (
+            PLAIN_BODY_BYTES + 1,
+            False,
+            413,
+            f"request body must be at most {PLAIN_BODY_BYTES} bytes without "
+            "ref_audio or references",
+        ),
+        (MAX_REQUEST_BODY_BYTES, True, 400, "input must be at most 4096 characters"),
         (
             MAX_REQUEST_BODY_BYTES + 1,
+            True,
             413,
             f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes",
         ),
     ],
 )
 def test_fish_caps_a_chunked_body_it_cannot_size_in_advance(
-    fish_server: Server, body_bytes: int, status: int, detail: str
+    fish_server: Server,
+    body_bytes: int,
+    with_references: bool,
+    status: int,
+    detail: str,
 ) -> None:
-    body = json.dumps({"input": "x" * (body_bytes - len('{"input": ""}'))}).encode()
+    """Without reference audio a body holds 1 MiB; with it, 16 MiB."""
+    prefix = '{"references": [], "input": "' if with_references else '{"input": "'
+    body = (prefix + "x" * (body_bytes - len(prefix) - 2) + '"}').encode()
     assert len(body) == body_bytes
     connection = http.client.HTTPConnection("127.0.0.1", fish_server.port, timeout=60)
     # Note (Minyi Tang): a body of one chunk is read to its end before the
@@ -759,6 +775,21 @@ def test_fish_caps_a_chunked_body_it_cannot_size_in_advance(
     assert response.status == status
     assert json.loads(response.read())["detail"].startswith(detail)
     connection.close()
+
+
+def test_fish_bounds_the_json_values_it_parses(fish_server: Server) -> None:
+    """A 16 MiB body of small vq_codes built a document of millions of values
+    before the request was admitted."""
+    codes = [[0] * 7000 for _ in range(10)]
+    status, response = fish_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps({"input": "hi", "references": [{"vq_codes": codes}]}).encode(),
+    )
+    assert (status, json.loads(response)) == (
+        400,
+        {"detail": "speech request body must hold at most 65536 JSON values"},
+    )
 
 
 def test_fish_server_serves_no_transcriptions(fish_server: Server) -> None:
