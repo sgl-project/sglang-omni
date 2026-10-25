@@ -107,14 +107,15 @@ def test_shaping_matches_the_talker_slot_state() -> None:
     assert torch.equal(shaped, slot_state_shaping(logits, histories, state))
 
 
-def test_verify_rows_count_the_drafts_before_them() -> None:
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_verify_rows_count_the_drafts_before_them(dtype: torch.dtype) -> None:
     torch.manual_seed(1)
     histories = [
         torch.randint(0, CODEC_EOS_ID, (length,)).tolist() for length in (1, 15, 30)
     ]
     drafts = torch.randint(0, VOCAB_SIZE, (len(histories), 4))
     state = make_state(histories)
-    logits = torch.randn(len(histories) * 5, VOCAB_SIZE) * 2
+    logits = (torch.randn(len(histories) * 5, VOCAB_SIZE) * 2).to(dtype)
 
     target = target_probabilities(logits, drafts, state)
 
@@ -291,7 +292,11 @@ def test_folded_draw_hook_draws_the_talker_shaped_block() -> None:
     )
 
 
-def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block(
+    dtype: torch.dtype,
+) -> None:
     require_cuda()
     device = torch.device("cuda")
     torch.manual_seed(4)
@@ -308,6 +313,7 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
         rows=rows,
         draft_tokens=draft_tokens_buffer,
         shaped_draft_logits=shaped_buffer,
+        target_logits_dtype=dtype,
         fallback=accept_block,
         backend=current_platform.get_device_graph_backend(device),
         device=device,
@@ -323,7 +329,10 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
     )
     base_logits = torch.randn(3, gamma, VOCAB_SIZE, device=device)
     previous = torch.tensor([3, 1, 2], device=device)
-    target_logits = torch.randn(3 * (gamma + 1), VOCAB_SIZE, device=device)
+    target_logits = torch.randn(3 * (gamma + 1), VOCAB_SIZE, device=device, dtype=dtype)
+    target_logits[0].fill_(-9.0)
+    target_logits[0, 1] = 0.58984375
+    target_logits[0, 3] = 1.0
     weights = (markov_head.markov_w1.weight, markov_head.markov_w2.weight)
     tokens, shaped = draw_block(base_logits, previous, *weights, state)
 
@@ -332,7 +341,7 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
     draft_tokens_buffer[: 3 * gamma].copy_(tokens.reshape(-1))
     shaped_buffer[: 3 * gamma].copy_(shaped.reshape(3 * gamma, -1))
     accepted, bonus = graphs.accept(
-        target_logits,
+        target_logits.float(),
         shaped_buffer[: 3 * gamma].view(3, gamma, -1),
         draft_tokens_buffer[: 3 * gamma].view(3, gamma),
         state,
@@ -345,14 +354,16 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
 
     # An eager draw's block is copied in first.
     accepted, bonus = graphs.accept(
-        target_logits, shaped.clone(), tokens.clone(), state
+        target_logits.float(), shaped.clone(), tokens.clone(), state
     )
     assert torch.equal(accepted, expected_accepted)
     assert torch.equal(bonus, expected_bonus)
 
     # One replay also gives the commit lengths and the output tokens.
     prefix_lens = torch.tensor([40, 7, 19], device=device)
-    outs = graphs.accept_and_finalize(target_logits, shaped, tokens, prefix_lens)
+    outs = graphs.accept_and_finalize(
+        target_logits.float(), shaped, tokens, prefix_lens
+    )
     expected = finalize_accept_lens(
         correct_len=expected_accepted,
         cap_trim_lens=torch.zeros(3, dtype=torch.int32, device=device),
@@ -373,7 +384,33 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
         ),
     )
 
+    larger_count = 5
+    larger_state = TalkerSamplingState(
+        **{
+            name: (
+                value[:1].expand(larger_count, *value.shape[1:])
+                if isinstance(value, torch.Tensor)
+                else value
+            )
+            for name, value in vars(state).items()
+        }
+    )
+    larger_logits = target_logits[: gamma + 1].repeat(larger_count, 1)
+    larger_shaped = shaped[:1].expand(larger_count, -1, -1)
+    larger_tokens = tokens[:1].expand(larger_count, -1)
 
+    fallback_result = graphs.accept(
+        larger_logits.float(), larger_shaped, larger_tokens, larger_state
+    )
+    expected_result = accept_block(
+        larger_logits, larger_shaped, larger_tokens, larger_state
+    )
+
+    assert torch.equal(fallback_result[0], expected_result[0])
+    assert torch.equal(fallback_result[1], expected_result[1])
+
+
+@pytest.mark.accelerator
 def test_kv_injection_graphs_write_only_the_committed_rows() -> None:
     require_cuda()
     device = torch.device("cuda")
@@ -471,6 +508,7 @@ def make_filled_slots(
 
 
 @pytest.mark.parametrize("vocab", [VOCAB_SIZE, 2500])
+@pytest.mark.accelerator
 def test_the_slot_gather_kernel_loads_what_state_from_slots_returns(vocab: int) -> None:
     require_cuda()
     device = torch.device("cuda")
@@ -500,6 +538,7 @@ def test_the_slot_gather_kernel_loads_what_state_from_slots_returns(vocab: int) 
         ), f"{name} bit-exact"
 
 
+@pytest.mark.accelerator
 def test_the_slot_commit_kernel_appends_what_commit_to_slots_appends() -> None:
     require_cuda()
     device = torch.device("cuda")

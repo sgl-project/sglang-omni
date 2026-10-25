@@ -375,6 +375,7 @@ class ExactAcceptGraphs:
         rows: StaticSamplingRows,
         draft_tokens: torch.Tensor,
         shaped_draft_logits: torch.Tensor,
+        target_logits_dtype: torch.dtype,
         fallback: BlockAccept,
         backend: DeviceGraphBackend,
         device: torch.device,
@@ -388,13 +389,17 @@ class ExactAcceptGraphs:
         self.fallback = fallback
         # note (0xtoward): compiled, the shaping, sort and scatters fuse into a few kernels;
         # the noise stays eager so each replay draws from the graph's random state.
-        self.kernel = torch.compile(exact_accept, dynamic=True)
+        self.kernel = torch.compile(
+            exact_accept, dynamic=True, options={"emulate_precision_casts": True}
+        )
         largest = self.batch_sizes[-1]
         vocab = int(shaped_draft_logits.shape[-1])
         self.draft_tokens = draft_tokens
         self.shaped_draft_logits = shaped_draft_logits
         self.target_logits = torch.zeros(
-            (largest * self.rows_per_request, vocab), device=device
+            (largest * self.rows_per_request, vocab),
+            dtype=target_logits_dtype,
+            device=device,
         )
         self.accepted_count = torch.zeros(largest, dtype=torch.long, device=device)
         self.next_tokens = torch.zeros(largest, dtype=torch.long, device=device)
@@ -517,7 +522,10 @@ class ExactAcceptGraphs:
         size = self.padded_size(count)
         if size is None:
             return self.fallback(
-                target_logits, shaped_draft_logits, draft_tokens, state
+                target_logits.to(self.target_logits.dtype),
+                shaped_draft_logits,
+                draft_tokens,
+                state,
             )
         else:
             pass
@@ -830,6 +838,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
     accept_function: BlockAccept = staticmethod(accept_block)
     accept_graphs: ExactAcceptGraphs | None = None
     kv_graphs: DraftKvInjectionGraphs | None = None
+    target_logits_dtype: torch.dtype = torch.float32
 
     def accept_and_finalize(
         self,
@@ -862,7 +871,10 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         else:
             pass
         accepted_count, next_tokens = self.accept_function(
-            target_logits, draft_block.corrected_logits, draft_tokens, state
+            target_logits.to(self.target_logits_dtype),
+            draft_block.corrected_logits,
+            draft_tokens,
+            state,
         )
         finalized = FinalizeAcceptLens.execute(
             correct_len=accepted_count,
@@ -982,6 +994,9 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             kv_injector=self._kv_injector,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             tp_sync=self._tp_sync,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
+        self.exact_verify_executor.target_logits_dtype = (
+            self.target_worker.model_runner.model.head_code.weight.dtype
+        )
         self._verify_executor = (
             self.exact_verify_executor
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -1001,7 +1016,9 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
         # note (0xtoward): batches the graphs do not cover draw and verify compiled; eager,
         # each is about a hundred small kernels per step.
         self.compiled_draw = torch.compile(draw_block, dynamic=True)
-        self.compiled_accept = torch.compile(accept_block, dynamic=True)
+        self.compiled_accept = torch.compile(
+            accept_block, dynamic=True, options={"emulate_precision_casts": True}
+        )
         self.talker_proposer.block_sampler = self.compiled_draw
         self.exact_verify_executor.accept_function = self.compiled_accept
         self.warm_up_compiled_sampling()
@@ -1022,6 +1039,7 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             rows=self.sampling_rows,
             draft_tokens=self.folded_draw.out,
             shaped_draft_logits=self.folded_draw.corrected_out,
+            target_logits_dtype=self.exact_verify_executor.target_logits_dtype,
             fallback=self.compiled_accept,
             backend=backend,
             device=device,
@@ -1089,7 +1107,11 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 state,
             )
             self.exact_verify_executor.accept_function(
-                torch.zeros((batch_size * (self.gamma + 1), vocab), device=self.device),
+                torch.zeros(
+                    (batch_size * (self.gamma + 1), vocab),
+                    device=self.device,
+                    dtype=self.exact_verify_executor.target_logits_dtype,
+                ),
                 shaped_logits,
                 draft_tokens,
                 state,
