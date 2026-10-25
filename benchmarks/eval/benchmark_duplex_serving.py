@@ -36,12 +36,13 @@ def ratio(value: JsonValue, form: str) -> str:
 def format_table(report: dict[str, JsonValue]) -> str:
     rows = [
         (
-            "| N | mean open | sessions failed | 503 | rejected | pacing violations "
+            "| N | mean open | sessions failed | 503 / in-session | rejected "
+            "| affected | denial events | pacing violations "
             "| unit miss | unit lag p50 / p90 / p99 (ms) | first audio p50 / p90 (ms) "
             "| buffer needed p50 / p90 (ms) | underrun replies | RTF p90 "
             "| meets targets |"
         ),
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for level in report["levels"]:
         real_time_factor = level["real_time_factor"]
@@ -51,7 +52,9 @@ def format_table(report: dict[str, JsonValue]) -> str:
         rows.append(
             f"| {level['concurrency']} | {level['mean_open_sessions']:.1f} "
             f"| {level['sessions_failed']}/{level['sessions']} "
-            f"| {level['admission_denials']} | {level['sessions_rejected']} "
+            f"| {level['admission_denials']} / {level['admission_rejections']} "
+            f"| {level['sessions_rejected']} | {level['sessions_with_admission_events']} "
+            f"| {level['admission_denial_events']} "
             f"| {level['input_pacing_violations']} "
             f"| {ratio(level['unit_miss_rate'], '.1%')} "
             f"| {milliseconds(unit_lag['p50'])} / {milliseconds(unit_lag['p90'])} / "

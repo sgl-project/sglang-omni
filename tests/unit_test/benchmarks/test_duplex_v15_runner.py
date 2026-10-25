@@ -10,6 +10,7 @@ import json
 import time
 from http import HTTPStatus
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -21,6 +22,9 @@ from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
+from benchmarks.duplex.profiles import ProfileName
+from benchmarks.duplex.reference_export import export_runs
+from benchmarks.duplex.serving import summarize_level
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
@@ -29,6 +33,7 @@ from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_SAMPLES,
     SERVER,
     DuplexPeer,
+    PeerMode,
     write_dataset,
     write_sample,
 )
@@ -568,10 +573,14 @@ class CappedPeerServer:
         capacity: int | None = None,
         hold_s: float = 0.0,
         initial_denials: int = 0,
+        rejected_updates: int = 0,
+        mode: PeerMode = "healthy",
     ) -> None:
         self.capacity = capacity
         self.hold_s = hold_s
         self.initial_denials = initial_denials
+        self.rejected_updates = rejected_updates
+        self.mode = mode
         self.open_count = 0
         self.peak_open = 0
         self.denials = 0
@@ -593,7 +602,9 @@ class CappedPeerServer:
 
     async def handler(self, websocket: ServerConnection) -> None:
         try:
-            await DuplexPeer().handler(websocket)
+            await DuplexPeer(self.mode, rejected_updates=self.rejected_updates).handler(
+                websocket
+            )
         finally:
             await asyncio.sleep(self.hold_s)
             self.open_count -= 1
@@ -612,6 +623,98 @@ class CappedPeerServer:
                 timeout_s=5.0,
                 **kwargs,
             )
+
+
+@pytest.mark.parametrize(
+    ("rejected_updates", "mode", "final_rejections", "runtime_failures"),
+    [(2, "healthy", 0, 0), (3, "healthy", 1, 0), (2, "server_error", 0, 2)],
+)
+def test_mixed_admission_outcomes_reach_reports_and_reference_export(
+    tmp_path: Path,
+    rejected_updates: int,
+    mode: PeerMode,
+    final_rejections: int,
+    runtime_failures: int,
+) -> None:
+    """Recovery and clean exhaustion need consistent counts across both transports."""
+    dataset, output = tmp_path / "dataset", tmp_path / "run"
+    write_dataset(dataset)
+    server = CappedPeerServer(
+        initial_denials=1, rejected_updates=rejected_updates, mode=mode
+    )
+    run = asyncio.run(server.record(dataset, output, sample_ids=["user_backchannel/1"]))
+    load = run["load"]
+    assert load["variants_with_admission_denials"] == 1
+    assert load["variants_with_admission_rejections"] == 2
+    assert load["variants_with_admission_events"] == 2
+    assert load["http_admission_denial_events"] == 1
+    assert load["session_admission_rejection_events"] == 2 * rejected_updates
+    assert load["admission_denial_events"] == 1 + 2 * rejected_updates
+    assert load["variants_rejected"] == final_rejections
+    assert load["variants_failed"] == runtime_failures
+    level = summarize_level(output, 0.08)
+    assert level["sessions_rejected"] == final_rejections
+    assert level["sessions_failed"] == runtime_failures
+    assert level["sessions_with_admission_events"] == 2
+    assert level["http_admission_denial_events"] == 1
+    assert level["session_admission_rejection_events"] == 2 * rejected_updates
+    assert level["admission_denial_events"] == 1 + 2 * rejected_updates
+    assert "no admission denials" in level["unmet_targets"]
+    assert "no admission rejections" in level["unmet_targets"]
+    for variant in run["samples"][0]["variants"].values():
+        report = json.loads(
+            (output / variant["directory"] / "report.json").read_text()
+        )["cases"][0]
+        assert report["failure_kind"] == variant["failure_kind"]
+        if variant["failure_kind"] == "admission_rejected":
+            assert report["artifact_errors"] == []
+        else:
+            pass
+    exported = export_runs([output], tmp_path / "reference", "fixture")
+    assert (
+        exported["counts"]["eligible_variants"]
+        == 2 - final_rejections - runtime_failures
+    )
+
+
+@pytest.mark.parametrize("transport", ["http", "session"])
+def test_reconstruction_failure_preserves_admission_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transport: Literal["http", "session"],
+) -> None:
+    """Output reconstruction errors must not erase already observed rejections."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+
+    def fail_reconstruction(
+        variant_dir: Path, *, profile: ProfileName
+    ) -> dict[str, JsonValue]:
+        raise OSError(f"Cannot reconstruct {variant_dir} for {profile}")
+
+    monkeypatch.setattr(v15_runner, "reconstruct_output", fail_reconstruction)
+    server = CappedPeerServer(
+        initial_denials=2 * (ADMISSION_RETRIES + 1) if transport == "http" else 0,
+        rejected_updates=ADMISSION_RETRIES + 1 if transport == "session" else 0,
+    )
+    run = asyncio.run(server.record(dataset, output, sample_ids=["user_backchannel/1"]))
+    load = run["load"]
+    assert load["variants_failed"] == 2
+    assert load["variants_rejected"] == 0
+    assert load["variants_with_admission_events"] == 2
+    assert load["admission_denial_events"] == 8
+    assert load["http_admission_denial_events"] == (8 if transport == "http" else 0)
+    assert load["session_admission_rejection_events"] == (
+        8 if transport == "session" else 0
+    )
+    level = summarize_level(output, 0.08)
+    assert level["sessions_failed"] == 2
+    assert level["sessions_rejected"] == 0
+    assert level["admission_denials"] == (2 if transport == "http" else 0)
+    assert level["admission_denial_events"] == load["admission_denial_events"]
+    assert (
+        "no admission denials" if transport == "http" else "no admission rejections"
+    ) in level["unmet_targets"]
 
 
 def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> None:
@@ -704,8 +807,8 @@ def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     ]
     denied = [variant for variant in variants if variant["status"] == "fail"]
     assert denied and all(
-        any("admission denied" in violation for violation in variant["violations"])
-        and variant["output"]["admission_denials"] == ADMISSION_RETRIES
+        variant["failure_kind"] == "admission_rejected"
+        and variant["output"]["admission_denials"] == ADMISSION_RETRIES + 1
         for variant in denied
     )
     assert all(

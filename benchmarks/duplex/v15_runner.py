@@ -94,6 +94,11 @@ def summarize_load(
         variant for sample in samples for variant in sample["variants"].values()
     ]
     outputs = [variant["output"] for variant in variants if variant["output"]]
+    admission_counts = [
+        counts
+        for variant in variants
+        if (counts := variant.get("admission") or variant["output"])
+    ]
     timings = [
         variant["input_timing"] for variant in variants if variant["input_timing"]
     ]
@@ -103,6 +108,12 @@ def summarize_load(
         for output in outputs
         if output["initial_delay_s"] is not None
     ]
+    http_admission_denial_events = sum(
+        counts["admission_denials"] for counts in admission_counts
+    )
+    session_admission_rejection_events = sum(
+        counts.get("admission_rejections", 0) for counts in admission_counts
+    )
     return {
         "concurrency": concurrency,
         "recording_wall_s": max(
@@ -136,7 +147,26 @@ def summarize_load(
             for timing in timings
         ),
         "variants_with_admission_denials": sum(
-            bool(output["admission_denials"]) for output in outputs
+            bool(counts["admission_denials"]) for counts in admission_counts
+        ),
+        "variants_with_admission_rejections": sum(
+            bool(counts.get("admission_rejections", 0)) for counts in admission_counts
+        ),
+        "variants_with_admission_events": sum(
+            bool(counts["admission_denials"] or counts.get("admission_rejections", 0))
+            for counts in admission_counts
+        ),
+        "http_admission_denial_events": http_admission_denial_events,
+        "session_admission_rejection_events": session_admission_rejection_events,
+        "admission_denial_events": http_admission_denial_events
+        + session_admission_rejection_events,
+        "variants_rejected": sum(
+            variant.get("failure_kind") == "admission_rejected" for variant in variants
+        ),
+        "variants_failed": sum(
+            variant["status"] in ("fail", "error")
+            and variant.get("failure_kind") != "admission_rejected"
+            for variant in variants
         ),
         "variants_passed": sum(variant["status"] == "pass" for variant in variants),
     }
@@ -223,6 +253,8 @@ async def run_samples(
                 "directory": str(Path("samples") / sample.directory / variant),
                 "status": "invalid" if sample.errors else "pending",
                 "protocol_verdict": None,
+                "failure_kind": None,
+                "admission": None,
                 "qualified": False,
                 "errors": list(sample.errors),
                 "violations": [],
@@ -376,6 +408,7 @@ async def run_samples(
                     f"variant {sample_record['id']}/{variant} preparation failed"
                 )
                 variant_state["status"] = "error"
+                variant_state["failure_kind"] = "runtime"
                 variant_state["errors"].append(
                     f"preparation failed: {type(exc).__name__}: {exc}"
                 )
@@ -419,16 +452,23 @@ async def run_samples(
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.
                 protocol_report = await asyncio.to_thread(replay_run, variant_dir)
+                (case_report,) = protocol_report["cases"]
+                variant_state["admission"] = {
+                    "admission_denials": case_report["metrics"]["admission_denials"],
+                    "admission_rejections": case_report["metrics"][
+                        "admission_rejections"
+                    ],
+                }
                 await asyncio.to_thread(
                     write_json, variant_dir / "report.json", protocol_report
                 )
-                (case_report,) = protocol_report["cases"]
                 playout_report = await asyncio.to_thread(
                     reconstruct_output, variant_dir, profile=profile
                 )
             except Exception as exc:
                 logger.exception(f"variant {sample_record['id']}/{variant} failed")
                 variant_state["status"] = "error"
+                variant_state["failure_kind"] = "runtime"
                 variant_state["errors"].append(f"{type(exc).__name__}: {exc}")
             else:
                 variant_state["protocol_verdict"] = case_report["status"]
@@ -436,6 +476,9 @@ async def run_samples(
                 variant_state["errors"].extend(playout_report["errors"])
                 variant_state["status"] = (
                     "fail" if playout_report["errors"] else case_report["status"]
+                )
+                variant_state["failure_kind"] = case_report["failure_kind"] or (
+                    "runtime" if playout_report["errors"] else None
                 )
                 variant_state["qualified"] = variant_state["status"] == "pass"
                 variant_state["input_timing"] = playout_report["input_timing"]
@@ -448,7 +491,7 @@ async def run_samples(
                     "playout_duration_s": playout_report["playout_samples"]
                     / playout_report["sample_rate"],
                     "initial_delay_s": playout_report["initial_delay_s"],
-                    "admission_denials": case_report["metrics"]["admission_denials"],
+                    **variant_state["admission"],
                 }
             open_sessions -= 1
             variant_state["session"]["finished_s"] = (

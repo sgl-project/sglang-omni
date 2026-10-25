@@ -485,6 +485,15 @@ class ReferenceExport(AudioFixture):
         output = self.root / "export"
         result = export_runs([run], output, "sglang")
 
+        self.assertEqual(
+            result["builder_sha256"]["oracle_models.py"],
+            hashlib.sha256(
+                Path(reference_audio.__file__)
+                .with_name("oracle_models.py")
+                .read_bytes()
+            ).hexdigest(),
+        )
+
         self.assertEqual(result["counts"]["eligible_variants"], 2)
         for variant in result["samples"][0]["variants"].values():
             self.assertFalse(variant["input_check"]["legacy_inference"])

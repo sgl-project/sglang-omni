@@ -171,6 +171,7 @@ def export_runs(
                 Path(__file__),
                 Path(__file__).with_name("reference_audio.py"),
                 Path(__file__).with_name("reference_capture.py"),
+                Path(__file__).with_name("oracle_models.py"),
                 Path(__file__).with_name("run_artifacts.py"),
             )
         },

@@ -231,26 +231,47 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         if variant_state["status"] in FAILED_STATUSES
     )
     trace_spans_s: list[tuple[float, float]] = []
-    sessions_rejected = 0
+    sessions_with_admission_events = 0
+    sessions_with_http_denials = 0
+    sessions_with_admission_rejections = 0
+    http_admission_denial_events = session_admission_rejection_events = 0
     for variant_state in attempted:
         variant_dir = run_dir / variant_state["directory"]
-        trace_lines = (variant_dir / "continuous.jsonl").read_text().splitlines()
-        if trace_lines:
-            trace_spans_s.append(
-                (
-                    json.loads(trace_lines[0])["time_s"],
-                    json.loads(trace_lines[-1])["time_s"],
-                )
-            )
+        trace_start_s: float | None = None
+        trace_end_s: float | None = None
+        http_denials = session_rejections = 0
+        with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace_file:
+            for line in trace_file:
+                record = json.loads(line)
+                if trace_start_s is None:
+                    trace_start_s = record["time_s"]
+                else:
+                    pass
+                trace_end_s = record["time_s"]
+                http_denials += record["direction"] == "admission"
+                session_rejections += record[
+                    "direction"
+                ] == "receive" and is_admission_rejection(record["event"])
+        if trace_start_s is not None:
+            assert trace_end_s is not None
+            trace_spans_s.append((trace_start_s, trace_end_s))
         else:
             pass
-        sessions_rejected += any(
-            is_admission_rejection(json.loads(line)["event"]) for line in trace_lines
-        )
+        http_admission_denial_events += http_denials
+        session_admission_rejection_events += session_rejections
+        sessions_with_admission_events += bool(http_denials or session_rejections)
+        sessions_with_http_denials += bool(http_denials)
+        sessions_with_admission_rejections += bool(session_rejections)
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
     sessions_failed = sum(
-        variant_state["status"] in FAILED_STATUSES for variant_state in attempted
+        variant_state["status"] in FAILED_STATUSES
+        and variant_state.get("failure_kind") != "admission_rejected"
+        for variant_state in attempted
+    )
+    sessions_rejected = sum(
+        variant_state.get("failure_kind") == "admission_rejected"
+        for variant_state in attempted
     )
     # note (jeffro): a native reply comes out one unit per input unit, so its
     # real-time factor tracks the input pace.
@@ -297,8 +318,14 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
-        "admission_denials": load["variants_with_admission_denials"],
+        "admission_denials": sessions_with_http_denials,
         "sessions_rejected": sessions_rejected,
+        "sessions_with_admission_events": sessions_with_admission_events,
+        "admission_rejections": sessions_with_admission_rejections,
+        "http_admission_denial_events": http_admission_denial_events,
+        "session_admission_rejection_events": session_admission_rejection_events,
+        "admission_denial_events": http_admission_denial_events
+        + session_admission_rejection_events,
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
         "units_missed": units_missed,
@@ -326,8 +353,8 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             target
             for target, is_unmet in (
                 ("no failed sessions", sessions_failed > 0),
-                ("no admission denials", load["variants_with_admission_denials"] > 0),
-                ("no admission rejections", sessions_rejected > 0),
+                ("no admission denials", sessions_with_http_denials > 0),
+                ("no admission rejections", sessions_with_admission_rejections > 0),
                 ("no input pacing violations", load["input_pacing_violations"] > 0),
                 pacing_target,
             )

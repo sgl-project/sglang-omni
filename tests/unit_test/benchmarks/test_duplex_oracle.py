@@ -7,6 +7,7 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.profiles import ProfileName
 from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
@@ -546,6 +547,39 @@ def rejected_update() -> dict[str, JsonValue]:
             "session": {"output_modalities": ["audio"]},
         },
     }
+
+
+@pytest.mark.parametrize("retry_limit", [2, 3])
+def test_oracle_checks_the_combined_admission_budget(retry_limit: int) -> None:
+    """A recorder cannot spend a fresh retry budget after HTTP admission."""
+    records = trace_fixture()
+    records[1:1] = [rejected_update(), rejection()]
+    result = evaluate_trace(
+        [admission(1), admission(2), *records], max_admission_attempts=retry_limit
+    )
+    assert result["metrics"]["admission_denials"] == 2
+    assert result["metrics"]["admission_rejections"] == 1
+    if retry_limit == 3:
+        assert result["status"] == "pass", result
+    else:
+        assert result["failure_kind"] == "runtime"
+        assert any("limit" in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize(
+    "profile", ["nemotron-voicechat-pr2188", "qwen3-omni-half-duplex"]
+)
+def test_partial_http_rejection_trace_is_not_clean_exhaustion(
+    profile: ProfileName,
+) -> None:
+    """Interrupted HTTP retries must not look like final admission rejection."""
+    result = evaluate_trace([admission(1)], profile=profile, max_admission_attempts=3)
+    assert result["failure_kind"] == "runtime"
+    exhausted = evaluate_trace(
+        [admission(i) for i in range(1, 5)], profile=profile, max_admission_attempts=3
+    )
+    assert exhausted["failure_kind"] == "admission_rejected"
+    assert exhausted["metrics"]["admission_denials"] == 4
 
 
 @pytest.mark.parametrize(

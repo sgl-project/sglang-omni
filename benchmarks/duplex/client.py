@@ -153,10 +153,11 @@ async def run_session(
             )
             return observed_time_s
 
-        async def admit() -> websockets.ClientConnection:
-            attempt = 0
+        admission_denials = 0
+
+        async def admit() -> websockets.ClientConnection | None:
+            nonlocal admission_denials
             while True:
-                attempt += 1
                 try:
                     return await websockets.connect(
                         url,
@@ -167,24 +168,28 @@ async def run_session(
                 except websockets.InvalidStatus as exc:
                     if exc.response.status_code != ADMISSION_DENIED_STATUS:
                         raise
-                    elif attempt > ADMISSION_RETRIES:
-                        raise RuntimeError(
-                            f"admission denied {attempt} times with HTTP "
-                            f"{ADMISSION_DENIED_STATUS}"
-                        ) from exc
                     else:
+                        admission_denials += 1
                         record(
                             "admission",
                             {
                                 "type": "connection_denied",
                                 "http_status": exc.response.status_code,
-                                "attempt": attempt,
+                                "attempt": admission_denials,
                             },
                         )
-                        await asyncio.sleep(ADMISSION_BACKOFF_S)
+                        if admission_denials > ADMISSION_RETRIES:
+                            return None
+                        else:
+                            await asyncio.sleep(ADMISSION_BACKOFF_S)
 
         async def exchange() -> None:
-            async with await admit() as websocket:
+            connection = await admit()
+            if connection is None:
+                return
+            else:
+                pass
+            async with connection as websocket:
                 seen: dict[str, asyncio.Event] = {}
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
@@ -251,7 +256,7 @@ async def run_session(
                     return receipt.is_set()
 
                 async def receive() -> None:
-                    nonlocal fatal
+                    nonlocal fatal, admission_denials
                     async for frame in websocket:
                         try:
                             event = json.loads(frame)
@@ -274,6 +279,7 @@ async def run_session(
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if is_admission_rejection(event):
+                            admission_denials += 1
                             rejected.set()
                         elif event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
@@ -296,19 +302,16 @@ async def run_session(
                     else:
                         pass
                     admitted = await settle("session.updated")
-                    admission_attempts = 1
-                    while rejected.is_set() and admission_attempts <= ADMISSION_RETRIES:
+                    while rejected.is_set() and admission_denials <= ADMISSION_RETRIES:
                         rejected.clear()
                         # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.
                         try:
                             await asyncio.wait_for(aborted.wait(), ADMISSION_BACKOFF_S)
                         except asyncio.TimeoutError:
-                            admission_attempts += 1
                             await send("session.update", session=configure)
                             admitted = await settle("session.updated")
                         else:
                             break
-                    is_admission_exhausted = rejected.is_set()
                     if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad
                         # when no Smart Turn model is loaded, so the echo is the only
@@ -391,12 +394,6 @@ async def run_session(
                     else:
                         pass
                     await closed.wait()
-                    if is_admission_exhausted:
-                        raise RuntimeError(
-                            f"admission rejected {admission_attempts} times"
-                        )
-                    else:
-                        pass
 
                 receiver = asyncio.create_task(receive())
                 driver = asyncio.create_task(drive())

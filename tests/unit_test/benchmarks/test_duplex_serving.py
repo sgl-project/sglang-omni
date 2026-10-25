@@ -35,6 +35,7 @@ def record_session(
     reply_created_s: float | None = None,
     is_legacy: bool = False,
     rejected_updates: int = 0,
+    http_denied: bool = False,
 ) -> Path:
     """Write a paced 80 ms session whose unit k completes at unit_done_s[k].
 
@@ -82,6 +83,10 @@ def record_session(
             },
         }
 
+    if http_denied:
+        add(START_S - 1.0, "admission", "connection_denied", http_status=503, attempt=1)
+    else:
+        pass
     for attempt in range(rejected_updates):
         sent_s = START_S - 0.2 * (rejected_updates - attempt)
         add(sent_s, "send", "session.update")
@@ -150,6 +155,7 @@ def record_run(
             reply_audio_s=reply_audio_s,
             is_legacy=profile == TURN_BASED_PROFILE,
             rejected_updates=rejected_updates,
+            http_denied=index < admission_denials,
         )
         samples.append(
             {"variants": {"input": {"directory": directory, "status": status}}}
@@ -294,15 +300,19 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
 
 
 def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> None:
+    run_dir = record_run(
+        tmp_path / "run",
+        3,
+        [("pass", ON_TIME), ("fail", []), ("fail", [101.16])],
+        rejected_updates=2,
+    )
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    run["samples"][1]["variants"]["input"]["failure_kind"] = "admission_rejected"
+    run["samples"][2]["variants"]["input"]["failure_kind"] = "runtime"
+    run_path.write_text(json.dumps(run))
     report = serving_report(
-        [
-            record_run(
-                tmp_path / "run",
-                2,
-                [("pass", ON_TIME), ("fail", [101.16])],
-                rejected_updates=2,
-            )
-        ],
+        [run_dir],
         PLAYBACK_RESERVE_S,
     )
     level = report["levels"][0]
@@ -315,8 +325,15 @@ def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> N
     )
 
     assert level["sessions_failed"] == 1
-    assert level["sessions_rejected"] == 2
-    assert cells["rejected"] == "2"
+    assert level["sessions_rejected"] == 1
+    assert level["sessions_with_admission_events"] == 3
+    assert level["admission_rejections"] == 3
+    assert level["admission_denial_events"] == 6
+    assert level["units_expected"] == 9
+    assert level["units_missed"] == 6
+    assert cells["rejected"] == "1"
+    assert cells["affected"] == "3"
+    assert cells["denial events"] == "6"
     assert level["unmet_targets"] == [
         "no failed sessions",
         "no admission rejections",

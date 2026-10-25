@@ -284,6 +284,12 @@ class DuplexPeer:
                 websocket,
                 {
                     "type": "response.created",
+                    "sglang": {
+                        "media_time": {
+                            "t_start_ms": self.frames * PACKET_MS,
+                            "duration_ms": PACKET_MS,
+                        },
+                    },
                     "response": {
                         "id": "response_0",
                         "object": "realtime.response",
@@ -468,6 +474,9 @@ class DuplexPeer:
                             "type": "realtime",
                             "model": "fixture",
                             "output_modalities": ["audio"],
+                            "audio": {
+                                "output": {"format": GRANTED["output_audio_format"]}
+                            },
                             "sglang": {"granted": GRANTED},
                         },
                     },
