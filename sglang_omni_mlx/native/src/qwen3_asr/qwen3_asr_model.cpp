@@ -98,35 +98,51 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   }
   const int longest_chunk =
       *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
-  std::vector<mx::array> padded_chunks;
-  for (size_t i = 0; i < chunk_starts.size(); ++i) {
-    const mx::array chunk =
-        mx::slice(mel, {0, chunk_starts[i]},
-                  {mel_bins, chunk_starts[i] + chunk_lengths[i]});
-    padded_chunks.push_back(
-        mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
-  }
-  mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
-  x = Gelu(Conv2d(x, "audio_tower.conv2d1"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d2"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d3"));
-  const int chunk_count = x.shape(0);
-  const int frequency_bins = x.shape(1);
-  const int conv_frames = x.shape(2);
-  const int channels = x.shape(3);
-  x = checkpoint_.Linear(
-      mx::reshape(mx::transpose(x, {0, 2, 3, 1}),
-                  {chunk_count, conv_frames, channels * frequency_bins}),
-      "audio_tower.conv_out");
-  x = mx::add(
-      x, mx::expand_dims(SinusoidalPositions(conv_frames, audio_.d_model), 0));
-
+  const int chunk_count = static_cast<int>(chunk_starts.size());
   std::vector<int> credited_lengths;
   for (const int length : chunk_lengths) {
     credited_lengths.push_back(layout == AudioLayout::kReference
                                    ? ConvOutputFrames(length)
                                    : SwiftTokenCount(length));
   }
+  const int chunks_per_window =
+      std::max(1, audio_.n_window_infer / chunk_frame_count);
+  // Note (Jiaxin Deng): the convs run and are evaluated one window of chunks at
+  // a time, so their activations stay bounded instead of growing with the clip;
+  // conv_out still sees every chunk at once, since splitting its matmul changes
+  // the GEMM kernel and with it the output bits.
+  std::vector<mx::array> conv_blocks;
+  for (int block_start = 0; block_start < chunk_count;
+       block_start += chunks_per_window) {
+    const int block_end =
+        std::min(block_start + chunks_per_window, chunk_count);
+    std::vector<mx::array> padded_chunks;
+    for (int i = block_start; i < block_end; ++i) {
+      const mx::array chunk =
+          mx::slice(mel, {0, chunk_starts[i]},
+                    {mel_bins, chunk_starts[i] + chunk_lengths[i]});
+      padded_chunks.push_back(
+          mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
+    }
+    mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
+    x = Gelu(Conv2d(x, "audio_tower.conv2d1"));
+    x = Gelu(Conv2d(x, "audio_tower.conv2d2"));
+    x = Gelu(Conv2d(x, "audio_tower.conv2d3"));
+    const int block_chunk_count = x.shape(0);
+    const int frequency_bins = x.shape(1);
+    const int conv_frames = x.shape(2);
+    const int channels = x.shape(3);
+    conv_blocks.push_back(mx::reshape(
+        mx::transpose(x, {0, 2, 3, 1}),
+        {block_chunk_count, conv_frames, channels * frequency_bins}));
+    mx::eval(conv_blocks.back());
+  }
+  mx::array x = checkpoint_.Linear(mx::concatenate(conv_blocks, 0),
+                                   "audio_tower.conv_out");
+  const int conv_frames = x.shape(1);
+  x = mx::add(
+      x, mx::expand_dims(SinusoidalPositions(conv_frames, audio_.d_model), 0));
+
   // Note (Jiaxin Deng): the Swift port credits each chunk by its own length
   // formula and keeps that many rows of the padded conv output.
   std::vector<mx::array> kept_rows;
@@ -140,8 +156,6 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
 
   // Note (Jiaxin Deng): attention stays within windows of chunks, equal-length
   // windows batched together, as in the Swift encoder.
-  const int chunks_per_window =
-      std::max(1, audio_.n_window_infer / chunk_frame_count);
   std::vector<int> window_lengths;
   for (int start = 0; start < chunk_count; start += chunks_per_window) {
     int total = 0;
