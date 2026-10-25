@@ -5,6 +5,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sglang.srt.runtime_context import max_speculative_num_draft_tokens
+from sglang.srt.speculative.ragged_verify import (
+    RaggedVerifyMode,
+    read_ragged_verify_mode,
+)
+
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.minicpm_o.components.sglang_thinker import (
+    SPECULATIVE_HIDDEN_ROWS,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    get_decode_cuda_graph_bs,
+    get_decode_cuda_graph_max_bs,
+)
+
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
@@ -166,8 +181,36 @@ def create_thinker_scheduler(
 
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
+    speculative = cfg.speculative_algorithm is not None
+    if (
+        cfg.speculative_algorithm == "DSPARK"
+        and read_ragged_verify_mode() != RaggedVerifyMode.STATIC
+    ):
+        raise ValueError(
+            "MiniCPM-o thinker speculative decoding requires static verify"
+        )
+    else:
+        pass
+    if (
+        speech_enabled
+        and speculative
+        and (
+            cfg.speculative_algorithm not in ("EAGLE3", "DFLASH", "DSPARK")
+            or cfg.speculative_eagle_topk not in (None, 1)
+        )
+    ):
+        # note (0xtoward): the talker rows ride the drafts' layer-capture hooks, and a
+        # linear verify block commits its leading rows.
+        raise ValueError(
+            "speech output needs an EAGLE3 chain (topk 1), DFLASH or DSPARK draft, got "
+            f"{cfg.speculative_algorithm} topk={cfg.speculative_eagle_topk}"
+        )
+    else:
+        pass
+    # note (0xtoward): check the speech hidden capacity before capturing verify graphs.
     defer_cuda_graph_capture = want_cuda_graph and speech_enabled
-    if defer_cuda_graph_capture:
+    override_hidden_capture = defer_cuda_graph_capture and not speculative
+    if override_hidden_capture:
         saved_return_hidden_states = cfg.enable_return_hidden_states
         saved_return_hidden_states_mode = cfg.return_hidden_states_mode
         override_server_args(
@@ -179,6 +222,9 @@ def create_thinker_scheduler(
     else:
         pass
 
+    def configure_talker_capture(model_worker: ModelWorker) -> None:
+        model_worker.model_runner.model.capture_hidden_for_talker = speech_enabled
+
     try:
         infrastructure = create_sglang_infrastructure(
             server_args,
@@ -188,13 +234,35 @@ def create_thinker_scheduler(
             model_arch_override="MiniCPMO",
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
+            supports_speculative_decoding=True,
+            before_memory_pool=configure_talker_capture,
         )
+        if speech_enabled and speculative:
+            worker = infrastructure[0]
+            verify_rows = max(
+                worker.model_runner.max_running_requests,
+                get_decode_cuda_graph_max_bs(server_args) or 0,
+                max(get_decode_cuda_graph_bs(server_args) or [0]),
+            ) * max(
+                worker.speculative_worker.speculative_num_draft_tokens,
+                max_speculative_num_draft_tokens() or 0,
+            )
+            if verify_rows > SPECULATIVE_HIDDEN_ROWS:
+                raise ValueError(
+                    f"MiniCPM-o speech verify needs {verify_rows} hidden rows; "
+                    f"capacity is {SPECULATIVE_HIDDEN_ROWS}. "
+                    "Reduce max_running_requests or the draft block size."
+                )
+            else:
+                pass
+        else:
+            pass
         if defer_cuda_graph_capture:
             init_sglang_cuda_graphs(infrastructure[0])
         else:
             pass
     finally:
-        if defer_cuda_graph_capture:
+        if override_hidden_capture:
             override_server_args(
                 server_args,
                 "sglang_omni.minicpm_o.restore_return_hidden_states",

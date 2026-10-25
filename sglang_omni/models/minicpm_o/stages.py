@@ -393,6 +393,12 @@ def create_sglang_thinker_executor_from_config(
     )
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
+    if overrides.get("speculative_algorithm") is not None:
+        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+    else:
+        pass
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,

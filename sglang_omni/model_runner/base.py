@@ -710,6 +710,33 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
 
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int,
+    ) -> None:
+        """Give every verify row the logits hooks its plain decode row would take.
+
+        Speculative verify samples outside sample_next_token_ids. The codec suppress
+        set and process_sampling_logits depend on the request but not the position,
+        so applying them to each of a request's rows is exact.
+        """
+        rows = [request for request in requests for _ in range(rows_per_request)]
+        self.apply_codec_suppress_tokens(logits_output, rows)
+        self.process_sampling_logits(logits_output, rows)
+
+    def after_speculative_step(
+        self,
+        batch: ScheduleBatch,
+        result: GenerationBatchResult,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted."""
+        return None
+
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
