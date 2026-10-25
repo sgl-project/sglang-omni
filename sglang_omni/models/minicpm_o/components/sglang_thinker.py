@@ -11,6 +11,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from sglang.srt.runtime_context import get_schedule, max_prefill_buffer_tokens
 from transformers import PretrainedConfig
 
 from sglang_omni.models.minicpm_o.hf_config import derive_text_config
@@ -46,6 +47,7 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         )
         self.speculative_hidden_rows: torch.Tensor | None = None
         self.prefill_hidden_rows: torch.Tensor | None = None
+        self.capture_hidden_for_talker: bool = False
 
     @property
     def thinker(self) -> "MiniCPMOThinkerForCausalLM":
@@ -93,6 +95,10 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         self.keep_hidden_rows_for_talker()
 
     def keep_hidden_rows_for_talker(self) -> None:
+        if not self.capture_hidden_for_talker:
+            return
+        else:
+            pass
         # note (0xtoward): captured verify and prefill graphs rewrite these fixed buffers on replay.
         head = self.language_model.lm_head.weight
         self.speculative_hidden_rows = torch.empty(
@@ -101,7 +107,17 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             dtype=head.dtype,
             device=head.device,
         )
-        self.prefill_hidden_rows = torch.empty_like(self.speculative_hidden_rows)
+        prefill_rows = (
+            max_prefill_buffer_tokens()
+            or get_schedule().max_prefill_tokens
+            or SPECULATIVE_HIDDEN_ROWS
+        )
+        self.prefill_hidden_rows = torch.empty(
+            max(SPECULATIVE_HIDDEN_ROWS, prefill_rows),
+            self.config.hidden_size,
+            dtype=head.dtype,
+            device=head.device,
+        )
         self.language_model.model.register_forward_hook(
             self.keep_speculative_hidden_rows, with_kwargs=True
         )

@@ -13,10 +13,14 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
+from sglang.srt.environ import envs
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 
 from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o import bootstrap as bootstrap_module
+from sglang_omni.models.minicpm_o.components import sglang_thinker as thinker_module
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
     SAMPLE_RATE,
     UNIT_SAMPLES,
@@ -296,7 +300,13 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
     runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
     batch = SimpleNamespace(
-        reqs=[SimpleNamespace(rid="a"), SimpleNamespace(rid="b")],
+        reqs=[
+            SimpleNamespace(
+                rid=request_id,
+                omni_data=SimpleNamespace(stage_payload=SimpleNamespace(data={})),
+            )
+            for request_id in ("a", "b")
+        ],
         extend_lens=extend_lens,
     )
 
@@ -306,6 +316,145 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
 
     torch.testing.assert_close(committed_rows(runner, "a"), prefill_hidden_rows[1:2])
     torch.testing.assert_close(committed_rows(runner, "b"), prefill_hidden_rows[4:5])
+
+
+@pytest.mark.parametrize("chunk_lengths", [(5,), (3, 2)])
+def test_speculative_known_text_keeps_prefill_rows_across_chunks(
+    chunk_lengths: tuple[int, ...],
+) -> None:
+    text_tokens = [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, THIRD_TOKEN_ID]
+    expected_rows = torch.arange(10, dtype=torch.float32).reshape(5, 2)
+    prefill_buffer = torch.empty_like(expected_rows)
+    runner = speculative_runner(torch.empty_like(expected_rows), prefill_buffer)
+    request_data = SimpleNamespace(
+        stage_payload=SimpleNamespace(
+            data={"prompt": {"known_tts_output_ids": text_tokens}}
+        ),
+        extra_model_outputs={},
+    )
+    request = SimpleNamespace(rid="known-text", omni_data=request_data)
+    start = 0
+
+    for length in chunk_lengths:
+        prefill_buffer[:length].copy_(expected_rows[start : start + length])
+        runner.after_speculative_step(
+            SimpleNamespace(reqs=[request], extend_lens=[length]),
+            None,
+            is_prefill=True,
+            num_draft_tokens=4,
+        )
+        prefill_buffer.fill_(-1)
+        start += length
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id=request.rid), [PLAIN_TOKEN_ID]
+    )
+    runner.on_request_finished(request.rid, request_data)
+
+    torch.testing.assert_close(
+        request_data.extra_model_outputs["hidden_states_seq"], expected_rows[1:4]
+    )
+    assert request.rid not in runner.pending_hidden
+    assert request.rid not in runner.speculative_hidden_queue
+
+
+@pytest.mark.parametrize("mode", ["compact", "cap-accept"])
+def test_thinker_rejects_nonstatic_verify_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False, speculative_algorithm="DSPARK"
+    )
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(side_effect=AssertionError("unsupported verify reached model loading")),
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
+        with pytest.raises(ValueError, match="requires static verify"):
+            bootstrap_module.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize("capture_speech", [False, True])
+@pytest.mark.parametrize("prefill_rows", [8192, 8193])
+def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
+    monkeypatch: pytest.MonkeyPatch, capture_speech: bool, prefill_rows: int
+) -> None:
+    model = thinker_module.MiniCPMOThinkerForCausalLM.__new__(
+        thinker_module.MiniCPMOThinkerForCausalLM
+    )
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(hidden_size=2)
+    model.language_model = SimpleNamespace(
+        lm_head=torch.nn.Linear(2, 2, bias=False), model=torch.nn.Identity()
+    )
+    model.capture_hidden_for_talker = capture_speech
+    model.prefill_hidden_rows = None
+    model.speculative_hidden_rows = None
+    monkeypatch.setattr(
+        thinker_module, "max_prefill_buffer_tokens", lambda: prefill_rows, raising=False
+    )
+    hidden = torch.arange(prefill_rows * 2, dtype=torch.float32).reshape(-1, 2)
+
+    model.keep_hidden_rows_for_talker()
+    if capture_speech:
+        model.keep_speculative_hidden_rows(
+            model.language_model.model,
+            (),
+            {"forward_batch": SimpleNamespace(forward_mode=ForwardMode.EXTEND)},
+            hidden,
+        )
+        torch.testing.assert_close(model.prefill_hidden_rows[:prefill_rows], hidden)
+    else:
+        assert model.prefill_hidden_rows is None
+        assert model.speculative_hidden_rows is None
+
+
+@pytest.mark.parametrize(
+    ("verify_rows", "error", "message"),
+    [(8192, MemoryError, "capture reached"), (8193, ValueError, "capacity is 8192")],
+)
+def test_speech_verify_capacity_is_checked_before_graph_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    verify_rows: int,
+    error: type[Exception],
+    message: str,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False,
+        speculative_algorithm="DSPARK",
+        speculative_eagle_topk=1,
+        cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(max_bs=1, bs=[1])),
+    )
+    worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            model=SimpleNamespace(capture_hidden_for_talker=False),
+            max_running_requests=verify_rows,
+        ),
+        speculative_worker=SimpleNamespace(speculative_num_draft_tokens=1),
+    )
+
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.generation_batch_policy.resolved_view",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(worker, None, None, None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.init_sglang_cuda_graphs",
+        Mock(side_effect=MemoryError("capture reached")),
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        with pytest.raises(error, match=message):
+            bootstrap_module.create_thinker_scheduler(server_args, speech_enabled=True)
 
 
 def duplex_tokenizer() -> Mock:

@@ -182,13 +182,25 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         if not self.hands_hidden_to_talker or model.speculative_hidden_rows is None:
             return
         elif is_prefill:
+            end_rows = list(accumulate(batch.extend_lens))
             last_rows = torch.tensor(
-                list(accumulate(batch.extend_lens)),
+                end_rows,
                 device=model.prefill_hidden_rows.device,
             )
             rows = model.prefill_hidden_rows[last_rows - 1]
-            for index, req in enumerate(batch.reqs):
-                self.speculative_hidden_queue[req.rid] = rows[index : index + 1]
+            start = 0
+            for index, (request, end) in enumerate(zip(batch.reqs, end_rows)):
+                prompt = (request.omni_data.stage_payload.data or {}).get(
+                    "prompt"
+                ) or {}
+                if prompt.get("known_tts_output_ids") is not None:
+                    hidden = model.prefill_hidden_rows[start:end].detach().clone()
+                    self.pending_hidden.setdefault(request.rid, []).extend(
+                        hidden.unbind(0)
+                    )
+                else:
+                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                start = end
         else:
             block = model.speculative_hidden_rows[
                 : len(batch.reqs) * num_draft_tokens
