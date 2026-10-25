@@ -591,9 +591,6 @@ in a graph.
 
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
-> **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
-> — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
-
 > Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
