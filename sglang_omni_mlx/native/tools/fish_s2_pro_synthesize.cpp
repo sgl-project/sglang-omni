@@ -23,6 +23,7 @@
 namespace {
 
 constexpr int kDefaultMaxFrames = 1024;
+constexpr int kMaxFrames = 2048;
 constexpr uint32_t kSeedMask = 0x7FFFFFFF;
 
 double SecondsSince(std::chrono::steady_clock::time_point start) {
@@ -58,7 +59,13 @@ int main(int argc, char **argv) {
     } else if (argument == "--ref-text") {
       reference_text = value;
     } else if (argument == "--seed") {
-      sampling.seed = static_cast<uint32_t>(std::stoll(value) & kSeedMask);
+      const long long seed = std::stoll(value);
+      if (seed < 0) {
+        std::cerr << argv[0] << ": --seed must be greater than or equal to 0\n";
+        return 2;
+      } else {
+      }
+      sampling.seed = static_cast<uint32_t>(seed & kSeedMask);
     } else if (argument == "--temperature") {
       sampling.temperature = std::stof(value);
     } else if (argument == "--top-p") {
@@ -68,7 +75,8 @@ int main(int argc, char **argv) {
     } else if (argument == "--repetition-penalty") {
       sampling.repetition_penalty = std::stof(value);
     } else if (argument == "--max-new-tokens") {
-      max_frames = std::stoi(value);
+      // The server's cap, applied without an error as the CUDA engine does.
+      max_frames = std::min(std::stoi(value), kMaxFrames);
     } else if (argument == "--output") {
       output_path = value;
     } else if (argument == "--codes-output") {
