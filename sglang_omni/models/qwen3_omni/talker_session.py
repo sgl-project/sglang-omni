@@ -173,8 +173,8 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
             self.relay_text(request_id, reply, item)
 
     def mark_thinker_done(self, request_data: SGLangARRequestData) -> None:
-        # The reply outlives the thinker's stream, so a talker that stops at its own budget can still say why.
         self.prefill_builder.mark_thinker_done(request_data)
+        self.replies.pop(request_data.stage_payload.request_id, None)
 
     def relay_text(self, request_id: str, reply: ReplyText, item: StreamItem) -> None:
         """Decode the reply's text incrementally and hand each increment to code2wav, which publishes it in order with the audio."""
@@ -214,14 +214,14 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
         request_id = request_data.stage_payload.request_id
-        reply = self.replies.pop(request_id, None)
-        if reply is not None and request_data.finish_reason == FINISH_LENGTH_KIND:
-            self.relay_truncation(request_id, reply)
+        self.replies.pop(request_id, None)
+        if request_data.finish_reason == FINISH_LENGTH_KIND:
+            self.relay_truncation(request_id)
         else:
             pass
         return request_data.stage_payload
 
-    def relay_truncation(self, request_id: str, reply: ReplyText) -> None:
+    def relay_truncation(self, request_id: str) -> None:
         """Flag a reply that stopped at the talker's token budget, ahead of its result, so code2wav ends its turn as truncated."""
         assert self.outbox is not None
         self.outbox.put(
