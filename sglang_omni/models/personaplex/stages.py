@@ -35,6 +35,7 @@ from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexSessionEngineBuilder,
 )
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -235,14 +236,20 @@ def create_session_mimi_encode_executor(
     *,
     max_open_sessions: int,
     max_concurrency: int = 1,
+    enable_cuda_graph: bool = True,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
-    """Each session encodes on its own streaming state; max_concurrency sessions'
-    units encode at once."""
-    codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
+    """Encode ready sessions in one batch; batched scheduling serializes max_concurrency."""
+    codec, _ = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
+    encode_slots = MimiEncodeSlots(
+        codec,
+        num_slots=max_open_sessions,
+        max_batch_size=max_open_sessions,
+        enable_graphs=enable_cuda_graph,
+    )
     return SessionScheduler(
-        MimiEncodeHooks(codec, device),
+        MimiEncodeHooks(encode_slots),
         max_open_sessions=max_open_sessions,
         max_concurrency=max_concurrency,
     )

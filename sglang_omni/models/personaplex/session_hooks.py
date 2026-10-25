@@ -16,8 +16,9 @@ from sglang_omni.models.personaplex.architecture import (
     SAMPLES_PER_FRAME,
     SILENCE_CODES,
 )
-from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiEncodeState
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -101,54 +102,69 @@ class PreprocessingHooks(SessionHooks):
         self.states.pop(session_identity, None)
 
 
-class MimiEncodeHooks(SessionHooks):
-    """Encodes each unit with the session's streaming encoder state."""
+class MimiEncodeHooks(BatchedSessionHooks):
+    """Encodes ready sessions together on their resident streaming state rows."""
 
-    def __init__(self, codec: MimiCodec, device: torch.device) -> None:
-        self.codec = codec
-        self.device = device
-        self.states: dict[SessionIdentity, MimiEncodeState] = {}
+    def __init__(self, encode_slots: MimiEncodeSlots) -> None:
+        self.encode_slots: MimiEncodeSlots = encode_slots
+        self.states: dict[SessionIdentity, int] = {}
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
-        """Encode a unit of silence on a throwaway state, so the codec's first use
-        on the serving thread happens before the first session."""
-        self.codec.encode_step(
-            torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
-            self.codec.init_encode_state(batch_size=1),
+        """Warm up the serving thread without advancing any session's state."""
+        slot_index = self.encode_slots.acquire_slot()
+        assert slot_index is not None
+        self.encode_slots.encode_step(
+            torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.encode_slots.codec.device),
+            [slot_index],
         )
+        self.encode_slots.release_slot(slot_index)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
+        slot_index = self.encode_slots.acquire_slot()
+        assert slot_index is not None
+        self.states[session_identity] = slot_index
 
     @torch.inference_mode()
-    def append(
-        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
-    ) -> StagePayload:
-        state = PersonaPlexState.from_dict(payload.data)
-        if state.voice_waveform is not None:
-            state.voice_codes = encode_waveform(
-                self.codec, self.device, state.voice_waveform
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        units = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
+        rows_by_samples: dict[int, list[int]] = defaultdict(list)
+        device = self.encode_slots.codec.device
+        for index, (append, unit) in enumerate(zip(appends, units, strict=True)):
+            if unit.voice_waveform is not None:
+                unit.voice_codes = encode_waveform(
+                    self.encode_slots.codec, device, unit.voice_waveform
+                )
+                unit.voice_waveform = None
+            else:
+                pass
+            if is_empty_end_of_input(append.chunk):
+                unit.user_codes = no_codes()
+            else:
+                assert unit.waveform is not None
+                rows_by_samples[unit.waveform.shape[-1]].append(index)
+        for indices in rows_by_samples.values():
+            waveform = torch.stack([units[index].waveform for index in indices])
+            codes = (
+                self.encode_slots.encode_step(
+                    waveform[:, None].to(device=device, dtype=torch.float32),
+                    [
+                        self.states[appends[index].context.session_identity]
+                        for index in indices
+                    ],
+                )
+                .transpose(1, 2)
+                .cpu()
             )
-            state.voice_waveform = None
-        else:
-            pass
-        if is_empty_end_of_input(chunk):
-            state.user_codes = no_codes()
-        else:
-            codes = self.codec.encode_step(
-                state.waveform.to(device=self.device, dtype=torch.float32).view(
-                    1, 1, -1
-                ),
-                self.states[context.session_identity],
-            )
-            state.user_codes = codes[0].T.cpu()
-        state.waveform = None
-        payload.data = state.to_dict()
-        return payload
+            for row, index in enumerate(indices):
+                units[index].user_codes = codes[row]
+        for append, unit in zip(appends, units, strict=True):
+            unit.waveform = None
+            append.payload.data = unit.to_dict()
+        return [append.payload for append in appends]
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.states.pop(session_identity)
+        self.encode_slots.release_slot(self.states.pop(session_identity))
 
 
 @dataclass(kw_only=True)

@@ -26,6 +26,7 @@ from sglang_omni.models.personaplex.components.mimi_transformer import (
     MimiTransformer,
     TransformerState,
 )
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeSlots
 
 
 def test_causal_conv_chunks_match_whole():
@@ -99,6 +100,107 @@ def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
     stream(earlier, state)
     state.reset()
     assert torch.equal(stream(codes, state), fresh)
+
+
+def test_encode_rows_match_separate_streams_after_reset_and_reordering() -> None:
+    """A new or reused session must not inherit another row's padding or history."""
+    torch.manual_seed(5)
+    spec = replace(
+        MIMI,
+        n_filters=2,
+        ratios=(2, 2),
+        dim=16,
+        num_heads=2,
+        num_layers=2,
+        ffn_dim=8,
+        context=6,
+        codebook_dim=8,
+        codebook_size=32,
+        num_codebooks=2,
+    )
+    codec = MimiCodec(spec, mode="encode").eval()
+    with torch.no_grad():
+        for parameter in codec.parameters():
+            parameter.normal_(std=0.3)
+        for quantizer in (codec.quantizer.rvq_first, codec.quantizer.rvq_rest):
+            for layer in quantizer.vq.layers:
+                layer.codebook.embedding_sum.normal_(std=0.1)
+    state = codec.init_encode_state(batch_size=3)
+    references = [codec.init_encode_state(batch_size=1) for _ in range(3)]
+    for iteration, row_order in enumerate(
+        ([2], [0, 2], [1, 2, 0], [2, 0], [0, 2], [1, 2, 0])
+    ):
+        if iteration == 4:
+            state.reset_row(0)
+            references[0] = codec.init_encode_state(batch_size=1)
+        elif iteration == 5:
+            state.reset()
+            references = [codec.init_encode_state(batch_size=1) for _ in range(3)]
+        else:
+            pass
+        rows = torch.tensor(row_order)
+        waveform = torch.randn(len(row_order), 1, codec.samples_per_frame)
+        selected = state.select_rows(rows)
+        batched_codes = codec.encode_step(waveform, selected)
+        state.store_rows(rows, selected)
+        expected_codes = torch.cat(
+            [
+                codec.encode_step(waveform[index : index + 1], references[row])
+                for index, row in enumerate(row_order)
+            ]
+        )
+        torch.testing.assert_close(batched_codes, expected_codes, atol=0, rtol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_encode_graph_matches_eager_across_mixed_rows_and_slot_reuse(
+    random_codec: MimiCodec,
+) -> None:
+    codec = random_codec.cuda()
+    graphed = MimiEncodeSlots(codec, num_slots=3, max_batch_size=2, enable_graphs=True)
+    eager = MimiEncodeSlots(codec, num_slots=3, max_batch_size=2, enable_graphs=False)
+    assert set(graphed.graphs) == {1, 2}
+    plan = [((0,), 1), ((1, 0), 1), ((2, 0), 2), ((0, 2), 1), ((1,), 1)]
+    generator = torch.Generator().manual_seed(6)
+    waveforms = [
+        torch.randn(
+            len(streams),
+            1,
+            codec.samples_per_frame * frame_count,
+            generator=generator,
+        ).cuda()
+        for streams, frame_count in plan
+    ]
+    first_round_codes: list[torch.Tensor] = []
+    for round_index in range(2):
+        pool_slots: list[list[int]] = []
+        for pool in (graphed, eager):
+            acquired_slots: list[int] = []
+            for _ in range(3):
+                slot_index = pool.acquire_slot()
+                assert slot_index is not None
+                acquired_slots.append(slot_index)
+            pool_slots.append(acquired_slots)
+        for step_index, ((streams, _), waveform) in enumerate(
+            zip(plan, waveforms, strict=True)
+        ):
+            graphed_codes = graphed.encode_step(
+                waveform, [pool_slots[0][stream] for stream in streams]
+            ).clone()
+            eager_codes = eager.encode_step(
+                waveform, [pool_slots[1][stream] for stream in streams]
+            )
+            torch.testing.assert_close(graphed_codes, eager_codes, atol=0, rtol=0)
+            if round_index == 0:
+                first_round_codes.append(graphed_codes)
+            else:
+                torch.testing.assert_close(
+                    graphed_codes, first_round_codes[step_index], atol=0, rtol=0
+                )
+        for pool, acquired_slots in zip((graphed, eager), pool_slots, strict=True):
+            for slot_index in acquired_slots:
+                pool.release_slot(slot_index)
 
 
 @pytest.mark.parametrize("mode", ["encode", "decode", "both"])
