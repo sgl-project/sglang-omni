@@ -71,8 +71,8 @@ bool IsTransposedConvolution(const std::string &prefix) {
 
 // Weight-normed kernels folded as the codec computes them per call, and
 // every convolution kernel in MLX's [out, kernel, in] layout.
-qwen3_asr::WeightMap PrepareWeights(qwen3_asr::WeightMap weights) {
-  qwen3_asr::WeightMap prepared;
+omni_common::WeightMap PrepareWeights(omni_common::WeightMap weights) {
+  omni_common::WeightMap prepared;
   const auto to_mlx_layout = [](const std::string &prefix,
                                 const mx::array &torch_kernel) {
     return IsTransposedConvolution(prefix)
@@ -145,7 +145,7 @@ mx::array Rotate(const mx::array &x, const mx::array &phases) {
 
 } // namespace
 
-AudioCodec::AudioCodec(qwen3_asr::WeightMap weights)
+AudioCodec::AudioCodec(omni_common::WeightMap weights)
     : checkpoint_(PrepareWeights(std::move(weights)),
                   nlohmann::json::object()) {}
 
@@ -209,7 +209,7 @@ mx::array AudioCodec::ConvNextBlock(const mx::array &x,
   y = checkpoint_.LayerNorm(mx::swapaxes(y, 1, 2), prefix + ".norm",
                             kConvNextNormEps);
   y = checkpoint_.Linear(
-      qwen3_asr::Gelu(checkpoint_.Linear(y, prefix + ".pwconv1")),
+      omni_common::Gelu(checkpoint_.Linear(y, prefix + ".pwconv1")),
       prefix + ".pwconv2");
   y = mx::multiply(checkpoint_.Weight(prefix + ".gamma"), y);
   return mx::add(x, mx::swapaxes(y, 1, 2));
@@ -292,7 +292,7 @@ mx::array AudioCodec::Transformer(const mx::array &x, const std::string &prefix,
         mx::multiply(
             checkpoint_.Linear(
                 mx::multiply(
-                    qwen3_asr::Silu(checkpoint_.Linear(
+                    omni_common::Silu(checkpoint_.Linear(
                         feed_forward_input, layer_prefix + ".feed_forward.w1")),
                     checkpoint_.Linear(feed_forward_input,
                                        layer_prefix + ".feed_forward.w3")),

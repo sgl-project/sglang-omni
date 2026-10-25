@@ -18,7 +18,7 @@ inline constexpr int kResidualCodebookSize = 1024;
 
 class AudioCodec {
 public:
-  explicit AudioCodec(qwen3_asr::WeightMap weights);
+  explicit AudioCodec(omni_common::WeightMap weights);
 
   // Mono samples at sample_rate() to int32 codes [codebooks, frames]: the
   // semantic codebook, then the residual ones.
@@ -59,7 +59,7 @@ private:
   mlx::core::array QuantizedFeatures(const mlx::core::array &codes,
                                      const std::string &prefix) const;
 
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 // Note (Jiaxin Deng): the CUDA vocoder's streaming schedule: a first window

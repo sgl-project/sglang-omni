@@ -121,9 +121,9 @@ private:
                           const std::vector<int> &history, int step,
                           const SamplingOptions &sampling) const;
 
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   AudioCodec codec_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   TransformerConfig slow_;
   TransformerConfig fast_;
   RotaryTable slow_rotary_;

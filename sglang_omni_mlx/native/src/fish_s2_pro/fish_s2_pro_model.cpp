@@ -96,7 +96,7 @@ void Softmax(std::vector<float> &values) {
 
 FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory)
     : FishS2ProModel(model_directory,
-                     qwen3_asr::ReadJson(model_directory / "config.json")) {}
+                     omni_common::ReadJson(model_directory / "config.json")) {}
 
 FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
                                const nlohmann::json &config)
@@ -104,13 +104,13 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
           [&] {
             auto [weights, metadata] = mx::load_safetensors(
                 (model_directory / "model.safetensors").string());
-            return qwen3_asr::WeightMap(weights.begin(), weights.end());
+            return omni_common::WeightMap(weights.begin(), weights.end());
           }(),
           config),
       codec_([&] {
         auto [weights, metadata] = mx::load_safetensors(
             (model_directory / "codec.safetensors").string());
-        return qwen3_asr::WeightMap(weights.begin(), weights.end());
+        return omni_common::WeightMap(weights.begin(), weights.end());
       }()),
       tokenizer_(model_directory),
       slow_rotary_{mx::array(0.0f), mx::array(0.0f)},
@@ -325,7 +325,7 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
     hidden = mx::add(
         hidden,
         checkpoint_.Linear(
-            mx::multiply(qwen3_asr::Silu(checkpoint_.Linear(
+            mx::multiply(omni_common::Silu(checkpoint_.Linear(
                              feed_forward_input, prefix + ".feed_forward.w1")),
                          checkpoint_.Linear(feed_forward_input,
                                             prefix + ".feed_forward.w3")),

@@ -50,10 +50,10 @@
 
 #include "civetweb.h"
 #include "common/http.h"
+#include "common/text.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "qwen3_asr/realtime.h"
 
 namespace {
 
@@ -278,7 +278,7 @@ std::string ReferencePayload(const std::string &audio,
 // A reference's WAV, decoded at its own rate; throws RejectedRequest.
 fish_s2_pro::DecodedWav DecodeReference(const PendingReference &reference) {
   const std::optional<std::vector<uint8_t>> bytes =
-      qwen3_asr::DecodeBase64(reference.audio_base64);
+      omni_common::DecodeBase64(reference.audio_base64);
   if (!bytes.has_value() || bytes->empty()) {
     throw RejectedRequest(reference.audio_field + " is not valid base64");
   } else {
@@ -377,7 +377,7 @@ SpeechRequest ParseRequest(const Json &body,
   RejectUnsupportedFields(body);
   const Json input = FieldOr(body, "input", Json());
   if (!input.is_string() ||
-      qwen3_asr::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
+      omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
     throw std::invalid_argument("input must be a non-empty string");
   } else {
   }
@@ -412,8 +412,8 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
   // Note (Minyi Tang): as CUDA's response_format.strip().lower().
-  for (const char character :
-       qwen3_asr::StripUnicodeWhitespace(response_format.get<std::string>())) {
+  for (const char character : omni_common::StripUnicodeWhitespace(
+           response_format.get<std::string>())) {
     request.response_format.push_back(
         static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
   }
