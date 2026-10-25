@@ -39,6 +39,12 @@ else:
     pass
 
 
+def thinker_length_penalty(sched_req: SchedulerRequest) -> float:
+    params = sched_req.data.stage_payload.request.params or {}
+    thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+    return thinker_params.get("length_penalty", 1.0)
+
+
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
@@ -102,9 +108,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         """Scale end-of-sequence logits by each request's length_penalty."""
         logits = logits_output.next_token_logits
         for row_idx, sched_req in enumerate(requests):
-            params = sched_req.data.stage_payload.request.params or {}
-            thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
-            length_penalty = thinker_params.get("length_penalty", 1.0)
+            length_penalty = thinker_length_penalty(sched_req)
             if length_penalty == 1.0:
                 continue
             else:
@@ -115,6 +119,12 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     eos_logits / length_penalty,
                     eos_logits * length_penalty,
                 )
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Only a length_penalty or a codec suppress set changes a thinker verify row."""
+        return super().verify_rows_take_logits_hooks(requests) or any(
+            thinker_length_penalty(sched_req) != 1.0 for sched_req in requests
+        )
 
     def eos_token_id_tensor(self, device: torch.device) -> torch.Tensor:
         """Keep the EOS ids on the logits device so indexing needs no H2D copy."""

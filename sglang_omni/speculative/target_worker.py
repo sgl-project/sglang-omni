@@ -76,12 +76,18 @@ class SpeculativeTargetWorker:
             requests = self.verify_requests
             logits = output.logits_output.next_token_logits
             if self.omni_runner is not None and requests and logits is not None:
-                assert logits.shape[0] % len(requests) == 0, (
-                    f"{logits.shape[0]} verify rows do not split over "
-                    f"{len(requests)} requests"
-                )
+                layout = getattr(forward_batch.spec_info, "ragged_verify_layout", None)
+                if layout is None:
+                    assert logits.shape[0] % len(requests) == 0, (
+                        f"{logits.shape[0]} verify rows do not split over "
+                        f"{len(requests)} requests"
+                    )
+                    rows_per_request = logits.shape[0] // len(requests)
+                else:
+                    # note (0xtoward): a compact verify packs each request's rows back to back and pads to its graph tier.
+                    rows_per_request = layout.verify_lens
                 self.omni_runner.apply_speculative_verify_logits(
-                    output.logits_output, requests, logits.shape[0] // len(requests)
+                    output.logits_output, requests, rows_per_request
                 )
             else:
                 pass

@@ -2397,6 +2397,8 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+            # note (0xtoward): the worker leaves its verify input on the batch; a compact verify's layout rides on it.
+            verify_layout=getattr(batch.spec_info, "ragged_verify_layout", None),
         )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
