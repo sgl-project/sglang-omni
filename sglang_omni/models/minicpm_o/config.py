@@ -32,6 +32,12 @@ def preprocessing_stage(*, gpu: int, process: str) -> StageConfig:
         gpu=gpu,
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
+        factory=FactoryArgs(
+            video_decode_cache_max_entries=8,
+            video_decode_cache_max_bytes=256 * 1024**2,
+            video_decode_cache_max_source_bytes=32 * 1024**2,
+            video_decode_cache_max_inflight=4,
+        ),
         next=["image_encoder", "audio_encoder", "thinker"],
         route_fn=f"{PKG}.routing.resolve_preprocessing_next_stages",
         project_payload={

@@ -27,6 +27,7 @@ from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.models.minicpm_o.video_frontend import VideoDecodeCache
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -57,11 +58,21 @@ def create_preprocessing_executor(
     speech_enabled: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
+    video_decode_cache_max_entries: int = 0,
+    video_decode_cache_max_bytes: int = 0,
+    video_decode_cache_max_source_bytes: int = 0,
+    video_decode_cache_max_inflight: int = 1,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
         device=resolve_concrete_device(device, gpu_id),
+        video_decode_cache=VideoDecodeCache(
+            max_entries=video_decode_cache_max_entries,
+            max_bytes=video_decode_cache_max_bytes,
+            max_source_bytes=video_decode_cache_max_source_bytes,
+            max_inflight=video_decode_cache_max_inflight,
+        ),
     )
 
     return SimpleScheduler[StagePayload, StagePayload](preprocessor)

@@ -7,6 +7,7 @@ import functools
 import http.server
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 from typing import Literal
@@ -30,7 +31,11 @@ from sglang_omni.models.minicpm_o.components.image_processing import CUDAImagePr
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
 from sglang_omni.models.minicpm_o.request_builders import apply_mm_pad_values
-from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
+from sglang_omni.models.minicpm_o.video_frontend import (
+    MiniCPMVideoIO,
+    TimedVideo,
+    VideoDecodeCache,
+)
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -622,6 +627,354 @@ async def test_cancelled_local_timed_video_drains_decoder(
         released.set()
 
 
+def test_video_decode_cache_content_identity_and_mutation_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    first.write_bytes(b"first")
+    second.write_bytes(b"first")
+    calls: list[bytes] = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        calls.append(contents)
+        return TimedVideo(
+            frames=[Image.new("RGB", (2, 2), (contents[0], 0, 0))],
+            audio_segments=[np.ones(4, dtype=np.float32)],
+            timestamps_seconds=[0.0],
+            duration_seconds=1.0,
+        )
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=2, max_bytes=1024, max_source_bytes=16, max_inflight=2
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    output = cache.load(first, decoder)
+    output.frames[0].putpixel((0, 0), (0, 0, 0))
+    output.audio_segments[0][:] = 0
+    output.timestamps_seconds.append(9.0)
+    reused = cache.load(second, decoder)
+    assert calls == [b"first"]
+    assert reused.frames[0].getpixel((0, 0)) == (ord("f"), 0, 0)
+    np.testing.assert_array_equal(
+        reused.audio_segments[0], np.ones(4, dtype=np.float32)
+    )
+    assert reused.timestamps_seconds == [0.0]
+    first.write_bytes(b"other")
+    assert cache.load(first, decoder).frames[0].getpixel((0, 0)) == (ord("o"), 0, 0)
+    cache.load(second, MiniCPMVideoIO(use_audio=False))
+    assert calls == [b"first", b"other", b"first"]
+
+
+@pytest.mark.parametrize("max_entries,max_bytes", [(1, 1024), (8, 16)])
+def test_video_decode_cache_eviction_and_failed_decode_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_entries: int, max_bytes: int
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"a")
+    attempts = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        attempts.append(contents)
+        if len(attempts) == 1:
+            raise ValueError("invalid decode")
+        else:
+            return TimedVideo(
+                audio_segments=[np.full(4, contents[0], dtype=np.float32)]
+            )
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=max_entries,
+        max_bytes=max_bytes,
+        max_source_bytes=16,
+        max_inflight=2,
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    with pytest.raises(ValueError, match="invalid decode"):
+        cache.load(path, decoder)
+    cache.load(path, decoder)
+    path.write_bytes(b"b")
+    cache.load(path, decoder)
+    path.write_bytes(b"a")
+    cache.load(path, decoder)
+    assert attempts == [b"a", b"a", b"b", b"a"]
+
+
+def test_video_decode_cache_shares_concurrent_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"first")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    waiting = threading.Event()
+    future_result = video_frontend.Future.result
+
+    def wait_for_producer(self, timeout=None):
+        waiting.set()
+        return future_result(self, timeout)
+
+    monkeypatch.setattr(video_frontend.Future, "result", wait_for_producer)
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        calls.append(contents)
+        entered.set()
+        assert release.wait(timeout=5)
+        return TimedVideo(audio_segments=[np.ones(4, dtype=np.float32)])
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024, max_source_bytes=16, max_inflight=2
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(cache.load, path, decoder)
+        assert entered.wait(timeout=5)
+        second = executor.submit(cache.load, path, decoder)
+        assert waiting.wait(timeout=5)
+        release.set()
+        outputs = [first.result(timeout=5), second.result(timeout=5)]
+    assert calls == [b"first"]
+    assert outputs[0].audio_segments[0] is not outputs[1].audio_segments[0]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_cached_video_drains_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            assert release.wait(timeout=5)
+            return TimedVideo()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024, max_source_bytes=16, max_inflight=2
+    )
+    task = asyncio.create_task(
+        video_frontend.load_timed_video(str(path), use_audio=True, decode_cache=cache)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert finished.is_set()
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_producer", [False, True])
+async def test_cancelled_cache_request_does_not_cancel_other_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_producer: bool
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    started = asyncio.Event()
+    waiting = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    original_result = video_frontend.Future.result
+
+    def result(self, timeout=None):
+        loop.call_soon_threadsafe(waiting.set)
+        return original_result(self, timeout)
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        return TimedVideo(duration_seconds=2.0)
+
+    monkeypatch.setattr(video_frontend.Future, "result", result)
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024, max_source_bytes=16, max_inflight=2
+    )
+    first = asyncio.create_task(
+        video_frontend.load_timed_video(str(path), use_audio=True, decode_cache=cache)
+    )
+    second = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        second = asyncio.create_task(
+            video_frontend.load_timed_video(
+                str(path), use_audio=True, decode_cache=cache
+            )
+        )
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        cancelled = first if cancel_producer else second
+        remaining = second if cancel_producer else first
+        cancelled.cancel()
+        await asyncio.sleep(0)
+        assert not cancelled.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(cancelled, timeout=5)
+        assert (await asyncio.wait_for(remaining, timeout=5)).duration_seconds == 2.0
+    finally:
+        release.set()
+        await asyncio.gather(
+            first, *([second] if second is not None else []), return_exceptions=True
+        )
+
+
+@pytest.mark.parametrize("max_entries,max_source_bytes", [(0, 16), (1, 2)])
+def test_video_decode_cache_ineligible_source_uses_original_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_entries: int,
+    max_source_bytes: int,
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    expected = TimedVideo(duration_seconds=3.0)
+    calls = []
+
+    def decode(self: MiniCPMVideoIO, video_path: Path) -> TimedVideo:
+        calls.append(video_path)
+        return expected
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_file", decode)
+    cache = VideoDecodeCache(
+        max_entries=max_entries,
+        max_bytes=1024,
+        max_source_bytes=max_source_bytes,
+        max_inflight=1,
+    )
+    assert cache.load(path, MiniCPMVideoIO(use_audio=True)) is expected
+    assert calls == [path]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"fps": 2.0},
+        {"max_frames": 4},
+        {"min_pixels": 3136},
+        {"max_pixels": 6272},
+        {"total_pixels": 12544},
+    ],
+)
+def test_video_decode_cache_separates_decode_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: dict[str, float | int]
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    calls: list[bytes] = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        calls.append(contents)
+        return TimedVideo(duration_seconds=float(len(calls)))
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=2, max_bytes=1024, max_source_bytes=16, max_inflight=1
+    )
+    assert cache.load(path, MiniCPMVideoIO(use_audio=True)).duration_seconds == 1.0
+    assert (
+        cache.load(path, MiniCPMVideoIO(use_audio=True, **options)).duration_seconds
+        == 2.0
+    )
+    assert len(calls) == 2
+
+
+def test_video_decode_cache_admission_overflow_uses_original_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    entered = threading.Event()
+    release = threading.Event()
+    uncached_paths: list[Path] = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        entered.set()
+        assert release.wait(timeout=5)
+        return TimedVideo(duration_seconds=1.0)
+
+    def uncached(self: MiniCPMVideoIO, video_path: Path) -> TimedVideo:
+        uncached_paths.append(video_path)
+        return TimedVideo(duration_seconds=2.0)
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    monkeypatch.setattr(MiniCPMVideoIO, "load_file", uncached)
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024, max_source_bytes=16, max_inflight=1
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(cache.load, path, decoder)
+        try:
+            assert entered.wait(timeout=5)
+            assert cache.load(path, decoder).duration_seconds == 2.0
+            assert uncached_paths == [path]
+        finally:
+            release.set()
+        assert first.result(timeout=5).duration_seconds == 1.0
+
+
+def test_video_decode_cache_decodes_the_hashed_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"first")
+    observed: list[bytes] = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        path.write_bytes(b"other")
+        observed.append(contents)
+        return TimedVideo(duration_seconds=float(contents[0]))
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=2, max_bytes=1024, max_source_bytes=16, max_inflight=1
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    assert cache.load(path, decoder).duration_seconds == ord("f")
+    assert cache.load(path, decoder).duration_seconds == ord("o")
+    assert observed == [b"first", b"other"]
+
+
+def test_video_decode_cache_does_not_retain_oversized_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    calls: list[bytes] = []
+
+    def decode(self: MiniCPMVideoIO, contents: bytes) -> TimedVideo:
+        calls.append(contents)
+        return TimedVideo(audio_segments=[np.ones(8, dtype=np.float32)])
+
+    monkeypatch.setattr(MiniCPMVideoIO, "load_bytes", decode)
+    cache = VideoDecodeCache(
+        max_entries=2, max_bytes=16, max_source_bytes=16, max_inflight=1
+    )
+    decoder = MiniCPMVideoIO(use_audio=True)
+    for _ in range(2):
+        np.testing.assert_array_equal(
+            cache.load(path, decoder).audio_segments[0], np.ones(8, dtype=np.float32)
+        )
+    assert calls == [b"video", b"video"]
+
+
 @pytest.fixture
 def encoded_video_path(tmp_path: Path) -> Path:
     video_path = tmp_path / "timeline.mp4"
@@ -641,6 +994,59 @@ def encoded_video_path(tmp_path: Path) -> Path:
         for packet in stream.encode():
             container.mux(packet)
     return video_path
+
+
+def test_video_decode_cache_preserves_real_video_frames(
+    encoded_video_path: Path,
+) -> None:
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024**2, max_source_bytes=1024**2, max_inflight=1
+    )
+    decoder = MiniCPMVideoIO(use_audio=False, fps=2, max_frames=4)
+    expected = decoder.load_file(encoded_video_path)
+    for actual in (
+        cache.load(encoded_video_path, decoder),
+        cache.load(encoded_video_path, decoder),
+    ):
+        assert actual.timestamps_seconds == expected.timestamps_seconds
+        assert actual.duration_seconds == expected.duration_seconds
+        for frame, reference in zip(actual.frames, expected.frames, strict=True):
+            np.testing.assert_array_equal(np.asarray(frame), np.asarray(reference))
+
+
+@pytest.mark.asyncio
+async def test_cached_video_still_checks_current_local_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"video")
+    allowed = True
+
+    class Connector:
+        def local_media_path(self, media_path: str) -> str:
+            if not allowed:
+                raise ValueError("local policy denied")
+            else:
+                return media_path
+
+    monkeypatch.setattr(video_frontend, "get_global_resource_connector", Connector)
+    monkeypatch.setattr(
+        MiniCPMVideoIO,
+        "load_bytes",
+        lambda self, contents: TimedVideo(duration_seconds=2.0),
+    )
+    cache = VideoDecodeCache(
+        max_entries=1, max_bytes=1024, max_source_bytes=16, max_inflight=1
+    )
+    result = await video_frontend.load_timed_video(
+        str(path), use_audio=True, decode_cache=cache
+    )
+    assert result.duration_seconds == 2.0
+    allowed = False
+    with pytest.raises(ValueError, match="local policy denied"):
+        await video_frontend.load_timed_video(
+            str(path), use_audio=True, decode_cache=cache
+        )
 
 
 def test_top_level_video_real_processor_bounds_match_embedding_rows(

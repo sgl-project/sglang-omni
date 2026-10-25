@@ -33,7 +33,10 @@ from sglang_omni.models.minicpm_o.prompt_frontend import (
     video_to_images,
 )
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
-from sglang_omni.models.minicpm_o.video_frontend import VideoProcessingOptions
+from sglang_omni.models.minicpm_o.video_frontend import (
+    VideoDecodeCache,
+    VideoProcessingOptions,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
@@ -81,12 +84,15 @@ def tts_read_prompt(text: str, language: str | None) -> str:
 
 
 class MiniCPMOPreprocessor:
+    video_decode_cache: VideoDecodeCache | None = None
+
     def __init__(
         self,
         model_path: str,
         *,
         speech_enabled: bool = False,
         device: torch.device = torch.device("cpu"),
+        video_decode_cache: VideoDecodeCache | None = None,
     ) -> None:
         local_model_directory = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -97,6 +103,7 @@ class MiniCPMOPreprocessor:
         self._processor: ProcessorMixin | None = None  # noqa: leading-underscore
         self.speech_enabled: bool = speech_enabled
         self.device: torch.device = device
+        self.video_decode_cache = video_decode_cache
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: Mapping[str, object]
@@ -264,6 +271,7 @@ class MiniCPMOPreprocessor:
                     video_min_pixels=video_options.video_min_pixels,
                     video_max_pixels=video_options.video_max_pixels,
                     video_total_pixels=video_options.video_total_pixels,
+                    video_decode_cache=self.video_decode_cache,
                 )
                 messages = rendered_chat.messages
                 raw_images = rendered_chat.images
