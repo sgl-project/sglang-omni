@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sglang.srt.runtime_context import max_speculative_num_draft_tokens
 from sglang.srt.speculative.ragged_verify import (
     RaggedVerifyMode,
     read_ragged_verify_mode,
@@ -238,13 +239,13 @@ def create_thinker_scheduler(
         )
         if speech_enabled and speculative:
             worker = infrastructure[0]
-            verify_rows = (
-                max(
-                    worker.model_runner.max_running_requests,
-                    get_decode_cuda_graph_max_bs(server_args) or 0,
-                    max(get_decode_cuda_graph_bs(server_args) or [0]),
-                )
-                * worker.speculative_worker.speculative_num_draft_tokens
+            verify_rows = max(
+                worker.model_runner.max_running_requests,
+                get_decode_cuda_graph_max_bs(server_args) or 0,
+                max(get_decode_cuda_graph_bs(server_args) or [0]),
+            ) * max(
+                worker.speculative_worker.speculative_num_draft_tokens,
+                max_speculative_num_draft_tokens() or 0,
             )
             if verify_rows > SPECULATIVE_HIDDEN_ROWS:
                 raise ValueError(

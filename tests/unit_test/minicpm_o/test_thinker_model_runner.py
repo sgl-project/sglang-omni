@@ -413,12 +413,17 @@ def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
 
 
 @pytest.mark.parametrize(
-    ("verify_rows", "error", "message"),
-    [(8192, MemoryError, "capture reached"), (8193, ValueError, "capacity is 8192")],
+    ("running_requests", "maximum_draft_tokens", "error", "message"),
+    [
+        (8192, 1, MemoryError, "capture reached"),
+        (8193, 1, ValueError, "capacity is 8192"),
+        (4097, 2, ValueError, "capacity is 8192"),
+    ],
 )
 def test_speech_verify_capacity_is_checked_before_graph_capture(
     monkeypatch: pytest.MonkeyPatch,
-    verify_rows: int,
+    running_requests: int,
+    maximum_draft_tokens: int,
     error: type[Exception],
     message: str,
 ) -> None:
@@ -431,7 +436,7 @@ def test_speech_verify_capacity_is_checked_before_graph_capture(
     worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             model=SimpleNamespace(capture_hidden_for_talker=False),
-            max_running_requests=verify_rows,
+            max_running_requests=running_requests,
         ),
         speculative_worker=SimpleNamespace(speculative_num_draft_tokens=1),
     )
@@ -442,6 +447,12 @@ def test_speech_verify_capacity_is_checked_before_graph_capture(
     monkeypatch.setattr(
         "sglang_omni.scheduling.generation_batch_policy.resolved_view",
         lambda value: value,
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "max_speculative_num_draft_tokens",
+        lambda: maximum_draft_tokens,
+        raising=False,
     )
     monkeypatch.setattr(
         "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
