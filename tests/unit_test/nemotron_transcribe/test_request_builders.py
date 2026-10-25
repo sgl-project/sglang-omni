@@ -170,7 +170,9 @@ def test_streamed_text_matches_final_response() -> None:
         tokenizer=tokenizer, max_new_tokens=32
     )
     request = build_request(make_payload({"stream": True}))
-    stream = make_stream_output_builder(tokenizer)
+    stream = make_stream_output_builder(
+        tokenizer, min_emit_interval_s=0.0, eos_token_id=EOS_TOKEN_ID
+    )
     messages = []
     for token_id in [7, 8, EOS_TOKEN_ID]:
         messages.extend(
@@ -246,7 +248,9 @@ def test_cache_miss_defers_admission_until_encode_finishes() -> None:
     assert result.ready.done()
     assert encoder.encoded is not None
     assert result.value.req.multimodal_inputs.mm_items[0].feature is None
-    assert result.value.req.multimodal_inputs.mm_items[0].precomputed_embeddings.shape == (
+    assert result.value.req.multimodal_inputs.mm_items[
+        0
+    ].precomputed_embeddings.shape == (
         13,
         4,
     )

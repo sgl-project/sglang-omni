@@ -46,10 +46,7 @@ class FeatureStacking(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary positions. Frequencies are computed on CPU so devices agree.
-
-    Buffers are not part of the checkpoint.
-    """
+    """Rotary positions with CPU-computed frequencies and non-checkpoint buffers."""
 
     def __init__(
         self, head_dim: int, rotary_fraction: float, rope_base: float, max_length: int
@@ -63,8 +60,7 @@ class RotaryEmbedding(nn.Module):
         else:
             pass
         self.rotary_dim = rotary_dim
-        # SGLang builds this module inside a CUDA default-device scope, so an
-        # unpinned factory tensor lands on the GPU and disagrees with inv_freq.
+        # note (yhayaran): SGLang builds this under a CUDA default device, so pin factories to CPU.
         inv_freq = 1.0 / (
             rope_base
             ** (
@@ -94,24 +90,17 @@ class RotaryEmbedding(nn.Module):
     def apply_rotary(
         self, queries: torch.Tensor, keys: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Rotate (batch, heads, time, dim). keys may be longer than queries."""
-        key_frames = keys.shape[2]
-        query_frames = queries.shape[2]
-        self.extend(key_frames)
-        # Reuse the device tables across attention layers and requests.
-        # Recopy only after extension or an explicit module/device move.
+        """Rotate equal-length (batch, heads, time, dim) queries and keys."""
+        frames = keys.shape[2]
+        self.extend(frames)
         if self.cos.device != queries.device:
             self.cos = self.cos.to(device=queries.device)
             self.sin = self.sin.to(device=queries.device)
         else:
             pass
-        cos = self.cos
-        sin = self.sin
-        offset = key_frames - query_frames
-        return (
-            self.rotate(queries, cos[offset:key_frames], sin[offset:key_frames]),
-            self.rotate(keys, cos[:key_frames], sin[:key_frames]),
-        )
+        cos = self.cos[:frames]
+        sin = self.sin[:frames]
+        return self.rotate(queries, cos, sin), self.rotate(keys, cos, sin)
 
     def rotate(
         self, tokens: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
@@ -257,13 +246,11 @@ class SpeechTransformerEncoder(nn.Module):
         rope_base: float = 10000.0,
         rotary_fraction: float = 1.0,
         pos_emb_max_len: int = 5000,
-        xscale: float | None = None,
     ) -> None:
         super().__init__()
         self.d_model = d_model
         self.subsampling_factor = subsampling_factor
         self.pre_encode = FeatureStacking(subsampling_factor, feat_in, d_model)
-        self.xscale = xscale
         self.dropout_pre_encoder = nn.Dropout(drop_rate)
         head_dim = d_model // n_heads
         self.pos_enc = RotaryEmbedding(
@@ -315,25 +302,17 @@ class SpeechTransformerEncoder(nn.Module):
         length: torch.Tensor,
         bypass_pre_encode: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (batch, width, time) and valid output frames.
-
-        Without bypass, audio_signal is (batch, bins, time). With bypass it is
-        already (batch, time, width) from a previous pre_encode.
-        """
+        """Map (batch, bins, time), or (batch, time, width) with bypass, to (batch, width, time)."""
         if bypass_pre_encode:
             hidden = audio_signal
             lengths = length.to(torch.int64)
         else:
             hidden, lengths = self.pre_encode(audio_signal, length)
             lengths = lengths.to(torch.int64)
-        if self.xscale is not None:
-            hidden = hidden * self.xscale
-        else:
-            pass
         hidden = self.dropout_pre_encoder(hidden)
         hidden = self.embed_norm(hidden)
         frames = hidden.shape[1]
-        # A bool mask disables flash attention. Full windows have no padding, so skip it.
+        # note (yhayaran): A bool mask disables flash attention, so full windows skip it.
         if bool(torch.all(lengths >= frames).item()):
             key_keep = None
         else:
@@ -342,8 +321,7 @@ class SpeechTransformerEncoder(nn.Module):
         if self.compiled_layers is None:
             hidden = self.forward_layers(hidden, key_keep)
         else:
-            # Dynamo config overrides are local to the serving thread. Concurrent
-            # requests exercise batch-size and padding variants in both encoders.
+            # note (yhayaran): The patch is thread-local and covers concurrent batch and padding shapes.
             with dynamo_config.patch(recompile_limit=ENCODER_RECOMPILE_LIMIT):
                 hidden = self.compiled_layers(hidden, key_keep)
         return hidden.transpose(1, 2).contiguous(), lengths

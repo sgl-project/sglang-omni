@@ -97,26 +97,6 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
         else:
             pass
-        if pre_lm_cache_max_entries < 1:
-            raise ValueError(
-                "pre_lm_cache_max_entries must be >= 1, got "
-                f"{pre_lm_cache_max_entries}"
-            )
-        else:
-            pass
-        if pre_lm_cache_size_bytes < 1:
-            raise ValueError(
-                f"pre_lm_cache_size_bytes must be >= 1, got {pre_lm_cache_size_bytes}"
-            )
-        else:
-            pass
-        if pre_lm_max_batch_wait_ms < 0:
-            raise ValueError(
-                "pre_lm_max_batch_wait_ms must be >= 0, got "
-                f"{pre_lm_max_batch_wait_ms}"
-            )
-        else:
-            pass
         self.max_new_tokens = max_new_tokens
         self.context_length = context_length
         self.max_audio_seconds = max_audio_seconds

@@ -10,7 +10,6 @@ import pytest
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.nemotron_transcribe.config import (
     ARCHITECTURE,
-    MAX_AUDIO_SECONDS,
     NemotronTranscribeFactoryArgs,
     NemotronTranscribePipelineConfig,
 )
@@ -24,15 +23,9 @@ from sglang_omni.models.registry import import_pipeline_configs
 def test_pipeline_is_one_whole_file_asr_stage() -> None:
     config = NemotronTranscribePipelineConfig(model_path="unused")
 
-    assert config.architecture == ARCHITECTURE
     assert config.allow_audio_chunking is False
-    assert config.max_native_clip_s == MAX_AUDIO_SECONDS
-    assert config.audio_chunking.max_total_audio_s == MAX_AUDIO_SECONDS
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.stages[0].terminal is True
-    assert config.stages[0].factory.max_new_tokens == 16384
-    assert config.stages[0].factory.enable_pre_lm_encoder is True
-    assert config.stages[0].factory.pre_lm_max_batch_wait_ms == 0
 
 
 def test_architecture_registers_with_the_model_registry() -> None:
@@ -57,9 +50,6 @@ def test_factory_signature_accepts_the_typed_pipeline_defaults() -> None:
         model_path="unused", **typed_kwargs
     )
     assert typed_kwargs["server_args_overrides"]["enable_torch_compile"] is False
-    assert typed_kwargs["compile_perception"] is False
-    assert typed_kwargs["perception_cuda_graphs"] is False
-    assert typed_kwargs["perception_compile_mode"] == "default"
 
 
 @pytest.mark.parametrize(

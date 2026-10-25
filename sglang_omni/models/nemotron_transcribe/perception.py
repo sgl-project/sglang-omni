@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 from torch import nn
 
@@ -78,36 +76,32 @@ def build_audio_perception(
     diar_encoder_cfg = expect_dict(diar_cfg.get("encoder"), "diarization encoder")
     diar_encoder = build_transformer(diar_encoder_cfg, rotary_fraction=1.0)
     modules_cfg = expect_dict(diar_cfg.get("sortformer_modules"), "sortformer_modules")
-    high_resolution = read_bool(diar_cfg, "high_resolution", False)
-    upsample = diar_encoder.subsampling_factor if high_resolution else 1
-    modules = build_sortformer(modules_cfg, upsample)
+    if not read_bool(diar_cfg, "high_resolution", False):
+        raise ValueError("only high-resolution diarization is supported")
+    else:
+        pass
+    modules = build_sortformer(modules_cfg, diar_encoder.subsampling_factor)
     diarizer = SortformerDiarizer(
         diar_encoder,
         modules,
-        high_resolution=high_resolution,
         output_subsampling_factor=asr_encoder.subsampling_factor,
     )
-    diar_frontend_cfg = expect_dict(
-        diar_cfg.get("preprocessor"), "diarization preprocessor"
-    )
-    diarizer.preprocessor = MelPreprocessor(
-        build_frontend(diar_frontend_cfg, pad_to=16)
-    )
     mode = str(encoder_config.get("speaker_feature_mode", "thresholded"))
+    if mode != "thresholded":
+        raise ValueError(f"unsupported speaker feature mode {mode!r}")
+    else:
+        pass
     threshold = encoder_config.get("speaker_activity_threshold", 0.5)
-    if threshold is None:
-        threshold_value = None
-    elif isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
+    if isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
         threshold_value = float(threshold)
     else:
-        raise TypeError("speaker_activity_threshold must be a number or null")
+        raise TypeError("speaker_activity_threshold must be a number")
     encoder = ParallelExpertEncoder(
         asr_encoder,
         diarizer,
         asr_normalize=optional_text(encoder_config, "asr_normalize_type")
         or "per_feature",
         diar_normalize=optional_text(encoder_config, "diar_normalize_type"),
-        speaker_feature_mode=mode,
         speaker_activity_threshold=threshold_value,
         speaker_kernel_scale=read_float(encoder_config, "spk_kernel_scale", 1.0),
         online_frames=read_int(encoder_config, "online_inference_length", 500),
@@ -129,17 +123,22 @@ def build_audio_perception(
         perception.get("preprocessor"), "perception preprocessor"
     )
     perception_module = AudioPerception(
-        MelPreprocessor(build_frontend(frontend_cfg, pad_to=0)),
+        MelPreprocessor(build_frontend(frontend_cfg)),
         encoder,
         output_width,
     )
-    # The fused encoder normalizes each branch itself.
-    perception_module.preprocessor.featurizer.normalize = None
     perception_module.eval()
     return perception_module
 
 
-def build_frontend(config: dict[str, object], pad_to: int) -> LogMelFrontend:
+def build_frontend(config: dict[str, object]) -> LogMelFrontend:
+    if read_int(config, "pad_to", 0) != 0 or optional_text(config, "normalize") not in (
+        None,
+        "NA",
+    ):
+        raise ValueError("frontend padding and normalization are not supported")
+    else:
+        pass
     return LogMelFrontend(
         sample_rate=read_int(config, "sample_rate", 16000),
         window_size=read_float(config, "window_size", 0.025),
@@ -147,9 +146,7 @@ def build_frontend(config: dict[str, object], pad_to: int) -> LogMelFrontend:
         n_fft=read_int(config, "n_fft", 512),
         features=read_int(config, "features", 128),
         preemph=read_float(config, "preemph", 0.97),
-        pad_to=read_int(config, "pad_to", pad_to),
         mag_power=read_float(config, "mag_power", 2.0),
-        normalize=optional_text(config, "normalize"),
     )
 
 
@@ -176,9 +173,9 @@ def build_transformer(
     else:
         pass
     if read_bool(config, "xscaling", False):
-        scale = math.sqrt(read_float(config, "d_model", 512.0))
+        raise ValueError("xscaling is not supported")
     else:
-        scale = None
+        pass
     return SpeechTransformerEncoder(
         feat_in=read_int(config, "feat_in", 128),
         d_model=width,
@@ -193,13 +190,16 @@ def build_transformer(
         rope_base=read_float(config, "rope_base", 10000.0),
         rotary_fraction=read_float(config, "rotary_fraction", rotary_fraction),
         pos_emb_max_len=read_int(config, "pos_emb_max_len", 5000),
-        xscale=scale,
     )
 
 
 def build_sortformer(
     config: dict[str, object], upsample_factor: int
 ) -> SortformerModules:
+    if not read_bool(config, "use_learnable_sil_emb", False):
+        raise ValueError("only the learned silence embedding is supported")
+    else:
+        pass
     return SortformerModules(
         speaker_count=read_int(config, "num_spks", 8),
         fc_d_model=read_int(config, "fc_d_model", 512),
@@ -214,11 +214,9 @@ def build_sortformer(
         pred_score_threshold=read_float(config, "pred_score_threshold", 0.25),
         max_index=read_int(config, "max_index", 99999),
         scores_boost_latest=read_float(config, "scores_boost_latest", 0.05),
-        sil_threshold=read_float(config, "sil_threshold", 0.2),
         strong_boost_rate=read_float(config, "strong_boost_rate", 0.75),
         weak_boost_rate=read_float(config, "weak_boost_rate", 1.5),
         min_pos_scores_rate=read_float(config, "min_pos_scores_rate", 0.5),
-        use_learnable_sil_emb=read_bool(config, "use_learnable_sil_emb", False),
     )
 
 

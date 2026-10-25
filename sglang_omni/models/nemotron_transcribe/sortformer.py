@@ -20,8 +20,6 @@ class StreamingState:
     recent_predictions: torch.Tensor | None = None
     speaker_cache_predictions: torch.Tensor | None = None
     cache_compressed: bool = False
-    silence_embedding: torch.Tensor | None = None
-    silence_frames: torch.Tensor | None = None
 
 
 class SortformerModules(nn.Module):
@@ -42,11 +40,9 @@ class SortformerModules(nn.Module):
         pred_score_threshold: float,
         max_index: int,
         scores_boost_latest: float,
-        sil_threshold: float,
         strong_boost_rate: float,
         weak_boost_rate: float,
         min_pos_scores_rate: float,
-        use_learnable_sil_emb: bool,
     ) -> None:
         super().__init__()
         self.speaker_count = speaker_count
@@ -60,11 +56,9 @@ class SortformerModules(nn.Module):
         self.pred_score_threshold = pred_score_threshold
         self.max_index = max_index
         self.scores_boost_latest = scores_boost_latest
-        self.sil_threshold = sil_threshold
         self.strong_boost_rate = strong_boost_rate
         self.weak_boost_rate = weak_boost_rate
         self.min_pos_scores_rate = min_pos_scores_rate
-        self.use_learnable_sil_emb = use_learnable_sil_emb
         self.dropout = nn.Dropout(dropout_rate)
         self.hidden_to_spks = nn.Linear(2 * tf_d_model, speaker_count)
         self.hidden_to_spks.requires_grad_(False)
@@ -80,10 +74,7 @@ class SortformerModules(nn.Module):
             )
         else:
             self.subpixel_upsample = nn.Identity()
-        if use_learnable_sil_emb:
-            self.learnable_sil_emb = nn.Parameter(torch.zeros(fc_d_model))
-        else:
-            self.learnable_sil_emb = None
+        self.learnable_sil_emb = nn.Parameter(torch.zeros(fc_d_model))
 
     def forward_speaker_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         hidden = self.dropout(F.relu(hidden))
@@ -92,10 +83,6 @@ class SortformerModules(nn.Module):
         return self.single_hidden_to_spks(hidden)
 
     def upsample_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
-        if self.upsample_factor == 1:
-            return hidden
-        else:
-            pass
         batch, frames, width = hidden.shape
         projected = self.subpixel_upsample(hidden.transpose(1, 2)).transpose(1, 2)
         return projected.reshape(batch, frames, self.upsample_factor, width).reshape(
@@ -128,10 +115,6 @@ class SortformerModules(nn.Module):
             recent_embeddings=torch.zeros(
                 (batch, 0, self.fc_d_model), device=device, dtype=dtype
             ),
-            silence_embedding=torch.zeros(
-                (batch, self.fc_d_model), device=device, dtype=dtype
-            ),
-            silence_frames=torch.zeros((batch,), dtype=torch.long, device=device),
         )
 
     def update_cache(
@@ -174,15 +157,6 @@ class SortformerModules(nn.Module):
             pop = min(pop, queued)
             popped_embeddings = state.recent_embeddings[:, :pop]
             popped_predictions = state.recent_predictions[:, :pop]
-            if not self.use_learnable_sil_emb:
-                state.silence_embedding, state.silence_frames = self.silence_profile(
-                    state.silence_embedding,
-                    state.silence_frames,
-                    popped_embeddings,
-                    popped_predictions,
-                )
-            else:
-                pass
             state.recent_embeddings = state.recent_embeddings[:, pop:]
             state.recent_predictions = state.recent_predictions[:, pop:]
             state.speaker_cache = torch.cat(
@@ -198,9 +172,7 @@ class SortformerModules(nn.Module):
                 )
             if state.speaker_cache.shape[1] > self.spkcache_len:
                 compressed, compressed_predictions = self.compress_cache(
-                    state.speaker_cache,
-                    state.speaker_cache_predictions,
-                    state.silence_embedding,
+                    state.speaker_cache, state.speaker_cache_predictions
                 )
                 state.speaker_cache = compressed
                 state.speaker_cache_predictions = compressed_predictions
@@ -211,47 +183,15 @@ class SortformerModules(nn.Module):
             pass
         return state
 
-    def silence_profile(
-        self,
-        mean_silence: torch.Tensor | None,
-        silence_frames: torch.Tensor | None,
-        embeddings: torch.Tensor,
-        predictions: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if mean_silence is None or silence_frames is None:
-            raise RuntimeError("streaming state is missing its silence profile")
-        else:
-            pass
-        silent = predictions.sum(dim=2) < self.sil_threshold
-        count = silent.sum(dim=1)
-        if not bool(count.any().item()):
-            return mean_silence, silence_frames
-        else:
-            pass
-        total_frames = silence_frames + count
-        total = mean_silence * silence_frames.unsqueeze(1) + (
-            embeddings * silent.unsqueeze(-1)
-        ).sum(dim=1)
-        return total / total_frames.clamp(min=1).unsqueeze(1), total_frames
-
     def compress_cache(
-        self,
-        embeddings: torch.Tensor,
-        predictions: torch.Tensor,
-        mean_silence: torch.Tensor | None,
+        self, embeddings: torch.Tensor, predictions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Keep spkcache_len frames, ordered by speaker, plus learned silence slots."""
         batch, _, speakers = predictions.shape
-        silence_parameter = self.learnable_sil_emb
-        if self.use_learnable_sil_emb and silence_parameter is not None:
-            silence = silence_parameter.to(
-                dtype=embeddings.dtype, device=embeddings.device
-            )
-            silence = silence.unsqueeze(0).expand(batch, -1)
-        elif mean_silence is not None:
-            silence = mean_silence
-        else:
-            raise RuntimeError("speaker-cache compression has no silence embedding")
+        silence = self.learnable_sil_emb.to(
+            dtype=embeddings.dtype, device=embeddings.device
+        )
+        silence = silence.unsqueeze(0).expand(batch, -1)
         per_speaker = self.spkcache_len // speakers - self.spkcache_sil_frames_per_spk
         scores = self.frame_scores(predictions)
         scores = self.drop_low_scores(

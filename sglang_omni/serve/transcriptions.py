@@ -478,7 +478,7 @@ async def transcribe_audio_chunks(
 ) -> tuple[list[str], str | None]:
     """Transcribe the chunks of a plan, returning one text per chunk.
 
-    The second value is ``length`` when any kept chunk stopped on the token
+    The second value is length when any kept chunk stopped on the token
     budget. A retried chunk keeps the retry's reason.
 
     Independent chunks run up to max_concurrent at once and return in span

@@ -12,17 +12,15 @@ FP32_PARAM_HOLDER_RENAMES = {
     ".mixer._fp32_params.dt_bias": ".mixer.dt_bias",
     ".mixer._fp32_params.D": ".mixer.D",
 }
-SKIPPED_CHECKPOINT_PREFIXES = ("llm.mtp.", "ctc_timestamp.")
+SKIPPED_CHECKPOINT_PREFIXES = (
+    "llm.mtp.",
+    "ctc_timestamp.",
+    "perception.encoder.diarization_model.preprocessor.",
+)
 
 
 def classify_checkpoint_name(name: str) -> tuple[CheckpointTensorKind, str]:
-    """Classify one consolidated checkpoint tensor.
-
-    Returns kind and payload. kind is skip, perception, rename, split_down,
-    or split_up. perception payload is the name with the perception prefix
-    removed. rename payload is the NemotronH name. split payloads are the
-    module prefix in front of the fused expert tensor.
-    """
+    """Return the tensor kind and its target name or fused expert module prefix."""
     if "._extra_state" in name or name.startswith(SKIPPED_CHECKPOINT_PREFIXES):
         return "skip", ""
     else:

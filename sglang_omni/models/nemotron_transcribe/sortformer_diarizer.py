@@ -22,22 +22,12 @@ class SortformerDiarizer(nn.Module):
         self,
         encoder: SpeechTransformerEncoder,
         modules: SortformerModules,
-        high_resolution: bool,
         output_subsampling_factor: int,
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.sortformer_modules = modules
-        self.high_resolution = high_resolution
-        self.output_subsampling_factor = output_subsampling_factor
-        native = 1 if high_resolution else encoder.subsampling_factor
-        if output_subsampling_factor % native != 0:
-            raise ValueError(
-                f"output subsampling {output_subsampling_factor} is not a multiple of {native}"
-            )
-        else:
-            pass
-        self.downsample_factor = output_subsampling_factor // native
+        self.downsample_factor = output_subsampling_factor
 
     def initial_state(self, batch: int) -> StreamingState:
         parameter = next(self.encoder.parameters())
@@ -76,36 +66,25 @@ class SortformerDiarizer(nn.Module):
         time_mask = torch.arange(encoded.shape[-1], device=hidden.device).unsqueeze(
             0
         ) < encoded_lengths.unsqueeze(1)
-        if self.high_resolution:
-            time_mask = time_mask.repeat_interleave(modules.upsample_factor, dim=1)
-        else:
-            pass
+        time_mask = time_mask.repeat_interleave(modules.upsample_factor, dim=1)
         logits = modules.forward_speaker_logits(hidden)
         high_predictions = torch.sigmoid(logits) * time_mask.unsqueeze(-1).to(
             logits.dtype
         )
-        if self.high_resolution:
-            state_predictions = modules.downsample_preds(
-                high_predictions, modules.upsample_factor
-            ).detach()
-        else:
-            state_predictions = high_predictions
+        state_predictions = modules.downsample_preds(
+            high_predictions, modules.upsample_factor
+        ).detach()
         state_predictions = self.mask_predictions(state_predictions, encoded_lengths)
         saved_cache = state.speaker_cache.shape[1]
         saved_recent = state.recent_embeddings.shape[1]
         state = modules.update_cache(
             state, pre_encoded, state_predictions, left_frames, right_frames
         )
-        if self.high_resolution:
-            core = pre_encoded.shape[1] - left_frames - right_frames
-            start = (saved_cache + saved_recent + left_frames) * modules.upsample_factor
-            chunk_predictions = high_predictions[
-                :, start : start + core * modules.upsample_factor
-            ]
-        else:
-            core = pre_encoded.shape[1] - left_frames - right_frames
-            start = saved_cache + saved_recent + left_frames
-            chunk_predictions = high_predictions[:, start : start + core]
+        core = pre_encoded.shape[1] - left_frames - right_frames
+        start = (saved_cache + saved_recent + left_frames) * modules.upsample_factor
+        chunk_predictions = high_predictions[
+            :, start : start + core * modules.upsample_factor
+        ]
         if self.downsample_factor > 1:
             chunk_predictions = modules.downsample_preds(
                 chunk_predictions, self.downsample_factor

@@ -85,6 +85,7 @@ def make_service(
         cache_max_entries=8,
         cache_max_bytes=1 << 20,
         max_batch_size=max_batch_size,
+        max_batch_wait_ms=0,
     )
     SERVICES.append(service)
     return service

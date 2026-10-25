@@ -6,7 +6,6 @@ from __future__ import annotations
 import math
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 STD_FLOOR = 1e-5
@@ -20,11 +19,6 @@ def normalize_per_feature(
     batch, _, frames = features.shape
     if frames == 0:
         return features
-    else:
-        pass
-    capturing = features.is_cuda and torch.cuda.is_current_stream_capturing()
-    if not capturing and bool(torch.any(frame_counts == 1).item()):
-        raise ValueError("per-feature normalize needs more than one frame")
     else:
         pass
     positions = (
@@ -110,10 +104,8 @@ class LogMelFrontend(nn.Module):
         n_fft: int = 512,
         features: int = 128,
         preemph: float = 0.97,
-        pad_to: int = 0,
         mag_power: float = 2.0,
         log_zero_guard: float = LOG_GUARD,
-        normalize: str | None = None,
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
@@ -121,10 +113,8 @@ class LogMelFrontend(nn.Module):
         self.hop_length = int(window_stride * sample_rate)
         self.n_fft = n_fft
         self.preemph = preemph
-        self.pad_to = pad_to
         self.mag_power = mag_power
         self.log_zero_guard = log_zero_guard
-        self.normalize = normalize
         window = torch.hann_window(self.win_length, periodic=False)
         self.register_buffer("window", window)
         banks = slaney_mel_filterbank(
@@ -134,10 +124,7 @@ class LogMelFrontend(nn.Module):
 
     def frame_counts(self, sample_counts: torch.Tensor) -> torch.Tensor:
         """Valid mel frames for centered STFT, excluding the extra trailing bin."""
-        pad = self.n_fft
-        return torch.div(
-            sample_counts + pad - self.n_fft, self.hop_length, rounding_mode="floor"
-        )
+        return torch.div(sample_counts, self.hop_length, rounding_mode="floor")
 
     def forward(
         self, waveforms: torch.Tensor, sample_counts: torch.Tensor
@@ -146,9 +133,6 @@ class LogMelFrontend(nn.Module):
         waveforms = waveforms.to(torch.float32)
         sample_counts = sample_counts.to(device=waveforms.device)
         frame_counts = self.frame_counts(sample_counts)
-        frame_counts = torch.where(
-            sample_counts == 0, torch.zeros_like(frame_counts), frame_counts
-        )
         if self.preemph:
             positions = torch.arange(
                 waveforms.shape[1], device=waveforms.device
@@ -187,16 +171,4 @@ class LogMelFrontend(nn.Module):
             0
         ) < frame_counts.unsqueeze(1)
         mel = mel.masked_fill(~valid.unsqueeze(1), 0.0)
-        if self.pad_to > 0:
-            remainder = mel.shape[-1] % self.pad_to
-            if remainder:
-                mel = F.pad(mel, (0, self.pad_to - remainder))
-            else:
-                pass
-        else:
-            pass
-        if self.normalize:
-            mel = normalize_features(mel, frame_counts, self.normalize)
-        else:
-            pass
         return mel.to(self.fb.dtype), frame_counts.to(torch.int64)

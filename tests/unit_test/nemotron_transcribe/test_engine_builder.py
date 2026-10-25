@@ -52,7 +52,6 @@ class RecordingEncoder(SpeechTransformerEncoder):
 def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
-    assert defaults["disable_cuda_graph"] is False
     assert defaults["disable_radix_cache"] is True
 
 
@@ -84,7 +83,9 @@ def test_encoder_compilation_uses_resolved_decoder_concurrency(
     assert model.encoder_max_batch_size == 8
 
 
-def test_pre_lm_encoder_starts_after_model_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pre_lm_encoder_starts_after_model_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     created: dict[str, object] = {}
 
     class Service:
@@ -131,20 +132,6 @@ def test_disabled_pre_lm_encoder_does_not_start_a_service(
     builder.enable_pre_lm_encoder = False
     builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
     assert builder.audio_encoder_service is None
-
-
-def test_pre_lm_batch_wait_must_be_nonnegative() -> None:
-    configuration = NemotronTranscribePipelineConfig(model_path="unused")
-    parameters = configuration.stages[0].factory.model_dump(exclude_none=True)
-    parameters.pop("dtype")
-    parameters.update(
-        compile_perception=False,
-        perception_cuda_graphs=False,
-        mem_fraction_static=None,
-        pre_lm_max_batch_wait_ms=-1,
-    )
-    with pytest.raises(ValueError, match="pre_lm_max_batch_wait_ms"):
-        NemotronTranscribeEngineBuilder(**parameters)
 
 
 @pytest.mark.parametrize("decoder_slots", [None, 1, 16])

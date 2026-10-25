@@ -30,10 +30,7 @@ from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
 )
-from sglang_omni.models.nemotron_transcribe.hf_config import (
-    NemotronTranscribeConfig,
-    num_audio_tokens,
-)
+from sglang_omni.models.nemotron_transcribe.hf_config import NemotronTranscribeConfig
 from sglang_omni.models.nemotron_transcribe.perception import (
     AudioPerception,
     build_audio_perception,
@@ -54,8 +51,6 @@ def build_perception(config: NemotronTranscribeConfig) -> AudioPerception:
 
 
 class NemotronTranscribeForConditionalGeneration(nn.Module):
-    DEFAULT_ENCODER_MAX_BATCH_SIZE = 4
-
     def __init__(
         self,
         config: NemotronTranscribeConfig,
@@ -72,7 +67,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             prefix=add_prefix("language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
-        self.encoder_max_batch_size = self.DEFAULT_ENCODER_MAX_BATCH_SIZE
+        self.encoder_max_batch_size: int | None = None
 
     @property
     def pp_group(self) -> GroupCoordinator:
@@ -89,6 +84,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
     @torch.no_grad()
     def get_audio_feature(self, items: list[MultimodalDataItem]) -> torch.Tensor:
         """Encode audio items in bounded batches; output follows item order."""
+        assert self.encoder_max_batch_size is not None
         outputs = []
         for start in range(0, len(items), self.encoder_max_batch_size):
             outputs.extend(
@@ -117,10 +113,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
 
         outputs = []
         for i, item in enumerate(items):
-            expected = int(
-                (item.model_specific_data or {}).get("num_audio_tokens")
-                or num_audio_tokens(waves[i].numel(), self.config.audio_token_estimator)
-            )
+            expected = int(item.model_specific_data["num_audio_tokens"])
             emb = embs[i, : int(emb_lens[i])].to(PERCEPTION_DTYPE)
             if emb.shape[0] != expected:
                 raise RuntimeError(
@@ -138,9 +131,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
-        # Admitted requests already carry precomputed perception embeddings, so
-        # this routine scatters them. get_audio_feature runs only when the
-        # pre-LM encoder service is disabled.
+        # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
         return general_mm_embed_routine(
             input_ids=input_ids,
             forward_batch=forward_batch,
@@ -166,9 +157,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             checkpoint_to_language_model_weights(language_model_weights())
         )
 
-        # SGLang builds this module under the serving dtype, so the filterbank
-        # is bfloat16. Float the frontend before load_state_dict: copy_ would
-        # otherwise round the checkpoint filterbank into that buffer.
+        # note (yhayaran): SGLang builds this in the serving dtype, so float the frontend before loading.
         self.perception.preprocessor.float()
         incompatible = self.perception.load_state_dict(perception_weights, strict=False)
         missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
@@ -182,8 +171,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             )
         else:
             pass
-        # The encoder and projection run in the serving dtype. These casts do
-        # not reach the frontend, which the float above already keeps in fp32.
         self.perception.encoder.to(PERCEPTION_DTYPE)
         self.perception.proj.to(PERCEPTION_DTYPE)
         self.perception.eval()

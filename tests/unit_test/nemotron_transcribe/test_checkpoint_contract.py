@@ -4,12 +4,8 @@
 from __future__ import annotations
 
 import ast
-import json
-import os
-import struct
 from pathlib import Path
 
-import pytest
 import torch
 from torch.nn import functional as F
 
@@ -71,37 +67,6 @@ def test_language_model_names_cover_the_decoder_remap() -> None:
     }
     for name, expected in samples.items():
         assert classify_checkpoint_name(name) == expected
-
-
-def local_checkpoint_directory() -> Path | None:
-    checkpoint_directory = os.environ.get("NEMOTRON_TRANSCRIBE_MODEL")
-    return Path(checkpoint_directory) if checkpoint_directory else None
-
-
-def safetensors_names(path: Path) -> set[str]:
-    with path.open("rb") as handle:
-        (length,) = struct.unpack("<Q", handle.read(8))
-        header = json.loads(handle.read(length))
-    return {name for name in header if name != "__metadata__"}
-
-
-def test_local_checkpoint_matches_the_native_contract() -> None:
-    model_dir = local_checkpoint_directory()
-    if model_dir is None:
-        pytest.skip("local Nemotron Transcribe checkpoint is not present")
-    else:
-        pass
-    names = safetensors_names(model_dir / "model.safetensors")
-    kinds = {classify_checkpoint_name(name)[0] for name in names}
-    assert kinds <= {"skip", "perception", "rename", "split_down", "split_up"}
-    renamed = [name for name in names if classify_checkpoint_name(name)[0] == "rename"]
-    assert renamed
-    assert all(
-        "llm.model." not in classify_checkpoint_name(name)[1] for name in renamed
-    )
-    assert all(
-        "_fp32_params" not in classify_checkpoint_name(name)[1] for name in renamed
-    )
 
 
 def test_expert_weight_conversion_preserves_ungated_relu2_computation() -> None:

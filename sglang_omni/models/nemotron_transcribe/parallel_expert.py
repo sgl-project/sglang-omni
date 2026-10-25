@@ -58,15 +58,14 @@ class ParallelExpertEncoder(nn.Module):
         diarizer: SortformerDiarizer,
         asr_normalize: str | None,
         diar_normalize: str | None,
-        speaker_feature_mode: str,
-        speaker_activity_threshold: float | None,
+        speaker_activity_threshold: float,
         speaker_kernel_scale: float,
-        online_frames: int = 500,
-        left_context_frames: int = 50,
-        right_context_frames: int = 50,
-        cache_limit: int = 188,
-        recent_limit: int = 40,
-        cache_update_frames: int = 300,
+        online_frames: int,
+        left_context_frames: int,
+        right_context_frames: int,
+        cache_limit: int,
+        recent_limit: int,
+        cache_update_frames: int,
     ) -> None:
         super().__init__()
         if asr_encoder.subsampling_factor != diarizer.encoder.subsampling_factor:
@@ -79,7 +78,6 @@ class ParallelExpertEncoder(nn.Module):
         self.diarization_model = diarizer
         self.asr_normalize = asr_normalize
         self.diar_normalize = diar_normalize
-        self.speaker_feature_mode = speaker_feature_mode
         self.speaker_activity_threshold = speaker_activity_threshold
         self.speaker_kernel_scale = speaker_kernel_scale
         self.online_frames = online_frames
@@ -180,19 +178,7 @@ class ParallelExpertEncoder(nn.Module):
         activity = align_time(activity, states.shape[1]).to(
             device=states.device, dtype=states.dtype
         )
-        if self.speaker_feature_mode == "continuous":
-            speaker_features = activity
-        elif self.speaker_feature_mode == "thresholded":
-            if self.speaker_activity_threshold is None:
-                raise RuntimeError("thresholded speaker features need a threshold")
-            else:
-                speaker_features = (activity > self.speaker_activity_threshold).to(
-                    states.dtype
-                )
-        else:
-            raise RuntimeError(
-                f"unsupported speaker feature mode {self.speaker_feature_mode!r}"
-            )
+        speaker_features = (activity > self.speaker_activity_threshold).to(states.dtype)
         infusion = self.diar_norm(speaker_features) @ self.diar_kernel.to(
             dtype=states.dtype
         )

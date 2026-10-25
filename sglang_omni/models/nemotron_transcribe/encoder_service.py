@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Encode Nemotron perception embeddings before decoder admission.
-
-A long waveform used to run inside ``general_mm_embed_routine`` during the
-decoder step, so one upload stalled every running request. This service owns
-that encode on a worker thread and a side device stream. The request is
-admitted only after ``precomputed_embeddings`` is attached, which makes the
-decoder scatter those rows instead of calling the encoder.
-"""
+"""Encode Nemotron perception embeddings on a worker before decoder admission."""
 
 from __future__ import annotations
 
@@ -43,10 +36,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_CACHE_MAX_ENTRIES = 128
-_CACHE_MAX_BYTES = 2 * 1024**3
-# Clips longer than this are encoded alone. Perception pads a batch to its
-# longest waveform, so a 30-minute upload must not stretch short requests.
+# note (yhayaran): Perception pads a batch to its longest waveform, so long clips encode alone.
 SOLO_WAVEFORM_SECONDS = 60
 _SAMPLE_RATE = 16000
 _LENGTH_RATIO_LIMIT = 4
@@ -62,13 +52,13 @@ def build_cache_namespace(
     model: NemotronTranscribeForConditionalGeneration, *, model_path: str
 ) -> str:
     """Digest identifying this process's perception pipeline for cache keying."""
-    config = getattr(model, "config", None)
+    config = model.config
     reference = next(model.perception.parameters())
     payload = {
         "model_path": model_path,
-        "perception": getattr(config, "perception", None),
-        "pe_encoder_config": getattr(config, "pe_encoder_config", None),
-        "audio_token_estimator": getattr(config, "audio_token_estimator", None),
+        "perception": config.perception,
+        "pe_encoder_config": config.pe_encoder_config,
+        "audio_token_estimator": config.audio_token_estimator,
         "dtype": str(reference.dtype),
         "device_type": reference.device.type,
         "hidden_size": int(model.perception.proj.out_features),
@@ -117,21 +107,11 @@ class NemotronTranscribePreLMEncoderService(
         model: NemotronTranscribeForConditionalGeneration,
         *,
         cache_namespace: str,
-        cache_max_entries: int = _CACHE_MAX_ENTRIES,
-        cache_max_bytes: int = _CACHE_MAX_BYTES,
-        max_batch_size: int = 8,
-        max_batch_wait_ms: int = 0,
+        cache_max_entries: int,
+        cache_max_bytes: int,
+        max_batch_size: int,
+        max_batch_wait_ms: int,
     ) -> None:
-        if cache_max_entries < 1:
-            raise ValueError(
-                f"cache_max_entries must be >= 1, got {cache_max_entries}"
-            )
-        else:
-            pass
-        if cache_max_bytes < 1:
-            raise ValueError(f"cache_max_bytes must be >= 1, got {cache_max_bytes}")
-        else:
-            pass
         self.model = model
         reference = next(model.perception.parameters())
         self.device = reference.device
@@ -148,8 +128,8 @@ class NemotronTranscribePreLMEncoderService(
             cache_device="cpu",
         )
         self.namespace = cache_namespace
-        self.max_batch_size = max(int(max_batch_size), 1)
-        self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self.max_batch_size = max_batch_size
+        self.max_batch_wait_s = max_batch_wait_ms / 1000.0
         self.lock = threading.Lock()
         self.lifecycle_lock = threading.Lock()
         self.closed = False
