@@ -2404,9 +2404,11 @@ class OmniScheduler(Generic[RequestDataT]):
             new_sequence_lengths is not None
             and new_sequence_lengths is not batch.seq_lens
         ):
-            batch.seq_lens = new_sequence_lengths
+            # note (0xtoward): the worker may hand out a view of a buffer that its
+            # next verify rewrites mid-step (sglang#42465), so the batch keeps a copy.
+            batch.seq_lens = new_sequence_lengths.clone()
             if batch.seq_lens_cpu is not None:
-                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                batch.seq_lens_cpu = batch.seq_lens.to("cpu")
                 batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
             else:
                 pass
