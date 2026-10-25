@@ -112,3 +112,15 @@ An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggi
 - **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
 - **Scheduling.** Async decode is turned off, and so is the stage's own mixed-chunk default. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
 - **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.
+
+## Talker speculative decoding
+
+Use a DSpark draft to propose several codec tokens per Talker step:
+
+```bash
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant speech \
+  --talker.engine.speculative_algorithm DSPARK \
+  --talker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-talker-DSpark
+```
+
+The draft and target use the same codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. Rejection sampling verifies the proposed tokens against the target distribution. The block size comes from the draft checkpoint. This path supports non-streaming speech requests, not native full-duplex sessions.

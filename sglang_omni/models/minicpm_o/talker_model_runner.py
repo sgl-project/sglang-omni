@@ -441,6 +441,20 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         self.slot_state.append(rows, next_token_ids[: len(requests)])
         return next_token_ids
 
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int,
+    ) -> None:
+        """Leave verify rows raw; the talker's draft worker shapes every row itself.
+
+        The penalty window moves with each draft of a block, so the exact verify
+        (talker_dspark_sampling.target_probabilities) applies the suppress set, the
+        penalty and the stop mask per row; shaping here would apply them twice.
+        """
+        return None
+
     def suppress_mask(
         self, requests: list[SchedulerRequest], logits: torch.Tensor
     ) -> torch.Tensor:
