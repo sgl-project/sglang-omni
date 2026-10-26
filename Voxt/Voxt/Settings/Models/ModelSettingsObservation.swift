@@ -73,25 +73,19 @@ extension ModelSettingsView {
         )
         .eraseToAnyPublisher()
 
-        let gguf = ggufTranslationModelManager.$stateByID
-            .removeDuplicates()
-            .map { _ in () }
-            .eraseToAnyPublisher()
-
         let ggufPauseMessage = ggufTranslationModelManager.$pausedStatusMessageByID
             .removeDuplicates()
             .map { _ in () }
             .eraseToAnyPublisher()
 
+        // Download progress is refreshed by the two-second state timer. Rebuilding
+        // the whole catalog for every progress sample causes layout churn.
         return Publishers.Merge(
             Publishers.Merge(
                 Publishers.Merge(mlx, mlxPauseMessage),
                 customLLM
             ),
-            Publishers.Merge(
-                customLLMPauseMessage,
-                Publishers.Merge(gguf, ggufPauseMessage)
-            )
+            Publishers.Merge(customLLMPauseMessage, ggufPauseMessage)
         )
         .dropFirst()
         .debounce(for: .milliseconds(150), scheduler: RunLoop.main)

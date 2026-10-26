@@ -56,7 +56,7 @@ private:
                                 const std::atomic<bool> &cancel) const;
 
   WhisperModel model_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   bool clean_up_tokenization_spaces_ = true;
   bool is_multilingual_ = false;
   int start_of_transcript_id_ = 0;

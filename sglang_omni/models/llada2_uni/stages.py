@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 from collections.abc import Mapping
@@ -63,12 +64,14 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_seq_len: int | None = None,
+    interleaved: bool = False,
 ):
     from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
 
     preprocessor = LLaDA2Preprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
+        interleaved=interleaved,
     )
     return SimpleScheduler(preprocessor)
 
@@ -196,10 +199,20 @@ def create_decode_executor(model_path: str):
         else:
             pass
 
-        events = decode_events(
-            thinker_out=thinker_out,
-            tokenizer=tokenizer,
-        )
+        if state.thinking_phase == "image":
+            events = [
+                LLaDA2UniEvent(
+                    type="text_final",
+                    modality="text",
+                    payload={"text": state.thinking_text},
+                    is_final=True,
+                )
+            ]
+        else:
+            events = decode_events(
+                thinker_out=thinker_out,
+                tokenizer=tokenizer,
+            )
         event_dicts = [event_to_dict(event) for event in events]
 
         result: LLaDA2UniDecodeResult = {"events": event_dicts}
@@ -218,7 +231,9 @@ def create_decode_executor(model_path: str):
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
         )
-        if input_ids is None:
+        if state.thinking_phase == "image":
+            prompt_tokens = state.thinking_prompt_tokens
+        elif input_ids is None:
             prompt_tokens = 0
         elif hasattr(input_ids, "numel"):
             prompt_tokens = int(input_ids.numel())
@@ -226,7 +241,7 @@ def create_decode_executor(model_path: str):
             prompt_tokens = len(input_ids)
 
         completion_ids = thinker_out.get("output_ids") or []
-        completion_tokens = len(completion_ids)
+        completion_tokens = len(completion_ids) + state.thinking_completion_tokens
 
         result.setdefault(
             "usage",
@@ -327,6 +342,19 @@ def create_image_decode_executor(
         image_buffer = io.BytesIO()
         image.save(image_buffer, format="PNG")
         image_b64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+        if state.task_kind == "interleaved":
+            # One inline image segment for the UMM controller.
+            png = image_buffer.getvalue()
+            payload.data = {
+                "kind": "image",
+                "mime_type": "image/png",
+                "size_bytes": len(png),
+                "sha256": hashlib.sha256(png).hexdigest(),
+                "url": f"data:image/png;base64,{image_b64}",
+            }
+            return payload
+        else:
+            pass
         event = LLaDA2UniEvent(
             type="image_final",
             modality="image",

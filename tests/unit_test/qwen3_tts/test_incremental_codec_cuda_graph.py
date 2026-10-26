@@ -180,7 +180,9 @@ def stub_device_runtime(
         SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
     )
     monkeypatch.setattr(
-        incremental_codec_cuda_graph, "supports_device_streams", lambda device: True
+        incremental_codec_cuda_graph,
+        "has_device_streams",
+        lambda device: True,
     )
     monkeypatch.setattr(
         incremental_codec_cuda_graph, "device_guard", lambda device: DeviceContext()
@@ -449,6 +451,7 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
         )
 
     static_codes = torch.zeros(1, 2, 4, dtype=torch.long, device=device)
+    static_index = torch.full((1,), Arena.scratch_slot, dtype=torch.long, device=device)
     key = IncrementalCodecGraphKey(fresh_frames=4, batch_bucket=1)
     resources = CaptureResourceSet(
         pool=None,
@@ -456,21 +459,23 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
         keepalives=[static_codes],
     )
 
-    runner((4,)).warmup_capture_shape(key, static_codes, None, resources)
+    runner((4,)).warmup_capture_shape(key, static_codes, None, static_index, resources)
 
     assert len(traces) == 1
     codes, state, inference, grad = traces[0]
     assert codes is static_codes
     assert state.frame_positions.is_inference()
-    assert state.index.tolist() == [Arena.scratch_slot]
+    assert state.index is static_index
     assert inference is True and grad is False
     assert [entry[2] for entry in decodes] == [True, True, True]
-    assert all(entry[0] is static_codes for entry in decodes)
+    assert all(
+        entry[0] is static_codes and entry[1].index is static_index for entry in decodes
+    )
     assert resources.keepalives == [static_codes]
 
     traces.clear()
     decodes.clear()
-    runner(()).warmup_capture_shape(key, static_codes, None, resources)
+    runner(()).warmup_capture_shape(key, static_codes, None, static_index, resources)
 
     assert traces == []
     assert [entry[2] for entry in decodes] == [False, False, False]

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The predictor kernels: the exact add-norm against the plain path; the fused layer
-against the plain path, an fp32 reference and its own buffer and cache contracts."""
+against the plain path, an fp32 reference and its own buffer and cache contracts; the
+decode attention against fp32 over stale slots."""
 
 from __future__ import annotations
 
@@ -30,8 +31,10 @@ from sglang_omni.utils import predictor_layers
 from sglang_omni.utils.predictor_layers import (
     HIDDEN_SIZE,
     MAX_FUSED_ROWS,
+    PredictorLayerShape,
     add_rmsnorm_rounded,
     codebook_step,
+    decode_attention,
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
@@ -60,7 +63,7 @@ class PlainLinear(TupleLinear):
 
     quant_method = UnquantizedLinearMethod()
     bias = None
-    tp_size = 1
+    tp_group = None
 
 
 class SwiGLU(nn.Module):
@@ -83,18 +86,20 @@ def norm_with_random_scale(device: torch.device, size: int) -> RMSNorm:
     return norm
 
 
-def build_layer(device: torch.device) -> SimpleNamespace:
+def build_layer(
+    device: torch.device, num_kv_heads: int = NUM_KV_HEADS
+) -> SimpleNamespace:
     attention = SimpleNamespace(
         hidden_size=HIDDEN,
         q_size=NUM_HEADS * HEAD_DIM,
-        kv_size=NUM_KV_HEADS * HEAD_DIM,
+        kv_size=num_kv_heads * HEAD_DIM,
         num_heads=NUM_HEADS,
-        num_kv_heads=NUM_KV_HEADS,
+        num_kv_heads=num_kv_heads,
         head_dim=HEAD_DIM,
         q_norm=norm_with_random_scale(device, HEAD_DIM),
         k_norm=norm_with_random_scale(device, HEAD_DIM),
         alt_stream=None,
-        qkv_proj=PlainLinear(HIDDEN, (NUM_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM).to(
+        qkv_proj=PlainLinear(HIDDEN, (NUM_HEADS + 2 * num_kv_heads) * HEAD_DIM).to(
             device, DTYPE
         ),
         o_proj=PlainLinear(NUM_HEADS * HEAD_DIM, HIDDEN).to(device, DTYPE),
@@ -463,15 +468,17 @@ def test_split_launches_leave_the_tile_counters_at_zero() -> None:
 @pytest.mark.usefixtures("published_server_args")
 def test_rows_beyond_the_batch_are_not_written() -> None:
     """The launches pad the batch to a tile of 16 rows; the padded rows must not reach
-    the q, residual or activation buffers, which later, larger batches read."""
+    the q, attention output, residual or activation buffers, which later, larger
+    batches read."""
     device = torch.device("cuda")
     talker = fuse(build_talker(device, seed=15))
     fused = talker.predictor_fused_layers
-    for buffer in (fused.q, fused.residual, fused.activated):
+    buffers = (fused.q, fused.attention_output, fused.residual, fused.activated)
+    for buffer in buffers:
         buffer.fill_(7.0)
     step = predictor_inputs(device, 3, seed=16)[1]
     run_sequence(talker, [step])
-    for buffer in (fused.q, fused.residual, fused.activated):
+    for buffer in buffers:
         assert torch.all(buffer[3:] == 7.0)
         assert not torch.all(buffer[:3] == 7.0)
 
@@ -505,11 +512,29 @@ def test_resolver_keeps_the_plain_path_for_a_partitioned_projection() -> None:
     """
     device = torch.device("cuda")
     talker = build_talker(device, seed=19)
-    talker.code_predictor.model.layers[1].mlp.down_proj.tp_size = 2
+    talker.code_predictor.model.layers[1].mlp.down_proj.tp_group = SimpleNamespace(
+        rank_in_group=0, world_size=2
+    )
     assert (
         resolve_predictor_layer_shape(talker.code_predictor, PREDICTOR_LEN, device)
         is None
     )
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.parametrize(("num_kv_heads", "is_fused"), [(2, True), (1, False)])
+def test_resolver_fuses_only_where_the_opening_pair_fits_one_attention_tile(
+    num_kv_heads: int, is_fused: bool
+) -> None:
+    """Fused only where the opening pair's two tokens by a kv head's q heads fit the
+    16-row attention tile; more rows would leave the pair's second token unwritten."""
+    device = torch.device("cuda")
+    code_predictor = SimpleNamespace(
+        model=SimpleNamespace(layers=[build_layer(device, num_kv_heads)])
+    )
+    shape = resolve_predictor_layer_shape(code_predictor, PREDICTOR_LEN, device)
+    assert (shape is not None) is is_fused
 
 
 def test_without_triton_the_predictor_keeps_the_plain_path(
@@ -616,6 +641,69 @@ def test_codebook_step_matches_argmax_gather_and_add() -> None:
     assert torch.equal(codes, expected_matrix)
     assert torch.equal(codebook_input[:, 0], weight[expected_codes])
     assert torch.equal(summed, expected_summed)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("tokens_per_row", "cache_len", "num_kv_heads"),
+    [(2, 0, NUM_KV_HEADS), (1, 9, NUM_KV_HEADS), (2, 0, 2)],
+)
+def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
+    tokens_per_row: int, cache_len: int, num_kv_heads: int
+) -> None:
+    device = torch.device("cuda")
+    generator = torch.Generator(device=device).manual_seed(34)
+    row_groups = 3
+    end = cache_len + tokens_per_row
+    q = torch.randn(
+        row_groups * tokens_per_row,
+        NUM_HEADS * HEAD_DIM,
+        device=device,
+        generator=generator,
+    ).to(DTYPE)
+    cache_shape = (row_groups, PREDICTOR_LEN, num_kv_heads, HEAD_DIM)
+    k_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
+    v_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
+    k_cache[:, end:] = float("nan")
+    v_cache[:, end:] = float("nan")
+    attention_output = torch.empty_like(q)
+    decode_attention(
+        q=q,
+        tokens_per_row=tokens_per_row,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        end=end,
+        attention_output=attention_output,
+        shape=PredictorLayerShape(
+            hidden_size=HIDDEN,
+            head_dim=HEAD_DIM,
+            num_q_heads=NUM_HEADS,
+            num_kv_heads=num_kv_heads,
+            intermediate_size=INTERMEDIATE,
+            split_qkv=1,
+            split_hidden=1,
+        ),
+    )
+    queries = q.view(row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+    keys = k_cache[:, :end].transpose(1, 2)
+    values = v_cache[:, :end].transpose(1, 2)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        queries.float(),
+        keys.float(),
+        values.float(),
+        is_causal=tokens_per_row > 1,
+        enable_gqa=True,
+    )
+    sdpa = torch.nn.functional.scaled_dot_product_attention(
+        queries, keys, values, is_causal=tokens_per_row > 1, enable_gqa=True
+    )
+    actual = attention_output.view(
+        row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM
+    ).transpose(1, 2)
+    assert (
+        relative_error(actual, expected) <= 1.25 * relative_error(sdpa, expected) + 1e-4
+    )
 
 
 @accelerator

@@ -123,6 +123,13 @@ class MossTTSSGLangRequestData(ARRequestData):
     audio_length: int = 0
     delayed_length: int = _INF_DELAY
     is_audio: bool = False
+    # note (rsi): launch-side step counter; under lookahead decode the committed
+    # generation_steps lags the launched step by one.
+    sampling_steps: int = 0
+    # Step that emits audio_end, known once the delay countdown starts; the
+    # step after it samples the full text vocabulary. Derived from output_rows.
+    audio_end_step: int | None = None
+    audio_end_scanned_rows: int = 0
     engine_start_s: float = 0.0
 
 

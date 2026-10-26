@@ -9,10 +9,13 @@ name: Voxt Mac CI
 # VOXT_CI_ROOT persists on the runner: the pinned checkpoints and the corpus are
 # fetched once and reused while their SHA-256 match (provision.py), and the
 # runtime's CMake build directory is reused across runs.
+#
+# The package job runs only when the repository variable
+# VOXT_ENABLE_CI_PACKAGE is true. Local development should use
+# Voxt/tools/package_local_app.sh instead.
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "Voxt/**"
@@ -42,6 +45,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
+      run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -55,23 +59,34 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const music3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(music3\/|common\/|qwen3_asr\/)|tools\/music3_|ci\/(music3_|generate_music3_reference\.py$|model_golden\/minimax-music3\.json$|model_pins\.json$|provision.*\.py$|check_.*\.py$|test_check_golden\.py$|test_model_servers\.py$|requirements\.lock$)))/;
+            core.setOutput("music3", files.some(file =>
+              music3.test(file.filename) || music3.test(file.previous_filename || "")));
+            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
-        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
           echo "PR is draft. Blocking Voxt Mac CI."
           exit 1
 
       - name: Checkout CI label rules
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Resolve CI stages
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
@@ -98,15 +113,34 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
-      # the runner's work directory; say so plainly instead of failing midway.
       - name: Check free disk space
+        env:
+          RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
         run: |
+          echo "Unified memory bytes: $(sysctl -n hw.memsize)"
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
+          required_gb=20
+          music3_cache="$VOXT_CI_ROOT/data/models/mlx-community_MiniMax-Music3-mxfp8"
+          if [ "$RUN_MUSIC3" = true ]; then
+            cached_gb=0
+            if [ -d "$music3_cache" ]; then
+              cached_gb=$(du -sk "$music3_cache" | awk '{print int($1 / 1048576)}')
+            else
+              :
+            fi
+            missing_gb=$((14 - cached_gb))
+            if [ "$missing_gb" -gt 0 ]; then
+              required_gb=$((required_gb + missing_gb))
+            else
+              :
+            fi
+          else
+            :
+          fi
+          if [ "$free_gb" -lt "$required_gb" ]; then
+            echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
           else
             :
@@ -126,6 +160,39 @@ jobs:
       - name: Build the runtime
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+
+      - name: Provision the Music3 checkpoint
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            --model mlx-community/MiniMax-Music3-mxfp8
+
+      - name: Music3 golden outputs
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
+            --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" \
+            --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+            --outputs "$RUNNER_TEMP/golden-outputs"
+
+      - name: Upload this chip's Music3 outputs
+        if: ${{ always() && needs.preflight.outputs.run_music3 == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: music3-golden-outputs
+          path: |
+            ${{ runner.temp }}/golden-outputs/minimax-music3.json
+            ${{ runner.temp }}/golden-outputs/music3-resident-audio
+            ${{ runner.temp }}/golden-outputs/music3-offload-audio
+          if-no-files-found: ignore
+
+      - name: Music3 server API tests
+        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
 
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
@@ -150,15 +217,21 @@ jobs:
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
       - name: Provision the other models' checkpoints
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data"
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            --exclude-model mlx-community/MiniMax-Music3-mxfp8
 
       - name: Other models' golden outputs on the frozen corpus
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
+            if [ "$(basename "$golden")" = minimax-music3.json ]; then
+              continue
+            else
+              :
+            fi
             "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
               --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
               --outputs "$RUNNER_TEMP/golden-outputs" || result=1
@@ -174,12 +247,27 @@ jobs:
           if-no-files-found: ignore
 
       - name: Other model servers' API tests
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
+            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py -k 'not music3'
+
+      - name: Archive tested native runtime
+        if: success()
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/voxt-native-runtime.tar.gz" -C "$RUNNER_TEMP/runtime" .
+
+      - name: Upload tested native runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
+          if-no-files-found: error
 
   voxt-unit:
     name: Voxt Omni unit tests
@@ -192,15 +280,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
+      # Checkpoints, corpus and builds need about 17 GB under VOXT_CI_ROOT and
       # the runner's work directory; say so plainly instead of failing midway.
       - name: Check free disk space
         run: |
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
+          if [ "$free_gb" -lt 20 ]; then
+            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 20 GB."
             exit 1
           else
             :
@@ -244,6 +332,12 @@ jobs:
           fi
           xcrun metal --version
 
+      - name: Standalone model artifact package tests
+        run: swift test --package-path Voxt/Packages/OmniModelArtifacts
+
+      - name: Voxt tooling tests
+        run: python3 -B -m unittest discover -s Voxt/tools -p 'test_*.py'
+
       - name: Build for testing
         working-directory: Voxt
         run: |
@@ -253,16 +347,125 @@ jobs:
             -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/voxt-build.log" 2>&1 \
             || { tail -100 "$RUNNER_TEMP/voxt-build.log"; exit 1; }
 
-      - name: Omni unit tests
+      - name: Omni, API, and hotkey unit tests
         run: |
           xctestrun="$(find "$RUNNER_TEMP/voxt-derived/Build/Products" -maxdepth 1 -name 'Voxt_*.xctestrun' -print -quit)"
           xcodebuild test-without-building -xctestrun "$xctestrun" -destination platform=macOS \
             -only-testing:VoxtTests/OmniTranscriptionRequestTests \
             -only-testing:VoxtTests/OmniRealtimeSessionUpdateTests \
             -only-testing:VoxtTests/OmniASRRuntimeLaunchTests \
+            -only-testing:VoxtTests/OmniASRRuntimeStorageOwnershipTests \
             -only-testing:VoxtTests/OmniVoiceActivityTests \
             -only-testing:VoxtTests/OmniSpeakerDiarizationTests \
+            -only-testing:VoxtTests/MeetingSortformerConfigurationTests \
+            -only-testing:VoxtTests/MeetingSortformerModelStorageTests \
+            -only-testing:VoxtTests/MeetingLocalInferenceCoordinatorTests \
+            -only-testing:VoxtTests/MeetingSpeakerFeedPolicyTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
-            -only-testing:VoxtTests/MLXNativeLiveRuntimeTests
+            -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
+            -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
+            -only-testing:VoxtTests/HotkeyManagerTests \
+            -only-testing:VoxtTests/RecordingSessionLifecycleTests \
+            -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
+            -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
+
+  package:
+    name: Voxt native runtime package
+    if: ${{ vars.VOXT_ENABLE_CI_PACKAGE == 'true' }}
+    needs: [native-runtime, voxt-unit]
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if /usr/bin/xcrun --find xcodebuild >/dev/null 2>&1 && xcodebuild -version >/dev/null 2>&1; then
+            :
+          else
+            candidates="$( {
+              mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null || true
+              ls -d /Applications/Xcode*.app "$HOME"/Applications/Xcode*.app 2>/dev/null || true
+            } | sort -u )"
+            xcode=""
+            while IFS= read -r app; do
+              if [ -n "$app" ] && [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ]; then
+                xcode="$app"
+              else
+                :
+              fi
+            done <<< "$(printf '%s\n' "$candidates" | sort -V)"
+            if [ -z "$xcode" ]; then
+              echo "::error::No usable Xcode found for the Voxt package build"
+              exit 1
+            else
+              echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+              export DEVELOPER_DIR="$xcode/Contents/Developer"
+            fi
+          fi
+          xcodebuild -version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download tested native runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime-artifact
+
+      - name: Extract tested native runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/voxt-native-runtime"
+          tar -xzf "$RUNNER_TEMP/voxt-native-runtime-artifact/voxt-native-runtime.tar.gz" \
+            -C "$RUNNER_TEMP/voxt-native-runtime"
+
+      - name: Validate native runtime artifact
+        run: |
+          set -euo pipefail
+          bash Voxt/tools/validate_native_runtime.sh "$RUNNER_TEMP/voxt-native-runtime"
+
+      - name: Build unsigned PR package
+        working-directory: Voxt
+        run: |
+          set -euo pipefail
+          tools/package_local_app.sh \
+            --native-runtime "$RUNNER_TEMP/voxt-native-runtime" \
+            --output-dir "$RUNNER_TEMP/voxt-package" \
+            --no-sign
+
+      - name: Validate package contents
+        run: |
+          set -euo pipefail
+          package_dir="$(find "$RUNNER_TEMP/voxt-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_dir"
+          zip_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*-macOS.zip' -type f -print -quit)"
+          dmg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.dmg' -type f -print -quit)"
+          pkg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.pkg' -type f -print -quit)"
+          test -f "$zip_path"
+          test -f "$dmg_path"
+          test -f "$pkg_path"
+          package_contents="$(mktemp -d "$RUNNER_TEMP/voxt-package-contents.XXXXXX")"
+          trap 'rm -rf "$package_contents"' EXIT
+          unzip -q "$zip_path" -d "$package_contents"
+          bash Voxt/tools/validate_native_runtime.sh "$package_contents/Voxt.app/Contents/Resources/OmniRuntime"
+          hdiutil verify "$dmg_path"
+          shasum -a 256 -c "$zip_path.sha256"
+          shasum -a 256 -c "$pkg_path.sha256"
+
+      - name: Upload PR package
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-native-runtime-package-${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            ${{ runner.temp }}/voxt-package/*/Voxt-*-macOS.zip
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.dmg
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.pkg
+            ${{ runner.temp }}/voxt-package/*/*.sha256
+          if-no-files-found: error

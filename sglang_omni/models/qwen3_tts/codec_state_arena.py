@@ -13,7 +13,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalDecoder,
 )
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -53,7 +53,8 @@ class Qwen3TTSCodecStateArena:
     Every buffer from ``Qwen3TTSIncrementalDecoder.state_spec`` carries a
     leading slot dimension, so the arena is exactly the state a decode of
     ``num_slots`` rows would use: ``gather`` selects a cohort's rows into a
-    contiguous state and ``scatter`` writes the advanced state back.
+    contiguous state and ``scatter`` writes the advanced state back, except the
+    conv state a channels-last decoder exchanges in place at the cohort's slots.
 
     Note (Qihao Liu): ``acquire`` zeroes a slot before handing it out, so a
     reused slot is provably a cold start; ``release`` therefore returns a slot
@@ -135,7 +136,7 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if supports_device_streams(self.device):
+        if has_device_streams(self.device):
             released = self.device_module.Event()
             released.record(self.device_module.current_stream(self.device))
         else:
@@ -171,6 +172,10 @@ class Qwen3TTSCodecStateArena:
             else:
                 pass
 
+    def start_slot(self, slot: int, frame_position: int) -> None:
+        """Start an acquired slot's stream at frame_position instead of frame 0."""
+        self.storage.frame_positions[slot].fill_(frame_position)
+
     def _buffers(self, state: Qwen3TTSIncrementalCodecState) -> list[torch.Tensor]:
         return [
             *state.conv_histories.values(),
@@ -190,7 +195,7 @@ class Qwen3TTSCodecStateArena:
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if not supports_device_streams(self.device):
+        if not has_device_streams(self.device):
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass
@@ -244,7 +249,8 @@ class Qwen3TTSCodecStateArena:
         return self.gather_by_index(self.stage_index(slots))
 
     def gather_by_index(self, index: torch.Tensor) -> Qwen3TTSIncrementalCodecState:
-        """Select the rows named by a device index tensor.
+        """Select the rows named by a device index tensor; a channels-last decoder's
+        state borrows the arena's conv pools, with the scratch slot as its pad slot.
 
         Capturable: with a static index this is the gather half of a graph
         that reads the arena directly.
@@ -254,10 +260,16 @@ class Qwen3TTSCodecStateArena:
             transformer_context_length=storage.transformer_context_length,
             frame_positions=storage.frame_positions.index_select(0, index),
         )
-        for key, buffer in storage.conv_histories.items():
-            state.conv_histories[key] = buffer.index_select(0, index)
-        for key, buffer in storage.transconv_overlaps.items():
-            state.transconv_overlaps[key] = buffer.index_select(0, index)
+        if self.decoder.channels_last_weights is not None:
+            state.slot_index = index
+            state.pad_slot = self.scratch_slot
+            state.conv_histories = dict(storage.conv_histories)
+            state.transconv_overlaps = dict(storage.transconv_overlaps)
+        else:
+            for key, buffer in storage.conv_histories.items():
+                state.conv_histories[key] = buffer.index_select(0, index)
+            for key, buffer in storage.transconv_overlaps.items():
+                state.transconv_overlaps[key] = buffer.index_select(0, index)
         for layer_index, buffer in storage.transformer_keys.items():
             state.transformer_keys[layer_index] = buffer.index_select(0, index)
         for layer_index, buffer in storage.transformer_values.items():
@@ -282,10 +294,13 @@ class Qwen3TTSCodecStateArena:
         else:
             pass
         self.copy_rows(storage.frame_positions, index, state.frame_positions)
-        for key, buffer in storage.conv_histories.items():
-            self.copy_rows(buffer, index, state.conv_histories[key], key)
-        for key, buffer in storage.transconv_overlaps.items():
-            self.copy_rows(buffer, index, state.transconv_overlaps[key], key)
+        if state.slot_index is None:
+            for key, buffer in storage.conv_histories.items():
+                self.copy_rows(buffer, index, state.conv_histories[key], key)
+            for key, buffer in storage.transconv_overlaps.items():
+                self.copy_rows(buffer, index, state.transconv_overlaps[key], key)
+        else:
+            pass
         for layer_index, buffer in storage.transformer_keys.items():
             self.copy_rows(
                 buffer, index, state.transformer_keys[layer_index], f"key.{layer_index}"

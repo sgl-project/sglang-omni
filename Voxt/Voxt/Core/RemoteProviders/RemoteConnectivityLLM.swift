@@ -3,7 +3,7 @@ import Foundation
 extension RemoteProviderConnectivityTester {
     func testLLMProvider(_ provider: RemoteLLMProvider, configuration: RemoteProviderConfiguration) async throws -> String {
         let model = configuration.model.isEmpty ? provider.suggestedModel : configuration.model
-        let endpoint = resolvedLLMTestEndpoint(provider: provider, endpoint: configuration.endpoint, model: model)
+        let endpoint = RemoteLLMRuntimeClient().resolvedLLMEndpoint(provider: provider, endpoint: configuration.endpoint, model: model, apiFormat: configuration.openAIAPIFormatValue)
         var headers: [String: String] = [:]
         switch provider {
         case .anthropic:
@@ -36,7 +36,7 @@ extension RemoteProviderConnectivityTester {
                     headers[key] = value
                 }
             }
-            if provider.usesResponsesAPI {
+            if configuration.usesResponsesAPI(for: provider) {
                 return try await testResponsesReachability(
                     provider: provider,
                     endpoint: endpoint,
@@ -123,6 +123,15 @@ extension RemoteProviderConnectivityTester {
             ],
             "stream": false
         ]
+        if provider == .openAI {
+            try runtimeClient.applyOpenAICompatibleGenerationSettings(
+                to: &payload,
+                provider: provider,
+                configuration: configuration,
+                tuning: .init(maxTokens: 32, temperature: 0.2, topP: 0.9),
+                responseFormat: nil
+            )
+        }
         if provider == .ollama {
             try runtimeClient.applyOllamaCompatibleOptionOverrides(
                 to: &payload,
@@ -329,11 +338,4 @@ extension RemoteProviderConnectivityTester {
             path.hasSuffix("/api/tags")
     }
 
-    private func resolvedLLMTestEndpoint(provider: RemoteLLMProvider, endpoint: String, model: String) -> String {
-        RemoteLLMRuntimeClient().resolvedLLMEndpoint(
-            provider: provider,
-            endpoint: endpoint,
-            model: model
-        )
-    }
 }

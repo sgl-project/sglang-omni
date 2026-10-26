@@ -11,7 +11,9 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import SnakeBeta
+from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+    Qwen3OmniMoeSnakeBeta,
+)
 
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
@@ -30,7 +32,7 @@ from tests.unit_test.fixtures.qwen_fakes import (
 def test_factory_installs_shared_snake_before_graph_capture(
     monkeypatch: pytest.MonkeyPatch, enabled: bool
 ) -> None:
-    original = SnakeBeta(96).eval()
+    original = Qwen3OmniMoeSnakeBeta(96).eval()
     decoder = torch.nn.Sequential(original)
     model = SimpleNamespace(
         decoder=decoder,
@@ -66,7 +68,7 @@ def test_factory_installs_shared_snake_before_graph_capture(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hf_snake_uses_shared_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = SnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
+    original = Qwen3OmniMoeSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     decoder = torch.nn.Sequential(original)
     x = torch.randn(16, 96, 37845, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():

@@ -38,10 +38,10 @@ public:
       throw std::invalid_argument("max_new_tokens must not be negative");
     } else {
     }
-    options.stop_at_end_of_text = qwen3_asr::FormFlag(
+    options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
-    options.stop_on_token_loop =
-        qwen3_asr::FormFlag(asr_service::TextField(form, "stop_on_token_loop"));
+    options.stop_on_token_loop = omni_common::FormFlag(
+        asr_service::TextField(form, "stop_on_token_loop"));
     const std::string layout =
         asr_service::TextField(form, "audio_layout").value_or("");
     if (layout.empty() || layout == "reference") {
@@ -148,7 +148,7 @@ int main(int argc, char **argv) {
   };
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
-        max_segment_seconds * qwen3_asr::kSampleRate;
+        max_segment_seconds * omni_common::kSampleRate;
     if (decode_interval_ms <= 0) {
       throw std::invalid_argument("--decode-interval-ms must be positive");
     } else if (first_decode_ms < 0) {

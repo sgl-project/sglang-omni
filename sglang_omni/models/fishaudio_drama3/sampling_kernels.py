@@ -176,15 +176,10 @@ if HAS_TRITON:
         tail_is_candidate = tail_candidates < CANDIDATE_COUNT
         row_logits_pointer = semantic_logits_pointer + row * semantic_logits_row_stride
         main_logits = tl.load(
-            row_logits_pointer + tl.load(candidate_token_ids_pointer + main_candidates)
+            row_logits_pointer + main_candidates, mask=main_is_candidate, other=0.0
         ).to(tl.float32)
         tail_logits = tl.load(
-            row_logits_pointer
-            + tl.load(
-                candidate_token_ids_pointer + tail_candidates,
-                mask=tail_is_candidate,
-                other=0,
-            ),
+            row_logits_pointer + tail_candidates,
             mask=tail_is_candidate,
             other=0.0,
         ).to(tl.float32)

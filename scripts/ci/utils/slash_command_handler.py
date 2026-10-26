@@ -10,6 +10,7 @@ from github import Auth, Github
 from resolve_ci_labels import (
     CI_STAGES,
     RUN_ALL_LABEL,
+    RUN_LINT_ONLY_LABEL,
     resolve_ci_plan,
     select_workflows,
 )
@@ -58,6 +59,7 @@ def handle_tag_run_ci(
     user_permissions: dict[str, bool | str],
     requested_targets: frozenset[str],
     react_on_success: bool = True,
+    is_full_ci: bool = False,
 ) -> bool:
     """Apply CI stage and model labels."""
     if not user_permissions.get("can_tag_run_ci_label", False):
@@ -67,7 +69,9 @@ def handle_tag_run_ci(
     else:
         pass
 
-    labels_by_target: dict[str, frozenset[str]] = {}
+    labels_by_target: dict[str, frozenset[str]] = {
+        "lint": frozenset({RUN_LINT_ONLY_LABEL}),
+    }
     for stage in CI_STAGES:
         labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
@@ -87,12 +91,13 @@ def handle_tag_run_ci(
         return False
     else:
         pass
-    if requested_targets:
-        requested_labels = frozenset(
-            label for target in requested_targets for label in labels_by_target[target]
-        )
+    requested_labels = frozenset(
+        label for target in requested_targets for label in labels_by_target[target]
+    )
+    if is_full_ci or not requested_targets:
+        requested_labels |= {RUN_ALL_LABEL}
     else:
-        requested_labels = frozenset({RUN_ALL_LABEL})
+        pass
     current_labels = frozenset(label.name for label in pull_request.get_labels())
     removed_labels: set[str] = set()
     for stage in CI_STAGES:
@@ -259,10 +264,6 @@ def main():
             )
             comment.create_reaction("confused")
             return
-        elif command == "/tag-and-rerun-full-ci" and label_arguments:
-            pr.create_issue_comment("/tag-and-rerun-full-ci does not accept arguments.")
-            comment.create_reaction("confused")
-            return
         elif not user_perms.get("can_rerun_failed_ci", False):
             print("Permission denied: can_rerun_failed_ci is false.")
             comment.create_reaction("confused")
@@ -275,6 +276,7 @@ def main():
             user_perms,
             frozenset(label_arguments),
             react_on_success=False,
+            is_full_ci=command == "/tag-and-rerun-full-ci",
         )
         if not tagged:
             return
@@ -283,13 +285,19 @@ def main():
         time.sleep(5)
         pr.update()
         labels = frozenset(label.name for label in pr.get_labels())
+        workflows_to_rerun = select_workflows(labels)
+        if not workflows_to_rerun:
+            comment.create_reaction("+1")
+            return
+        else:
+            pass
         rerun = handle_rerun_failed_ci(
             repo,
             pr,
             comment,
             user_perms,
             react_on_success=False,
-            full_rerun_workflows=select_workflows(labels),
+            full_rerun_workflows=workflows_to_rerun,
         )
         if rerun:
             comment.create_reaction("+1")

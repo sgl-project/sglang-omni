@@ -947,6 +947,8 @@ def run_s2pro_engine_with_fake_buffers(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False

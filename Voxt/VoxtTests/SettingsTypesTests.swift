@@ -525,7 +525,11 @@ final class SettingsTypesTests: XCTestCase {
                     asrSelectionID: .mlx(MLXModelManager.defaultModelRepo),
                     llmEnabled: false,
                     llmSelectionID: .localLLM(CustomLLMModelManager.defaultModelRepo),
-                    prompt: AppPreferenceKey.defaultEnhancementPrompt
+                    prompt: AppPreferenceKey.defaultEnhancementPrompt,
+                    notes: .init(
+                        titleModelSelectionID: .localLLM(CustomLLMModelManager.defaultModelRepo),
+                        remindersSync: .init(enabled: true)
+                    )
                 ),
                 translation: .init(
                     asrSelectionID: .dictation,

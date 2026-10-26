@@ -86,7 +86,7 @@ extension RemoteLLMRuntimeClient {
         return base
     }
 
-    nonisolated func resolvedLLMEndpoint(provider: RemoteLLMProvider, endpoint: String, model: String) -> String {
+    nonisolated func resolvedLLMEndpoint(provider: RemoteLLMProvider, endpoint: String, model: String, apiFormat: OpenAIAPIFormat = .automatic) -> String {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let usesStepFunStepPlan = provider == .stepFun &&
             model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "step-router-v1"
@@ -103,10 +103,23 @@ extension RemoteLLMRuntimeClient {
                 defaultPath: "/api/v3/responses"
             )
         case .openAI:
-            return normalizedResponsesEndpoint(
-                base,
-                defaultPath: "/v1/responses"
-            )
+            let targetSuffix = apiFormat.usesResponsesAPI(endpoint: base) ? "/responses" : "/chat/completions"
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return base }
+            let apiPath = path.hasSuffix("/") ? String(path.dropLast()) : path
+            if components.percentEncodedPath.hasSuffix("/") { components.percentEncodedPath.removeLast() }
+            if apiPath.hasSuffix(targetSuffix) { return components.string ?? base }
+            if apiPath.hasSuffix("/chat/completions") {
+                components.percentEncodedPath = String(components.percentEncodedPath.dropLast("/chat/completions".count)) + targetSuffix
+            } else if apiPath.hasSuffix("/responses") {
+                components.percentEncodedPath = String(components.percentEncodedPath.dropLast("/responses".count)) + targetSuffix
+            } else if apiPath.hasSuffix("/models") {
+                components.percentEncodedPath = String(components.percentEncodedPath.dropLast("/models".count)) + targetSuffix
+            } else if apiPath.hasSuffix("/v1") {
+                components.percentEncodedPath += targetSuffix
+            } else if apiPath.isEmpty {
+                components.percentEncodedPath = "/v1" + targetSuffix
+            }
+            return components.string ?? base
         case .codex:
             return normalizedResponsesEndpoint(
                 base,
@@ -189,9 +202,10 @@ extension RemoteLLMRuntimeClient {
         provider: RemoteLLMProvider,
         endpoint: String,
         model: String,
-        streamingEnabled: Bool
+        streamingEnabled: Bool,
+        apiFormat: OpenAIAPIFormat = .automatic
     ) -> String {
-        let resolved = resolvedLLMEndpoint(provider: provider, endpoint: endpoint, model: model)
+        let resolved = resolvedLLMEndpoint(provider: provider, endpoint: endpoint, model: model, apiFormat: apiFormat)
         guard streamingEnabled else { return resolved }
 
         switch provider {
@@ -208,10 +222,11 @@ extension RemoteLLMRuntimeClient {
     nonisolated func responsesEndpointValue(
         provider: RemoteLLMProvider,
         endpoint: String,
-        model: String
+        model: String,
+        apiFormat: OpenAIAPIFormat = .automatic
     ) -> String {
         if provider.usesResponsesAPI {
-            return resolvedLLMEndpoint(provider: provider, endpoint: endpoint, model: model)
+            return resolvedLLMEndpoint(provider: provider, endpoint: endpoint, model: model, apiFormat: apiFormat)
         }
 
         let resolved = resolvedLLMEndpoint(provider: provider, endpoint: endpoint, model: model)

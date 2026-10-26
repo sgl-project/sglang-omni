@@ -4,6 +4,43 @@ import XCTest
 
 @MainActor
 final class MeetingDetailViewModelTranscriptTests: MeetingDetailViewModelTestCase {
+    func testRenameSpeakerClearsWhitespaceNameAndIgnoresEmptyLegacyIdentity() {
+        let segment = MeetingTranscriptSegment(
+            speaker: .them,
+            speakerID: "speaker-1",
+            speakerDisplayName: " Alice ",
+            audioSource: .systemAudio,
+            speakerConfidence: 0.9,
+            startSeconds: 3,
+            endSeconds: 5,
+            text: "original text",
+            translatedText: "translation",
+            isHighlighted: true
+        )
+        var persisted: [[MeetingTranscriptSegment]] = []
+        let viewModel = makeHistoryViewModel(
+            initialSettings: .init(autoGenerate: false, promptTemplate: nil, modelSelectionID: nil),
+            modelOptions: [],
+            captureMode: .meeting,
+            segments: [segment],
+            transcriptSegmentsPersistence: { _, segments in
+                persisted.append(segments)
+                return nil
+            }
+        )
+
+        viewModel.renameSpeaker(identityKey: "display: \n ", displayName: "Bob")
+        XCTAssertEqual(viewModel.segments, [segment])
+        XCTAssertTrue(persisted.isEmpty)
+
+        viewModel.renameSpeaker(identityKey: "display: Alice ", displayName: " \n ")
+        let expected = segment.updatingSpeakerDisplayName(nil)
+        XCTAssertEqual(viewModel.segments, [expected])
+        XCTAssertEqual(persisted, [[expected]])
+        XCTAssertTrue(viewModel.isSummaryStale)
+        XCTAssertEqual(viewModel.displayedSegments, [expected])
+    }
+
     func testHistoryMeetingModeEnablesSpeakerPresentationEvenWithSingleSystemSpeaker() {
         let viewModel = makeHistoryViewModel(
             initialSettings: MeetingSummarySettingsSnapshot(

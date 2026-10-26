@@ -47,7 +47,7 @@ public:
     const auto use_punctuation =
         asr_service::TextField(form, "use_punctuation");
     if (use_punctuation.has_value()) {
-      options.use_punctuation = qwen3_asr::FormFlag(use_punctuation);
+      options.use_punctuation = omni_common::FormFlag(use_punctuation);
     } else {
     }
     options.max_new_tokens = asr_service::IntegerField(form, "max_new_tokens")

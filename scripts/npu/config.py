@@ -21,7 +21,7 @@ def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("sglang-version must be a numeric X.Y.Z release")
     matrix = []
-    for device in ("a3", "910b"):
+    for device in ("a3", "950"):
         image = config[f"base-image-{device}"]
         match = re.fullmatch(
             rf"[^\s@]+:v{re.escape(version)}-cann(\d+\.\d+\.\d+)-{device}"
@@ -34,7 +34,7 @@ def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
             )
         matrix.append({"device": device, "cann": match[1]})
     if matrix[0]["cann"] != matrix[1]["cann"]:
-        raise ValueError("A3 and 910B must use the same CANN release")
+        raise ValueError("A3 and 950 must use the same CANN release")
     return config, matrix
 
 
@@ -42,7 +42,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument(
-        "--get", choices=["sglang-version", "base-image-a3", "base-image-910b"]
+        "--get", choices=["sglang-version", "base-image-a3", "base-image-950"]
     )
     modes.add_argument("--matrix", action="store_true")
     args = parser.parse_args()

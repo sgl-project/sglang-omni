@@ -57,6 +57,7 @@ def test_qwen3_omni_profile_declares_persistent_stage_routes_and_feedback() -> N
     )
     assert node.controls == (
         ControlEdge("input", "configure"),
+        ControlEdge("dialog", "configure"),
         ControlEdge("dialog", INTERRUPT, should_preempt=True),
         ControlEdge("dialog", "qwen.truncate"),
     )
@@ -83,6 +84,29 @@ def test_qwen3_omni_profile_declares_persistent_stage_routes_and_feedback() -> N
     )
     qwen_stages = ("image_encoder", "audio_encoder", "thinker", "talker_ar", "code2wav")
     assert {placement.stages[name].gpu_ids for name in qwen_stages} == {(0,)}
+
+
+@pytest.mark.parametrize("admission", [True, False])
+def test_ar_stages_take_continuation_aware_admission_from_their_factory_settings(
+    admission: bool,
+) -> None:
+    manager = ConfigManager(profile_config())
+    config = manager.merge_config(
+        manager.parse_extra_args(
+            [
+                "--thinker.factory.continuation_aware_admission",
+                str(admission).lower(),
+                "--talker_ar.factory.continuation_aware_admission",
+                str(admission).lower(),
+            ]
+        )
+    )
+    for stage_name in ("thinker", "talker_ar"):
+        assert "continuation_aware_admission" not in resolve_stage_factory_args(
+            profile_config().stage_named(stage_name), profile_config()
+        )
+        kwargs = resolve_stage_factory_args(config.stage_named(stage_name), config)
+        assert kwargs["continuation_aware_admission"] is admission
 
 
 def test_a_node_reading_every_input_format_must_take_camera_frames():

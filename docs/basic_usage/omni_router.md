@@ -1,4 +1,4 @@
-# SGLang-Omni Rust Router
+# SGLang-Omni Router
 
 `sgl-omni-router` is the multi-threaded Rust data plane for SGLang-Omni. It
 routes OpenAI-compatible chat, speech, transcription, translation, and
@@ -61,7 +61,7 @@ supervise them.
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni/sglang_omni_router/rust
+cd sglang-omni/sglang_omni_router
 
 # Build release binary
 cargo build --release --locked
@@ -452,8 +452,3 @@ loopback sockets where transport behavior is part of the contract.
 | `src/websocket/` | Speech and realtime session setup and relay |
 | `src/operations.rs` | Models, metrics, and diagnostics |
 | `tests/` | Process and protocol integration tests |
-
-## Python Router
-
-The Python router remains available as `sgl-omni-router-py`. Its guide is
-`docs/basic_usage/python_router.md`.

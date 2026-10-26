@@ -10,6 +10,7 @@ Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import os
@@ -51,6 +52,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -455,6 +457,7 @@ class Stage:
                         msg,
                         (
                             ShutdownMessage,
+                            FreezeGCMessage,
                             ProfilerStartMessage,
                             ProfilerStopMessage,
                             AdminMessage,
@@ -506,6 +509,7 @@ class Stage:
             SubmitMessage
             | DataAckMessage
             | DataReadyMessage
+            | FreezeGCMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
             | AdminMessage
@@ -517,6 +521,8 @@ class Stage:
             self.comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
             self.schedule_receive_task(msg)
+        elif isinstance(msg, FreezeGCMessage):
+            gc.freeze()
         elif isinstance(msg, ProfilerStartMessage):
             self.on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):

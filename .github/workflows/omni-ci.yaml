@@ -5,8 +5,9 @@ name: Omni CI
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
-# any stage label runs pr-test, and each model suite runs only when its stage is
-# selected. Model suites wait for the previous suite to finish but use always()
+# any stage label, including run-unit-test-ci-only, runs pr-test, and each model
+# suite runs only when its stage is selected. run-lint-only passes the gate and
+# skips setup. Model suites wait for the previous suite to finish but use always()
 # so a failed or skipped suite does not skip later suites. Only setup blocks all
 # downstream model CI.
 #
@@ -23,12 +24,11 @@ name: Omni CI
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       ci_labels:
-        description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-tts-moss-tts-local-transformer-v1.5')."
+        description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
         required: false
         type: string
         default: run-all-ci
@@ -64,6 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
+      run_self_hosted: ${{ steps.plan.outputs.run_self_hosted }}
       run_asr: ${{ steps.plan.outputs.run_asr }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
@@ -130,7 +131,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
@@ -142,11 +143,11 @@ jobs:
   setup:
     name: setup - omni venv
     needs: preflight
-    if: needs.preflight.result == 'success'
+    if: needs.preflight.result == 'success' && needs.preflight.outputs.run_self_hosted == 'true'
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -308,7 +309,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

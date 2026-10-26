@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs with its stage label or run-all-ci. A model label picks the model of
-a selected stage; a selected stage without one draws its model at random.
+A stage runs with its stage label or run-all-ci. run-lint-only satisfies the
+gate and runs no self-hosted job. A model label names a model, not a stage.
+It picks that model for every selected stage that accepts it, and never
+selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
+stage without a model label draws its model at random.
 """
 
 from __future__ import annotations
@@ -15,6 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 RUN_ALL_LABEL = "run-all-ci"
+RUN_LINT_ONLY_LABEL = "run-lint-only"
+HIGGS_TTS_MODEL_LABEL = "run-higgs-tts-3-4b"
+MOSS_TTS_MODEL_LABEL = "run-moss-tts-local-transformer-v1.5"
 OMNI_CI_WORKFLOW = "Omni CI"
 
 
@@ -40,9 +46,9 @@ CI_STAGES: tuple[CiStage, ...] = (
         label="run-asr-ci",
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={
-            "run-asr-fun-asr-nano-2512": "fun",
-            "run-asr-qwen3-asr-1.7b": "qwen3",
-            "run-asr-whisper-large-v3": "whisper",
+            "run-fun-asr-nano-2512": "fun",
+            "run-qwen3-asr-1.7b": "qwen3",
+            "run-whisper-large-v3": "whisper",
         },
         random_presets=("fun", "qwen3", "whisper"),
     ),
@@ -51,11 +57,11 @@ CI_STAGES: tuple[CiStage, ...] = (
         label="run-tts-ci",
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={
-            "run-tts-higgs-tts-3-4b": "higgs",
-            "run-tts-moss-tts-local-transformer-v1.5": "moss",
-            "run-tts-qwen3-tts-12hz-1.7b-base": "qwen3-tts",
-            "run-tts-qwen3-tts-12hz-1.7b-customvoice": "qwen3-tts-custom-voice",
-            "run-tts-fun-cosyvoice3-0.5b-2512": "cosyvoice3",
+            HIGGS_TTS_MODEL_LABEL: "higgs",
+            MOSS_TTS_MODEL_LABEL: "moss",
+            "run-qwen3-tts-12hz-1.7b-base": "qwen3-tts",
+            "run-qwen3-tts-12hz-1.7b-customvoice": "qwen3-tts-custom-voice",
+            "run-fun-cosyvoice3-0.5b-2512": "cosyvoice3",
         },
         # note (chenyang): qwen3-tts-custom-voice gates nothing until it is
         # calibrated on the CI host, so only its model label selects it.
@@ -66,8 +72,8 @@ CI_STAGES: tuple[CiStage, ...] = (
         label="run-mps-ci",
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={
-            "run-mps-higgs-tts-3-4b": "higgs",
-            "run-mps-moss-tts-local-transformer-v1.5": "moss",
+            HIGGS_TTS_MODEL_LABEL: "higgs",
+            MOSS_TTS_MODEL_LABEL: "moss",
         },
         random_presets=("higgs", "moss"),
     ),
@@ -76,8 +82,8 @@ CI_STAGES: tuple[CiStage, ...] = (
         label="run-omni-ci",
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={
-            "run-omni-qwen3-omni-30b-a3b-instruct": "qwen3-omni",
-            "run-omni-minicpm-o-4.5": "minicpmo",
+            "run-qwen3-omni-30b-a3b-instruct": "qwen3-omni",
+            "run-minicpm-o-4.5": "minicpmo",
         },
         random_presets=("qwen3-omni", "minicpmo"),
     ),
@@ -141,18 +147,21 @@ def select_workflows(labels: frozenset[str]) -> frozenset[str]:
 
 
 def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
-    """Raises ValueError without a stage label or with two model labels in a stage."""
+    """Raises ValueError without a CI label or with two model labels in a stage."""
     enabled_stage_names = select_stage_names(labels)
-    if not enabled_stage_names:
+    if not enabled_stage_names and RUN_LINT_ONLY_LABEL not in labels:
         stage_labels = ", ".join(stage.label for stage in CI_STAGES)
         raise ValueError(
-            f"No CI label found. Add {RUN_ALL_LABEL} or a stage label: {stage_labels}."
+            "No CI label found. Add "
+            f"{RUN_ALL_LABEL}, {RUN_LINT_ONLY_LABEL}, "
+            f"or a stage label: {stage_labels}."
         )
     else:
         pass
 
     preset_by_stage_name: dict[str, str] = {}
-    ignored_model_labels: list[str] = []
+    unused_model_labels: list[str] = []
+    used_model_labels: set[str] = set()
     for stage in CI_STAGES:
         model_labels = sorted(stage.preset_by_model_label.keys() & labels)
         if len(model_labels) > 1:
@@ -160,21 +169,28 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
                 f"Keep only one {stage.name} model label: {', '.join(model_labels)}."
             )
         elif stage.name not in enabled_stage_names:
-            ignored_model_labels.extend(model_labels)
+            unused_model_labels.extend(model_labels)
         elif model_labels:
+            selected_model_label = model_labels[0]
             preset_by_stage_name[stage.name] = stage.preset_by_model_label[
-                model_labels[0]
+                selected_model_label
             ]
+            used_model_labels.add(selected_model_label)
         elif stage.random_presets:
             preset_by_stage_name[stage.name] = random.Random(
                 f"{seed}-{stage.name}"
             ).choice(stage.random_presets)
         else:
             pass
+    ignored_model_labels = tuple(
+        dict.fromkeys(
+            label for label in unused_model_labels if label not in used_model_labels
+        )
+    )
     return CiPlan(
         enabled_stage_names=enabled_stage_names,
         preset_by_stage_name=preset_by_stage_name,
-        ignored_model_labels=tuple(ignored_model_labels),
+        ignored_model_labels=ignored_model_labels,
     )
 
 
@@ -190,6 +206,8 @@ def format_github_outputs(plan: CiPlan) -> list[str]:
             pass
     mps_preset = plan.preset_by_stage_name.get("mps", "")
     output_lines.append(f"mps_ci_config={MPS_CONFIG_BY_PRESET.get(mps_preset, '')}")
+    is_self_hosted = bool(plan.enabled_stage_names)
+    output_lines.append(f"run_self_hosted={str(is_self_hosted).lower()}")
     return output_lines
 
 

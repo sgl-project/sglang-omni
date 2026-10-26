@@ -333,7 +333,9 @@ class OmniDecodeScheduler(PDKVLifecycle):
         self.disagg_decode_prealloc_queue = types.SimpleNamespace(
             queue=[], retracted_queue=[], num_tokens_pre_allocated=0
         )
-        self.disagg_decode_transfer_queue = types.SimpleNamespace(queue=[])
+        self.disagg_decode_transfer_queue = types.SimpleNamespace(
+            queue=[], num_pending_deferred_releases=lambda: 0
+        )
 
     def pd_holds_kv(self) -> bool:
         with self.pd_lifecycle_lock:

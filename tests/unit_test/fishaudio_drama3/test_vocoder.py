@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
+from dac.nn.layers import Snake1d
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
@@ -26,6 +28,11 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
+)
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+    CausalConvNet,
+    DecoderBlock,
+    ResidualUnit,
 )
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -462,6 +469,181 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
     ]
 
 
+class CpuSnakeDecoder(ChannelsLastDecoder):
+    """Runs the real sequence and convolution paths with a CPU Snake boundary."""
+
+    def snake(
+        self,
+        module: Snake1d,
+        hidden_states: torch.Tensor,
+        pad_left: int = 0,
+        pad_right: int = 0,
+    ) -> torch.Tensor:
+        self.snake_padding.append((pad_left, pad_right))
+        activated = module(hidden_states.transpose(1, 2)).transpose(1, 2).contiguous()
+        return F.pad(activated, (0, 0, pad_left, pad_right))
+
+
+@pytest.mark.parametrize("context", ["sequence", "residual", "block", "decoder"])
+@pytest.mark.parametrize("frame_count", [11, 12])
+def test_snake_padding_preserves_real_decoder_sequences(
+    context: str, frame_count: int
+) -> None:
+    codec = tiny_codec()
+    codec.fold_weight_norm()
+    if context == "sequence":
+        sequence = torch.nn.Sequential(
+            Snake1d(8),
+            Snake1d(8),
+            CausalConvNet(8, 8, kernel_size=3, dilation=3),
+            torch.nn.Tanh(),
+            Snake1d(8),
+        )
+    elif context == "residual":
+        sequence = torch.nn.Sequential(ResidualUnit(8, dilation=3, causal=True))
+    elif context == "block":
+        sequence = torch.nn.Sequential(
+            DecoderBlock(input_dim=8, output_dim=4, stride=2, causal=True)
+        )
+    else:
+        sequence = codec.decoder.model
+    codec.decoder.model = sequence
+    decoder = CpuSnakeDecoder(codec, dtype=torch.float32)
+    decoder.snake_padding: list[tuple[int, int]] = []
+    with torch.no_grad():
+        if context == "decoder":
+            codes = torch.randint(0, 16, (2, 10, frame_count))
+            expected = codec.from_indices(codes)
+            actual = decoder(codes)
+        else:
+            activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
+            expected = sequence(activation.transpose(1, 2)).transpose(1, 2)
+            actual = decoder.apply_sequence(sequence, activation)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    assert any(left > 0 for left, _ in decoder.snake_padding)
+    if context == "sequence":
+        assert decoder.snake_padding == [(0, 0), (6, (-frame_count) % 3), (0, 0)]
+    elif context == "block":
+        assert decoder.snake_padding[0] == (0, 0)
+        assert len(decoder.snake_padding) == 7
+    else:
+        assert len(decoder.snake_padding) >= 2
+
+
+@pytest.mark.parametrize("dilation", [1, 3, 9])
+@pytest.mark.parametrize("frame_count", [11, 12])
+def test_prepadded_causal_conv_keeps_original_length(
+    dilation: int, frame_count: int
+) -> None:
+    codec = tiny_codec()
+    module = CausalConvNet(8, 4, kernel_size=3, dilation=dilation)
+    codec.decoder.model = torch.nn.Sequential(module)
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float32)
+    activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
+    alignment = (-(module.padding + frame_count)) % dilation
+    padded = F.pad(activation, (0, 0, module.padding, alignment))
+    with torch.no_grad():
+        expected = module(activation.transpose(1, 2)).transpose(1, 2)
+        actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
+        fallback = decoder.causal_conv(module, activation)
+    assert actual.shape == (2, frame_count, 4)
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual, fallback)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize(
+    ("frame_count", "channel_count", "pad_left", "dilation", "trim_frames"),
+    [(11, 7, 0, 1, 0), (13, 65, 6, 3, 5), (17, 96, 54, 9, 3)],
+)
+def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
+    dtype: torch.dtype,
+    batch_size: int,
+    frame_count: int,
+    channel_count: int,
+    pad_left: int,
+    dilation: int,
+    trim_frames: int,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    generator = torch.Generator(device="cuda").manual_seed(7)
+    activation = torch.randn(
+        batch_size,
+        frame_count + trim_frames,
+        channel_count,
+        generator=generator,
+        device="cuda",
+        dtype=dtype,
+    )[:, :frame_count]
+    alpha = torch.rand(channel_count, generator=generator, device="cuda") * 4 + 0.05
+    inverse_alpha = (alpha + 1e-9).reciprocal()
+    pad_right = (-(pad_left + frame_count)) % dilation
+    unpadded = torch.empty(activation.shape, device="cuda", dtype=dtype)
+    output = torch.empty(
+        (batch_size, frame_count + pad_left + pad_right, channel_count),
+        device="cuda",
+        dtype=dtype,
+    )
+    for target, left, right in [(unpadded, 0, 0), (output, pad_left, pad_right)]:
+        rows = batch_size * target.shape[1]
+        snake_channels_last_kernel[((rows + 31) // 32, (channel_count + 63) // 64)](
+            activation,
+            alpha,
+            inverse_alpha,
+            target,
+            rows,
+            frame_count,
+            channel_count,
+            activation.stride(0) // channel_count,
+            BLOCK_ROWS=32,
+            BLOCK_CHANNELS=64,
+            PAD_LEFT=left,
+            pad_right=right,
+        )
+    expected = F.pad(unpadded, (0, 0, pad_left, pad_right))
+    assert torch.equal(output.view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    alpha = torch.ones(96, device="cuda")
+    inverse_alpha = (alpha + 1e-9).reciprocal()
+    compiled_hashes: set[str] = set()
+    for frame_count in [1, 8, 9, 16, 17, 31, 32, 33, 64, 127]:
+        pad_right = (-frame_count) % 9
+        activation = torch.randn(2, frame_count + 3, 96, device="cuda", dtype=dtype)
+        output = torch.empty(
+            (2, frame_count + 54 + pad_right, 96), device="cuda", dtype=dtype
+        )
+        rows = 2 * output.shape[1]
+        compiled = snake_channels_last_kernel[((rows + 31) // 32, 2)](
+            activation,
+            alpha,
+            inverse_alpha,
+            output,
+            rows,
+            frame_count,
+            96,
+            frame_count + 3,
+            BLOCK_ROWS=32,
+            BLOCK_CHANNELS=64,
+            PAD_LEFT=54,
+            pad_right=pad_right,
+        )
+        compiled_hashes.add(compiled.hash)
+    assert len(compiled_hashes) == 1
+
+
 @pytest.mark.accelerator
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
@@ -589,7 +771,7 @@ def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
     ],
 )
 def test_a_ramp_with_a_non_positive_stride_is_refused(
-    stream_followup_stride_ramp: tuple[int, ...]
+    stream_followup_stride_ramp: tuple[int, ...],
 ) -> None:
     with pytest.raises(ValueError, match="stream_followup_stride_ramp"):
         Drama3VocoderScheduler(

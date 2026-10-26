@@ -17,6 +17,12 @@ extension RemoteProviderConfigurationSheet {
         llmProviderForPicker == .openAI
     }
 
+    var isCustomOpenAILLMEndpoint: Bool {
+        guard isOpenAILLMProvider,
+              let host = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines))?.host else { return false }
+        return host.lowercased() != "api.openai.com"
+    }
+
     var isAliyunASRProvider: Bool {
         asrProviderForSheet == .aliyunBailianASR
     }
@@ -236,7 +242,9 @@ extension RemoteProviderConfigurationSheet {
 
     var generationThinkingEffortMenuOptions: [SettingsMenuOption<String>] {
         let values: [String]
-        if usesOpenAIResponsesOptions {
+        if isCustomOpenAILLMEndpoint {
+            values = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        } else if usesOpenAIResponsesOptions {
             values = OpenAIReasoningEffort.supportedCases(forModel: resolvedModelValue())
                 .filter { $0 != .automatic }
                 .map(\.rawValue)
@@ -433,7 +441,13 @@ extension RemoteProviderConfigurationSheet {
     }
 
     var endpointFieldPlaceholder: String {
-        RemoteProviderConfigurationPolicy.endpointPlaceholder(
+        if isOpenAILLMProvider {
+            return RemoteLLMRuntimeClient().resolvedLLMEndpoint(
+                provider: .openAI, endpoint: "", model: resolvedModelValue(),
+                apiFormat: OpenAIAPIFormat(rawValue: openAIAPIFormat) ?? .automatic
+            )
+        }
+        return RemoteProviderConfigurationPolicy.endpointPlaceholder(
             target: testTarget,
             resolvedModel: resolvedModelValue()
         )

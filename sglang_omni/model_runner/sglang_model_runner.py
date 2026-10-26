@@ -615,6 +615,12 @@ class SGLModelRunner(ModelRunner):
             return layers
         else:
             extra_layers = self.extra_prefill_graph_attention_layers
+            if self.model_arch_override == "WhisperForConditionalGeneration":
+                extra_layers = [
+                    layer.encoder_attn.attn for layer in self.model.model.decoder.layers
+                ] + extra_layers
+            else:
+                pass
             return AttentionAndMoeLayers(
                 attention_layers=[*layers.attention_layers, *extra_layers],
                 moe_layers=layers.moe_layers,
@@ -740,6 +746,7 @@ class SGLModelRunner(ModelRunner):
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
+            "LlamaForCausalLMEagle3": "sglang_omni.model_runner.eagle3_draft:OmniLlamaForCausalLMEagle3",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

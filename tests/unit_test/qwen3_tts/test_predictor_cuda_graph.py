@@ -79,7 +79,7 @@ class TupleLinear(nn.Module):
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
         self.quant_method = UnquantizedLinearMethod()
-        self.tp_size = 1
+        self.tp_group = None
 
     @property
     def weight(self) -> torch.Tensor:
@@ -384,7 +384,11 @@ def test_missing_embedding_buffer_uses_original_graph_path():
 def with_projected_tables(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
     device = talker.predictor_k_cache.device
     talker.predictor_projected_embeddings = torch.empty(
-        NUM_CODE_GROUPS - 2, PRED_VOCAB, HIDDEN, device=device, dtype=DTYPE
+        NUM_CODE_GROUPS - 2,
+        talker.config.code_predictor_config.vocab_size,
+        HIDDEN,
+        device=device,
+        dtype=DTYPE,
     )
     talker.predictor_projected_buffer = torch.empty(
         MAX_BS, HIDDEN, device=device, dtype=DTYPE
@@ -437,6 +441,59 @@ def test_projected_tables_decode_the_codes_the_projection_decodes(batch_size: in
 
     assert torch.equal(table_codes, projection_codes)
     assert torch.equal(table_embeds, projection_embeds)
+
+
+def with_checkpoint_vocab(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
+    device = talker.predictor_k_cache.device
+    talker.config.code_predictor_config.vocab_size = CHECKPOINT_VOCAB
+    talker.code_predictor.model.codec_embedding = Qwen3TTSCodecTables(
+        NUM_CODE_GROUPS - 1, CHECKPOINT_VOCAB, HIDDEN
+    ).to(device, DTYPE)
+    talker.code_predictor.lm_head = nn.ModuleList(
+        [
+            TupleLinear(HIDDEN, CHECKPOINT_VOCAB).to(device, DTYPE)
+            for _ in range(NUM_CODE_GROUPS - 1)
+        ]
+    )
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+@pytest.mark.parametrize("projected", [False, True])
+def test_sampled_codebook_steps_match_the_separate_sampler_and_gather(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, projected: bool
+):
+    if torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("the split sampler runs on sm_90")
+    else:
+        pass
+    device = torch.device("cuda")
+    requests = uniform_requests(batch_size, top_k=50, top_p=0.9)
+    talkers = []
+    for _ in range(2):
+        talker = with_checkpoint_vocab(build_talker(device))
+        talker = with_projected_tables(talker) if projected else talker
+        talker.prepare_decode_buffers(requests)
+        talkers.append(talker)
+    fused_talker, separate_talker = talkers
+    object.__delattr__(separate_talker, "predictor_embedding_buffer")
+    layer0, hidden, positions = step_inputs(batch_size, device)
+    separate_eager = run_eager(separate_talker, layer0, hidden, positions)
+    separate_graph = run_forward(separate_talker, layer0, hidden, positions)
+
+    def sampler_outside_the_codebook_step(self, logits, *, sub_positions):
+        raise AssertionError("a sampled codebook step ran the sampler on its own")
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "sample_subtalker_token", sampler_outside_the_codebook_step
+    )
+    fused_eager = run_eager(fused_talker, layer0, hidden, positions)
+    fused_graph = run_forward(fused_talker, layer0, hidden, positions)
+
+    for codes, embeds in (fused_eager, fused_graph, separate_graph):
+        assert torch.equal(codes, separate_eager[0])
+        assert torch.equal(embeds, separate_eager[1])
 
 
 @pytest.mark.accelerator
