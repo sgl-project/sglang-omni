@@ -319,7 +319,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         if (
             current_platform.is_npu()
             and self.enable_pre_lm_encoder
-            and (self.enable_encoder_cuda_graph or not cfg.disable_cuda_graph)
+            and (
+                self.enable_encoder_cuda_graph
+                or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+            )
             and (
                 os.environ.get("PER_STREAM_QUEUE") != "1"
                 or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"

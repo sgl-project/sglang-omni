@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
     build_default_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
@@ -163,23 +164,28 @@ def test_per_stream_queue_env_defaults(
         "enable_pre_lm_encoder",
         "enable_encoder_cuda_graph",
         "enable_decode_graph",
+        "enable_prefill_graph",
+        "disable_cuda_graph",
         "per_stream_queue",
         "task_queue_enable",
         "launch_blocking",
         "is_valid",
     ),
     [
-        (True, True, True, True, "1", "1", "0", True),
-        (True, True, True, False, "1", "2", "0", False),
-        (True, True, False, True, "1", None, None, True),
-        (True, True, False, True, "1", "2", "0", False),
-        (True, True, False, True, None, None, None, False),
-        (True, True, True, True, "0", "1", "0", False),
-        (True, True, True, True, "1", "0", "0", False),
-        (True, True, True, True, "1", "1", "1", False),
-        (True, True, False, False, None, None, None, True),
-        (False, True, True, True, None, None, None, True),
-        (True, False, True, True, None, None, None, True),
+        (True, True, True, True, False, False, "1", "1", "0", True),
+        (True, True, True, False, False, True, "1", "2", "0", False),
+        (True, True, False, True, False, False, "1", None, None, True),
+        (True, True, False, True, False, False, "1", "2", "0", False),
+        (True, True, False, True, False, False, None, None, None, False),
+        (True, True, True, True, False, False, "0", "1", "0", False),
+        (True, True, True, True, False, False, "1", "0", "0", False),
+        (True, True, True, True, False, False, "1", "1", "1", False),
+        (True, True, False, False, False, True, None, None, None, True),
+        (False, True, True, True, False, False, None, None, None, True),
+        (True, False, True, True, False, False, None, None, None, True),
+        (True, True, False, False, False, False, None, "0", None, True),
+        (True, True, False, False, True, False, "1", "0", None, False),
+        (True, True, False, True, False, True, "1", "0", None, False),
     ],
 )
 def test_npu_graph_startup_requires_per_stream_queues(
@@ -188,6 +194,8 @@ def test_npu_graph_startup_requires_per_stream_queues(
     enable_pre_lm_encoder: bool,
     enable_encoder_cuda_graph: bool,
     enable_decode_graph: bool,
+    enable_prefill_graph: bool,
+    disable_cuda_graph: bool,
     per_stream_queue: str | None,
     task_queue_enable: str | None,
     launch_blocking: str | None,
@@ -217,8 +225,24 @@ def test_npu_graph_startup_requires_per_stream_queues(
     monkeypatch.setattr(builder, "uses_torch_mps", lambda: False)
     monkeypatch.setattr(builder, "log_memory_checkpoint", lambda checkpoint: None)
     server_args = SimpleNamespace(
-        disable_cuda_graph=not enable_decode_graph,
-        cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=[1])),
+        disable_cuda_graph=disable_cuda_graph,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.FULL
+                    if enable_decode_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+                bs=[1],
+            ),
+            prefill=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.BREAKABLE
+                    if enable_prefill_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+            ),
+        ),
     )
     expectation = (
         nullcontext()
