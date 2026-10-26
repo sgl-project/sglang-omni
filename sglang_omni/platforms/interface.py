@@ -124,6 +124,15 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform captures codec decode graphs (Higgs TTS, Mimi)"""
         return False
 
+    def enable_mimi_decode_graph(self) -> bool:
+        """Check if current platform captures PersonaPlex's Mimi decode graphs.
+
+        Kept separate from ``enable_codec_decode_graph`` because the Higgs TTS
+        codec and Mimi have different device support: a platform can capture
+        Mimi's graphs without changing the Higgs TTS policy.
+        """
+        return self.enable_codec_decode_graph()
+
     def enable_talker_graph(self) -> bool:
         return True
 

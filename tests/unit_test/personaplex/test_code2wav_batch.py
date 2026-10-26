@@ -746,8 +746,8 @@ class CountingGraph:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(
-    not current_platform.enable_codec_decode_graph(),
-    reason="the platform does not capture codec decode graphs",
+    not current_platform.enable_mimi_decode_graph(),
+    reason="the platform does not capture Mimi decode graphs",
 )
 def test_graph_replay_matches_eager_decode_through_the_scheduler(
     random_codec: MimiCodec,

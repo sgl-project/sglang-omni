@@ -17,6 +17,13 @@ import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
 
 try:
+    import torch_npu
+except ImportError:
+    # note (chaijiacheng888): only NPU stacks install torch_npu; the NPU backend
+    # reads its option API lazily, so a non-NPU build can still import this.
+    torch_npu = None
+
+try:
     from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
 except ImportError:
     # note (cocoa): NPU stacks on PyTorch 2.10 do not expose XPU graph types.
@@ -127,8 +134,13 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        # note : aclop ops cannot run during capture; disabling internal formats selects
-        # aclnn, and the default is restored afterwards.The option is process-global;
+        # note (chaijiacheng888): internal-format convolutions lower to aclop, which
+        # cannot run during capture; disabling the option selects aclnn. Restore
+        # the caller's value: the option is process-global, and Qwen3-TTS already
+        # disables it around its whole warmup.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
         torch.npu.config.allow_internal_format = False
         try:
             capture = torch.npu.graph(npu_graph=graph, **kwargs)
@@ -138,7 +150,7 @@ class NpuDeviceGraphBackend:
                     stack.enter_context(capture)
                 yield graph
         finally:
-            torch.npu.config.allow_internal_format = True
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
 
 
 class XpuDeviceGraphBackend:

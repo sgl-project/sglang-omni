@@ -16,8 +16,6 @@ It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voice
 
 Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
 
-It's ok to run it on Ascend NPU hardware, the only difference thing is set `--lm.engine.disable_cuda_graph false` in luanch command.
-
 The Mimi encoder stage loads only its encoding path, and Code2Wav loads only its
 decoding path. Both retain the codebooks and quantizer projections their path
 needs, reducing the combined FP32 codec weights and buffers by about 302 MiB.

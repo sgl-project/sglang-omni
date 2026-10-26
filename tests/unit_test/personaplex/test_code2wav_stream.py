@@ -454,7 +454,7 @@ def test_platforms_without_codec_decode_graphs_batch_eagerly(random_codec, monke
         mimi_decode_graph,
         "current_platform",
         SimpleNamespace(
-            enable_codec_decode_graph=lambda: False,
+            enable_mimi_decode_graph=lambda: False,
             get_device_graph_backend=lambda device: SimpleNamespace(),
         ),
     )
@@ -501,8 +501,8 @@ def decode_plan(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(
-    not current_platform.enable_codec_decode_graph(),
-    reason="the platform does not capture codec decode graphs",
+    not current_platform.enable_mimi_decode_graph(),
+    reason="the platform does not capture Mimi decode graphs",
 )
 def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_codec):
     codec = random_codec.cuda()
