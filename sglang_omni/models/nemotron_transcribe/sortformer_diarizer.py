@@ -4,15 +4,30 @@
 import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from sglang_omni.models.nemotron_transcribe.sortformer import (
-    SortformerModules,
-    StreamingState,
-)
+from sglang_omni.models.nemotron_diarization.model import SortformerModules
+from sglang_omni.models.nemotron_diarization.speaker_cache import SpeakerCache
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
+
+
+def downsample_preds(predictions: torch.Tensor, factor: int) -> torch.Tensor:
+    """Average non-overlapping speaker-probability windows. predictions is (batch, time, speakers)."""
+    if factor == 1 or predictions.shape[1] == 0:
+        return predictions
+    else:
+        pass
+    pooled = F.avg_pool1d(
+        predictions.transpose(1, 2),
+        kernel_size=factor,
+        stride=factor,
+        ceil_mode=True,
+        count_include_pad=False,
+    )
+    return pooled.transpose(1, 2)
 
 
 class SortformerDiarizer(nn.Module):
@@ -29,69 +44,52 @@ class SortformerDiarizer(nn.Module):
         self.sortformer_modules = modules
         self.downsample_factor = output_subsampling_factor
 
-    def initial_state(self, batch: int) -> StreamingState:
-        parameter = next(self.encoder.parameters())
-        return self.sortformer_modules.initial_state(
-            batch, parameter.device, parameter.dtype
-        )
-
     def streaming_step(
         self,
-        state: StreamingState,
+        state: SpeakerCache,
         total_predictions: torch.Tensor,
         mel_chunk: torch.Tensor,
         mel_lengths: torch.Tensor,
         left_offset: int,
         right_offset: int,
-    ) -> tuple[StreamingState, torch.Tensor]:
-        """mel_chunk is (batch, bins, time). Returns state and predictions concatenated on time."""
+    ) -> torch.Tensor:
+        """mel_chunk is (batch, bins, time). Returns predictions concatenated on time."""
         modules = self.sortformer_modules
         pre_encoded, pre_lengths = self.encoder.pre_encode(mel_chunk, mel_lengths)
         left_frames = round(left_offset / self.encoder.subsampling_factor)
         right_frames = math.ceil(right_offset / self.encoder.subsampling_factor)
-        combined = torch.cat(
-            [state.speaker_cache, state.recent_embeddings, pre_encoded], dim=1
-        )
-        combined_lengths = (
-            state.speaker_cache.shape[1]
-            + state.recent_embeddings.shape[1]
-            + pre_lengths
-        )
-        encoded, encoded_lengths = self.encoder(
-            combined, combined_lengths, bypass_pre_encode=True
-        )
-        hidden = encoded.transpose(1, 2)
-        hidden = modules.encoder_proj(hidden)
-        hidden = modules.upsample_hidden(hidden)
-        time_mask = torch.arange(encoded.shape[-1], device=hidden.device).unsqueeze(
-            0
-        ) < encoded_lengths.unsqueeze(1)
-        time_mask = time_mask.repeat_interleave(modules.upsample_factor, dim=1)
-        logits = modules.forward_speaker_logits(hidden)
-        high_predictions = torch.sigmoid(logits) * time_mask.unsqueeze(-1).to(
-            logits.dtype
-        )
-        state_predictions = modules.downsample_preds(
-            high_predictions, modules.upsample_factor
-        ).detach()
-        state_predictions = self.mask_predictions(state_predictions, encoded_lengths)
-        saved_cache = state.speaker_cache.shape[1]
-        saved_recent = state.recent_embeddings.shape[1]
-        state = modules.update_cache(
-            state, pre_encoded, state_predictions, left_frames, right_frames
-        )
         core = pre_encoded.shape[1] - left_frames - right_frames
-        start = (saved_cache + saved_recent + left_frames) * modules.upsample_factor
-        chunk_predictions = high_predictions[
-            :, start : start + core * modules.upsample_factor
-        ]
-        if self.downsample_factor > 1:
-            chunk_predictions = modules.downsample_preds(
-                chunk_predictions, self.downsample_factor
-            )
+        if core < 0:
+            raise ValueError("streaming chunk is shorter than its context")
         else:
             pass
-        return state, torch.cat([total_predictions, chunk_predictions], dim=1)
+        prefix = state.cache.shape[1] + state.fifo.shape[1]
+        combined = torch.cat([state.cache, state.fifo, pre_encoded], dim=1)
+        encoded, encoded_lengths = self.encoder(
+            combined, prefix + pre_lengths, bypass_pre_encode=True
+        )
+        high_predictions = modules(
+            encoded.transpose(1, 2), encoded_lengths.unsqueeze(1)
+        )
+        state_predictions = self.mask_predictions(
+            downsample_preds(high_predictions, modules.upsample).detach(),
+            encoded_lengths,
+        )
+        state.update(
+            pre_encoded[:, left_frames : left_frames + core],
+            torch.cat(
+                [
+                    state_predictions[:, :prefix],
+                    state_predictions[:, prefix + left_frames :],
+                ],
+                dim=1,
+            ),
+            modules.learnable_sil_emb,
+        )
+        start = (prefix + left_frames) * modules.upsample
+        chunk_predictions = high_predictions[:, start : start + core * modules.upsample]
+        chunk_predictions = downsample_preds(chunk_predictions, self.downsample_factor)
+        return torch.cat([total_predictions, chunk_predictions], dim=1)
 
     @staticmethod
     def mask_predictions(

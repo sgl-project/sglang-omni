@@ -6,10 +6,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from sglang_omni.models.nemotron_diarization.model import SortformerModules
 from sglang_omni.models.nemotron_transcribe.hf_config import decode_nemo_floats
 from sglang_omni.models.nemotron_transcribe.mel_features import LogMelFrontend
 from sglang_omni.models.nemotron_transcribe.parallel_expert import ParallelExpertEncoder
-from sglang_omni.models.nemotron_transcribe.sortformer import SortformerModules
 from sglang_omni.models.nemotron_transcribe.sortformer_diarizer import (
     SortformerDiarizer,
 )
@@ -213,6 +213,16 @@ def build_transformer(
     )
 
 
+SORTFORMER_SCORING = {
+    "spkcache_sil_frames_per_spk": 1,
+    "pred_score_threshold": 0.25,
+    "scores_boost_latest": 0.05,
+    "strong_boost_rate": 0.75,
+    "weak_boost_rate": 1.5,
+    "min_pos_scores_rate": 0.5,
+}
+
+
 def build_sortformer(
     config: dict[str, object], upsample_factor: int
 ) -> SortformerModules:
@@ -220,23 +230,18 @@ def build_sortformer(
         raise ValueError("only the learned silence embedding is supported")
     else:
         pass
+    for name, supported in SORTFORMER_SCORING.items():
+        if read_float(config, name, supported) != supported:
+            raise ValueError(
+                f"unsupported sortformer_modules {name}, expected {supported}"
+            )
+        else:
+            pass
     return SortformerModules(
-        speaker_count=read_int(config, "num_spks", 8),
         fc_d_model=read_int(config, "fc_d_model", 512),
         tf_d_model=read_int(config, "tf_d_model", 192),
-        dropout_rate=read_float(config, "dropout_rate", 0.5),
-        upsample_factor=upsample_factor,
-        spkcache_len=read_int(config, "spkcache_len", 188),
-        fifo_len=read_int(config, "fifo_len", 0),
-        chunk_len=read_int(config, "chunk_len", 188),
-        spkcache_update_period=read_int(config, "spkcache_update_period", 188),
-        spkcache_sil_frames_per_spk=read_int(config, "spkcache_sil_frames_per_spk", 1),
-        pred_score_threshold=read_float(config, "pred_score_threshold", 0.25),
-        max_index=read_int(config, "max_index", 99999),
-        scores_boost_latest=read_float(config, "scores_boost_latest", 0.05),
-        strong_boost_rate=read_float(config, "strong_boost_rate", 0.75),
-        weak_boost_rate=read_float(config, "weak_boost_rate", 1.5),
-        min_pos_scores_rate=read_float(config, "min_pos_scores_rate", 0.5),
+        speakers=read_int(config, "num_spks", 8),
+        upsample=upsample_factor,
     )
 
 

@@ -8,6 +8,7 @@ import math
 import torch
 from torch import nn
 
+from sglang_omni.models.nemotron_diarization.speaker_cache import SpeakerCache
 from sglang_omni.models.nemotron_transcribe.mel_features import normalize_features
 from sglang_omni.models.nemotron_transcribe.sortformer_diarizer import (
     SortformerDiarizer,
@@ -74,7 +75,7 @@ class ParallelExpertEncoder(nn.Module):
             pass
         self.asr_encoder = asr_encoder
         self.asr_norm = nn.LayerNorm(asr_encoder.d_model)
-        self.diar_norm = nn.LayerNorm(diarizer.sortformer_modules.speaker_count)
+        self.diar_norm = nn.LayerNorm(diarizer.sortformer_modules.speakers)
         self.diarization_model = diarizer
         self.asr_normalize = asr_normalize
         self.diar_normalize = diar_normalize
@@ -88,9 +89,7 @@ class ParallelExpertEncoder(nn.Module):
         self.cache_update_frames = cache_update_frames
         self.register_buffer(
             "diar_kernel",
-            speaker_kernel(
-                diarizer.sortformer_modules.speaker_count, asr_encoder.d_model
-            ),
+            speaker_kernel(diarizer.sortformer_modules.speakers, asr_encoder.d_model),
             persistent=False,
         )
 
@@ -110,15 +109,19 @@ class ParallelExpertEncoder(nn.Module):
             normalize_features(mel, mel_lengths, self.diar_normalize),
             self.diarization_model.encoder,
         )
-        modules = self.diarization_model.sortformer_modules
-        modules.chunk_len = self.online_frames
-        modules.fifo_len = self.recent_limit
-        modules.spkcache_update_period = self.cache_update_frames
-        modules.spkcache_len = self.cache_limit
+        speakers = self.diarization_model.sortformer_modules.speakers
         batch = mel.shape[0]
-        state = self.diarization_model.initial_state(batch)
+        state = SpeakerCache(
+            diar_mel,
+            cache_size=self.cache_limit,
+            fifo_size=self.recent_limit,
+            update_period=self.cache_update_frames,
+            batch=batch,
+            width=self.diarization_model.encoder.d_model,
+            speakers=speakers,
+        )
         total = torch.zeros(
-            (batch, 0, modules.speaker_count),
+            (batch, 0, speakers),
             device=diar_mel.device,
             dtype=diar_mel.dtype,
         )
@@ -147,7 +150,7 @@ class ParallelExpertEncoder(nn.Module):
             core = max(0, min(core, encoded.shape[-1] - left_drop))
             asr_parts.append(encoded[:, :, left_drop : left_drop + core])
             previous = total.shape[1]
-            state, total = self.diarization_model.streaming_step(
+            total = self.diarization_model.streaming_step(
                 state,
                 total,
                 diar_mel[:, :, context_start:context_end],

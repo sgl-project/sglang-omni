@@ -4,6 +4,7 @@
 import librosa
 import torch
 
+from sglang_omni.models.nemotron_diarization.model import SortformerModules
 from sglang_omni.models.nemotron_transcribe.hf_config import num_audio_tokens
 from sglang_omni.models.nemotron_transcribe.mel_features import (
     LogMelFrontend,
@@ -15,7 +16,6 @@ from sglang_omni.models.nemotron_transcribe.perception import (
     MelPreprocessor,
     load_perception_weights,
 )
-from sglang_omni.models.nemotron_transcribe.sortformer import SortformerModules
 from sglang_omni.models.nemotron_transcribe.sortformer_diarizer import (
     SortformerDiarizer,
 )
@@ -102,22 +102,7 @@ def small_parallel_encoder() -> ParallelExpertEncoder:
         feat_in=4, d_model=8, n_heads=2, n_layers=1, subsampling_factor=2, drop_rate=0.0
     )
     speaker_modules = SortformerModules(
-        speaker_count=2,
-        fc_d_model=8,
-        tf_d_model=4,
-        dropout_rate=0.0,
-        upsample_factor=2,
-        spkcache_len=4,
-        fifo_len=2,
-        chunk_len=4,
-        spkcache_update_period=4,
-        spkcache_sil_frames_per_spk=1,
-        pred_score_threshold=0.25,
-        max_index=99999,
-        scores_boost_latest=0.05,
-        strong_boost_rate=0.75,
-        weak_boost_rate=1.5,
-        min_pos_scores_rate=0.5,
+        fc_d_model=8, tf_d_model=4, speakers=2, upsample=2
     )
     diarizer = SortformerDiarizer(
         diarization_encoder, speaker_modules, output_subsampling_factor=2
