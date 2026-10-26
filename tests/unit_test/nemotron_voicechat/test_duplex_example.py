@@ -12,8 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sglang_omni.models.nemotron_voicechat.duplex_config import (
-    TALKER_CONTEXT_LENGTH,
-    THINKER_CONTEXT_LENGTH,
+    CONTEXT_LENGTH,
     NemotronVoiceChatDuplexPipelineConfig,
 )
 
@@ -102,13 +101,13 @@ def test_duplex_capacity_follows_max_sessions() -> None:
     assert config.stage_factory_kwargs("thinker") == {
         "server_args_overrides": {
             "max_running_requests": request_slots,
-            "max_total_tokens": request_slots * THINKER_CONTEXT_LENGTH,
+            "max_total_tokens": request_slots * CONTEXT_LENGTH,
         }
     }
     assert config.stage_factory_kwargs("talker") == {
         "server_args_overrides": {
             "max_running_requests": request_slots,
-            "max_total_tokens": request_slots * TALKER_CONTEXT_LENGTH,
+            "max_total_tokens": request_slots * CONTEXT_LENGTH,
         }
     }
 

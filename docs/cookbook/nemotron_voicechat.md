@@ -98,6 +98,7 @@ Keep the realtime audio stream running, including silence while waiting for a re
 ## Known limitations
 
 - The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API. Native duplex sessions have independent state but do not yet batch perception or codec work across conversations.
+- A conversation holds at most 6144 positions in the thinker and in the talker: the system prompt, then one per 80 ms frame, so about eight minutes. The checkpoint was trained on conversations of at most about two minutes, and context beyond that may not be retained reliably.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.
 - Talker output is not bit-identical to NeMo's offline script even with deterministic sampling on both sides (about 82 % of quantizer cells and 63 of 150 frames agree on a 12 s fixture; transcripts and amplitude envelopes match). Known causes: the backbone and KV cache run in bfloat16 because SGLang's attention backends and `sgl_kernel`'s Gemma RMSNorm have no fp32 path, while NeMo runs the whole talker in fp32; NeMo's offline script enables classifier-free guidance by default; and NeMo's offline recipe walks the system-prompt region before frame 0 (realtime convention here; see `prompt_region_steps`). The thinker is frame-exact with NeMo.

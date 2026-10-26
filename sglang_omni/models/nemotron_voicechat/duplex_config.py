@@ -32,9 +32,8 @@ STAGES = ["perception", "thinker", "talker", "code2wav"]
 TOOL_STAGE = "tool"
 VOICECHAT_NODE = "voicechat"
 DEFAULT_MAX_SESSIONS = 1
-THINKER_CONTEXT_LENGTH = 8192
+CONTEXT_LENGTH = 6144
 THINKER_MEMORY_FRACTION = 0.40
-TALKER_CONTEXT_LENGTH = 4096
 TALKER_MEMORY_FRACTION = 0.25
 
 
@@ -113,13 +112,8 @@ class NemotronVoiceChatDuplexPipelineConfig(PipelineConfig):
                 and engine.max_total_tokens is None
                 and engine.mem_fraction_static == default_memory_fraction
             ):
-                context_length = (
-                    THINKER_CONTEXT_LENGTH
-                    if stage_name == "thinker"
-                    else TALKER_CONTEXT_LENGTH
-                )
                 server_args_overrides["max_total_tokens"] = (
-                    request_slots * context_length
+                    request_slots * CONTEXT_LENGTH
                 )
             else:
                 pass

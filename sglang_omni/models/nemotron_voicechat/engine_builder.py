@@ -11,10 +11,7 @@ from sglang.kernels.ops.mamba.triton_ops import (
 )
 from transformers import AutoTokenizer
 
-from sglang_omni.models.nemotron_voicechat.duplex_config import (
-    TALKER_CONTEXT_LENGTH,
-    THINKER_CONTEXT_LENGTH,
-)
+from sglang_omni.models.nemotron_voicechat.duplex_config import CONTEXT_LENGTH
 from sglang_omni.models.nemotron_voicechat.hf_config import (
     VOICECHAT_MODEL_ARCH_OVERRIDE,
     NemotronVoiceChatConfig,
@@ -144,7 +141,7 @@ class VoiceChatEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
 
 class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat"
-    context_length = THINKER_CONTEXT_LENGTH
+    context_length = CONTEXT_LENGTH
     scheduler_class = OmniScheduler
 
     def __init__(
@@ -224,7 +221,7 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
 
 class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat-talker"
-    context_length = TALKER_CONTEXT_LENGTH
+    context_length = CONTEXT_LENGTH
     scheduler_class = NemotronTalkerScheduler
 
     def __init__(
