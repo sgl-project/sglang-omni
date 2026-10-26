@@ -41,7 +41,8 @@ tests/
     │   └── qwen_fakes.py
     ├── utils/
     │   ├── test_audio.py
-    │   └── test_g711.py
+    │   ├── test_g711.py
+    │   └── test_managed_workers.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -216,9 +217,6 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
-    ├── router/
-    │   ├── test_app.py
-    │   └── test_core.py
     ├── profiler/
     │   ├── test_event_recorder.py
     │   ├── test_stop_run_id.py
@@ -847,12 +845,8 @@ that happened to contain an older version of the test.
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
     ownership, and async resolve contracts.
 
-- `unit_test/router/`: SGLang-Omni Router unit tests:
-  - router CLI/config behavior
-  - worker metadata and health-state contracts
-  - request routing, proxying, and streaming relay
-  - worker selection policy behavior
-  - managed launcher command construction and cleanup.
+- `unit_test/utils/test_managed_workers.py`: CI worker command construction, GPU placement, parallel readiness, and process-group cleanup for `tests/utils/managed_workers.py`.
+- `sglang_omni_router/tests/` (from the repository root): Rust router process, HTTP, media, WebSocket, and voice integration tests. Unit tests live next to the Rust implementation.
 
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
@@ -941,8 +935,15 @@ that happened to contain an older version of the test.
   channel, `audios` input, role prompt, voice resolution, `stage_params`),
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
-  filler values, seeds, stream chunks, context limit, input validation). CPU
-  only, no weights; runner and request tests need SGLang but start no engine.
+  filler values, seeds, stream chunks, context limit, input validation), and
+  full-duplex sessions (a session stepped unit by unit through the LM session
+  adapter matches one offline request row for row, frame for frame and word
+  for word, however the audio is cut into units; per-session Mimi encode and
+  batched decode on the offline decode slots; the prompt handed on once; stage
+  sizes and settings resolved through the session config; deployment and
+  session voice, role prompt and sampling; the `/v1/realtime` events, and a
+  session over the WebSocket against a scripted pipeline). CPU only, no
+  weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

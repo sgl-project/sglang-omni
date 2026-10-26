@@ -12,6 +12,7 @@ extension OnboardingGuideView {
         isPaused: Bool,
         status: ModelDownloadStatusSnapshot?,
         errorMessage: String?,
+        unavailabilityReason: String? = nil,
         onSelect: @escaping () -> Void,
         onInstall: @escaping () -> Void,
         onPause: @escaping () -> Void,
@@ -54,10 +55,11 @@ extension OnboardingGuideView {
                 } else if isInstalled {
                     Button(isSelected ? AppLocalization.localizedString("Selected") : AppLocalization.localizedString("Select"), action: onSelect)
                         .buttonStyle(SettingsCompactActionButtonStyle())
-                        .disabled(isSelected)
+                        .disabled(isSelected || unavailabilityReason != nil)
                 } else {
                     Button(AppLocalization.localizedString("Install"), action: onInstall)
                         .buttonStyle(SettingsCompactActionButtonStyle())
+                        .disabled(unavailabilityReason != nil)
                 }
             }
 
@@ -65,6 +67,14 @@ extension OnboardingGuideView {
                 ModelDownloadStatusView(status: status)
                 Button(AppLocalization.localizedString(isPaused ? "Resume" : "Pause"), action: isPaused ? onInstall : onPause)
                     .buttonStyle(SettingsPillButtonStyle())
+                    .disabled(isPaused && unavailabilityReason != nil)
+            }
+
+            if let unavailabilityReason {
+                Text(unavailabilityReason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let errorMessage {

@@ -1208,6 +1208,7 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     execution_mode: Literal["request", "session"] = "request",
+    continuation_aware_admission: bool = True,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -1341,6 +1342,7 @@ def create_sglang_thinker_executor_from_config(
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides
         ),
+        continuation_aware_admission=continuation_aware_admission,
     )
     from sglang.srt.runtime_context import get_schedule
 
@@ -1388,6 +1390,7 @@ def create_talker_ar_executor_from_config(
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
     execution_mode: Literal["request", "session"] = "request",
+    continuation_aware_admission: bool = True,
 ) -> QwenTalkerScheduler:
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1483,6 +1486,7 @@ def create_talker_ar_executor_from_config(
         codec_coalesce_frames=codec_coalesce_frames,
         codec_coalesce_first_frames=codec_coalesce_first_frames,
         codec_coalesce_early_frames=codec_coalesce_early_frames,
+        continuation_aware_admission=continuation_aware_admission,
     )
     from sglang.srt.runtime_context import get_schedule
 

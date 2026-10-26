@@ -44,6 +44,14 @@ class ResponseProgress(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class ResponseHeard(ResponseEvent):
+    """After the client's truncate, the history keeps the ended reply's first text_end characters; it follows the response's end."""
+
+    item_id: str
+    text_end: int
+
+
+@dataclass(frozen=True)
 class AudioFinished(ResponseEvent):
     item_id: str
 
@@ -94,6 +102,7 @@ OutputEvent = (
     | TextFinished
     | AudioDelta
     | ResponseProgress
+    | ResponseHeard
     | AudioFinished
     | ResponseFinished
     | TurnFailure

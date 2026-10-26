@@ -7,6 +7,52 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
     private let asrRepo = "mlx-community/Qwen3-ASR-0.6B-4bit"
     private let llmRepo = CustomLLMModelManager.defaultModelRepo
 
+    private var selectedASRAvailabilityIssues: [ModelConfigurationIssue] {
+        guard let reason = OmniASRBackend.unavailabilityReason(for: asrRepo) else { return [] }
+        return [.init(scope: .mlxModel(asrRepo), message: reason)]
+    }
+
+    func testNativeASRAliasPreservesSelectionAndUsesPlatformAndInstallationGates() async throws {
+        let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+        let scope = ModelConfigurationIssue.Scope.mlxModel(repo)
+        let availabilityIssues: [ModelConfigurationIssue] = OmniASRBackend.unavailabilityReason(for: repo).map {
+            [ModelConfigurationIssue(scope: scope, message: $0)]
+        } ?? []
+        let selections: [WritableKeyPath<FeatureSettings, FeatureModelSelectionID>] = [
+            \.transcription.asrSelectionID, \.translation.asrSelectionID,
+            \.rewrite.asrSelectionID, \.meeting.asrSelectionID
+        ]
+        for selection in selections {
+            try await withIsolatedModelStorageRoot { root in
+                let (defaults, name) = configuredDefaults()
+                defer { defaults.removePersistentDomain(forName: "VoxtTests.\(name)") }
+                var settings = FeatureSettingsStore.load(defaults: defaults)
+                settings[keyPath: selection] = .mlx("mlx-community/Parakeet-0.6B")
+                FeatureSettingsStore.save(settings, defaults: defaults)
+                let savedPreferences = defaults.dictionaryRepresentation() as NSDictionary
+                let mlx = MLXModelManager(modelRepo: repo)
+                let llm = CustomLLMModelManager(modelRepo: llmRepo)
+                XCTAssertTrue(mlx.isCheckingInstallation(repo: repo))
+                XCTAssertEqual(issues(defaults, mlx, llm).filter { $0.scope == scope }, availabilityIssues)
+
+                _ = try await mlx.refreshInstallation(repo: repo)
+                let missingIssues: [ModelConfigurationIssue] = OmniASRBackend.isAppleSilicon
+                    ? [ModelConfigurationIssue(scope: scope, message: AppLocalization.localizedString("Model needs to be installed."))]
+                    : availabilityIssues
+                XCTAssertEqual(issues(defaults, mlx, llm).filter { $0.scope == scope }, missingIssues)
+                try seedValidMLXModelDirectory(repo: repo, root: root)
+                mlx.checkExistingModel(refresh: true)
+                _ = try await mlx.refreshInstallation(repo: repo)
+                XCTAssertTrue(mlx.isModelDownloaded(repo: repo))
+                XCTAssertEqual(issues(defaults, mlx, llm).filter { $0.scope == scope }, availabilityIssues)
+                XCTAssertEqual(FeatureSettingsStore.load(defaults: defaults)[keyPath: selection], .mlx(repo))
+                XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, savedPreferences)
+                await mlx.shutdownForApplicationTermination()
+                await llm.shutdownForApplicationTermination()
+            }
+        }
+    }
+
     func testColdInstalledModelsNeverProduceMissingIssues() async throws {
         try await withIsolatedModelStorageRoot { root in
             try seedModels(root)
@@ -17,12 +63,12 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
             // No suspension: scan publication cannot have reached MainActor yet.
             XCTAssertTrue(mlx.isCheckingInstallation(repo: asrRepo))
             XCTAssertTrue(llm.isCheckingInstallation(repo: llmRepo))
-            XCTAssertTrue(issues(defaults, mlx, llm).isEmpty)
+            XCTAssertEqual(issues(defaults, mlx, llm), selectedASRAvailabilityIssues)
             let asr = try await mlx.refreshInstallation(repo: asrRepo)
             let text = try await llm.refreshInstallation(repo: llmRepo)
             XCTAssertTrue(asr.isInstalled)
             XCTAssertTrue(text.isInstalled)
-            XCTAssertTrue(issues(defaults, mlx, llm).isEmpty)
+            XCTAssertEqual(issues(defaults, mlx, llm), selectedASRAvailabilityIssues)
             await mlx.shutdownForApplicationTermination()
             await llm.shutdownForApplicationTermination()
         }
@@ -34,7 +80,7 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
             defer { defaults.removePersistentDomain(forName: "VoxtTests.\(name)") }
             let mlx = MLXModelManager(modelRepo: asrRepo)
             let llm = CustomLLMModelManager(modelRepo: llmRepo)
-            XCTAssertTrue(issues(defaults, mlx, llm).isEmpty)
+            XCTAssertEqual(issues(defaults, mlx, llm), selectedASRAvailabilityIssues)
             _ = try await mlx.refreshInstallation(repo: asrRepo)
             _ = try await llm.refreshInstallation(repo: llmRepo)
             XCTAssertEqual(Set(issues(defaults, mlx, llm).map(\.scope)), [
@@ -65,7 +111,7 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
                     }
                     if sawMissing, !sawInstalled,
                        mlx.isModelDownloaded(repo: self.asrRepo), llm.isModelDownloaded(repo: self.llmRepo),
-                       current.isEmpty {
+                       current == self.selectedASRAvailabilityIssues {
                         sawInstalled = true
                         installed.fulfill()
                     }
@@ -76,7 +122,7 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
             try seedModels(root)
             mlx.checkExistingModel(refresh: true)
             llm.checkExistingModel(refresh: true)
-            XCTAssertTrue(issues(defaults, mlx, llm).isEmpty)
+            XCTAssertEqual(issues(defaults, mlx, llm), selectedASRAvailabilityIssues)
             await fulfillment(of: [installed], timeout: 5)
             XCTAssertTrue(mlx.activeDownloadRepos.isEmpty)
             XCTAssertTrue(llm.activeDownloadRepos.isEmpty)
@@ -114,6 +160,17 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
         let installed = FeatureModelCatalogBuilder.localSelectorAvailability(isInstalled: true)
         XCTAssertTrue(installed.isSelectable)
         XCTAssertNil(installed.disabledReason)
+        for isInstalled in [false, true] {
+            for isChecking in [false, true] {
+                let unavailable = FeatureModelCatalogBuilder.localSelectorAvailability(
+                    isInstalled: isInstalled,
+                    isChecking: isChecking,
+                    unavailabilityReason: "Native support is unavailable"
+                )
+                XCTAssertFalse(unavailable.isSelectable)
+                XCTAssertEqual(unavailable.disabledReason, "Native support is unavailable")
+            }
+        }
     }
 
     private func configuredDefaults() -> (UserDefaults, String) {
@@ -127,6 +184,7 @@ final class ModelConfigurationIssueResolverTests: MLXModelManagerTestCase {
         settings.translation.modelSelectionID = .localLLM(llmRepo)
         settings.rewrite.asrSelectionID = .mlx(asrRepo)
         settings.rewrite.llmSelectionID = .localLLM(llmRepo)
+        settings.meeting.asrSelectionID = .mlx(asrRepo)
         FeatureSettingsStore.save(settings, defaults: defaults)
         return (defaults, name)
     }

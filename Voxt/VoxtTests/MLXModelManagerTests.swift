@@ -2,7 +2,6 @@ import XCTest
 @testable import Voxt
 import HuggingFace
 import MLX
-import MLXAudioSTT
 
 @MainActor
 final class MLXModelManagerTests: MLXModelManagerTestCase {
@@ -30,38 +29,110 @@ final class MLXModelManagerTests: MLXModelManagerTestCase {
     }
 
     func testRetiredVoxtralUsesDefaultCapabilities() {
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Voxtral-Mini-4B-Realtime-2602"))
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"))
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Voxtral-Mini-4B-Realtime-2602-6bit"))
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Voxtral-Mini-4B-Realtime-6bit"))
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16"))
-        XCTAssertTrue(MLXModelManager.isRealtimeCapableModelRepo("beshkenadze/cohere-transcribe-03-2026-mlx-fp16"))
-        XCTAssertTrue(MLXModelManager.isRealtimeCapableModelRepo("OpenMOSS-Team/MOSS-Transcribe-Diarize"))
-        XCTAssertTrue(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"))
-        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Qwen3-ASR-0.6B-4bit"))
+        for repo in [
+            "mlx-community/Voxtral-Mini-4B-Realtime-2602",
+            "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
+            "mlx-community/Voxtral-Mini-4B-Realtime-2602-6bit",
+            "mlx-community/Voxtral-Mini-4B-Realtime-6bit",
+            "mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16",
+        ] {
+            XCTAssertEqual(MLXModelManager.isRealtimeCapableModelRepo(repo), OmniASRBackend.isAppleSilicon)
+        }
+        XCTAssertFalse(MLXModelManager.isRealtimeCapableModelRepo("beshkenadze/cohere-transcribe-03-2026-mlx-fp16"))
+        XCTAssertEqual(MLXModelManager.isRealtimeCapableModelRepo("OpenMOSS-Team/MOSS-Transcribe-Diarize"), OmniASRBackend.isAppleSilicon)
+        XCTAssertEqual(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"), OmniASRBackend.isAppleSilicon)
+        XCTAssertEqual(MLXModelManager.isRealtimeCapableModelRepo("mlx-community/Qwen3-ASR-0.6B-4bit"), OmniASRBackend.isAppleSilicon)
     }
 
     func testLiveModeRoutesRealtimeFamiliesToNativeSessions() {
         XCTAssertEqual(
             MLXModelManager.liveMode(for: "mlx-community/Qwen3-ASR-0.6B-4bit"),
-            .nativeQwenLive
+            OmniASRBackend.isAppleSilicon ? .nativeQwenLive : .batchPreview
         )
         XCTAssertEqual(
             MLXModelManager.liveMode(for: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"),
-            .nativeNemotronLive
+            OmniASRBackend.isAppleSilicon ? .nativeNemotronLive : .batchPreview
         )
         XCTAssertEqual(
             MLXModelManager.liveMode(for: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"),
-            .nativeStreamingLive
+            .batchPreview
         )
         XCTAssertEqual(
             MLXModelManager.liveMode(for: "OpenMOSS-Team/MOSS-Transcribe-Diarize"),
-            .nativeStreamingLive
+            OmniASRBackend.isAppleSilicon ? .nativeStreamingLive : .batchPreview
         )
         XCTAssertEqual(
             MLXModelManager.liveMode(for: "mlx-community/Voxtral-Mini-4B-Realtime-6bit"),
-            .nativeQwenLive
+            OmniASRBackend.isAppleSilicon ? .nativeQwenLive : .batchPreview
         )
+    }
+
+    func testUnavailableModelsRejectLoadingAndDownloadsButKeepCatalogEntries() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            for repo in ["unknown/model", "unknown/Qwen3-ASR-0.6B-8bit"] {
+                let expected = try XCTUnwrap(OmniASRBackend.unavailability(for: repo))
+                XCTAssertEqual(expected, OmniASRBackend.isAppleSilicon ? .unsupportedModel : .unsupportedPlatform)
+                let manager = MLXModelManager(modelRepo: repo)
+                XCTAssertFalse(MLXModelManager.isAvailableModelRepo(repo))
+                XCTAssertEqual(manager.displayModelsIncludingInstalled().map(\.id), MLXModelCatalog.availableModels.map(\.id))
+                do {
+                    _ = try await manager.loadModel()
+                    XCTFail("An unavailable model must not load")
+                } catch {
+                    XCTAssertEqual(error as? OmniASRBackend.Unavailability, expected)
+                }
+                do {
+                    _ = try await manager.ensureModelDirectory(repo: repo)
+                    XCTFail("An unavailable model must not download")
+                } catch {
+                    XCTAssertEqual(error as? OmniASRBackend.Unavailability, expected)
+                }
+                await manager.downloadModel(repo: repo)
+                XCTAssertFalse(manager.isModelDownloaded(repo: repo))
+                XCTAssertFalse(manager.catalogSnapshot(for: repo).hasActiveDownloadTask)
+                await manager.shutdownForApplicationTermination()
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("mlx-audio").path))
+        }
+    }
+
+    func testMissingNativeRuntimeDoesNotFallBackToSwiftLoader() async throws {
+        guard OmniASRBackend.launchSettings == nil else {
+            throw XCTSkip("This test requires an unconfigured Native runtime")
+        }
+        try await withIsolatedModelStorageRoot { _ in
+            for model in MLXModelCatalog.availableModels {
+                let manager = MLXModelManager(modelRepo: model.id)
+                do {
+                    _ = try await manager.loadModel()
+                    XCTFail("An unavailable runtime must not invoke the Swift loader")
+                } catch {
+                    XCTAssertEqual(
+                        error as? OmniASRBackend.Unavailability,
+                        OmniASRBackend.isAppleSilicon ? .runtimeUnavailable : .unsupportedPlatform,
+                        model.id
+                    )
+                }
+                XCTAssertTrue(manager.activeDownloadRepos.isEmpty)
+                await manager.shutdownForApplicationTermination()
+            }
+        }
+    }
+
+    func testInstalledNativeModelCanBeDeletedRegardlessOfPlatformAvailability() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+            try seedValidMLXModelDirectory(repo: repo, root: root)
+            let manager = MLXModelManager(modelRepo: repo)
+            let installation = try await manager.refreshInstallation(repo: repo)
+            XCTAssertTrue(installation.isInstalled)
+            XCTAssertEqual(OmniASRBackend.unavailability(for: repo), OmniASRBackend.isAppleSilicon ? nil : .unsupportedPlatform)
+            let deletion = await manager.deleteModel(repo: repo)
+            try deletion.get()
+            let remaining = try await manager.refreshInstallation(repo: repo)
+            XCTAssertFalse(remaining.isInstalled)
+            await manager.shutdownForApplicationTermination()
+        }
     }
 
     func testTranscriptionBehaviorUsesIncrementalModeForDefaultModels() {
@@ -107,6 +178,9 @@ final class MLXModelManagerTests: MLXModelManagerTestCase {
 
     func testAvailableModelsIncludeLatestSupportedSTTRepos() {
         let modelIDs = Set(MLXModelManager.availableModels.map(\.id))
+        for repo in modelIDs {
+            XCTAssertEqual(MLXModelManager.isAvailableModelRepo(repo), OmniASRBackend.isAppleSilicon, repo)
+        }
 
         XCTAssertTrue(modelIDs.contains("mlx-community/Qwen3-ASR-0.6B-4bit"))
         XCTAssertTrue(modelIDs.contains("mlx-community/Qwen3-ASR-1.7B-6bit"))

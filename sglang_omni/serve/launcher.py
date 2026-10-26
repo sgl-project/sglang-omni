@@ -49,6 +49,7 @@ from sglang_omni.client.types import GenerateChunk
 from sglang_omni.config import PipelineConfig
 from sglang_omni.http import admin_auth
 from sglang_omni.models.model_capabilities import get_model_capabilities
+from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
@@ -145,17 +146,11 @@ class PipelineUvicornServer(uvicorn.Server):
     The pipeline launcher owns child-process cleanup, so it restores the
     original handlers but deliberately consumes the already-handled signal.
 
-    The optional startup GC freeze is process-wide and lasts until serve exits.
+    The post-warmup GC freeze is process-wide and lasts until serve exits.
     """
 
-    def __init__(
-        self,
-        config: uvicorn.Config,
-        *,
-        freeze_api_gc_on_startup: bool = False,
-    ) -> None:
+    def __init__(self, config: uvicorn.Config) -> None:
         super().__init__(config)
-        self.freeze_api_gc_on_startup: bool = freeze_api_gc_on_startup
         self.has_frozen_api_gc: bool = False
 
     async def serve(self, sockets: list[socket.socket] | None = None) -> None:
@@ -168,18 +163,13 @@ class PipelineUvicornServer(uvicorn.Server):
             else:
                 pass
 
-    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        await super().startup(sockets=sockets)
-        if self.started and self.freeze_api_gc_on_startup:
-            # note (yxs): New request cycles retain normal GC outside the startup graph.
-            gc.collect()
-            gc.freeze()
-            self.has_frozen_api_gc = True
-            logger.info(
-                f"Frozen API startup object graph ({gc.get_freeze_count()} objects)"
-            )
-        else:
-            pass
+    def freeze_api_gc(self) -> None:
+        # note (yxs): New request cycles retain normal GC outside the startup graph.
+        gc.freeze()
+        self.has_frozen_api_gc = True
+        logger.info(
+            f"Frozen API startup object graph ({gc.get_freeze_count()} objects)"
+        )
 
     @contextmanager
     def capture_signals(self) -> Generator[None, None, None]:
@@ -520,9 +510,76 @@ def mount_profiler_routes(
     app.include_router(router)
 
 
+async def freeze_serving_gc(
+    server: PipelineUvicornServer, coordinator: Coordinator
+) -> None:
+    """Freeze the heap of every stage process, then of the API process."""
+    # note (ratish): warmup builds long-lived state lazily, so the freeze follows
+    # it; a freeze moves the heap in constant time, so it can follow the up status.
+    await coordinator.freeze_gc()
+    server.freeze_api_gc()
+
+
+async def send_warmup_requests(
+    server: PipelineUvicornServer,
+    *,
+    base_url: str,
+    requests: list[
+        ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
+    ],
+    timeout_s: float,
+) -> bool:
+    """Send the warmup requests one at a time; False when a shutdown drops one."""
+    async with httpx.AsyncClient(
+        base_url=base_url, timeout=timeout_s, trust_env=False
+    ) as http_client:
+        # note (ratish): one request at a time keeps warmup within the
+        # coordinator's admission limit; consecutive admissions still bind
+        # every replica of each process.
+        for request in requests:
+            if isinstance(request, ChatCompletionRequest):
+                post = http_client.post(
+                    "/v1/chat/completions",
+                    json=request.model_dump(exclude_none=True),
+                )
+            elif isinstance(request, CreateSpeechRequest):
+                post = http_client.post(
+                    "/v1/audio/speech",
+                    json=request.model_dump(exclude_none=True),
+                )
+            else:
+                post = http_client.post(
+                    TRANSCRIPTIONS_ENDPOINT,
+                    data={"max_new_tokens": str(request.max_new_tokens)},
+                    files={"file": ("warmup.wav", request.wav_bytes, "audio/wav")},
+                )
+            post_task = asyncio.create_task(post)
+            while not post_task.done() and not server.should_exit:
+                await asyncio.wait({post_task}, timeout=SERVER_START_POLL_S)
+            if not post_task.done():
+                # note (ratish): HTTP shutdown waits for in-flight requests, so
+                # the warmup drops its own; the route aborts it on disconnect.
+                post_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await post_task
+                return False
+            else:
+                pass
+            response = post_task.result()
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Server warmup failed with status {response.status_code}: "
+                    f"{response.text}"
+                )
+            else:
+                pass
+    return True
+
+
 async def warm_up_server(
-    server: uvicorn.Server,
+    server: PipelineUvicornServer,
     app: FastAPI,
+    coordinator: Coordinator,
     *,
     base_url: str,
     requests: list[
@@ -533,66 +590,37 @@ async def warm_up_server(
     """Mark the server up once its warmup requests have crossed every stage.
 
     A fresh process builds kernels on its first request; this keeps that cost
-    off user requests. A failed warmup stops the server and raises; a shutdown
-    that starts first drops the request in flight and leaves the server down.
+    off user requests. Every process then freezes the heap warmup built. A failed
+    warmup stops the server and raises; a shutdown that starts first drops the
+    request in flight and leaves the server down.
     """
     while not server.started:
         await asyncio.sleep(SERVER_START_POLL_S)
     if not requests:
         app.state.server_status = ServerStatus.UP
+        await freeze_serving_gc(server, coordinator)
         return
     else:
         pass
     start = time.perf_counter()
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, timeout=timeout_s, trust_env=False
-        ) as http_client:
-            # note (ratish): one request at a time keeps warmup within the
-            # coordinator's admission limit; consecutive admissions still bind
-            # every replica of each process.
-            for request in requests:
-                if isinstance(request, ChatCompletionRequest):
-                    post = http_client.post(
-                        "/v1/chat/completions",
-                        json=request.model_dump(exclude_none=True),
-                    )
-                elif isinstance(request, CreateSpeechRequest):
-                    post = http_client.post(
-                        "/v1/audio/speech",
-                        json=request.model_dump(exclude_none=True),
-                    )
-                else:
-                    post = http_client.post(
-                        TRANSCRIPTIONS_ENDPOINT,
-                        data={"max_new_tokens": str(request.max_new_tokens)},
-                        files={"file": ("warmup.wav", request.wav_bytes, "audio/wav")},
-                    )
-                post_task = asyncio.create_task(post)
-                while not post_task.done() and not server.should_exit:
-                    await asyncio.wait({post_task}, timeout=SERVER_START_POLL_S)
-                if not post_task.done():
-                    # note (ratish): HTTP shutdown waits for in-flight requests, so
-                    # the warmup drops its own; the route aborts it on disconnect.
-                    post_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await post_task
-                    return
-                else:
-                    pass
-                response = post_task.result()
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Server warmup failed with status {response.status_code}: "
-                        f"{response.text}"
-                    )
-                else:
-                    pass
+        is_warmed_up = await send_warmup_requests(
+            server, base_url=base_url, requests=requests, timeout_s=timeout_s
+        )
     except (httpx.HTTPError, RuntimeError) as exc:
         logger.error(f"Server warmup failed, stopping the server: {exc!r}")
         server.should_exit = True
         raise
+    if not is_warmed_up:
+        return
+    else:
+        pass
+    # note (ratish): an httpx response and its stream reference each other, so the
+    # warmup responses, out of scope once the sends return, wait for a collection;
+    # it runs before the server is up, as the freeze would keep them for good.
+    gc.collect()
     app.state.server_status = ServerStatus.UP
+    await freeze_serving_gc(server, coordinator)
     logger.info(
         f"Server warmup of {len(requests)} request(s) finished in "
         f"{time.perf_counter() - start:.1f} s; the server is ready"
@@ -737,10 +765,7 @@ async def run_server(
                 log_level=log_level,
                 timeout_keep_alive=KEEP_ALIVE_S,
             )
-            server = PipelineUvicornServer(
-                config,
-                freeze_api_gc_on_startup=pipeline_config.freeze_api_gc_on_startup,
-            )
+            server = PipelineUvicornServer(config)
             # note (ratish): a wildcard bind address is not a destination, so the
             # server reaches itself on loopback.
             if not host or host == "0.0.0.0":
@@ -754,6 +779,7 @@ async def run_server(
                 warm_up_server(
                     server,
                     app,
+                    coordinator,
                     base_url=base_url,
                     requests=warmup_requests,
                     timeout_s=float(

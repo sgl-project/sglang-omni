@@ -1,5 +1,6 @@
 // TranscriptionHistoryStoreAsyncTests.swift
 
+import Combine
 import Foundation
 import XCTest
 @testable import Voxt
@@ -174,6 +175,25 @@ final class TranscriptionHistoryStoreAsyncTests: XCTestCase {
         XCTAssertTrue(store.hasMore)
     }
 
+    func testNextPageMergesInDescendingOrderAndFinishesPagination() async throws {
+        let now = Date()
+        let entries = (0..<80).map { makeEntry(index: $0, createdAt: now.addingTimeInterval(TimeInterval(-$0))) }
+        let repository = try makeFixture(entries: entries)
+        let store = TranscriptionHistoryStore(repository: repository)
+        XCTAssertEqual(store.entries, Array(entries.prefix(40)))
+        XCTAssertTrue(store.hasMore)
+
+        store.loadNextPage()
+        await drainMainQueue()
+
+        XCTAssertEqual(store.entries, entries)
+        XCTAssertEqual(store.historyEntries(for: .normal), entries)
+        XCTAssertFalse(store.hasMore)
+        store.loadNextPage()
+        await drainMainQueue()
+        XCTAssertEqual(store.entries, entries)
+    }
+
     func testMutationRestartsInterruptedReload() async throws {
         let initialEntries = [makeEntry(index: 0), makeEntry(index: 1)]
         let repository = try makeFixture(entries: initialEntries)
@@ -248,6 +268,152 @@ final class TranscriptionHistoryStoreAsyncTests: XCTestCase {
             store.loadEntry(id: candidate.id) { continuation.resume(returning: $0) }
         }
         XCTAssertEqual(loaded?.text, text)
+    }
+
+    func testCorrectionMergesTermsAndSnapshotsWithoutNormalizingStoredValues() throws {
+        let later = DictionaryCorrectionSnapshot(originalText: "beta", correctedText: "Beta", finalLocation: 10, finalLength: 4)
+        let earlier = DictionaryCorrectionSnapshot(originalText: "a", correctedText: "Alpha", finalLocation: 0, finalLength: 5)
+        let shorter = DictionaryCorrectionSnapshot(originalText: "al", correctedText: "Al", finalLocation: 0, finalLength: 2)
+        let original = makeEntry(index: 0, kind: .translation).updatingDictionaryCorrectionResult(
+            text: "Alpha and Beta",
+            dictionaryCorrectedTerms: [" Alpha ", "ALPHA", ""],
+            dictionaryCorrectionSnapshots: [later, later]
+        )
+        let repository = try makeFixture(entries: [original])
+        let store = TranscriptionHistoryStore(repository: repository)
+
+        store.applyDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: "  Alpha and Beta!\n",
+            correctedTerms: ["alpha", " ", " Beta ", "BETA", "Gamma"],
+            correctionSnapshots: [earlier, later, shorter, earlier]
+        )
+
+        let expected = original.updatingDictionaryCorrectionResult(
+            text: "Alpha and Beta!",
+            dictionaryCorrectedTerms: [" Alpha ", "ALPHA", "", " Beta ", "Gamma"],
+            dictionaryCorrectionSnapshots: [shorter, earlier, later, later]
+        )
+        XCTAssertEqual(store.entry(id: original.id), expected)
+        XCTAssertEqual(store.entries, [expected])
+        XCTAssertEqual(try repository.entry(id: original.id), expected)
+        XCTAssertEqual(store.historyEntries(for: .translation), [expected])
+    }
+
+    func testReplacementKeepsIncomingSnapshotOrderAndDuplicatesAndCanClearSnapshots() throws {
+        let snapshot = DictionaryCorrectionSnapshot(originalText: "a", correctedText: "Alpha", finalLocation: 0, finalLength: 5)
+        let later = DictionaryCorrectionSnapshot(originalText: "b", correctedText: "Beta", finalLocation: 10, finalLength: 4)
+        let original = makeEntry(index: 0).updatingDictionaryCorrectionResult(
+            text: "Alpha and Beta",
+            dictionaryCorrectedTerms: ["Alpha"],
+            dictionaryCorrectionSnapshots: [snapshot]
+        )
+        let repository = try makeFixture(entries: [original])
+        let store = TranscriptionHistoryStore(repository: repository)
+
+        store.replaceDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: original.text,
+            correctedTerms: ["alpha", "Beta"],
+            correctionSnapshots: [later, snapshot, later]
+        )
+        let replaced = original.updatingDictionaryCorrectionResult(
+            text: original.text,
+            dictionaryCorrectedTerms: ["Alpha", "Beta"],
+            dictionaryCorrectionSnapshots: [later, snapshot, later]
+        )
+        XCTAssertEqual(store.entry(id: original.id), replaced)
+        XCTAssertEqual(try repository.entry(id: original.id), replaced)
+
+        store.replaceDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: original.text,
+            correctedTerms: [],
+            correctionSnapshots: []
+        )
+        XCTAssertEqual(store.entry(id: original.id)?.dictionaryCorrectedTerms, ["Alpha", "Beta"])
+        XCTAssertEqual(store.entry(id: original.id)?.dictionaryCorrectionSnapshots, [])
+        XCTAssertEqual(try repository.entry(id: original.id), store.entry(id: original.id))
+    }
+
+    func testEmptyAndUnchangedCorrectionsDoNotPublishOrPersist() throws {
+        let later = DictionaryCorrectionSnapshot(originalText: "b", correctedText: "Beta", finalLocation: 10, finalLength: 4)
+        let earlier = DictionaryCorrectionSnapshot(originalText: "a", correctedText: "Alpha", finalLocation: 0, finalLength: 5)
+        let original = makeEntry(index: 0).updatingDictionaryCorrectionResult(
+            text: "Alpha and Beta",
+            dictionaryCorrectedTerms: ["Alpha"],
+            dictionaryCorrectionSnapshots: [later, earlier]
+        )
+        let repository = try makeFixture(entries: [original])
+        let store = TranscriptionHistoryStore(repository: repository)
+        var publicationCount = 0
+        let observation = store.$entries.dropFirst().sink { _ in publicationCount += 1 }
+        defer { observation.cancel() }
+        repository.failNextUpsertRequest()
+
+        store.applyDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: " \n",
+            correctedTerms: ["Beta"],
+            correctionSnapshots: [earlier]
+        )
+        store.replaceDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: "\n",
+            correctedTerms: [],
+            correctionSnapshots: []
+        )
+        store.applyDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: "  \(original.text)\n",
+            correctedTerms: ["alpha"],
+            correctionSnapshots: []
+        )
+        store.applyDictionaryCorrectedTerms([original.id: ["alpha", " "]])
+        XCTAssertEqual(publicationCount, 0)
+        XCTAssertEqual(store.entry(id: original.id), original)
+        XCTAssertEqual(try repository.entry(id: original.id), original)
+
+        store.applyDictionaryCorrectedTerms([original.id: ["Beta", "beta"]])
+        XCTAssertEqual(publicationCount, 1)
+        XCTAssertEqual(store.entry(id: original.id)?.dictionaryCorrectedTerms, ["Alpha", "Beta"])
+        XCTAssertEqual(try repository.entry(id: original.id), original)
+    }
+
+    func testCorrectionPublicationStillPrecedesPersistenceButTermPublicationFollowsIt() throws {
+        let original = makeEntry(index: 0)
+        let repository = try makeFixture(entries: [original])
+        let store = TranscriptionHistoryStore(repository: repository)
+        var persistedAtPublication: [TranscriptionHistoryEntry] = []
+        let observation = store.$entries.dropFirst().sink { _ in
+            if let persisted = try? repository.entry(id: original.id) {
+                persistedAtPublication.append(persisted)
+            }
+        }
+        defer { observation.cancel() }
+
+        store.applyDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: "corrected",
+            correctedTerms: ["Alpha"],
+            correctionSnapshots: []
+        )
+        XCTAssertEqual(persistedAtPublication, [original])
+        let corrected = try XCTUnwrap(store.entry(id: original.id))
+        XCTAssertEqual(try repository.entry(id: original.id), corrected)
+
+        store.replaceDictionaryCorrectionResult(
+            historyID: original.id,
+            updatedText: "replacement",
+            correctedTerms: [],
+            correctionSnapshots: []
+        )
+        XCTAssertEqual(persistedAtPublication, [original, corrected])
+
+        store.applyDictionaryCorrectedTerms([original.id: ["Beta"]])
+        let withTerms = try XCTUnwrap(store.entry(id: original.id))
+        XCTAssertEqual(persistedAtPublication.last, withTerms)
+        XCTAssertEqual(try repository.entry(id: original.id), withTerms)
     }
 
     private func recentMenuEntries(in store: TranscriptionHistoryStore) async -> [TranscriptionHistoryListEntry] {

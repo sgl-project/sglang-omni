@@ -1085,6 +1085,12 @@ class Qwen3TTSRefCodeBatcher:
         return codes[0, :, :frames].transpose(0, 1)
 
     def run(self) -> None:
+        if self.encode_stream is not None:
+            # note (ratish): a new thread starts on device 0, and leaving the encode
+            # stream switches it back there, which opens a context on that card.
+            torch.get_device_module(self.encoder_device).set_device(self.encoder_device)
+        else:
+            pass
         while True:
             raw_batch, shutdown = self.drain()
             if not raw_batch:
@@ -1597,6 +1603,18 @@ def prepare_qwen3_tts_request(
         tts_pad_embed=prompt_constants.feedback_pad_embed,
         gen_kwargs=gen_kwargs,
     )
+
+
+def bind_preprocessing_thread_device() -> None:
+    """Pin a preprocessing pool thread to the device of the preprocessing stream."""
+    with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
+    if context is not None and context.stream is not None:
+        # note (ratish): a pool thread starts on device 0, and leaving the stream
+        # switches it back there, which opens a context on that card.
+        torch.get_device_module(context.stream.device).set_device(context.stream.device)
+    else:
+        pass
 
 
 def preprocess_qwen3_tts_payload(

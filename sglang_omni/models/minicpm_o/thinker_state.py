@@ -16,6 +16,7 @@ class MiniCPMOThinkerSessionState:
     sampling: MiniCPMODuplexSampling
     is_turn_ended: bool = True
     is_prefix_pending: bool = True
+    is_interrupt_pending: bool = False
     force_listen_counter: int = 0
     generated_history: list[int] = field(default_factory=list)
 
@@ -32,4 +33,5 @@ class DuplexUnitRequestData(SGLangARRequestData):
     generated_unit_ids: list[int] = field(default_factory=list)
     pending_unit_token: int | None = None
     is_listen_forced: bool = False
+    is_interrupted: bool = False
     enforce_request_limits: bool = True

@@ -492,7 +492,7 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
         guard type == .otherMouseDown || type == .otherMouseUp else { return }
         let configuration = runtimeConfiguration()
 
-        if activeCustomPasteHotkeyIsDisabled(configuration.customPasteHotkey) {
+        if configuration.customPasteHotkey == nil {
             clearCustomPasteTransientState()
         }
         if configuration.rewriteBindings.isEmpty {
@@ -508,10 +508,6 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
             eventWasConsumed = true
             return
         }
-    }
-
-    private func activeCustomPasteHotkeyIsDisabled(_ hotkey: HotkeyPreference.Hotkey?) -> Bool {
-        hotkey == nil
     }
 
     private func resolvedSidedModifiers(
@@ -572,13 +568,13 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
                 }
             }
             .sorted { lhs, rhs in
-                let lhsSpecificity = hotkeySpecificity(lhs.binding.hotkey)
-                let rhsSpecificity = hotkeySpecificity(rhs.binding.hotkey)
+                let lhsSpecificity = HotkeyModifierInterpreter.hotkeySpecificity(lhs.binding.hotkey)
+                let rhsSpecificity = HotkeyModifierInterpreter.hotkeySpecificity(rhs.binding.hotkey)
                 if lhsSpecificity != rhsSpecificity {
                     return lhsSpecificity > rhsSpecificity
                 }
-                let lhsBehaviorPriority = behaviorPriority(lhs.binding.behavior)
-                let rhsBehaviorPriority = behaviorPriority(rhs.binding.behavior)
+                let lhsBehaviorPriority = HotkeyModifierInterpreter.behaviorPriority(lhs.binding.behavior)
+                let rhsBehaviorPriority = HotkeyModifierInterpreter.behaviorPriority(rhs.binding.behavior)
                 if lhsBehaviorPriority != rhsBehaviorPriority {
                     return lhsBehaviorPriority < rhsBehaviorPriority
                 }
@@ -586,51 +582,6 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
             }
         cachedRoutedBindings = resolvedBindings
         return resolvedBindings
-    }
-
-    private func hotkeySpecificity(_ hotkey: HotkeyPreference.Hotkey) -> Int {
-        var score = modifierSpecificity(hotkey.modifiers)
-        if !hotkey.sidedModifiers.isEmpty {
-            score += sidedModifierSpecificity(hotkey.sidedModifiers)
-        }
-        if !HotkeyModifierInterpreter.isModifierOnly(hotkey) {
-            score += 100
-        }
-        return score
-    }
-
-    private func modifierSpecificity(_ modifiers: NSEvent.ModifierFlags) -> Int {
-        var score = 0
-        if modifiers.contains(.function) { score += 10 }
-        if modifiers.contains(.shift) { score += 10 }
-        if modifiers.contains(.control) { score += 10 }
-        if modifiers.contains(.option) { score += 10 }
-        if modifiers.contains(.command) { score += 10 }
-        return score
-    }
-
-    private func sidedModifierSpecificity(_ sidedModifiers: SidedModifierFlags) -> Int {
-        var score = 0
-        if sidedModifiers.contains(.leftShift) { score += 1 }
-        if sidedModifiers.contains(.rightShift) { score += 1 }
-        if sidedModifiers.contains(.leftControl) { score += 1 }
-        if sidedModifiers.contains(.rightControl) { score += 1 }
-        if sidedModifiers.contains(.leftOption) { score += 1 }
-        if sidedModifiers.contains(.rightOption) { score += 1 }
-        if sidedModifiers.contains(.leftCommand) { score += 1 }
-        if sidedModifiers.contains(.rightCommand) { score += 1 }
-        return score
-    }
-
-    private func behaviorPriority(_ behavior: HotkeyPreference.TriggerBehavior) -> Int {
-        switch behavior {
-        case .doubleTap:
-            return 0
-        case .longPress:
-            return 1
-        case .tap:
-            return 2
-        }
     }
 
     private func handleBindingRoutedKeyboardEvent(
@@ -1104,7 +1055,7 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
             guard candidate.binding.id != binding.id,
                   modifierTapCandidate(for: business),
                   activeBindingID(for: business) == candidate.binding.id,
-                  modifierOnlyHotkey(
+                  HotkeyModifierInterpreter.modifierOnlyHotkey(
                     binding.hotkey,
                     isMoreSpecificThan: candidate.binding.hotkey,
                     distinguishModifierSides: distinguishModifierSides
@@ -1123,36 +1074,12 @@ nonisolated final class HotkeyManager: @unchecked Sendable {
     ) -> Bool {
         routedBindings.contains {
             $0.binding.id != binding.id &&
-            modifierOnlyHotkey(
+            HotkeyModifierInterpreter.modifierOnlyHotkey(
                 $0.binding.hotkey,
                 isMoreSpecificThan: binding.hotkey,
                 distinguishModifierSides: distinguishModifierSides
             )
         }
-    }
-
-    private func modifierOnlyHotkey(
-        _ candidate: HotkeyPreference.Hotkey,
-        isMoreSpecificThan base: HotkeyPreference.Hotkey,
-        distinguishModifierSides: Bool
-    ) -> Bool {
-        guard HotkeyModifierInterpreter.isModifierOnly(candidate),
-              HotkeyModifierInterpreter.isModifierOnly(base),
-              candidate.modifiers.intersection(base.modifiers) == base.modifiers
-        else {
-            return false
-        }
-
-        if distinguishModifierSides, !base.sidedModifiers.isEmpty {
-            guard candidate.sidedModifiers.isSuperset(of: base.sidedModifiers) else { return false }
-        }
-
-        if candidate.modifiers != base.modifiers {
-            return true
-        }
-
-        guard distinguishModifierSides else { return false }
-        return candidate.sidedModifiers.isStrictSuperset(of: base.sidedModifiers)
     }
 
     private func scheduleModifierOnlyLongPressDown(

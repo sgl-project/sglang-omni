@@ -150,6 +150,24 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         # Existing Qwen thinker runner/hook code expects model.thinker.model.
         return self
 
+    def set_talker_layers_to_capture(self) -> None:
+        """Capture, in every forward and every graph, the hidden state HF hands the talker: the
+        residual entering its accept layer. Called before graph capture."""
+        accept_hidden_layer = self.root_config.talker_config.accept_hidden_layer
+        if not 0 <= accept_hidden_layer <= self.config.num_hidden_layers:
+            raise ValueError(
+                f"Talker accept_hidden_layer {accept_hidden_layer} is outside "
+                f"[0, {self.config.num_hidden_layers}]"
+            )
+        else:
+            pass
+        # Note (wenyao): the final layer uses normalized output; auxiliary states hold layer inputs.
+        self.model.layers_to_capture = (
+            [accept_hidden_layer]
+            if accept_hidden_layer < self.config.num_hidden_layers
+            else []
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -195,11 +213,17 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 marked_live_rows.is_live_row = None
             else:
                 pass
+        aux_hidden_states = None
+        if isinstance(hidden_states, tuple):
+            hidden_states, aux_hidden_states = hidden_states
+        else:
+            pass
         return self.logits_processor(
             input_ids,
             hidden_states,
             self.lm_head,
             forward_batch,
+            aux_hidden_states=aux_hidden_states,
         )
 
     @torch.no_grad()

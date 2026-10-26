@@ -1,4 +1,4 @@
-# Qwen3 TTS
+# Qwen3-TTS
 
 [Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a discrete
 multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a

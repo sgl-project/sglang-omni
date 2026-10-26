@@ -68,8 +68,6 @@ logger = logging.getLogger(__name__)
 
 # note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
 WARM_UP_UNITS = 2
-# note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
-FORWARD_FLOOR_MS = 45
 # note (0xtoward): these KV formats store per-block scales, so their bytes per token are not one element size.
 BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
 
@@ -267,6 +265,7 @@ class PerceptionHooks(BatchedSessionHooks):
 class SpeechState:
     session_id: str
     clock_ms: float = 0
+    turn: int = 0
 
 
 def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
@@ -280,11 +279,15 @@ def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
 
 
 class SpeechHooks(BatchedSessionHooks):
-    # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
-    gather_window_ms = FORWARD_FLOOR_MS / 2
-
-    def __init__(self, runtime: MiniCPMOVocoderRuntime, reference_audio: bytes) -> None:
+    def __init__(
+        self,
+        runtime: MiniCPMOVocoderRuntime,
+        reference_audio: bytes,
+        *,
+        gather_window_ms: float,
+    ) -> None:
         self.runtime, self.reference_audio = runtime, reference_audio
+        self.gather_window_ms = gather_window_ms
         self.states: dict[SessionIdentity, SpeechState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -344,11 +347,17 @@ class SpeechHooks(BatchedSessionHooks):
                             else talker_result["is_listen"]
                         ),
                         model_end_of_turn=talker_result["end_of_turn"],
+                        is_speech_cut=talker_result["is_speech_cut"],
                     ),
                     eos=chunk.eos,
+                    turn=state.turn,
                 )
             )
             state.clock_ms += duration_ms
+            if is_turn_end[index]:
+                state.turn += 1
+            else:
+                pass
             payload.data = None
 
         speaking = set(speaking_indices)
@@ -389,6 +398,7 @@ def create_perception_scheduler(
     dtype: str = "bfloat16",
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
+    batch_sessions: bool,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -414,6 +424,7 @@ def create_perception_scheduler(
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,
+        batch_sessions=batch_sessions,
     )
 
 
@@ -506,11 +517,14 @@ def create_speech_scheduler(
     gpu_id: int | None = None,
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
+    batch_sessions: bool,
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
     dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
     enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
     enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
+    enable_chunk_cuda_graph: bool = DEFAULT_SPEECH_SETTINGS.enable_chunk_cuda_graph,
+    gather_window_ms: float = DEFAULT_SPEECH_SETTINGS.gather_window_ms,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
@@ -538,9 +552,10 @@ def create_speech_scheduler(
     )
     reference_audio_bytes = Path(codec.default_prompt_wav).read_bytes()
     # note (Junnan Li): Code2Wav warms only the offline flow, so the streaming chunk graphs and compiled forms are built here.
-    runtime.warm_up(reference_audio_bytes)
+    runtime.warm_up(reference_audio_bytes, capture_chunk_graphs=enable_chunk_cuda_graph)
     return SessionScheduler(
-        SpeechHooks(runtime, reference_audio_bytes),
+        SpeechHooks(runtime, reference_audio_bytes, gather_window_ms=gather_window_ms),
         max_open_sessions=max_open_sessions,
         max_state_bytes_per_session=max_state_bytes_per_session,
+        batch_sessions=batch_sessions,
     )

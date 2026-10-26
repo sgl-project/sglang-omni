@@ -14,6 +14,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     ForwardBatch,
     PPProxyTensors,
 )
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -24,7 +25,9 @@ from sglang_omni.scheduling.types import SchedulerRequest
 class SpeculativeTargetWorker:
     """Prefill through the Omni model runner, verify through the SGLang forward."""
 
-    def __init__(self, model_worker: ModelWorker) -> None:
+    def __init__(
+        self, model_worker: ModelWorker, speculative_algorithm: SpeculativeAlgorithm
+    ) -> None:
         self.model_worker: ModelWorker = model_worker
         self.model_runner: SGLModelRunner = model_worker.model_runner
         self.model_config: ModelConfig = model_worker.model_config
@@ -33,12 +36,17 @@ class SpeculativeTargetWorker:
         # note (wilsonzheng0327): drafts read a tokenizer only to resolve a mask token
         # their config does not name, and every supported draft names it.
         self.tokenizer: None = None
+        # An EAGLE draft extends on the embeddings the target prefilled with.
+        self.publishes_prefill_input_embeds: bool = speculative_algorithm.is_eagle()
         self.omni_runner: ModelRunner | None = None
 
     def attach_runner(self, omni_runner: ModelRunner) -> None:
         if omni_runner.tp_worker is not self.model_worker:
             raise ValueError("the speculative target runner must use the target worker")
         else:
+            omni_runner.retain_prefill_input_embeds = (
+                self.publishes_prefill_input_embeds
+            )
             self.omni_runner = omni_runner
 
     def get_memory_pool(self) -> tuple[ReqToTokenPool, BaseTokenToKVPoolAllocator]:
@@ -53,6 +61,7 @@ class SpeculativeTargetWorker:
         skip_attn_backend_init: bool | None = None,
         *,
         capture_hidden_mode: CaptureHiddenMode | None = None,
+        return_kv_loc_plan: bool = False,
     ) -> GenerationBatchResult:
         if pp_proxy_tensors is not None:
             raise ValueError("speculative decoding does not support pipeline parallel")
@@ -68,6 +77,7 @@ class SpeculativeTargetWorker:
                 expert_distribution_metrics=output.expert_distribution_metrics,
                 routed_experts_output=output.routed_experts_output,
                 indexer_topk_output=output.indexer_topk_output,
+                kv_loc_plan=forward_batch.kv_loc_plan if return_kv_loc_plan else None,
             )
         elif self.omni_runner is None:
             raise RuntimeError("the speculative target runner is not attached")
@@ -88,6 +98,13 @@ class SpeculativeTargetWorker:
             batch_result = omni_runner.prepare_and_forward(
                 forward_batch, batch, requests, is_prefill=True
             )
+            if omni_runner.retain_prefill_input_embeds:
+                batch_result.logits_output.mm_input_embeds = (
+                    omni_runner.retained_prefill_input_embeds
+                )
+                omni_runner.retained_prefill_input_embeds = None
+            else:
+                pass
             if batch.is_prefill_only:
                 batch_result.next_token_ids = torch.zeros(
                     len(forward_batch.seq_lens),
@@ -100,4 +117,9 @@ class SpeculativeTargetWorker:
                 )
             else:
                 pass
+            # note (wilsonzheng0327): The draft writes its KV into the slots this
+            # plan resolved for the target.
+            batch_result.kv_loc_plan = (
+                forward_batch.kv_loc_plan if return_kv_loc_plan else None
+            )
             return batch_result

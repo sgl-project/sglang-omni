@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import DeviceMixin
 
+from sglang_omni.utils.gpu_memory import narrow_visible_devices
 from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
@@ -41,6 +43,67 @@ class JointRopeInplaceKernel(Protocol):
         *,
         is_neox: bool,
     ) -> None: ...
+
+
+def build_cuda_compatible_stage_process_env(
+    spec: StageLaunchConfig,
+    env: Mapping[str, str] | None,
+    native_visibility_variable: str,
+) -> dict[str, str]:
+    """Build a CUDA-compatible worker environment from a native device mask."""
+    source_env = env if env is not None else os.environ
+    native_visible = source_env.get(native_visibility_variable)
+    visibility_variable = (
+        native_visibility_variable if native_visible else "CUDA_VISIBLE_DEVICES"
+    )
+    original_visible_devices = source_env.get(visibility_variable)
+    # note (zijiecode): Native masks win; CUDA stays aligned for locks and physical-device helpers.
+    if spec.allow_child_processes and spec.owned_gpu_ids:
+        # Native children inherit this mask; narrowing keeps unpinned host threads on owned GPUs.
+        owned_visible_devices = narrow_visible_devices(
+            original_visible_devices,
+            spec.owned_gpu_ids,
+            visibility_variable,
+        )
+        if native_visible:
+            return {
+                "CUDA_VISIBLE_DEVICES": owned_visible_devices,
+                native_visibility_variable: owned_visible_devices,
+            }
+        else:
+            return {"CUDA_VISIBLE_DEVICES": owned_visible_devices}
+    elif spec.tp_size <= 1:
+        return {}
+    else:
+        pass
+
+    if spec.gpu_id is None:
+        raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
+    else:
+        pass
+    if original_visible_devices:
+        visible_devices = [item.strip() for item in original_visible_devices.split(",")]
+        if spec.gpu_id >= len(visible_devices):
+            raise ValueError(
+                f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
+                f"but {visibility_variable} only exposes {visible_devices}"
+            )
+        else:
+            pass
+        mapped_gpu = visible_devices[spec.gpu_id]
+    else:
+        mapped_gpu = str(spec.gpu_id)
+
+    env_updates = {
+        "CUDA_VISIBLE_DEVICES": mapped_gpu,
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+    }
+    if native_visible:
+        env_updates[native_visibility_variable] = mapped_gpu
+    else:
+        pass
+    return env_updates
 
 
 class OmniPlatform(DeviceMixin):
