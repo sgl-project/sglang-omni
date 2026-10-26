@@ -2,6 +2,7 @@
 """Building blocks shared by the component kinds: the component contract, chunk helpers and service probes."""
 
 import asyncio
+import math
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
@@ -35,6 +36,8 @@ PROBE_TIMEOUT_S = 10.0
 SENTENCE_END = re.compile(r"[.!?;。！？；…]+[\"')\]”’」』）]*$")
 # Note (Junnan Li): CJK text has no spaces between sentences, so a sentence also ends inside a word once its punctuation run is followed by more text.
 CJK_SENTENCE_END = re.compile(r"[。！？；…]+[\"')\]”’」』）]*(?=\S)")
+# note (luojiaxuan): A word ending in a comma, colon or dash ends a clause, where a sentence too long for one speech request is cut when the cut may fall there.
+CLAUSE_END = re.compile(r"[,:，、：—–]+[\"')\]”’」』）]*$")
 
 
 class StreamComponent:
@@ -335,15 +338,21 @@ async def texts(inputs: AsyncIterator[TimedChunk]) -> AsyncIterator[str]:
             yield str(chunk.payload["text"])
 
 
-def sentence_end(text: str, max_words: int) -> int | None:
-    """Where the first sentence of `text` ends: after a whole word with terminal punctuation or the max_words-th whole word, after a run of CJK terminal punctuation that something follows, or at the end of a line; None while it may still grow."""
-    ends = []
-    for count, word in enumerate(re.finditer(r"\S+(?=\s)", text), start=1):
-        if SENTENCE_END.search(word.group()) or count >= max_words:
-            ends.append(word.end())
-            break
-        else:
-            pass
+def first_sentence_end(text: str, is_complete: bool) -> int | None:
+    """Where the first sentence of `text` ends: after a whole word with terminal punctuation, after a run of CJK terminal punctuation that something follows, at the end of a line, or at the end of a complete text; None while it may still grow."""
+    ends = [len(text)] if is_complete else []
+    word = next(
+        (
+            word
+            for word in re.finditer(r"\S+(?=\s)", text)
+            if SENTENCE_END.search(word.group())
+        ),
+        None,
+    )
+    if word is not None:
+        ends.append(word.end())
+    else:
+        pass
     cjk = CJK_SENTENCE_END.search(text)
     if cjk is not None:
         ends.append(cjk.end())
@@ -357,20 +366,58 @@ def sentence_end(text: str, max_words: int) -> int | None:
     return min(ends, default=None)
 
 
+def sentence_end(text: str, max_words: int, *, is_complete: bool = False) -> int | None:
+    """Where the first span of `text` sent in one speech request ends; None while it may still grow.
+
+    A sentence of at most max_words words is one span. A longer one is cut
+    so every span holds at most max_words words and at least half as many,
+    at a clause end where one falls in that range: a sentence that ended
+    within twice max_words words into two near-equal halves, and a longer
+    one near max_words words, which waits only until the words after the
+    cut can no longer end the sentence before half as many.
+    """
+    end = first_sentence_end(text, is_complete)
+    words = list(re.finditer(r"\S+" if end is not None else r"\S+(?=\s)", text[:end]))
+    half = (max_words + 1) // 2
+    if end is not None and len(words) <= max_words:
+        return end
+    elif end is not None and len(words) <= 2 * max_words:
+        low, high, ideal = (
+            max(len(words) - max_words, half),
+            min(max_words, len(words) - half),
+            len(words) / 2,
+        )
+    elif end is None and len(words) < max_words + half - 1:
+        return None
+    else:
+        low, high, ideal = half, max_words, max_words
+    clause_cuts = [
+        count
+        for count in range(low, high + 1)
+        if CLAUSE_END.search(words[count - 1].group())
+    ]
+    count = (
+        min(clause_cuts, key=lambda cut: (abs(cut - ideal), -cut))
+        if clause_cuts
+        else math.ceil(ideal)
+    )
+    return words[count - 1].end()
+
+
 async def sentences(
     inputs: AsyncIterator[TimedChunk], max_words: int
 ) -> AsyncIterator[str]:
-    """The reply text cut into sentences, each span with its own spacing, so the spans join back to the text."""
+    """The reply text cut into the spans sent to speech, each with its own spacing, so the spans join back to the text."""
     pending = ""
     async for text in texts(inputs):
         pending += text
         while (end := sentence_end(pending, max_words)) is not None:
             yield pending[:end]
             pending = pending[end:]
-    if pending:
-        yield pending
-    else:
-        pass
+    while pending:
+        end = sentence_end(pending, max_words, is_complete=True)
+        yield pending[:end]
+        pending = pending[end:]
 
 
 class ComponentConfig(BaseModel):

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -50,19 +51,25 @@ Request ParseRequest(const nlohmann::json &body,
                      const std::string &model_name, int context_tokens);
 std::string EncodeAudio(const std::vector<float> &samples, bool pcm);
 uint64_t AcousticSeed(uint64_t seed, int chunk_index);
+void ValidateSerialOffload(const std::string &offload_components);
 std::vector<float> ResampleStereo(const mlx::core::array &waveform);
 
 class Model {
 public:
-  explicit Model(const std::filesystem::path &directory);
-  Result Synthesize(const Request &request,
-                    const std::atomic<bool> &cancelled) const;
+  explicit Model(const std::filesystem::path &directory,
+                 bool is_serial_offload_enabled = false);
+  Result Synthesize(const Request &request, const std::atomic<bool> &cancelled,
+                    const std::function<void()> &on_ar_complete = {});
   const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
   int context_tokens() const {
     return config_.at("max_position_embeddings").get<int>();
   }
 
 private:
+  void ReleaseWeights();
+  void LoadStageWeights(bool is_acoustic_stage);
+  Result DecodeFrames(const mlx::core::array &frames, const Request &request,
+                      const std::atomic<bool> &cancelled) const;
   mlx::core::array GenerateFrames(const Request &request,
                                   const std::atomic<bool> &cancelled) const;
   mlx::core::array Depth(const mlx::core::array &embeddings) const;
@@ -77,6 +84,8 @@ private:
   mlx::core::array Snake(const mlx::core::array &hidden_states,
                          const std::string &prefix) const;
 
+  std::filesystem::path checkpoint_directory_;
+  bool is_serial_offload_enabled_;
   nlohmann::json config_;
   omni_common::Checkpoint checkpoint_;
   qwen3_asr::Qwen3Decoder decoder_;

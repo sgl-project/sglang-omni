@@ -186,13 +186,17 @@ class OutputConverter:
             self.cancelled_turn = self.turn
             return self.turn
 
-    def finish(self) -> list[OutputEvent]:
+    def finish(self, is_speech_cut: bool) -> list[OutputEvent]:
+        """End the open response: cancelled when the client stopped it, incomplete when the talker's budget cut its speech."""
         if self.response_id is None:
             return []
         else:
             if self.cancelled_turn is not None:
                 status: ResponseStatus = "cancelled"
                 reason = "interrupted"
+            elif is_speech_cut:
+                status = "incomplete"
+                reason = "max_output_tokens"
             else:
                 status = "completed"
                 reason = "stop"
@@ -249,7 +253,7 @@ class OutputConverter:
         else:
             pass
         if value["end_of_turn"] or output.eos:
-            events.extend(self.finish())
+            events.extend(self.finish(value["is_speech_cut"]))
         else:
             pass
         return events

@@ -254,7 +254,11 @@ Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian` doe
 
 ### The forced-alignment worker
 
-An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+Word boundaries use Unicode character offsets into the original reply, not into the aligner's normalized text. The worker maps removed punctuation and Japanese compatibility normalization back to the source and rejects missing or changed tokens instead of searching ahead. An expanded number or compatibility character becomes heard only after its last aligned token finishes. The worker's tests use the actual language-specific tokenizer with simulated timestamps; real-model playback remains a separate validation step.
+
+The heard-ASR matcher accepts joined spellings such as `long-term` / `long term`, `one-time` / `onetime`, and `U.S.` / `US`, but commits only at complete units on both sides. Thus `can` does not match `cannot`, and `now here` does not match `nowhere`. English and Chinese requests also compare the existing spoken number readings, preserving original offsets: `350` matches `three hundred fifty`, but `21` does not commit after only `twenty`. Both the original-spelling and expanded-reading comparisons must match a strict prefix; the former preserves counting sequences that the TTS reader treats as grouped digits. This change does not extend the TTS reading rules for contractions, percentages, versions or decades.
+
+An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi`, `regex` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
 
 ```bash
 PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
@@ -508,7 +512,7 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 
 ### `openai_speech`
 
-Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after `max_sentence_words` words, after Chinese end punctuation followed by more text, or at a line end.
+Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after Chinese end punctuation followed by more text, or at a line end; a sentence longer than `max_sentence_words` is cut as that setting describes.
 
 Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
 
@@ -522,7 +526,7 @@ Every sentence is its own request, and Qwen3-TTS samples each request with a fre
 | `reference_audio_path` | string | `""` | A WAV the speech service reads, for voice cloning. |
 | `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
 | `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the language the recognizer last heard in an answered turn; any other name tags every sentence with that name. With a fixed name, and with `auto` before the recognizer has named a language, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
-| `max_sentence_words` | integer > 0 | `24` | The longest sentence sent in one request. |
+| `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
 

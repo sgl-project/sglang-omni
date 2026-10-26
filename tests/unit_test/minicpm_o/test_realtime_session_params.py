@@ -57,6 +57,7 @@ def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
         end_of_turn=end_of_turn,
         is_listen=not pcm or end_of_turn,
         model_end_of_turn=end_of_turn,
+        is_speech_cut=False,
     )
 
 

@@ -67,6 +67,9 @@ TERMINAL_REASONS = {
     "stop": ("completed", "sglang.input_audio.end"),
     "client_closed": ("cancelled", "session.close"),
 }
+# note (luojiaxuan): A native reply whose turn ended before its talker spoke all of its text ends incomplete, where it would end completed/stop; no client command causes it.
+NATIVE_CUT_TERMINAL = ("incomplete", "max_output_tokens")
+NATIVE_ENDED_TERMINALS = {("completed", "stop"), NATIVE_CUT_TERMINAL}
 
 # note (luojiaxuan): A turn-based server takes turns by server VAD and flushes the
 # partial last unit; whether it truncates a cancelled reply, accepts client
@@ -496,7 +499,8 @@ def evaluate_trace(
                             )
                         else:
                             check(
-                                reason in TERMINAL_REASONS,
+                                reason in TERMINAL_REASONS
+                                or (status, reason) == NATIVE_CUT_TERMINAL,
                                 f"unsupported response terminal reason: {reason}",
                             )
                         if not turn_based and reason in TERMINAL_REASONS:
@@ -518,7 +522,8 @@ def evaluate_trace(
                             pass
                         # note (wenyao): The pump consumes EOS before enqueueing drain.
                         check(
-                            reason != "stop" or not drained,
+                            (status, reason) not in NATIVE_ENDED_TERMINALS
+                            or not drained,
                             "native completed terminal after the drain receipt",
                         )
                         check(
@@ -657,10 +662,11 @@ def evaluate_trace(
             )
         else:
             check(
-                response_state.terminal == "completed"
-                and response_state.reason == "stop",
+                (response_state.terminal, response_state.reason)
+                in NATIVE_ENDED_TERMINALS,
                 f"response {response_id} ended {response_state.terminal}/"
-                f"{response_state.reason}, expected completed/stop",
+                f"{response_state.reason}, expected completed/stop or "
+                "incomplete/max_output_tokens",
             )
     coverage = {
         "input_output_overlap": bool(audio_times)
