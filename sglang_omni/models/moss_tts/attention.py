@@ -398,12 +398,13 @@ class PositionIdsCache:
             pass
         key = (device.type, device.index)
         position_ids = self.items.get(key)
-        if position_ids is None or position_ids.shape[0] < max_seqlen:
-            position_ids = torch.arange(max_seqlen, device=device, dtype=torch.long)
+        if position_ids is None or position_ids.shape[0] <= max_seqlen:
+            position_ids = torch.arange(max_seqlen + 1, device=device, dtype=torch.long)
             self.items[key] = position_ids
         else:
             pass
-        cu_seqlens = torch.tensor([0, max_seqlen], dtype=torch.int32, device=device)
+        # note (Zhuofeng Li): device-side boundaries keep packing graph-capturable.
+        cu_seqlens = position_ids[::max_seqlen][:2].to(torch.int32)
         return cu_seqlens, position_ids[:max_seqlen]
 
 

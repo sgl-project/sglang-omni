@@ -300,6 +300,7 @@ def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
         gpu_id=0,
         model_runner=model_runner,
         enable_prefill_input_embeds=False,
+        speculative_worker=None,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None))
 

@@ -139,7 +139,7 @@ class SGLangOutputProcessor:
             pass
 
         is_extend = bool(batch_data.forward_mode.is_extend())
-        lengths = [req.extend_range.length for req in reqs] if is_extend else None
+        lengths = batch_data.extend_lens if is_extend else None
         if lengths is not None and tensor.shape[0] == sum(lengths):
             start = sum(lengths[:request_index])
             end = start + lengths[request_index]

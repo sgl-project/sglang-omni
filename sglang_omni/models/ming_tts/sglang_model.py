@@ -48,7 +48,6 @@ from sglang_omni.modules.ming_audio.flow.flow_loss import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
     MRotaryEmbedding,
@@ -60,19 +59,18 @@ from sglang_omni.vendor.sglang.layers import (
     SiluAndMul,
     TopK,
     VocabParallelEmbedding,
+    append_stages,
     declare_attn,
     declare_ffn,
     get_moe_impl_class,
     get_rope,
-    make_stages,
     residual_batch,
-    should_skip_post_experts_all_reduce,
 )
 from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.utils import add_prefix
+from sglang_omni.vendor.sglang.utils import add_prefix, make_layers
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +250,6 @@ class MingBailingMoeAttention(nn.Module):
         self.num_kv_heads = int(config.num_key_value_heads)
         self.head_dim = int(config.head_dim)
 
-        attn_tp_rank = get_parallel().attn_tp_rank
         attn_tp_size = get_parallel().attn_tp_size
         if self.num_heads % attn_tp_size != 0:
             raise ValueError(
@@ -292,8 +289,7 @@ class MingBailingMoeAttention(nn.Module):
             self.num_kv_heads,
             bias=bool(getattr(config, "use_qkv_bias", False)),
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("query_key_value", prefix),
         )
         self.dense = RowParallelLinear(
@@ -302,8 +298,7 @@ class MingBailingMoeAttention(nn.Module):
             bias=bool(getattr(config, "use_bias", False)),
             reduce_results=False,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("dense", prefix),
         )
 
@@ -483,6 +478,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             top_k=self.num_experts_per_tok,
             renormalize=self.norm_topk_prob,
             routed_scaling_factor=self.routed_scaling_factor,
+            layer_id=layer_id,
         )
 
         FusedMoE = get_moe_impl_class(quant_config)
@@ -529,12 +525,6 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         else:
             pass
 
-        if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
-            is_tp_path=True,
-        ):
-            hidden_states = tensor_model_parallel_all_reduce(hidden_states)
-        else:
-            pass
         return hidden_states.view(original_shape)
 
 
@@ -568,6 +558,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
                 config=config,
                 intermediate_size=int(config.intermediate_size),
                 quant_config=quant_config,
+                reduce_results=False,
                 prefix=add_prefix("mlp", prefix),
             )
         self.input_layernorm = RMSNorm(
@@ -578,24 +569,15 @@ class MingBailingMoeDecoderLayer(nn.Module):
             int(config.hidden_size),
             eps=float(config.rms_norm_eps),
         )
-        self.attn_boundary, self.ffn_boundary = make_stages(
+        self.attn_boundary, self.ffn_boundary = append_stages(
             (declare_attn(), self.input_layernorm),
             (
                 declare_ffn(
                     sparse=self.is_layer_sparse,
-                    next_sparse=self._is_layer_sparse(config, layer_id + 1),
+                    next_layer_sparse=self._is_layer_sparse(config, layer_id + 1),
                 ),
                 self.post_attention_layernorm,
             ),
-            previous=(
-                declare_ffn(
-                    sparse=self._is_layer_sparse(config, layer_id - 1),
-                    next_sparse=self.is_layer_sparse,
-                )
-                if layer_id != 0
-                else None
-            ),
-            terminal=layer_id == int(config.num_hidden_layers) - 1,
         )
 
     @staticmethod
@@ -617,9 +599,8 @@ class MingBailingMoeDecoderLayer(nn.Module):
             pass
         hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
         hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
-        with self.ffn_boundary.exit(forward_batch) as ffn_exit:
-            hidden_states = self.mlp(hidden_states, forward_batch)
-        return ffn_exit.finish(hidden_states)
+        hidden_states = self.mlp(hidden_states, forward_batch)
+        return self.ffn_boundary.finish(hidden_states, forward_batch)
 
 
 class MingBailingMoeTextModel(nn.Module):
@@ -642,16 +623,15 @@ class MingBailingMoeTextModel(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("word_embeddings", prefix),
         )
-        self.layers = nn.ModuleList(
-            [
-                MingBailingMoeDecoderLayer(
-                    config=config,
-                    layer_id=layer_id,
-                    quant_config=quant_config,
-                    prefix=add_prefix(f"layers.{layer_id}", prefix),
-                )
-                for layer_id in range(int(config.num_hidden_layers))
-            ]
+        self.layers = make_layers(
+            int(config.num_hidden_layers),
+            lambda idx, prefix: MingBailingMoeDecoderLayer(
+                config=config,
+                layer_id=idx,
+                quant_config=quant_config,
+                prefix=prefix,
+            ),
+            prefix=add_prefix("layers", prefix),
         )
         self.start_layer = 0
         self.end_layer = int(config.num_hidden_layers)
@@ -750,11 +730,9 @@ class MingBailingMoeTextModel(nn.Module):
         layers = self.layers
         for layer_id in range(self.start_layer, self.end_layer):
             hidden_states = layers[layer_id](positions, hidden_states, forward_batch)
-        hidden_states = residual_batch.complete_output(hidden_states, forward_batch)
-        if hidden_states.shape[0] != 0:
-            hidden_states = residual_batch.norm(hidden_states, forward_batch, self.norm)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
         return hidden_states
 
 

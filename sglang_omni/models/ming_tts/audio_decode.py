@@ -182,7 +182,7 @@ class FixedQwenCacheLayer(CacheLayerMixin):
     def get_seq_length(self) -> int:
         return self.cumulative_length
 
-    def get_max_cache_shape(self) -> int:
+    def get_max_length(self) -> int:
         return self.sliding_window
 
 

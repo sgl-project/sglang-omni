@@ -16,7 +16,9 @@ from sglang_omni.models.minicpm_o.components.sglang_talker import (
     MiniCPMOTalkerForCausalLM,
     MiniCPMTTSProjector,
 )
+from sglang_omni.models.minicpm_o.talker_request import make_talker_scheduler_adapters
 from sglang_omni.platforms import current_platform
+from sglang_omni.proto.request import OmniRequest, StagePayload
 
 HIDDEN = 8
 LLM_DIM = 16
@@ -125,3 +127,37 @@ def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
         == stages.TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
     )
     assert built["scheduler"]["operator_selected_prefill_backend"] is operator_selected
+
+
+def test_talker_request_builder_returns_inference_conditioning() -> None:
+    model = bare_model()
+    builder, _ = make_talker_scheduler_adapters(
+        model=model,
+        codec_vocab_size=32,
+        codec_eos_id=31,
+        tts_bos_token_id=30,
+        tts_eos_token_id=31,
+    )
+    hidden_states = torch.randn(2, LLM_DIM, requires_grad=True)
+    payload = StagePayload(
+        request_id="inference-conditioning",
+        request=OmniRequest(inputs=None),
+        data={
+            "prompt": {
+                "input_ids": torch.tensor([30, 11, 12, 31]),
+                "known_tts_output_ids": [11, 12],
+            },
+            "thinker_out": {
+                "extra_model_outputs": {"hidden_states_seq": hidden_states}
+            },
+        },
+    )
+    with torch.no_grad():
+        expected = model.build_condition_embeddings(
+            torch.tensor([11, 12]), hidden_states
+        )
+    with torch.enable_grad():
+        request = builder(payload)
+    torch.testing.assert_close(request.prefill_input_embeds, expected, rtol=0, atol=0)
+    assert not request.prefill_input_embeds.requires_grad
+    assert request.prefill_input_embeds.grad_fn is None

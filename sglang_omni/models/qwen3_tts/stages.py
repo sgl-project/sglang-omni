@@ -26,6 +26,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
 from sglang_omni.models.qwen3_tts.request_builders import (
     Qwen3TTSReferenceEncoderStats,
     Qwen3TTSSGLangRequestData,
+    bind_preprocessing_thread_device,
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
     qwen3_tts_reference_encoder_stats,
@@ -46,6 +47,11 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.hf import use_text_rope
 from sglang_omni.utils.json import JsonValue
+
+if current_platform.is_npu():
+    import torch_npu
+else:
+    torch_npu = None
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSTokenizer
@@ -297,6 +303,7 @@ def create_preprocessing_executor(
         ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
+        thread_initializer=bind_preprocessing_thread_device,
     )
 
 
@@ -436,7 +443,9 @@ def create_vocoder_executor(
     else:
         pass
     if incremental_codec_compile is None:
-        incremental_codec_compile = enable_stateful_codec_decoder
+        incremental_codec_compile = (
+            enable_stateful_codec_decoder and torch.device(device).type != "npu"
+        )
     else:
         pass
     tokenizer = load_qwen3_tts_tokenizer(
@@ -510,6 +519,17 @@ def create_vocoder_executor(
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
     # from colocated stages.
-    scheduler.warmup_now()
+    if torch.device(device).type == "npu":
+        # note (cocoa): Internal-format convolutions use aclop, which cannot be captured.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        torch.npu.config.allow_internal_format = False
+        try:
+            scheduler.warmup_now()
+        finally:
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
+    else:
+        scheduler.warmup_now()
     scheduler.log_cuda_graph_coverage(running_stream_count)
     return scheduler

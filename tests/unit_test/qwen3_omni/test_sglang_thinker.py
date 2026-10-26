@@ -11,6 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
+transformers = pytest.importorskip("transformers")
 
 from flashinfer.sampling import get_sampling_module
 from sglang.kernels.ops.moe.fused_moe_triton_kernels import fused_moe_kernel
@@ -37,6 +38,7 @@ from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
+    Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTextConfig,
     Qwen3OmniMoeThinkerConfig,
 )
@@ -129,6 +131,36 @@ def test_real_qwen_config_drives_prefill_positions(
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 
+def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta() -> (
+    None
+):
+    """A talker config rebuilt from transformers' to_dict keeps the M-RoPE sections and the theta
+    that transformers serializes under rope_parameters."""
+    hf_text_config = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "rope_parameters": {
+            "rope_type": "default",
+            "mrope_section": [1, 1, 2],
+            "interleaved": True,
+            "rope_theta": 123456.0,
+        },
+    }
+    serialized = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config=hf_text_config
+    ).to_dict()
+
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized)
+
+    assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
+    assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
+    assert rebuilt.text_config.rope_theta == 123456.0
+
+
 def test_outer_thinker_forward_accepts_sidecar_request_identity():
     seen: dict[str, object] = {}
 
@@ -139,7 +171,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = fake_model
-    wrapper.logits_processor = lambda *args: args[0]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[0]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     wrapper.decode_live_rows = DecodeLiveRows()
@@ -237,7 +269,7 @@ def make_bare_wrapper(error: RuntimeError | None = None) -> Qwen3OmniThinkerForC
     torch.nn.Module.__init__(wrapper)
     wrapper.decode_live_rows = DecodeLiveRows()
     wrapper.model = RecordingTextModel(wrapper.decode_live_rows, error)
-    wrapper.logits_processor = lambda *args: args[1]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[1]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     return wrapper
@@ -257,6 +289,29 @@ def run_forward(
             out_cache_loc=torch.tensor(out_cache_loc),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("accept_hidden_layer", "expected_layers"),
+    [(2, [2]), (4, []), (5, None)],
+)
+def test_the_thinker_captures_the_talkers_accept_layer_in_every_forward(
+    accept_hidden_layer: int, expected_layers: list[int] | None
+) -> None:
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.root_config = SimpleNamespace(
+        talker_config=SimpleNamespace(accept_hidden_layer=accept_hidden_layer)
+    )
+    wrapper.config = SimpleNamespace(num_hidden_layers=4)
+    wrapper.model = SimpleNamespace(layers_to_capture=[])
+
+    if expected_layers is None:
+        with pytest.raises(ValueError, match="accept_hidden_layer"):
+            wrapper.set_talker_layers_to_capture()
+    else:
+        wrapper.set_talker_layers_to_capture()
+        assert wrapper.model.layers_to_capture == expected_layers
 
 
 @pytest.mark.parametrize(

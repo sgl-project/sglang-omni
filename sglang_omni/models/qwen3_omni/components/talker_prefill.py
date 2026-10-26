@@ -198,12 +198,36 @@ class TalkerPrefillBuilder:
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        # note (ratish): the talker projects zeros in place of the thinker's hidden at
-        # multimodal prompt rows, the only prompt rows the hidden is read at.
-        thinker_hidden = torch.cat(
-            [torch.zeros_like(prompt_embed), assistant_embed], dim=0
-        )
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
+        prompt_hidden = torch.zeros_like(prompt_embed)
+        prompt_chunk = thinker_chunks[0]
+        captured_positions = (prompt_chunk.metadata or {}).get(
+            "prompt_hidden_positions"
+        )
+        # note (ratish): a session turn reuses its slot's KV and sends no prompt rows, so it
+        # keeps zeros at the multimodal rows, the only prompt rows the hidden is read at.
+        if captured_positions is not None:
+            # note (ratish): checked on the CPU prompt ids, so the device mask is never read back.
+            multimodal_token_ids = prompt_ids.new_tensor(
+                [
+                    int(token_id)
+                    for token_id in (
+                        self.audio_token_id,
+                        self.image_token_id,
+                        self.video_token_id,
+                    )
+                    if token_id is not None
+                ]
+            )
+            prompt_positions = torch.isin(prompt_ids, multimodal_token_ids)
+            assert (
+                captured_positions
+                == prompt_positions.nonzero(as_tuple=True)[0].tolist()
+            ), "the thinker's prompt hidden rows are not the prompt's multimodal rows"
+            prompt_hidden[captured_positions] = prompt_chunk.data.to(prompt_hidden)
+        else:
+            pass
+        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
         speaker_id = resolve_speaker_id(payload.request.params, self.speaker_map)

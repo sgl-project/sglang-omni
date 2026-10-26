@@ -219,6 +219,7 @@ def test_unstructured_or_malformed_decisions_fail_as_server_errors(response):
         umm.advance(reply(dispatched, response))
     assert generation_error_status_code(rejected.value) == 500
     assert not umm.contexts and not umm.adapter.histories
+    assert not umm.adapter.reason_times.entries
 
 
 def generate_turn(umm, decision=None, params=None, inputs="task"):

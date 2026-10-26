@@ -2,7 +2,7 @@
 
 [nvidia/personaplex-7b-v1](https://huggingface.co/nvidia/personaplex-7b-v1) is a 7B full-duplex speech-to-speech model built on [Moshi](https://arxiv.org/abs/2410.00037): every 80 ms it reads one text token and 16 [Mimi](https://huggingface.co/kyutai/mimi) codes (8 for what it says, 8 for what it hears) and writes the next frame. A voice prompt and a `<system>` role prompt set the persona, and the model decides for itself when to speak; there is no VAD.
 
-SGLang-Omni serves it as an **offline** pipeline: one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out. Live duplex sessions over `/v1/realtime` are tracked in [#1909](https://github.com/sgl-project/sglang-omni/issues/1909).
+SGLang-Omni serves it two ways: an **offline** pipeline (one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out) and a **session** variant that holds live full-duplex sessions over `/v1/realtime` ([#1909](https://github.com/sgl-project/sglang-omni/issues/1909)).
 
 ## Prerequisites
 
@@ -58,6 +58,10 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 }'
 ```
 
+## Native Full-Duplex Ability
+
+PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-personaplex).
+
 ## Request parameters
 
 | Parameter | Effect |
@@ -87,8 +91,8 @@ The fixed caller-frame budget still determines the number of generated frames.
 ## Known limitations
 
 - Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
-- On CUDA the backbone's decode step replays a CUDA graph (`--lm.engine.disable_cuda_graph true` turns it off); the 8 depformer steps still run eagerly, so a frame runs close to the 80 ms budget rather than well inside it.
-- Decode feedback stays on device. On CUDA, `--lm.factory.enable_async_decode true` launches the next decode before collecting the previous result. The eager Depformer can delay frame delivery by one decode interval, so synchronous decode remains the default. Other platforms, requests needing host token history for sampling, and requests returning log probabilities use the synchronous path. When any request reaches its caller-frame budget, the whole batch uses synchronous decode for that step.
+- On CUDA the backbone's decode step and all 8 Depformer steps replay CUDA graphs. At startup, offline serving captures the default audio-sampling layout for every configured batch bucket through the smallest bucket that covers the effective `max_running_requests`; session serving captures the same buckets with the deployment's resolved audio sampling. Other sampling layouts and batch shapes run eagerly. `--lm.engine.disable_cuda_graph true` disables both backbone and Depformer graphs, while `--lm.factory.depformer_cuda_graph_batch_sizes '[]'` disables only Depformer graphs. Seeded requests preserve their per-request RNG draws.
+- Decode feedback stays on device. On CUDA, `--lm.factory.enable_async_decode true` launches the next decode before collecting the previous result and can add 16–21% throughput with identical audio; synchronous decode remains the default. Other platforms, requests needing host token history for sampling, and requests returning log probabilities use the synchronous path. When any request reaches its caller-frame budget, the whole batch uses synchronous decode for that step.
 - Streaming Mimi decode follows `--code2wav.factory.chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time; a finished stream flushes its shorter remainder). Ready requests whose chunks share a width decode in one batched step of up to `max_batch_size` (default 8), each at its own decode position. `num_decode_slots` resident decode states default to the LM's effective `max_running_requests`, and a smaller explicit value is rejected; a stream that finds every slot taken while another stream's tail drains waits for the next free slot, so sustained overload is not bounded by this queue. On CUDA, graphs cover every batch size up to `min(max_batch_size, num_decode_slots)` and every chunk width up to `max_graph_frames` (the widest ramp entry unless set; `0` turns the graphs off), 8 × 4 = 32 graphs at LM concurrency 16; other shapes and platforms decode eagerly with the same states.
 - On CUDA, streaming Mimi decode uses a dedicated stream. The stage accepts CPU codes only; transfers and decode-slot reset/replay stay on that stream, so waveform collection does not drain queued LM forwards. Other devices retain their normal execution context.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.

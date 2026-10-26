@@ -524,7 +524,7 @@ class HiggsTTSModelRunner(ModelRunner):
         offset = 0
         for sched_req in requests:
             data = sched_req.data
-            end = offset + int(data.req.extend_range.length)
+            end = offset + data.req.extend_len
             codes_rows = data.reference_codes_delayed
             if not codes_rows:
                 offset = end
@@ -546,7 +546,7 @@ class HiggsTTSModelRunner(ModelRunner):
             # absolute prompt position instead of request-local progress.
             consumed = sum(
                 token == AUDIO_PLACEHOLDER_ID
-                for token in data.req.origin_input_ids[: data.req.extend_range.start]
+                for token in data.req.origin_input_ids[: data.req.prefix_len]
             )
             if consumed + n_placeholders > len(codes_rows):
                 raise RuntimeError(

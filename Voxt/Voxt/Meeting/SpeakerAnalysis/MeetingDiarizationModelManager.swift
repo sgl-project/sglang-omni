@@ -4,7 +4,7 @@
 import Combine
 import Foundation
 import HuggingFace
-import MLXAudioVAD
+import OmniModelArtifacts
 
 @MainActor
 final class MeetingDiarizationModelManager: ObservableObject {
@@ -103,14 +103,19 @@ final class MeetingDiarizationModelManager: ObservableObject {
                 guard revision == self.storageRevision else { throw CancellationError() }
                 _ = try ModelStorageDirectoryManager.requireWriteRootURL()
                 _ = try await self.downloadSortformerWithFallback()
-                try Task.checkCancellation()
-                guard revision == self.storageRevision else { throw CancellationError() }
+                // note (guanwei): A completed atomic commit wins over late cancellation.
+                guard revision == self.storageRevision else { return }
                 self.state = .downloaded
                 SystemNotificationSupport.postModelDownloadSucceeded(modelName: mode.title)
                 VoxtLog.meeting("Meeting diarization model ready. mode=\(mode.rawValue)")
             } catch is CancellationError {
                 guard revision == self.storageRevision else { return }
-                self.state = .notDownloaded
+                let directories = self.storageDirectories
+                let installed = await Task.detached(priority: .utility) {
+                    directories.contains { MeetingSortformerModelStorage.isValidModelDirectory($0) }
+                }.value
+                guard revision == self.storageRevision else { return }
+                self.state = installed ? .downloaded : .notDownloaded
             } catch {
                 guard revision == self.storageRevision else { return }
                 self.state = .error(error.localizedDescription)
@@ -150,6 +155,8 @@ final class MeetingDiarizationModelManager: ObservableObject {
             return try await downloadSortformer(using: preferredBaseURL)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as OmniModelStorageError {
+            throw error
         } catch {
             try Task.checkCancellation()
             guard let fallback = Self.fallbackHubBaseURL(from: preferredBaseURL) else {
@@ -158,7 +165,6 @@ final class MeetingDiarizationModelManager: ObservableObject {
             VoxtLog.meetingWarning(
                 "Primary meeting Sortformer download endpoint failed. Retrying with mirror. baseURL=\(preferredBaseURL.absoluteString), error=\(error.localizedDescription)"
             )
-            MeetingSortformerModelStorage.clearHubCache()
             return try await downloadSortformer(using: fallback)
         }
     }
@@ -178,12 +184,14 @@ final class MeetingDiarizationModelManager: ObservableObject {
         let installed = await Task.detached(priority: .utility) {
             MeetingSortformerModelStorage.isValidModelDirectory(modelDir)
         }.value
+        try Task.checkCancellation()
         if installed { return modelDir }
 
         let token = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
         let session = MLXModelDownloadSupport.makeDownloadSession(for: baseURL)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let stagingLease = try await ModelDiskOperations.prepareStagingDirectory(at: tempDir)
+        defer { withExtendedLifetime(stagingLease) {} }
 
         let entries = try await MLXModelDownloadSupport.fetchModelEntries(
             repo: repoID.description,
@@ -276,17 +284,16 @@ final class MeetingDiarizationModelManager: ObservableObject {
             )
         }
 
-        try await Task.detached(priority: .userInitiated) {
-            guard MeetingSortformerModelStorage.isValidModelDirectory(tempDir) else {
+        let outcome = try await ModelDiskOperations.publish(stagingLease: stagingLease, to: modelDir) { directory in
+            guard MeetingSortformerModelStorage.isValidModelDirectory(directory) else {
                 throw MLXModelDownloadSupport.DownloadValidationError.missingFiles
             }
-            if FileManager.default.fileExists(atPath: modelDir.path) {
-                try FileManager.default.removeItem(at: modelDir)
-            }
-            try FileManager.default.moveItem(at: tempDir, to: modelDir)
-            _ = try SortformerModel.fromModelDirectory(modelDir)
-        }.value
-        return modelDir
+            try OmniModelArtifactValidation.validateSafetensorsDirectory(at: directory)
+        }
+        if let warning = outcome.cleanupErrorDescription {
+            VoxtLog.meetingWarning("Model installed; cleanup incomplete. retainedPreviousDirectory=\(outcome.retainedPreviousDirectory?.path ?? "none"), error=\(warning)")
+        }
+        return outcome.directory
     }
 
     private func updateDownloadingState(progress: Double, detail: String?) {

@@ -9,6 +9,7 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from sglang.srt.server_args import ServerArgs
 
@@ -19,6 +20,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
 )
 from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN
 from sglang_omni.models.fun_cosyvoice3.utils import (
+    MAX_REFERENCE_SAMPLES,
     CosyVoice3Tokenizer,
     SpeakerEncoder,
     SpeechTokenizerV3,
@@ -42,10 +44,19 @@ else:
 
 logger = logging.getLogger(__name__)
 
+_ENGINE_HEADROOM_BYTES = 0
+
+
+def engine_headroom_bytes() -> int:
+    """The memory the engine keeps free beside its static pools; 0 when this process
+    runs no engine."""
+    return _ENGINE_HEADROOM_BYTES
+
 
 class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
     model_name = "Fun-CosyVoice3"
     context_length = 4096
+    mem_fraction_static = 0.85
     model_arch_override = "FunCosyVoice3SGLangModel"
 
     def __init__(
@@ -112,7 +123,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
-            "mem_fraction_static": 0.85,
+            "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "sampling_backend": (
                 "flashinfer" if current_platform.is_cuda() else "pytorch"
@@ -167,6 +178,12 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             device=device,
             intra_op_threads=self.onnx_intra_op_threads,
         )
+        # note (ratish): ONNX Runtime keeps its arena outside torch at the peak it
+        # reached, so one reference at the cap makes it resident before either pool
+        # is sized from free memory.
+        speech_tokenizer.extract_speech_token(
+            np.zeros((1, MAX_REFERENCE_SAMPLES), dtype=np.float32)
+        )
         speaker_encoder = SpeakerEncoder(
             campplus_path,
             device=device,
@@ -180,6 +197,16 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             speaker_encoder=speaker_encoder,
             device=torch.device(device),
             model_revision=root,
+        )
+        global _ENGINE_HEADROOM_BYTES
+        model_runner = model_worker.model_runner
+        # note (ratish): the vocoder in this process sizes its Flow prefix pool after the
+        # engine, so it leaves the share of pre-load memory the engine keeps free for its
+        # activations; a declared budget bounds only the engine's KV pool.
+        _ENGINE_HEADROOM_BYTES = int(
+            model_runner.pre_model_load_memory
+            * (1 - model_runner.mem_fraction_static)
+            * 2**30
         )
 
     def setup_model(

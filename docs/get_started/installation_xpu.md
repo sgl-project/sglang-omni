@@ -87,7 +87,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.21   # the pinned release
+git checkout v0.5.22   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -188,7 +188,7 @@ See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request paramete
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
 Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
-would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
+would replace this project's 5.19.0, and resolving `sox` lifts `numpy` past the
 `numba==0.65.1` ceiling. See
 [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
@@ -570,8 +570,8 @@ so concurrent requests raise throughput almost linearly.
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
-wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu`
+wheel that SGLang v0.5.22 pins (0.4.0); sgl-kernel builds older than 0.3.0 fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800

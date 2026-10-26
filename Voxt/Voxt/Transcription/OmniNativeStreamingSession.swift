@@ -1,12 +1,11 @@
 import Foundation
-import MLXAudioSTT
 
 /// Presents an Omni live session through the native streaming session seam.
 ///
 /// The adapter leases the runtime for the session's lifetime, so retiring the
 /// runtime waits for the session to end instead of cutting it off.
-nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @unchecked Sendable {
-    let events: AsyncStream<TranscriptionEvent>
+nonisolated final class OmniNativeStreamingSession: ASRStreamingSession, @unchecked Sendable {
+    let events: AsyncStream<ASRStreamingEvent>
     private let session: OmniRealtimeTranscriptionSession
     private let forwarding: Task<Void, Never>
 
@@ -49,7 +48,7 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
     private init(session: OmniRealtimeTranscriptionSession, runtime: OmniASRRuntime) {
         self.session = session
         let source = session.events
-        let (events, continuation) = AsyncStream.makeStream(of: TranscriptionEvent.self)
+        let (events, continuation) = AsyncStream.makeStream(of: ASRStreamingEvent.self)
         self.events = events
         forwarding = Task.detached {
             for await event in source {
@@ -57,12 +56,12 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
                 case .display(let confirmedText, let provisionalText):
                     continuation.yield(.displayUpdate(confirmedText: confirmedText, provisionalText: provisionalText))
                 case .ended(let text, let segments):
-                    continuation.yield(.ended(STTOutput(
+                    continuation.yield(.ended(ASRTranscriptionResult(
                         text: text,
-                        segments: segments.isEmpty ? nil : segments.map(\.transcriptSegment)
+                        segments: segments.map(\.transcriptSegment)
                     )))
                 case .failed(let message):
-                    continuation.yield(.failed(StreamingFailure(message: message)))
+                    continuation.yield(.failed(ASRStreamingFailure(message: message)))
                 }
             }
             continuation.finish()
@@ -84,12 +83,11 @@ nonisolated final class OmniNativeStreamingSession: MLXNativeStreamingSession, @
 }
 
 nonisolated extension OmniSpeakerSegment {
-    /// The MLXAudio segment Voxt's MOSS handling reads; no speaker means none.
-    var transcriptSegment: STTTranscriptSegment {
-        STTTranscriptSegment(
+    var transcriptSegment: ASRTranscriptSegment {
+        ASRTranscriptSegment(
             text: text,
-            startTime: startSeconds,
-            endTime: endSeconds,
+            startSeconds: startSeconds,
+            endSeconds: endSeconds,
             speakerID: speakerID.isEmpty ? nil : speakerID
         )
     }

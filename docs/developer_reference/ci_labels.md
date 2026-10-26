@@ -20,7 +20,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
 | Omni CI: MPS | H100 | Two Higgs-TTS or MOSS-TTS workers sharing one H100 through CUDA MPS, with the TTS quality assertions | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
-| CPU CI | Intel Xeon (`intel-omni-spr`) | Intel CPU unit tests | `run-intel-cpu-ci` or `run-all-ci` |
+| CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
 | Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
 
@@ -59,7 +59,7 @@ The CPU partitions run as independent matrix jobs with fail-fast disabled. Files
 
 The initial weights are per-file p90 elapsed estimates from three successful H100 CPU jobs: [118185861718](https://github.com/sgl-project/sglang-omni/actions/runs/39288752772/job/118185861718), [118197139172](https://github.com/sgl-project/sglang-omni/actions/runs/39292142439/job/118197139172) and [118244967308](https://github.com/sgl-project/sglang-omni/actions/runs/39305977181/job/118244967308). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
-`run-unit-test-ci-only` selects PR Test without selecting model or hardware stages. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. `run-lint-only` does not run PR Test or setup.
+`run-unit-test-ci-only` selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` or `run-all-ci`, and the CPU path filter. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. `run-lint-only` does not run PR Test or setup.
 
 ### ASR
 
@@ -133,13 +133,13 @@ The stage label is `run-omni-ci`. A model label does not name the stage. Combine
 
 ## Hardware workflows
 
-Each hardware stage is its own workflow, with a gate job that waits for lint and resolves the labels. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
+Each hardware stage is its own workflow. Its gate checks live labels and skips draft blocking, label resolution and lint checks unless its stage label or `run-all-ci` selects it. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
 
 ### CPU CI
 
-CPU CI builds the Intel Xeon image from `docker/cpu.Dockerfile` and runs `pytest tests/unit_test/cpu/`. Its tests run when the pull request touches `sglang_omni/` (except Markdown files), `tests/unit_test/cpu/`, `pyproject_cpu.toml`, `scripts/cpu/`, `docker/cpu.Dockerfile` or the workflow itself.
+CPU CI builds the Intel Xeon image from `docker/cpu.Dockerfile` and runs `pytest tests/unit_test/cpu/` in the job `intel-cpu-ci (unit_test/cpu)`. Its tests run when the pull request touches `sglang_omni/` (except Markdown files), `tests/unit_test/cpu/`, `pyproject_cpu.toml`, `scripts/cpu/`, `docker/cpu.Dockerfile` or the workflow itself.
 
-The stage label is `run-intel-cpu-ci`. When the paths are untouched, or when the pull request selects other stages but not Intel CPU, the test job is skipped and the `CPU CI Status` check still reports success.
+The stage label is `run-intel-cpu-ci`. `run-unit-test-ci-only` does not select this job. When the paths are untouched, or when the pull request selects other stages but not Intel CPU, the test job is skipped and the `CPU CI Status` check still reports success.
 
 ### XPU CI
 
@@ -156,7 +156,7 @@ The stage label is `run-mac-ci`.
 ## Label rules
 
 1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage.
-2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the gates of Omni CI and the hardware workflows fail with `No CI label found`. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
+2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
 5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
@@ -167,12 +167,12 @@ The stage label is `run-mac-ci`.
 | --- | --- |
 | `run-all-ci` | Every stage |
 | `run-lint-only` | No self-hosted job. The gates succeed. |
-| `run-unit-test-ci-only` | PR Test in Omni CI |
+| `run-unit-test-ci-only` | PR Test on H100. Not `intel-cpu-ci (unit_test/cpu)`. |
 | `run-asr-ci` | ASR in Omni CI |
 | `run-tts-ci` | TTS in Omni CI |
 | `run-mps-ci` | MPS in Omni CI |
 | `run-omni-ci` | Omni in Omni CI |
-| `run-intel-cpu-ci` | CPU CI |
+| `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
 | `run-intel-xpu-ci` | XPU CI |
 | `run-mac-ci` | Voxt Mac CI |
 
@@ -182,7 +182,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 | Labels | What runs |
 | --- | --- |
-| none | Nothing. The self-hosted gates fail with `No CI label found`. |
+| none | Nothing. The Omni CI gate fails with `No CI label found`; hardware tests are skipped. |
 | `run-lint-only` | Nothing self-hosted. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test only, after shared setup. |
 | `run-tts-ci` | PR Test, then TTS on a random model from its pool. |

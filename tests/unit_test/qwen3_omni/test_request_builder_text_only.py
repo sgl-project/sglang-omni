@@ -18,7 +18,9 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     build_thinker_request,
     compute_mrope_positions,
+    make_thinker_scheduler_adapters,
 )
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
 from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import ChatCompletionRequest
@@ -60,6 +62,7 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
             video_token_id=66,
             audio_token_id=77,
         ),
+        capture_prompt_hidden_states=False,
     )
 
     assert sglang_request.model_inputs == {}
@@ -68,6 +71,40 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
     assert (
         getattr(sglang_request.req, "_omni_mm_positions", None) is None
     )  # noqa: leading-underscore  # production name
+
+
+@pytest.mark.parametrize(
+    ("capture_prompt_hidden_states", "output_modalities", "prompt_ids", "positions"),
+    [
+        (True, ["audio"], [4, 55, 77, 66, 5], [1, 2, 3]),
+        (True, ["text"], [4, 77, 5], [1]),
+        (False, ["audio"], [4, 77, 5], None),
+        (True, ["audio"], [4, 5], None),
+    ],
+)
+def test_every_request_with_media_writes_its_prompt_rows_on_a_speech_server(
+    monkeypatch, capture_prompt_hidden_states, output_modalities, prompt_ids, positions
+):
+    patch_sampling_validation(monkeypatch)
+    request_builder, _ = make_thinker_scheduler_adapters(
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        thinker_config=SimpleNamespace(
+            image_token_id=55, video_token_id=66, audio_token_id=77
+        ),
+        capture_prompt_hidden_states=capture_prompt_hidden_states,
+    )
+    payload = make_qwen_payload(
+        make_qwen_state(prompt={"input_ids": torch.tensor(prompt_ids)})
+    )
+    payload.request.metadata = {"output_modalities": output_modalities}
+
+    request = request_builder(payload).req
+
+    if positions is None:
+        assert not isinstance(request, PromptHiddenRequest)
+    else:
+        assert request.prompt_hidden_positions.tolist() == positions
 
 
 def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch):
@@ -93,6 +130,7 @@ def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
             tokenizer=FakeQwenTokenizer(),
             vocab_size=256,
             request_id="out-of-vocabulary",
+            capture_prompt_hidden_states=False,
         )
 
     assert f"token id {token_id} at position 1" in str(raised.value)
@@ -114,6 +152,7 @@ def test_chat_request_without_a_temperature_reaches_the_thinker_greedy(monkeypat
         tokenizer=FakeQwenTokenizer(),
         vocab_size=256,
         request_id="chat-without-temperature",
+        capture_prompt_hidden_states=False,
     )
 
     assert request.temperature == 0.0

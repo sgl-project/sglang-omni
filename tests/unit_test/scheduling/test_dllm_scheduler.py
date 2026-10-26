@@ -12,8 +12,9 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import ReqKvInfo
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -37,7 +38,7 @@ class ReqDouble:
         self.full_untruncated_fill_ids = self.origin_input_ids + array(
             "q", [-1] * block_size
         )
-        self.extend_range = SimpleNamespace(end=len(self.full_untruncated_fill_ids))
+        self.extend_end = len(self.full_untruncated_fill_ids)
         self.output_ids: list[int] = []
         self.output_ids_through_stop: list[int] = self.output_ids
         self.finished_reason = None
@@ -193,7 +194,7 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     cache_calls = []
     free_calls = []
     scheduler.tree_cache = SimpleNamespace(
-        cache_unfinished_req=lambda *args, **kwargs: cache_calls.append((args, kwargs))
+        checkpoint=lambda *args, **kwargs: cache_calls.append((args, kwargs))
     )
     scheduler.req_to_token_pool = SimpleNamespace(
         free=lambda value: free_calls.append(value)
@@ -329,12 +330,13 @@ def chunked_scheduler() -> DllmScheduler:
     scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
         512, torch.float32, "cpu", None, False
     )
-    scheduler.tree_cache = ChunkCache(
+    scheduler.tree_cache = UnifiedRadixCache(
         CacheInitParams(
             disable=True,
             req_to_token_pool=scheduler.req_to_token_pool,
             token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
             page_size=1,
+            tree_components=(ComponentType.FULL,),
         )
     )
     scheduler.chunked_prefill_size = 32
@@ -365,7 +367,7 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
     allocator = scheduler.token_to_kv_pool_allocator
     occupied = allocator.alloc(300)
-    original_ranges = [req.extend_range for req in requests]
+    original_spans = [(req.prefix_len, req.extend_end) for req in requests]
     monkeypatch.setattr(
         dllm_scheduler_module,
         "ScheduleBatch",
@@ -378,12 +380,12 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
         assert scheduler.schedule_next_batch() is None
         assert scheduler.waiting_queue == requests
-        assert [req.extend_range for req in requests] == original_ranges
+        assert [(req.prefix_len, req.extend_end) for req in requests] == original_spans
         allocator.free(occupied)
         batch = scheduler.schedule_next_batch()
 
     assert batch.reqs == requests
-    assert all(req.extend_range.length == 32 for req in batch.reqs)
+    assert all(req.extend_len == 32 for req in batch.reqs)
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -408,7 +410,7 @@ def test_dllm_staging_admission_uses_dllm_config(
         batch = scheduler.schedule_next_batch()
 
     assert batch.reqs == [request]
-    assert request.extend_range.length == scheduler.dllm_config.block_size
+    assert request.extend_len == scheduler.dllm_config.block_size
 
 
 def test_abort_between_blocks_releases_cached_tokens(
@@ -423,7 +425,7 @@ def test_abort_between_blocks_releases_cached_tokens(
     pool.alloc([req])
     req.kv.kv_allocated_len = req.kv.kv_committed_len = 32
     pool.req_to_token[req.kv.req_pool_idx, :32] = allocator.alloc(32).int()
-    req.set_extend_range(0, 32)
+    req.extend_end = 32
     scheduler.post_step(SimpleNamespace(reqs=[req], filter_batch=lambda **kwargs: None))
     scheduler.aborted_request_ids = {req.rid}
 

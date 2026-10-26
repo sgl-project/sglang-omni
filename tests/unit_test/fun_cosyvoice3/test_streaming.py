@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from queue import Empty, Queue
 from types import SimpleNamespace
 
@@ -186,13 +187,16 @@ def stream_payload(
     codes: list[int] | None = None,
     prompt_feat_frames: int = TOKEN_HOP_LEN * TOKEN_MEL_RATIO,
     prompt_token_len: int = TOKEN_HOP_LEN,
+    prompt_feat_dtype: torch.dtype = torch.float32,
 ) -> StagePayload:
     state = FunCosyVoice3State(
         text="hello",
         stream=True,
         audio_codes=None if codes is None else torch.tensor(codes, dtype=torch.long),
         flow_prompt_speech_token=torch.zeros(1, prompt_token_len, dtype=torch.int32),
-        flow_prompt_speech_feat=torch.zeros(1, prompt_feat_frames, 80),
+        flow_prompt_speech_feat=torch.zeros(
+            1, prompt_feat_frames, 80, dtype=prompt_feat_dtype
+        ),
         flow_embedding=torch.ones(1, 192),
         finish_reason="length",
     )
@@ -562,6 +566,161 @@ def test_backlogged_request_runs_one_hop_per_step() -> None:
     with scheduler.state_lock:
         assert scheduler.pump_one_step() == []
     assert hop_frames(flow) == {window_frames(flow, 28), window_frames(flow, 78)}
+    assert state.token_offset == TOKEN_HOP_LEN + next_stream_hop_len(TOKEN_HOP_LEN)
+
+
+class PendingCopy:
+    def __init__(self, log: list[str], label: str) -> None:
+        self.log = log
+        self.label = label
+
+    def synchronize(self) -> None:
+        self.log.append(f"read {self.label}")
+
+
+def pending_copies(
+    scheduler: FunCosyVoice3StreamingVocoderScheduler,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    log: list[str] = []
+    vocoder = scheduler.vocoder
+    original_hift_step = vocoder.hift_step
+
+    def hift_step(rows: list[stages.HiftStepRow]) -> stages.HiftStepSamples:
+        samples = original_hift_step(rows)
+        label = str(sum(entry.startswith("launch") for entry in log) + 1)
+        log.append(f"launch {label}")
+        return dataclasses.replace(samples, copy_done=PendingCopy(log, label))
+
+    monkeypatch.setattr(vocoder, "hift_step", hift_step)
+    return log
+
+
+def test_next_step_launches_before_the_previous_step_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    for request_id in ("req-a", "req-b"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert drain(scheduler) == []
+    scheduler.ingest_stream_item("req-b", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-a"]
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() is None
+    assert stream_ids(drain(scheduler)) == ["req-b"]
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+
+
+def test_a_final_launched_behind_its_hop_leaves_after_it_with_its_result_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(30))))
+    scheduler.handle_stream_done("req-a")
+    assert serve(scheduler) == 3
+    assert [m.type for m in drain(scheduler)] == ["stream", "stream", "result"]
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+    assert estimator_calls(flow)[-1]["streaming"] is False
+    assert "req-a" not in scheduler.stream_states
+
+
+def test_a_stream_whose_first_hop_is_in_flight_ranks_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, scheduler = make_scheduler(max_batch_size=1)
+    clock = Clock(999.0)
+    scheduler.clock = clock
+    pending_copies(scheduler, monkeypatch)
+    for request_id in ("req-a", "req-c"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+    scheduler.ingest_stream_item("req-a", item([i % 31 for i in range(78)]))
+    clock.now = 999.5
+    scheduler.ingest_stream_item("req-c", item(list(range(28))))
+    clock.now = 1000.0
+    with scheduler.state_lock:
+        assert scheduler.pump_streams() == []
+    assert stream_ids(drain(scheduler)) == ["req-a", "req-a", "req-c"]
+
+
+def test_a_stream_aborted_while_its_step_is_in_flight_gets_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, scheduler = make_scheduler()
+    pending_copies(scheduler, monkeypatch)
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    scheduler.abort_state("req-a")
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() is None
+    assert drain(scheduler) == []
+
+
+def test_a_stream_whose_abort_lands_while_the_pump_holds_its_state_gets_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, scheduler = make_scheduler()
+    pending_copies(scheduler, monkeypatch)
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        scheduler.record_aborted_request_id("req-a")
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() is None
+    assert drain(scheduler) == []
+
+
+def test_a_failed_launch_still_sends_the_step_in_flight_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    for request_id in ("req-a", "req-b"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+
+    def hop_batch(items: list[stages.FlowBatchInput]) -> list[torch.Tensor]:
+        raise RuntimeError("flow failed")
+
+    monkeypatch.setattr(scheduler.vocoder, "hop_batch", hop_batch)
+    scheduler.ingest_stream_item("req-b", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == ["req-b"]
+        assert scheduler.pump_one_step() is None
+    assert sorted((m.request_id, m.type) for m in drain(scheduler)) == [
+        ("req-a", "stream"),
+        ("req-b", "error"),
+    ]
+    assert log == ["launch 1", "read 1"]
+
+
+def test_a_streams_prompt_takes_flows_dtype_at_its_latch_and_keeps_it() -> None:
+    _, scheduler = make_scheduler()
+    scheduler.handle_streaming_new_request(
+        "req-a", stream_payload("req-a", prompt_feat_dtype=torch.float16)
+    )
+    state = scheduler.stream_states["req-a"]
+    prompt_feat = state.prompt_feat
+    scheduler.ingest_stream_item("req-a", item(list(range(78))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() == []
+    assert prompt_feat.dtype == torch.float32
+    assert state.prompt_feat is prompt_feat
     assert state.token_offset == TOKEN_HOP_LEN + next_stream_hop_len(TOKEN_HOP_LEN)
 
 
