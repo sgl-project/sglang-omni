@@ -134,21 +134,21 @@ Supported Models
    cookbook/minicpm_o.md
    cookbook/fun_asr.md
    cookbook/higgs_tts.md
-   cookbook/moss_tts_local.md
    cookbook/nemotron_diarization.md
+   cookbook/moss_tts_local.md
    cookbook/fishaudio_drama3.md
-   cookbook/minimax_music3.md
    cookbook/ming_omni.md
-   cookbook/auk.md
+   cookbook/minimax_music3.md
    cookbook/zonos2.md
    cookbook/arkasr.md
+   cookbook/auk.md
    cookbook/voxtral_tts.md
    cookbook/dots_tts.md
+   cookbook/ming3_tts.md
    cookbook/llada2_uni.md
-   cookbook/ming_tts.md
    cookbook/ming3_asr.md
    cookbook/ming3_audio.md
-   cookbook/ming3_tts.md
+   cookbook/ming_tts.md
 
 .. toctree::
    :maxdepth: 1
