@@ -134,6 +134,11 @@ accepts `n` from 1 to 10 and sends each output as its own pipeline request with
 image edit produces one image, so it must use `n=1`.
 Both routes require `think_mode=false`.
 
+The text-to-image endpoint ignores unknown extension fields for compatibility
+with shared clients and benchmarks. Fields such as `return_stage_metrics`,
+`bot_task`, `sys_type`, and `system_prompt` do not enable those features.
+Recognized fields retain their existing validation and defaults.
+
 ## Cache-DiT Acceleration
 
 Cache-DiT is off by default. Enable it for all requests in the pipeline config

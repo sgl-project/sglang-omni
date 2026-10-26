@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class ImageGenerationRequest(BaseModel):
     """SenseNova T2I request with native multi-output generation (base64 PNG)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     model: str | None = None
     prompt: str = Field(min_length=1)

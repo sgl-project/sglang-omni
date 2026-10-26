@@ -156,7 +156,7 @@ def prefix_tokenizer() -> PreTrainedTokenizerFast:
 
 
 def test_t2i_api_returns_all_outputs_in_one_request() -> None:
-    """HTTP coercion accepted invalid sampling values before dispatch."""
+    """Unknown benchmark extensions caused 422 responses for valid image requests."""
     buffer = io.BytesIO()
     Image.new("RGB", (32, 32)).save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -167,6 +167,19 @@ def test_t2i_api_returns_all_outputs_in_one_request() -> None:
         async def generate(self, request, request_id):
             self.calls += 1
             assert request.extra_params["n"] == 3
+            assert request.extra_params["seed"] == 42
+            assert request.extra_params["width"] == 2048
+            assert (
+                not {
+                    "return_stage_metrics",
+                    "bot_task",
+                    "sys_type",
+                    "system_prompt",
+                    "stage_params",
+                    "think_mode",
+                }
+                & request.extra_params.keys()
+            )
             yield umm_image_chunk(request_id, [encoded] * 3)
 
     backend = MultiClient()
@@ -175,7 +188,19 @@ def test_t2i_api_returns_all_outputs_in_one_request() -> None:
             backend, model_name="sensenova", image_api_registrar=register_images_api
         )
     )
-    response = client.post("/v1/images/generations", json={"prompt": "a cat", "n": 3})
+    extensions = {
+        "return_stage_metrics": True,
+        "bot_task": "think",
+        "sys_type": "en_unified",
+        "system_prompt": "custom prompt",
+        "width": 32,
+        "think_mode": True,
+        "stage_params": {"generate": {"seed": 7}},
+    }
+    response = client.post(
+        "/v1/images/generations",
+        json={"prompt": "a cat", "n": 3, **extensions},
+    )
     assert response.status_code == 200
     assert response.json()["data"] == [{"b64_json": encoded}] * 3
     assert backend.calls == 1
@@ -190,7 +215,7 @@ def test_t2i_api_returns_all_outputs_in_one_request() -> None:
         assert (
             client.post(
                 "/v1/images/generations",
-                json={"prompt": "a cat", **invalid_parameters},
+                json={"prompt": "a cat", **extensions, **invalid_parameters},
             ).status_code
             == 422
         )
