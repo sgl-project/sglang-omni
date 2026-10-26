@@ -3,6 +3,8 @@
 
 Provides the following endpoints:
 - POST /v1/chat/completions  — Text (+ audio) chat completions
+- POST /v1/images/generations — model-registered text-to-image generation
+- POST /v1/images/edits     — model-registered image editing
 - POST /v1/audio/speech      — Text-to-speech synthesis
 - POST /v1/audio/translations — Translate audio speech to English
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import time
@@ -29,7 +32,7 @@ import uuid
 from contextlib import aclosing, suppress
 from dataclasses import asdict, replace
 from enum import Enum
-from typing import AsyncGenerator, AsyncIterator, Literal
+from typing import AsyncGenerator, AsyncIterator, Literal, Protocol
 
 from fastapi import (
     Depends,
@@ -43,6 +46,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from PIL import Image
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.types import ASGIApp
@@ -152,6 +156,9 @@ from sglang_omni.serve.translations import register_translations
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
+MAX_IMAGE_EDIT_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_EDIT_PIXELS = 4096 * 4096
+SUPPORTED_IMAGE_EDIT_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 
 
 class ServerStatus(Enum):
@@ -215,6 +222,13 @@ class VoiceUploadBodyLimitMiddleware:
             await send_voice_upload_too_large(send, self.max_bytes)
 
 
+class ImageApiRegistrar(Protocol):
+    """Register a model's Images API routes on an initialized app."""
+
+    def __call__(self, app: FastAPI) -> None:
+        """Register model-specific image routes on the application."""
+
+
 def create_app(
     client: Client,
     *,
@@ -243,13 +257,15 @@ def create_app(
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
     interleaved_output: bool = False,
+    image_api_registrar: ImageApiRegistrar | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
     Args:
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
-        supports_image_api: Mount image generation and editing routes for this pipeline.
+        supports_image_api: Mount the generic image pipeline routes for this pipeline.
+        image_api_registrar: Model-provided callback that mounts the model's Images API.
         image_decode_mode: Decoder factory mode used to validate omitted request modes.
         image_decode_steps: Decoder factory step count used for omitted request steps.
         requires_uploaded_voice_for_named_voice: Whether non-default TTS voice
@@ -295,6 +311,12 @@ def create_app(
     Returns:
         Configured FastAPI application.
     """
+    if supports_image_api and image_api_registrar is not None:
+        raise ValueError(
+            "Configure either supports_image_api or image_api_registrar, not both"
+        )
+    else:
+        pass
     app = FastAPI(title="sglang-omni", version=__version__)
 
     app.add_middleware(
@@ -381,8 +403,28 @@ def create_app(
         )
     else:
         pass
+    if image_api_registrar is not None:
+        image_api_registrar(app)
+    else:
+        pass
 
     return app
+
+
+def parse_image_size(value: str) -> tuple[int, int]:
+    """Parse the Images API WxH size string with one stable error."""
+    try:
+        width_text, height_text = value.split("x")
+        width, height = int(width_text), int(height_text)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("size must be WxH") from error
+    else:
+        pass
+    if width <= 0 or height <= 0:
+        raise ValueError("size must be WxH")
+    else:
+        pass
+    return width, height
 
 
 def register_images(
@@ -478,7 +520,11 @@ def register_images(
                 pass
             size = supplied.get("size")
             if size is not None:
-                width, height = (int(value) for value in size.split("x"))
+                if not isinstance(size, str):
+                    raise ValueError("size must be WxH")
+                else:
+                    pass
+                width, height = parse_image_size(size)
                 if request.width is not None and (width, height) != (
                     request.width,
                     request.height,
@@ -1476,6 +1522,103 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         output_modalities=output_modalities,
         metadata=metadata,
     )
+
+
+async def image_result_with_disconnect_watch(
+    request: Request,
+    client: Client,
+    generation_request: GenerateRequest,
+    request_id: str,
+) -> GenerateChunk:
+    stream = client.generate(generation_request, request_id=request_id)
+
+    async def consume_result() -> GenerateChunk:
+        try:
+            result: GenerateChunk | None = None
+            async for chunk in stream:
+                if result is None:
+                    result = chunk
+                else:
+                    pass
+            if result is None:
+                raise RuntimeError("Pipeline returned no result")
+            else:
+                pass
+            return result
+        finally:
+            await _close_async_iterator_if_supported(stream)
+
+    result_task = asyncio.create_task(consume_result())
+    disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {result_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if result_task in done:
+            return result_task.result()
+        else:
+            pass
+        raise asyncio.CancelledError
+    except asyncio.CancelledError:
+        await client.abort(request_id)
+        raise
+    finally:
+        if not result_task.done():
+            await cancel_task_bounded(result_task)
+        else:
+            pass
+        if not disconnect_task.done():
+            await cancel_task_bounded(disconnect_task)
+        else:
+            pass
+
+
+async def read_image_edit_upload(image: UploadFile) -> bytes:
+    """Read and validate one bounded reference-image upload."""
+    try:
+        image_bytes = await image.read(MAX_IMAGE_EDIT_UPLOAD_BYTES + 1)
+    finally:
+        await image.close()
+    if not image_bytes:
+        raise ValueError("reference image must not be empty")
+    else:
+        pass
+    if len(image_bytes) > MAX_IMAGE_EDIT_UPLOAD_BYTES:
+        raise ValueError(
+            f"reference image must be at most {MAX_IMAGE_EDIT_UPLOAD_BYTES} bytes"
+        )
+    else:
+        pass
+
+    def validate_image() -> None:
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as decoded:
+                image_format = decoded.format
+                width, height = decoded.size
+                if image_format not in SUPPORTED_IMAGE_EDIT_FORMATS:
+                    supported = ", ".join(sorted(SUPPORTED_IMAGE_EDIT_FORMATS))
+                    raise ValueError(
+                        f"reference image format must be one of: {supported}"
+                    )
+                else:
+                    pass
+                if width < 1 or height < 1 or width * height > MAX_IMAGE_EDIT_PIXELS:
+                    raise ValueError(
+                        "reference image must contain at most "
+                        f"{MAX_IMAGE_EDIT_PIXELS} pixels"
+                    )
+                else:
+                    pass
+                decoded.verify()
+            # note (Wes): JPEG verification does not decode pixels, so truncated images need a separate load after verification.
+            with Image.open(io.BytesIO(image_bytes)) as decoded:
+                decoded.load()
+        # note (Wes): Pillow's PNG verify raises SyntaxError for a corrupt chunk checksum.
+        except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
+            raise ValueError("reference image is not a valid image") from exc
+
+    await asyncio.to_thread(validate_image)
+    return image_bytes
 
 
 ROLLOUT_ARTIFACT_FIELDS = (

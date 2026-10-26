@@ -650,6 +650,11 @@ async def run_server(
     port = find_available_port(host, port)
     export_server_port(port)
 
+    registrar_path = type(pipeline_config).image_api_registrar
+    image_api_registrar = (
+        import_string(registrar_path) if registrar_path is not None else None
+    )
+
     async with ServiceProcesses(pipeline_config.services) as services:
         mp_runner = MultiProcessPipelineRunner(pipeline_config)
         startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -705,6 +710,7 @@ async def run_server(
                 client,
                 model_name=model_name or pipeline_config.name,
                 supports_image_api=pipeline_config.supports_image_api,
+                image_api_registrar=image_api_registrar,
                 image_decode_mode=pipeline_config.image_decode_mode(),
                 image_decode_steps=pipeline_config.image_decode_steps(),
                 requires_uploaded_voice_for_named_voice=(

@@ -727,6 +727,7 @@ class PipelineConfig(BaseModel):
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
     supports_image_api: ClassVar[bool] = False
+    image_api_registrar: ClassVar[str | None] = None
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False

@@ -21,6 +21,8 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
+from sglang_omni.config.patch import ConfigPatchSet
+from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
@@ -45,6 +47,7 @@ from sglang_omni.serve.server_warmup import (
 )
 from sglang_omni.serve.speech_to_text import SpeechToTextForm, parse_speech_to_text_form
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
+from tests.unit_test.fixtures.image_media import register_test_images
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -577,6 +580,58 @@ async def run_launcher_with_fake_runner(
     await launcher.run_server(config, host=host, port=8000)
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_registrar", [False, True])
+async def test_launcher_resolves_image_registrar_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_registrar: bool,
+) -> None:
+    class ImagePipelineConfig(PipelineConfig):
+        image_api_registrar: ClassVar[str | None] = (
+            "tests.unit_test.fixtures.image_media.register_test_images"
+            if has_registrar
+            else None
+        )
+
+    config = ImagePipelineConfig.model_validate(make_config(tmp_path).model_dump())
+    resolved = ConfigResolver(config).resolve(ConfigPatchSet())
+    _, app, _ = await run_launcher_with_fake_runner(
+        config=resolved.config,
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+    )
+    assert app.state.create_app_kwargs["image_api_registrar"] is (
+        register_test_images if has_registrar else None
+    )
+
+
+@pytest.mark.asyncio
+async def test_launcher_rejects_invalid_image_registrar_before_pipeline_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An invalid image registrar used to fail only after starting model workers."""
+
+    class ImagePipelineConfig(PipelineConfig):
+        image_api_registrar: ClassVar[str] = (
+            "tests.unit_test.fixtures.image_media.missing_image_registrar"
+        )
+
+    config = ImagePipelineConfig.model_validate(make_config(tmp_path).model_dump())
+    runners = []
+    server_serve = AsyncMock()
+    with pytest.raises(ImportError, match="missing_image_registrar"):
+        await run_launcher_with_fake_runner(
+            config=config,
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+            created_runners=runners,
+        )
+    server_serve.assert_not_awaited()
+    assert not runners
 
 
 @pytest.mark.asyncio
