@@ -9,6 +9,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "common/swift_port.h"
+#include "common/text.h"
 
 namespace parakeet {
 
@@ -31,7 +32,7 @@ bool Contains(const std::string &text, const char *needle) {
 // Note (Dayuxiaoshui): Swift's String.contains(" ") compares grapheme
 // clusters, so a space that a combining mark attaches to is not a space.
 bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = qwen3_asr::CodePoints(text);
+  const std::vector<uint32_t> code_points = omni_common::CodePoints(text);
   const CFCharacterSetRef combining =
       CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
   for (size_t index = 0; index < code_points.size(); ++index) {
@@ -306,7 +307,7 @@ qwen3_asr::TranscriptionResult
 ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
-  const double sample_rate = qwen3_asr::kSampleRate;
+  const double sample_rate = omni_common::kSampleRate;
   const double chunk_seconds =
       options.chunk_duration_seconds >= kWholeRecordingChunkSeconds
           ? kWholeRecordingChunkReplacementSeconds

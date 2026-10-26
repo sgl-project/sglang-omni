@@ -10,6 +10,8 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
+# Note (ruoyu): the settings panel is the realtime page's module, served under this page's own path so its ./session.js import resolves to the cascade session.
+SHARED_SETTINGS_MODULE = ROOT.parent / "realtime" / "frontend" / "orb" / "settings.js"
 logger = logging.getLogger(__name__)
 
 
@@ -78,11 +80,16 @@ def create_app(api_base: str) -> web.Application:
     async def index(request: web.Request) -> web.FileResponse:
         return web.FileResponse(FRONTEND / "orb" / "index.html")
 
+    async def settings_module(request: web.Request) -> web.FileResponse:
+        return web.FileResponse(SHARED_SETTINGS_MODULE)
+
     app.router.add_get("/v1/realtime/capabilities", capabilities)
     app.router.add_get("/v1/realtime", realtime)
     app.router.add_get("/", index)
 
     app.router.add_get("/orb", index)
+    # Note (ruoyu): aiohttp matches routes in the order they are added, so this must come before the static mount.
+    app.router.add_get("/static/orb/settings.js", settings_module)
     app.router.add_static("/static/", FRONTEND)
     return app
 

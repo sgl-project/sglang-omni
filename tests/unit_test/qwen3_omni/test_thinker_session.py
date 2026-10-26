@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni import thinker_session
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.models.qwen3_omni.thinker_session import (
     CODEC_FRAME_MS,
     PREFILL_TEXT_ROWS,
@@ -16,13 +17,27 @@ from sglang_omni.models.qwen3_omni.thinker_session import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import CONTROL
+from sglang_omni.proto.streams import (
+    COMMIT,
+    CONTROL,
+    INTERRUPT,
+    PCM16,
+    REPLY_DELIVERED,
+    TRUNCATE,
+    TURN_STARTED,
+)
+from sglang_omni.scheduling.session import SessionContext
+from tests.unit_test.fixtures.qwen_fakes import make_dialog
+from tests.unit_test.fixtures.session_outputs import control_chunk
 
 IDENTITY = SessionIdentity("session")
 END = 99
 NEWLINE = 10
 SYSTEM_PREFIX = [1, 2]
 PROMPT_TEXT = "<|im_start|>system\nbe brief<|im_end|>\n<|im_start|>user\n<audio><|im_end|>\n<|im_start|>assistant\n"
+DELIVERED_TWO_FRAMES = control_chunk(
+    REPLY_DELIVERED, turn=1, audio_ms=2.0 * CODEC_FRAME_MS
+)
 
 
 @pytest.fixture
@@ -33,7 +48,15 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         [NEWLINE] if text == "\n" else SYSTEM_PREFIX
     )
 
-    def build_request(pipeline_state, *, params, tokenizer, vocab_size, request_id):
+    def build_request(
+        pipeline_state,
+        *,
+        params,
+        tokenizer,
+        vocab_size,
+        request_id,
+        capture_prompt_hidden_states,
+    ):
         return SimpleNamespace(
             req=SimpleNamespace(
                 origin_input_ids=pipeline_state.prompt["input_ids"].tolist()
@@ -104,6 +127,21 @@ def truncate(turn: int, **fields: object) -> TimedChunk:
     )
 
 
+def interrupted_dialog() -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """A dialog whose first turn's reply was interrupted after it started; what it tells the thinker from here on are truncates."""
+    hooks, outputs, context = make_dialog(IDENTITY)
+    stage_payload = StagePayload("in", OmniRequest(None), {})
+    hooks.append(
+        TimedChunk("audio", 0, 20, 0, b"\x01\x00" * 320, format=PCM16),
+        stage_payload,
+        context,
+    )
+    hooks.append(control_chunk(COMMIT), stage_payload, context)
+    hooks.append(control_chunk(TURN_STARTED, turn=1), stage_payload, context)
+    hooks.control(IDENTITY, control_chunk(INTERRUPT))
+    return hooks, outputs, context
+
+
 def test_each_turn_is_one_native_append_after_the_last_reply(
     adapter: QwenThinkerSessionAdapter,
 ) -> None:
@@ -157,6 +195,64 @@ def test_without_truncate_the_whole_generated_reply_stays(
     abort(adapter, [51, 52])
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert second.req.origin_input_ids == SYSTEM_PREFIX + [5, 51, 52, END, NEWLINE, 7]
+
+
+@pytest.mark.parametrize(
+    ("reports", "heard"),
+    [
+        pytest.param(
+            [DELIVERED_TWO_FRAMES], PREFILL_TEXT_ROWS + 2, id="no_client_truncate"
+        ),
+        pytest.param(
+            [DELIVERED_TWO_FRAMES, control_chunk(TRUNCATE, t_ms=CODEC_FRAME_MS)],
+            PREFILL_TEXT_ROWS + 1,
+            id="client_below_delivered",
+        ),
+        pytest.param(
+            [DELIVERED_TWO_FRAMES, control_chunk(TRUNCATE, t_ms=4 * CODEC_FRAME_MS)],
+            PREFILL_TEXT_ROWS + 2,
+            id="client_above_delivered",
+        ),
+        pytest.param(
+            [control_chunk(TRUNCATE, t_ms=4 * CODEC_FRAME_MS), DELIVERED_TWO_FRAMES],
+            PREFILL_TEXT_ROWS + 2,
+            id="client_first",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "is_reply_finished",
+    [pytest.param(False, id="aborted"), pytest.param(True, id="finished")],
+)
+def test_an_interrupted_reply_keeps_at_most_the_smaller_of_delivered_and_heard(
+    adapter: QwenThinkerSessionAdapter,
+    reports: list[TimedChunk],
+    heard: int,
+    is_reply_finished: bool,
+) -> None:
+    """The graph delivered two codec frames of the reply when the interrupt came: whether the thinker had finished the reply or was aborted, the history keeps those without a client truncate, fewer when the client heard less, and never more, whichever report reaches the dialog first."""
+    hooks, dialog_outputs, context = interrupted_dialog()
+    first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    generated = [51, 52, 53, 54, 55, 56, 57, 58]
+    if is_reply_finished:
+        finish(adapter, first, [*generated, END])
+    else:
+        abort(adapter, generated)
+    for report in reports:
+        hooks.append(report, StagePayload("in", OmniRequest(None), {}), context)
+    for output in dialog_outputs:
+        if output.format == TRUNCATE_FORMAT:
+            adapter.control(IDENTITY, output)
+        else:
+            pass
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    assert second.req.origin_input_ids == SYSTEM_PREFIX + [
+        5,
+        *generated[:heard],
+        END,
+        NEWLINE,
+        7,
+    ]
 
 
 def test_truncating_past_the_end_of_a_finished_reply_keeps_its_kv(

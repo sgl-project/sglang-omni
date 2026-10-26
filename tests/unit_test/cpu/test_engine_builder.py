@@ -176,6 +176,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
             events.append("init_eager_runner")
 
     class FakeWorker:
+        speculative_worker = None
         enable_prefill_input_embeds = False
         model_config = SimpleNamespace(is_multimodal=False)
 
@@ -188,6 +189,10 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
     monkeypatch.setattr("sglang.srt.runtime_context.get_context", lambda: FakeContext())
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_spec",
+        lambda: SimpleNamespace(speculative_algorithm=None),
     )
     monkeypatch.setattr(
         bootstrap,

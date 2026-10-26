@@ -113,8 +113,10 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-intel-xpu-ci"));
 
       - name: Log PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -123,13 +125,13 @@ jobs:
           echo "PR draft: ${{ steps.pr.outputs.draft }}"
 
       - name: Block draft PR
-        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
           echo "PR is draft. Blocking XPU CI."
           exit 1
 
       - name: Checkout workflow scripts
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -139,7 +141,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Resolve CI stages
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}

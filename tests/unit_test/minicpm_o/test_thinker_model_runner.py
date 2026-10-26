@@ -27,6 +27,8 @@ from sglang_omni.models.minicpm_o.special_tokens import (
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
@@ -39,6 +41,10 @@ BAD_TOKEN_IDS = (7, 8, 94)
 PLAIN_TOKEN_ID = 42
 OTHER_TOKEN_ID = 55
 THIRD_TOKEN_ID = 60
+SESSION = SessionIdentity("duplex")
+INTERRUPT_CONTROL = TimedChunk(
+    CONTROL, 0, 0, 0, {"type": INTERRUPT}, format=SESSION_CONTROL, turn=0
+)
 
 
 def bare_runner() -> MiniCPMOThinkerModelRunner:
@@ -245,6 +251,53 @@ def test_forced_listen_applies_to_the_first_step_only() -> None:
         [],
         [PLAIN_TOKEN_ID],
     )
+
+
+def step_plan_payload(request: OmniRequest) -> StagePayload:
+    return StagePayload(
+        "unit",
+        request,
+        {"token_ids": [PLAIN_TOKEN_ID], "input_embeds": None, "embedding_spans": []},
+    )
+
+
+@pytest.mark.parametrize(
+    ("is_turn_ended", "interrupted_input_ids"),
+    [
+        (False, [PLAIN_TOKEN_ID, SPECIAL_TOKENS.turn_eos]),
+        (True, [PLAIN_TOKEN_ID]),
+    ],
+    ids=["mid_reply", "after_the_model_ended_its_turn"],
+)
+def test_an_interrupt_forces_one_listen_unit_that_ends_the_turn(
+    is_turn_ended: bool, interrupted_input_ids: list[int]
+) -> None:
+    """A client stop: the next unit closes an open turn with turn_eos, listens and reports the end of the turn, and the one after is free again."""
+    tokenizer = duplex_tokenizer()
+    tokenizer.decode.return_value = ""
+    adapter = ThinkerAdapter(tokenizer, VOCAB_SIZE)
+    request = OmniRequest(
+        None, params=MiniCPMODuplexSampling(force_listen_count=0).model_dump()
+    )
+    adapter.open(SESSION, request)
+    state = adapter.states[SESSION]
+    state.is_turn_ended = is_turn_ended
+    audio_chunk = TimedChunk("audio", 0, 1000, 0, b"")
+
+    adapter.control(SESSION, INTERRUPT_CONTROL)
+    interrupted = adapter.build(SESSION, audio_chunk, step_plan_payload(request))
+    interrupted.output_ids = [SPECIAL_TOKENS.listen]
+    result = adapter.result(SESSION, interrupted)
+    following = adapter.build(SESSION, audio_chunk, step_plan_payload(request))
+
+    assert interrupted.is_listen_forced is True
+    assert interrupted.input_ids.tolist() == interrupted_input_ids
+    assert following.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]
+    assert result.data == dict(
+        talker_conditions=[], text="", is_listen=True, end_of_turn=True
+    )
+    assert state.is_turn_ended is True
+    assert following.is_listen_forced is False
 
 
 def test_chunk_eos_from_the_first_sample_skips_the_second_stage() -> None:

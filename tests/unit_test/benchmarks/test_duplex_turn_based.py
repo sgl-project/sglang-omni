@@ -739,7 +739,9 @@ def test_deployment_grants_beyond_server_vad_turns_pass(
     assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == []
 
 
-def with_progress(response_id: str) -> list[dict[str, JsonValue]]:
+def with_progress(
+    response_id: str, event_type: str = "sglang.response.progress"
+) -> list[dict[str, JsonValue]]:
     """The turn-based trace with an alignment progress report after the first
     response.created."""
     trace = turn_based_trace()
@@ -750,7 +752,7 @@ def with_progress(response_id: str) -> list[dict[str, JsonValue]]:
         and record["event"]["type"] == "response.created"
     )
     progress = {
-        "type": "sglang.response.progress",
+        "type": event_type,
         "event_id": "evt_progress",
         "response_id": response_id,
         "item_id": "item_0",
@@ -763,12 +765,17 @@ def with_progress(response_id: str) -> list[dict[str, JsonValue]]:
     return [*trace[: created + 1], record, *trace[created + 1 :]]
 
 
-def test_progress_reports_must_name_a_created_response() -> None:
+@pytest.mark.parametrize(
+    "event_type", ["sglang.response.progress", "sglang.response.heard"]
+)
+def test_progress_reports_must_name_a_created_response(event_type: str) -> None:
     first = receive_events(turn_based_trace(), "response.created")[0]
-    known = with_progress(first["response"]["id"])
+    known = with_progress(first["response"]["id"], event_type)
     assert evaluate_trace(known, profile=TURN_BASED)["violations"] == []
-    unknown = evaluate_trace(with_progress("resp_missing"), profile=TURN_BASED)
-    assert unknown["violations"] == ["sglang.response.progress: unknown response"]
+    unknown = evaluate_trace(
+        with_progress("resp_missing", event_type), profile=TURN_BASED
+    )
+    assert unknown["violations"] == [f"{event_type}: unknown response"]
 
 
 def granted_with(name: str, value: JsonValue) -> Callable[[list], None]:

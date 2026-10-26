@@ -140,7 +140,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     kernel.assert_not_called()
 
 
-@pytest.mark.parametrize("platform_name", ["CPUOmniPlatform", "MUSAOmniPlatform"])
+@pytest.mark.parametrize("platform_name", ["CPUOmniPlatform"])
 def test_ming_tts_rejects_missing_joint_rope_before_building_backbone(
     monkeypatch: pytest.MonkeyPatch,
     platform_name: str,

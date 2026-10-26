@@ -18,11 +18,14 @@ from sglang_omni.models.streaming_cascade.base import (
 )
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
+    COMMIT,
     INTERRUPT,
     MAX_HISTORY_CHARS,
     REPLY_DELIVERED,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SPEECH_STARTED,
+    SPEECH_STOPPED,
     TEXT_DELTA,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -75,11 +78,18 @@ class Dialog(StreamComponent):
     the synthesizer tell it how much of the reply was spoken. The interrupted
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` moves the
-    cut back to what the listener heard. The language the recognizer last
+    cut back to what the listener heard; from then on each cut is
+    published as reply.heard. A reply the history keeps nothing of when the
+    next reply begins leaves no entry, and the next utterance joins the user
+    message it followed. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
     settings apply at once and reach the next prompt.
+
+    Speech that started after an utterance ended and has not stopped when
+    the utterance's reply begins is speech over that reply, so the reply
+    ends as soon as it begins.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -100,6 +110,8 @@ class Dialog(StreamComponent):
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
+        # note (luojiaxuan): From a speech.started to the speech.stopped or commit that ends the utterance; the node that reports speech also stops it at the end of the input.
+        self.is_user_speaking = False
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, Dialog):
@@ -115,6 +127,7 @@ class Dialog(StreamComponent):
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
+            self.is_user_speaking = previous.is_user_speaking
         else:
             pass
 
@@ -175,8 +188,14 @@ class Dialog(StreamComponent):
             self.truncatable_text = reply
             self.delivered_ms = math.inf
             self.reply = None
-        elif control_type(chunk) == SPEECH_STARTED and self.reply is not None:
-            self.interrupt_reply()
+        elif control_type(chunk) == SPEECH_STARTED:
+            self.is_user_speaking = True
+            if self.reply is not None:
+                self.interrupt_reply()
+            else:
+                pass
+        elif control_type(chunk) in (SPEECH_STOPPED, COMMIT):
+            self.is_user_speaking = False
         elif (
             control_type(chunk) == REPLY_DELIVERED
             and self.truncatable is not None
@@ -208,11 +227,15 @@ class Dialog(StreamComponent):
         while self.reply is None and self.waiting:
             for output in self.respond(*self.waiting.popleft()):
                 self.emit(output)
+            if self.reply is not None and self.is_user_speaking:
+                self.interrupt_reply()
+            else:
+                pass
 
     def truncate(self) -> None:
-        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known."""
-        assert self.truncatable is not None
-        _, index = self.truncatable
+        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known. Once the client's truncate arrived, every cut is reported as reply.heard so the client's caption matches the history."""
+        assert self.emit is not None and self.truncatable is not None
+        turn, index = self.truncatable
         heard_ms = min(
             (ms for ms in (self.heard_ms, self.delivered_ms) if ms is not None),
             default=0.0,
@@ -224,7 +247,7 @@ class Dialog(StreamComponent):
             text_end, uncertain = heard_prefix(self.progress, heard_ms, content)
             logger.info(
                 "truncate turn %d at %.0f ms (client %s, delivered %s) keeps %d of %d chars (uncertain=%s, %d progress points)",
-                self.truncatable[0],
+                turn,
                 heard_ms,
                 self.heard_ms,
                 self.delivered_ms,
@@ -238,6 +261,10 @@ class Dialog(StreamComponent):
                 content=content[:text_end].rstrip(),
                 uncertain=uncertain,
             )
+            if self.heard_ms is not None:
+                self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
+            else:
+                pass
 
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
@@ -253,7 +280,14 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            self.messages.append(ChatMessage(role="user", content=text))
+            if self.messages[-1].role == "assistant" and not self.messages[-1].content:
+                # note (luojiaxuan): Nothing of the last reply was heard, so the user kept talking; an empty assistant entry would only show the model an empty answer to copy.
+                self.messages.pop()
+                self.messages[-1] = ChatMessage(
+                    role="user", content=f"{self.messages[-1].content} {text}"
+                )
+            else:
+                self.messages.append(ChatMessage(role="user", content=text))
             if language is not None:
                 self.language = language
             else:

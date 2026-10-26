@@ -155,6 +155,21 @@ class OutputBuffer:
                 raise RuntimeError("producer emitted invalid PCM16")
             elif isinstance(event, ResponseFinished):
                 response_state.is_terminal = True
+                if event.status == "cancelled":
+                    # Note (ruoyu): The listener stopped this reply, so its audio still waiting for a slow socket must not leave; the socket can hold seconds of it.
+                    self.queued_envelopes = deque(
+                        (envelope, size_bytes)
+                        for envelope, size_bytes in self.queued_envelopes
+                        if not (
+                            isinstance(envelope.event, AudioDelta)
+                            and envelope.event.response_id == event.response_id
+                        )
+                    )
+                    self.queued_bytes = sum(
+                        size_bytes for _, size_bytes in self.queued_envelopes
+                    )
+                else:
+                    pass
             else:
                 pass
         else:

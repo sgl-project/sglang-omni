@@ -78,9 +78,8 @@ struct OnboardingGuideView: View {
     static let microphoneStartupWatchdogDelay: Duration = .milliseconds(1200)
     static let collapsedModelListLimit = 3
     static let preferredLocalASRRepos = [
-        "mlx-community/SenseVoiceSmall",
-        "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
-        "mlx-community/Qwen3-ASR-1.7B-4bit",
+        "mlx-community/Qwen3-ASR-0.6B-4bit",
+        "mlx-community/Qwen3-ASR-1.7B-8bit",
         "OpenMOSS-Team/MOSS-Transcribe-Diarize",
         "mlx-community/whisper-large-v3-turbo"
     ]
@@ -436,7 +435,10 @@ struct OnboardingGuideView: View {
 
     func advanceStep() {
         guard !isPracticeSessionActive, let next = currentStep.next else { return }
-        if currentStep == .models { commitModelDraft() }
+        if currentStep == .models {
+            guard modelStepReady else { return }
+            commitModelDraft()
+        }
         currentStep = next
     }
 }

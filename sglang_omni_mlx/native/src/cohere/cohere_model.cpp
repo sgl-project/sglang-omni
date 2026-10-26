@@ -298,7 +298,7 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
   // Note (khazic): relative shift: row i of [length, 2 * length - 1] scores
   // moves left by length - 1 - i, so column j is relative position j - i.
   const int length = position_scores.shape(2);
-  position_scores = qwen3_asr::RelativeShift(position_scores);
+  position_scores = omni_common::RelativeShift(position_scores);
   position_scores =
       mx::slice(position_scores, {0, 0, 0, 0},
                 {batch, head_count, length, content_scores.shape(3)});

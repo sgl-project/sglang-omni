@@ -658,6 +658,8 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
@@ -762,6 +764,37 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is True
     assert scheduler.server_args.torch_compile_max_bs == 16
+
+
+@pytest.mark.parametrize(
+    ("device", "expected_graph_batch_sizes"),
+    [
+        ("cpu", []),
+        ("cuda:0", [[1, 2, 4]]),
+    ],
+)
+def test_voxtral_acoustic_graphs_are_captured_only_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    expected_graph_batch_sizes: list[list[int]],
+) -> None:
+    from sglang_omni.models.voxtral_tts.pipeline import engine_builder
+
+    captured_batch_sizes: list[list[int]] = []
+
+    class FakeModel:
+        def init_acoustic_graphs(self, batch_sizes: list[int]) -> None:
+            captured_batch_sizes.append(batch_sizes)
+
+    monkeypatch.setattr(
+        engine_builder, "get_decode_cuda_graph_bs", lambda server_args: [1, 2, 4]
+    )
+    builder = engine_builder.VoxtralTtsEngineBuilder()
+    builder.device = device
+
+    builder.post_cuda_graph_setup(FakeModel(), SimpleNamespace())
+
+    assert captured_batch_sizes == expected_graph_batch_sizes
 
 
 def test_enable_inductor_gemm_autotune_sets_per_shape_autotuning() -> None:

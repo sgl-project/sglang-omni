@@ -10,22 +10,23 @@
 #include <regex>
 
 #include "common/audio.h"
+#include "common/text.h"
 #include "nlohmann/json.hpp"
 
 namespace moss {
 
 namespace mx = mlx::core;
+using omni_common::IsTokenLoop;
+using omni_common::kHopLength;
+using omni_common::kSampleRate;
+using omni_common::kWhisperWindowSampleCount;
+using omni_common::StripUnicodeWhitespace;
+using omni_common::WhisperWindowFeatures;
 using qwen3_asr::FinishReason;
-using qwen3_asr::IsTokenLoop;
-using qwen3_asr::kHopLength;
-using qwen3_asr::kSampleRate;
 using qwen3_asr::KVCache;
-using qwen3_asr::kWhisperWindowSampleCount;
 using qwen3_asr::SpeakerSegment;
-using qwen3_asr::StripUnicodeWhitespace;
 using qwen3_asr::TranscriptionCancelled;
 using qwen3_asr::TranscriptionResult;
-using qwen3_asr::WhisperWindowFeatures;
 
 namespace {
 

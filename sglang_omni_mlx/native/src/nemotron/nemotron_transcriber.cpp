@@ -7,6 +7,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "common/swift_port.h"
+#include "common/text.h"
 
 namespace nemotron {
 
@@ -31,7 +32,7 @@ bool Contains(const std::string &text, const char *needle) {
 // clusters, so a space that a combining mark attaches to is not a space; a
 // word marker before a Thai vowel sign is one such piece.
 bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = qwen3_asr::CodePoints(text);
+  const std::vector<uint32_t> code_points = omni_common::CodePoints(text);
   const CFCharacterSetRef combining =
       CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
   for (size_t index = 0; index < code_points.size(); ++index) {
@@ -47,7 +48,7 @@ bool ContainsStandaloneSpace(const std::string &text) {
 
 sortformer::ProcessorConfig FrontEnd(const std::filesystem::path &directory) {
   const nlohmann::json config =
-      qwen3_asr::ReadJson(directory / "config.json").at("preprocessor");
+      omni_common::ReadJson(directory / "config.json").at("preprocessor");
   const int sample_rate = config.at("sample_rate").get<int>();
   sortformer::ProcessorConfig front_end;
   front_end.feature_size = config.at("features").get<int>();

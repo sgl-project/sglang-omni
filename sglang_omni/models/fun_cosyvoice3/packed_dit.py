@@ -39,6 +39,10 @@ PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
 }
 
 
+def supports_ragged_attention(device: torch.device) -> bool:
+    return device.type == "cuda" and _is_fa3_supported()
+
+
 def ragged_fa3(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -334,7 +338,7 @@ class PackedDiT:
     def __init__(self, dit: torch.nn.Module, *, device: str | torch.device) -> None:
         self.dit = dit
         device = torch.device(device)
-        self.is_ragged = device.type == "cuda" and _is_fa3_supported()
+        self.is_ragged = supports_ragged_attention(device)
         self.is_compiled = False
         # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
         # prefix compile. to_q, to_k and to_v become row views of them, so the DiT

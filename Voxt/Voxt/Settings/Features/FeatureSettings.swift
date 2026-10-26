@@ -191,7 +191,7 @@ struct RemindersNoteSyncSettings: Codable, Hashable, Sendable {
     var selectedListTitle: String
 
     init(
-        enabled: Bool = true,
+        enabled: Bool = false,
         selectedListIdentifier: String = "",
         selectedListTitle: String = ""
     ) {

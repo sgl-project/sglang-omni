@@ -37,13 +37,15 @@ export function base64ToBytes(encoded) {
 
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
-  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...).
-  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, listeners = {} }) {
+  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...);
+  // turnDetection as session.audio.input.turn_detection.
+  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
     this.transport = transport;
     this.now = now;
     this.outputModalities = outputModalities;
     this.instructions = instructions;
     this.extension = extension;
+    this.turnDetection = turnDetection;
     this.listeners = listeners;
     this.state = "connecting";
     this.sessionId = null;
@@ -295,6 +297,7 @@ export class DuplexSession {
         this.state = "negotiating";
         const session = { output_modalities: this.outputModalities };
         if (this.instructions) session.instructions = this.instructions;
+        if (this.turnDetection) session.audio = { input: { turn_detection: this.turnDetection } };
         if (this.extension && Object.keys(this.extension).length) session.sglang = this.extension;
         this.send("session.update", { session });
         break;

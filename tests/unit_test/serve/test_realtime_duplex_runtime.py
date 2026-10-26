@@ -6,19 +6,31 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 import sglang_omni.serve.realtime.runtime as runtime_module
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
-from sglang_omni.serve.realtime.control import Closed, Drained, Failure, UnitCompleted
+from sglang_omni.serve.realtime.control import (
+    Closed,
+    Drained,
+    Failure,
+    UnitCompleted,
+    Updated,
+)
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
+    AudioFinished,
     OutputEvent,
     ResponseFinished,
+    ResponseProgress,
     ResponseStarted,
+    TextDelta,
 )
 from sglang_omni.serve.realtime.output_buffer import (
     ENVELOPE_BYTES,
@@ -43,6 +55,10 @@ NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
 UPDATE_DEADLINE_S = 600.0
+CANCELLED_RESPONSE_ID = "resp_1"
+CANCELLED_ITEM_ID = "item_1"
+TEST_WAIT_TIMEOUT_SECONDS = 5.0
+ADMISSION_CLEANUP_TIMEOUT_SECONDS = 0.5
 
 
 class GatedAdapter(InteractionAdapter):
@@ -54,6 +70,7 @@ class GatedAdapter(InteractionAdapter):
         self.output_sink: OutputSink | None = None
         self.has_started = asyncio.Event()
         self.release = asyncio.Event()
+        self.close_call_count = 0
 
     async def open(
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
@@ -70,7 +87,7 @@ class GatedAdapter(InteractionAdapter):
         return unit.real_samples
 
     async def close(self) -> None:
-        pass
+        self.close_call_count += 1
 
 
 class SlowAdmissionAdapter(GatedAdapter):
@@ -98,6 +115,17 @@ def deadline_reached(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
 
     monkeypatch.setattr(asyncio, "sleep", sleep_until_reached)
     return is_reached
+
+
+@asynccontextmanager
+async def running_runtime(runtime: SessionRuntime) -> AsyncIterator[SessionRuntime]:
+    runtime.notify_created()
+    try:
+        yield runtime
+    finally:
+        await asyncio.wait_for(
+            runtime.close("client_closed"), TEST_WAIT_TIMEOUT_SECONDS
+        )
 
 
 async def open_runtime(adapter: GatedAdapter) -> SessionRuntime:
@@ -389,3 +417,350 @@ def test_output_budget_counts_outbound_events_only() -> None:
         buffer.enqueue(completed)
     assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
     assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]
+
+
+def test_a_cancelled_response_drops_only_its_queued_audio() -> None:
+    """A socket slower than the reply still held two audio deltas of a cancelled reply, and both left after the cancel. They are dropped at the cancelled response.done, while the reply's text, progress and audio done, an earlier reply's queued audio and the terminals stay in order with the byte count exact."""
+    buffer = OutputBuffer(RuntimeLimits())
+    earlier_audio = AudioDelta("resp_0", "item_0", bytes(UNIT_BYTES))
+    earlier_finished = ResponseFinished(
+        "resp_0", "item_0", "earlier", True, "completed", "stop"
+    )
+    cancelled_text = TextDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, "unheard")
+    cancelled_progress = ResponseProgress(
+        CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, 7, 40.0
+    )
+    cancelled_audio_done = AudioFinished(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID)
+    cancelled_finished = ResponseFinished(
+        CANCELLED_RESPONSE_ID,
+        CANCELLED_ITEM_ID,
+        "unheard",
+        True,
+        "cancelled",
+        "interrupted",
+    )
+    for event in (
+        ResponseStarted("resp_0"),
+        earlier_audio,
+        earlier_finished,
+        ResponseStarted(CANCELLED_RESPONSE_ID),
+        AudioDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, bytes(UNIT_BYTES)),
+        cancelled_text,
+        AudioDelta(CANCELLED_RESPONSE_ID, CANCELLED_ITEM_ID, bytes(UNIT_BYTES)),
+        cancelled_progress,
+        cancelled_audio_done,
+        cancelled_finished,
+    ):
+        buffer.emit(event, None, ("text", "audio"))
+
+    assert buffer.queued_bytes == 256 + 1112 + 263 + 256 + 263 + 256 + 256 + 263
+    drained_events: list[OutputEvent] = []
+    while (envelope := buffer.dequeue()) is not None:
+        drained_events.append(envelope.event)
+    assert drained_events == [
+        ResponseStarted("resp_0"),
+        earlier_audio,
+        earlier_finished,
+        ResponseStarted(CANCELLED_RESPONSE_ID),
+        cancelled_text,
+        cancelled_progress,
+        cancelled_audio_done,
+        cancelled_finished,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_competing_closes_keep_initial_failure_reason() -> None:
+    """Concurrent close requests must preserve the initial failure reported to clients."""
+    runtime = await open_runtime(GatedAdapter([]))
+    try:
+        runtime.fail("context full", "context_exhausted")
+        await asyncio.wait_for(
+            asyncio.gather(runtime.close("disconnect"), runtime.close("client_closed")),
+            TEST_WAIT_TIMEOUT_SECONDS,
+        )
+    finally:
+        await asyncio.wait_for(runtime.close("disconnect"), TEST_WAIT_TIMEOUT_SECONDS)
+
+    assert runtime.close_reason == "context_exhausted"
+
+
+@pytest.mark.parametrize(
+    "termination", ["cancelled_future", "cancelled_task", "client_close"]
+)
+@pytest.mark.asyncio
+async def test_process_cancellation_releases_session_resources(
+    termination: Literal["cancelled_future", "cancelled_task", "client_close"],
+) -> None:
+    """Cancelling input processing must close the session and release its resources."""
+
+    class CancellableAdapter(GatedAdapter):
+        async def process(self, unit: Unit) -> int:
+            self.has_started.set()
+            if termination == "cancelled_future":
+                consumed_samples: asyncio.Future[int] = (
+                    asyncio.get_running_loop().create_future()
+                )
+                consumed_samples.cancel()
+                return await consumed_samples
+            else:
+                await self.release.wait()
+                return unit.real_samples
+
+    adapter = CancellableAdapter([])
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
+    )
+    async with running_runtime(runtime):
+        await runtime.update({}, "client_update")
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        if termination == "cancelled_task":
+            assert runtime.pump_task is not None
+            runtime.pump_task.cancel()
+        elif termination == "client_close":
+            await runtime.close("client_closed")
+        else:
+            pass
+
+        envelopes = await asyncio.wait_for(
+            receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
+        )
+        if termination == "client_close":
+            assert envelopes[-1].event == Closed("client_closed")
+            assert not any(
+                isinstance(envelope.event, Failure) for envelope in envelopes
+            )
+        else:
+            assert closing_failure(envelopes) == ("internal", "internal")
+        assert adapter.close_call_count == 1
+        assert runtime.state == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_admission_finishing_after_close_releases_adapter_without_opening() -> (
+    None
+):
+    """An admission that succeeds after the session started closing must release the adapter and never open the session."""
+
+    adapter = SlowAdmissionAdapter([])
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
+    )
+    runtime.notify_created()
+    update_task = asyncio.create_task(runtime.update({}, "open"))
+    await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+    close_task = asyncio.create_task(runtime.close("client_closed"))
+    await asyncio.sleep(0)
+    adapter.release.set()
+    await asyncio.wait_for(update_task, TEST_WAIT_TIMEOUT_SECONDS)
+    await asyncio.wait_for(close_task, TEST_WAIT_TIMEOUT_SECONDS)
+
+    envelopes = await asyncio.wait_for(
+        receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
+    )
+    assert not any(isinstance(envelope.event, Updated) for envelope in envelopes)
+    assert adapter.close_call_count == 1
+    assert runtime.pump_task is None
+    assert runtime.state == "CLOSED"
+
+
+@pytest.mark.parametrize("cancellation_stage", ["open", "admission_cleanup"])
+@pytest.mark.parametrize("should_close_first", [False, True])
+@pytest.mark.asyncio
+async def test_cancelled_admission_closes_resources_and_rejects_queued_update(
+    cancellation_stage: Literal["open", "admission_cleanup"],
+    should_close_first: bool,
+) -> None:
+    """Cancelling admission must release resources and reject queued session updates."""
+
+    class CancellableAdmissionAdapter(GatedAdapter):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.cleanup_started: asyncio.Event = asyncio.Event()
+            self.is_resource_open: bool = False
+
+        async def open(
+            self, session_id: str, config: SessionConfiguration, emit: OutputSink
+        ) -> None:
+            self.is_resource_open = True
+            self.has_started.set()
+            if cancellation_stage == "admission_cleanup":
+                raise RuntimeError("pipeline unavailable")
+            else:
+                await self.release.wait()
+
+        async def close(self) -> None:
+            await super().close()
+            if cancellation_stage == "admission_cleanup" and self.close_call_count == 1:
+                self.cleanup_started.set()
+                await self.release.wait()
+            else:
+                pass
+            self.is_resource_open = False
+
+    adapter = CancellableAdmissionAdapter()
+    factory_call_count = 0
+
+    def create_adapter() -> InteractionAdapter:
+        nonlocal factory_call_count
+        factory_call_count += 1
+        return adapter
+
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), create_adapter, RuntimeLimits()
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "open"))
+        queued_update_task: asyncio.Task[None] | None = None
+        client_close_task: asyncio.Task[None] | None = None
+        try:
+            cancellation_started = (
+                adapter.cleanup_started
+                if cancellation_stage == "admission_cleanup"
+                else adapter.has_started
+            )
+            await asyncio.wait_for(
+                cancellation_started.wait(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            queued_update_task = asyncio.create_task(runtime.update({}, "queued"))
+            await asyncio.sleep(0)
+            if should_close_first:
+                client_close_task = asyncio.create_task(runtime.close("client_closed"))
+                await asyncio.sleep(0)
+            else:
+                pass
+            update_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(update_task, TEST_WAIT_TIMEOUT_SECONDS)
+            with pytest.raises(ProtocolError, match="closing"):
+                await asyncio.wait_for(queued_update_task, TEST_WAIT_TIMEOUT_SECONDS)
+
+            envelopes = await asyncio.wait_for(
+                receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            if should_close_first:
+                assert envelopes[-1].event == Closed("client_closed")
+                assert not any(
+                    isinstance(envelope.event, Failure) for envelope in envelopes
+                )
+            else:
+                assert closing_failure(envelopes) == ("internal", "internal")
+                assert [
+                    envelope.event.client_event_id
+                    for envelope in envelopes
+                    if isinstance(envelope.event, Failure)
+                ] == ["open"]
+            assert factory_call_count == 1
+            assert adapter.close_call_count == (
+                2 if cancellation_stage == "admission_cleanup" else 1
+            )
+            assert not adapter.is_resource_open
+            assert runtime.state == "CLOSED"
+        finally:
+            update_task.cancel()
+            pending_tasks = [update_task]
+            if queued_update_task is not None:
+                queued_update_task.cancel()
+                pending_tasks.append(queued_update_task)
+            else:
+                pass
+            if client_close_task is not None:
+                pending_tasks.append(client_close_task)
+            else:
+                pass
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("cleanup_failure", ["exception", "timeout"])
+@pytest.mark.asyncio
+async def test_failed_admission_cleanup_rejects_queued_update_and_releases_resources(
+    cleanup_failure: Literal["exception", "timeout"],
+) -> None:
+    """Failed admission cleanup must release resources and reject queued session updates."""
+
+    class FailedCleanupAdapter(GatedAdapter):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.cleanup_started: asyncio.Event = asyncio.Event()
+            self.is_resource_open: bool = False
+
+        async def open(
+            self, session_id: str, config: SessionConfiguration, emit: OutputSink
+        ) -> None:
+            self.is_resource_open = True
+            raise RuntimeError("pipeline unavailable")
+
+        async def close(self) -> None:
+            await super().close()
+            if self.close_call_count == 1:
+                self.cleanup_started.set()
+                await self.release.wait()
+                raise RuntimeError("pipeline cleanup failed")
+            else:
+                self.is_resource_open = False
+
+    adapter = FailedCleanupAdapter()
+    factory_call_count = 0
+
+    def create_adapter() -> InteractionAdapter:
+        nonlocal factory_call_count
+        factory_call_count += 1
+        return adapter
+
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(),
+        create_adapter,
+        RuntimeLimits(cleanup_timeout_s=ADMISSION_CLEANUP_TIMEOUT_SECONDS),
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "open"))
+        queued_update_task: asyncio.Task[None] | None = None
+        try:
+            await asyncio.wait_for(
+                adapter.cleanup_started.wait(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            queued_update_task = asyncio.create_task(runtime.update({}, "queued"))
+            await asyncio.sleep(0)
+            if cleanup_failure == "exception":
+                adapter.release.set()
+            else:
+                pass
+
+            with pytest.raises(RuntimeError, match="admission cleanup failed"):
+                await asyncio.wait_for(update_task, TEST_WAIT_TIMEOUT_SECONDS)
+            with pytest.raises(ProtocolError, match="closing"):
+                await asyncio.wait_for(queued_update_task, TEST_WAIT_TIMEOUT_SECONDS)
+
+            envelopes = await asyncio.wait_for(
+                receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            assert closing_failure(envelopes) == ("internal", "internal")
+            assert [
+                envelope.event.client_event_id
+                for envelope in envelopes
+                if isinstance(envelope.event, Failure)
+            ] == ["open"]
+            assert factory_call_count == 1
+            assert adapter.close_call_count == 2
+            assert not adapter.is_resource_open
+            assert runtime.state == "CLOSED"
+        finally:
+            update_task.cancel()
+            pending_tasks = [update_task]
+            if queued_update_task is not None:
+                queued_update_task.cancel()
+                pending_tasks.append(queued_update_task)
+            else:
+                pass
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+def closing_failure(envelopes: list[Envelope]) -> tuple[str, str]:
+    failures = [
+        envelope.event for envelope in envelopes if isinstance(envelope.event, Failure)
+    ]
+    closed = envelopes[-1].event
+    assert len(failures) == 1 and failures[0].is_fatal and isinstance(closed, Closed)
+    return failures[0].code, closed.reason
