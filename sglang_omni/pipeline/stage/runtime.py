@@ -1625,6 +1625,7 @@ class Stage:
                 request_id=transfer.request_id,
                 source_pool_id=transfer.source_pool_id,
                 source_page_indices=transfer.source_page_indices,
+                source_buffer_page_indices=transfer.source_buffer_page_indices,
                 target_pool_id=target_pool_id,
                 to_stage=to_stage,
                 metadata=metadata,

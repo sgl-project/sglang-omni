@@ -9,8 +9,9 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.configs.mamba_utils import Mamba2CacheParams, Mamba2StateShape
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.proto import (
@@ -299,3 +300,118 @@ def test_continuation_allows_asr_refresh_without_retained_kv(
     restored = rebuilt_req(request)
     assert restored.session is None
     assert restored.omni_data.stage_payload.request.params == parameters
+
+
+@pytest.mark.parametrize("finish", ["commit", "abort", "invalid_destination"])
+def test_hybrid_reservation_owns_token_pages_and_state_until_terminal(finish):
+    token_allocator = KVAllocator()
+    state_allocator = KVAllocator()
+    state_allocator.next_slot = 1
+    admissions = queue.SimpleQueue()
+    receiver = DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=token_allocator,
+        state_allocator=state_allocator,
+        state_buffer_names=("linear_state.0", "linear_state.1"),
+        admissions=admissions,
+        resume_schema="test-v1",
+    )
+    message = replace(
+        make_message(),
+        source_buffer_page_indices={"linear_state.0": (4,), "linear_state.1": (4,)},
+    )
+    destination = receiver.reserve(message)
+    assert destination.page_indices == (7, 8, 9)
+    assert destination.buffer_page_indices == {
+        "linear_state.0": (1,),
+        "linear_state.1": (1,),
+    }
+    assert admissions.empty()
+    assert not token_allocator.freed and not state_allocator.freed
+    if finish == "commit":
+        receiver.commit(message, destination)
+        admission = admissions.get_nowait()
+        assert admission.allocation.state_slots.tolist() == [1]
+        assert not token_allocator.freed and not state_allocator.freed
+        receiver.release_allocation(admission.allocation)
+    elif finish == "abort":
+        receiver.abort(message, destination, RuntimeError("copy failed"))
+    else:
+        with pytest.raises(RuntimeError, match="live reservation"):
+            receiver.commit(message, replace(destination, buffer_page_indices={}))
+    receiver.abort(message, destination, RuntimeError("duplicate cleanup"))
+    assert len(token_allocator.freed) == len(state_allocator.freed) == 1
+    assert token_allocator.freed[0].tolist() == [7, 8, 9]
+    assert state_allocator.freed[0].tolist() == [1]
+    assert not receiver.has_reservations()
+
+
+def test_hybrid_state_exhaustion_rolls_back_token_reservation():
+    token_allocator = KVAllocator()
+    state_allocator = Mock()
+    state_allocator.alloc.return_value = None
+    receiver = DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=token_allocator,
+        state_allocator=state_allocator,
+        state_buffer_names=("linear_state.0",),
+        admissions=queue.SimpleQueue(),
+        resume_schema="test-v1",
+    )
+    message = replace(
+        make_message(), source_buffer_page_indices={"linear_state.0": (4,)}
+    )
+    with pytest.raises(RuntimeError, match="linear-state pool exhausted"):
+        receiver.reserve(message)
+    assert token_allocator.freed[0].tolist() == [7, 8, 9]
+    assert not receiver.has_reservations()
+    state_allocator.free.assert_not_called()
+
+
+def test_restored_request_adopts_upstream_state_slot_without_clear_or_reallocation():
+    pool = HybridReqToTokenPool(
+        size=2,
+        mamba_size=4,
+        mamba_spec_state_size=2,
+        max_context_len=32,
+        device="cpu",
+        enable_memory_saver=False,
+        mamba_layer_ids=[0],
+        enable_mamba_extra_buffer=False,
+        enable_overlap_schedule=False,
+        cache_params=Mamba2CacheParams(
+            layers=[0],
+            shape=Mamba2StateShape.create(
+                tp_world_size=1,
+                intermediate_size=4,
+                n_groups=1,
+                num_heads=2,
+                head_dim=2,
+                state_size=2,
+                conv_kernel=3,
+            ),
+        ),
+    )
+    initial_capacity = pool.mamba_allocator.available_size()
+    state_slots = pool.mamba_allocator.alloc(1)
+    assert state_slots is not None
+    request = req_from_continuation(
+        make_continuation(),
+        replace(make_allocation(), state_slots=state_slots),
+        req_to_token_pool=pool,
+        state_restorer=lambda req, data, resume: setattr(req, "tokenizer", None),
+    )
+    assert request.kv.mamba_pool_idx.item() == state_slots[0].item()
+    assert not request.kv.mamba_needs_clear
+    assert pool.mamba_allocator.available_size() == initial_capacity - 1
+    assert (
+        pool.get_mamba_indices(torch.tensor([request.kv.req_pool_idx])).item()
+        == state_slots[0].item()
+    )
+    pool.alloc([request])
+    assert pool.mamba_allocator.available_size() == initial_capacity - 1
+    assert not request.kv.mamba_needs_clear
+    pool.free_mamba_cache(request)
+    pool.free(request)
+    assert pool.mamba_allocator.available_size() == initial_capacity
+    assert pool.available_size() == 2

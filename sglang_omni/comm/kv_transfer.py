@@ -91,18 +91,20 @@ class KVPool:
             ),
         )
 
-    def validate_page_indices(self, page_indices: tuple[int, ...]) -> None:
-        if min(page_indices) < 0:
-            raise ValueError("KV page indices must be non-negative")
+    def validate_page_indices(
+        self,
+        page_indices: tuple[int, ...],
+        buffer_page_indices: Mapping[str, tuple[int, ...]] | None = None,
+    ) -> None:
+        overrides = buffer_page_indices or {}
+        if set(overrides) - {buffer.name for buffer in self.buffers}:
+            raise ValueError("unknown KV buffer index override")
         else:
             pass
-        max_page_index = max(page_indices)
         for buffer in self.buffers:
-            if max_page_index >= buffer.page_count:
-                raise ValueError(
-                    f"KV page index {max_page_index} exceeds buffer "
-                    f"{buffer.name!r} capacity {buffer.page_count}"
-                )
+            indices = overrides.get(buffer.name, page_indices)
+            if not indices or min(indices) < 0 or max(indices) >= buffer.page_count:
+                raise ValueError(f"invalid page indices for KV buffer {buffer.name!r}")
             else:
                 pass
 
@@ -113,6 +115,7 @@ class KVPageDestination:
 
     pool_id: str
     page_indices: tuple[int, ...]
+    buffer_page_indices: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 class KVReceiver(Protocol):
@@ -156,3 +159,4 @@ class KVPageTransfer:
     to_stage: str
     metadata: Mapping[str, object] = field(default_factory=dict)
     lease: KVPageLease | None = None
+    source_buffer_page_indices: dict[str, tuple[int, ...]] = field(default_factory=dict)

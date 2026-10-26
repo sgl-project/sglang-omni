@@ -19,7 +19,12 @@ import msgspec
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import (
+    HybridLinearKVPool,
+    HybridReqToTokenPool,
+    KVCache,
+    ReqToTokenPool,
+)
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
@@ -178,6 +183,7 @@ class ReservedKV:
     slots: torch.Tensor
     page_indices: tuple[int, ...]
     seq_len: int
+    state_slots: torch.Tensor | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -358,6 +364,15 @@ def req_from_continuation(
     else:
         pass
 
+    if allocation.state_slots is not None:
+        if not isinstance(req_to_token_pool, HybridReqToTokenPool):
+            raise TypeError("linear state requires a hybrid request pool")
+        else:
+            pass
+        req.kv.mamba_pool_idx = allocation.state_slots[0]
+        req.kv.mamba_needs_clear = False
+    else:
+        pass
     if req_to_token_pool.alloc([req]) is None:
         raise DecodeRequestPoolExhausted("decode request pool is exhausted")
     else:
@@ -423,6 +438,30 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
 
 
 def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
+    if isinstance(token_to_kv_pool, HybridLinearKVPool):
+        full_pool = build_kv_pool(token_to_kv_pool.full_kv_pool, pool_id=pool_id)
+        state_buffers = tuple(
+            KVBufferRegion(
+                name=f"linear_state.{field}.{layer_id}.{index}:{tensor.dtype}:{tuple(tensor.shape[1:])}",
+                tensor=tensor,
+                bytes_per_page=tensor[0].numel() * tensor.element_size(),
+            )
+            for index, (field, tensor, _slice_axis, layer_id) in enumerate(
+                token_to_kv_pool.mamba_pool._iter_transfer_state_entries()  # noqa: leading-underscore  # existing state export iterator
+            )
+        )
+        if not state_buffers:
+            raise ValueError("hybrid PD requires exportable linear state")
+        else:
+            pass
+        return KVPool(
+            pool_id=pool_id,
+            layout_id=f"hybrid:{full_pool.layout_id}:{tuple(token_to_kv_pool.get_kv_layer_ids())}",
+            page_size=1,
+            buffers=full_pool.buffers + state_buffers,
+        )
+    else:
+        pass
     getter = getattr(
         token_to_kv_pool, "_pd_registerable_tensors", None
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -491,7 +530,17 @@ class DecodeKVReceiver:
         admissions: queue.SimpleQueue[DecodeAdmission],
         resume_schema: str,
         lifecycle_lock: _thread.RLock | None = None,
+        state_allocator=None,
+        state_buffer_names: tuple[str, ...] = (),
     ) -> None:
+        if bool(state_buffer_names) != (state_allocator is not None):
+            raise ValueError(
+                "linear-state buffers and allocator must be supplied together"
+            )
+        else:
+            pass
+        self.state_allocator = state_allocator
+        self.state_buffer_names = state_buffer_names
         self.pool_id = pool_id
         self.allocator = allocator
         self.admissions = admissions
@@ -545,6 +594,15 @@ class DecodeKVReceiver:
             raise ValueError("PD requires one transferred page per prompt token")
         else:
             pass
+        if set(request.source_buffer_page_indices) != set(self.state_buffer_names):
+            raise ValueError("PD linear-state buffers differ from the receiver")
+        elif any(
+            len(indices) != 1 or indices[0] < 0
+            for indices in request.source_buffer_page_indices.values()
+        ):
+            raise ValueError("PD requires one linear-state slot per buffer")
+        else:
+            pass
         bindings = dict(request.metadata.get("replica_bindings") or {})
         with self.lock:
             if self.closed:
@@ -574,15 +632,36 @@ class DecodeKVReceiver:
                 raise RuntimeError(f"decode KV allocator failed to allocate {count}")
             else:
                 pass
+            state_slots = None
+            try:
+                if self.state_allocator is not None:
+                    state_slots = self.state_allocator.alloc(1)
+                    if state_slots is None:
+                        raise RuntimeError("decode linear-state pool exhausted")
+                    else:
+                        pass
+                else:
+                    pass
+            except Exception:
+                self.allocator.free(slots)
+                raise
             allocation = ReservedKV(
                 slots=slots,
                 page_indices=tuple(int(slot) for slot in slots.tolist()),
                 seq_len=seq_len,
+                state_slots=state_slots,
             )
             self.reservations[request.transfer_id] = DecodeAdmission(
                 continuation, allocation, bindings
             )
-        return KVPageDestination(self.pool_id, allocation.page_indices)
+        return KVPageDestination(
+            self.pool_id,
+            allocation.page_indices,
+            {
+                name: tuple(int(slot) for slot in allocation.state_slots.tolist())
+                for name in self.state_buffer_names
+            },
+        )
 
     def commit(
         self,
@@ -604,8 +683,16 @@ class DecodeKVReceiver:
                 or request.target_pool_id != self.pool_id
                 or destination.pool_id != self.pool_id
                 or reservation.allocation.page_indices != destination.page_indices
+                or destination.buffer_page_indices
+                != {
+                    name: tuple(
+                        int(slot)
+                        for slot in reservation.allocation.state_slots.tolist()
+                    )
+                    for name in self.state_buffer_names
+                }
             ):
-                self.allocator.free(reservation.allocation.slots)
+                self.release_allocation(reservation.allocation)
                 raise RuntimeError("KV commit does not match a live reservation")
             else:
                 pass
@@ -625,10 +712,18 @@ class DecodeKVReceiver:
             else:
                 pass
         if reservation is not None:
-            self.allocator.free(reservation.allocation.slots)
+            self.release_allocation(reservation.allocation)
         else:
             pass
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)
+
+    def release_allocation(self, allocation: ReservedKV) -> None:
+        with self.lock:
+            self.allocator.free(allocation.slots)
+            if allocation.state_slots is not None:
+                self.state_allocator.free(allocation.state_slots)
+            else:
+                pass
 
     def has_reservations(self) -> bool:
         with self.lock:

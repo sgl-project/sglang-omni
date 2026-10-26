@@ -18,7 +18,7 @@ from sglang.srt.mem_cache.allocator.swa import (
     PureSWATokenToKVPoolAllocator,
     SWATokenToKVPoolAllocator,
 )
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, HybridReqToTokenPool
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
@@ -219,6 +219,24 @@ class OmniPrefillScheduler(PDKVLifecycle):
                     req, transfer_id, self.pd_state_builder
                 )
                 source_page_indices = request_page_indices(self.req_to_token_pool, req)
+                source_buffer_page_indices = {}
+                if isinstance(self.req_to_token_pool, HybridReqToTokenPool):
+                    if req.kv.mamba_pool_idx is None:
+                        raise RuntimeError("hybrid Prefill request has no linear state")
+                    else:
+                        pass
+                    state_slot = int(
+                        self.req_to_token_pool.translate_mamba_indices(
+                            req.kv.mamba_pool_idx
+                        ).item()
+                    )
+                    source_buffer_page_indices = {
+                        buffer.name: (state_slot,)
+                        for buffer in self.kv_registrations[0][0].buffers
+                        if buffer.name.startswith("linear_state.")
+                    }
+                else:
+                    pass
                 metadata = {"decode_continuation": continuation.encode()}
             except Exception as exc:
                 terminal_error, _ = self.finalize_prefill_request(
@@ -245,6 +263,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
                 source_pool_id=self.pd_pool_id,
                 target_pool_id=f"{self.pd_partner_stage}:kv",
                 source_page_indices=source_page_indices,
+                source_buffer_page_indices=source_buffer_page_indices,
                 to_stage=self.pd_partner_stage,
                 metadata=metadata,
                 lease=self.lease_pd_kv(req),
@@ -321,12 +340,27 @@ class OmniDecodeScheduler(PDKVLifecycle):
             self.token_to_kv_pool_allocator.get_kvcache(),
             pool_id=pool_id,
         )
+        state_allocator = (
+            self.req_to_token_pool.mamba_allocator
+            if isinstance(self.req_to_token_pool, HybridReqToTokenPool)
+            else None
+        )
+        if state_allocator is not None:
+            serialize_kv_allocator(state_allocator, lock=self.pd_lifecycle_lock)
+        else:
+            pass
         receiver = DecodeKVReceiver(
             pool_id=pool_id,
             allocator=self.token_to_kv_pool_allocator,
             admissions=self.pd_admissions,
             resume_schema=resume_schema,
             lifecycle_lock=self.pd_lifecycle_lock,
+            state_allocator=state_allocator,
+            state_buffer_names=tuple(
+                buffer.name
+                for buffer in pool.buffers
+                if buffer.name.startswith("linear_state.")
+            ),
         )
         self.pd_receiver = receiver
         self.kv_registrations = ((pool, receiver),)
@@ -413,7 +447,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 )
                 if request_id in self.aborted_request_ids:
                     self.pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self.pd_receiver.release_allocation(admission.allocation)
                     continue
                 else:
                     pass
@@ -429,7 +463,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     return
                 except Exception as exc:
                     self.pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self.pd_receiver.release_allocation(admission.allocation)
                     self.outbox.put(admitted)
                     self.emit_request_error(request_id, exc)
                     continue
@@ -491,7 +525,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
             admission = self.pd_deferred_admission
             self.pd_deferred_admission = None
             if admission is not None:
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                self.pd_receiver.release_allocation(admission.allocation)
             else:
                 pass
             while True:
@@ -499,7 +533,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     admission = self.pd_admissions.get_nowait()
                 except queue.Empty:
                     return
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                self.pd_receiver.release_allocation(admission.allocation)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         with self.pd_lifecycle_lock:
@@ -525,7 +559,22 @@ def validate_pd_runtime(scheduler: OmniScheduler) -> None:
     else:
         pass
     if isinstance(scheduler.req_to_token_pool, HybridReqToTokenPool):
-        raise NotImplementedError("PD does not transfer linear-attention state")
+        if scheduler.req_to_token_pool.enable_mamba_extra_buffer:
+            raise NotImplementedError(
+                "PD linear state does not support extra tracking buffers"
+            )
+        elif scheduler.req_to_token_pool.mamba_pool.replayssm_write_pos is not None:
+            raise NotImplementedError(
+                "PD linear state does not support ReplaySSM history"
+            )
+        elif scheduler.req_to_token_pool.mamba_v2p_table is not None:
+            raise NotImplementedError("PD linear state requires a static state pool")
+        elif not isinstance(
+            scheduler.token_to_kv_pool_allocator.get_kvcache(), HybridLinearKVPool
+        ):
+            raise NotImplementedError("PD requires HybridLinearKVPool for linear state")
+        else:
+            pass
     elif isinstance(
         scheduler.token_to_kv_pool_allocator,
         (PureSWATokenToKVPoolAllocator, SWATokenToKVPoolAllocator),

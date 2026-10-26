@@ -393,6 +393,7 @@ class CommEngine:
         metadata: Mapping[str, object] | None = None,
         transfer_id: str | None = None,
         lease: KVPageLease | None = None,
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
     ) -> DataRef:
         """Transfer this rank's pages to the same rank of ``to_stage``."""
         from_stage = self.router.stage_name
@@ -425,7 +426,7 @@ class CommEngine:
                 raise KeyError(f"unknown source KV pool {source_pool_id!r}")
             else:
                 pass
-            pool.validate_page_indices(source_page_indices)
+            pool.validate_page_indices(source_page_indices, source_buffer_page_indices)
             if transfer_id in self.kv_ready or transfer_id in self.pending:
                 raise RuntimeError(f"duplicate KV transfer {transfer_id!r}")
             else:
@@ -467,6 +468,7 @@ class CommEngine:
                     target_pool_id=target_pool_id,
                     source_page_indices=source_page_indices,
                     source_layout=pool.layout,
+                    source_buffer_page_indices=dict(source_buffer_page_indices or {}),
                     metadata=dict(metadata or {}),
                 ),
             )
@@ -494,6 +496,7 @@ class CommEngine:
             op = await relay.put_kv_pages(
                 source_pool_id=source_pool_id,
                 source_page_indices=source_page_indices,
+                source_buffer_page_indices=source_buffer_page_indices,
                 destination_ref=ready.destination_ref,
                 transfer_id=transfer_id,
             )
@@ -701,7 +704,22 @@ class CommEngine:
                 )
             else:
                 pass
-            pool.validate_page_indices(destination.page_indices)
+            pool.validate_page_indices(
+                destination.page_indices, destination.buffer_page_indices
+            )
+            if set(message.source_buffer_page_indices) != set(
+                destination.buffer_page_indices
+            ):
+                raise ValueError("source and destination KV index overrides differ")
+            else:
+                pass
+            for name, indices in message.source_buffer_page_indices.items():
+                if len(indices) != len(destination.buffer_page_indices[name]):
+                    raise ValueError(
+                        "source and destination KV buffer page counts differ"
+                    )
+                else:
+                    pass
             if not message.source_layout.compatible_with(pool.layout):
                 raise ValueError("source and destination KV pool layouts do not match")
             else:
@@ -765,6 +783,8 @@ class CommEngine:
                 destination_pool_id=state.destination.pool_id,
                 source_page_indices=state.request.source_page_indices,
                 destination_page_indices=state.destination.page_indices,
+                source_buffer_page_indices=state.request.source_buffer_page_indices,
+                destination_buffer_page_indices=state.destination.buffer_page_indices,
                 request_id=request_id,
                 transfer_id=data_ref.object_id,
             )

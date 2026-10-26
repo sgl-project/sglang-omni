@@ -56,6 +56,7 @@ class KVTransferPrepareMessage:
     source_page_indices: tuple[int, ...]
     source_layout: KVPoolLayout
     metadata: dict[str, object] = field(default_factory=dict)
+    source_buffer_page_indices: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         value = msgspec.to_builtins(self)

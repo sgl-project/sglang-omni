@@ -1266,6 +1266,7 @@ class CudaIpcRelay(Relay):
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, dict[str, str]],
         transfer_id: str | None = None,
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
     ) -> ReceiverAckOperation:
         pool = self.kv_pools.get(source_pool_id)
         if pool is None:
@@ -1287,7 +1288,12 @@ class CudaIpcRelay(Relay):
         )
         relay_info["transfer_info"] = {
             "size": sum(
-                buffer.bytes_per_page * len(source_page_indices)
+                buffer.bytes_per_page
+                * len(
+                    (source_buffer_page_indices or {}).get(
+                        buffer.name, source_page_indices
+                    )
+                )
                 for buffer in pool.buffers
             )
         }
@@ -1318,6 +1324,8 @@ class CudaIpcRelay(Relay):
         destination_page_indices: tuple[int, ...],
         request_id: str,
         transfer_id: str | None = None,
+        source_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
+        destination_buffer_page_indices: dict[str, tuple[int, ...]] | None = None,
     ) -> CudaIpcGetOperation:
         destination = self.kv_pools.get(destination_pool_id)
         if destination is None:
@@ -1369,7 +1377,7 @@ class CudaIpcRelay(Relay):
             pass
 
         copy_args = tuple(
-            (source, target.byte_view(), target.bytes_per_page)
+            (source, target.byte_view(), target.bytes_per_page, target.name)
             for source, target in zip(
                 source_buffers,
                 destination.buffers,
@@ -1381,16 +1389,47 @@ class CudaIpcRelay(Relay):
             destination_device,
             source_meta["ready_event"],
         )
-        source_indices = torch.tensor(
-            source_page_indices,
-            dtype=torch.int64,
-            device=destination_device,
-        )
-        destination_indices = torch.tensor(
-            destination_page_indices,
-            dtype=torch.int64,
-            device=destination_device,
-        )
+        index_pairs = {}
+        for buffer in destination.buffers:
+            source_pages = (source_buffer_page_indices or {}).get(
+                buffer.name, source_page_indices
+            )
+            destination_pages = (destination_buffer_page_indices or {}).get(
+                buffer.name, destination_page_indices
+            )
+            if len(source_pages) != len(destination_pages):
+                raise ValueError("KV buffer source and destination lengths differ")
+            else:
+                pass
+            page_pair = (tuple(source_pages), tuple(destination_pages))
+            if page_pair not in index_pairs:
+                index_pairs[page_pair] = (
+                    torch.tensor(
+                        source_pages, dtype=torch.int64, device=destination_device
+                    ),
+                    torch.tensor(
+                        destination_pages, dtype=torch.int64, device=destination_device
+                    ),
+                )
+            else:
+                pass
+        buffer_indices = {
+            buffer.name: index_pairs[
+                (
+                    tuple(
+                        (source_buffer_page_indices or {}).get(
+                            buffer.name, source_page_indices
+                        )
+                    ),
+                    tuple(
+                        (destination_buffer_page_indices or {}).get(
+                            buffer.name, destination_page_indices
+                        )
+                    ),
+                )
+            ]
+            for buffer in destination.buffers
+        }
         stream = torch.cuda.current_stream(destination_device)
         done_event = torch.cuda.Event()
         from sgl_kernel import transfer_kv_per_layer_mla
@@ -1398,7 +1437,8 @@ class CudaIpcRelay(Relay):
         with torch.cuda.device(destination_device), torch.cuda.stream(stream):
             stream.wait_event(ready_event)
             try:
-                for source, target, item_size in copy_args:
+                for source, target, item_size, name in copy_args:
+                    source_indices, destination_indices = buffer_indices[name]
                     transfer_kv_per_layer_mla(
                         src=source,
                         dst=target,
@@ -1412,7 +1452,10 @@ class CudaIpcRelay(Relay):
                     stream.synchronize()
                 raise
         transfer_size = sum(
-            buffer.bytes_per_page * len(source_page_indices)
+            buffer.bytes_per_page
+            * len(
+                (source_buffer_page_indices or {}).get(buffer.name, source_page_indices)
+            )
             for buffer in destination.buffers
         )
         _comm_trace(
@@ -1439,8 +1482,7 @@ class CudaIpcRelay(Relay):
             held_references=(
                 ready_event,
                 source_buffers,
-                source_indices,
-                destination_indices,
+                buffer_indices,
             ),
             finish_on_interrupt=True,
             emit_trace=False,
