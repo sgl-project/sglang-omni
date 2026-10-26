@@ -144,7 +144,6 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
     supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
-    uses_platform_attention_backend = True
 
     def __init__(
         self,
@@ -375,6 +374,16 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
+        else:
+            pass
+        if (
+            current_platform.is_xpu()
+            and self.device.split(":")[0] == "xpu"
+            and overrides.get("attention_backend") is None
+            and overrides.get("prefill_attention_backend") is None
+            and overrides.get("decode_attention_backend") is None
+        ):
+            overrides["attention_backend"] = "intel_xpu"
         else:
             pass
         # note (ratish): fa4 avoids fa3's per-slot split KV combine but runs FP8 KV only

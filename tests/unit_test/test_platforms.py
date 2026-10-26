@@ -188,13 +188,6 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     }
 
 
-def test_xpu_names_the_intel_xpu_attention_backend() -> None:
-    assert xpu_platform.XPUOmniPlatform().get_sglang_attention_backend() == "intel_xpu"
-    # Other platforms keep SGLang's own attention default.
-    assert OmniPlatform().get_sglang_attention_backend() is None
-    assert CPUOmniPlatform().get_sglang_attention_backend() is None
-
-
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
