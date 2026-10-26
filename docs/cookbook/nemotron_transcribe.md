@@ -22,6 +22,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+On a fresh install, the first launch also builds FlashInfer kernels, which can take longer than the default 600 second startup timeout. Set `SGLANG_OMNI_STARTUP_TIMEOUT=1800` for that launch.
+
 The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to mono 16 kHz, and keeps each upload as one decoder request. Measured transcripts are the short clips in [Short-clip validation](#short-clip-validation): 4.352 s and 5.855 s. A one-hour recording can repeat sentences until the 16384-token response budget. The HTTP status stays 200. `json` and `verbose_json` then include `"finish_reason": "length"`. `text` sets `X-Finish-Reason: length`. A stream puts the same reason on `transcript.text.done`. The encoder processes the recording in checkpoint-defined windows with left and right context; the default checkpoint uses 40-second core windows.
 
 | Setting | Default | Purpose |

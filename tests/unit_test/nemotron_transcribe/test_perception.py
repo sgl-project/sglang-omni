@@ -13,6 +13,7 @@ from sglang_omni.models.nemotron_transcribe.parallel_expert import ParallelExper
 from sglang_omni.models.nemotron_transcribe.perception import (
     AudioPerception,
     MelPreprocessor,
+    load_perception_weights,
 )
 from sglang_omni.models.nemotron_transcribe.sortformer import SortformerModules
 from sglang_omni.models.nemotron_transcribe.sortformer_diarizer import (
@@ -75,23 +76,15 @@ def test_frontend_stays_fp32_when_built_under_bfloat16() -> None:
 
     featurizer = perception.preprocessor.featurizer
     assert featurizer.fb.dtype == torch.bfloat16
-    checkpoint_fb = torch.randn(featurizer.fb.shape)
-    checkpoint_window = torch.randn(featurizer.window.shape)
-    checkpoint_fb.view(-1)[0] = 1.0001
-    checkpoint_window.view(-1)[0] = 1.0001
-    perception.preprocessor.float()
-    perception.preprocessor.load_state_dict(
-        {"featurizer.fb": checkpoint_fb, "featurizer.window": checkpoint_window}
-    )
-    torch.testing.assert_close(featurizer.fb, checkpoint_fb)
-
-    perception.encoder.to(torch.bfloat16)
-    perception.proj.to(torch.bfloat16)
+    checkpoint = {
+        name: tensor.float() for name, tensor in perception.state_dict().items()
+    }
+    checkpoint["preprocessor.featurizer.fb"].view(-1)[0] = 1.0001
+    load_perception_weights(perception, checkpoint, torch.bfloat16)
     mel, _ = perception.preprocessor(torch.zeros(1, 16000), torch.tensor([16000]))
 
     assert mel.dtype == torch.float32
-    assert featurizer.fb.dtype == torch.float32
-    torch.testing.assert_close(featurizer.fb, checkpoint_fb)
+    torch.testing.assert_close(featurizer.fb, checkpoint["preprocessor.featurizer.fb"])
     assert perception.encoder.asr_encoder.pre_encode.proj.weight.dtype == torch.bfloat16
     assert perception.proj.weight.dtype == torch.bfloat16
 

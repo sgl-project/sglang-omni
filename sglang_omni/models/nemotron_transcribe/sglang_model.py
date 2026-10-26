@@ -34,6 +34,7 @@ from sglang_omni.models.nemotron_transcribe.hf_config import NemotronTranscribeC
 from sglang_omni.models.nemotron_transcribe.perception import (
     AudioPerception,
     build_audio_perception,
+    load_perception_weights,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,23 +158,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             checkpoint_to_language_model_weights(language_model_weights())
         )
 
-        # note (yhayaran): SGLang builds this in the serving dtype, so float the frontend before loading.
-        self.perception.preprocessor.float()
-        incompatible = self.perception.load_state_dict(perception_weights, strict=False)
-        missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
-        unexpected = [
-            k for k in incompatible.unexpected_keys if "._extra_state" not in k
-        ]
-        if missing or unexpected:
-            raise RuntimeError(
-                "Nemotron Transcribe perception weights do not match the "
-                f"architecture: missing={missing[:8]}, unexpected={unexpected[:8]}"
-            )
-        else:
-            pass
-        self.perception.encoder.to(PERCEPTION_DTYPE)
-        self.perception.proj.to(PERCEPTION_DTYPE)
-        self.perception.eval()
+        load_perception_weights(self.perception, perception_weights, PERCEPTION_DTYPE)
         logger.info(f"Loaded {len(perception_weights)} perception tensors")
 
 

@@ -131,6 +131,26 @@ def build_audio_perception(
     return perception_module
 
 
+def load_perception_weights(
+    perception: AudioPerception, weights: dict[str, torch.Tensor], dtype: torch.dtype
+) -> None:
+    # note (yhayaran): SGLang builds this in the serving dtype, so float the frontend before loading.
+    perception.preprocessor.float()
+    incompatible = perception.load_state_dict(weights, strict=False)
+    missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
+    unexpected = [k for k in incompatible.unexpected_keys if "._extra_state" not in k]
+    if missing or unexpected:
+        raise RuntimeError(
+            "Nemotron Transcribe perception weights do not match the "
+            f"architecture: missing={missing[:8]}, unexpected={unexpected[:8]}"
+        )
+    else:
+        pass
+    perception.encoder.to(dtype)
+    perception.proj.to(dtype)
+    perception.eval()
+
+
 def build_frontend(config: dict[str, object]) -> LogMelFrontend:
     if read_int(config, "pad_to", 0) != 0 or optional_text(config, "normalize") not in (
         None,
