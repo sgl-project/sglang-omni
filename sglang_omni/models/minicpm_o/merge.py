@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Join encoder branches for the thinker, and build the decode-stage result."""
+"""Join branches for the thinker and Code2Wav, and build the decode-stage result."""
 
 from __future__ import annotations
 
@@ -10,6 +10,20 @@ from sglang_omni.models.minicpm_o.payload_types import (
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.streaming_detokenizer import Tokenizer
+
+
+def merge_for_code2wav(payloads: dict[str, StagePayload]) -> StagePayload:
+    payload = payloads["talker"]
+    state = MiniCPMOPipelineState.from_dict(payload.data)
+    if "reference" in payloads:
+        state.reference_features = MiniCPMOPipelineState.from_dict(
+            payloads["reference"].data
+        ).reference_features
+    else:
+        pass
+    return StagePayload(
+        request_id=payload.request_id, request=payload.request, data=state.to_dict()
+    )
 
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
