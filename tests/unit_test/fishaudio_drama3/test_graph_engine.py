@@ -54,11 +54,14 @@ from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     EngineKind,
     GraphEngineRun,
     GraphEngineSpec,
+    GraphRequestSpec,
     GraphScenario,
     bits,
 )
 from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
+    DECODER_CONFIG,
     TOTAL_GPU_MEMORY_FRACTION,
+    prompt_rows,
     write_expert_variant,
     write_synthetic_checkpoint,
 )
@@ -162,6 +165,121 @@ def run_engine(
     run = torch.load(output_path, weights_only=False)
     assert isinstance(run, GraphEngineRun)
     return run
+
+
+def test_prefix_cache_reuses_prompt_without_sharing_acoustic_tails(
+    tmp_path: Path,
+) -> None:
+    """Cache hits preserve acoustic boundaries, graph replay, and abort reuse."""
+    require_cuda()
+    checkpoint_dir = tmp_path / "checkpoint"
+    write_synthetic_checkpoint(checkpoint_dir)
+    original_rows = prompt_rows(145, seed=42)
+    changed_rows = [row.copy() for row in original_rows]
+    changed_rows[127][-1] = (changed_rows[127][-1] + 1) % int(
+        DECODER_CONFIG["vocab_size"]
+    )
+    # note (wirybeaver): cross a decode checkpoint boundary before exercising reuse.
+    request = GraphRequestSpec(prompt_name="original", max_new_tokens=112)
+    changed = request.model_copy(update={"prompt_name": "changed"})
+    scenarios = [
+        GraphScenario(name="cold", sampling_mode="greedy", waves=[[request]]),
+        GraphScenario(
+            name="warm-and-changed", sampling_mode="greedy", waves=[[request, changed]]
+        ),
+        GraphScenario(
+            name="one-token-hit",
+            sampling_mode="greedy",
+            waves=[[GraphRequestSpec(prompt_name="short", max_new_tokens=4)]],
+        ),
+        GraphScenario(
+            name="abort",
+            sampling_mode="greedy",
+            waves=[
+                [
+                    request.model_copy(
+                        update={"max_new_tokens": 16, "abort_after_frames": 2}
+                    )
+                ]
+            ],
+        ),
+        GraphScenario(name="after-abort", sampling_mode="greedy", waves=[[request]]),
+    ]
+    spec = GraphEngineSpec(
+        model_dir=str(checkpoint_dir),
+        kind="prefill_graph",
+        context_length=512,
+        prompts={
+            "original": original_rows,
+            "changed": changed_rows,
+            "short": original_rows[:129],
+        },
+        scenarios=scenarios,
+    )
+    uncached = run_engine("uncached", spec, tmp_path, {})
+    cached_spec = spec.model_copy(update={"prefix_cache_enabled": True})
+    cached_reference = run_engine(
+        "cached-reference",
+        cached_spec.model_copy(update={"use_original_tracking_indices": True}),
+        tmp_path,
+        {},
+    )
+    cached = run_engine(
+        "cached",
+        cached_spec.model_copy(
+            update={
+                "prefix_cache_prompt_only": True,
+                "prefill_cuda_graph_token_counts": [
+                    1,
+                    *PREFILL_CUDA_GRAPH_TOKEN_COUNTS,
+                ],
+            }
+        ),
+        tmp_path,
+        {},
+    )
+    for request_id, outcome in cached.outcomes.items():
+        reference_outcome = cached_reference.outcomes[request_id]
+        uncached_outcome = uncached.outcomes[request_id]
+        assert outcome.error_messages == []
+        assert reference_outcome.error_messages == []
+        assert uncached_outcome.error_messages == []
+        assert outcome.result_frames == reference_outcome.result_frames
+        assert outcome.result_frames == uncached_outcome.result_frames
+    for scenario in cached.scenarios:
+        assert scenario.idle_free_counts == cached.baseline_free_counts
+    (single_token_prefill,) = [
+        forward
+        for forward in cached.forwards
+        if forward.is_extend and forward.scenario_name == "one-token-hit"
+    ]
+    assert single_token_prefill.steps[0].positions == [128]
+    assert single_token_prefill.prefill_replay_buckets == {1: 1}
+    assert single_token_prefill.prefill_eager_count == 0
+    assert any(
+        step.positions == [255]
+        for forward in cached.forwards
+        if not forward.is_extend
+        for step in forward.steps
+    )
+    warm_steps = [
+        step
+        for forward in cached.forwards
+        if forward.is_extend and forward.scenario_name == "warm-and-changed"
+        for step in forward.steps
+    ]
+    starts_by_prompt = {
+        cached.outcomes[step.request_id].request_spec.prompt_name: step.positions[0]
+        for step in warm_steps
+    }
+    assert starts_by_prompt["original"] == 128
+    assert starts_by_prompt["changed"] == 0
+    assert all(
+        step.positions[0] > 0
+        for forward in cached.forwards
+        if forward.is_extend and forward.scenario_name == "after-abort"
+        for step in forward.steps
+    )
 
 
 def engine_pairs(
