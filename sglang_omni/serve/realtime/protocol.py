@@ -232,7 +232,7 @@ class SharedRealtimeSession:
         elif event.type == "input_audio_buffer.commit":
             await self.runtime.commit()
         elif isinstance(event, ConversationItemTruncateEvent):
-            await self.runtime.truncate(event.audio_end_ms)
+            await self.runtime.truncate(event.item_id, event.audio_end_ms)
         elif event.type == "sglang.input_audio.end":
             await self.runtime.end(event.event_id)
         elif event.type == "session.close":

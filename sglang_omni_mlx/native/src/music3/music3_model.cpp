@@ -2,6 +2,9 @@
 #include "music3/music3_model.h"
 
 #include <algorithm>
+#include <cctype>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace music3 {
@@ -82,9 +85,26 @@ nlohmann::json ReadConfig(const std::filesystem::path &directory) {
   return config;
 }
 
+bool IsAcousticWeight(const std::string &tensor_name) {
+  const bool is_ar_weight = tensor_name.rfind("language_model.", 0) == 0 ||
+                            tensor_name.rfind("rvq_depth_decoder.", 0) == 0;
+  const bool is_acoustic_weight =
+      tensor_name.rfind("condition_encoder.", 0) == 0 ||
+      tensor_name.rfind("transformer.", 0) == 0 ||
+      tensor_name.rfind("vocoder.", 0) == 0;
+  if (is_ar_weight == is_acoustic_weight) {
+    throw std::invalid_argument("unassigned or ambiguous Music3 tensor: " +
+                                tensor_name);
+  } else {
+    return is_acoustic_weight;
+  }
+}
+
 omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config) {
   auto weights = omni_common::LoadSafetensors(directory);
+  for (const auto &[tensor_name, tensor] : weights)
+    IsAcousticWeight(tensor_name);
   const auto shape = [&](const std::string &name, const mx::Shape &expected) {
     const auto found = weights.find(name);
     if (found == weights.end() || found->second.shape() != expected) {
@@ -236,12 +256,51 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
 
 } // namespace
 
-Model::Model(const std::filesystem::path &directory)
-    : config_(ReadConfig(directory)),
-      checkpoint_(LoadWeights(directory, config_), config_),
+void ValidateSerialOffload(const std::string &offload_components) {
+  std::set<std::string> component_names;
+  std::istringstream component_stream(offload_components);
+  std::string component_name;
+  while (std::getline(component_stream, component_name, ',')) {
+    const auto first_character =
+        component_name.find_first_not_of(" \t\n\r\f\v");
+    if (first_character == std::string::npos) {
+      continue;
+    } else {
+      const auto last_character =
+          component_name.find_last_not_of(" \t\n\r\f\v");
+      component_name = component_name.substr(
+          first_character, last_character - first_character + 1);
+      std::transform(component_name.begin(), component_name.end(),
+                     component_name.begin(), [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                     });
+      component_names.insert(component_name);
+    }
+  }
+  if (component_names != std::set<std::string>{"ar", "dit"}) {
+    throw std::invalid_argument(
+        "--stage-offload-components requires both ar,dit");
+  } else {
+  }
+}
+
+Model::Model(const std::filesystem::path &directory,
+             bool is_serial_offload_enabled)
+    : checkpoint_directory_(std::filesystem::canonical(directory)),
+      is_serial_offload_enabled_(is_serial_offload_enabled),
+      config_(ReadConfig(checkpoint_directory_)),
+      checkpoint_(is_serial_offload_enabled
+                      ? omni_common::WeightMap{}
+                      : LoadWeights(checkpoint_directory_, config_),
+                  config_),
       decoder_(checkpoint_, "language_model.model",
                qwen3_asr::Qwen3DecoderConfig::FromJson(config_)),
-      tokenizer_(directory / "tokenizer") {
+      tokenizer_(checkpoint_directory_ / "tokenizer") {
+  if (is_serial_offload_enabled_) {
+    // Note (Akazaakane): Validate lazily before reporting readiness.
+    LoadWeights(checkpoint_directory_, config_);
+  } else {
+  }
   const std::vector<std::pair<std::string, int>> special_tokens = {
       {"<|im_start|>", 151644},    {"<|im_end|>", 151645},
       {"<|audio_cfg|>", 151654},   {"<|audio_start|>", 151669},
@@ -254,6 +313,28 @@ Model::Model(const std::filesystem::path &directory)
     } else {
     }
   }
+}
+
+void Model::ReleaseWeights() {
+  mx::synchronize();
+  // Note (Akazaakane): The decoder keeps a reference to this checkpoint object.
+  checkpoint_ = omni_common::Checkpoint({}, config_);
+  mx::clear_cache();
+}
+
+void Model::LoadStageWeights(bool is_acoustic_stage) {
+  ReleaseWeights();
+  auto stage_weights = LoadWeights(checkpoint_directory_, config_);
+  for (auto iterator = stage_weights.begin();
+       iterator != stage_weights.end();) {
+    const auto &tensor_name = iterator->first;
+    if (IsAcousticWeight(tensor_name) != is_acoustic_stage) {
+      iterator = stage_weights.erase(iterator);
+    } else {
+      ++iterator;
+    }
+  }
+  checkpoint_ = omni_common::Checkpoint(std::move(stage_weights), config_);
 }
 
 } // namespace music3

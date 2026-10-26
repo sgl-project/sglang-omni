@@ -645,6 +645,58 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_prefix_graph_tiers_capture_over_one_set_of_input_buffers() -> None:
+    estimator = make_estimator()
+    device = torch.device("cuda", torch.cuda.current_device())
+    dtype = torch.bfloat16
+    pool = PrefixKVPool(
+        layer_num=LAYERS,
+        euler_steps=10,
+        head_num=HEADS,
+        head_dim=HEAD_DIM,
+        capacity_frames=8 * BLOCK_FRAMES,
+        device=device,
+        dtype=dtype,
+    )
+    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    runner = PrefixCudaGraphRunner(
+        estimator,
+        pool,
+        graphs=SolveGraphCapture(backend, device=device, autocast_dtype=dtype),
+        frame_dtype=torch.float32,
+        speaker_dtype=dtype,
+        cfg_rate=0.7,
+        mel_channels=CHANNELS,
+        speaker_channels=CHANNELS,
+        max_rows=4,
+        hop_frames=2 * CHUNK,
+        min_hop_frames=CHUNK,
+        max_frames=1024,
+    )
+    runner.capture()
+    assert len({captured.layout.row_slots for captured in runner.captured}) > 1
+    for field in (
+        "noise",
+        "mu",
+        "mel_conditioning",
+        "speaker_embeddings",
+        "time_span",
+        "context",
+        "next_context",
+    ):
+        storages = {
+            getattr(captured, field).untyped_storage().data_ptr()
+            for captured in runner.captured
+        }
+        assert len(storages) == 1, field
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("compile_packed", [False, True], ids=["eager", "compiled"])
 def test_whole_history_graph_replays_equal_the_eager_solve(
     compile_packed: bool,

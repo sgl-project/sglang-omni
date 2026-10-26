@@ -347,6 +347,7 @@ class SpeechHooks(BatchedSessionHooks):
                             else talker_result["is_listen"]
                         ),
                         model_end_of_turn=talker_result["end_of_turn"],
+                        is_speech_cut=talker_result["is_speech_cut"],
                     ),
                     eos=chunk.eos,
                     turn=state.turn,

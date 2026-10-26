@@ -1116,7 +1116,7 @@ def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> Non
     assert state.ref_text == "reference"
     assert state.x_vector_only_mode is False
     assert state.non_streaming_mode is False
-    assert state.generation_kwargs == {"max_new_tokens": 2048}
+    assert state.generation_kwargs == {}
 
 
 def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
@@ -1132,7 +1132,6 @@ def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
     state = build_qwen3_tts_state(payload)
 
     assert state.generation_kwargs == {
-        "max_new_tokens": 2048,
         "temperature": 0.8,
         "top_p": 1.0,
         "top_k": 30,
@@ -1164,16 +1163,12 @@ def test_qwen3_tts_forwards_tts_engine_stage_sampling_params() -> None:
     greedy_state = build_qwen3_tts_state(greedy_payload)
 
     assert sampled_state.generation_kwargs == {
-        "max_new_tokens": 2048,
         "subtalker_dosample": True,
         "subtalker_temperature": 0.7,
         "subtalker_top_p": 0.8,
         "subtalker_top_k": 40,
     }
-    assert greedy_state.generation_kwargs == {
-        "max_new_tokens": 2048,
-        "subtalker_dosample": False,
-    }
+    assert greedy_state.generation_kwargs == {"subtalker_dosample": False}
 
 
 def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
@@ -1274,7 +1269,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
             return [(np.zeros(32, dtype=np.float32), 24000)]
 
         def _tokenize_texts(self, texts):
-            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+            return [torch.arange(1, len(texts[0]) + 1, dtype=torch.long).unsqueeze(0)]
 
         def _build_assistant_text(self, text):
             return text
@@ -1327,6 +1322,89 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     )
 
     assert prepared.state.seed is None
+
+
+@pytest.mark.parametrize(
+    ("params", "max_new_tokens"),
+    [
+        ({}, qwen3_request_builders.text_length_budget(len("target"))),
+        ({"max_new_tokens": 256}, 256),
+    ],
+    ids=["default", "explicit"],
+)
+def test_qwen3_tts_budgets_generation_by_the_target_text(
+    params: dict[str, object], max_new_tokens: int
+) -> None:
+    """Without max_new_tokens a request could run to 2048 codec frames, 163.84 s of audio for a one-word text; the default now counts the target text's tokens, not the reference's."""
+
+    class FakeWrapper:
+        def _normalize_audio_inputs(self, ref_audio):
+            return [(np.zeros(32, dtype=np.float32), 24000)]
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        tts_model_type = "base"
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+        speech_tokenizer = fake_speech_tokenizer()
+        speaker_encoder_sample_rate = 24000
+
+        def extract_speaker_embedding(self, *, audio, sr):
+            return torch.ones(4)
+
+        def build_voice_clone_inputs(self, **kwargs):
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    prepared = qwen3_request_builders.prepare_qwen3_tts_request(
+        make_payload(
+            inputs="target",
+            params=params,
+            tts_params={
+                "ref_audio": "voice.wav",
+                "ref_text": "a much longer reference",
+            },
+        ),
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
+    )
+
+    assert prepared.gen_kwargs["max_new_tokens"] == max_new_tokens
+
+
+@pytest.mark.parametrize(
+    ("text_tokens", "frames"),
+    [(1, 45), (3, 64), (30, 328), (200, 1985), (300, 2048)],
+)
+def test_the_text_length_budget_is_twice_the_slowest_natural_stop(
+    text_tokens: int, frames: int
+) -> None:
+    assert qwen3_request_builders.text_length_budget(text_tokens) == frames
 
 
 def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(

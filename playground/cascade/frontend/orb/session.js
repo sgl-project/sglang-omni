@@ -127,6 +127,11 @@ export class DuplexSession {
     this.emit("played", responseId);
   }
 
+  // note (Haoling Pu): only a turn-based server stops its open reply on response.cancel; the player's truncate then cuts its history.
+  cancelReply() {
+    if (this.state === "ready" && this.turnBased && this.responseOpen) this.send("response.cancel");
+  }
+
   get turnBased() {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
   }

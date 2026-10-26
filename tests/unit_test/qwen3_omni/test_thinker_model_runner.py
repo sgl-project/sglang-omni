@@ -214,3 +214,29 @@ def test_a_capturing_prefill_stores_each_multimodal_row_at_its_kv_slot() -> None
         assert torch.equal(
             store.read(0, torch.tensor([3, 5])), hidden_states[[2, 4]].cpu()
         )
+
+
+def test_omni_forward_retains_the_composed_embeds_for_an_eagle_draft() -> None:
+    """An EAGLE3 draft extends on the prefill embeddings the runner composed."""
+    runner = ThinkerModelRunner.__new__(ThinkerModelRunner)
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            attn_backend=SimpleNamespace(init_forward_metadata=lambda batch: None)
+        )
+    )
+    runner.retain_prefill_input_embeds = True
+    runner.outer_model = SimpleNamespace(
+        model=lambda **kwargs: torch.zeros(1, 2),
+        logits_processor=lambda input_ids, hidden_states, lm_head, forward_batch, aux_hidden_states: "logits",
+        lm_head="lm_head",
+    )
+    forward_batch = SimpleNamespace(
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+        input_ids=torch.tensor([1]),
+    )
+    input_embeds = torch.ones(1, 2)
+
+    runner.forward_with_omni_embeds(forward_batch, input_embeds)
+
+    assert runner.retained_prefill_input_embeds is input_embeds

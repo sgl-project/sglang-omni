@@ -13,14 +13,21 @@ int main(int argc, char **argv) {
   try {
     std::filesystem::path directory, requests, output;
     bool prompt_only = false;
+    bool should_check_cancellation = false;
+    bool is_serial_offload_enabled = false;
     for (int i = 1; i < argc; ++i) {
       const std::string flag = argv[i];
       if (flag == "--prompt-only") {
         prompt_only = true;
+      } else if (flag == "--check-cancellation") {
+        should_check_cancellation = true;
       } else if (i + 1 >= argc) {
         throw std::invalid_argument(flag + " needs a value");
       } else if (flag == "--model-path") {
         directory = argv[++i];
+      } else if (flag == "--stage-offload-components") {
+        music3::ValidateSerialOffload(argv[++i]);
+        is_serial_offload_enabled = true;
       } else if (flag == "--requests") {
         requests = argv[++i];
       } else if (flag == "--output-directory") {
@@ -33,7 +40,8 @@ int main(int argc, char **argv) {
         (!prompt_only && output.empty())) {
       throw std::invalid_argument(
           "usage: music3_synthesize --model-path DIR "
-          "--requests JSONL [--prompt-only | --output-directory DIR]");
+          "--requests JSONL [--prompt-only | --output-directory DIR] "
+          "[--stage-offload-components ar,dit] [--check-cancellation]");
     } else {
     }
     mlx::core::set_cache_limit(1024ULL * 1024 * 1024);
@@ -43,7 +51,8 @@ int main(int argc, char **argv) {
       prompt_tokenizer =
           std::make_unique<omni_common::Tokenizer>(directory / "tokenizer");
     } else {
-      model = std::make_unique<music3::Model>(directory);
+      model =
+          std::make_unique<music3::Model>(directory, is_serial_offload_enabled);
       std::filesystem::create_directories(output);
     }
     std::ifstream input(requests);
@@ -51,7 +60,7 @@ int main(int argc, char **argv) {
       throw std::runtime_error("cannot read " + requests.string());
     } else {
     }
-    const std::atomic<bool> cancelled{false};
+    std::atomic<bool> cancelled{false};
     std::string line;
     while (std::getline(input, line)) {
       auto body = nlohmann::json::parse(line);
@@ -76,8 +85,28 @@ int main(int argc, char **argv) {
       }
       const auto request = music3::ParseRequest(
           body, model->tokenizer(), "minimax_music3", model->context_tokens());
+      const size_t idle_active_memory_bytes = mlx::core::get_active_memory();
+      bool is_cancelled_after_ar = false;
+      size_t cancelled_active_memory_bytes = 0;
+      if (should_check_cancellation) {
+        try {
+          model->Synthesize(request, cancelled,
+                            [&]() { cancelled.store(true); });
+        } catch (const music3::Cancelled &) {
+          is_cancelled_after_ar = true;
+        }
+        cancelled.store(false);
+        cancelled_active_memory_bytes = mlx::core::get_active_memory();
+      } else {
+      }
+      mlx::core::reset_peak_memory();
       const auto started = std::chrono::steady_clock::now();
-      const auto result = model->Synthesize(request, cancelled);
+      double ar_elapsed_seconds = 0;
+      const auto result = model->Synthesize(request, cancelled, [&]() {
+        ar_elapsed_seconds = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+      });
       const double elapsed = std::chrono::duration<double>(
                                  std::chrono::steady_clock::now() - started)
                                  .count();
@@ -90,14 +119,23 @@ int main(int argc, char **argv) {
         throw std::runtime_error("cannot write " + path.string());
       } else {
       }
-      std::cout << nlohmann::json({{"id", identifier},
-                                   {"file", path.string()},
-                                   {"generated_frames", result.frames},
-                                   {"sample_count", result.samples.size() / 2},
-                                   {"sample_rate", music3::kSampleRate},
-                                   {"elapsed_s", elapsed}})
-                       .dump()
-                << std::endl;
+      nlohmann::json synthesis_result = {
+          {"id", identifier},
+          {"file", path.string()},
+          {"generated_frames", result.frames},
+          {"sample_count", result.samples.size() / 2},
+          {"sample_rate", music3::kSampleRate},
+          {"elapsed_s", elapsed},
+          {"ar_elapsed_s", ar_elapsed_seconds},
+          {"peak_memory_bytes", mlx::core::get_peak_memory()}};
+      if (should_check_cancellation) {
+        synthesis_result["cancelled_after_ar"] = is_cancelled_after_ar;
+        synthesis_result["idle_active_memory_bytes"] = idle_active_memory_bytes;
+        synthesis_result["cancelled_active_memory_bytes"] =
+            cancelled_active_memory_bytes;
+      } else {
+      }
+      std::cout << synthesis_result.dump() << std::endl;
       mlx::core::clear_cache();
     }
     return 0;

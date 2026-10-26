@@ -9,6 +9,7 @@ import pytest
 import torch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.speculative_target_worker import SpeculativeTargetWorker
 
@@ -42,7 +43,7 @@ def test_prefill_hands_the_draft_its_kv_location_plan(
     model_worker = SimpleNamespace(
         model_runner=None, model_config=None, device="cpu", random_seed=0
     )
-    target_worker = SpeculativeTargetWorker(model_worker)
+    target_worker = SpeculativeTargetWorker(model_worker, SpeculativeAlgorithm.DFLASH)
     target_worker.attach_runner(PrefillRunner(model_worker))
     batch = SimpleNamespace(
         reqs=[

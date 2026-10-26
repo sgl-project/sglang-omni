@@ -143,7 +143,7 @@ The session takes 16 kHz PCM16 audio and camera frames. A user turn ends on `spe
 
 Camera input uses `sglang.input_image.append`, as for [MiniCPM-o](minicpm_o.md): a base64 JPEG or PNG in `image` and its audio timeline position in `sglang.t_ms`. The newest `max_utterance_frames` (4) frames that fall in an utterance go to the model with that turn; each frame costs thinker context for the rest of the session.
 
-`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker.
+`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker. Over `/v1/realtime`, `sglang.sampling` in a later `session.update` applies from the next unit as well, and `instructions` is accepted only in the first `session.update`; `session.updated` reports this as `supports_sampling_updates` true and `supports_instruction_updates` false.
 
 Current limits:
 

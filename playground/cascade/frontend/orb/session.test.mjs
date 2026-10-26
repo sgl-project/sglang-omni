@@ -147,3 +147,28 @@ test("a completed reply keeps the heard part and the rest", () => {
   session.played("resp_0", 2000, false);
   assert.deepEqual(session.captionParts("resp_0"), { heard: "One, two,", pending: " three." });
 });
+
+function openGranted(interaction) {
+  const sent = [];
+  const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
+  session.handle({ type: "session.created", session: { id: "s" } });
+  session.handle({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, interaction } } } });
+  return { session, cancels: () => sent.filter((event) => event.type === "response.cancel").length };
+}
+
+test("a local interrupt cancels the open reply of a turn-based server only", () => {
+  const { session, cancels } = openGranted("turn_based");
+  session.cancelReply();
+  assert.equal(cancels(), 0);
+  session.handle({ type: "response.created", response: { id: "resp_0" } });
+  session.cancelReply();
+  assert.equal(cancels(), 1);
+  session.handle({ type: "response.done", response: { id: "resp_0", status: "cancelled" } });
+  session.cancelReply();
+  assert.equal(cancels(), 1);
+
+  const native = openGranted("native");
+  native.session.handle({ type: "response.created", response: { id: "resp_0" } });
+  native.session.cancelReply();
+  assert.equal(native.cancels(), 0);
+});

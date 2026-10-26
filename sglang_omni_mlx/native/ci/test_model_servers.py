@@ -70,9 +70,14 @@ SENSEVOICE_VAD_FIELDS = {
 class ModelServer(Server):
     """Another model's server binary, started and spoken to as qwen3_asr_server is."""
 
-    def __init__(self, binary: str, model_kind: str, repo: str) -> None:
+    def __init__(
+        self, binary: str, model_kind: str, repo: str, flags: tuple[str, ...] = ()
+    ) -> None:
         super().__init__(
-            binary, model_kind, Path(DATA_ROOT) / "models" / repo.replace("/", "_")
+            binary,
+            model_kind,
+            Path(DATA_ROOT) / "models" / repo.replace("/", "_"),
+            flags,
         )
 
 
@@ -933,13 +938,125 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     assert "overlap" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def music3_server() -> Iterator[ModelServer]:
-    running = ModelServer(
-        "music3_server", "minimax_music3", "mlx-community/MiniMax-Music3-mxfp8"
+MUSIC3_SERVER_MODES = [
+    pytest.param((), id="resident"),
+    pytest.param(("--stage-offload-components", " DIT , ar "), id="offload"),
+]
+
+
+@pytest.fixture(scope="module", params=[()], ids=["resident"])
+def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    music3_process = ModelServer(
+        "music3_server",
+        "minimax_music3",
+        "mlx-community/MiniMax-Music3-mxfp8",
+        request.param,
     )
-    yield running
-    running.stop()
+    yield music3_process
+    music3_process.stop()
+
+
+@pytest.mark.parametrize("offload_components", ["ar", "dit", "ar,dit,other", ""])
+@pytest.mark.parametrize("binary_name", ["music3_server", "music3_synthesize"])
+def test_music3_rejects_invalid_offload_components(
+    tmp_path: Path, binary_name: str, offload_components: str
+) -> None:
+    process_result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / binary_name),
+            "--model-path",
+            str(tmp_path),
+            "--stage-offload-components",
+            offload_components,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert process_result.returncode != 0
+    assert "requires both ar,dit" in process_result.stderr
+
+
+@pytest.mark.parametrize("server_flags", MUSIC3_SERVER_MODES)
+@pytest.mark.parametrize(
+    ("tensor_name", "expected_error"),
+    [
+        ("language_model.model.norm.weight", "missing or incompatible Music3 tensor"),
+        ("unassigned.weight", "unassigned or ambiguous Music3 tensor"),
+    ],
+)
+def test_music3_rejects_invalid_checkpoint_before_ready(
+    tmp_path: Path,
+    server_flags: tuple[str, ...],
+    tensor_name: str,
+    expected_error: str,
+) -> None:
+    """Offload must reject incompatible and unassigned weights before serving."""
+    checkpoint_directory = Path(DATA_ROOT) / "models/mlx-community_MiniMax-Music3-mxfp8"
+    for checkpoint_file in checkpoint_directory.iterdir():
+        (tmp_path / checkpoint_file.name).symlink_to(checkpoint_file)
+    tensor_header = json.dumps(
+        {tensor_name: {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
+    ).encode()
+    tensor_header += b" " * (-len(tensor_header) % 8)
+    (tmp_path / "zz-invalid.safetensors").write_bytes(
+        struct.pack("<Q", len(tensor_header)) + tensor_header + struct.pack("<f", 0)
+    )
+    music3_process = Server("music3_server", "minimax_music3", tmp_path, server_flags)
+    assert music3_process.ready["event"] == "failed"
+    assert expected_error in music3_process.ready["reason"]
+    assert music3_process.process.wait(timeout=30) != 0
+
+
+def test_music3_recovers_after_cancellation_at_ar_handoff(tmp_path: Path) -> None:
+    """Cancellation after AR must release stage weights and allow seeded retries."""
+    synthesis_request = {
+        "input": "[Verse]\nWalking through the morning light",
+        "instructions": "Gentle acoustic folk",
+        "max_new_tokens": 10,
+        "dit_steps": 2,
+        "seed": 42,
+    }
+    request_file = tmp_path / "requests.jsonl"
+    request_file.write_text(
+        "".join(
+            json.dumps({"id": case_id, **synthesis_request}) + "\n"
+            for case_id in ("after_cancel", "repeat")
+        )
+    )
+    process_result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "music3_synthesize"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models/mlx-community_MiniMax-Music3-mxfp8"),
+            "--stage-offload-components",
+            " AR, dit,AR, ",
+            "--requests",
+            str(request_file),
+            "--output-directory",
+            str(tmp_path / "audio"),
+            "--check-cancellation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert process_result.returncode == 0, process_result.stderr
+    synthesis_results = [
+        json.loads(result_line) for result_line in process_result.stdout.splitlines()
+    ]
+    assert [result["id"] for result in synthesis_results] == ["after_cancel", "repeat"]
+    for synthesis_result in synthesis_results:
+        assert synthesis_result["cancelled_after_ar"] is True
+        assert (
+            synthesis_result["cancelled_active_memory_bytes"]
+            == synthesis_result["idle_active_memory_bytes"]
+        )
+        assert synthesis_result["generated_frames"] == 10
+    assert (
+        Path(synthesis_results[0]["file"]).read_bytes()
+        == Path(synthesis_results[1]["file"]).read_bytes()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1063,9 +1180,11 @@ def test_music3_rejects_invalid_requests_before_generation(
     assert json.loads(body)["request_states"] == {}
 
 
-def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
-    """A valid request returns audio instead of failing during token sampling."""
-    request = {
+@pytest.mark.parametrize("music3_server", MUSIC3_SERVER_MODES, indirect=True)
+def test_music3_seeded_wav_matches_pcm_and_repeated_requests(
+    music3_server: ModelServer,
+) -> None:
+    synthesis_request = {
         "input": "[Verse]\nWalking through the morning light",
         "instructions": "Gentle acoustic folk",
         "max_new_tokens": 10,
@@ -1074,26 +1193,35 @@ def test_music3_wav_pcm_and_seeded_repeat(music3_server: ModelServer) -> None:
         # No --model-name was chosen, so an OpenAI client's model is accepted.
         "model": "tts-1",
     }
-    responses = []
-    for format_name in ["wav", "pcm", "wav"]:
-        status, body = music3_server.request(
+    audio_responses: list[bytes] = []
+    for response_format in ("wav", "pcm"):
+        status_code, response_body = music3_server.request(
             "POST",
             "/v1/audio/speech",
-            json.dumps({**request, "response_format": format_name}).encode(),
+            json.dumps(
+                {**synthesis_request, "response_format": response_format}
+            ).encode(),
             {"Content-Type": "application/json"},
         )
-        assert status == 200
-        responses.append(body)
-    assert responses[0] == responses[2]
-    with wave.open(io.BytesIO(responses[0])) as audio:
+        assert status_code == 200
+        audio_responses.append(response_body)
+    with wave.open(io.BytesIO(audio_responses[0])) as audio:
         assert (audio.getnchannels(), audio.getframerate(), audio.getsampwidth()) == (
             2,
             32000,
             2,
         )
-        pcm = audio.readframes(audio.getnframes())
-        assert pcm == responses[1]
-        assert any(pcm)
+        pcm_bytes = audio.readframes(audio.getnframes())
+        assert pcm_bytes == audio_responses[1]
+        assert any(pcm_bytes)
+    status_code, response_body = music3_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps({**synthesis_request, "response_format": "wav"}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert status_code == 200
+    assert response_body == audio_responses[0]
 
 
 @pytest.mark.parametrize(
@@ -1124,6 +1252,7 @@ def test_music3_unicode_tag_case_preserves_seeded_audio(
     assert responses[0] == responses[1]
 
 
+@pytest.mark.parametrize("music3_server", MUSIC3_SERVER_MODES, indirect=True)
 def test_music3_busy_request_returns_429(music3_server: ModelServer) -> None:
     request = json.dumps(
         {

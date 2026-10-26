@@ -57,6 +57,7 @@ def test_qwen3_omni_profile_declares_persistent_stage_routes_and_feedback() -> N
     )
     assert node.controls == (
         ControlEdge("input", "configure"),
+        ControlEdge("dialog", "configure"),
         ControlEdge("dialog", INTERRUPT, should_preempt=True),
         ControlEdge("dialog", "qwen.truncate"),
     )

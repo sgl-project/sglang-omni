@@ -16,7 +16,8 @@ namespace music3 {
 
 class SpeechService : public omni_server::Service {
 public:
-  explicit SpeechService(const std::filesystem::path &directory);
+  explicit SpeechService(const std::filesystem::path &directory,
+                         bool is_serial_offload_enabled = false);
   ~SpeechService() override;
   void SetModelName(const std::string &model_name, bool chosen) override;
   void Register(mg_context *context, const std::string &model_name) override;
@@ -30,7 +31,8 @@ private:
     std::atomic<bool> cancelled{false};
     std::promise<Result> completion;
   };
-  void Run(const std::filesystem::path &directory, std::promise<void> loaded);
+  void Run(const std::filesystem::path &directory,
+           bool is_serial_offload_enabled, std::promise<void> loaded);
   int Handle(mg_connection *connection);
 
   std::string model_name_;

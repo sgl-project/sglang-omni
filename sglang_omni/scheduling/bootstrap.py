@@ -183,7 +183,7 @@ def create_sglang_infrastructure(
     else:
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.
-        target_worker = SpeculativeTargetWorker(model_worker)
+        target_worker = SpeculativeTargetWorker(model_worker, speculative_algorithm)
         if speculative_worker_class is None:
             speculative_worker_class = speculative_algorithm.create_worker(server_args)
         else:
