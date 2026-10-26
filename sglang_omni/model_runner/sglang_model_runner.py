@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 import torch
+from sglang.srt.configs.draft_parallel import DraftParallelLayout
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.sampler import (
@@ -768,7 +769,9 @@ class SGLModelRunner(ModelRunner):
         except Exception as exc:
             logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
-    def init_kv_cache_configurator(self):
+    def init_kv_cache_configurator(
+        self, draft_parallel_layout: DraftParallelLayout | None = None
+    ) -> None:
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
         Upstream keeps _profile_available_bytes on the composed
@@ -776,7 +779,7 @@ class SGLModelRunner(ModelRunner):
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """
-        super().init_kv_cache_configurator()
+        super().init_kv_cache_configurator(draft_parallel_layout)
         base = self.kv_cache_configurator
         self.kv_cache_configurator = OmniKVCacheConfigurator(
             **{

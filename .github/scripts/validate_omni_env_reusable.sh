@@ -76,6 +76,10 @@ else
   echo "Note: ${DEPS_HASH_FILE} missing; validating installed venv against pyproject.toml"
 fi
 
+if ! "$(dirname "${PYTHON}")/sgl-omni-prepare-runtime" --check; then
+  exit 1
+fi
+
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
   exit 1
 fi

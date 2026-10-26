@@ -44,6 +44,7 @@ from sglang.srt.managers.schedule_batch import (
     retract_all,
 )
 from sglang.srt.managers.scheduler import (
+    PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
     TEST_RETRACT_NO_PREFILL_BS,
     GenerationBatchResult,
@@ -581,6 +582,9 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         self.dynamic_chunk_sizer = None
         self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
+        self.prefill_decode_interval_min_bs = (
+            get_schedule().prefill_decode_interval_min_bs
+        )
         self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore
         self.processed_tokens_counter = 0
 
@@ -868,6 +872,10 @@ class OmniScheduler(Generic[RequestDataT]):
         self._prev_step = None  # noqa: leading-underscore
         self._prev_prefill_end_ts = None  # noqa: leading-underscore
         self._sched_idled = False  # noqa: leading-underscore
+        self._pause_intervals: deque[tuple[float, float]] = deque(
+            maxlen=PAUSE_WINDOWS_MAX
+        )  # noqa: leading-underscore
+        self._pause_started_at: float | None = None  # noqa: leading-underscore
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
@@ -2036,9 +2044,14 @@ class OmniScheduler(Generic[RequestDataT]):
         running_bs: int,
         beam_width: int | None = None,
         running_batch: ScheduleBatch | None = None,
+        num_held_rows: int = 0,
     ) -> int:
         free_request_rows = _Upstream.get_num_allocatable_reqs(
-            self, running_bs, beam_width=beam_width, running_batch=running_batch
+            self,
+            running_bs,
+            beam_width=beam_width,
+            running_batch=running_batch,
+            num_held_rows=num_held_rows,
         )
         bridge = self.session_bridge
         if (
