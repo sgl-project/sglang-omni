@@ -50,6 +50,20 @@ def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
     assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.70, 0.10)
 
 
+def test_gdn_defaults_stay_in_the_engine_and_respect_overrides() -> None:
+    """GDN opt-ins must not leak into other stage processes or override a user."""
+    config = Drama3PipelineConfig(model_path="checkpoint")
+    for variable in (
+        "SGLANG_ENABLE_GDN_PREFILL_GRAPH_EXTEND",
+        "SGLANG_ENABLE_GDN_FP32_PREFIX_SNAPSHOTS",
+    ):
+        assert config.resolved_stage_env_defaults("tts_engine")[variable] == "1"
+        assert variable not in config.resolved_stage_env_defaults("preprocessing")
+        assert variable not in config.resolved_stage_env_defaults("vocoder")
+        config.stage_named("tts_engine").env[variable] = "0"
+        assert config.resolved_stage_env_defaults("tts_engine")[variable] == "0"
+
+
 def test_each_factory_gets_the_defaults_written_once() -> None:
     config = Drama3PipelineConfig(model_path="checkpoint")
 

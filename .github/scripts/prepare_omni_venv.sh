@@ -72,6 +72,7 @@ if [ "${#OVERRIDE_REQUIREMENTS[@]}" -gt 0 ]; then
   python -m pip install --no-deps "${OVERRIDE_REQUIREMENTS[@]}"
 fi
 uv pip install --no-deps -e .
+sgl-omni-prepare-runtime
 
 COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
 COSYVOICE_PATH="${HOST}/src/CosyVoice"
