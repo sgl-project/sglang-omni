@@ -18,7 +18,12 @@ import torch
 import xxhash
 from sglang.srt.utils.hf_transformers.common import get_context_length
 from tokenizers.normalizers import NFC
-from transformers import AutoConfig, BatchFeature, PreTrainedTokenizerBase
+from transformers import (
+    AutoConfig,
+    BatchEncoding,
+    BatchFeature,
+    PreTrainedTokenizerBase,
+)
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -947,15 +952,36 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        hf_inputs: BatchFeature = self.processor(
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
-        )
+        try:
+            hf_inputs: BatchFeature | BatchEncoding = self.processor(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
+        except StopIteration as exc:
+            # note (Richard Wang): the processor gives every placeholder in the
+            # prompt the next media input, so placeholder text the user typed
+            # runs past them. Without media, tokenize it as plain SGLang does.
+            if images or videos or audios:
+                processor = self.processor
+                raise ValueError(
+                    "The prompt has more media placeholders than the request has "
+                    f"media inputs ({prompt_text.count(processor.audio_token)} "
+                    f"{processor.audio_token} for {len(audios or [])} audio inputs, "
+                    f"{prompt_text.count(processor.image_token)} "
+                    f"{processor.image_token} for {len(images)} image inputs, "
+                    f"{prompt_text.count(processor.video_token)} "
+                    f"{processor.video_token} for {len(videos)} video inputs). "
+                    "Remove the placeholder text or send a media input for each one."
+                ) from exc
+            else:
+                hf_inputs = self.processor.tokenizer(
+                    prompt_text, add_special_tokens=False, return_tensors="pt"
+                )
 
         input_ids = hf_inputs["input_ids"][0]
         attention_mask = hf_inputs.get("attention_mask")
