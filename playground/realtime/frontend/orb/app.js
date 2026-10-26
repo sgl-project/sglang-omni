@@ -357,6 +357,7 @@ function pcm16ToFloat(bytes, sourceRate, targetRate) {
 
 function sessionListeners(activeSession) {
   let boundPlaybackNode = null;
+  let lastResponseId = null;
   return {
     state: (state) => {
       if (state !== "ready") stopCamera();
@@ -402,13 +403,16 @@ function sessionListeners(activeSession) {
       awaitingAudio = open;
       setButtons();
       if (playbackNode) {
+        // note (luojiaxuan): turn-based playback never trims, so once the user has taken the turn the previous reply's leftovers are dropped by its id.
+        if (open && activeSession.turnBased && lastResponseId !== null) playbackNode.port.postMessage({ type: "cancel", responseId: lastResponseId });
         if (open) playbackNode.port.postMessage({ type: "open" });
         // A cancelled reply stops now; a completed one plays out what is buffered.
         else if (status === "cancelled") playbackNode.port.postMessage({ type: "cancel", responseId: id });
         else playbackNode.port.postMessage({ type: "flush" });
       }
       // A new answer means whatever is still queued belongs to the previous one.
-      if (open && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open && playbackNode && !activeSession.turnBased) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open) lastResponseId = id;
       renderTranscript();
     },
     text: renderTranscript,
