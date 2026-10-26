@@ -99,6 +99,7 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
+            supports_speculative_decoding=True,
         )
         if capture_prompt_hidden_states:
             infrastructure[0].model_runner.model.set_talker_layers_to_capture()
@@ -164,6 +165,7 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
         capture_prompt_hidden_states=capture_prompt_hidden_states,
+        is_speculative=model_worker.speculative_worker is not None,
     )
     # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
     stream_output_builder = make_thinker_stream_output_builder(

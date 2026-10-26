@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -17,7 +17,7 @@ from sglang_omni.proto.session import OutputChunk, SessionLimits, TimedChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.output import OutputEvent, TextDelta, TurnFailure
 from sglang_omni.serve.realtime.schema import SessionConfiguration
-from sglang_omni.serve.realtime.types import Unit
+from sglang_omni.serve.realtime.types import RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import FakeSessionClient
 
 SAMPLE_RATE = 16000
@@ -118,6 +118,38 @@ def build_unit(
             else None
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pipeline_idle_seconds", "runtime_idle_seconds", "expected_backup_seconds"),
+    [(1, 60, 300), (900, 60, 900), (1, 300, 640)],
+)
+async def test_runtime_limits_set_pipeline_idle_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline_idle_seconds: float,
+    runtime_idle_seconds: float,
+    expected_backup_seconds: float,
+) -> None:
+    coordinator = SessionCoordinator([])
+    open_session = AsyncMock(wraps=coordinator.open_session)
+    monkeypatch.setattr(coordinator, "open_session", open_session)
+    adapter = build_adapter(
+        coordinator,
+        limits=SessionLimits(idle_timeout_s=pipeline_idle_seconds, max_output_chunks=7),
+    )
+    adapter.set_limits(
+        RuntimeLimits(idle_timeout_s=runtime_idle_seconds, cleanup_timeout_s=10)
+    )
+    try:
+        await adapter.open("sess_1", SESSION_CONFIG, RecordingSink())
+        session_limits = open_session.call_args.kwargs["limits"]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == expected_backup_seconds
+        assert session_limits.operation_timeout_s == 30
+        assert session_limits.max_output_chunks == 7
+    finally:
+        await adapter.close()
 
 
 @pytest.mark.asyncio

@@ -12,10 +12,8 @@ from sglang_omni.config.schema import SessionNodeConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
 from sglang_omni.pipeline.replicas import expand_replica_stages
-from sglang_omni.pipeline.sessions import admit_input
-from sglang_omni.proto.session import ControlEdge, TimedChunk
+from sglang_omni.proto.session import ControlEdge
 from sglang_omni.proto.streams import (
-    CONTROL,
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
@@ -131,23 +129,3 @@ def test_session_profile_round_trip_keeps_model_factory_arguments() -> None:
     assert config.realtime_deployment_factory == (
         "sglang_omni.serve.realtime.session_deployment.build_realtime_deployment"
     )
-
-
-def test_session_limit_admits_a_complete_maximum_duration_utterance() -> None:
-    config = profile_config()
-    unit = TimedChunk(
-        CONTROL,
-        0,
-        0,
-        0,
-        {
-            "pcm": bytes(int(config.max_utterance_seconds * 32000)),
-            "images": [],
-            "carried_turns": [],
-        },
-        format="qwen.unit",
-        turn=1,
-    )
-    admitted, encoded_bytes = admit_input(unit, config.session_limits(), {}, set())
-    assert admitted.payload["pcm"] == unit.payload["pcm"]
-    assert encoded_bytes > 1048576

@@ -8,6 +8,10 @@ from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
+from sglang_omni.proto.session import (
+    DEFAULT_IDLE_TIMEOUT_S,
+    DEFAULT_SESSION_UPDATE_TIMEOUT_S,
+)
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
@@ -44,7 +48,8 @@ class RuntimeLimits:
     max_output_bytes: int = 32 * 1024 * 1024
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
-    session_update_timeout_s: float = 60
+    session_update_timeout_s: float = DEFAULT_SESSION_UPDATE_TIMEOUT_S
+    idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S
 
     def __post_init__(self) -> None:
         if any(
@@ -74,6 +79,7 @@ class Capabilities:
     supports_instruction_updates: bool = False
     supports_sampling_updates: bool = False
     supports_truncate: bool = False
+    supports_cancel: bool = False
     supports_client_commit: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
@@ -133,6 +139,7 @@ class Capabilities:
             tail_policy=self.tail_policy,
             supports_server_interrupt=False,
             supports_truncate=self.supports_truncate,
+            supports_cancel=self.supports_cancel,
             supports_resume=False,
             partial_style=self.partial_style,
             pressure_policy="reject",
@@ -213,7 +220,7 @@ class InteractionAdapter:
     async def cancel(self) -> None:
         raise ProtocolError("not_supported", "this session does not cancel responses")
 
-    async def truncate(self, audio_end_ms: float) -> None:
+    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
         raise ProtocolError("not_supported", "this session does not truncate responses")
 
     async def commit(self) -> None:

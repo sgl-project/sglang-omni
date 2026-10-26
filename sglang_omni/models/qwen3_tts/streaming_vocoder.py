@@ -947,7 +947,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             num_quantizers=num_quantizers,
             codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
-            compile_kernels=bool(incremental_codec_compile),
+            compile_kernels=bool(incremental_codec_compile)
+            and self.device.type != "npu",
             cold_frames=(
                 incremental_codec_cuda_graph_cold_frames
                 if incremental_codec_cuda_graph_cold_frames is not None
@@ -2734,10 +2735,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         return (plan, False)
 
     def run_initial_worker(self) -> None:
-        if self.decode_stream is not None:
-            self.device_module.set_stream(self.decode_stream)
-        else:
-            pass
+        self.activate_decode_worker(self.decode_stream)
         while True:
             batch = self.collect_async_batch(
                 self.initial_queue,
@@ -3206,10 +3204,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             if index < len(self.followup_decode_streams)
             else self.followup_decode_stream
         )
-        if self.worker_ctx.stream is not None:
-            self.device_module.set_stream(self.worker_ctx.stream)
-        else:
-            pass
+        self.activate_decode_worker(self.worker_ctx.stream)
         while True:
             self.commit_decoded_incremental()
             in_flight = bool(getattr(self.worker_ctx, "pending_incremental", None))
@@ -3240,6 +3235,20 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             self.run_followup_batch(batch)
+
+    def activate_decode_worker(self, stream: torch.Stream | None) -> None:
+        """Set the thread-local NPU device before decoding; workers do not inherit it.
+
+        This prevents allocations or stream operations from using the default device.
+        """
+        if self.device.type == "npu":
+            current_platform.set_device(self.device)
+        else:
+            pass
+        if stream is not None:
+            self.device_module.set_stream(stream)
+        else:
+            pass
 
     def collect_followup_batch(
         self, *, first_timeout: float | None = None

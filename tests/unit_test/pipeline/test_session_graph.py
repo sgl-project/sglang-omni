@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import random
 from dataclasses import replace
 from multiprocessing.queues import Queue
 
@@ -25,6 +27,7 @@ from sglang_omni.proto.session import (
     SessionLimits,
     SessionNode,
     TimedChunk,
+    join_fragments,
     wire_size,
 )
 from sglang_omni.proto.streams import (
@@ -1234,5 +1237,217 @@ async def test_a_preempting_interrupt_drops_its_turn_at_every_owner_of_the_targe
             {"turn": 2}
         ]
         assert has_appended("sink", 2) and not has_appended("sink", 1)
+        await outputs.aclose()
+        await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+def fragment_runtime(
+    sessions: SessionGraphRunner, limits: SessionLimits
+) -> tuple[SessionGraphRuntime, Session]:
+    """A graph whose `reader` node takes `writer` units, with the reader's node session registered and not pumped."""
+    node = SessionIdentity("graph:reader")
+    session = Session(
+        session_identity=node,
+        request=OmniRequest(None),
+        stages=("first", "last"),
+        bindings={},
+        limits=limits,
+        is_node=True,
+    )
+    sessions.sessions[node.id] = session
+    graph = SessionGraphRuntime(
+        session_identity=SessionIdentity("graph"),
+        graph=SessionGraph(
+            nodes={
+                "writer": SessionNode(("writer",), ("input",)),
+                "reader": SessionNode(("first", "last"), ("writer:unit",)),
+            },
+            publish={},
+        ),
+        nodes={"writer": SessionIdentity("graph:writer"), "reader": node},
+        limits=limits,
+        inboxes={"writer": NodeInbox(), "reader": NodeInbox()},
+        outputs=asyncio.Queue(),
+        client_sequences={"writer": {}, "reader": {}},
+    )
+    return graph, session
+
+
+def blob_unit(turn: int, size: int) -> TimedChunk:
+    blob = random.Random(turn).randbytes(size)
+    return TimedChunk(CONTROL, 0, 0, 0, {"blob": blob}, format="unit", turn=turn)
+
+
+@pytest.mark.asyncio
+async def test_a_node_chunk_over_max_chunk_bytes_enters_its_reader_as_fragments():
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(sessions, SessionLimits(max_chunk_bytes=1024))
+    unit = blob_unit(1, 5000)
+    next_seq = await sessions.append_fragments(graph, "reader", unit, 0)
+    pending = list(reader.pending)
+    assert next_seq == len(pending) > 1
+    assert [entry.chunk.seq for entry in pending] == list(range(next_seq))
+    assert [entry.continues for entry in pending] == [True] * (next_seq - 1) + [False]
+    assert all(entry.encoded_bytes <= 1024 for entry in pending)
+    restored = join_fragments([entry.chunk for entry in pending])
+    assert restored == replace(unit, seq=next_seq - 1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_interrupted_at_the_reader_takes_no_more_fragments():
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(
+        sessions, SessionLimits(max_chunk_bytes=1024, max_pending_chunks=2)
+    )
+    delivery = asyncio.create_task(
+        sessions.append_fragments(graph, "reader", blob_unit(1, 5000), 0)
+    )
+    await wait_until(lambda: reader.pending_count == 2)
+    graph.interrupted_turns["reader"] = {1}
+    assert await asyncio.wait_for(delivery, OUTPUT_TIMEOUT_S) == 2
+    assert [entry.continues for entry in reader.pending] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_drops_the_turns_unsent_fragments(monkeypatch):
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(
+        sessions, SessionLimits(max_chunk_bytes=1024, max_pending_chunks=2)
+    )
+    controlled = []
+
+    async def control_session(*args, **kwargs) -> None:
+        controlled.append(args[0])
+
+    # note (luojiaxuan): the reader's node session has no running stages, so the control it forwards is recorded instead.
+    monkeypatch.setattr(sessions, "control_session", control_session)
+    delivery = asyncio.create_task(
+        sessions.append_fragments(graph, "reader", blob_unit(1, 5000), 0)
+    )
+    await wait_until(lambda: reader.pending_count == 2)
+    await sessions.control_edge(
+        graph,
+        "reader",
+        ControlEdge("writer", INTERRUPT),
+        replace(control_chunk(INTERRUPT, turn=1), format="session"),
+    )
+    assert await asyncio.wait_for(delivery, OUTPUT_TIMEOUT_S) == 2
+    assert (reader.pending_count, reader.pending_bytes, list(reader.pending)) == (
+        0,
+        0,
+        [],
+    )
+    assert controlled == [graph.nodes["reader"]]
+
+
+class BlobWriter(SessionHooks):
+    """Makes each client chunk the unit of a new turn, a blob of the size the chunk names."""
+
+    def __init__(self) -> None:
+        self.turns: dict[SessionIdentity, int] = {}
+        self.emitters: dict[SessionIdentity, ChunkEmitter] = {}
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.turns[session_identity] = 0
+
+    def attach_output_stream(
+        self, session_identity: SessionIdentity, emit: ChunkEmitter
+    ) -> None:
+        self.emitters[session_identity] = emit
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.turns.pop(session_identity)
+        self.emitters.pop(session_identity)
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.turns[context.session_identity] += 1
+        turn = self.turns[context.session_identity]
+        unit = replace(blob_unit(turn, chunk.payload["size"]), seq=chunk.seq)
+        self.emitters[context.session_identity](unit)
+        return payload
+
+
+class BlobReader(SessionHooks):
+    """Each owner records the turn of every append it runs; the last answers with the digest of the blob it sees."""
+
+    def __init__(self, name: str, events: Queue[StageEvent]) -> None:
+        self.name = name
+        self.events = events
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        pass
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        pass
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.events.put(("append", self.name, context.session_identity.id, chunk.turn))
+        if self.name == "sink":
+            digest = hashlib.sha256(chunk.payload["blob"]).hexdigest()
+            context.emit(
+                TimedChunk("text", 0, 0, chunk.seq, {"digest": digest}, format="text")
+            )
+        else:
+            pass
+        payload.data = {}
+        return payload
+
+
+def create_blob_stage(name: str, events: Queue[StageEvent]) -> SessionScheduler:
+    if name == "front":
+        return SessionScheduler(BlobWriter())
+    else:
+        return SessionScheduler(BlobReader(name, events))
+
+
+@pytest.mark.asyncio
+async def test_a_node_chunk_over_max_chunk_bytes_reaches_every_owner_of_its_reader_whole(
+    tmp_path,
+):
+    factory = f"{__name__}.create_blob_stage"
+    async with pipeline(
+        tmp_path,
+        other_terminals=("front",),
+        factories={"source": factory, "sink": factory, "front": factory},
+    ) as (coordinator, events, _):
+        coordinator.session_graph = SessionGraph(
+            nodes={
+                "front": SessionNode(("front",), ("input",)),
+                "relay": SessionNode(("source", "sink"), ("front:unit",)),
+            },
+            publish={"relay": ("text",)},
+        )
+        identity = await coordinator.open_session(
+            OmniRequest(None), limits=SessionLimits(max_chunk_bytes=65536)
+        )
+        outputs = coordinator.session_outputs(identity)
+        sizes = (300_000, 1000)
+        for seq, size in enumerate(sizes):
+            await coordinator.append_session(
+                identity, TimedChunk(CONTROL, 0, 0, seq, {"size": size}, format="size")
+            )
+        received = []
+        while len(received) < len(sizes):
+            output = await asyncio.wait_for(anext(outputs), OUTPUT_TIMEOUT_S)
+            if output.format == "text":
+                received.append(output.payload["digest"])
+            else:
+                pass
+        assert received == [
+            hashlib.sha256(blob_unit(turn, size).payload["blob"]).hexdigest()
+            for turn, size in enumerate(sizes, start=1)
+        ]
+        log: list[StageEvent] = []
+
+        def appended_turns(stage: str) -> list[int]:
+            log.extend(event_log(events))
+            return [event[3] for event in log if event[0:2] == ("append", stage)]
+
+        await wait_until(lambda: appended_turns("sink") == [1, 2])
+        assert appended_turns("source") == [1, 2]
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)

@@ -172,6 +172,7 @@ class GrantedCapabilities(TypedDict, total=False):
     tail_policy: TailPolicy
     supports_server_interrupt: bool
     supports_truncate: bool
+    supports_cancel: bool
     supports_resume: bool
     partial_style: PartialStyle
     pressure_policy: Literal["reject"]
