@@ -156,7 +156,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
     session_identity = SessionIdentity("context-limit")
     thinker_adapter.open(session_identity, OmniRequest(None))
     chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
-    for unit_index in range(5):
+    for unit_index in range(4):
         request = thinker_adapter.build(
             session_identity,
             chunk,

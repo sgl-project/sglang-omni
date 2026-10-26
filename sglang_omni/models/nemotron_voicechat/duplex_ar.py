@@ -240,10 +240,11 @@ class FrameAdapter(ARSessionAdapter):
         state = self.states[session_identity]
         new_position_count = fusion_rows.shape[0]
         positions = state.position_count + new_position_count + 1
-        if positions > self.context_length:
+        # note (Junnan Li): SGLang holds at most context_length - 1 tokens per request.
+        if positions > self.context_length - 1:
             raise ContextExhaustedError(
                 f"{ContextExhaustedError.CODE}: VoiceChat session needs {positions} "
-                f"positions but the context holds {self.context_length}; "
+                f"positions but the context holds {self.context_length - 1}; "
                 "start a new session"
             )
         else:
