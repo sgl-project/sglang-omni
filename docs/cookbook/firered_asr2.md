@@ -45,8 +45,25 @@ For Ascend, select a physical device with `ASCEND_RT_VISIBLE_DEVICES` and add
 `--asr.factory.device npu`. The stage uses logical device 0. Defaults are a
 BF16 decoder, eight concurrent requests, and greedy decoding with up to 256
 output tokens. The acoustic encoder and adapter retain FP32 weights and
-compute; reducing their precision changes recognition results. Decode graphs
-are enabled by default; the encoder (up to four clips) and prefill run eagerly.
+compute; reducing their precision changes recognition results. Encoder, prefill,
+and decode graphs are enabled by default on NPU. Encoder graphs also capture
+the adapter and retain FP32 compute. Decode uses SGLang's graph runner; CUDA
+prefill uses its breakable graph backend.
+
+NPU prefill captures the Qwen2 transformer inside the model, with attention
+metadata and the logits processor outside the graph. Query lengths are padded
+to power-of-two buckets; cached-prefix lengths remain exact. Each replay updates
+the embeddings, positions, KV write locations, and block tables. Captures are
+lazy, and the prefill cache retains at most 32 shapes. The supported NPU graph
+configuration is TP=1, PP=1, and the default `ascend` attention kernels
+(`ASCEND_USE_FIA` and `ASCEND_USE_FA` unset). The scheduler's generic prefill
+graph flag describes its outer runner; model-owned captures and replays appear
+in the FireRed graph logs (replay counters at debug level).
+
+Use `--asr.engine.disable_cuda_graph true` for eager execution throughout.
+To disable individual phases, use
+`--asr.factory.enable_encoder_cuda_graph false` or
+`--asr.engine.disable_prefill_cuda_graph true`.
 
 The example sets `mem_fraction_static=0.70`; lower it or concurrency to leave
 more encoder activation headroom. The audio embedding cache defaults to

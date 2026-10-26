@@ -100,11 +100,11 @@ def test_npu_backend_records_into_an_npu_graph(
 
 
 def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
-    """The stub tests above accept any keyword, so pin the real ones here.
-
-    Both contexts are plain Python classes that a build without the device still
-    exposes, so this runs anywhere.
-    """
+    """Check the real context signatures when this build exposes both backends."""
+    if not hasattr(torch.xpu, "graph"):
+        pytest.skip("This PyTorch build does not expose XPU graphs")
+    else:
+        pass
     cuda = inspect.signature(torch.cuda.graph).parameters
     xpu = inspect.signature(torch.xpu.graph).parameters
 

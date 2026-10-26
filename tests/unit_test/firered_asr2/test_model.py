@@ -9,6 +9,8 @@ from torch import nn
 from transformers import PretrainedConfig
 
 import sglang_omni.models.firered_asr2.sglang_model as implementation
+from sglang_omni.models.firered_asr2.encoder_graph import FireRedEncoderGraph
+from sglang_omni.platforms import current_platform
 
 
 class FakeLanguageModel(nn.Module):
@@ -120,3 +122,39 @@ def test_bfloat16_decoder_keeps_audio_weights_and_compute_in_float32(
     assert mixed.encoder.positional_encoding.pe.dtype == torch.float32
     item = SimpleNamespace(feature=torch.randn(21, 80), num_audio_tokens=3)
     assert mixed.get_audio_feature([item]).dtype == torch.bfloat16
+
+
+@pytest.mark.accelerator
+def test_encoder_graph_replays_changed_audio_and_lengths(
+    model: implementation.FireRedASR2ForConditionalGeneration,
+) -> None:
+    device = current_platform.get_device(0)
+    backend = current_platform.get_device_graph_backend(device)
+    if backend is None:
+        pytest.skip("Requires a device graph backend")
+    else:
+        pass
+    if current_platform.is_npu():
+        torch.npu.config.allow_internal_format = False
+    else:
+        pass
+    model.to(device)
+    runner = FireRedEncoderGraph(model.encoder, model.encoder_projector, backend)
+    saved_outputs = []
+    for frame_counts in ([39, 21], [58, 49], [65], [72, 20, 31, 60], [36, 57]):
+        items = [
+            SimpleNamespace(
+                feature=torch.randn(frames, 80),
+                num_audio_tokens=implementation.num_audio_tokens(frames),
+            )
+            for frames in frame_counts
+        ]
+        model.encoder_graph = None
+        expected = model.get_audio_feature(items)
+        model.encoder_graph = runner
+        actual = model.get_audio_feature(items)
+        torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+        saved_outputs.append((actual, actual.clone()))
+    for actual, saved in saved_outputs:
+        torch.testing.assert_close(actual, saved, atol=0, rtol=0)
+    assert runner.replay_count == 5
