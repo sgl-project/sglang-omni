@@ -26,7 +26,6 @@ from sglang_omni.proto.streams import (
 )
 from sglang_omni.scheduling.session import (
     DEFAULT_MAX_CONCURRENCY,
-    NODE_STAGE_MAX_OPEN_SESSIONS,
     ChunkEmitter,
     SessionContext,
     SessionHooks,
@@ -279,10 +278,10 @@ class ComponentHooks(SessionHooks):
 
 
 def create_scheduler(
-    name: str, settings: dict[str, object], timeout_s: float
+    name: str, settings: dict[str, object], timeout_s: float, max_open_sessions: int
 ) -> SessionScheduler:
     return SessionScheduler(
         ComponentHooks(name, ComponentGraphConfig.model_validate(settings), timeout_s),
-        max_open_sessions=NODE_STAGE_MAX_OPEN_SESSIONS,
+        max_open_sessions=max_open_sessions,
         max_concurrency=DEFAULT_MAX_CONCURRENCY,
     )

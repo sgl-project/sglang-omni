@@ -86,7 +86,7 @@ private:
   ParakeetConfig config_;
   sortformer::ProcessorConfig front_end_;
   sortformer::FeatureExtractor features_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   int prediction_width_ = 0;
   // Note (Dayuxiaoshui): the decoder step compiled, as the Swift port runs it.
   std::function<std::vector<mlx::core::array>(

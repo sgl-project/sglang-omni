@@ -197,7 +197,11 @@ class SessionInbox(queue.Queue[IncomingMessage]):
 
 
 class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
-    """Opt-in scheduler for persistent hooks, with bounded stage admission."""
+    """Opt-in scheduler for persistent hooks, with bounded stage admission.
+
+    batch_sessions=False hands batched hooks one session's append per call,
+    still one call at a time and without a gather window.
+    """
 
     def __init__(
         self,
@@ -207,6 +211,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         max_state_bytes_per_session: int = DEFAULT_MAX_STATE_BYTES_PER_SESSION,
+        batch_sessions: bool = True,
     ) -> None:
         self.session_hooks = session_hooks
         self.request_compute = compute_fn
@@ -221,12 +226,18 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.operation_finished: threading.Condition = threading.Condition(
             self.session_table_lock
         )
-        if isinstance(session_hooks, BatchedSessionHooks):
+        if isinstance(session_hooks, BatchedSessionHooks) and batch_sessions:
             # Note (Junnan Li): One hook call runs every session whose append is ready, so the batch replaces the concurrent workers.
             batch_compute_fn = self.compute_batch
             max_batch_size = max_open_sessions
             max_concurrency = 1
             gather_window_seconds = session_hooks.gather_window_ms / 1000
+        elif isinstance(session_hooks, BatchedSessionHooks):
+            # note (luojiaxuan): Batched hooks implement only append_batch, and their state assumes one call at a time.
+            batch_compute_fn = self.compute_batch
+            max_batch_size = 1
+            max_concurrency = 1
+            gather_window_seconds = 0.0
         else:
             batch_compute_fn = None
             max_batch_size = 1

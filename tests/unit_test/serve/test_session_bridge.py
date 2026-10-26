@@ -20,6 +20,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -43,6 +44,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     ResponseFinished,
+    ResponseHeard,
     ResponseProgress,
     ResponseStarted,
     SpeechStarted,
@@ -53,7 +55,7 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
-from sglang_omni.serve.realtime.types import RuntimeLimits, Unit
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import PORTS, FakeSessionClient
 
 RATE = 16000
@@ -190,6 +192,23 @@ async def test_every_vocabulary_item_projects_through_the_table():
 
 
 @pytest.mark.asyncio
+async def test_a_reply_the_talker_cut_at_its_token_budget_ends_incomplete():
+    """Reaching the talker's token budget ends the response as incomplete instead of reporting a completed one."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=0)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Half a sen"})
+    h.client.control(TURN_DONE, reply_truncated=True)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(
+            "resp_0", "item_0", "Half a sen", False, "incomplete", "max_output_tokens"
+        )
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     h = Harness()
     await h.open()
@@ -202,6 +221,49 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     await settle()
     assert [event for event in h.published if isinstance(event, ResponseProgress)] == [
         ResponseProgress("resp_0", "item_0", 4, 500.0)
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_reply_heard_maps_to_the_ended_response_of_its_turn():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "One, two."}, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=4)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=5)
+    h.client.control(REPLY_HEARD, turn=2, text_end=9)
+    h.client.control(TURN_EMPTY, turn=4)
+    h.client.control(REPLY_HEARD, turn=3, text_end=6)
+    h.client.control(TURN_STARTED, turn=5)
+    h.client.control(REPLY_HEARD, turn=3, text_end=9)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseHeard)] == [
+        ResponseHeard("resp_0", "item_0", 5),
+        ResponseHeard("resp_0", "item_0", 6),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_names_the_turn_of_its_item():
+    """A truncate reached the session without its item, so the dialog cut the reply it guessed; an item the bridge never sent is an error and appends nothing."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(TURN_STARTED, turn=5)
+    await settle()
+    await h.bridge.truncate("item_0", 400.0)
+    await h.bridge.truncate("item_1", 200.0)
+    with pytest.raises(ProtocolError, match="not found") as error:
+        await h.bridge.truncate("item_7", 100.0)
+    assert error.value.code == "item_not_found"
+    assert [(chunk.payload, chunk.turn) for chunk in h.client.appended] == [
+        ({"type": TRUNCATE, "t_ms": 400.0}, 3),
+        ({"type": TRUNCATE, "t_ms": 200.0}, 5),
     ]
     await h.bridge.close()
 
@@ -241,9 +303,9 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
             "instructions": "Be verbose.",
             "turn_detection": {"silence_duration_ms": 800},
         }
-        sampling = {**runtime.config, "sglang": {"sampling": {"temperature": 0.7}}}
-        await h.bridge.update(sampling)
-        await h.bridge.update(sampling)
+        sampling = {"sglang": {"sampling": {"temperature": 0.7}}}
+        await runtime.update(sampling, "sampling")
+        await runtime.update(sampling, "sampling repeated")
         assert len(h.client.appended) == 3
         assert h.client.appended[-1].payload == {
             "type": CONFIGURE,
@@ -255,8 +317,14 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
         assert event.format == SESSION_CONTROL and event.payload == {"type": INTERRUPT}
         assert event.t_start_ms == 200.0
         assert stages is None and should_preempt
-        await runtime.truncate(1234.5)
-        assert h.client.appended[-1].payload == {"type": TRUNCATE, "t_ms": 1234.5}
+        h.client.control(TURN_STARTED, turn=1)
+        await settle()
+        await runtime.truncate("item_0", 1234.5)
+        truncate = h.client.appended[-1]
+        assert (truncate.payload, truncate.turn) == (
+            {"type": TRUNCATE, "t_ms": 1234.5},
+            1,
+        )
         assert await h.bridge.clear() == 0
     finally:
         await runtime.close("client_closed")

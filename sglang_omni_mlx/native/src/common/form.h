@@ -6,7 +6,7 @@
 #include <optional>
 #include <string>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 struct FormField {
   std::string value;
@@ -23,4 +23,4 @@ ParseMultipartForm(const std::string &content_type, const std::string &body);
 // "1", "true", "yes" or "on", ignoring case and surrounding whitespace.
 bool FormFlag(const std::optional<std::string> &value);
 
-} // namespace qwen3_asr
+} // namespace omni_common

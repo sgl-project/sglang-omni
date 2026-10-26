@@ -62,7 +62,15 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         [NEWLINE] if text == "\n" else SYSTEM_PREFIX
     )
 
-    def build_request(pipeline_state, *, params, tokenizer, vocab_size, request_id):
+    def build_request(
+        pipeline_state,
+        *,
+        params,
+        tokenizer,
+        vocab_size,
+        request_id,
+        capture_prompt_hidden_states,
+    ):
         return SimpleNamespace(
             req=SimpleNamespace(
                 origin_input_ids=pipeline_state.prompt["input_ids"].tolist()

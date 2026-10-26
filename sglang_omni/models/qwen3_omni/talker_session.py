@@ -24,7 +24,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import TEXT, TEXT_DELTA
+from sglang_omni.proto.streams import REPLY_TRUNCATED, TEXT, TEXT_DELTA
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
@@ -34,6 +34,9 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 CODE2WAV_STAGE = "code2wav"
+
+# ARRequestData.finish_reason of SGLang's FINISH_LENGTH: the request used up its token budget.
+FINISH_LENGTH_KIND = "length"
 
 
 def code2wav_payload(payload: StagePayload) -> StagePayload:
@@ -210,5 +213,23 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
     def result(
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
-        self.replies.pop(request_data.stage_payload.request_id, None)
+        request_id = request_data.stage_payload.request_id
+        self.replies.pop(request_id, None)
+        if request_data.finish_reason == FINISH_LENGTH_KIND:
+            self.relay_truncation(request_id)
+        else:
+            pass
         return request_data.stage_payload
+
+    def relay_truncation(self, request_id: str) -> None:
+        """Flag a reply that stopped at the talker's token budget, ahead of its result, so code2wav ends its turn as truncated."""
+        assert self.outbox is not None
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.empty(0, dtype=torch.long),
+                target=CODE2WAV_STAGE,
+                metadata={"modality": TEXT, "stream": True, REPLY_TRUNCATED: True},
+            )
+        )

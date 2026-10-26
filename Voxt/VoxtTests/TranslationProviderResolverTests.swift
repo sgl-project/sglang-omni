@@ -18,6 +18,19 @@ final class TranslationProviderResolverTests: XCTestCase {
         XCTAssertEqual(resolution.fallbackProvider, .customLLM)
     }
 
+    func testCustomLLMProviderPassesThroughForMeetingTranslation() {
+        let resolution = TranslationProviderResolver.resolve(
+            selectedProvider: .customLLM,
+            fallbackProvider: .remoteLLM,
+            transcriptionEngine: .mlxAudio,
+            targetLanguage: .japanese,
+            isSelectedTextTranslation: false
+        )
+
+        XCTAssertEqual(resolution.provider, .customLLM)
+        XCTAssertEqual(resolution.fallbackProvider, .remoteLLM)
+    }
+
     func testLegacyWhisperProviderRawValueMigratesToCustomLLM() {
         XCTAssertEqual(TranslationModelProvider.resolved(rawValue: "whisperKit"), .customLLM)
     }

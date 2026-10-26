@@ -219,8 +219,8 @@ class MingTTSModelRunner(ModelRunner):
             data: MingTTSSGLangRequestData = sched_req.data
             request_state = self.request_states[sched_req.request_id]
             req = data.req
-            prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_range.length)
+            prefix_len = req.prefix_len
+            extend_len = req.extend_len
             end = prefix_len + extend_len
             prompt_ids = data.input_ids
             prompt_len = int(prompt_ids.shape[0])
@@ -563,24 +563,7 @@ class MingTTSModelRunner(ModelRunner):
         import torch.distributed as dist
 
         tp_group = self.get_tp_group()
-        if tp_group is None:
-            raise RuntimeError("Ming TTS TP broadcast requires a TP group")
-        else:
-            pass
-        ranks = getattr(tp_group, "ranks", None)
-        src_rank = int(ranks[0]) if ranks else int(getattr(tp_group, "first_rank", 0))
-        dist_group = getattr(tp_group, "device_group", None)
-        if dist_group is None:
-            dist_group = getattr(tp_group, "group", None)
-        else:
-            pass
-        dist.broadcast(tensor, src=src_rank, group=dist_group)
+        dist.broadcast(tensor, src=tp_group.first_rank, group=tp_group.device_group)
 
-    def get_tp_group(self) -> GroupCoordinator | None:
-        getter = getattr(self.tp_worker, "get_tp_group", None)
-        if callable(getter):
-            return getter()
-        else:
-            pass
-        model_runner = getattr(self.tp_worker, "model_runner", None)
-        return getattr(model_runner, "tp_group", None)
+    def get_tp_group(self) -> GroupCoordinator:
+        return self.tp_worker.get_tp_group()

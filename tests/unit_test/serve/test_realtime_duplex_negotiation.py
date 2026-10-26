@@ -167,6 +167,22 @@ def test_a_port_may_declare_talker_sampling_beyond_the_duplex_defaults() -> None
     assert exc_info.value.code == "not_applicable"
 
 
+def test_a_session_picks_only_a_voice_the_deployment_lists() -> None:
+    capabilities = Capabilities(voices=("NATF2", "NATM1"))
+    config, granted = build_negotiation(capabilities).negotiate(
+        {}, "CREATED", {"sglang": {"voice": "NATM1"}}
+    )
+    assert config["sglang"]["voice"] == "NATM1"
+    assert granted["voices"] == ["NATF2", "NATM1"]
+    for negotiation in (build_negotiation(capabilities), build_negotiation()):
+        with pytest.raises(ProtocolError) as exc_info:
+            negotiation.negotiate({}, "CREATED", {"sglang": {"voice": "/etc/hosts"}})
+        assert (exc_info.value.code, exc_info.value.param) == (
+            "not_applicable",
+            "session.sglang.voice",
+        )
+
+
 def test_open_session_merges_patch_into_current_configuration() -> None:
     negotiation = build_negotiation(Capabilities(output_modalities=("text", "audio")))
     current = open_session(negotiation)
@@ -187,6 +203,7 @@ def test_open_session_merges_patch_into_current_configuration() -> None:
         ("force_listen_count", 1.5),
         ("max_new_tokens_per_unit", 0),
         ("talker_temperature", -1.0),
+        ("talker_top_k", 0),
         ("length_penalty", 1.1),
     ],
 )
@@ -242,6 +259,8 @@ def test_open_session_freezes_admission_fields(patch: JsonObject) -> None:
     assert current["sglang"]["max_slice_nums"] == 4
     assert granted["sampling_parameters"] == ["temperature"]
     assert granted["supports_reference_audio"] is True
+    assert granted["supports_instruction_updates"] is False
+    assert granted["supports_sampling_updates"] is False
 
     with pytest.raises(ProtocolError) as exc_info:
         negotiation.negotiate(current, "OPEN", patch)

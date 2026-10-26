@@ -29,6 +29,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.llada2_uni import stages
+from sglang_omni.models.llada2_uni.components import common as common_module
 from sglang_omni.models.llada2_uni.components import decoder_runtime
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
@@ -61,9 +62,14 @@ from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.request_builders import (
     build_dllm_thinker_request,
+    make_dllm_thinker_scheduler_adapters,
     merge_image_tokens_for_thinker,
+    thinker_next,
 )
-from sglang_omni.models.llada2_uni.stages import create_image_decode_executor
+from sglang_omni.models.llada2_uni.stages import (
+    create_decode_executor,
+    create_image_decode_executor,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -514,6 +520,9 @@ class FakeTokenizer:
                 ids.extend(ord(char) + 1000 for char in part)
         return ids
 
+    def decode(self, ids, skip_special_tokens=True):
+        return "".join(chr(token - 1000) for token in ids if 1000 <= token < 10000)
+
 
 @pytest.fixture
 def preprocessor():
@@ -685,3 +694,152 @@ def test_edit_preprocess_merge_extract_and_decode(
     ]
     with pytest.raises(ValueError, match="does not match"):
         extract_image_vq_tokens(state)
+
+
+@pytest.mark.parametrize("cfg_scale", [1.0, 4.0])
+def test_thinking_stops_at_boundary_then_generates_image(
+    preprocessor: LLaDA2Preprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    cfg_scale: float,
+) -> None:
+    payload = StagePayload(
+        request_id="thinking-image",
+        request=OmniRequest(
+            inputs={"messages": [{"role": "user", "content": "A red sailboat."}]},
+            metadata={
+                "image_generation": {
+                    "mode": "thinking",
+                    "cfg_scale": cfg_scale,
+                    "dllm_steps": 8,
+                }
+            },
+            params={},
+        ),
+        data={},
+    )
+    payload = asyncio.run(preprocessor(payload))
+    tokenizer = preprocessor.tokenizer
+    prompt_tokens = payload.data["prompt"]["input_ids"].numel()
+    config = DllmConfig(
+        algorithm="LowConfidenceCFG",
+        algorithm_config={},
+        block_size=32,
+        mask_id=tokenizer.mask_token_id,
+        max_running_requests=4,
+    )
+    build, finish = make_dllm_thinker_scheduler_adapters(
+        tokenizer=tokenizer,
+        vocab_size=len(tokenizer),
+        dllm_config=config,
+    )
+    text_request = build(payload)
+    assert text_request.req.sampling_params.max_new_tokens == 2048
+    assert (
+        text_request.req._task_kind == "thinking"
+    )  # noqa: leading-underscore  # DLLM protocol
+    assert preprocessor.boi_id in text_request.req.eos_token_ids
+    # dllm_steps sets the image pass, the thinking text keeps the block schedule.
+    assert (
+        text_request.req._dllm_steps is None
+    )  # noqa: leading-underscore  # DLLM protocol
+    assert (
+        text_request.req._uncond_input_ids is None
+    )  # noqa: leading-underscore  # DLLM protocol
+
+    trace = "A red sailboat."
+    text_request.output_ids = (
+        tokenizer.encode(trace)
+        + preprocessor.build_t2i_header_ids(32, 32)
+        + [IMAGE_TOKEN_OFFSET + 7]
+    )
+    image_payload = finish(text_request)
+    image_payload.data = LLaDA2UniPipelineState.from_dict(image_payload.data).to_dict()
+    assert thinker_next(payload.request_id, image_payload) == "thinker"
+    image_request = build(image_payload)
+    assert image_request.req.origin_input_ids[-1] == preprocessor.boi_id
+    assert image_request.req.sampling_params.max_new_tokens == 1024
+    assert (
+        image_request.req._dllm_steps == 8
+    )  # noqa: leading-underscore  # DLLM protocol
+    assert (
+        image_request.req._task_kind == "t2i"
+    )  # noqa: leading-underscore  # DLLM protocol
+    if cfg_scale > 1:
+        assert len(
+            image_request.req._uncond_input_ids
+        ) == len(  # noqa: leading-underscore  # DLLM protocol
+            image_request.req.origin_input_ids
+        )
+    else:
+        assert (
+            image_request.req._uncond_input_ids is None
+        )  # noqa: leading-underscore  # DLLM protocol
+    image_request.output_ids = [IMAGE_TOKEN_OFFSET + 7] * 1024
+    output = finish(image_request)
+    state = LLaDA2UniPipelineState.from_dict(output.data)
+    assert state.thinking_text == trace
+    assert thinker_next(payload.request_id, output) == ["decode", "image_decode"]
+    assert extract_image_vq_tokens(state)[:3] == ([7] * 1024, 32, 32)
+
+    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    output.data = state.to_dict()
+    decoded = create_decode_executor("unused").fn(output)
+    thinking_tokens = text_request.output_ids.index(preprocessor.boi_id) + 1
+    assert decoded.data["usage"] == {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": thinking_tokens + 1024,
+        "total_tokens": prompt_tokens + thinking_tokens + 1024,
+    }
+    assert decoded.data["text"] == trace
+
+    text_request.output_ids = tokenizer.encode("No image boundary")
+    with pytest.raises(RuntimeError, match="did not produce <boi>"):
+        finish(text_request)
+    assert LLaDA2UniPipelineState.from_dict(payload.data).thinking_phase == "text"
+
+
+@pytest.mark.parametrize("task_kind", ["chat", "t2i"])
+def test_single_pass_usage_is_unchanged(
+    preprocessor: LLaDA2Preprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    task_kind: str,
+) -> None:
+    tokenizer = preprocessor.tokenizer
+    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    state = LLaDA2UniPipelineState(
+        prompt={"input_ids": torch.tensor([[1, 2, 3]])},
+        thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 7] * 4},
+        task_kind=task_kind,
+    )
+    payload = StagePayload(
+        request_id="single-pass",
+        request=OmniRequest(inputs={}, metadata={}, params={}),
+        data=state.to_dict(),
+    )
+    result = create_decode_executor("unused").fn(payload)
+    assert result.data["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 4,
+        "total_tokens": 7,
+    }
+
+
+def test_thinking_edit_is_rejected(preprocessor: LLaDA2Preprocessor) -> None:
+    payload = StagePayload(
+        request_id="thinking-edit",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "Make it red"}],
+                "images": ["source.png"],
+            },
+            metadata={
+                "image_generation": {
+                    "mode": "thinking",
+                }
+            },
+            params={},
+        ),
+        data={},
+    )
+    with pytest.raises(ValueError, match="only supports text-to-image"):
+        asyncio.run(preprocessor(payload))

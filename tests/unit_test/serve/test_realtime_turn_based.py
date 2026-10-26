@@ -11,6 +11,7 @@ import pytest
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
     InputTranscription,
+    ResponseHeard,
     ResponseProgress,
     SpeechStarted,
     SpeechStopped,
@@ -44,6 +45,7 @@ def test_capabilities_are_derived_from_the_ports():
         tail_policy="flush",
         sampling_parameters=("temperature", "max_new_tokens_per_unit"),
         supports_instruction_updates=True,
+        supports_sampling_updates=True,
     )
     streaming = capabilities_of(
         replace(PORTS, output=None, hot_settings=frozenset(), turn_detection_types=())
@@ -51,6 +53,7 @@ def test_capabilities_are_derived_from_the_ports():
     assert streaming.output_modalities == ("text",)
     assert (streaming.max_granted_modalities, streaming.turn_control) == (1, (None,))
     assert streaming.supports_instruction_updates is False
+    assert streaming.supports_sampling_updates is False
 
 
 def negotiate(capabilities: Capabilities, patch: dict, current=None, state="CREATED"):
@@ -89,25 +92,64 @@ def test_turn_based_grants_server_vad_and_native_keeps_its_contract():
         Capabilities(interaction="pipelined")  # type: ignore[arg-type]
 
 
-def test_turn_detection_and_instructions_are_hot_updates():
-    current, _ = negotiate(TURN_BASED, {"instructions": "Be brief."})
+def test_the_ports_hot_settings_decide_which_fields_a_later_update_may_change():
+    opening = {
+        "instructions": "Be brief.",
+        "sglang": {"sampling": {"temperature": 0.7}},
+    }
+    current, granted = negotiate(TURN_BASED, opening)
+    assert granted["supports_instruction_updates"] is True
+    assert granted["supports_sampling_updates"] is True
     config, _ = negotiate(
         TURN_BASED,
         {
             "instructions": "Be verbose.",
             "audio": {"input": {"turn_detection": {"type": "server_vad"}}},
+            "sglang": {"sampling": {"temperature": 0.2}},
         },
         current=current,
         state="OPEN",
     )
     assert config["audio"]["input"]["turn_detection"] == {"type": "server_vad"}
     assert config["instructions"] == "Be verbose."
-    frozen = capabilities_of(replace(PORTS, output=None, hot_settings=frozenset()))
-    current, _ = negotiate(frozen, {"instructions": "Be brief."})
+    assert config["sglang"]["sampling"] == {"temperature": 0.2}
+    sampling_only = capabilities_of(
+        replace(PORTS, hot_settings=frozenset({"sampling"}))
+    )
+    current, granted = negotiate(sampling_only, opening)
+    assert granted["supports_instruction_updates"] is False
+    assert granted["supports_sampling_updates"] is True
+    config, _ = negotiate(
+        sampling_only,
+        {"sglang": {"sampling": {"temperature": 0.2}}},
+        current=current,
+        state="OPEN",
+    )
+    assert config["sglang"]["sampling"] == {"temperature": 0.2}
     with pytest.raises(ProtocolError, match="frozen"):
         negotiate(
-            frozen, {"instructions": "Be verbose."}, current=current, state="OPEN"
+            sampling_only,
+            {"instructions": "Be verbose."},
+            current=current,
+            state="OPEN",
         )
+    with pytest.raises(ProtocolError, match="unsupported sampling"):
+        negotiate(
+            sampling_only,
+            {"sglang": {"sampling": {"top_k": 3}}},
+            current=current,
+            state="OPEN",
+        )
+    frozen = capabilities_of(replace(PORTS, output=None, hot_settings=frozenset()))
+    current, granted = negotiate(frozen, opening)
+    assert granted["supports_instruction_updates"] is False
+    assert granted["supports_sampling_updates"] is False
+    for patch in (
+        {"instructions": "Be verbose."},
+        {"sglang": {"sampling": {"temperature": 0.2}}},
+    ):
+        with pytest.raises(ProtocolError, match="frozen"):
+            negotiate(frozen, patch, current=current, state="OPEN")
 
 
 def test_speech_and_transcription_events_project_to_openai_names():
@@ -144,6 +186,17 @@ def test_reply_progress_projects_to_a_response_event():
         "content_index": 0,
         "text_end": 4,
         "audio_ms": 500.0,
+    }
+
+
+def test_reply_heard_projects_to_a_response_event():
+    assert project_output(ResponseHeard("resp_0", "item_0", 3)) == {
+        "type": "sglang.response.heard",
+        "response_id": "resp_0",
+        "item_id": "item_0",
+        "output_index": 0,
+        "content_index": 0,
+        "text_end": 3,
     }
 
 
@@ -202,5 +255,5 @@ async def test_an_adapter_without_cancel_reports_not_supported():
     with pytest.raises(ProtocolError, match="not cancel"):
         await runtime.cancel()
     with pytest.raises(ProtocolError, match="not truncate"):
-        await runtime.truncate(10.0)
+        await runtime.truncate("item_0", 10.0)
     await runtime.close("client_closed")

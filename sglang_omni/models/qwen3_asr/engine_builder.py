@@ -516,6 +516,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 False if use_torch_mps else self.enable_async_decode
             ),
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            # note (rsi): ASR prompts fit one chunk, so a prefill's first
+            # tokens can be resolved after the next decode launches.
+            "async_prefill": current_platform.is_cuda(),
             "request_build_max_workers": (
                 1 if use_torch_mps else self.request_build_max_workers
             ),

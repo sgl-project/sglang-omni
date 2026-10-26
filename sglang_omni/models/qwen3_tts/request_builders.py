@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -22,6 +23,7 @@ from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
+    ReferenceEncoderGraphStats,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
 from sglang_omni.platforms import current_platform
@@ -50,7 +52,7 @@ from sglang_omni.scheduling.speaker_cache import (
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams, supports_device_streams
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,12 @@ else:
 
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
+# note (luojiaxuan): The 12Hz codec emits one frame per 80 ms of audio.
+QWEN3_TTS_CODEC_FRAMES_PER_S = 12.5
+# note (luojiaxuan): Over 4460 natural stops of Qwen3-TTS-12Hz-1.7B-Base, a target text of n tokens never ran longer than 1.38 s + 0.39 s per token; the default budget allows twice that, so speech at half the slowest observed rate still ends at its codec EOS while a runaway on a few words stops within seconds.
+QWEN3_TTS_SLOWEST_STOP_S = 1.38
+QWEN3_TTS_SLOWEST_STOP_S_PER_TOKEN = 0.39
+QWEN3_TTS_BUDGET_MARGIN = 2.0
 QWEN3_TTS_TASK_BASE = "Base"
 QWEN3_TTS_TASK_CUSTOM_VOICE = "CustomVoice"
 QWEN3_TTS_TASK_VOICE_DESIGN = "VoiceDesign"
@@ -208,6 +216,7 @@ _ADHOC_REFERENCE_SERVICE_ENTRY: (
             tuple[VoicePrompt, str | None],
             CachedVoicePrompt,
         ],
+        Qwen3TTSAdhocReferenceHook,
     ]
     | None
 ) = None
@@ -279,6 +288,31 @@ def clear_qwen3_tts_preprocessing_context() -> None:
         _PREPROCESSING_CONTEXT = None
         _ADHOC_REFERENCE_SERVICE_ENTRY = None
         _PREPARED_REQUESTS.clear()
+
+
+class Qwen3TTSReferenceEncoderStats(TypedDict):
+    codec: ReferenceEncoderGraphStats | None
+    speaker: ReferenceEncoderGraphStats | None
+
+
+def qwen3_tts_reference_encoder_stats() -> Qwen3TTSReferenceEncoderStats | None:
+    """Graph stats of the reference encoders preprocessing runs in this process;
+    None when nothing here encodes references (only Base checkpoints clone)."""
+    with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
+        entry = _ADHOC_REFERENCE_SERVICE_ENTRY
+    if context is None or entry is None:
+        return None
+    elif context.model.tts_model_type != "base":
+        return None
+    else:
+        pass
+    codec_runner = entry[2].ref_code_batcher.graph_runner
+    speaker_runner = context.model.speaker_encoder_graph_runner
+    return {
+        "codec": codec_runner.stats() if codec_runner is not None else None,
+        "speaker": speaker_runner.stats() if speaker_runner is not None else None,
+    }
 
 
 def prepared_request_id(payload: StagePayload) -> str | None:
@@ -734,6 +768,21 @@ def resolve_x_vector_only_mode(
     return not bool(ref_text)
 
 
+def text_length_budget(text_tokens: int) -> int:
+    """The codec frames a target text of `text_tokens` tokens may take without an explicit max_new_tokens."""
+    return min(
+        QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS,
+        math.ceil(
+            QWEN3_TTS_BUDGET_MARGIN
+            * (
+                QWEN3_TTS_SLOWEST_STOP_S
+                + QWEN3_TTS_SLOWEST_STOP_S_PER_TOKEN * text_tokens
+            )
+            * QWEN3_TTS_CODEC_FRAMES_PER_S
+        ),
+    )
+
+
 def build_generation_kwargs(
     params: Mapping[str, object],
     *,
@@ -754,18 +803,11 @@ def build_generation_kwargs(
             pass
         selected_fields[field] = value
 
-    max_new_tokens = selected_fields.get("max_new_tokens")
-    if max_new_tokens is None:
-        max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
-    else:
-        pass
-    generation_kwargs: dict[str, object] = {"max_new_tokens": int(max_new_tokens)}
+    generation_kwargs: dict[str, object] = {}
     for field in _GENERATION_FIELDS:
-        if field == "max_new_tokens":
-            continue
-        else:
-            pass
-        if field in selected_fields:
+        if field == "max_new_tokens" and field in selected_fields:
+            generation_kwargs[field] = int(selected_fields[field])
+        elif field in selected_fields:
             generation_kwargs[field] = selected_fields[field]
         else:
             pass
@@ -1058,6 +1100,12 @@ class Qwen3TTSRefCodeBatcher:
         return codes[0, :, :frames].transpose(0, 1)
 
     def run(self) -> None:
+        if self.encode_stream is not None:
+            # note (ratish): a new thread starts on device 0, and leaving the encode
+            # stream switches it back there, which opens a context on that card.
+            torch.get_device_module(self.encoder_device).set_device(self.encoder_device)
+        else:
+            pass
         while True:
             raw_batch, shutdown = self.drain()
             if not raw_batch:
@@ -1303,18 +1351,19 @@ def get_qwen3_tts_adhoc_reference_service_locked(
             entry[1].close()
         else:
             pass
+        hook = Qwen3TTSAdhocReferenceHook(
+            model=model,
+            wrapper=wrapper,
+            graph_bucket_frames=graph_bucket_frames,
+        )
         service = ReferenceEncodeService(
-            Qwen3TTSAdhocReferenceHook(
-                model=model,
-                wrapper=wrapper,
-                graph_bucket_frames=graph_bucket_frames,
-            ),
+            hook,
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
             log_prefix="Qwen3-TTS ad-hoc reference",
         )
-        entry = (owner, service)
+        entry = (owner, service, hook)
         _ADHOC_REFERENCE_SERVICE_ENTRY = entry
     else:
         pass
@@ -1492,8 +1541,19 @@ def prepare_qwen3_tts_request(
     )
 
     validate_qwen3_tts_model_task(model, state)
+    if "max_new_tokens" in state.generation_kwargs:
+        generation_kwargs = state.generation_kwargs
+    else:
+        # note (luojiaxuan): The default budget counts the target text only; reference text and instructions are prompt, not speech.
+        target_ids = wrapper._tokenize_texts([state.text])[
+            0
+        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        generation_kwargs = {
+            **state.generation_kwargs,
+            "max_new_tokens": text_length_budget(target_ids.shape[-1]),
+        }
     gen_kwargs = wrapper._merge_generate_kwargs(
-        **state.generation_kwargs
+        **generation_kwargs
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if state.task_type == QWEN3_TTS_TASK_BASE:
         (
@@ -1569,6 +1629,18 @@ def prepare_qwen3_tts_request(
         tts_pad_embed=prompt_constants.feedback_pad_embed,
         gen_kwargs=gen_kwargs,
     )
+
+
+def bind_preprocessing_thread_device() -> None:
+    """Pin a preprocessing pool thread to the device of the preprocessing stream."""
+    with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
+    if context is not None and context.stream is not None:
+        # note (ratish): a pool thread starts on device 0, and leaving the stream
+        # switches it back there, which opens a context on that card.
+        torch.get_device_module(context.stream.device).set_device(context.stream.device)
+    else:
+        pass
 
 
 def preprocess_qwen3_tts_payload(
@@ -1961,7 +2033,7 @@ def make_qwen3_tts_scheduler_adapters(
                 codes = torch.cat((ref_code, codes), dim=0)
                 # note (luojiaxuan): the step's ready event was recorded before
                 # this cat, so the prefixed chunk needs its own.
-                if supports_device_streams(codes.device):
+                if has_device_streams(codes.device):
                     data.codes_ready_event = torch.get_device_module(
                         codes.device
                     ).Event()

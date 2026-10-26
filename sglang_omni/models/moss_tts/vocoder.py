@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import logging
 import traceback
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from itertools import accumulate
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -25,6 +25,7 @@ from sglang_omni.models.moss_tts.payload_types import (
     resolve_moss_audio_pad_code,
     store_moss_tts_state,
 )
+from sglang_omni.models.moss_tts.vocoder_graphs import MossVocoderSegmentGraphs
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -142,10 +143,39 @@ def copy_valid_waveforms_to_cpu(
     ]
 
 
+class QuantizerDecode(Protocol):
+    def __call__(self, codes: torch.Tensor) -> torch.Tensor: ...
+
+
+def decode_padded_codes(
+    audio_codes: torch.Tensor,
+    input_lengths: torch.Tensor,
+    input_lengths_cpu: list[int],
+    *,
+    quantizer_decode: QuantizerDecode,
+    decoder: MossAudioTokenizerVocoderDecoder,
+    compute_dtype: torch.dtype | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantizer and decoder forward over padded [n_vq, B, T] codes."""
+    device = audio_codes.device
+    with torch.inference_mode():
+        # note (Zhang Yiyang): keep codebook math in FP32; only decoder
+        # stages run under the configured compute autocast, independent of
+        # the attention backend.
+        with torch.autocast(device_type=device.type, enabled=False):
+            decoder_hidden_states = quantizer_decode(audio_codes).float()
+        with autocast_if_supported(device, compute_dtype):
+            return decoder(
+                decoder_hidden_states,
+                input_lengths,
+                input_lengths_cpu=input_lengths_cpu,
+            )
+
+
 def decode_codes_batch(
     codes_rows: Sequence[torch.Tensor],
     *,
-    quantizer_decode: Callable[[torch.Tensor], torch.Tensor],
+    quantizer_decode: QuantizerDecode,
     decoder: MossAudioTokenizerVocoderDecoder,
     device: torch.device,
     compute_dtype: torch.dtype | None,
@@ -198,18 +228,14 @@ def decode_codes_batch(
             dtype=torch.int32,
         )
         output_lengths_cpu = decoder.output_lengths(input_lengths_cpu)
-        with torch.inference_mode():
-            # note (Zhang Yiyang): keep codebook math in FP32; only decoder
-            # stages run under the configured compute autocast, independent of
-            # the attention backend.
-            with torch.autocast(device_type=device.type, enabled=False):
-                decoder_hidden_states = quantizer_decode(audio_codes).float()
-            with autocast_if_supported(device, compute_dtype):
-                audio, audio_lengths = decoder(
-                    decoder_hidden_states,
-                    input_lengths,
-                    input_lengths_cpu=input_lengths_cpu,
-                )
+        audio, audio_lengths = decode_padded_codes(
+            audio_codes,
+            input_lengths,
+            input_lengths_cpu,
+            quantizer_decode=quantizer_decode,
+            decoder=decoder,
+            compute_dtype=compute_dtype,
+        )
         if audio is None or audio_lengths is None:
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer returned empty audio/audio_lengths"
@@ -264,6 +290,7 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
         self.codec = getattr(audio_vocoder, "model", None)
         self.quantizer = getattr(self.codec, "quantizer", None)
         self.nonstream_decoder = None
+        self.segment_graphs: MossVocoderSegmentGraphs | None = None
         if (
             self.compute_dtype is not None
             and self.codec is not None
@@ -289,6 +316,9 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
                 if supports_packed_attention:
                     self.quantizer.to(dtype=torch.float32)
                     self.nonstream_decoder = nonstream_decoder
+                    self.segment_graphs = MossVocoderSegmentGraphs(
+                        nonstream_decoder, row_decode=self.decode_row
+                    )
                     logger.info(
                         "MOSS-TTS Delay vocoder enabled batched packed decoder "
                         "stages=%d compute_dtype=%s",
@@ -390,17 +420,50 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
             )
         else:
             pass
-        wavs = decode_codes_batch(
-            segments,
-            quantizer_decode=quantizer.decode_codes,
-            decoder=self.nonstream_decoder,
-            device=codec_device(codec, self.device),
-            compute_dtype=self.compute_dtype,
-            max_batch_size=self.max_segment_batch_size,
-        )
+        graphs = self.segment_graphs
+        if graphs is not None and len(segments) == 1 and graphs.covers(segments[0]):
+            # note (Zhuofeng Li): retain the eager batch shape for multiple segments.
+            wavs = [graphs.replay(segment) for segment in segments]
+        else:
+            wavs = decode_codes_batch(
+                segments,
+                quantizer_decode=quantizer.decode_codes,
+                decoder=self.nonstream_decoder,
+                device=codec_device(codec, self.device),
+                compute_dtype=self.compute_dtype,
+                max_batch_size=self.max_segment_batch_size,
+            )
         # note (Zhang Yiyang): the Delay codec is mono: [1, samples] ->
         # [samples].
         return [mono_waveform(wav) for wav in wavs]
+
+    def decode_row(
+        self, codes: torch.Tensor, lengths: torch.Tensor, frames: int
+    ) -> torch.Tensor:
+        """Packed decode of one unpadded [n_vq, 1, frames] code row."""
+        audio, _ = decode_padded_codes(
+            codes,
+            lengths,
+            [frames],
+            quantizer_decode=self.quantizer.decode_codes,
+            decoder=self.nonstream_decoder,
+            compute_dtype=self.compute_dtype,
+        )
+        return audio
+
+    def capture_segment_graphs(self, max_frames: int) -> None:
+        """Capture batch-of-one decode graphs for segments up to max_frames."""
+        graphs = self.segment_graphs
+        n_vq = int(getattr(getattr(self.processor, "model_config", None), "n_vq", 0))
+        if graphs is None or n_vq <= 0 or max_frames <= 0:
+            return
+        else:
+            pass
+        graphs.capture(
+            range(1, max_frames + 1),
+            n_vq=n_vq,
+            device=codec_device(self.codec, self.device),
+        )
 
     async def decode_batch(
         self, items: list[tuple[MossTTSState, torch.Tensor]]
@@ -440,6 +503,7 @@ class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor]):
             failure_traceback = traceback.format_exc()
         if failure_traceback is not None:
             self.nonstream_decoder = None
+            self.segment_graphs = None
             logger.error(
                 "MOSS-TTS Delay packed codec decode failed; disabling the "
                 "packed path and falling back to standalone codec decode:\n%s",

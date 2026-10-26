@@ -28,6 +28,7 @@ from sglang_omni.proto import (
     AdminResult,
     AdminResultMessage,
     CompleteMessage,
+    FreezeGCMessage,
     OmniRequest,
     RequestInfo,
     RequestState,
@@ -166,7 +167,8 @@ class Coordinator(SessionGraphRunner):
                 caller names none; session_graph the node graph it is
                 instead. A pipeline declares one of them.
             max_output_lead_ms: How far ahead of real time, counted from
-                a reply's start, a Session delivers the reply's audio.
+                the release of a reply's first audio, a Session delivers the
+                reply's audio.
         """
         super().__init__(max_output_lead_ms)
         if session_route is not None and session_graph is not None:
@@ -363,6 +365,13 @@ class Coordinator(SessionGraphRunner):
             stages=stages,
             timeout_s=timeout_s,
         )
+
+    async def freeze_gc(self) -> None:
+        """Ask every stage process to freeze its heap; nothing waits for them."""
+        for stage_name, stage_info in self.stages.items():
+            await self.control_plane.submit_to_stage(
+                stage_name, stage_info.control_endpoint, FreezeGCMessage()
+            )
 
     async def pause_generation(
         self,

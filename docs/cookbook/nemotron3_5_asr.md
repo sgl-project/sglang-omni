@@ -32,6 +32,8 @@ Tune the ASR stage with `--asr.factory.*` flags:
 | `num_lookahead_tokens` | `3` | Encoder right context; the checkpoint supports `0`, `3`, `6`, and `13` |
 | `max_batch_size` | `8` | Maximum number of requests in a scheduler batch |
 | `max_batch_wait_ms` | `2.0` | Maximum wait to form a batch, in milliseconds |
+| `enable_encoder_cuda_graph` | `true` | Capture steady-state streaming encoder batches at startup |
+| `encoder_graph_max_batch_size` | `16` | Maximum captured batch size, capped by `max_batch_size` and pool capacity |
 | `session_max_concurrency` | `max(4, max_batch_size)` | Concurrent hooks/ordinary requests per ASR replica |
 | `max_open_sessions` | `64` | Open streams per ASR replica |
 | `max_state_bytes` | `8 GiB` | Total reserved session state budget, excluding shared model weights |
@@ -202,6 +204,18 @@ Capacity is limited by `max_open_sessions` and `max_state_bytes`; a budget too
 small for one slot fails at startup. Completion, cancellation, failure and
 shutdown release slots, which are cleared before reuse. The pool is the sole
 streaming encoder state representation. Offline transcription is unchanged.
+
+### Streaming encoder CUDA graphs
+
+At startup, CUDA captures every exact subsequent-window batch size from
+`min(encoder_graph_max_batch_size, max_batch_size, pool_capacity)` down to 1,
+largest first, in one shared graph memory pool. The defaults capture B8 through
+B1. First windows and uncovered shapes use the pooled eager encoder. Capture
+failures fail startup; set `enable_encoder_cuda_graph=false` to run entirely eager.
+
+Graphs update persistent attention, convolution and frame-count state by slot ID.
+History length therefore needs no additional buckets or Python cache packing.
+Graph workspaces and static inputs and outputs are outside `max_state_bytes`.
 
 Setting stream=true on /v1/audio/transcriptions streams the response to a
 complete uploaded file. It does not select native PCM input.

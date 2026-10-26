@@ -7,7 +7,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/rust-router.yml"
-      - "sglang_omni_router/rust/**"
+      - "sglang_omni_router/**"
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +30,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: sglang_omni_router/rust
+        working-directory: sglang_omni_router
 
     steps:
       - name: Checkout

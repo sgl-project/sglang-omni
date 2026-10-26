@@ -39,6 +39,7 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
     fileprivate var storedCredentialPresence: RemoteStoredCredentialPresence?
     var searchEnabled: Bool
     var openAIChunkPseudoRealtimeEnabled: Bool
+    var openAIAPIFormat: String
     var openAIReasoningEffort: String
     var openAITextVerbosity: String
     var openAIMaxOutputTokens: Int?
@@ -172,6 +173,22 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
         OpenAIReasoningEffort(rawValue: openAIReasoningEffort) ?? .automatic
     }
 
+    nonisolated var openAIAPIFormatValue: OpenAIAPIFormat {
+        OpenAIAPIFormat(rawValue: openAIAPIFormat) ?? .automatic
+    }
+
+    nonisolated var usesCustomOpenAIEndpoint: Bool {
+        guard providerID == RemoteLLMProvider.openAI.rawValue,
+              let host = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines))?.host else { return false }
+        return host.lowercased() != "api.openai.com"
+    }
+
+    nonisolated func usesResponsesAPI(for provider: RemoteLLMProvider) -> Bool {
+        provider == .openAI
+            ? openAIAPIFormatValue.usesResponsesAPI(endpoint: endpoint)
+            : provider.usesResponsesAPI
+    }
+
     var openAITextVerbosityValue: OpenAITextVerbosity {
         OpenAITextVerbosity(rawValue: openAITextVerbosity) ?? .automatic
     }
@@ -185,6 +202,7 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
         accessToken: String = "",
         searchEnabled: Bool = false,
         openAIChunkPseudoRealtimeEnabled: Bool = false,
+        openAIAPIFormat: String = OpenAIAPIFormat.automatic.rawValue,
         openAIReasoningEffort: String = OpenAIReasoningEffort.automatic.rawValue,
         openAITextVerbosity: String = OpenAITextVerbosity.automatic.rawValue,
         openAIMaxOutputTokens: Int? = nil,
@@ -221,6 +239,7 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
         )
         self.searchEnabled = searchEnabled
         self.openAIChunkPseudoRealtimeEnabled = openAIChunkPseudoRealtimeEnabled
+        self.openAIAPIFormat = openAIAPIFormat
         self.openAIReasoningEffort = openAIReasoningEffort
         self.openAITextVerbosity = openAITextVerbosity
         self.openAIMaxOutputTokens = openAIMaxOutputTokens
@@ -266,6 +285,7 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
         case storedCredentialPresence
         case searchEnabled
         case openAIChunkPseudoRealtimeEnabled
+        case openAIAPIFormat
         case openAIReasoningEffort
         case openAITextVerbosity
         case openAIMaxOutputTokens
@@ -305,6 +325,7 @@ struct RemoteProviderConfiguration: Codable, Identifiable, Hashable {
         let defaultSearchEnabled = RemoteLLMProvider(rawValue: providerID)?.defaultSearchEnabled ?? false
         searchEnabled = try container.decodeIfPresent(Bool.self, forKey: .searchEnabled) ?? defaultSearchEnabled
         openAIChunkPseudoRealtimeEnabled = try container.decodeIfPresent(Bool.self, forKey: .openAIChunkPseudoRealtimeEnabled) ?? false
+        openAIAPIFormat = try container.decodeIfPresent(String.self, forKey: .openAIAPIFormat) ?? OpenAIAPIFormat.automatic.rawValue
         openAIReasoningEffort = try container.decodeIfPresent(String.self, forKey: .openAIReasoningEffort) ?? OpenAIReasoningEffort.automatic.rawValue
         openAITextVerbosity = try container.decodeIfPresent(String.self, forKey: .openAITextVerbosity) ?? OpenAITextVerbosity.automatic.rawValue
         openAIMaxOutputTokens = try container.decodeIfPresent(Int.self, forKey: .openAIMaxOutputTokens)

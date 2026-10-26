@@ -1,22 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runs one PersonaPlex request through the timeline, one row per forward.
 
-Prefill embeds every prompt row at once. Each decode step then fuses the row
-for the next position from the last sampled text token, the agent codes the
-depformer produced for that position, and the caller's codes for it. The
-text token is sampled *before* the post hook so the depformer can consume it
-in the same step; the codes it spells out become the next row's input and,
-one position later, a finished output frame streamed to the codec.
+Prefill embeds every row the request's KV lacks at once: the whole prompt for
+a new request, the prompt and its generated positions for a retracted one.
+Each decode step then fuses the row for the next position from the last
+sampled text token, the agent codes the depformer produced for that position,
+and the caller's codes for it. The text token is sampled *before* the post
+hook so the depformer can consume it in the same step; the codes it spells
+out become the next row's input and, one position later, a finished output
+frame streamed to the codec.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import groupby
-from typing import Protocol
 
 import torch
-from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -30,14 +31,17 @@ from sglang_omni.models.personaplex.architecture import (
     NUM_STREAMS,
     USER_STREAM_OFFSET,
 )
-from sglang_omni.models.personaplex.sampling import AudioSampling, sample_token
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
+from sglang_omni.models.personaplex.sampling import (
+    AudioTokenSampler,
+    SamplingRun,
+    sample_runs,
+)
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
-
-
-class AudioTokenSampler(Protocol):
-    def __call__(self, logits: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass(kw_only=True)
@@ -56,16 +60,9 @@ class PersonaPlexFrameBatch:
     audio_rng_states: list[torch.Tensor | None]
 
 
-@dataclass(frozen=True, kw_only=True)
-class SamplingRun:
-    """Adjacent batch rows that share one sample_token call."""
-
-    row_slice: slice
-    sampling: AudioSampling
-    generators: list[torch.Generator | None]
-
-
 class PersonaPlexModelRunner(ModelRunner):
+    depformer_cuda_graph: DepformerCudaGraphRunner | None = None
+
     def sample_before_post_prefill(
         self,
         forward_batch: ForwardBatch,
@@ -107,19 +104,37 @@ class PersonaPlexModelRunner(ModelRunner):
         return data.talker_model_inputs["timeline"]
 
     def decode_feedback(self, data: SGLangARRequestData) -> DecodeFeedback:
-        """Cache device inputs and per-request decode state."""
+        """Cache device inputs and per-request decode state; user rows a
+        session's later units append are copied as they arrive."""
         inputs = data.talker_model_inputs
+        timeline = self.request_timeline(data)
         cached = inputs.get("decode_feedback")
         if cached is None:
-            timeline = self.request_timeline(data)
             cached = DecodeFeedback(
                 user_rows=timeline.user_rows.to(self.model_device),
                 agent_row=timeline.agent_row_before_start.to(self.model_device),
             )
             inputs["decode_feedback"] = cached
+        elif cached.user_rows.shape[0] < timeline.user_rows.shape[0]:
+            num_copied = cached.user_rows.shape[0]
+            cached.user_rows = torch.cat(
+                [
+                    cached.user_rows,
+                    timeline.user_rows[num_copied:].to(self.model_device),
+                ]
+            )
         else:
             pass
         return cached
+
+    def agent_row_at(self, data: SGLangARRequestData, position: int) -> torch.Tensor:
+        timeline = self.request_timeline(data)
+        if position < timeline.num_prompt_positions:
+            return timeline.agent_row_before_start.to(self.model_device)
+        else:
+            return data.talker_model_inputs["agent_rows"][
+                position - timeline.num_prompt_positions
+            ]
 
     def prefill_rows(self, data: SGLangARRequestData) -> torch.Tensor:
         timeline = self.request_timeline(data)
@@ -154,7 +169,9 @@ class PersonaPlexModelRunner(ModelRunner):
             pass
         return generator
 
-    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+    def audio_sampling_runs(
+        self, requests: list[SchedulerRequest]
+    ) -> list[SamplingRun]:
         """Sample row i with requests[i]'s audio settings and generator."""
         runs: list[SamplingRun] = []
         start_row = 0
@@ -177,14 +194,11 @@ class PersonaPlexModelRunner(ModelRunner):
             )
             start_row = end_row
 
-        def sample(logits: torch.Tensor) -> torch.Tensor:
-            picks = [
-                sample_token(logits[run.row_slice], run.sampling, run.generators)
-                for run in runs
-            ]
-            return picks[0] if len(picks) == 1 else torch.cat(picks)
+        return runs
 
-        return sample
+    def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
+        runs = self.audio_sampling_runs(requests)
+        return lambda logits: sample_runs(logits, runs)
 
     def spell_frames(
         self,
@@ -199,12 +213,20 @@ class PersonaPlexModelRunner(ModelRunner):
         Row i of text_token_B and forced_BK belongs to requests[i].
         """
         batch_size = len(requests)
-        codes_BK = self.model.depformer.generate(
-            text_token_B[:batch_size],
-            self.model.hidden_out[:batch_size],
-            forced_BK,
-            self.audio_sampler(requests),
-        )
+        if self.depformer_cuda_graph is None:
+            codes_BK = self.model.depformer.generate(
+                text_token_B[:batch_size],
+                self.model.hidden_out[:batch_size],
+                forced_BK,
+                self.audio_sampler(requests),
+            )
+        else:
+            codes_BK = self.depformer_cuda_graph.generate(
+                text_token_B[:batch_size],
+                self.model.hidden_out[:batch_size],
+                forced_BK,
+                self.audio_sampling_runs(requests),
+            )
         # Note (edwardzh): Sampling buffers can be reused before host results commit.
         text_tokens = text_token_B[:batch_size].clone()
         frames = []
@@ -292,23 +314,44 @@ class PersonaPlexModelRunner(ModelRunner):
             device=self.model_device,
         )
 
-    def generated_rows(
-        self, data: SGLangARRequestData, generated: list[int]
-    ) -> torch.Tensor:
-        """Embed the positions already generated, replayed after a retract."""
+    def missing_rows(self, data: SGLangARRequestData, req: Req) -> torch.Tensor:
+        """Embed the positions req's KV lacks, from its cached prefix to its last token.
+
+        A prompt position is the prompt's own row. A later one is the text token
+        req holds there, the agent codes the depformer spelled there, and the
+        caller's codes.
+        """
         model = self.model
         timeline = self.request_timeline(data)
-        feedback = self.decode_feedback(data)
-        agent_rows = data.talker_model_inputs["agent_rows"]
-        start = timeline.num_prompt_positions
-        rows = torch.empty(
-            len(generated), NUM_STREAMS, dtype=torch.long, device=self.model_device
-        )
-        for index, token in enumerate(generated):
-            rows[index, 0] = int(token)
-            rows[index, AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = agent_rows[index]
-            rows[index, USER_STREAM_OFFSET:] = feedback.user_rows[start + index]
-        return model.embed_rows(rows).to(model.fusion_buffer.dtype)
+        num_prompt = timeline.num_prompt_positions
+        num_origin = len(req.origin_input_ids)
+        start = req.prefix_len
+        end = num_origin + len(req.output_ids)
+        pieces = []
+        if start < num_prompt:
+            pieces.append(self.prefill_rows(data)[start:])
+        else:
+            pass
+        first = max(start, num_prompt)
+        if first < end:
+            tokens = [
+                *req.origin_input_ids[first:],
+                *req.output_ids[max(first - num_origin, 0) :],
+            ]
+            agent_rows = data.talker_model_inputs["agent_rows"]
+            user_rows = self.decode_feedback(data).user_rows
+            rows = torch.empty(
+                end - first, NUM_STREAMS, dtype=torch.long, device=self.model_device
+            )
+            rows[:, 0] = torch.tensor(tokens, dtype=torch.long)
+            rows[:, AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = torch.stack(
+                agent_rows[first - num_prompt : end - num_prompt]
+            )
+            rows[:, USER_STREAM_OFFSET:] = user_rows[first:end]
+            pieces.append(model.embed_rows(rows).to(model.fusion_buffer.dtype))
+        else:
+            pass
+        return torch.cat(pieces, dim=0)
 
     def before_prefill(
         self,
@@ -320,33 +363,24 @@ class PersonaPlexModelRunner(ModelRunner):
         for request, req in zip(requests, schedule_batch.reqs, strict=True):
             data = request.data
             inputs = data.talker_model_inputs
-            generated = [int(token) for token in req.output_ids]
+            timeline = self.request_timeline(data)
+            predicted = len(req.origin_input_ids) + len(req.output_ids)
             feedback = self.decode_feedback(data)
-            feedback.launched_frames = len(generated)
+            feedback.launched_frames = predicted - timeline.num_prompt_positions
             generator = inputs.get("audio_generator")
             if generator is not None and feedback.audio_rng_state is not None:
                 # Note (edwardzh): Discarded lookahead must not consume a seeded audio draw.
                 generator.set_state(feedback.audio_rng_state)
             else:
                 pass
-            prompt_rows = self.prefill_rows(data)
-            if not generated:
-                inputs["prefill_forced"] = self.request_timeline(
-                    data
-                ).forced_agent_at_start.to(self.model_device)
-                rows.append(prompt_rows)
-                continue
+            rows.append(self.missing_rows(data, req))
+            feedback.agent_row = self.agent_row_at(data, predicted - 1)
+            if predicted == timeline.num_prompt_positions:
+                inputs["prefill_forced"] = timeline.forced_agent_at_start.to(
+                    self.model_device
+                )
             else:
-                pass
-            # Note (wilsonzheng0327): Resuming a retracted request replays the prompt
-            # and every generated position, so those rows are embedded again too.
-            self.decode_feedback(data).agent_row = inputs["agent_rows"][
-                len(generated) - 1
-            ]
-            inputs["prefill_forced"] = self.free_codes()
-            rows.append(
-                torch.cat([prompt_rows, self.generated_rows(data, generated)], dim=0)
-            )
+                inputs["prefill_forced"] = self.free_codes()
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(

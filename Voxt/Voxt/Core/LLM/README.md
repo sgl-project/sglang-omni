@@ -23,4 +23,6 @@ Remote and local text-enhancement support for prompts, requests, streaming respo
 
 These are extensions of the existing client, not new service layers. Helpers used across files are internal; helpers local to an implementation remain private. Normal task execution goes through `executeCompiledRequest`; `enhance(userPrompt:)` remains used by title/summary and debug flows.
 
+OpenAI configuration supports Automatic, Responses API, and Chat Completions API. Automatic preserves the official OpenAI Responses route and honors explicit Chat Completions URLs on custom hosts. Explicit selections normalize the endpoint and select the matching request schema throughout enhancement, rewrite conversations, dictionary scans, connection tests, and warmup. Custom OpenAI endpoints receive explicit reasoning effort and use server-managed output budgets unless the user sets a limit. Chat Completions omits unconfigured sampling fields and maps reasoning effort to the top-level field; Responses uses the nested reasoning object. Official OpenAI Responses payload defaults and model-family filtering, and the Codex policy, remain unchanged.
+
 `RewriteAnswerModels.swift` contains answer/conversation values and normalization shared with overlays and history. Delivery snapshots remain in `Core/SessionFinalizeContext.swift`.

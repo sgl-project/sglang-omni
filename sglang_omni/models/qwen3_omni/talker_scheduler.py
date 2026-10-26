@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_WAIT_LOG_INTERVAL_S = 10.0
 
-# Note (Junnan Li): A reply of one spoken token has no talker reference: HF fails to assemble its assistant prompt, and this talker never samples codec EOS for it.
-MIN_SPOKEN_TOKENS = 2
+# note (ratish): a reply with no spoken token has nothing to speak; a reply of one
+# token terminates.
+MIN_SPOKEN_TOKENS = 1
 
 
 def configure_talker_server_args(

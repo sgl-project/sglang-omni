@@ -1,5 +1,36 @@
 import Foundation
 
+enum OpenAIAPIFormat: String, CaseIterable {
+    case automatic
+    case responses
+    case chatCompletions
+
+    var title: String {
+        switch self {
+        case .automatic:
+            return AppLocalization.localizedString("Automatic")
+        case .responses:
+            return "Responses API"
+        case .chatCompletions:
+            return "Chat Completions API"
+        }
+    }
+
+    nonisolated func usesResponsesAPI(endpoint: String) -> Bool {
+        switch self {
+        case .responses:
+            return true
+        case .chatCompletions:
+            return false
+        case .automatic:
+            guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  url.host?.lowercased() != "api.openai.com" else { return true }
+            let path = url.path.lowercased()
+            return !path.hasSuffix("/chat/completions") && !path.hasSuffix("/chat/completions/")
+        }
+    }
+}
+
 enum OllamaResponseFormat: String, CaseIterable, Identifiable {
     case plain
     case json

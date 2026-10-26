@@ -19,6 +19,7 @@ from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import (
+    MAXIMUM_TOP_K,
     Drama3GenerationInput,
     Drama3RequestBuilder,
 )
@@ -192,9 +193,13 @@ def test_text_becomes_a_tts_prompt_spoken_by_speaker_zero(
 @pytest.mark.parametrize(
     ("sampling_fields", "sampling"),
     [
-        pytest.param({}, (1.0, 0.9, 30, None), id="omitted"),
-        pytest.param(dict.fromkeys(GENERATION_FIELDS), (1.0, 0.9, 30, None), id="null"),
-        pytest.param({"temperature": 0.5}, (0.5, 0.9, 30, None), id="only-temperature"),
+        pytest.param({}, (1.0, 0.9, MAXIMUM_TOP_K, None), id="omitted"),
+        pytest.param(
+            dict.fromkeys(GENERATION_FIELDS), (1.0, 0.9, MAXIMUM_TOP_K, None), id="null"
+        ),
+        pytest.param(
+            {"temperature": 0.5}, (0.5, 0.9, MAXIMUM_TOP_K, None), id="only-temperature"
+        ),
         pytest.param(
             {
                 "temperature": 0.0,
@@ -249,7 +254,7 @@ def test_a_generate_request_keeps_its_set_fields_and_max_tokens(
         generation_input.top_p,
         generation_input.top_k,
         generation_input.max_new_tokens,
-    ) == (0.5, 0.9, 30, 12)
+    ) == (0.5, 0.9, MAXIMUM_TOP_K, 12)
 
 
 def test_references_become_a_reference_prompt(tokenizer: Tokenizer) -> None:
@@ -519,7 +524,7 @@ def test_a_preprocessed_request_is_admitted_with_the_engine_cap(
     assert (request_data.temperature, request_data.top_p, request_data.top_k) == (
         1.0,
         0.9,
-        30,
+        MAXIMUM_TOP_K,
     )
 
 
@@ -669,7 +674,7 @@ def direct_client_payload(sampling: SamplingParams) -> StagePayload:
 @pytest.mark.parametrize(
     ("sampling", "expected_sampling"),
     [
-        pytest.param(SamplingParams(), (1.0, 0.9, 30), id="unset"),
+        pytest.param(SamplingParams(), (1.0, 0.9, MAXIMUM_TOP_K), id="unset"),
         pytest.param(
             SamplingParams(temperature=0.0, top_p=1.0, top_k=1),
             (0.0, 1.0, 1),
