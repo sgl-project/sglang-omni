@@ -8,6 +8,10 @@ from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
+from sglang_omni.proto.session import (
+    DEFAULT_IDLE_TIMEOUT_S,
+    DEFAULT_SESSION_UPDATE_TIMEOUT_S,
+)
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
@@ -44,7 +48,8 @@ class RuntimeLimits:
     max_output_bytes: int = 32 * 1024 * 1024
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
-    session_update_timeout_s: float = 60
+    session_update_timeout_s: float = DEFAULT_SESSION_UPDATE_TIMEOUT_S
+    idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S
 
     def __post_init__(self) -> None:
         if any(

@@ -9,6 +9,8 @@ import pytest
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS as QWEN3_OMNI_PORTS
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -55,6 +57,7 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
+from sglang_omni.serve.realtime.session_deployment import build_realtime_deployment
 from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import PORTS, FakeSessionClient
 
@@ -87,6 +90,61 @@ def unit(index, *, eos=False, samples=UNIT_SAMPLES):
 
 async def settle():
     await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_runtime_limits_raise_pipeline_idle_backup_before_open() -> None:
+    """A long runtime idle window must not expire at the shorter pipeline timeout."""
+    harness = Harness(limits=SessionLimits(idle_timeout_s=1, max_output_chunks=7))
+    harness.bridge.set_limits(RuntimeLimits(idle_timeout_s=300, cleanup_timeout_s=10))
+    try:
+        await harness.open()
+        session_limits = harness.client.opened[0][1]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == 640
+        assert session_limits.operation_timeout_s == 30
+        assert session_limits.max_output_chunks == 7
+    finally:
+        await harness.bridge.close()
+
+
+@pytest.mark.parametrize(
+    ("configured_idle_seconds", "runtime_idle_seconds", "pipeline_idle_seconds"),
+    [(7200, 20, 21600), (10, 300, 21600), (30, 30, 21600)],
+)
+@pytest.mark.asyncio
+async def test_realtime_idle_limit_preserves_pipeline_session_timeout(
+    configured_idle_seconds: float,
+    runtime_idle_seconds: float,
+    pipeline_idle_seconds: float,
+) -> None:
+    """Realtime idle overrides must preserve the independent backend idle policy."""
+    pipeline_config = StreamingCascadePipelineConfig(
+        model_path="unused",
+        session_nodes={"vad": {"stages": ["vad"], "inputs": ["input:pcm16"]}},
+        session_publish={"vad": ["session"]},
+        realtime_idle_timeout_s=configured_idle_seconds,
+    )
+    assert pipeline_config.session_limits().idle_timeout_s == 6 * 3600
+    client = FakeSessionClient()
+    deployment = build_realtime_deployment(client, pipeline_config)
+    assert deployment.session_limits.idle_timeout_s == 6 * 3600
+    assert deployment.limits.idle_timeout_s == configured_idle_seconds
+    runtime = SessionRuntime(
+        "configured-graph",
+        deployment.capabilities,
+        deployment.adapter_factory,
+        replace(deployment.limits, idle_timeout_s=runtime_idle_seconds),
+    )
+    runtime.start()
+    try:
+        await runtime.update({}, "open")
+        session_limits = client.opened[0][1]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == pipeline_idle_seconds
+        assert session_limits.idle_timeout_s > runtime_idle_seconds
+    finally:
+        await runtime.close("client_closed")
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio import sleep as real_sleep
 from dataclasses import dataclass, field
 
 from sglang_omni.serve.realtime.output import OutputEvent
@@ -11,6 +12,44 @@ from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import InteractionAdapter, OutputSink, Unit
 
 MODEL_NAME = "duplex-test"
+SETTLE_ITERATIONS = 20
+
+
+@dataclass(kw_only=True)
+class FakeClock:
+    now_seconds: float = 0.0
+    sleepers: list[tuple[float, asyncio.Future[None]]] = field(default_factory=list)
+
+    def monotonic(self) -> float:
+        return self.now_seconds
+
+    async def sleep(self, delay_seconds: float) -> None:
+        if delay_seconds <= 0:
+            await real_sleep(0)
+        else:
+            deadline_seconds = self.now_seconds + delay_seconds
+            sleeper: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            self.sleepers.append((deadline_seconds, sleeper))
+            try:
+                await sleeper
+            finally:
+                self.sleepers = [
+                    (deadline_seconds, pending_sleeper)
+                    for deadline_seconds, pending_sleeper in self.sleepers
+                    if pending_sleeper is not sleeper
+                ]
+
+    async def advance(self, seconds: float) -> None:
+        assert seconds >= 0
+        self.now_seconds += seconds
+        for deadline_seconds, sleeper in self.sleepers:
+            if deadline_seconds <= self.now_seconds and not sleeper.done():
+                sleeper.set_result(None)
+            else:
+                pass
+        # note (Haiyang Luo): Let woken tasks run to their next await before the test asserts.
+        for _ in range(SETTLE_ITERATIONS):
+            await real_sleep(0)
 
 
 class HealthCoordinator:

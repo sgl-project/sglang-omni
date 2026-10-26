@@ -13,7 +13,9 @@ from pydantic.main import IncEx
 from typing_extensions import Unpack
 
 from sglang_omni.proto.session import (
+    DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_MAX_OUTPUT_LEAD_MS,
+    DEFAULT_SESSION_UPDATE_TIMEOUT_S,
     ControlEdge,
     DataEdge,
     SessionGraph,
@@ -772,6 +774,14 @@ class PipelineConfig(BaseModel):
     "Per node of the graph, the chunk formats that reach the client."
     max_output_lead_ms: float = Field(default=DEFAULT_MAX_OUTPUT_LEAD_MS, gt=0)
     "How far ahead of real time, counted from the release of a reply's first audio, a Session delivers the reply's audio; an interruption cannot take back audio already delivered."
+    realtime_session_update_timeout_s: float = Field(
+        default=DEFAULT_SESSION_UPDATE_TIMEOUT_S, gt=0, allow_inf_nan=False
+    )
+    "Seconds a shared realtime session waits for its first session.update."
+    realtime_idle_timeout_s: float = Field(
+        default=DEFAULT_IDLE_TIMEOUT_S, gt=0, allow_inf_nan=False
+    )
+    "Seconds without input or output before a shared realtime session closes."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 

@@ -49,6 +49,7 @@ from sglang_omni.proto.streams import (
     ImagePort,
     SessionPorts,
 )
+from sglang_omni.serve.realtime.adapters import pipeline_limits_with_idle_backup
 from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
@@ -219,8 +220,9 @@ class SessionBridge(InteractionAdapter):
         self.response_text = ""
         self.has_audio = False
 
-    def set_limits(self, limits: RuntimeLimits) -> None:
-        self.cleanup_timeout_s = limits.cleanup_timeout_s
+    def set_limits(self, runtime_limits: RuntimeLimits) -> None:
+        self.cleanup_timeout_s = runtime_limits.cleanup_timeout_s
+        self.limits = pipeline_limits_with_idle_backup(self.limits, runtime_limits)
 
     async def open(
         self, session_id: str, config: SessionConfiguration, emit: OutputSink

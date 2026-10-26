@@ -6,6 +6,7 @@ import asyncio
 import copy
 import logging
 import math
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -19,6 +20,7 @@ from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLEANUP_TIMEOUT,
     CLOSE_REASON_CLIENT_CLOSED,
     CLOSE_REASON_DISCONNECT,
+    CLOSE_REASON_IDLE_TIMEOUT,
     CLOSE_REASON_INTERNAL,
     CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
 )
@@ -96,10 +98,15 @@ class SessionRuntime:
         self.end_event_id: str | None = None
         self.command_lock = asyncio.Lock()
         self.input_ready = asyncio.Event()
+        self.last_activity_seconds: float = time.monotonic()
+        self.admission_deadline_seconds: float | None = None
+        self.is_admitting: bool = False
+        self.is_unit_in_flight: bool = False
         self.output_buffer = OutputBuffer(limits)
         self.pump_task: asyncio.Task[None] | None = None
-        self.update_deadline_task: asyncio.Task[None] | None = None
+        self.watchdog_task: asyncio.Task[None] | None = None
         self.close_task: asyncio.Task[None] | None = None
+        self.closed_event: asyncio.Event = asyncio.Event()
         self.close_reason: str | None = None
         self.processing_unit: ContextVar[Unit | None] = ContextVar(
             "realtime_unit", default=None
@@ -133,24 +140,32 @@ class SessionRuntime:
     def notify(self, event: ControlEvent) -> None:
         self.output_buffer.enqueue(Envelope(event=event, is_control=True))
 
-    def notify_created(self) -> None:
-        self.notify(Created(self.session_id, self.model, "realtime"))
-        self.update_deadline_task = asyncio.create_task(self.expire_without_update())
+    def mark_activity(self) -> None:
+        """Restart the idle timeout."""
+        self.last_activity_seconds = time.monotonic()
 
-    async def expire_without_update(self) -> None:
-        """Free the connection slot of a session that never opens; cancelled on OPEN."""
-        await asyncio.sleep(self.limits.session_update_timeout_s)
-        async with self.command_lock:
-            if self.state == "CREATED":
-                # Note (Yucheng Hu): Fence under the lock so a late session.update is
-                # rejected instead of starting an admission before run_close runs.
-                self.state = "CLOSING"
-                self.fail(
-                    f"session not opened within {self.limits.session_update_timeout_s:g} s",
-                    CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
-                )
-            else:
-                pass
+    def start(self) -> None:
+        self.admission_deadline_seconds = (
+            time.monotonic() + self.limits.session_update_timeout_s
+        )
+        self.notify(Created(self.session_id, self.model, "realtime"))
+        self.watchdog_task = asyncio.create_task(self.watch_activity())
+
+    def expire_admission_if_due(self) -> bool:
+        """Reject a new admission after the admission deadline."""
+        if (
+            self.state == "CREATED"
+            and self.admission_deadline_seconds is not None
+            and time.monotonic() >= self.admission_deadline_seconds
+        ):
+            self.state = "CLOSING"
+            self.fail(
+                f"no session.update within {self.limits.session_update_timeout_s}s",
+                CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+            )
+            return True
+        else:
+            return False
 
     async def outputs(self) -> AsyncIterator[Envelope]:
         while True:
@@ -177,6 +192,7 @@ class SessionRuntime:
                 )
             )
             self.output_buffer.emit(event, producing_unit, modalities)
+            self.mark_activity()
 
     def require_open(self) -> None:
         if self.state != "OPEN":
@@ -186,6 +202,10 @@ class SessionRuntime:
 
     async def update(self, patch: object, event_id: str) -> None:
         async with self.command_lock:
+            if self.expire_admission_if_due():
+                return
+            else:
+                pass
             if self.state not in ("CREATED", "OPEN"):
                 raise ProtocolError("invalid_state", "session is closing")
             else:
@@ -196,13 +216,20 @@ class SessionRuntime:
             if self.state == "CREATED":
                 adapter = self.adapter_factory()
                 adapter.set_limits(self.limits)
+                self.is_admitting = True
                 try:
-                    await self.open_adapter(adapter, candidate, event_id)
+                    is_open = await self.open_adapter(adapter, candidate, event_id)
                 except asyncio.CancelledError:
                     self.abandon_admission(
                         adapter, "session admission cancelled", event_id
                     )
                     raise
+                finally:
+                    self.is_admitting = False
+                if not is_open:
+                    return
+                else:
+                    pass
                 self.adapter = adapter
                 if self.close_task is not None:
                     # Note (Junnan Li): Admission cleanup belongs to the closing owner; do not publish OPEN here.
@@ -210,14 +237,12 @@ class SessionRuntime:
                 else:
                     pass
                 self.state = "OPEN"
+                self.mark_activity()
                 self.pump_task = asyncio.create_task(self.pump())
-                if self.update_deadline_task is not None:
-                    self.update_deadline_task.cancel()
-                else:
-                    pass
             else:
                 assert self.adapter is not None
                 await self.adapter.update(candidate)
+                self.mark_activity()
             self.config, self.granted = candidate, granted
             public_config = {
                 **candidate,
@@ -243,13 +268,14 @@ class SessionRuntime:
         adapter: InteractionAdapter,
         candidate: SessionConfiguration,
         event_id: str,
-    ) -> None:
-        """Open the adapter; on failure close it again and reject the update."""
+    ) -> bool:
+        """Open the adapter; return False if failed admission expires after cleanup."""
         try:
             await asyncio.wait_for(
                 adapter.open(self.session_id, candidate, self.emit),
                 self.limits.cleanup_timeout_s,
             )
+            return True
         except Exception as exc:
             logger.exception(f"Realtime session {self.session_id} admission failed")
             try:
@@ -257,7 +283,10 @@ class SessionRuntime:
             except Exception:
                 self.abandon_admission(adapter, "admission cleanup failed", event_id)
                 raise RuntimeError("admission cleanup failed") from exc
-            raise ProtocolError("admission_rejected", str(exc)) from exc
+            if self.expire_admission_if_due():
+                return False
+            else:
+                raise ProtocolError("admission_rejected", str(exc)) from exc
 
     def abandon_admission(
         self, adapter: InteractionAdapter, message: str, event_id: str
@@ -327,6 +356,7 @@ class SessionRuntime:
                     event_id,
                 )
             )
+            self.mark_activity()
             self.input_ready.set()
 
     async def append_image(self, image: bytes, t_ms: float, event_id: str) -> None:
@@ -366,6 +396,7 @@ class SessionRuntime:
             else:
                 self.pending_frames.setdefault(unit_index, []).append((t_ms, image))
                 self.notify(ImageAccepted(f"unit_{unit_index}", event_id))
+                self.mark_activity()
 
     async def clear(self, event_id: str) -> None:
         async with self.command_lock:
@@ -379,6 +410,7 @@ class SessionRuntime:
             self.notify(
                 Cleared(self.capabilities.input_duration_ms(cleared_samples), event_id)
             )
+            self.mark_activity()
 
     async def cancel(self) -> None:
         """Stop the reply in progress; the session answers with its own cancelled response.done."""
@@ -386,6 +418,7 @@ class SessionRuntime:
             self.require_open()
             assert self.adapter is not None
             await self.adapter.cancel()
+            self.mark_activity()
 
     async def truncate(self, item_id: str, audio_end_ms: float) -> None:
         """Tell the session how much of the reply item the listener heard."""
@@ -393,6 +426,7 @@ class SessionRuntime:
             self.require_open()
             assert self.adapter is not None
             await self.adapter.truncate(item_id, audio_end_ms)
+            self.mark_activity()
 
     async def commit(self) -> None:
         """End the user's turn where the client says it ends, after the audio appended before it."""
@@ -406,6 +440,7 @@ class SessionRuntime:
                 raise ProtocolError("invalid_state", "audio input already ended")
             else:
                 self.pending_commits += 1
+                self.mark_activity()
             self.input_ready.set()
 
     async def end(self, event_id: str) -> None:
@@ -442,6 +477,7 @@ class SessionRuntime:
                     event_id,
                 )
             )
+            self.mark_activity()
             self.input_ready.set()
 
     def cut_next_unit(self) -> Unit:
@@ -508,14 +544,23 @@ class SessionRuntime:
                         unit = None
                     else:
                         unit = self.cut_next_unit()
+                    self.is_unit_in_flight = True
                 if unit is None:
-                    await self.adapter.commit()
+                    try:
+                        await self.adapter.commit()
+                    finally:
+                        self.is_unit_in_flight = False
+                    self.mark_activity()
                     self.input_ready.set()
                     continue
                 else:
                     pass
                 self.processing_unit.set(unit)
-                consumption = await self.adapter.process(unit)
+                try:
+                    consumption = await self.adapter.process(unit)
+                finally:
+                    self.is_unit_in_flight = False
+                self.mark_activity()
                 if isinstance(consumption, tuple):
                     consumed_samples, discarded_samples = consumption
                 else:
@@ -582,6 +627,37 @@ class SessionRuntime:
                 failure_code = CLOSE_REASON_INTERNAL
             self.fail(str(exc), failure_code)
 
+    async def watch_activity(self) -> None:
+        # note (Haiyang Luo): OPEN has no wake-up event; cap waits at the idle timeout.
+        maximum_wait_seconds = self.limits.idle_timeout_s
+        while self.state in ("CREATED", "OPEN"):
+            # note (Haiyang Luo): No await between the idle check and CLOSING avoids command races.
+            if self.state == "CREATED":
+                timeout_seconds = self.limits.session_update_timeout_s
+                is_busy = self.is_admitting
+                assert self.admission_deadline_seconds is not None
+                remaining_seconds = self.admission_deadline_seconds - time.monotonic()
+            else:
+                timeout_seconds = self.limits.idle_timeout_s
+                is_busy = self.is_unit_in_flight or self.command_lock.locked()
+                remaining_seconds = (
+                    self.last_activity_seconds + timeout_seconds - time.monotonic()
+                )
+            if is_busy:
+                await asyncio.sleep(min(timeout_seconds, maximum_wait_seconds))
+            elif remaining_seconds > 0:
+                await asyncio.sleep(min(remaining_seconds, maximum_wait_seconds))
+            elif self.state == "CREATED":
+                self.expire_admission_if_due()
+                return
+            else:
+                self.state = "CLOSING"
+                self.fail(
+                    f"no input or output within {timeout_seconds}s",
+                    CLOSE_REASON_IDLE_TIMEOUT,
+                )
+                return
+
     def fail(
         self,
         message: str,
@@ -627,8 +703,7 @@ class SessionRuntime:
         finally:
             try:
                 await cancel_local_tasks(
-                    [self.pump_task, self.update_deadline_task],
-                    self.limits.cleanup_timeout_s,
+                    [self.pump_task, self.watchdog_task], self.limits.cleanup_timeout_s
                 )
             except Exception as exc:
                 cleanup_error = cleanup_error or exc
@@ -655,3 +730,4 @@ class SessionRuntime:
         finally:
             self.state = "CLOSED"
             self.output_buffer.output_ready.set()
+            self.closed_event.set()

@@ -681,6 +681,38 @@ Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference wor
 
 TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see [First-audio chunk ramp](#first-audio-chunk-ramp) for the buffering tradeoff.
 
+### Runaway Regression
+
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. The text request fails only when it stops on `length` before its paired baseline stopped naturally.
+
+Create a request template, for example `request.json`:
+
+```json
+{
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "input": "replaced by each case",
+  "voice": "Ryan"
+}
+```
+
+For Base, use a fixed `references` entry instead of a built-in voice. `--seedtts-samples` replaces the bundled cases with prompts that missed codec EOS on 0.6B Base in #1179.
+
+```bash
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request request.json \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 0 --output-dir results/budget-nonstream
+
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request base-request.json --seedtts-samples \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 123 --output-dir results/budget-runaway
+```
+
+Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
+
+The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload the evidence.
+
 ## Known Limitations
 
 - **Reference audio recommended.** As a cloning model, Qwen3-TTS Base produces robotic speech

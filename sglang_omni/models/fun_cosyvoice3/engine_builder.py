@@ -11,10 +11,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.model_executor.cuda_graph_config import Phase, with_phase
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.fun_cosyvoice3 import request_builders
+from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES, request_builders
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
 )
@@ -32,8 +37,15 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     TtsEngineBuilder,
 )
+from sglang_omni.scheduling.generation_batch_policy import (
+    FULL_PREFILL_ATTENTION_BACKENDS,
+    CudaGraphBackend,
+    nested_prefill_overrides,
+    operator_selected_prefill_backend,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
 
@@ -58,6 +70,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
     context_length = 4096
     mem_fraction_static = 0.85
     model_arch_override = "FunCosyVoice3SGLangModel"
+    supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
 
     def __init__(
         self,
@@ -128,8 +141,54 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             "sampling_backend": (
                 "flashinfer" if current_platform.is_cuda() else "pytorch"
             ),
+            # note (ratish): run eagerly, a prefill launches about 320 kernels for 2 ms of
+            # device work while every running row waits for it.
+            "cuda_graph_backend_prefill": (
+                CudaGraphBackend.FULL
+                if current_platform.is_cuda()
+                else CudaGraphBackend.DISABLED
+            ),
             "trust_remote_code": True,
         }
+
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        resolved = resolved_view(server_args)
+        graph_config = resolved.cuda_graph_config
+        prefill = graph_config.prefill
+        if (
+            prefill.backend == CudaGraphBackend.FULL
+            and attention_backends_of(resolved)[0]
+            not in FULL_PREFILL_ATTENTION_BACKENDS
+            and not operator_selected_prefill_backend(self.server_args_overrides)
+        ):
+            # note (ratish): the full prefill graph is this model's default only where
+            # the attention backend captures it; elsewhere the prefill stays eager.
+            override_server_args(
+                server_args,
+                "fun_cosyvoice3.prefill_cuda_graph_backend",
+                cuda_graph_config=with_phase(
+                    graph_config, Phase.PREFILL, backend=CudaGraphBackend.DISABLED
+                ),
+            )
+        elif (
+            prefill.backend == CudaGraphBackend.FULL
+            and prefill.bs
+            and prefill.bs[0] != 1
+            and self.server_args_overrides.get("cuda_graph_bs_prefill") is None
+            and "bs" not in nested_prefill_overrides(self.server_args_overrides)
+        ):
+            # note (ratish): a prompt the radix cache holds re-prefills only its last
+            # token, which the ladder's first bucket of 4 pads past twice its size and
+            # runs eagerly; every eager prefill measured at c16 and c64 was one.
+            override_server_args(
+                server_args,
+                "fun_cosyvoice3.prefill_cuda_graph_shape",
+                cuda_graph_config=with_phase(
+                    graph_config, Phase.PREFILL, bs=[1, *prefill.bs]
+                ),
+            )
+        else:
+            pass
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         # Note (Jiaxin Deng): the fraction alone sized a 62 GB pool on an

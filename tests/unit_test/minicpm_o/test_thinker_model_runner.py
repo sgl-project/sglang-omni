@@ -25,10 +25,13 @@ from sglang_omni.models.minicpm_o.special_tokens import (
     resolve_special_token_ids,
 )
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
-from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
+from sglang_omni.models.minicpm_o.thinker_state import (
+    DuplexUnitRequestData,
+    MiniCPMOThinkerSessionState,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
@@ -47,15 +50,39 @@ SESSION = SessionIdentity("duplex")
 FIRST_UNIT_PROMPT_LENGTH = 7
 SECOND_UNIT_PROMPT_LENGTH = 12
 THIRD_UNIT_PROMPT_LENGTH = 18
+# The native session's prompt lengths of thirteen units in a row, the first three as above.
+UNIT_PROMPT_LENGTHS = (
+    FIRST_UNIT_PROMPT_LENGTH,
+    SECOND_UNIT_PROMPT_LENGTH,
+    THIRD_UNIT_PROMPT_LENGTH,
+    25,
+    33,
+    42,
+    52,
+    63,
+    75,
+    88,
+    102,
+    117,
+    133,
+)
+# A unit's perception ids are one audio placeholder, this id plus the unit index, so a re-fed unit is told apart by its id.
+AUDIO_PLACEHOLDER_ID_BASE = 80
+# The listen units after a reply's last spoken unit within which the thinker still cuts the reply.
+TRUNCATE_WINDOW_UNITS = 10
 
 
-def interrupt_control(payload: dict[str, object]) -> TimedChunk:
+def session_control(payload: dict[str, object]) -> TimedChunk:
     return TimedChunk(CONTROL, 0, 0, 0, payload, format=SESSION_CONTROL, turn=0)
 
 
-def interrupt_after(last_delivered_unit: int) -> TimedChunk:
-    return interrupt_control(
-        {"type": INTERRUPT, "last_delivered_unit": last_delivered_unit}
+def interrupt_after(keep_through_unit: int) -> TimedChunk:
+    return session_control({"type": INTERRUPT, "keep_through_unit": keep_through_unit})
+
+
+def truncate_through(keep_through_unit: int) -> TimedChunk:
+    return session_control(
+        {"type": TRUNCATE, "t_ms": 0.0, "keep_through_unit": keep_through_unit}
     )
 
 
@@ -436,16 +463,24 @@ def speak_two_units(
             True,
             True,
             0,
-            None,
-            [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, SPECIAL_TOKENS.turn_eos],
-            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+            SECOND_UNIT_PROMPT_LENGTH,
+            [PLAIN_TOKEN_ID],
+            [
+                SPECIAL_TOKENS.turn_eos,
+                SPECIAL_TOKENS.listen,
+                SPECIAL_TOKENS.unit_end,
+                PLAIN_TOKEN_ID,
+                SPECIAL_TOKENS.listen,
+                SPECIAL_TOKENS.unit_end,
+                PLAIN_TOKEN_ID,
+            ],
         ),
     ],
     ids=[
         "the_second_unit_was_not_received_with_the_turn_open_before_it",
         "the_second_unit_was_not_received_with_the_turn_closed_before_it",
         "both_units_were_received",
-        "a_listen_unit_followed_the_spoken_one",
+        "a_listen_unit_followed_the_unreceived_spoken_one",
     ],
 )
 def test_an_interrupt_drops_the_spoken_unit_the_client_did_not_receive(
@@ -457,7 +492,7 @@ def test_an_interrupt_drops_the_spoken_unit_the_client_did_not_receive(
     generated_history: list[int],
     interrupted_input_ids: list[int],
 ) -> None:
-    """A client stop that names an earlier unit as the last one received: the next unit keeps the session up to the dropped unit's prompt and refills that unit as the official forced listen, turn_eos then listen when the turn was open before it and listen alone otherwise, the repetition window returns to what it was before it, and the forced listen adds no second turn_eos. A stop after a unit the client received, or after a unit without tokens, cuts nothing."""
+    """A client stop that names an earlier unit as the last one received: the next unit keeps the session up to the dropped unit's prompt and refills that unit as the official forced listen, turn_eos then listen when the turn was open before it and listen alone otherwise, the repetition window returns to what it was before it, and the forced listen adds no second turn_eos. A stop after a unit the client received cuts nothing; a listen unit that followed the unreceived spoken unit is re-fed after the refill, its own ids then a listen."""
     adapter, request = open_duplex_adapter()
     state = adapter.states[SESSION]
     speak_two_units(
@@ -504,20 +539,38 @@ def test_an_interrupt_drops_the_spoken_unit_the_client_did_not_receive(
 
 
 @pytest.mark.parametrize(
-    "payload",
-    [{"type": INTERRUPT}, {"type": INTERRUPT, "last_delivered_unit": "0"}],
-    ids=["without_a_delivered_unit", "with_a_delivered_unit_that_is_not_an_int"],
+    ("payload", "is_listen_forced", "next_input_ids"),
+    [
+        ({"type": INTERRUPT}, True, [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]),
+        (
+            {"type": INTERRUPT, "keep_through_unit": "0"},
+            True,
+            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+        ),
+        ({"type": TRUNCATE}, False, [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]),
+        (
+            {"type": TRUNCATE, "keep_through_unit": "0"},
+            False,
+            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+        ),
+    ],
+    ids=[
+        "an_interrupt_without_a_kept_unit",
+        "an_interrupt_with_a_kept_unit_that_is_not_an_int",
+        "a_truncate_without_a_kept_unit",
+        "a_truncate_with_a_kept_unit_that_is_not_an_int",
+    ],
 )
-def test_an_interrupt_without_a_usable_delivered_unit_forces_the_listen_and_cuts_nothing(
-    payload: dict[str, object],
+def test_a_control_without_a_usable_unit_cuts_nothing(
+    payload: dict[str, object], is_listen_forced: bool, next_input_ids: list[int]
 ) -> None:
-    """An interrupt that does not say which unit the client received, as any session client may send, still stops the reply as before: the next unit is a forced listen that closes the turn, and the session keeps the latest spoken unit."""
+    """An interrupt or truncate that does not say which unit to keep, as any session client may send, drops nothing from a reply the model ended: an interrupt still stops the reply with a forced listen, a truncate leaves the next unit alone, and the session keeps the spoken unit."""
     adapter, request = open_duplex_adapter()
     state = adapter.states[SESSION]
     first = adapter.build(SESSION, audio_unit(0), step_plan_payload(request))
-    first_output_ids, first_generated_ids = spoken_output(PLAIN_TOKEN_ID, False)
+    first_output_ids, first_generated_ids = spoken_output(PLAIN_TOKEN_ID, True)
     state.generated_history = list(first_generated_ids)
-    state.is_turn_ended = False
+    state.is_turn_ended = True
     complete_unit(
         adapter,
         first,
@@ -526,20 +579,315 @@ def test_an_interrupt_without_a_usable_delivered_unit_forces_the_listen_and_cuts
         generated_unit_ids=first_generated_ids,
     )
 
-    adapter.control(SESSION, interrupt_control(payload))
+    adapter.control(SESSION, session_control(payload))
     preparation = adapter.prepare_unit(
         SESSION, audio_unit(1), step_plan_payload(request)
     )
-    interrupted = adapter.build(SESSION, audio_unit(1), step_plan_payload(request))
+    following = adapter.build(SESSION, audio_unit(1), step_plan_payload(request))
 
     assert preparation == ARSessionPreparation()
-    assert interrupted.is_listen_forced is True
-    assert interrupted.input_ids.tolist() == [
+    assert following.is_listen_forced is is_listen_forced
+    assert following.input_ids.tolist() == next_input_ids
+    assert state.generated_history == first_generated_ids
+
+
+def perception_payload(request: OmniRequest, unit_index: int) -> StagePayload:
+    """The perception plan of unit unit_index: one audio placeholder whose embedding row is filled with the unit index."""
+    return StagePayload(
+        "unit",
+        request,
+        {
+            "token_ids": [AUDIO_PLACEHOLDER_ID_BASE + unit_index],
+            "input_embeds": torch.full((1, 2), float(unit_index)),
+            "embedding_spans": [
+                {
+                    "modality": "audio",
+                    "token_start": 0,
+                    "token_end": 1,
+                    "embedding_start": 0,
+                    "embedding_end": 1,
+                }
+            ],
+        },
+    )
+
+
+def feed_unit(
+    adapter: ThinkerAdapter,
+    request: OmniRequest,
+    unit_index: int,
+    *,
+    spoken_token_id: int | None,
+    ends_turn: bool = False,
+) -> DuplexUnitRequestData:
+    """Build and finish unit unit_index on its perception plan: a listen unit, or one that speaks spoken_token_id and closes the turn when ends_turn, with the sampler state as the duplex sampler leaves it."""
+    state = adapter.states[SESSION]
+    unit_request = adapter.build(
+        SESSION, audio_unit(unit_index), perception_payload(request, unit_index)
+    )
+    if spoken_token_id is None:
+        output_ids: list[int] = [SPECIAL_TOKENS.listen]
+        generated_unit_ids: list[int] = []
+    else:
+        output_ids, generated_unit_ids = spoken_output(spoken_token_id, ends_turn)
+        state.generated_history = [*state.generated_history, *generated_unit_ids]
+        state.is_turn_ended = ends_turn
+    complete_unit(
+        adapter,
+        unit_request,
+        prompt_length=UNIT_PROMPT_LENGTHS[unit_index],
+        output_ids=output_ids,
+        generated_unit_ids=generated_unit_ids,
+    )
+    return unit_request
+
+
+def spans_of(unit_request: DuplexUnitRequestData) -> list[tuple[int, int, float]]:
+    """Each unit span of the request as (start, end, the unit index its embedding row carries)."""
+    return [
+        (span.start, span.end, span.input_embeds[0, 0].item())
+        for span in unit_request.unit_embedding_spans
+    ]
+
+
+@pytest.mark.parametrize(
+    "cut_controls",
+    [[interrupt_after(0)], [interrupt_after(2), truncate_through(0)]],
+    ids=[
+        "a_stop_after_the_client_received_the_first_unit_only",
+        "a_truncate_played_through_the_first_unit_after_a_stop_that_cut_nothing",
+    ],
+)
+def test_a_cut_at_an_earlier_unit_rewinds_there_and_re_feeds_the_later_units_as_listen_units(
+    cut_controls: list[TimedChunk],
+) -> None:
+    """A stop, or a truncate after a stop, that keeps a three-unit reply through its first unit: the next unit keeps the session up to the second unit's prompt, refills that unit as the forced listen, turn_eos first since the turn was open before it, re-feeds the third unit's own ids and embedding span followed by a listen, then adds its own ids and span after them, with the repetition window from before the second unit."""
+    adapter, request = open_duplex_adapter()
+    state = adapter.states[SESSION]
+    feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID)
+    feed_unit(adapter, request, 1, spoken_token_id=OTHER_TOKEN_ID)
+    feed_unit(adapter, request, 2, spoken_token_id=THIRD_TOKEN_ID)
+
+    for cut_control in cut_controls:
+        adapter.control(SESSION, cut_control)
+    preparation = adapter.prepare_unit(
+        SESSION, audio_unit(3), perception_payload(request, 3)
+    )
+    cut = adapter.build(SESSION, audio_unit(3), perception_payload(request, 3))
+
+    assert preparation == ARSessionPreparation(
+        kept_token_count=SECOND_UNIT_PROMPT_LENGTH
+    )
+    assert cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.turn_eos,
+        SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
-        PLAIN_TOKEN_ID,
+        82,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        83,
+    ]
+    assert spans_of(cut) == [(3, 4, 2.0), (6, 7, 3.0)]
+    assert cut.is_listen_forced is True
+    assert state.generated_history == [PLAIN_TOKEN_ID]
+    assert state.is_turn_ended is True
+
+
+def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it() -> (
+    None
+):
+    """After a stop that cut nothing, a truncate cuts the reply at the unit the client did not play and re-feeds the forced listen unit; a repeated or later truncate changes nothing; an earlier one rewinds further and re-feeds every unit since that position, the ones a cut already re-fed included, each by its own ids and span."""
+    adapter, request = open_duplex_adapter()
+    state = adapter.states[SESSION]
+    feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID)
+    feed_unit(adapter, request, 1, spoken_token_id=OTHER_TOKEN_ID)
+    feed_unit(adapter, request, 2, spoken_token_id=THIRD_TOKEN_ID)
+    adapter.control(SESSION, interrupt_after(2))
+    stop_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(3), perception_payload(request, 3)
+    )
+    forced_listen = feed_unit(adapter, request, 3, spoken_token_id=None)
+
+    adapter.control(SESSION, truncate_through(1))
+    first_cut_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(4), perception_payload(request, 4)
+    )
+    first_cut = feed_unit(adapter, request, 4, spoken_token_id=None)
+    first_cut_history = list(state.generated_history)
+    adapter.control(SESSION, truncate_through(1))
+    adapter.control(SESSION, truncate_through(2))
+    unchanged_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(5), perception_payload(request, 5)
+    )
+    unchanged = feed_unit(adapter, request, 5, spoken_token_id=None)
+    adapter.control(SESSION, truncate_through(0))
+    second_cut_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(6), perception_payload(request, 6)
+    )
+    second_cut = adapter.build(SESSION, audio_unit(6), perception_payload(request, 6))
+
+    assert stop_preparation == ARSessionPreparation()
+    assert forced_listen.input_ids.tolist() == [
+        SPECIAL_TOKENS.unit_end,
+        83,
         SPECIAL_TOKENS.turn_eos,
     ]
-    assert state.generated_history == first_generated_ids
+    assert first_cut_preparation == ARSessionPreparation(
+        kept_token_count=THIRD_UNIT_PROMPT_LENGTH
+    )
+    assert first_cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.turn_eos,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        83,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        84,
+    ]
+    assert spans_of(first_cut) == [(3, 4, 3.0), (6, 7, 4.0)]
+    assert first_cut_history == [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    assert unchanged_preparation == ARSessionPreparation()
+    assert unchanged.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 85]
+    assert spans_of(unchanged) == [(1, 2, 5.0)]
+    assert second_cut_preparation == ARSessionPreparation(
+        kept_token_count=SECOND_UNIT_PROMPT_LENGTH
+    )
+    assert second_cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.turn_eos,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        82,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        83,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        84,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        85,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        86,
+    ]
+    assert spans_of(second_cut) == [
+        (3, 4, 2.0),
+        (6, 7, 3.0),
+        (9, 10, 4.0),
+        (12, 13, 5.0),
+        (15, 16, 6.0),
+    ]
+    assert state.generated_history == [PLAIN_TOKEN_ID]
+
+
+def test_a_truncate_cuts_an_ended_reply_and_not_an_open_one() -> None:
+    """A truncate cuts the latest reply once the model ended it itself, with the same rewind and re-feed as after a stop, drops nothing from a reply the model is still speaking, whose units the client goes on to hear, and cuts that reply in turn once it ends; a stop still cuts the open reply."""
+    adapter, request = open_duplex_adapter()
+    state = adapter.states[SESSION]
+    feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID)
+    feed_unit(adapter, request, 1, spoken_token_id=OTHER_TOKEN_ID, ends_turn=True)
+    feed_unit(adapter, request, 2, spoken_token_id=None)
+    adapter.control(SESSION, truncate_through(0))
+    ended_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(3), perception_payload(request, 3)
+    )
+    ended_cut = feed_unit(adapter, request, 3, spoken_token_id=None)
+    ended_cut_history = list(state.generated_history)
+    feed_unit(adapter, request, 4, spoken_token_id=THIRD_TOKEN_ID)
+    adapter.control(SESSION, truncate_through(3))
+    open_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(5), perception_payload(request, 5)
+    )
+    open_reply = feed_unit(
+        adapter, request, 5, spoken_token_id=PLAIN_TOKEN_ID, ends_turn=True
+    )
+    adapter.control(SESSION, truncate_through(4))
+    second_cut_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(6), perception_payload(request, 6)
+    )
+    second_cut = feed_unit(adapter, request, 6, spoken_token_id=None)
+    second_cut_history = list(state.generated_history)
+    feed_unit(adapter, request, 7, spoken_token_id=OTHER_TOKEN_ID)
+    adapter.control(SESSION, interrupt_after(6))
+    stop_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(8), perception_payload(request, 8)
+    )
+    stopped = adapter.build(SESSION, audio_unit(8), perception_payload(request, 8))
+
+    assert ended_preparation == ARSessionPreparation(
+        kept_token_count=SECOND_UNIT_PROMPT_LENGTH
+    )
+    assert ended_cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.turn_eos,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        82,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        83,
+    ]
+    assert ended_cut.is_listen_forced is False
+    assert ended_cut_history == [PLAIN_TOKEN_ID]
+    assert open_preparation == ARSessionPreparation()
+    assert open_reply.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 85]
+    assert second_cut_preparation == ARSessionPreparation(
+        kept_token_count=UNIT_PROMPT_LENGTHS[5]
+    )
+    assert second_cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.turn_eos,
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        86,
+    ]
+    assert second_cut_history == [PLAIN_TOKEN_ID, THIRD_TOKEN_ID]
+    assert stop_preparation == ARSessionPreparation(
+        kept_token_count=UNIT_PROMPT_LENGTHS[7]
+    )
+    assert stopped.input_ids.tolist() == [
+        SPECIAL_TOKENS.listen,
+        SPECIAL_TOKENS.unit_end,
+        88,
+    ]
+    assert stopped.is_listen_forced is True
+
+
+def test_a_stopped_reply_is_no_longer_cut_past_the_truncate_window() -> None:
+    """A stopped reply stays cuttable through TRUNCATE_WINDOW_UNITS listen units after its last spoken unit, each of which a cut re-feeds; one listen unit later a truncate drops nothing."""
+    adapter, request = open_duplex_adapter()
+    feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID)
+    adapter.control(SESSION, interrupt_after(0))
+    for unit_index in range(1, TRUNCATE_WINDOW_UNITS + 1):
+        feed_unit(adapter, request, unit_index, spoken_token_id=None)
+    adapter.control(SESSION, truncate_through(-1))
+    within_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(11), perception_payload(request, 11)
+    )
+    within = feed_unit(adapter, request, 11, spoken_token_id=None)
+    adapter.control(SESSION, truncate_through(-1))
+    past_preparation = adapter.prepare_unit(
+        SESSION, audio_unit(12), perception_payload(request, 12)
+    )
+    past = adapter.build(SESSION, audio_unit(12), perception_payload(request, 12))
+
+    assert within_preparation == ARSessionPreparation(
+        kept_token_count=FIRST_UNIT_PROMPT_LENGTH
+    )
+    assert within.input_ids.tolist() == [
+        SPECIAL_TOKENS.listen,
+        *[
+            token_id
+            for unit_index in range(1, TRUNCATE_WINDOW_UNITS + 1)
+            for token_id in (
+                SPECIAL_TOKENS.unit_end,
+                AUDIO_PLACEHOLDER_ID_BASE + unit_index,
+                SPECIAL_TOKENS.listen,
+            )
+        ],
+        SPECIAL_TOKENS.unit_end,
+        91,
+    ]
+    assert past_preparation == ARSessionPreparation()
+    assert past.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 92]
 
 
 def test_chunk_eos_from_the_first_sample_skips_the_second_stage() -> None:
