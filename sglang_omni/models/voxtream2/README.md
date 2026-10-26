@@ -168,17 +168,33 @@ Use the saved artifacts to fill the PR evidence table:
 | Speech quality | Listening review and a separate ASR/WER evaluation; not inferred from nonempty audio |
 | Peak GPU memory | Separate measurement required; not collected by this test |
 
-Historical tests of the September 18 implementation covered streamed PCM, non-streaming WAV, seeded parity,
-disconnect recovery, a six-client burst with capacity four, and service health
-after overload. Both streaming and non-streaming HTTP requests were checked
-for unsupported sampling controls, style instructions, language, and invalid SPS.
-All eight invalid requests returned HTTP 400; two burst rejections returned 503.
-The four admitted burst requests ran serially. This is lifecycle
-validation, not a throughput optimization or a broad quality benchmark.
+## Local validation
 
-The October 11 refresh against current main has not yet repeated these HTTP
-or real-model checks. Historical observations do not establish compatibility
-with the refreshed implementation.
+The October 27 validation used one RTX 2080 Ti (11 GiB), Linux/WSL2,
+float16 generation, one reference voice, and a 20-second generation limit.
+The parent core versions were PyTorch 2.14.1, SGLang 0.5.22, and Transformers
+5.19.0; the separate worker used the author environment listed above.
 
-Code, tests, and this draft were prepared with Codex assistance. The refreshed
-code requires human review and listening evaluation before PR submission.
+| Execution | Measured requests | Median first audio (s) | Median RTF |
+|---|---:|---:|---:|
+| Eager | 8 | 0.475360 | 2.110993 |
+| CUDA Graph | 8 | 0.232152 | 0.430372 |
+
+These measurements include local pipe transport and exclude warmup and recovery
+requests. CUDA Graph reuses the author's implementation. This is a comparison
+of two settings within the new integration, not a new graph algorithm or a
+comparison against an existing Omni VoXtream2 implementation. Other GPUs on the
+host had unrelated workloads; this is not an isolated-host performance study.
+One-second device-level sampling reached 2542 MiB on the test GPU, including its
+11 MiB idle baseline; this is not per-process allocator accounting.
+
+Both execution modes passed repeatability, cancellation, invalid-request recovery,
+and worker-exit checks. The refreshed Stage unit tests and HTTP WAV/PCM,
+invalid-request, and disconnect-recovery checks passed. The waveform comparison
+maximum error was 0.000244140625 in both modes. Independent Whisper base.en
+transcription checks are retained with the local experiment artifacts; these
+short checks do not establish broad speech quality or listening preference.
+
+Code, tests, and documentation were prepared with Codex assistance. Human code
+review and listening evaluation remain necessary; automated speech recognition
+is not a naturalness evaluation.
