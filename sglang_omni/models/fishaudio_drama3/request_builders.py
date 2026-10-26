@@ -3,15 +3,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import struct
 from array import array
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from itertools import count, pairwise
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.models.fishaudio_drama3.config import DEFAULT_REFERENCE_SAMPLING
+from sglang_omni.models.fishaudio_drama3.config import (
+    DEFAULT_PREFIX_CACHE_PROMPT_ONLY,
+    DEFAULT_REFERENCE_SAMPLING,
+)
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
@@ -31,6 +38,7 @@ MAXIMUM_TOP_K = torch.iinfo(torch.int32).max
 # Reference sampling's epsilon_cutoff for a request that sets none.
 REFERENCE_EPSILON_CUTOFF = 1e-3
 VOCODER_STAGE = "vocoder"
+PROMPT_CACHE_TOKEN_BASE = 1 << 62
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -66,6 +74,7 @@ class Drama3RequestData(SGLangARRequestData):
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
     epsilon_cutoff: float = 0.0
+    prefix_cache_enabled: bool = False
 
 
 class Drama3RequestBuilder:
@@ -79,12 +88,19 @@ class Drama3RequestBuilder:
         max_prompt_rows: int,
         max_new_tokens_cap: int,
         reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
+        prefix_cache_enabled: bool = False,
+        prefix_cache_prompt_only: bool = DEFAULT_PREFIX_CACHE_PROMPT_ONLY,
     ) -> None:
         self.vocab_size = config.text_config.vocab_size
         self.codebook_size = config.audio_decoder_config.vocab_size
         self.frame_width = 1 + config.audio_decoder_config.num_codebooks
         self.eos_token_id = config.eos_token_id
         self.context_length = context_length
+        self.prefix_cache_enabled: bool = prefix_cache_enabled
+        self.prefix_cache_prompt_only: bool = (
+            prefix_cache_enabled and prefix_cache_prompt_only
+        )
+        self.request_numbers: Iterator[int] = count(1)
         self.max_prompt_rows = checked_int(
             max_prompt_rows, "max_prompt_rows", MINIMUM_PROMPT_ROWS
         )
@@ -225,14 +241,38 @@ class Drama3RequestBuilder:
         sampling_params.normalize(None)
         sampling_params.verify(self.vocab_size)
         frame_rows = prompt_rows.tolist()
+        if self.prefix_cache_enabled:
+            # note (wirybeaver): tower KV at row p also depends on frame p + 1.
+            cache_token_ids = array("q")
+            for frame_row, next_frame_row in pairwise(frame_rows):
+                digest = hashlib.blake2b(
+                    struct.pack(
+                        f"<{2 * self.frame_width}q", *frame_row, *next_frame_row
+                    ),
+                    digest_size=8,
+                ).digest()
+                cache_token_ids.append(
+                    (int.from_bytes(digest, "little") & (PROMPT_CACHE_TOKEN_BASE - 1))
+                    | PROMPT_CACHE_TOKEN_BASE
+                )
+            # note (wirybeaver): generated codebooks are not in output_ids; isolate their suffix.
+            cache_token_ids.append(-next(self.request_numbers))
+        else:
+            cache_token_ids = array("q", [frame_row[0] for frame_row in frame_rows])
         req = Req(
             rid=payload.request_id,
             origin_input_text="",
-            origin_input_ids=array("q", [frame_row[0] for frame_row in frame_rows]),
+            origin_input_ids=cache_token_ids,
             sampling_params=sampling_params,
             vocab_size=self.vocab_size,
             eos_token_ids={self.eos_token_id},
         )
+        if self.prefix_cache_prompt_only:
+            req._omni_prompt_only_radix = (
+                True  # noqa: leading-underscore  # scheduler contract
+            )
+        else:
+            pass
         return Drama3RequestData(
             req=req,
             input_ids=prompt_rows[:, 0].clone(),
@@ -244,6 +284,7 @@ class Drama3RequestBuilder:
             frame_rows=frame_rows,
             prompt_row_count=len(frame_rows),
             epsilon_cutoff=epsilon_cutoff,
+            prefix_cache_enabled=self.prefix_cache_enabled,
         )
 
 
