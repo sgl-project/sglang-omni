@@ -312,9 +312,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         else:
             topk_output = self.topk(hidden_states, router_logits)
         y = self.experts(hidden_states, topk_output)
+        output_dtype = y.dtype
 
         if self.shared_experts is not None:
-            y = y + self.shared_experts(identity)
+            y = y.float() + self.shared_experts(identity).float()
         else:
             pass
 
@@ -324,7 +325,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         else:
             pass
 
-        return y
+        return y.to(output_dtype)
 
     def reference_topk(self, router_logits: torch.Tensor) -> StandardTopKOutput:
         """Keep group selection and expert weighting in FP32 Torch arithmetic."""
