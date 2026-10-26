@@ -182,7 +182,8 @@ jobs:
           name: music3-golden-outputs
           path: |
             ${{ runner.temp }}/golden-outputs/minimax-music3.json
-            ${{ runner.temp }}/golden-outputs/music3-audio
+            ${{ runner.temp }}/golden-outputs/music3-resident-audio
+            ${{ runner.temp }}/golden-outputs/music3-offload-audio
           if-no-files-found: ignore
 
       - name: Music3 server API tests

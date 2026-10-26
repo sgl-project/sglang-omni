@@ -213,7 +213,7 @@ class InteractionAdapter:
     async def cancel(self) -> None:
         raise ProtocolError("not_supported", "this session does not cancel responses")
 
-    async def truncate(self, audio_end_ms: float) -> None:
+    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
         raise ProtocolError("not_supported", "this session does not truncate responses")
 
     async def commit(self) -> None:

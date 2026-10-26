@@ -41,6 +41,7 @@ SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 class SessionKV(Protocol):
     kv_allocated_len: int
+    kv_committed_len: int
     holds_kv: bool
 
 
@@ -106,6 +107,8 @@ def is_close_request(payload: StagePayload) -> bool:
 class ARSessionPreparation:
     reset_history: bool = False
     bypass_generation: bool = False
+    # note (ruoyu): The native tokens to keep before the unit is appended, the last unit's prompt; that unit's generated tokens leave the session's arrays and KV.
+    kept_token_count: int | None = None
 
 
 class ARSessionAdapter:
@@ -323,6 +326,10 @@ class ARSessionBridge:
                 raise RuntimeError("native session reset failed")
             else:
                 pass
+        elif preparation.kept_token_count is not None:
+            self.rewind_streaming_session(
+                unit.session_identity.id, preparation.kept_token_count
+            )
         else:
             pass
         return preparation.bypass_generation
@@ -350,6 +357,19 @@ class ARSessionBridge:
             raise RuntimeError("streaming session close is still pending")
         else:
             pass
+
+    def rewind_streaming_session(self, session_id: str, kept_token_count: int) -> None:
+        """Drop the last unit's generated tokens from the native session's arrays and its KV record together, so the next unit extends the last unit's prompt without a re-prefill."""
+        native_session = self.bridge_scheduler.session_controller.get(session_id)
+        [last_request_node] = native_session.req_nodes.values()
+        last_request = last_request_node.req
+        if kept_token_count != len(last_request.origin_input_ids):
+            raise ValueError("a session rewind keeps exactly the last unit's prompt")
+        else:
+            # note (ruoyu): The streaming session matches its KV by length alone, so the token arrays and the committed length shrink together or the next unit reuses rows computed for the dropped tokens.
+            last_request.output_ids = last_request.output_ids[:0]
+            record = self.bridge_scheduler.tree_cache.session_records()[session_id]
+            record.kv_committed_len = min(record.kv_committed_len, kept_token_count)
 
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData

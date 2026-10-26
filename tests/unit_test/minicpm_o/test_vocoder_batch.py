@@ -304,6 +304,7 @@ def speech_append(
                 is_listen=is_listen,
                 end_of_turn=end_of_turn,
                 speech_turn_start=True,
+                is_speech_cut=False,
             )
         ),
         context=SessionContext(
@@ -365,6 +366,7 @@ def test_speech_hooks_emit_one_voice_chunk_per_unit() -> None:
     assert [chunk.payload["pcm"] for chunk in listening_chunks] == [b""]
     (voice,) = speaking_chunks
     assert voice.duration_ms == 1000
+    assert voice.payload["is_speech_cut"] is False
     assert len(voice.payload["pcm"]) == 2 * OUTPUT_SAMPLE_RATE
     assert runtime.token2wav.forward_sizes == [1]
 
@@ -394,6 +396,7 @@ def run_speech_stage(
                 is_listen=False,
                 end_of_turn=end_of_turn,
                 speech_turn_start=seq == 0,
+                is_speech_cut=False,
             )
             appends.append(append)
     chunks: dict[str, list[dict]] = {append.request_id: [] for append in appends}

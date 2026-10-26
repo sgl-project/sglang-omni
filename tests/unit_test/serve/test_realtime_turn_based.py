@@ -255,5 +255,5 @@ async def test_an_adapter_without_cancel_reports_not_supported():
     with pytest.raises(ProtocolError, match="not cancel"):
         await runtime.cancel()
     with pytest.raises(ProtocolError, match="not truncate"):
-        await runtime.truncate(10.0)
+        await runtime.truncate("item_0", 10.0)
     await runtime.close("client_closed")

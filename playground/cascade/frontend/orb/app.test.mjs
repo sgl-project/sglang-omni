@@ -38,6 +38,7 @@ function createApp(sessionOptions) {
     clearTimeout() {},
     setInterval() {},
     requestAnimationFrame() {},
+    ResizeObserver: class { observe() {} },
     Orb: class {},
     Settings: class {
       constructor(ui, options) { panelOptions.push(options); }

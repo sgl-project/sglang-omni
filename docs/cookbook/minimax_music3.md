@@ -65,12 +65,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh "$MUSIC3_RUNTIME" "$MUSIC3_BUILD
   --model-name MiniMaxAI/MiniMax-Music3 --port 8000
 ```
 
-Set `MUSIC3_DATA`, `MUSIC3_RUNTIME` and `MUSIC3_BUILD` to separate local
-directories. Serving needs neither Python nor SGLang's CUDA package. Model
-provisioning uses the existing CI Python requirements. The converted weights
-occupy about 14 GB; allow additional unified memory for the KV cache and
-acoustic activations. Both stages stay resident, with MLX's free buffer cache
-limited to 1 GiB.
+Set `MUSIC3_DATA`, `MUSIC3_RUNTIME` and `MUSIC3_BUILD` to separate local directories. Serving needs neither Python nor SGLang's CUDA package. Model provisioning uses the existing CI Python requirements. The converted weights occupy about 14 GB; allow additional unified memory for the KV cache and acoustic activations. Both stages stay resident by default, with MLX's free buffer cache limited to 1 GiB.
 
 This path includes Qwen3/RVQ decoding, condition fusion, Euler Flow/DiT,
 stereo DAV decoding, overlap crops, and Hann sinc conversion from 44.1 to
@@ -88,6 +83,25 @@ client's generation releases the worker when computation finishes. Supervisor
 shutdown cancels between frames, acoustic windows and Euler steps. Voxt's
 `--supervised` lifecycle, `/health` and `/v1/models` are supported; this does
 not add a Music3 interface to Voxt.
+
+### Native MLX stage offload
+
+Pass both components to the native server to load one stage at a time:
+
+```bash
+"$MUSIC3_RUNTIME/bin/music3_server" \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --model-name MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --stage-offload-components ar,dit
+```
+
+Startup loads configuration and the tokenizer and validates checkpoint shapes and stage ownership without evaluating the weights. Every tensor must belong to exactly one stage: AR/RVQ uses language_model and rvq_depth_decoder; the acoustic stage uses condition_encoder, transformer and vocoder. Each accepted request loads AR/RVQ weights, evaluates the hidden-state handoff, synchronizes and releases AR, then loads the acoustic weights. Acoustic weights stay loaded across all windows and are released after completion, cancellation or failure.
+
+The checkpoint directory is resolved once at startup; keep its contents unchanged while the server runs. No second host weight copy is retained. Reloading weights adds disk I/O and latency; file-backed pages can remain in the operating system's cache.
+
+The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
+
+`music3_synthesize` accepts the same flag and reports per-request elapsed time, AR elapsed time and peak active MLX allocation in bytes. Its diagnostic `--check-cancellation` flag cancels at the fully evaluated AR handoff before synthesizing a retry, and reports active MLX allocation before and after cancellation. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. HTTP seeded-repeat and busy cases run in both modes; the remaining HTTP cases run resident. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.
 
 ### Reference parity and Mac CI
 

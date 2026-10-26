@@ -10,8 +10,10 @@ import base64
 import binascii
 import logging
 import threading
+import unicodedata
 
 import numpy as np
+import regex
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -78,30 +80,44 @@ def create_app(model: str, device: str, default_language: str) -> FastAPI:
         else:
             language = request.language
         text, origin = spoken_text(request.text, language)
+        normalized_characters: list[str] = []
+        original_ends_chars: list[int] = []
+        for cluster in regex.finditer(r"\X", text):
+            characters = (
+                unicodedata.normalize("NFKC", cluster.group())
+                if language.lower() == "japanese"
+                else cluster.group()
+            )
+            for character in characters:
+                if aligner.aligner_processor.is_kept_char(character):
+                    normalized_characters.append(character)
+                    original_ends_chars.append(origin[cluster.end() - 1] + 1)
+                else:
+                    pass
+        normalized_text = "".join(normalized_characters)
         with inference_lock:
             result = aligner.align(
                 audio=(samples, request.sample_rate_hz),
                 text=text,
                 language=language,
             )[0]
-        boundaries = []
-        cursor = 0
+        boundaries: list[AlignmentBoundary] = []
+        normalized_end_chars = 0
         for token in result:
-            position = text.find(token.text, cursor)
-            if position < 0:
+            if not token.text or not normalized_text.startswith(
+                token.text, normalized_end_chars
+            ):
                 logger.warning(
-                    "aligner token %r not found in %r after %d",
-                    token.text,
-                    text,
-                    cursor,
+                    f"aligner token {token.text!r} does not match normalized text "
+                    f"at character {normalized_end_chars}"
                 )
                 raise HTTPException(
                     422,
-                    "Aligner normalized text requires an explicit original-text mapping",
+                    "Aligner tokens do not match the normalized source text",
                 )
             else:
                 pass
-            cursor = position + len(token.text)
+            normalized_end_chars += len(token.text)
             # Note (Junnan Li): The aligner works in frames of its own, so a token may end a few milliseconds past the audio; that is the audio's end.
             sample_end = min(
                 round(token.end_time * request.sample_rate_hz), len(samples)
@@ -113,11 +129,22 @@ def create_app(model: str, device: str, default_language: str) -> FastAPI:
                 raise HTTPException(422, "Alignment precedes source audio")
             else:
                 pass
-            boundaries.append(
-                AlignmentBoundary(
-                    text_end_chars=origin[cursor - 1] + 1, audio_end_samples=sample_end
+            text_end_chars = original_ends_chars[normalized_end_chars - 1]
+            if (
+                normalized_end_chars < len(original_ends_chars)
+                and original_ends_chars[normalized_end_chars] == text_end_chars
+            ):
+                pass
+            else:
+                boundaries.append(
+                    AlignmentBoundary(
+                        text_end_chars=text_end_chars, audio_end_samples=sample_end
+                    )
                 )
-            )
+        if normalized_end_chars != len(normalized_text):
+            raise HTTPException(422, "Aligner tokens omit the end of the source text")
+        else:
+            pass
         return AlignmentResult(boundaries=boundaries)
 
     return application

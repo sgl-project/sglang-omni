@@ -182,9 +182,42 @@ mx::array Model::Vocoder(const mx::array &latents) const {
 }
 
 Result Model::Synthesize(const Request &request,
-                         const std::atomic<bool> &cancelled) const {
-  const mx::array frames = GenerateFrames(request, cancelled);
-  mx::eval(frames);
+                         const std::atomic<bool> &cancelled,
+                         const std::function<void()> &on_ar_complete) {
+  try {
+    CheckCancelled(cancelled);
+    if (is_serial_offload_enabled_) {
+      LoadStageWeights(false);
+    } else {
+    }
+    const mx::array frames = GenerateFrames(request, cancelled);
+    mx::eval(frames);
+    if (on_ar_complete) {
+      on_ar_complete();
+    } else {
+    }
+    CheckCancelled(cancelled);
+    if (is_serial_offload_enabled_) {
+      LoadStageWeights(true);
+    } else {
+    }
+    Result result = DecodeFrames(frames, request, cancelled);
+    if (is_serial_offload_enabled_) {
+      ReleaseWeights();
+    } else {
+    }
+    return result;
+  } catch (...) {
+    if (is_serial_offload_enabled_) {
+      ReleaseWeights();
+    } else {
+    }
+    throw;
+  }
+}
+
+Result Model::DecodeFrames(const mx::array &frames, const Request &request,
+                           const std::atomic<bool> &cancelled) const {
   const int frame_count = frames.shape(1);
   std::optional<mx::array> previous_latent;
   std::optional<mx::array> previous_condition;
