@@ -19,6 +19,7 @@ from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
 )
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 
@@ -53,7 +54,8 @@ class FireRedASR2EngineBuilder(AsrEngineBuilder[FireRedRequestData]):
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "max_running_requests": self.max_running_requests,
-            "disable_cuda_graph": True,
+            "disable_cuda_graph": False,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
             "max_prefill_tokens": 4096,

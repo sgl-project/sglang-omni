@@ -45,8 +45,8 @@ For Ascend, select a physical device with `ASCEND_RT_VISIBLE_DEVICES` and add
 `--asr.factory.device npu`. The stage uses logical device 0. Defaults are a
 BF16 decoder, eight concurrent requests, and greedy decoding with up to 256
 output tokens. The acoustic encoder and adapter retain FP32 weights and
-compute; reducing their precision changes recognition results. The encoder
-processes at most four clips per forward. Graph execution is disabled.
+compute; reducing their precision changes recognition results. Decode graphs
+are enabled by default; the encoder (up to four clips) and prefill run eagerly.
 
 The example sets `mem_fraction_static=0.70`; lower it or concurrency to leave
 more encoder activation headroom. The audio embedding cache defaults to
