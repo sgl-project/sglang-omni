@@ -15,8 +15,10 @@ repos:
       - id: check-symlinks
       - id: destroyed-symlinks
       - id: trailing-whitespace
+        exclude_types: [diff]
         exclude: (^Voxt/third_party/|^Voxt/internal/lang/.*\.tsv$)
       - id: end-of-file-fixer
+        exclude_types: [diff]
         exclude: (^Voxt/third_party/)
       - id: check-yaml
         args: [--allow-multiple-documents]

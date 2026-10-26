@@ -8,5 +8,8 @@ omni_ci_deps_hash() {
     return 1
   fi
   cat pyproject.toml "$(dirname "${BASH_SOURCE[0]}")/prepare_omni_venv.sh" \
+    sglang_omni/vendor/sglang/runtime_patch.py \
+    sglang_omni/vendor/sglang/patches/runtime.json \
+    sglang_omni/vendor/sglang/patches/*.patch \
     | sha256sum | awk '{print $1}'
 }

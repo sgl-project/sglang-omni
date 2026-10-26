@@ -1,0 +1,309 @@
+diff --git a/kernels/ops/attention/fla/chunk.py b/kernels/ops/attention/fla/chunk.py
+--- a/kernels/ops/attention/fla/chunk.py
++++ b/kernels/ops/attention/fla/chunk.py
+@@ -47,6 +47,8 @@
+     inplace_update: bool = True,
+     chunk_offsets: torch.LongTensor | None = None,
+     o_chunk_indices: torch.LongTensor | None = None,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
+ ):
+     g = chunk_local_cumsum(
+         g, chunk_size=CHUNK_SIZE, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices
+@@ -73,6 +75,8 @@
+         chunk_indices=chunk_indices,
+         inplace_update=inplace_update,
+         chunk_offsets=chunk_offsets,
++        track_state=track_state,
++        track_chunk_idx=track_chunk_idx,
+     )
+     o = chunk_fwd_o(
+         q=q,
+@@ -109,6 +113,8 @@
+         inplace_update: bool = True,
+         chunk_indices: Optional[torch.LongTensor] = None,
+         chunk_offsets: Optional[torch.LongTensor] = None,
++        track_state: torch.Tensor | None = None,
++        track_chunk_idx: torch.Tensor | None = None,
+     ):
+         q_orig = q
+         k_orig = k
+@@ -136,6 +142,8 @@
+             inplace_update=inplace_update,
+             chunk_offsets=chunk_offsets,
+             o_chunk_indices=o_chunk_indices,
++            track_state=track_state,
++            track_chunk_idx=track_chunk_idx,
+         )
+         return o.to(q.dtype), h
+ 
+@@ -156,6 +164,8 @@
+     inplace_update: bool = True,
+     chunk_indices: Optional[torch.LongTensor] = None,
+     chunk_offsets: Optional[torch.LongTensor] = None,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
+ ):
+     r"""
+     Args:
+@@ -275,6 +285,8 @@
+         inplace_update,
+         chunk_indices,
+         chunk_offsets,
++        track_state,
++        track_chunk_idx,
+     )
+     if head_first:
+         o = rearrange(o, "b t h ... -> b h t ...")
+diff --git a/kernels/ops/mamba/gdn_prefill_track.py b/kernels/ops/mamba/gdn_prefill_track.py
+--- a/kernels/ops/mamba/gdn_prefill_track.py
++++ b/kernels/ops/mamba/gdn_prefill_track.py
+@@ -7,8 +7,8 @@
+ * ``track_mode[r] == 0``: row ``r`` is not tracked (or is padding); no-op.
+ * ``track_mode[r] == 1``: the tracked length is chunk aligned; the snapshot is
+   the post-extend state of the row's own cache slot.
+-* ``track_mode[r] == 2``: the snapshot is the chunk-boundary state stored in
+-  ``h[track_h_row[r]]`` (activation dtype), as the eager Triton path reads it.
++* ``track_mode[r] == 2``: read the selected FP32 snapshot, or the activation-dtype
++  chunk state when FP32 snapshots are disabled.
+ 
+ Every tracked row also snapshots its conv window: the ``STATE_LEN`` raw
+ pre-conv input rows ending at the tracked boundary.
+@@ -65,9 +65,9 @@
+ @triton.jit
+ def _gdn_track_ssm_kernel(
+     ssm_pool,  # [slots, ...] per-slot contiguous
+-    h,  # [chunks, ...] per-chunk states
++    h,  # Selected FP32 snapshots or activation-dtype chunk states
+     track_mode,  # [rows] int32
+-    track_h_row,  # [rows] int32 row of h holding the chunk-boundary state
++    track_h_row,  # None for selected snapshots
+     track_dst,  # [rows] int64 physical track slot
+     cache_indices,  # [rows] physical cache slot of the row
+     stride_ssm_slot,
+@@ -86,8 +86,8 @@
+         src = tl.load(cache_indices + r).to(tl.int64)
+         val = tl.load(ssm_pool + src * stride_ssm_slot + offs, mask=mask)
+     else:
+-        row = tl.load(track_h_row + r).to(tl.int64)
+-        val = tl.load(h + row * stride_h_row + offs, mask=mask)
++        row = r if track_h_row is None else tl.load(track_h_row + r)
++        val = tl.load(h + row.to(tl.int64) * stride_h_row + offs, mask=mask)
+         val = val.to(ssm_pool.dtype.element_ty)
+     tl.store(ssm_pool + dst * stride_ssm_slot + offs, val, mask=mask)
+ 
+@@ -127,16 +127,16 @@
+     ssm_pool: torch.Tensor,
+     h: torch.Tensor,
+     track_mode: torch.Tensor,
+-    track_h_row: torch.Tensor,
++    track_h_row: torch.Tensor | None,
+     track_dst: torch.Tensor,
+     cache_indices: torch.Tensor,
+ ) -> None:
+-    """Snapshot the tracked rows' SSM state into their track slots (mode 1:
+-    the row's final state, mode 2: its chunk-boundary state in ``h``)."""
++    """Copy final states or selected boundary snapshots to track slots."""
+     rows = track_mode.shape[0]
+     numel = ssm_pool[0].numel()
+     assert ssm_pool[0].is_contiguous(), "per-slot SSM state must be contiguous"
+-    h = h.flatten(0, 1)
++    if track_h_row is not None:
++        h = h.flatten(0, 1)
+     assert h[0].is_contiguous() and h[0].numel() == numel
+     block = 1024
+     _gdn_track_ssm_kernel[(rows, triton.cdiv(numel, block))](
+diff --git a/srt/arg_groups/field_order.py b/srt/arg_groups/field_order.py
+--- a/srt/arg_groups/field_order.py
++++ b/srt/arg_groups/field_order.py
+@@ -552,5 +552,6 @@
+     "enable_return_aux_hidden_states",
+     "aux_hidden_state_capture",
+     "return_aux_hidden_state_layer_ids",
++    "enable_gdn_fp32_snapshots",
+ )
+ # fmt: on
+diff --git a/srt/arg_groups/fields/exec_.py b/srt/arg_groups/fields/exec_.py
+--- a/srt/arg_groups/fields/exec_.py
++++ b/srt/arg_groups/fields/exec_.py
+@@ -494,6 +494,10 @@
+             choices=["float32", "bfloat16", "float16"],
+         ),
+     ] = None
++    enable_gdn_fp32_snapshots: A[
++        bool,
++        "Preserve FP32 GDN prefix-cache snapshots with FP32 SSM states and FP16/BF16 activations. Defaults to the existing activation-dtype snapshot path.",
++    ] = False
+     mamba_max_states_per_path: A[
+         int,
+         "Maximum number of cached Mamba states retained per root-to-tail path "
+diff --git a/srt/layers/attention/linear/gdn_backend.py b/srt/layers/attention/linear/gdn_backend.py
+--- a/srt/layers/attention/linear/gdn_backend.py
++++ b/srt/layers/attention/linear/gdn_backend.py
+@@ -618,12 +618,20 @@
+         self, forward_batch: ForwardBatch
+     ) -> GDNPrefillGraphMetadata:
+         cache_indices = self._prefill_graph_cache_indices(forward_batch)
++        track = get_exec().mamba.enable_mamba_extra_buffer
+         meta = GDNPrefillGraphMetadata.allocate(
+             num_tokens=forward_batch.positions.shape[0],
+             max_seqs_cap=self.prefill_graph_max_seqs,
+             # Any replay of this bucket may carry prefix-cache snapshots (the
+             # extra buffer is only on with the radix cache).
+-            track=get_exec().mamba.enable_mamba_extra_buffer,
++            track=track,
++            fp32_snapshots=(
++                get_exec().mamba.enable_gdn_fp32_snapshots
++                and track
++                and self.req_to_token_pool.mamba_pool.mamba_cache.temporal.dtype
++                == torch.float32
++                and self._model_runner.dtype in (torch.float16, torch.bfloat16)
++            ),
+             cache_index_dtype=cache_indices.dtype,
+             device=self.device,
+         )
+@@ -1167,6 +1175,16 @@
+         ).transpose(0, 1)
+         query, key, value = self._split_prefill_qkv(layer, mixed_qkv)
+         g, beta = self._prefill_gates(layer, a, b)
++        # note (wirybeaver): snapshots must bypass activation-dtype chunk states.
++        snapshot = (
++            torch.empty(
++                (meta.max_seqs, *ssm_states.shape[1:]),
++                dtype=torch.float32,
++                device=ssm_states.device,
++            )
++            if meta.track_chunk_idx is not None
++            else None
++        )
+         core_attn_out, _, h = self.kernel_dispatcher.extend(
+             q=query,
+             k=key,
+@@ -1178,13 +1196,15 @@
+             query_start_loc=meta.cu_seqlens,
+             chunk_indices=meta.chunk_indices,
+             chunk_offsets=meta.chunk_offsets,
++            track_state=snapshot,
++            track_chunk_idx=meta.track_chunk_idx if snapshot is not None else None,
+         )
+         if meta.track:
+             gdn_track_ssm_state(
+                 ssm_pool=ssm_states,
+-                h=h,
++                h=snapshot if snapshot is not None else h,
++                track_h_row=meta.track_h_row if snapshot is None else None,
+                 track_mode=meta.track_mode,
+-                track_h_row=meta.track_h_row,
+                 track_dst=meta.track_dst,
+                 cache_indices=meta.cache_indices,
+             )
+@@ -1414,8 +1434,11 @@
+             g, beta = self._prefill_gates(layer, a, b)
+             h_track_buf = None
+             if (
+-                forward_metadata.has_mamba_track_mask
++                get_exec().mamba.enable_gdn_fp32_snapshots
++                and forward_metadata.has_mamba_track_mask
+                 and forward_metadata.track_ssm_h_src.numel() > 0
++                and ssm_states.dtype == torch.float32
++                and query.dtype in (torch.float16, torch.bfloat16)
+                 and self.kernel_dispatcher.extend_kernel.supports_track_state_snapshot
+             ):
+                 # Snapshot-capable kernels can supply just the selected FP32
+diff --git a/srt/layers/attention/linear/gdn_prefill_graph.py b/srt/layers/attention/linear/gdn_prefill_graph.py
+--- a/srt/layers/attention/linear/gdn_prefill_graph.py
++++ b/srt/layers/attention/linear/gdn_prefill_graph.py
+@@ -78,6 +78,7 @@
+     conv_block_table: torch.Tensor  # [max_conv_blocks, 2] (seq, block)
+     track_mode: torch.Tensor  # [max_seqs]
+     track_h_row: torch.Tensor  # [max_seqs] row of the per-chunk states h
++    track_chunk_idx: torch.Tensor | None  # [max_seqs], selected FP32 snapshots
+     track_conv_start: torch.Tensor  # [max_seqs]
+     num_logical_tokens: torch.Tensor  # [1]
+     host: np.ndarray  # int32 staging for `packed`
+@@ -96,6 +97,7 @@
+         track: bool,
+         cache_index_dtype: torch.dtype,
+         device: torch.device,
++        fp32_snapshots: bool = False,
+     ) -> GDNPrefillGraphMetadata:
+         max_seqs = max(1, min(num_tokens, max_seqs_cap))
+         max_chunks = triton.cdiv(num_tokens, GDN_CHUNK_SIZE) + max_seqs
+@@ -109,6 +111,7 @@
+             max_seqs,  # track_h_row
+             max_seqs,  # track_conv_start
+             1,  # num_logical_tokens
++            max_seqs if fp32_snapshots else 0,  # track_chunk_idx
+         ]
+         packed = torch.zeros(sum(sizes), dtype=torch.int32, device=device)
+         views = torch.split(packed, sizes)
+@@ -125,6 +128,7 @@
+             conv_block_table=views[3].view(max_conv_blocks, 2),
+             track_mode=views[4],
+             track_h_row=views[5],
++            track_chunk_idx=views[8] if fp32_snapshots else None,
+             track_conv_start=views[6],
+             num_logical_tokens=views[7],
+             host=np.zeros(sum(sizes), dtype=np.int32),
+@@ -204,11 +208,18 @@
+ 
+         track_mode = np.zeros(self.max_seqs, dtype=np.int64)
+         track_h_row = np.zeros(self.max_seqs, dtype=np.int64)
++        track_chunk_idx = (
++            np.full(self.max_seqs, -1, dtype=np.int64)
++            if self.track_chunk_idx is not None
++            else None
++        )
+         track_conv_start = np.zeros(self.max_seqs, dtype=np.int64)
+         if track_rows is not None:
+             # Same source rows as the eager plan: h_offsets[row] + chunk.
+             for row, chunk in track_rows.chunk_rows:
+                 track_h_row[row] = offsets[row] + chunk
++                if track_chunk_idx is not None:
++                    track_chunk_idx[row] = chunk
+                 track_mode[row] = TRACK_CHUNK_STATE
+             for row in track_rows.final_rows:
+                 track_mode[row] = TRACK_FINAL_STATE
+@@ -218,6 +229,8 @@
+         o = self._write(o=o, values=track_h_row)
+         o = self._write(o=o, values=track_conv_start)
+         o = self._write(o=o, values=np.array([total]))
++        if track_chunk_idx is not None:
++            o = self._write(o=o, values=track_chunk_idx)
+         assert o == self.host.shape[0]
+ 
+     def _write(self, *, o: int, values: np.ndarray) -> int:
+diff --git a/srt/layers/attention/linear/kernels/gdn_triton.py b/srt/layers/attention/linear/kernels/gdn_triton.py
+--- a/srt/layers/attention/linear/kernels/gdn_triton.py
++++ b/srt/layers/attention/linear/kernels/gdn_triton.py
+@@ -42,6 +42,7 @@
+ 
+     supports_packed_decode: bool = not is_cpu() and not is_npu()
+     supports_strided_target_verify_qkv: bool = True
++    supports_track_state_snapshot: bool = not (is_cpu() or is_npu() or is_xpu())
+ 
+     def packed_decode(
+         self,
+@@ -190,6 +191,14 @@
+                 "chunk_indices": kwargs["chunk_indices"],
+                 "chunk_offsets": kwargs["chunk_offsets"],
+             }
++        snapshot_arguments = (
++            {
++                "track_state": kwargs.get("track_state"),
++                "track_chunk_idx": kwargs.get("track_chunk_idx"),
++            }
++            if self.supports_track_state_snapshot
++            else {}
++        )
+         if is_cpu():
+             if not inplace_update:
+                 raise NotImplementedError(
+@@ -220,6 +229,7 @@
+             **recurrent_state_indices_args,
+             **inplace_update_args,
+             **graph_table_args,
++            **snapshot_arguments,
+         )
+ 
+     def target_verify(

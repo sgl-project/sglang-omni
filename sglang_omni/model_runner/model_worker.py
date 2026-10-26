@@ -17,6 +17,7 @@ from sglang_omni.quantization import (
     resolve_quant_config,
 )
 from sglang_omni.utils.misc import model_config_has_moe
+from sglang_omni.vendor.sglang.runtime_patch import verify_active_runtime
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ class ModelWorker:
         gpu_id: int,
         tp_rank: int = 0,
     ):
+        verify_active_runtime()
         self.server_args = server_args
         self.model_arch_override = config.model_arch_override
         self.weight_prefix = config.weight_prefix

@@ -193,6 +193,19 @@ class Drama3PipelineConfig(PipelineConfig):
         assert isinstance(factory, Drama3VocoderFactoryArgs)
         return factory.stateful_decode
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "tts_engine":
+            factory = self.stage_named(stage_name).factory
+            assert isinstance(factory, Drama3EngineFactoryArgs)
+            env_defaults.setdefault(
+                "SGLANG_ENABLE_GDN_PREFILL_GRAPH_EXTEND",
+                "1" if factory.gdn_prefill_cuda_graphs else "0",
+            )
+        else:
+            pass
+        return env_defaults
+
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         preprocessing_extra = (
