@@ -8,6 +8,7 @@ import base64
 import logging
 import tempfile
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from pathlib import Path
 
@@ -21,10 +22,21 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.utils.cpu import effective_cpu_count
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup, global_thread_pool
+
+try:
+    from torchcodec.decoders import VideoDecoder
+except (ImportError, OSError, RuntimeError):
+    # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
+    VideoDecoder = None
+
+# note (ratish): sampled frames sit far apart, so each decoder seeks to its own share of them;
+# one video takes at most this many decoder threads.
+MAX_VIDEO_DECODERS = 16
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +443,40 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
         return False
 
 
+def read_video_torchcodec(
+    ele: dict[str, str | float | int],
+) -> tuple[torch.Tensor, float]:
+    """The frames (T, C, H, W) and sample fps of the qwen-vl-utils torchcodec reader, with the
+    sampled frames split over up to MAX_VIDEO_DECODERS decoders decoding in parallel."""
+    video_path = str(ele["video"])
+    first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
+    video_fps = first_decoder.metadata.average_fps
+    start_frame, end_frame, total_frames = qwen_vision.calculate_video_frame_range(
+        ele, first_decoder.metadata.num_frames, video_fps
+    )
+    frame_count = qwen_vision.smart_nframes(
+        ele, total_frames=total_frames, video_fps=video_fps
+    )
+    frame_indices = (
+        torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
+    )
+    decoder_count = min(MAX_VIDEO_DECODERS, effective_cpu_count(), len(frame_indices))
+    index_shares = [
+        share.tolist() for share in np.array_split(frame_indices, decoder_count)
+    ]
+
+    def decode_share(share_index: int) -> torch.Tensor:
+        if share_index == 0:
+            decoder = first_decoder
+        else:
+            decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
+        return decoder.get_frames_at(indices=index_shares[share_index]).data
+
+    with ThreadPoolExecutor(max_workers=decoder_count) as pool:
+        frames = torch.cat(list(pool.map(decode_share, range(decoder_count))))
+    return frames, frame_count / max(total_frames, 1e-6) * video_fps
+
+
 def load_video_path(
     path: str | Path,
     fps: float | None = None,
@@ -464,7 +510,10 @@ def load_video_path(
         pass
     backend = qwen_vision.get_video_reader_backend()
     try:
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
+        if backend == "torchcodec":
+            video, sample_fps = read_video_torchcodec(ele)
+        else:
+            video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
     except Exception as backend_exc:
         if backend == "torchvision":
             if is_invalid_video(path, backend_exc):

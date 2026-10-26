@@ -399,3 +399,20 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
             assert torch.equal(loaded, decoded)
     assert sample_fps is None
     assert audios == ([None, None, None] if extract_audio else None)
+
+
+@pytest.mark.parametrize("frame_range", [{}, {"video_start": 0.5, "video_end": 1.75}])
+def test_parallel_torchcodec_decode_returns_the_reader_frames(
+    mpeg4_video: Path, monkeypatch, frame_range: dict[str, float]
+) -> None:
+    pytest.importorskip("torchcodec.decoders")
+    monkeypatch.setattr(video, "effective_cpu_count", lambda: 3)
+    ele = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
+
+    frames, sample_fps = video.read_video_torchcodec(dict(ele))
+    expected_frames, expected_fps = video.qwen_vision.VIDEO_READER_BACKENDS[
+        "torchcodec"
+    ](dict(ele))
+
+    assert torch.equal(frames, expected_frames)
+    assert sample_fps == expected_fps
