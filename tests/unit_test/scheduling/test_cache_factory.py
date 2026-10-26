@@ -101,7 +101,7 @@ def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
 
 
 def make_window_cache(
-    position_capacity: int, window_positions: int
+    position_capacity: int, window_positions: int, *, streaming: bool = False
 ) -> tuple[ReqToTokenPool, PureSWATokenToKVPoolAllocator, SWAKVPool, BasePrefixCache]:
     request_pool = ReqToTokenPool(
         1, position_capacity, "cpu", enable_memory_saver=False
@@ -128,7 +128,7 @@ def make_window_cache(
     with get_context().override_server_args(
         disable_radix_cache=True,
         chunked_prefill_size=None,
-        enable_streaming_session=False,
+        enable_streaming_session=streaming,
     ):
         cache = create_tree_cache(request_pool, allocator, 1, window_positions)
     return request_pool, allocator, kv_pool, cache
@@ -150,6 +150,14 @@ def test_factory_preserves_window_eviction_capability() -> None:
     assert not ordinary_cache.supports_swa()
 
 
+def test_factory_keeps_streaming_sessions_on_the_unified_cache_over_a_window_pool():
+    _, _, _, cache = make_window_cache(32, 8, streaming=True)
+    assert type(cache) is UnifiedRadixCache
+    assert cache.tree_components == (ComponentType.FULL, ComponentType.SWA)
+    assert cache.supports_swa()
+    assert cache.sliding_window_size == 8
+
+
 @pytest.fixture
 def window_cache_runtime() -> Iterator[None]:
     with get_context().override_server_args(
@@ -167,14 +175,15 @@ def window_cache_runtime() -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("window_cache_runtime")
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("cache_on_release", [False, True])
 def test_window_slots_survive_reuse_and_release(
-    monkeypatch: pytest.MonkeyPatch, cache_on_release: bool
+    monkeypatch: pytest.MonkeyPatch, cache_on_release: bool, streaming: bool
 ) -> None:
     monkeypatch.setenv("SGLANG_SWA_EVICTION_INTERVAL", "4")
     position_capacity, position_count, window_positions = 32, 24, 8
     request_pool, allocator, kv_pool, cache = make_window_cache(
-        position_capacity, window_positions
+        position_capacity, window_positions, streaming=streaming
     )
     request = Req(
         rid="window-request",

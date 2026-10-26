@@ -171,7 +171,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = fake_model
-    wrapper.logits_processor = lambda *args: args[0]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[0]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     wrapper.decode_live_rows = DecodeLiveRows()
@@ -269,7 +269,7 @@ def make_bare_wrapper(error: RuntimeError | None = None) -> Qwen3OmniThinkerForC
     torch.nn.Module.__init__(wrapper)
     wrapper.decode_live_rows = DecodeLiveRows()
     wrapper.model = RecordingTextModel(wrapper.decode_live_rows, error)
-    wrapper.logits_processor = lambda *args: args[1]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[1]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     return wrapper
@@ -289,6 +289,29 @@ def run_forward(
             out_cache_loc=torch.tensor(out_cache_loc),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("accept_hidden_layer", "expected_layers"),
+    [(2, [2]), (4, []), (5, None)],
+)
+def test_the_thinker_captures_the_talkers_accept_layer_in_every_forward(
+    accept_hidden_layer: int, expected_layers: list[int] | None
+) -> None:
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.root_config = SimpleNamespace(
+        talker_config=SimpleNamespace(accept_hidden_layer=accept_hidden_layer)
+    )
+    wrapper.config = SimpleNamespace(num_hidden_layers=4)
+    wrapper.model = SimpleNamespace(layers_to_capture=[])
+
+    if expected_layers is None:
+        with pytest.raises(ValueError, match="accept_hidden_layer"):
+            wrapper.set_talker_layers_to_capture()
+    else:
+        wrapper.set_talker_layers_to_capture()
+        assert wrapper.model.layers_to_capture == expected_layers
 
 
 @pytest.mark.parametrize(

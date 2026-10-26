@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.server_args import ServerArgs
+    from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+
+    from sglang_omni.model_runner.speculative_target_worker import (
+        SpeculativeTargetWorker,
+    )
 else:
     pass
 
@@ -92,6 +97,9 @@ class ModelWorker:
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
+        # Set by create_sglang_infrastructure when speculative decoding is on.
+        self.speculative_target_worker: SpeculativeTargetWorker | None = None
+        self.speculative_worker: BaseSpecWorker | None = None
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
         from sglang.srt.distributed import bootstrap

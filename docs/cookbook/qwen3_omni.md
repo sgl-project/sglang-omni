@@ -35,20 +35,22 @@ Use the selector below to generate the exact launch command for your configurati
 Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
 (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
-| Mode | Topology | Thinker TP | Precision | Status |
-|---|---|---|---|---|
-| Thinker-only | — | — | BF16 | ✅ |
-| Thinker-only | — | — | FP8 | ✅ |
-| Thinker-only | — | — | AutoRound INT4 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Colocated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
+All configurations listed below are supported.
+
+| Mode | Topology | Thinker TP | Precision |
+|---|---|---|---|
+| Thinker-only | — | — | BF16 |
+| Thinker-only | — | — | FP8 |
+| Thinker-only | — | — | AutoRound INT4 |
+| Thinker-Talker | Disaggregated | TP=1 | BF16 |
+| Thinker-Talker | Disaggregated | TP=1 | FP8 |
+| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav |
+| Thinker-Talker | Disaggregated | TP=2 | BF16 |
+| Thinker-Talker | Disaggregated | TP=2 | FP8 |
+| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav |
+| Thinker-Talker | Colocated | TP=1 | BF16 |
+| Thinker-Talker | Colocated | TP=1 | FP8 |
+| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav |
 
 ## Input / Output Modalities
 
@@ -135,11 +137,13 @@ sgl-omni serve --config examples/qwen3_omni/session_h200.yaml --enable-realtime 
 
 `examples/qwen3_omni/session_h200.yaml` sets what depends on the device: the per-stage memory fractions (those of the colocated speech profile for one H200) and `max_sessions`. On another device, declare both for that device; colocated stages require explicit memory fractions. Each open session retains up to the thinker's `max_seq_len` (32768) tokens of KV, so `max_sessions` is the thinker's KV pool in tokens, which the thinker logs at startup as `KV Cache is allocated. ... #tokens`, divided by 32768: 555,988 tokens and 16 sessions with these fractions on one H200. The image and audio encoders run in their own processes under their own fractions, so the thinker's `encoder_mem_reserve` is 0.
 
+The thinker and talker keep each session's KV between units, and that KV holds a request row, so the session's next unit reuses the row. A prefill batch therefore admits the next unit of every waiting session, not only as many as there are free rows. `--thinker.factory.continuation_aware_admission false` and `--talker_ar.factory.continuation_aware_admission false` count those units against the free rows like new requests; the KV is still kept and the rows still reused.
+
 The session takes 16 kHz PCM16 audio and camera frames. A user turn ends on `speech.stopped`, `commit`, or the end of input; the reply streams as `text_delta` and 24 kHz `pcm16` with `turn.queued`, `turn.started` and `turn.done`, and `turn.done` arrives once the reply's audio has left the server. The model hears each utterance whole and answers it with the conversation so far; it does not listen while it speaks. Speech that starts during a reply, or an `interrupt` control, stops the reply and publishes `turn.interrupted`. `max_utterance_seconds` (60) bounds the audio of one utterance and `max_queued_turns` (8) the finished utterances waiting behind the turn being answered; a client past either ends its session.
 
 Camera input uses `sglang.input_image.append`, as for [MiniCPM-o](minicpm_o.md): a base64 JPEG or PNG in `image` and its audio timeline position in `sglang.t_ms`. The newest `max_utterance_frames` (4) frames that fall in an utterance go to the model with that turn; each frame costs thinker context for the rest of the session.
 
-`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker.
+`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker. Over `/v1/realtime`, `sglang.sampling` in a later `session.update` applies from the next unit as well, and `instructions` is accepted only in the first `session.update`; `session.updated` reports this as `supports_sampling_updates` true and `supports_instruction_updates` false.
 
 Current limits:
 

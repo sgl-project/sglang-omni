@@ -1,4 +1,4 @@
-# Qwen3 TTS
+# Qwen3-TTS
 
 [Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a discrete
 multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a
@@ -577,7 +577,7 @@ only the first chunk.
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
+| `max_new_tokens` | Twice the slowest natural stop for the target text, at most `2048` | Maximum number of generated codec tokens (80 ms each). The default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -681,6 +681,38 @@ Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference wor
 
 TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see [First-audio chunk ramp](#first-audio-chunk-ramp) for the buffering tradeoff.
 
+### Runaway Regression
+
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. The text request fails only when it stops on `length` before its paired baseline stopped naturally.
+
+Create a request template, for example `request.json`:
+
+```json
+{
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "input": "replaced by each case",
+  "voice": "Ryan"
+}
+```
+
+For Base, use a fixed `references` entry instead of a built-in voice. `--seedtts-samples` replaces the bundled cases with prompts that missed codec EOS on 0.6B Base in #1179.
+
+```bash
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request request.json \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 0 --output-dir results/budget-nonstream
+
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request base-request.json --seedtts-samples \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 123 --output-dir results/budget-runaway
+```
+
+Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
+
+The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload the evidence.
+
 ## Known Limitations
 
 - **Reference audio recommended.** As a cloning model, Qwen3-TTS Base produces robotic speech
@@ -689,7 +721,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
   speaker similarity than speaker-embedding-only (x-vector) mode.
 - **Language detection.** `language: auto` may misdetect for short or code-switched inputs;
   set `language` explicitly when you know the target language.
-- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint) can
-  fall into a repetition loop and keep generating up to `max_new_tokens`. Raising
-  `repetition_penalty` (default `1.05`) or lowering `max_new_tokens` mitigates it; the 1.7B
-  checkpoint is less prone.
+- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
+  on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
+  `max_new_tokens`. The default text-length budget stops such a loop after a few seconds with
+  finish reason `length`; raising `repetition_penalty` (default `1.05`) also helps.

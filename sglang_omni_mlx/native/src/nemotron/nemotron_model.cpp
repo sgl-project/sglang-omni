@@ -28,12 +28,12 @@ mx::array Scalar(float value, mx::Dtype dtype) {
 } // namespace
 
 NemotronModel::NemotronModel(const std::filesystem::path &model_directory)
-    : NemotronModel(qwen3_asr::ReadJson(model_directory / "config.json"),
+    : NemotronModel(omni_common::ReadJson(model_directory / "config.json"),
                     model_directory) {}
 
 NemotronModel::NemotronModel(const nlohmann::json &config,
                              const std::filesystem::path &model_directory)
-    : checkpoint_(qwen3_asr::LoadSafetensors(model_directory), config) {
+    : checkpoint_(omni_common::LoadSafetensors(model_directory), config) {
   const nlohmann::json &encoder = config.at("encoder");
   const nlohmann::json &context = config.at("default_att_context_size");
   config_.feature_count = config.at("preprocessor").at("features").get<int>();
@@ -194,7 +194,7 @@ mx::array NemotronModel::RelativeAttention(const mx::array &queries,
             position_count);
   mx::array position_scores =
       mx::matmul(position_queries, mx::swapaxes(positions, -2, -1));
-  position_scores = qwen3_asr::RelativeShift(position_scores);
+  position_scores = omni_common::RelativeShift(position_scores);
   position_scores =
       mx::multiply(mx::slice(position_scores, {0, 0, 0, 0},
                              {1, head_count, query_count, key_count}),
@@ -325,9 +325,9 @@ NemotronModel::Predict(std::optional<int> token,
         mx::addmm(checkpoint_.Weight(lstm_prefix + ".bias"), output,
                   mx::transpose(checkpoint_.Weight(lstm_prefix + ".Wx")));
     gates = mx::reshape(gates, {1, gates.shape(-1)});
-    const qwen3_asr::LstmCell step = qwen3_asr::LstmStep(
+    const omni_common::LstmCell step = omni_common::LstmStep(
         gates,
-        state.has_value() ? std::optional<qwen3_asr::LstmCell>(
+        state.has_value() ? std::optional<omni_common::LstmCell>(
                                 {state->hidden[layer], state->cell[layer]})
                           : std::nullopt,
         checkpoint_.Weight(lstm_prefix + ".Wh"));

@@ -82,7 +82,7 @@ source .venv/bin/activate
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
-For installation problems, see [Troubleshooting](./troubleshooting.md).
+For installation problems, see [Troubleshooting](./troubleshooting.md). `uv pip check` prints a few expected lines on CUDA installs, listed under [Expected output of uv pip check](./troubleshooting.md#expected-output-of-uv-pip-check).
 
 ## Other platforms
 

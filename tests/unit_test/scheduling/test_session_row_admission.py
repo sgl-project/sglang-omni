@@ -40,7 +40,10 @@ class KVAllocator:
 class AdmissionScheduler:
     get_num_allocatable_reqs = OmniScheduler.get_num_allocatable_reqs
 
-    def __init__(self, *, request_rows: int) -> None:
+    def __init__(
+        self, *, request_rows: int, continuation_aware_admission: bool = True
+    ) -> None:
+        self.continuation_aware_admission = continuation_aware_admission
         self.req_to_token_pool = ReqToTokenPool(
             size=request_rows,
             max_context_len=CONTEXT_LENGTH,
@@ -142,6 +145,32 @@ def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() ->
     assert scheduler.admit_prefill_batch() == [unit.rid for unit in units]
     assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
     assert scheduler.free_rows() == 1
+
+
+def test_without_continuation_aware_admission_units_wait_for_free_rows() -> None:
+    session_count = 6
+    scheduler = AdmissionScheduler(
+        request_rows=session_count + 1, continuation_aware_admission=False
+    )
+    held_rows: dict[str, int] = {}
+    for index in range(session_count):
+        scheduler.open_session(f"session-{index}", holds_row=True)
+        held_rows[f"unit-{index}"] = scheduler.tree_cache.session.slots[
+            f"session-{index}"
+        ].kv.req_pool_idx
+    units = [
+        scheduler.queue_request(f"unit-{index}", f"session-{index}")
+        for index in range(session_count)
+    ]
+
+    batches = []
+    while scheduler.waiting_queue:
+        batches.append(scheduler.admit_prefill_batch())
+        scheduler.waiting_queue = scheduler.waiting_queue[len(batches[-1]) :]
+        assert scheduler.free_rows() == 1
+
+    assert batches == [[unit.rid] for unit in units]
+    assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
 
 
 def test_first_units_and_plain_requests_are_limited_by_free_rows() -> None:

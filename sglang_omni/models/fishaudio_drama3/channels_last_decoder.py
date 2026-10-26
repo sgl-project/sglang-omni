@@ -32,7 +32,7 @@ SNAKE_BLOCK_CHANNELS = 64
 
 if triton is not None:
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["rows", "frames", "batch_frames", "pad_right"])
     def snake_channels_last_kernel(
         x_ptr: torch.Tensor,
         alpha_ptr: torch.Tensor,
@@ -44,15 +44,22 @@ if triton is not None:
         batch_frames: int,
         BLOCK_ROWS: tl.constexpr,
         BLOCK_CHANNELS: tl.constexpr,
+        PAD_LEFT: tl.constexpr = 0,
+        pad_right: int = 0,
     ) -> None:
         row = tl.program_id(0).to(tl.int64) * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
         channel = tl.program_id(1) * BLOCK_CHANNELS + tl.arange(0, BLOCK_CHANNELS)
         row_mask = row < rows
         channel_mask = channel < channels
         mask = row_mask[:, None] & channel_mask[None, :]
-        source = ((row // frames) * batch_frames + row % frames) * channels
+        output_frames = frames + PAD_LEFT + pad_right
+        source_frame = row % output_frames - PAD_LEFT
+        source_mask = (source_frame >= 0) & (source_frame < frames)
+        source = ((row // output_frames) * batch_frames + source_frame) * channels
         x = tl.load(
-            x_ptr + source[:, None] + channel[None, :], mask=mask, other=0.0
+            x_ptr + source[:, None] + channel[None, :],
+            mask=mask & source_mask[:, None],
+            other=0.0,
         ).to(tl.float32)
         alpha = tl.load(alpha_ptr + channel, mask=channel_mask, other=1.0)
         inverse_alpha = tl.load(
@@ -62,7 +69,7 @@ if triton is not None:
         y = x + inverse_alpha[None, :] * sine * sine
         tl.store(
             y_ptr + row[:, None] * channels + channel[None, :],
-            y.to(y_ptr.dtype.element_ty),
+            tl.where(source_mask[:, None], y, 0.0).to(y_ptr.dtype.element_ty),
             mask=mask,
         )
 
@@ -98,9 +105,37 @@ class ChannelsLastDecoder:
     def __call__(self, indices: torch.Tensor) -> torch.Tensor:
         latent = self.codec.quantizer.decode(indices)
         hidden_states = latent.transpose(1, 2).contiguous()
-        for module in self.codec.decoder.model:
-            hidden_states = self.apply(module, hidden_states)
+        hidden_states = self.apply_sequence(self.codec.decoder.model, hidden_states)
         return hidden_states.transpose(1, 2)
+
+    def apply_sequence(
+        self, sequence: torch.nn.Sequential, hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        modules = iter(sequence)
+        module = next(modules, None)
+        while module is not None:
+            if isinstance(module, Snake1d):
+                following = next(modules, None)
+                if isinstance(following, CausalConvNet):
+                    assert following.stride == 1
+                    frame_count = hidden_states.shape[1]
+                    alignment = (
+                        -(following.padding + frame_count)
+                    ) % following.conv.dilation[0]
+                    padded = self.snake(
+                        module, hidden_states, following.padding, alignment
+                    )
+                    hidden_states = self.causal_conv(
+                        following, padded, original_frame_count=frame_count
+                    )
+                    module = next(modules, None)
+                else:
+                    hidden_states = self.apply(module, hidden_states)
+                    module = following
+            else:
+                hidden_states = self.apply(module, hidden_states)
+                module = next(modules, None)
+        return hidden_states
 
     def apply(
         self, module: torch.nn.Module, hidden_states: torch.Tensor
@@ -112,14 +147,10 @@ class ChannelsLastDecoder:
         elif isinstance(module, Snake1d):
             return self.snake(module, hidden_states)
         elif isinstance(module, ResidualUnit):
-            residual = hidden_states
-            for submodule in module.block:
-                residual = self.apply(submodule, residual)
+            residual = self.apply_sequence(module.block, hidden_states)
             return hidden_states[:, : residual.shape[1]] + residual
         elif isinstance(module, DecoderBlock):
-            for submodule in module.block:
-                hidden_states = self.apply(submodule, hidden_states)
-            return hidden_states
+            return self.apply_sequence(module.block, hidden_states)
         elif isinstance(module, torch.nn.Tanh):
             return torch.tanh(hidden_states)
         else:
@@ -128,13 +159,21 @@ class ChannelsLastDecoder:
             )
 
     def causal_conv(
-        self, module: CausalConvNet, hidden_states: torch.Tensor
+        self,
+        module: CausalConvNet,
+        hidden_states: torch.Tensor,
+        *,
+        original_frame_count: int | None = None,
     ) -> torch.Tensor:
         assert module.stride == 1
-        frame_count = hidden_states.shape[1]
-        dilation = module.conv.dilation[0]
-        alignment = (-(module.padding + frame_count)) % dilation
-        padded = F.pad(hidden_states, (0, 0, module.padding, alignment))
+        if original_frame_count is None:
+            frame_count = hidden_states.shape[1]
+            dilation = module.conv.dilation[0]
+            alignment = (-(module.padding + frame_count)) % dilation
+            padded = F.pad(hidden_states, (0, 0, module.padding, alignment))
+        else:
+            frame_count = original_frame_count
+            padded = hidden_states
         return channels_last_conv1d(
             padded,
             module.conv,
@@ -154,16 +193,25 @@ class ChannelsLastDecoder:
         )
         return output[:, : output.shape[1] - (module.kernel_size - module.stride)]
 
-    def snake(self, module: Snake1d, hidden_states: torch.Tensor) -> torch.Tensor:
+    def snake(
+        self,
+        module: Snake1d,
+        hidden_states: torch.Tensor,
+        pad_left: int = 0,
+        pad_right: int = 0,
+    ) -> torch.Tensor:
         alpha, inverse_alpha = self.snake_alphas[id(module)]
         batch_size, frame_count, channel_count = hidden_states.shape
         assert hidden_states.stride(2) == 1
         assert hidden_states.stride(1) == channel_count
         assert batch_size == 1 or hidden_states.stride(0) % channel_count == 0
+        output_frame_count = frame_count + pad_left + pad_right
         output = torch.empty(
-            hidden_states.shape, dtype=hidden_states.dtype, device=hidden_states.device
+            (batch_size, output_frame_count, channel_count),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
         )
-        rows = batch_size * frame_count
+        rows = batch_size * output_frame_count
         snake_channels_last_kernel[
             (
                 triton.cdiv(rows, SNAKE_BLOCK_ROWS),
@@ -180,5 +228,7 @@ class ChannelsLastDecoder:
             hidden_states.stride(0) // channel_count,
             BLOCK_ROWS=SNAKE_BLOCK_ROWS,
             BLOCK_CHANNELS=SNAKE_BLOCK_CHANNELS,
+            PAD_LEFT=pad_left,
+            pad_right=pad_right,
         )
         return output

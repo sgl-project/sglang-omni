@@ -29,14 +29,24 @@ def merge_config(
 
 
 def admission_fields(
-    config: SessionConfiguration, *, hot_instructions: bool
+    config: SessionConfiguration, *, capabilities: Capabilities
 ) -> SessionConfiguration:
     """Fields fixed once the session is OPEN; everything else may be hot-updated."""
     admission_config = copy.deepcopy(config)
     admission_config.pop("output_modalities", None)
     admission_config.get("audio", {}).get("input", {}).pop("turn_detection", None)
-    if hot_instructions:
+    if capabilities.supports_instruction_updates:
         admission_config.pop("instructions", None)
+    else:
+        pass
+    if capabilities.supports_sampling_updates:
+        extension = admission_config.get("sglang", {})
+        extension.pop("sampling", None)
+        # Note (ruoyu): A session opened without sglang must compare equal to one whose only sglang field was sampling.
+        if not extension:
+            admission_config.pop("sglang", None)
+        else:
+            pass
     else:
         pass
     return admission_config
@@ -66,10 +76,9 @@ class SessionNegotiation:
             raise ProtocolError(
                 "invalid_request", "invalid session configuration", location
             ) from exc
-        hot_instructions = self.capabilities.supports_instruction_updates
         if state == "OPEN" and admission_fields(
-            candidate, hot_instructions=hot_instructions
-        ) != admission_fields(current, hot_instructions=hot_instructions):
+            candidate, capabilities=self.capabilities
+        ) != admission_fields(current, capabilities=self.capabilities):
             raise ProtocolError("invalid_state", "session field is frozen")
         elif (
             "instructions" in candidate
@@ -153,6 +162,14 @@ class SessionNegotiation:
                 "not_applicable",
                 f"unsupported sampling parameters: {', '.join(sorted(unsupported_sampling))}",
                 "session.sglang.sampling",
+            )
+        else:
+            pass
+        if "voice" in extension and extension["voice"] not in self.capabilities.voices:
+            raise ProtocolError(
+                "not_applicable",
+                "voice is unavailable",
+                "session.sglang.voice",
             )
         else:
             pass

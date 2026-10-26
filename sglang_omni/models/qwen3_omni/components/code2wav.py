@@ -27,6 +27,8 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeSnakeBeta,
 )
 
+from sglang_omni.kernels.bias_snake_beta import SnakeBetaCoefficients
+from sglang_omni.kernels.single_output_conv import clamped_single_output_conv
 from sglang_omni.models.qwen3_omni.components.codec_state_pool import (
     CodecStatePool,
     CodecStateSpec,
@@ -44,6 +46,7 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_conv_transpose1d,
     channels_last_weight,
 )
+from sglang_omni.utils.merged_projections import merge_projection_weights
 from sglang_omni.utils.snake_beta import FusedSnakeBeta
 
 
@@ -129,22 +132,7 @@ class FusedCode2WavTransformer(torch.nn.Module):
             torch.cat((angles.cos(), angles.sin()), dim=-1) * rotary.attention_scaling,
             persistent=False,
         )
-        # note (ratish): q, k, v and gate, up become views of one matrix each, so the
-        # fused GEMMs read the loaded weights without a second copy.
-        for layer in transformer.layers:
-            attention, mlp = layer.self_attn, layer.mlp
-            projections = (attention.q_proj, attention.k_proj, attention.v_proj)
-            attention.qkv_weight = torch.cat([p.weight.data for p in projections])
-            start = 0
-            for projection in projections:
-                rows = projection.weight.shape[0]
-                projection.weight.data = attention.qkv_weight[start : start + rows]
-                start += rows
-            mlp.gate_up_weight = torch.cat(
-                (mlp.gate_proj.weight.data, mlp.up_proj.weight.data)
-            )
-            mlp.gate_proj.weight.data = mlp.gate_up_weight[: mlp.intermediate_size]
-            mlp.up_proj.weight.data = mlp.gate_up_weight[mlp.intermediate_size :]
+        merge_projection_weights(transformer.layers)
 
     def forward(self, inputs_embeds: torch.Tensor) -> BaseModelOutputWithPast:
         batch_size, length, hidden_size = inputs_embeds.shape
@@ -377,9 +365,14 @@ class Qwen3OmniCode2Wav(Qwen3OmniMoeCode2Wav):
         for blocks in self.upsample:
             for block in blocks:
                 hidden_states = channels_last_block(block, hidden_states)
-        for block in self.decoder:
+        for block in self.decoder[:-1]:
             hidden_states = channels_last_block(block, hidden_states)
-        return hidden_states.transpose(1, 2).clamp(min=-1, max=1)
+        final_conv = self.decoder[-1]
+        return clamped_single_output_conv(
+            F.pad(hidden_states, (0, 0, final_conv.padding, 0)),
+            final_conv.conv,
+            hidden_states.shape[1],
+        )
 
 
 class Qwen3OmniIncrementalCodec:
@@ -405,6 +398,13 @@ class Qwen3OmniIncrementalCodec:
             head_dim=transformer.layers[0].self_attn.head_dim,
             retained_context=transformer.window_size - 1,
         )
+        # note (ratish): a SnakeBeta's coefficients depend on its weights alone, so they are
+        # computed once here and every slot decode reads them.
+        self.snake_coefficients = {
+            module: SnakeBetaCoefficients.from_activation(module)
+            for module in model.decoder.modules()
+            if isinstance(module, (Qwen3OmniMoeSnakeBeta, FusedSnakeBeta))
+        }
 
     @staticmethod
     def supports(model: Qwen3OmniCode2Wav) -> bool:
@@ -454,6 +454,7 @@ class Qwen3OmniIncrementalCodec:
             self.model,
             hidden_states,
             SlotDecode(pool=pool, slot_index=slot_index, is_cold=first_decode),
+            self.snake_coefficients,
         )
         pool.frame_positions.index_put_((slot_index,), start_positions + new_frames)
         return waveform

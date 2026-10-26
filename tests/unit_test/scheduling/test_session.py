@@ -3,6 +3,7 @@
 
 import queue
 import threading
+from array import array
 from collections import deque
 from dataclasses import asdict, dataclass
 from types import MethodType, SimpleNamespace
@@ -11,8 +12,13 @@ from unittest.mock import Mock
 
 import msgpack
 import pytest
-from sglang.srt.managers.schedule_batch import Req
+import torch
+from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
+from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams, MatchResult
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.session.session_controller import Session
+from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
 
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -34,10 +40,14 @@ from sglang_omni.scheduling.session import (
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
+    ARSessionPreparation,
     BridgeSession,
     SessionUnit,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    EmbeddingSpan,
+    SGLangARRequestData,
+)
 from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
     compute_registered,
@@ -687,3 +697,234 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.on_abort.assert_called_once_with(identity, unit)
     assert order == ["model", "native"]
     assert bridge.sessions[identity.id].unit is None
+
+
+NATIVE_SESSION_ID = "native"
+NATIVE_VOCAB_SIZE = 1000
+FIRST_UNIT_IDS = [1, 2, 3]
+FIRST_UNIT_OUTPUT_IDS = [4, 5, 6]
+SECOND_UNIT_IDS = [10, 11]
+SECOND_UNIT_OUTPUT_IDS = [20, 21, 22, 23]
+THIRD_UNIT_IDS = [30, 31]
+# The second unit's KV past its finish: committed one less than generated (the clock lag), one row over-allocated.
+COMMITTED_PAST_PROMPT = 4
+ALLOCATED_PAST_PROMPT = 5
+
+
+def tokenized_unit(request_id: str, input_ids: list[int]) -> TokenizedGenerateReqInput:
+    return TokenizedGenerateReqInput(
+        rid=request_id,
+        input_text=None,
+        input_ids=array("q", input_ids),
+        input_embeds=None,
+        mm_inputs=None,
+        token_type_ids=None,
+        sampling_params=SamplingParams(max_new_tokens=16),
+        session_params=SessionParams(id=NATIVE_SESSION_ID),
+        stream=False,
+        logprob_start_len=-1,
+        return_logprob=False,
+        return_sampling_mask=False,
+        lora_id=None,
+        custom_logit_processor=None,
+        require_reasoning=False,
+        return_hidden_states=False,
+        return_routed_experts=False,
+        routed_experts_start_len=0,
+        priority=None,
+        routing_key=None,
+        extra_key=None,
+        cache_salt=None,
+        http_worker_ipc=None,
+        top_logprobs_num=0,
+        token_ids_logprob=None,
+    )
+
+
+def finish_unit(session: Session, request: Req, output_ids: list[int]) -> None:
+    """Generate output_ids on a native request and finish it as the scheduler does, the fill ids lagging the last token."""
+    request.output_ids.extend(output_ids[:-1])
+    request.refresh_fill_ids()
+    request.output_ids.extend(output_ids[-1:])
+    request.finished_len = len(request.output_ids)
+    session.finish_req(request)
+
+
+def spoken_native_session() -> tuple[Session, int]:
+    """A streaming session after two finished units, with the second unit's prompt length."""
+    session = Session(0, NATIVE_SESSION_ID, streaming=True)
+    first = session.create_req(
+        tokenized_unit("unit-0", FIRST_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    finish_unit(session, first, FIRST_UNIT_OUTPUT_IDS)
+    second = session.create_req(
+        tokenized_unit("unit-1", SECOND_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    prompt_length = len(second.origin_input_ids)
+    finish_unit(session, second, SECOND_UNIT_OUTPUT_IDS)
+    return session, prompt_length
+
+
+def audio_span(start: int, end: int) -> EmbeddingSpan:
+    """The retained span of a unit's audio placeholders at [start, end) of the native sequence."""
+    return EmbeddingSpan(start=start, end=end, input_embeds=torch.zeros(end - start, 1))
+
+
+# The retained spans of the two units' audio: the first unit's placeholders at [1, 3), the second's at [7, 8).
+FIRST_UNIT_AUDIO_SPAN = audio_span(1, 3)
+SECOND_UNIT_AUDIO_SPAN = audio_span(7, 8)
+
+
+def rewinding_bridge(
+    session: Session,
+    record: ReqKvInfo,
+    kept_token_count: int,
+    embedding_spans: list[EmbeddingSpan],
+) -> tuple[ARSessionBridge, SessionUnit, StagePayload]:
+    """A bridge over the native session, its KV record and its retained spans, with an adapter that asks to keep kept_token_count tokens."""
+    identity = SessionIdentity(NATIVE_SESSION_ID)
+    adapter = ARSessionAdapter()
+    adapter.prepare_unit = Mock(
+        return_value=ARSessionPreparation(kept_token_count=kept_token_count)
+    )
+    scheduler = Mock()
+    scheduler.session_controller.get.return_value = session
+    scheduler.tree_cache.session_records.return_value = {identity.id: record}
+    bridge = ARSessionBridge(scheduler, adapter)
+    bridge.sessions[identity.id] = BridgeSession(
+        session_identity=identity, embedding_spans=list(embedding_spans)
+    )
+    payload = StagePayload("unit", OmniRequest(None), {})
+    unit = bridge.accept(
+        payload,
+        SessionOperation(
+            "append", identity, ("thinker",), TimedChunk("audio", 2000, 1000, 2, b"")
+        ),
+    )
+    return bridge, unit, payload
+
+
+def rewound_third_unit(
+    session: Session, record: ReqKvInfo
+) -> tuple[Req, MatchResult, list[tuple[int, int]]]:
+    """Append the third unit to the rewound native session and match its prefix on a streaming session over the record; returns the request, the match and the KV ranges the match freed."""
+    third = session.create_req(
+        tokenized_unit("unit-2", THIRD_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    third.refresh_fill_ids()
+    freed: list[tuple[int, int]] = []
+    streaming = StreamingSession(
+        SimpleNamespace(
+            page_size=1, free_kv_row=lambda kv, ranges: freed.extend(ranges)
+        )
+    )
+    streaming.slots[NATIVE_SESSION_ID] = SessionSlot(kv=record)
+    match = streaming.try_match_prefix(
+        MatchPrefixParams(key=third.full_untruncated_fill_ids[:-1], req=third)
+    )
+    return third, match, freed
+
+
+def test_ar_bridge_rewind_hands_the_next_unit_the_kept_prompt_and_frees_the_rest() -> (
+    None
+):
+    """A unit prepared with the last unit's prompt length as the kept token count: the next native request's prompt is that prompt plus the new ids, without the dropped output, its prefix match reuses exactly the kept tokens, the KV rows past them are freed, and both units' spans stay retained."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    bridge, unit, payload = rewinding_bridge(
+        session,
+        record,
+        prompt_length,
+        [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN],
+    )
+
+    assert bridge.prepare_unit(unit, payload) is False
+    third, match, freed = rewound_third_unit(session, record)
+
+    assert third.to_finish is None
+    assert list(third.origin_input_ids) == [
+        *FIRST_UNIT_IDS,
+        *FIRST_UNIT_OUTPUT_IDS,
+        *SECOND_UNIT_IDS,
+        *THIRD_UNIT_IDS,
+    ]
+    assert list(third.full_untruncated_fill_ids) == list(third.origin_input_ids)
+    assert match.device_prefix_len == prompt_length
+    assert freed == [(prompt_length, prompt_length + ALLOCATED_PAST_PROMPT)]
+    assert (record.kv_committed_len, record.kv_allocated_len) == (
+        prompt_length,
+        prompt_length,
+    )
+    bridge.bridge_scheduler.session_controller.close.assert_not_called()
+
+
+def test_ar_bridge_rewind_below_the_last_prompt_keeps_that_prefix_and_drops_the_spans_past_it() -> (
+    None
+):
+    """A unit prepared with an earlier unit's prompt length as the kept token count: the next native request's prompt is that prefix plus the new ids, without the earlier unit's output or the later unit, its prefix match reuses exactly the kept tokens and frees the rest, the session's committed lengths move to the kept count, and only the spans inside the kept prefix stay retained."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    kept_token_count = len(FIRST_UNIT_IDS)
+    bridge, unit, payload = rewinding_bridge(
+        session,
+        record,
+        kept_token_count,
+        [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN],
+    )
+
+    assert bridge.prepare_unit(unit, payload) is False
+    third, match, freed = rewound_third_unit(session, record)
+
+    assert third.to_finish is None
+    assert list(third.origin_input_ids) == [*FIRST_UNIT_IDS, *THIRD_UNIT_IDS]
+    assert list(third.full_untruncated_fill_ids) == list(third.origin_input_ids)
+    assert match.device_prefix_len == kept_token_count
+    assert freed == [(kept_token_count, prompt_length + ALLOCATED_PAST_PROMPT)]
+    assert (record.kv_committed_len, record.kv_allocated_len) == (
+        kept_token_count,
+        kept_token_count,
+    )
+    assert (
+        session.committed_origin_len,
+        session.committed_unpadded_len,
+        session.committed_fill_len,
+    ) == (kept_token_count, kept_token_count, kept_token_count)
+    assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == [FIRST_UNIT_AUDIO_SPAN]
+
+
+@pytest.mark.parametrize(
+    "kept_token_count",
+    [9, 0, 2],
+    ids=["inside_the_last_output", "nothing_kept", "inside_an_embedding_span"],
+)
+def test_ar_bridge_refuses_a_rewind_that_does_not_land_between_units(
+    kept_token_count: int,
+) -> None:
+    """A kept token count past the last unit's prompt, at zero, or inside a retained embedding span is refused, and the native session, its KV record and its spans stay as they were."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    embedding_spans = [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN]
+    bridge, unit, payload = rewinding_bridge(
+        session, record, kept_token_count, embedding_spans
+    )
+
+    with pytest.raises(ValueError):
+        bridge.prepare_unit(unit, payload)
+
+    [last_request_node] = session.req_nodes.values()
+    assert list(last_request_node.req.output_ids) == SECOND_UNIT_OUTPUT_IDS
+    assert session.committed_origin_len == prompt_length
+    assert record.kv_committed_len == prompt_length + COMMITTED_PAST_PROMPT
+    assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == embedding_spans

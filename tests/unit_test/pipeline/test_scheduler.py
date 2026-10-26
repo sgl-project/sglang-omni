@@ -1935,6 +1935,301 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     assert model_path_ends == [("req-finished", "success")]
 
 
+def test_speculative_stream_output_emits_each_committed_token_before_the_result(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = {"req-spec"}
+    scheduler.prefill_end_done = set()
+    scheduler.draft_worker = SimpleNamespace()
+    monkeypatch.setattr(
+        omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Runner:
+        def on_speculative_tokens(self, scheduler_request, token_ids):
+            calls.append(("runner", list(token_ids)))
+
+        def on_request_finished(self, rid, data):
+            calls.append(("finished", rid))
+
+    scheduler.model_runner = Runner()
+    request_data = SimpleNamespace(
+        prefill_input_embeds=None,
+        decode_input_embeds=None,
+        emitted_token_count=1,
+        generation_steps=1,
+    )
+    finished = False
+    req = SimpleNamespace(
+        rid="req-spec",
+        omni_data=request_data,
+        output_ids=[5, 6, 7],
+        output_ids_through_stop=[5, 6, 7],
+        finished=lambda: finished,
+        finished_reason=None,
+        _omni_terminal_claimed=False,
+    )
+    request_data.req = req
+
+    def stream_output_builder(rid, data, output):
+        calls.append(("stream", output.data))
+        return [SimpleNamespace(request_id=rid, type="stream", data=output.data)]
+
+    scheduler.stream_output_builder = stream_output_builder
+    scheduler.result_adapter = lambda data: (
+        calls.append(("result", list(data.output_ids))) or {"done": True}
+    )
+
+    scheduler.stream_output([req])
+    # The next verify accepts drafts past the stop token 9, which finishing trims.
+    finished = True
+    req.output_ids = [5, 6, 7, 9, 8, 8]
+    req.output_ids_through_stop = [5, 6, 7, 9]
+    scheduler.stream_output([req])
+
+    assert calls == [
+        ("runner", [6, 7]),
+        ("stream", 6),
+        ("stream", 7),
+        ("runner", [9]),
+        ("stream", 9),
+        ("finished", "req-spec"),
+        ("result", [5, 6, 7, 9]),
+    ]
+    assert request_data.generation_steps == 4
+    outputs = [scheduler.outbox.get_nowait() for _ in range(4)]
+    assert [output.type for output in outputs] == [
+        "stream",
+        "stream",
+        "stream",
+        "result",
+    ]
+
+
+def test_speculative_emission_failure_fails_only_its_request() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.is_entry_rank = True
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.stream_output_builder = None
+    emitted: list[tuple[str, list[int]]] = []
+    hook_error = RuntimeError("vocoder chunker failed")
+
+    class Runner:
+        def on_speculative_tokens(self, scheduler_request, token_ids):
+            if scheduler_request.request_id == "req-bad":
+                raise hook_error
+            else:
+                emitted.append((scheduler_request.request_id, list(token_ids)))
+
+    scheduler.model_runner = Runner()
+
+    def running_request(request_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            rid=request_id,
+            omni_data=SimpleNamespace(emitted_token_count=1, generation_steps=1),
+            output_ids_through_stop=[5, 6],
+            finished=lambda: False,
+            finished_reason=None,
+            to_finish=None,
+            _omni_terminal_claimed=False,
+        )
+
+    bad_request = running_request("req-bad")
+    good_request = running_request("req-good")
+
+    scheduler.stream_output([bad_request, good_request])
+
+    assert emitted == [("req-good", [6])]
+    assert isinstance(bad_request.to_finish, omni_scheduler_module.FINISH_ABORT)
+    error = scheduler.outbox.get_nowait()
+    assert (error.request_id, error.type, error.data) == (
+        "req-bad",
+        "error",
+        hook_error,
+    )
+    assert good_request.to_finish is None
+
+
+def test_abort_during_speculative_emission_lands_before_or_after_the_step(
+    monkeypatch,
+) -> None:
+    """An abort arriving mid-emission no longer lands between the liveness check and
+    the enqueue, so a cancelled request ships no tokens after the abort is recorded."""
+
+    class ObservedRLock:
+        def __init__(self):
+            self.lock = threading.RLock()
+            self.owner: int | None = None
+            self.contender_waiting = threading.Event()
+
+        def __enter__(self):
+            thread_id = threading.get_ident()
+            if self.owner is not None and self.owner != thread_id:
+                self.contender_waiting.set()
+            self.lock.acquire()
+            self.owner = thread_id
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.owner = None
+            self.lock.release()
+
+    monkeypatch.setattr(
+        omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
+    )
+    scheduler = object.__new__(OmniScheduler)
+    init_sync_request_build_state(scheduler)
+    lock = ObservedRLock()
+    scheduler.request_admission_lock = lock
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.waiting_queue = []
+    request_data = SimpleNamespace(emitted_token_count=1, generation_steps=1)
+    req = SimpleNamespace(
+        rid="req-spec-abort",
+        omni_data=request_data,
+        output_ids_through_stop=[5, 6, 7],
+        finished=lambda: False,
+        finished_reason=None,
+        is_retracted=False,
+        to_finish=None,
+        kv=ReqKvInfo(req_pool_idx=1),
+        _omni_terminal_claimed=False,
+    )
+    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    abort_errors: list[BaseException] = []
+
+    def abort_from_listener() -> None:
+        try:
+            scheduler.abort(req.rid)
+        except BaseException as exc:
+            abort_errors.append(exc)
+
+    abort_thread = threading.Thread(target=abort_from_listener)
+    enqueue_aborted: list[bool] = []
+
+    class Runner:
+        def on_speculative_tokens(self, scheduler_request, token_ids):
+            abort_thread.start()
+            # The listener's abort reaches the lock while this step is mid-emission.
+            assert lock.contender_waiting.wait(timeout=1)
+
+    scheduler.model_runner = Runner()
+
+    def stream_output_builder(rid, data, output):
+        enqueue_aborted.append(rid in scheduler.aborted_request_ids)
+        return [SimpleNamespace(request_id=rid, type="stream", data=output.data)]
+
+    scheduler.stream_output_builder = stream_output_builder
+
+    scheduler.stream_output([req])
+    abort_thread.join(timeout=1)
+    req.output_ids_through_stop = [5, 6, 7, 8, 9]
+    scheduler.stream_output([req])
+
+    assert not abort_thread.is_alive()
+    assert abort_errors == []
+    assert enqueue_aborted == [False, False]
+    assert isinstance(req.to_finish, omni_scheduler_module.FINISH_ABORT)
+    assert [scheduler.outbox.get_nowait().data for _ in range(2)] == [6, 7]
+    assert scheduler.outbox.empty()
+
+
+def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.max_req_len = 100
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+
+    def request(max_new_tokens: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            origin_input_ids=[0] * 50,
+            sampling_params=SimpleNamespace(max_new_tokens=max_new_tokens),
+        )
+
+    assert scheduler.request_kv_capacity_error(request(34)) is None
+    message = scheduler.request_kv_capacity_error(request(40))
+    assert "16-token speculative decoding reserve" in message
+    assert "Lower max_tokens" in message
+
+
+@pytest.mark.parametrize(
+    (
+        "sampling_overrides",
+        "return_logprob",
+        "return_hidden_states",
+        "verifies_repetition_penalty",
+        "refused_option",
+    ),
+    [
+        ({}, False, False, False, None),
+        ({}, True, False, False, "logprobs"),
+        ({}, False, True, False, "return_hidden_states"),
+        ({"min_p": 0.05}, False, False, False, "min_p"),
+        ({"frequency_penalty": 0.5}, False, False, False, "frequency_penalty"),
+        ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, True, None),
+    ],
+)
+def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
+    sampling_overrides: dict[str, float],
+    return_logprob: bool,
+    return_hidden_states: bool,
+    verifies_repetition_penalty: bool,
+    refused_option: str | None,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verifies_repetition_penalty=verifies_repetition_penalty
+    )
+    sampling_params = {
+        "min_p": 0.0,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    sampling_params.update(sampling_overrides)
+    request = SimpleNamespace(
+        sampling_params=SimpleNamespace(**sampling_params),
+        return_hidden_states=return_hidden_states,
+    )
+    request_data = SimpleNamespace(return_logprob=return_logprob)
+
+    error = scheduler.speculative_request_error(request, request_data)
+
+    if refused_option is None:
+        assert error is None
+    else:
+        assert refused_option in error
+    scheduler.draft_worker = None
+    assert scheduler.speculative_request_error(request, request_data) is None
+
+
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:
     """A Fish abort landing mid-step defers per-request cleanup to the
     upstream FINISH_ABORT path, leaves the buffered codes unconsumed, and
@@ -3111,6 +3406,7 @@ def construct_omni_scheduler(
         ),
         random_seed=0,
         device=torch.device("cpu"),
+        speculative_worker=None,
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -3344,6 +3640,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         ),
         random_seed=0,
         device=torch.device("cpu"),
+        speculative_worker=None,
     )
     server_args = SimpleNamespace(
         tp_size=1,
@@ -3430,6 +3727,7 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         ),
         random_seed=0,
         device=torch.device("cpu"),
+        speculative_worker=None,
     )
     server_args = SimpleNamespace(
         tp_size=1,

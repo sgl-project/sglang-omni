@@ -1,0 +1,10 @@
+[
+  {"id": "short_en", "input": "Hello! How can I help you?", "language": "English"},
+  {"id": "short_zh", "input": "你好，有什么可以帮你的吗？", "language": "Chinese"},
+  {"id": "numbers_en", "input": "Your verification code is 102938. The total is $12.50.", "language": "English"},
+  {"id": "mixed_zh", "input": "今天下午三点开会，请带上显卡测试结果。", "language": "Chinese"},
+  {"id": "slow_en", "input": "Take your time. Breathe in, pause, and breathe out gently.", "language": "English", "instructions": "Speak slowly and calmly, with gentle pauses."},
+  {"id": "long_en", "input": "Before we begin, please check that the microphone is connected and the speakers are working. Read the entire sentence at a comfortable pace, including this final phrase, so we can verify that the end of the recording is complete.", "language": "English"},
+  {"id": "symbols_en", "input": "Great job! 🎉 See you soon.", "language": "English"},
+  {"id": "short_ja", "input": "こんにちは。今日はどのようなお手伝いができますか。", "language": "Japanese"}
+]

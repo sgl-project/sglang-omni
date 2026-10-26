@@ -508,6 +508,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         model_worker = SimpleNamespace(
             model_runner=model_runner,
             enable_prefill_input_embeds=False,
+            speculative_worker=None,
         )
         if before_memory_pool is not None:
             before_memory_pool(model_worker)
