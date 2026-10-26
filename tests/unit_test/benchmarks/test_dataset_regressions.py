@@ -9,6 +9,7 @@ import sys
 import types
 import wave
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from benchmarks.eval import (
     benchmark_asr_seedtts,
     benchmark_asr_stt_benchmark,
 )
+from tests.utils.npu_ci import load_full_seedtts_samples
 
 
 class FakeDataset:
@@ -129,6 +131,53 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].ref_text == "hello"
     assert samples[0].ref_audio == str(ref_audio)
     assert samples[0].target_text == "target one"
+
+
+@pytest.mark.parametrize(("language", "sample_count"), [("en", 1088), ("zh", 2020)])
+@pytest.mark.parametrize("contents", ["full", "subset", "duplicate"])
+def test_npu_seedtts_requires_full_unique_splits(
+    monkeypatch: pytest.MonkeyPatch,
+    language: Literal["en", "zh"],
+    sample_count: int,
+    contents: Literal["full", "subset", "duplicate"],
+) -> None:
+    count = 50 if contents == "subset" else sample_count
+    dataset = FakeDataset(
+        [
+            {
+                "sample_id": "duplicate" if contents == "duplicate" else f"sample-{i}",
+                "ref_text": "reference",
+                "ref_audio_path": "shared.wav",
+                "target_text": "target",
+                "ref_audio": {"bytes": b"audio"},
+            }
+            for i in range(count)
+        ]
+    )
+
+    def fake_load_dataset(repo_id: str, split: str, revision: str) -> FakeDataset:
+        assert repo_id == prepare.SEEDTTS_DATASET_ID
+        assert split == language
+        assert revision == prepare.SEEDTTS_DATASET_REVISION
+        return dataset
+
+    monkeypatch.setattr(seedtts, "_STAGED_CACHE", {})
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        types.SimpleNamespace(
+            Audio=lambda **kwargs: ("Audio", kwargs),
+            load_dataset=fake_load_dataset,
+        ),
+    )
+    if contents == "full":
+        samples = load_full_seedtts_samples(language)
+        assert samples[-1].sample_id == f"sample-{sample_count - 1}"
+        assert Path(samples[-1].ref_audio).read_bytes() == b"audio"
+        assert dataset.selected_indices is None
+    else:
+        with pytest.raises(AssertionError):
+            load_full_seedtts_samples(language)
 
 
 def test_local_seedtts_source_does_not_claim_huggingface_revision(

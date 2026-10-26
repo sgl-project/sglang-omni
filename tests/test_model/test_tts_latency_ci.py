@@ -38,7 +38,11 @@ from tests.test_model.test_tts_ci import (
     resolve_stage_output_dir,
     run_benchmark,
 )
-from tests.utils import MetricCheckCollector
+from tests.utils import (
+    MetricCheckCollector,
+    assert_open_loop_latency_results,
+    print_latency_point,
+)
 
 # note (luojiaxuan): every run offers the same Poisson arrival sequence, so run
 # to run spread comes from the server and not from a different offered load.
@@ -85,61 +89,6 @@ def worker_admission_cap() -> int:
     return Qwen3TTSPipelineConfig.generation_admission_defaults()[
         "max_running_requests"
     ]
-
-
-def assert_open_loop_latency_results(
-    results: dict,
-    *,
-    samples: int,
-    label: str,
-    collector: MetricCheckCollector,
-) -> None:
-    summary = results["summary"]
-    per_request = results.get("per_request") or []
-    collector.check(
-        len(per_request) == samples and summary.get("completed_requests") == samples,
-        f"{label}: {summary.get('completed_requests')}/{len(per_request)} completed, "
-        f"expected {samples}/{samples}",
-    )
-    failed = [r["id"] for r in per_request if not r.get("is_success")]
-    collector.check(not failed, f"{label}: failed requests {failed[:5]}")
-    silent = [
-        r["id"]
-        for r in per_request
-        if r.get("is_success")
-        and not (r.get("audio_chunk_count") and r.get("first_audio_payload_bytes"))
-    ]
-    collector.check(not silent, f"{label}: requests without audio {silent[:5]}")
-    collector.check(
-        summary.get("client_slot_waits") == 0,
-        f"{label}: {summary.get('client_slot_waits')} requests waited for a client "
-        "slot, so the run was not open loop",
-    )
-
-
-def print_latency_point(summary: dict, *, label: str) -> None:
-    keys = (
-        "audio_ttfp_from_arrival_median_s",
-        "audio_ttfp_from_arrival_p95_s",
-        "audio_ttfp_from_arrival_p99_s",
-        "audio_ttfp_median_s",
-        "audio_ttfp_p95_s",
-        "dispatch_lateness_p50_s",
-        "dispatch_lateness_p99_s",
-        "dispatch_lateness_max_s",
-        "first_audio_payload_bytes_mean",
-        "audio_chunks_mean",
-        "max_playback_underrun_p95_s",
-        "c50",
-        "c100",
-        "c200",
-        "playback_continuity_requests",
-        "playback_continuity_na_requests",
-        "client_slot_waits",
-    )
-    print(f"\n[TTS latency] {label}")
-    for key in keys:
-        print(f"  {key:<36} {summary.get(key)}")
 
 
 @pytest.mark.benchmark

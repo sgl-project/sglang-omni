@@ -1,6 +1,6 @@
 # CI Workflows and Labels
 
-SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request. Everything else runs on self-hosted runners: H100 machines for the GPU stages, an Intel Xeon host, an Intel GPU host and an Apple Silicon Mac.
+SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request. Everything else runs on self-hosted runners: H100 machines for the GPU stages, an Intel Xeon host, an Intel GPU host, an Ascend NPU host and an Apple Silicon Mac.
 
 **A pull request runs none of the self-hosted CI until a maintainer adds CI labels.** Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.
 
@@ -22,6 +22,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
+| NPU Model CI | Ascend A2 (`linux-aarch64-a2-2`) | Qwen3-TTS CustomVoice and Qwen3-ASR serving tests | `run-npu-ci` or `run-all-ci` |
 | Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
 
 The Omni CI stages are the core of the project's CI: they serve the main ASR, TTS and omni models end to end on H100 and gate their accuracy and speed.
@@ -147,6 +148,20 @@ XPU CI pulls or builds the Intel GPU image from `docker/xpu.Dockerfile` and runs
 
 The stage label is `run-intel-xpu-ci`.
 
+### NPU Model CI
+
+NPU Model CI resolves the SWR `main-cann9.0.0-910b` image to a digest during preflight and uses that same image for both model jobs. Preflight checks the ARM64/910B metadata and compares `.dockerignore`, `docker/npu.Dockerfile`, `pyproject_npu.toml` and `scripts/npu/` against the image's recorded source commit. A dependency-changing PR needs a matching 910B test image published through Release Docker Images (NPU); set `NPU_CI_IMAGE` in the workflow to that image. CI does not publish PR images or upgrade the NPU runtime.
+
+Each model job refreshes the editable install from the exact pull request commit and prepares the pinned full SeedTTS dataset. The two serial matrix jobs on the Ascend A2 runner run `tests/test_model/test_npu_tts.py` with Qwen3-TTS-12Hz-0.6B-CustomVoice and `tests/test_model/test_npu_asr.py` with Qwen3-ASR-1.7B. Like the GPU Qwen3-ASR lane, ASR transcribes all 1,088 English and 2,020 Chinese samples at concurrency 32 and applies the shared corpus and per-sample WER thresholds. The official-audio streaming/concurrency/rejection checks remain.
+
+TTS follows the GPU CustomVoice workload: the full 1,088-sample English split in non-streaming and streaming modes at concurrency 16, WER on both modes, UTMOS on non-streaming audio, and streaming/non-streaming consistency. It reuses the named-voice preset and skips reference-speaker similarity, as GPU CustomVoice does. TTS is stopped before UTMOS scoring on CPU and ASR scoring at the shared WER concurrency. The separate first-audio test reuses the GPU preset's open-loop points (1 request/s for 60 samples and 20 requests/s for 1,088 samples). Both TTS tests use the model's generation admission defaults (currently 64 running and 64 queued requests), and the latency client's cap follows the running limit. The NPU execution settings are unchanged.
+
+Complete coverage, successful requests and transcription, valid non-silent audio, no reported token-limit truncation, duration consistency and unthrottled open-loop arrivals are required. CustomVoice quality scores and NPU performance metrics are reported without H100 thresholds. The NPU lane currently uses one worker and the mounted 0.6B checkpoint, whereas GPU CustomVoice uses 1.7B with two workers for throughput; results are not directly comparable. GPU-only Higgs serving stress and MOSS multi-speaker tests are outside this two-model lane. JSON reports and server logs are uploaded; generated audio is excluded from artifacts. TTS allows 240 minutes, and ASR allows 60 minutes.
+
+The stage label is `run-npu-ci`. It selects both models, with no model labels or random model selection. Changes to source, tests, benchmarks, serving configurations, NPU installation or shared CI gates select the path filter. When the paths are untouched or NPU is not selected, the model jobs skip and `NPU Model CI Status` succeeds; gate or test failures and cancellations still fail it.
+
+Hardware jobs use the `npu-ci` environment and serialize access to the runner's devices, with `queue: max` retaining up to 100 pending jobs across runs. The job container needs the allocated NPU, host driver libraries and both local model directories mounted under `/root/.cache/modelscope/hub/models/Qwen/`. Manual dispatch and the daily 00:00 Beijing-time run execute both models without PR labels; any required environment approval still applies.
+
 ### Voxt Mac CI
 
 Voxt Mac CI has two jobs on Apple Silicon. The native runtime job builds the MLX runtime, checks its golden outputs on a frozen corpus for Qwen3-ASR and the other native models, and runs the server API tests. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
@@ -174,6 +189,7 @@ The stage label is `run-mac-ci`.
 | `run-omni-ci` | Omni in Omni CI |
 | `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
 | `run-intel-xpu-ci` | XPU CI |
+| `run-npu-ci` | NPU Model CI |
 | `run-mac-ci` | Voxt Mac CI |
 
 ## Examples
@@ -191,6 +207,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 | `run-tts-ci`, `run-mps-ci` | PR Test, TTS and MPS, each drawing its own model. |
 | `run-tts-ci`, `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then TTS and MPS, both on Higgs-TTS. |
 | `run-mac-ci` | PR Test on H100 and Voxt Mac CI. No H100 model stage. |
+| `run-npu-ci` | PR Test on H100 and both NPU model suites when the NPU paths match. No H100 model stage. |
 | `run-all-ci` | Every stage. Each model stage draws its own model. |
 | `run-all-ci`, `run-minicpm-o-4.5` | Every stage. Omni uses MiniCPM-o 4.5, the other stages draw at random. |
 | `run-tts-ci`, `run-minicpm-o-4.5` | PR Test and TTS. The Omni model label is ignored with a warning, because Omni is not selected. |
@@ -199,9 +216,9 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 ## Label changes, re-runs and manual runs
 
-Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
+Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI, NPU Model CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
-Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
+Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI, NPU Model CI and Voxt Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
 Re-running jobs reuses the run ID, so every stage keeps the model it drew. The gate reads the live labels from the pull request, so re-running all jobs picks up labels added or removed since the run started.
 
@@ -212,12 +229,13 @@ gh workflow run omni-ci.yaml --ref <branch> \
   -f ci_labels="run-tts-ci run-moss-tts-local-transformer-v1.5"
 ```
 
-Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests.
+Manual runs of CPU CI, XPU CI, NPU Model CI and Voxt Mac CI ignore labels and always run their tests.
 
 Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more short stage or model targets to re-run completed CI workflows:
 
 ```text
 /tag-and-rerun-ci unit-test
+/tag-and-rerun-ci npu
 /tag-and-rerun-ci tts asr
 /tag-and-rerun-ci tts asr omni
 /tag-and-rerun-ci asr qwen3-omni
@@ -226,7 +244,7 @@ Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more sho
 /tag-and-rerun-ci mps-higgs
 ```
 
-Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu` and `mac`. `lint` adds `run-lint-only`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. `higgs` and `moss` add `run-tts-ci` plus `run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5`. `mps-higgs` and `mps-moss` add `run-mps-ci` plus that same model label. `qwen3-tts` adds `run-tts-ci` plus `run-qwen3-tts-12hz-1.7b-base`. A short model target adds its stage label and its model label. The model label itself never includes the stage name.
+Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `intel-cpu`, `intel-xpu`, `npu` and `mac`. `lint` adds `run-lint-only`. Model targets are `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. `higgs` and `moss` add `run-tts-ci` plus `run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5`. `mps-higgs` and `mps-moss` add `run-mps-ci` plus that same model label. `qwen3-tts` adds `run-tts-ci` plus `run-qwen3-tts-12hz-1.7b-base`. A short model target adds its stage label and its model label. The model label itself never includes the stage name.
 
 Use `/tag-and-rerun-full-ci` to add `run-all-ci` and select all stages. It also accepts short model targets, for example `/tag-and-rerun-full-ci qwen3-tts qwen3-asr qwen3-omni`. `higgs` or `mps-higgs` selects Higgs for every selected stage that accepts it, TTS and MPS included. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci` or `run-all-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
 

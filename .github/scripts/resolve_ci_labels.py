@@ -108,6 +108,13 @@ CI_STAGES: tuple[CiStage, ...] = (
         preset_by_model_label={},
         random_presets=(),
     ),
+    CiStage(
+        name="npu",
+        label="run-npu-ci",
+        workflow="NPU Model CI",
+        preset_by_model_label={},
+        random_presets=(),
+    ),
 )
 MPS_CONFIG_BY_PRESET = {
     "higgs": "examples/mps_dp/configs/higgs_h100_dp3.yaml",
