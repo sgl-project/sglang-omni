@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Per-session sampling and references reach the model without replacing deployment defaults."""
 
+import asyncio
 import base64
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -43,11 +45,27 @@ FIRST_RESPONSE = "session-response-0"
 FIRST_ITEM = "session-response-0-message"
 SECOND_RESPONSE = "session-response-1"
 SECOND_ITEM = "session-response-1-message"
-INTERRUPT_OF_TURN_1 = (
-    TimedChunk(CONTROL, 0, 0, 0, {"type": INTERRUPT}, format=SESSION_CONTROL, turn=1),
-    None,
-    False,
-)
+HEARD_PCM = b"\1\0" * 4
+RUNNING_UNIT_PCM = b"\2\0" * 4
+TAIL_PCM = b"\3\0" * 2
+NEXT_REPLY_PCM = b"\4\0" * 4
+
+
+def interrupt_of_turn_1(last_delivered_unit: int) -> tuple[TimedChunk, None, bool]:
+    """The control a stop of turn 1 sends once the client received unit last_delivered_unit."""
+    return (
+        TimedChunk(
+            CONTROL,
+            0,
+            0,
+            0,
+            {"type": INTERRUPT, "last_delivered_unit": last_delivered_unit},
+            format=SESSION_CONTROL,
+            turn=1,
+        ),
+        None,
+        False,
+    )
 
 
 def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
@@ -62,13 +80,10 @@ def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
 
 
 class VoiceCoordinator(FakeSessionClient):
-    """Answers each unit with the scripted (turn, voice chunk) of its seq, then input_done."""
+    """Records the appends; the test emits each unit's voice chunk and its input_done itself."""
 
-    def __init__(
-        self, voice_chunks: dict[int, tuple[int | None, dict[str, object]]]
-    ) -> None:
-        super().__init__()
-        self.voice_chunks = voice_chunks
+    def __init__(self) -> None:
+        super().__init__(auto_done=False)
 
     async def append_session(
         self,
@@ -80,9 +95,10 @@ class VoiceCoordinator(FakeSessionClient):
     ) -> int:
         return await super().append_session(session_identity, chunk)
 
-    def answer(self, chunk: TimedChunk) -> None:
-        turn, payload = self.voice_chunks[chunk.seq]
-        self.emit("voice", None, payload, input_seq=chunk.seq, turn=turn)
+    def voice(
+        self, input_seq: int, turn: int | None, payload: dict[str, object]
+    ) -> None:
+        self.emit("voice", None, payload, input_seq=input_seq, turn=turn)
 
 
 async def open_adapter(
@@ -101,46 +117,75 @@ async def open_adapter(
     return adapter, events
 
 
-def unit(seq: int) -> Unit:
-    return Unit(seq, seq * UNIT_SAMPLES, b"\0\0" * UNIT_SAMPLES, UNIT_SAMPLES)
+def unit(input_seq: int) -> Unit:
+    return Unit(
+        input_seq, input_seq * UNIT_SAMPLES, b"\0\0" * UNIT_SAMPLES, UNIT_SAMPLES
+    )
+
+
+async def run_unit(
+    adapter: InteractionAdapter,
+    coordinator: VoiceCoordinator,
+    input_seq: int,
+    turn: int | None,
+    payload: dict[str, object],
+    *,
+    cancel_at: Literal["before_output", "after_output"] | None = None,
+) -> None:
+    """Append one unit whose voice chunk arrives while it is in flight; the client stop, when asked for, lands before or after that chunk."""
+    processing = asyncio.create_task(adapter.process(unit(input_seq)))
+    await asyncio.sleep(0)
+    if cancel_at == "before_output":
+        await adapter.cancel()
+    else:
+        pass
+    coordinator.voice(input_seq, turn, payload)
+    await asyncio.sleep(0)
+    if cancel_at == "after_output":
+        await adapter.cancel()
+    else:
+        pass
+    coordinator.done(input_seq)
+    await processing
 
 
 @pytest.mark.asyncio
-async def test_cancel_stops_the_open_reply_and_drops_its_later_audio() -> None:
-    """A client stop interrupts the open reply's turn; audio of that turn after the stop is dropped, the reply ends as cancelled when its turn ends, and the next reply completes as usual."""
-    heard, unheard, tail, next_reply = (
-        b"\1\0" * 4,
-        b"\2\0" * 4,
-        b"\3\0" * 2,
-        b"\4\0" * 4,
-    )
-    coordinator = VoiceCoordinator(
-        {
-            0: (1, voice(heard)),
-            1: (1, voice(unheard)),
-            2: (1, voice(tail, end_of_turn=True)),
-            3: (2, voice(next_reply, end_of_turn=True)),
-        }
-    )
+@pytest.mark.parametrize(
+    ("cancel_at", "last_delivered_unit", "received_pcm"),
+    [
+        ("before_output", 0, [HEARD_PCM]),
+        ("after_output", 1, [HEARD_PCM, RUNNING_UNIT_PCM]),
+    ],
+    ids=["the_running_unit_arrives_after_the_stop", "the_running_unit_arrived_first"],
+)
+async def test_cancel_stops_the_open_reply_and_names_the_last_unit_the_client_received(
+    cancel_at: Literal["before_output", "after_output"],
+    last_delivered_unit: int,
+    received_pcm: list[bytes],
+) -> None:
+    """A client stop interrupts the open reply's turn: the turn's audio that arrives after the stop is dropped, the interrupt names the last unit whose audio the client did receive, the reply ends as cancelled when its turn ends, and the next reply completes as usual."""
+    coordinator = VoiceCoordinator()
     adapter, events = await open_adapter(coordinator)
 
-    await adapter.process(unit(0))
-    await adapter.cancel()
-    for seq in (1, 2, 3):
-        await adapter.process(unit(seq))
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    await run_unit(
+        adapter, coordinator, 1, 1, voice(RUNNING_UNIT_PCM), cancel_at=cancel_at
+    )
+    await run_unit(adapter, coordinator, 2, 1, voice(TAIL_PCM, end_of_turn=True))
+    await run_unit(adapter, coordinator, 3, 2, voice(NEXT_REPLY_PCM, end_of_turn=True))
     await adapter.close()
 
-    assert coordinator.controlled == [INTERRUPT_OF_TURN_1]
+    assert coordinator.controlled == [interrupt_of_turn_1(last_delivered_unit)]
     assert events == [
         ResponseStarted(FIRST_RESPONSE),
-        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, heard),
+        *(AudioDelta(FIRST_RESPONSE, FIRST_ITEM, pcm) for pcm in received_pcm),
         TextFinished(FIRST_RESPONSE, FIRST_ITEM, ""),
         AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
         ResponseFinished(
             FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
         ),
         ResponseStarted(SECOND_RESPONSE),
-        AudioDelta(SECOND_RESPONSE, SECOND_ITEM, next_reply),
+        AudioDelta(SECOND_RESPONSE, SECOND_ITEM, NEXT_REPLY_PCM),
         TextFinished(SECOND_RESPONSE, SECOND_ITEM, ""),
         AudioFinished(SECOND_RESPONSE, SECOND_ITEM),
         ResponseFinished(SECOND_RESPONSE, SECOND_ITEM, "", True, "completed", "stop"),
@@ -150,26 +195,25 @@ async def test_cancel_stops_the_open_reply_and_drops_its_later_audio() -> None:
 @pytest.mark.asyncio
 async def test_a_second_cancel_of_the_same_reply_sends_no_control() -> None:
     """A reply is interrupted once; a repeated client stop before it ends sends nothing more to the pipeline."""
-    heard = b"\1\0" * 4
-    coordinator = VoiceCoordinator({0: (1, voice(heard))})
+    coordinator = VoiceCoordinator()
     adapter, events = await open_adapter(coordinator)
 
-    await adapter.process(unit(0))
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
     await adapter.cancel()
     await adapter.cancel()
     await adapter.close()
 
-    assert coordinator.controlled == [INTERRUPT_OF_TURN_1]
+    assert coordinator.controlled == [interrupt_of_turn_1(0)]
     assert events == [
         ResponseStarted(FIRST_RESPONSE),
-        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, heard),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
     ]
 
 
 @pytest.mark.asyncio
 async def test_cancel_without_an_open_reply_sends_no_control() -> None:
     """A client stop with no open reply sends nothing to the pipeline and emits no event."""
-    coordinator = VoiceCoordinator({})
+    coordinator = VoiceCoordinator()
     adapter, events = await open_adapter(coordinator)
 
     await adapter.cancel()
@@ -182,17 +226,16 @@ async def test_cancel_without_an_open_reply_sends_no_control() -> None:
 @pytest.mark.asyncio
 async def test_a_reply_without_a_turn_plays_when_nothing_was_cancelled() -> None:
     """Without a client stop, a voice chunk whose turn is unset is played and completes, not fenced as a cancelled turn."""
-    pcm = b"\1\0" * 4
-    coordinator = VoiceCoordinator({0: (None, voice(pcm, end_of_turn=True))})
+    coordinator = VoiceCoordinator()
     adapter, events = await open_adapter(coordinator)
 
-    await adapter.process(unit(0))
+    await run_unit(adapter, coordinator, 0, None, voice(HEARD_PCM, end_of_turn=True))
     await adapter.close()
 
     assert coordinator.controlled == []
     assert events == [
         ResponseStarted(FIRST_RESPONSE),
-        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, pcm),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
         TextFinished(FIRST_RESPONSE, FIRST_ITEM, ""),
         AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
         ResponseFinished(FIRST_RESPONSE, FIRST_ITEM, "", True, "completed", "stop"),

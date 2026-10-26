@@ -387,12 +387,12 @@ class SessionRuntime:
             assert self.adapter is not None
             await self.adapter.cancel()
 
-    async def truncate(self, audio_end_ms: float) -> None:
-        """Tell the session how much of the cancelled reply the listener heard."""
+    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
+        """Tell the session how much of the reply item the listener heard."""
         async with self.command_lock:
             self.require_open()
             assert self.adapter is not None
-            await self.adapter.truncate(audio_end_ms)
+            await self.adapter.truncate(item_id, audio_end_ms)
 
     async def commit(self) -> None:
         """End the user's turn where the client says it ends, after the audio appended before it."""

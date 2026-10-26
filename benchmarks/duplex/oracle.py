@@ -86,7 +86,12 @@ TURN_BASED_CAPABILITIES = {
     "native_full_duplex": False,
     "tail_policy": "flush",
 }
-TURN_BASED_TERMINALS = {("completed", "stop"), ("completed", "empty_turn")}
+# note (luojiaxuan): A turn-based reply whose talker stopped at its token budget ends incomplete.
+TURN_BASED_TERMINALS = {
+    ("completed", "stop"),
+    ("completed", "empty_turn"),
+    ("incomplete", "max_output_tokens"),
+}
 TURN_BASED_INTERRUPTED_TERMINAL = ("cancelled", "interrupted")
 TURN_BASED_OBSERVATIONS = (
     "input_audio_buffer.speech_stopped",

@@ -577,7 +577,7 @@ only the first chunk.
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
+| `max_new_tokens` | Twice the slowest natural stop for the target text, at most `2048` | Maximum number of generated codec tokens (80 ms each). The default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -689,7 +689,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
   speaker similarity than speaker-embedding-only (x-vector) mode.
 - **Language detection.** `language: auto` may misdetect for short or code-switched inputs;
   set `language` explicitly when you know the target language.
-- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint) can
-  fall into a repetition loop and keep generating up to `max_new_tokens`. Raising
-  `repetition_penalty` (default `1.05`) or lowering `max_new_tokens` mitigates it; the 1.7B
-  checkpoint is less prone.
+- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
+  on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
+  `max_new_tokens`. The default text-length budget stops such a loop after a few seconds with
+  finish reason `length`; raising `repetition_penalty` (default `1.05`) also helps.
