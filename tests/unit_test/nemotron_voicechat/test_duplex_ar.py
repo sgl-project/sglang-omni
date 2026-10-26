@@ -8,6 +8,7 @@ import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
@@ -167,7 +168,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
         request.extra_model_outputs = {"function_ids": [4]}
         thinker_adapter.result(session_identity, request)
     for attempt in range(2):
-        with pytest.raises(ValueError, match="context limit"):
+        with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
             thinker_adapter.build(
                 session_identity,
                 chunk,
