@@ -36,6 +36,11 @@ Usage:
     # Manual commit instead of server VAD:
     python -m benchmarks.eval.benchmark_asr_realtime \\
         --port 8000 --max-samples 50 --mode manual
+
+    # Nemotron native streaming sessions:
+    python -m benchmarks.eval.benchmark_asr_realtime \\
+        --port 8000 --max-samples 50 --protocol native \\
+        --model-path nvidia/nemotron-3.5-asr-streaming-0.6b
 """
 
 from __future__ import annotations
@@ -48,10 +53,13 @@ import logging
 import os
 import tempfile
 import time
+import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlencode
 
 import torch
+from pydantic import JsonValue
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import (
@@ -93,11 +101,27 @@ LATENCY_KEYS = (
     "partial_interval_s",
     "final_latency_s",
     "done_to_completed_s",
+    "first_text_s",
 )
 
 
-def load_pcm16(wav_path: str) -> bytes:
+def load_pcm16(wav_path: str, *, preserve_pcm: bool = False) -> bytes:
     """Mono 16 kHz PCM16 bytes for any WAV the SeedTTS loader hands out."""
+    if preserve_pcm:
+        try:
+            with wave.open(wav_path, "rb") as audio_file:
+                if (
+                    audio_file.getnchannels(),
+                    audio_file.getsampwidth(),
+                    audio_file.getframerate(),
+                ) == (1, 2, 16000):
+                    return audio_file.readframes(audio_file.getnframes())
+                else:
+                    pass
+        except wave.Error:
+            pass
+    else:
+        pass
     audio = _load_wav_mono_16k(wav_path)
     return (audio.clamp(-1.0, 1.0) * 32767.0).to(torch.int16).numpy().tobytes()
 
@@ -120,6 +144,7 @@ def _per_sample_record(
         "text": trace.completed_text,
         "ref_text": sample.ref_text,
         "wer": output.wer if output.is_success else None,
+        "wer_error": output.error or None,
         **latency_metrics(trace),
     }
     return record
@@ -131,9 +156,11 @@ def _summary(
     *,
     lang: str,
     wall_clock_s: float,
+    protocol: Literal["transcription", "native"] = "transcription",
 ) -> dict[str, Any]:
+    clean = [record for record in per_sample if not record["violations"]]
     latencies: dict[str, list[float]] = {key: [] for key in LATENCY_KEYS}
-    for record in per_sample:
+    for record in clean if protocol == "native" else per_sample:
         for key in LATENCY_KEYS:
             value = record[key]
             if isinstance(value, list):
@@ -141,13 +168,28 @@ def _summary(
             elif value is not None:
                 latencies[key].append(value)
     wer = calculate_wer_metrics(outputs, lang)
-    clean = [record for record in per_sample if not record["violations"]]
     return {
+        "success": len(clean),
+        "requests_per_second": len(clean) / wall_clock_s,
+        "audio_seconds_per_second": sum(record["audio_duration_s"] for record in clean)
+        / wall_clock_s,
+        "request_wall_s": summarize(
+            [record["wall_s"] for record in clean if record["wall_s"] is not None]
+        ),
+        "request_rtf": summarize(
+            [
+                record["wall_s"] / record["audio_duration_s"]
+                for record in clean
+                if record["wall_s"] is not None and record["audio_duration_s"] > 0
+            ]
+        ),
         "total": len(per_sample),
         "evaluated": wer["evaluated"],
         "sessions_with_violations": len(per_sample) - len(clean),
         "sessions_with_client_error": sum(1 for r in per_sample if r["error"]),
-        "corpus_wer": wer["wer_corpus"],
+        "corpus_wer": (
+            None if protocol == "native" and not wer["evaluated"] else wer["wer_corpus"]
+        ),
         "per_sample_wer_max": wer["wer_per_sample_max"],
         "segments_total": sum(r["segment_count"] for r in per_sample),
         "partials_total": sum(r["partial_count"] for r in per_sample),
@@ -165,13 +207,14 @@ async def _http_baseline(
     concurrency: int,
     model_path: str,
     lang: str,
+    request_language: str,
 ) -> tuple[dict[str, Any], list[SampleOutput]]:
     outputs, wall_clock_s = await run_asr_transcription(
         samples,
         host=host,
         port=port,
         model_path=model_path,
-        lang=lang,
+        lang=request_language,
         concurrency=concurrency,
     )
     results = build_asr_eval_results(
@@ -205,7 +248,8 @@ async def run_asr_realtime_once(
     port: int,
     concurrency: int = 1,
     packet_ms: int = 200,
-    mode: str = "vad",
+    protocol: Literal["transcription", "native"] = "transcription",
+    mode: Literal["vad", "manual"] | None = None,
     lang: str = "en",
     paced: bool = True,
     trailing_silence_ms: int = DEFAULT_TRAILING_SILENCE_MS,
@@ -214,6 +258,8 @@ async def run_asr_realtime_once(
     model_path: str = QWEN3_ASR_MODEL_PATH,
     pcm_cache: dict[str, bytes] | None = None,
     trace_dir: str | None = None,
+    repeat: int = 1,
+    warmup: bool = False,
 ) -> dict[str, Any]:
     """Stream every sample once, ``concurrency`` sessions at a time.
 
@@ -222,14 +268,29 @@ async def run_asr_realtime_once(
     corpus WER, and how many sessions violated a protocol invariant. Nothing is
     asserted here; CI decides what to gate on.
     """
-    session_kwargs = _session_kwargs(mode)
-    url = realtime_url(host, port)
+    if protocol == "native":
+        if mode is not None:
+            raise ValueError("mode is unavailable with the native protocol")
+        else:
+            pass
+        session_kwargs = {"turn_detection": None, "manual_commit": False}
+        trailing_silence_ms = 0
+        url = f"{realtime_url(host, port, protocol='native')}?{urlencode({'model': model_path})}"
+    else:
+        mode = mode or "vad"
+        session_kwargs = _session_kwargs(mode)
+        url = realtime_url(host, port)
     pcm_cache = {} if pcm_cache is None else pcm_cache
     for sample in samples:
         if sample.ref_audio not in pcm_cache:
-            pcm_cache[sample.ref_audio] = load_pcm16(sample.ref_audio)
+            pcm_cache[sample.ref_audio] = load_pcm16(
+                sample.ref_audio, preserve_pcm=protocol == "native"
+            )
 
     config = {
+        "repeat": repeat,
+        "warmup": warmup,
+        "protocol": protocol,
         "mode": mode,
         "concurrency": concurrency,
         "packet_ms": packet_ms,
@@ -287,6 +348,7 @@ async def run_asr_realtime_once(
                 language=lang,
                 trailing_silence_ms=trailing_silence_ms,
                 timeout_s=timeout_s,
+                protocol=protocol,
                 **session_kwargs,
             )
 
@@ -324,14 +386,21 @@ async def run_asr_realtime_once(
         per_sample.append(record)
 
     decode_intervals = {t.session.get("decode_interval_ms") for t in traces}
+    native_units = {
+        (t.session.get("sglang", {}).get("granted") or {}).get("native_unit_ms")
+        for t in traces
+    }
     result: dict[str, Any] = {
         "config": {
             **config,
             "decode_interval_ms": (
                 decode_intervals.pop() if len(decode_intervals) == 1 else None
             ),
+            "native_unit_ms": native_units.pop() if len(native_units) == 1 else None,
         },
-        "summary": _summary(per_sample, outputs, lang=lang, wall_clock_s=wall_clock_s),
+        "summary": _summary(
+            per_sample, outputs, lang=lang, wall_clock_s=wall_clock_s, protocol=protocol
+        ),
         "per_sample": per_sample,
     }
     if with_http_baseline:
@@ -342,6 +411,7 @@ async def run_asr_realtime_once(
             concurrency=concurrency,
             model_path=model_path,
             lang=lang,
+            request_language="auto" if protocol == "native" else lang,
         )
         result["http_baseline"] = baseline
         result["summary"]["http_corpus_wer"] = baseline["corpus_wer"]
@@ -378,7 +448,7 @@ def _print_table(results: list[dict[str, Any]]) -> None:
         config, summary = result["config"], result["summary"]
         print(
             f"| {config['concurrency']} | {config['mode']} "
-            f"| {config['decode_interval_ms']} | {summary['total']} "
+            f"| {config['decode_interval_ms'] if config['protocol'] == 'transcription' else config['native_unit_ms']} | {summary['total']} "
             f"| {summary['sessions_with_violations']} "
             f"| {_fmt(summary['corpus_wer'], 4)} "
             f"| {_fmt(summary.get('http_corpus_wer'), 4)} "
@@ -410,7 +480,17 @@ def parse_args() -> argparse.Namespace:
         default=[1],
         help="Comma-separated simultaneous session counts; one result each.",
     )
-    parser.add_argument("--mode", choices=MODES, default="vad")
+    parser.add_argument(
+        "--protocol", choices=("transcription", "native"), default="transcription"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default=None,
+        help="Turn closing for the transcription protocol (default: vad).",
+    )
+    parser.add_argument("--repeats", type=_positive_int, default=1)
+    parser.add_argument("--warmup", action="store_true")
     parser.add_argument("--packet-ms", type=_positive_int, default=200)
     parser.add_argument(
         "--no-pace",
@@ -432,7 +512,54 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save inputs and raw session observations here (default: OUTPUT.traces).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.protocol == "native" and args.mode is not None:
+        parser.error("--mode is only available with --protocol transcription")
+    else:
+        return args
+
+
+async def run_sweep(
+    arguments: argparse.Namespace, samples: list[SampleInput]
+) -> list[dict[str, JsonValue]]:
+    pcm_cache: dict[str, bytes] = {}
+    results: list[dict[str, JsonValue]] = []
+    for concurrency in arguments.concurrencies:
+        for repeat in range(0 if arguments.warmup else 1, arguments.repeats + 1):
+            result = await run_asr_realtime_once(
+                samples,
+                host=arguments.host,
+                port=arguments.port,
+                concurrency=concurrency,
+                packet_ms=arguments.packet_ms,
+                protocol=arguments.protocol,
+                mode=arguments.mode,
+                lang=arguments.lang,
+                paced=not arguments.no_pace,
+                trailing_silence_ms=arguments.trailing_silence_ms,
+                timeout_s=arguments.timeout_s,
+                with_http_baseline=arguments.http_baseline,
+                model_path=arguments.model_path,
+                pcm_cache=pcm_cache,
+                trace_dir=arguments.trace_dir or f"{arguments.output}.traces",
+                repeat=repeat,
+                warmup=repeat == 0,
+            )
+            if repeat == 0:
+                if result["summary"]["sessions_with_violations"]:
+                    raise RuntimeError("Warmup failed; inspect saved traces")
+                else:
+                    pass
+            else:
+                summary = result["summary"]
+                print(
+                    f"[conc={concurrency}] wall={summary['wall_clock_s']:.1f}s "
+                    f"violations={summary['sessions_with_violations']}/{summary['total']} "
+                    f"corpus_wer={_fmt(summary['corpus_wer'], 4)} "
+                    f"first_partial_p95={_fmt((summary['first_partial_latency_s'] or {}).get('p95'))}s"
+                )
+                results.append(result)
+    return results
 
 
 def main() -> None:
@@ -459,41 +586,12 @@ def main() -> None:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
     print(
         f"Loaded {len(samples)} SeedTTS {args.lang} samples; streaming "
-        f"mode={args.mode} packet={args.packet_ms}ms paced={not args.no_pace} "
+        f"protocol={args.protocol} mode={args.mode or 'default'} "
+        f"packet={args.packet_ms}ms paced={not args.no_pace} "
         f"concurrencies={args.concurrencies} against {args.host}:{args.port}"
     )
 
-    async def _sweep() -> list[dict[str, Any]]:
-        pcm_cache: dict[str, bytes] = {}
-        results = []
-        for concurrency in args.concurrencies:
-            result = await run_asr_realtime_once(
-                samples,
-                host=args.host,
-                port=args.port,
-                concurrency=concurrency,
-                packet_ms=args.packet_ms,
-                mode=args.mode,
-                lang=args.lang,
-                paced=not args.no_pace,
-                trailing_silence_ms=args.trailing_silence_ms,
-                timeout_s=args.timeout_s,
-                with_http_baseline=args.http_baseline,
-                model_path=args.model_path,
-                pcm_cache=pcm_cache,
-                trace_dir=args.trace_dir or f"{args.output}.traces",
-            )
-            summary = result["summary"]
-            print(
-                f"[conc={concurrency}] wall={summary['wall_clock_s']:.1f}s "
-                f"violations={summary['sessions_with_violations']}/{summary['total']} "
-                f"corpus_wer={_fmt(summary['corpus_wer'], 4)} "
-                f"first_partial_p95={_fmt((summary['first_partial_latency_s'] or {}).get('p95'))}s"
-            )
-            results.append(result)
-        return results
-
-    results = asyncio.run(_sweep())
+    results = asyncio.run(run_sweep(args, samples))
     _print_table(results)
     payload = {
         "schema_version": 1,
@@ -510,6 +608,12 @@ def main() -> None:
     with open(args.output, "w") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
     print(f"Saved {args.output}")
+    if args.protocol == "native" and any(
+        result["summary"]["sessions_with_violations"] for result in results
+    ):
+        raise RuntimeError("Native requests failed; inspect saved results and traces")
+    else:
+        pass
 
 
 if __name__ == "__main__":
