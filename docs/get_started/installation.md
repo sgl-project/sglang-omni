@@ -95,7 +95,7 @@ For other platforms, use the dedicated pages:
 
 ## Prepare the bundled SGLang runtime
 
-Source installs set SGLANG_BUILD_RUST_EXTS=none to retain the Python cache implementation used in qualification. This branch pins SGLang source revision 9f6678aa and carries the GDN prefill graph changes in the Omni wheel. After installing Omni, prepare the runtime before starting Python workers:
+Source installs set SGLANG_BUILD_RUST_EXTS=none to retain the Python cache implementation used in qualification. This branch pins SGLang source revision 9f6678aa and carries the GDN prefill graph and prompt-only prefix-cache policy changes in the Omni wheel. After installing Omni, prepare the runtime before starting Python workers:
 
 ```bash
 sgl-omni-prepare-runtime

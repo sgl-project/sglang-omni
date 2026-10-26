@@ -7,11 +7,17 @@ import logging
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.configs.linear_attn_model_registry import (
+    LinearAttnModelSpec,
+    get_linear_attn_spec_by_arch,
+    register_linear_attn_model,
+)
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.quantization import QUANTIZATION_METHODS
-from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
+from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, HybridReqToTokenPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
@@ -30,6 +36,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_PREFIX_CACHE_PROMPT_ONLY,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
@@ -60,6 +67,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     triton_sampling_unsupported_reason,
 )
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
+from sglang_omni.models.fishaudio_drama3.text_config import Drama3TextConfig
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
     MAX_FUSED_ROWS,
@@ -69,6 +77,9 @@ from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
@@ -83,8 +94,7 @@ logger = logging.getLogger(__name__)
 
 
 class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
-    """Single-GPU engine replaying decode CUDA graphs; no radix, chunked prefill or
-    overlap."""
+    """Single-GPU engine with optional hybrid prefix caching and whole-suffix prefill."""
 
     model_name = "Fish Audio Drama 3"
     supports_breakable_prefill_cuda_graph = (
@@ -109,6 +119,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         ),
         triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
+        prefix_cache_prompt_only: bool = DEFAULT_PREFIX_CACHE_PROMPT_ONLY,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     ) -> None:
@@ -123,10 +134,12 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.first_frame_cuda_graph_max_requests = first_frame_cuda_graph_max_requests
         self.triton_sampling = triton_sampling
         self.tower_fused_layers = tower_fused_layers
+        self.prefix_cache_prompt_only: bool = prefix_cache_prompt_only
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
+        self.prefix_cache_enabled: bool = False
 
     def resolve_checkpoint(self, model_path: str) -> str:
         return resolve_checkpoint(model_path)
@@ -135,6 +148,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         """Register the classes the checkpoint names; the directory is the contract."""
         AutoConfig.register(FishOmniConfig.model_type, FishOmniConfig, exist_ok=True)
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
+        if get_linear_attn_spec_by_arch(FISH_OMNI_ARCHITECTURE) is None:
+            register_linear_attn_model(
+                LinearAttnModelSpec(
+                    config_class=Drama3TextConfig,
+                    backend_class_name=(
+                        "sglang.srt.layers.attention.linear.gdn_backend.GDNAttnBackend"
+                    ),
+                    arch_names=[FISH_OMNI_ARCHITECTURE],
+                    support_mamba_cache_extra_buffer=True,
+                    unwrap_text_config=True,
+                )
+            )
+        else:
+            pass
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
         QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
 
@@ -144,9 +171,14 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "disable_cuda_graph": False,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
             "cuda_graph_max_bs_prefill": PREFILL_CUDA_GRAPH_MAX_TOKENS,
+            # note (wirybeaver): a prefix hit can leave only the final prompt row.
+            "cuda_graph_bs_prefill": [
+                1,
+                *build_default_prefill_cuda_graph_bs(PREFILL_CUDA_GRAPH_MAX_TOKENS),
+            ],
             "prefill_decode_interval": DECODE_STEPS_BETWEEN_PREFILLS,
             "disable_overlap_schedule": True,
-            "disable_radix_cache": True,
+            "disable_radix_cache": False,
             "enable_mixed_chunk": False,
             "chunked_prefill_size": -1,
             "attention_backend": ATTENTION_BACKEND,
@@ -157,6 +189,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.setdefault("page_size", 1)
+        if overrides.get("disable_radix_cache") is False:
+            overrides.setdefault("mamba_radix_cache_strategy", "extra_buffer")
+        else:
+            pass
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         attention_backends = {
@@ -170,12 +206,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         max_position_embeddings = FishOmniConfig.from_pretrained(
             server_args.model_path
         ).text_config.max_position_embeddings
-        if not server_args.disable_radix_cache:
-            raise ValueError("Drama 3 needs disable_radix_cache=True")
+        self.prefix_cache_enabled = not server_args.disable_radix_cache
+        self.prefix_cache_prompt_only = (
+            self.prefix_cache_enabled and self.prefix_cache_prompt_only
+        )
+        if self.prefix_cache_enabled and (
+            resolved_view(server_args).mamba_radix_cache_strategy != "extra_buffer"
+        ):
+            raise ValueError(
+                "Drama 3 prefix caching needs mamba_radix_cache_strategy=extra_buffer"
+            )
         elif chunked_prefill_size > 0 or server_args.enable_mixed_chunk:
             raise ValueError(
-                "Drama 3 needs chunked_prefill_size <= 0 and no mixed chunk: a "
-                "prompt must reach the tower in one extend"
+                "Drama 3 needs chunked_prefill_size <= 0 and no mixed chunk: the "
+                "uncached suffix must reach the tower in one extend"
             )
         elif not server_args.disable_overlap_schedule:
             raise ValueError("Drama 3 runs without overlap scheduling")
@@ -237,6 +281,21 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         sglang_runner = model_worker.model_runner
         model = sglang_runner.model
         assert isinstance(model, Drama3ForCausalLM)
+        if self.prefix_cache_enabled:
+            attention_backend = sglang_runner.attn_backend
+            assert isinstance(attention_backend, HybridLinearAttnBackend)
+            full_attention_backend = attention_backend.full_attn_backend
+            assert isinstance(full_attention_backend, TritonAttnBackend)
+            full_attention_backend.use_unified_prefill = True
+        else:
+            pass
+        if self.prefix_cache_prompt_only:
+            request_pool = sglang_runner.req_to_token_pool
+            assert isinstance(request_pool, HybridReqToTokenPool)
+            assert request_pool.mamba_cache_prompt_only is False
+            request_pool.mamba_cache_prompt_only = True
+        else:
+            pass
         # No decode batch or captured graph size exceeds the request slots.
         model.decode_buffers = Drama3DecodeBuffers.allocate(
             row_count=sglang_runner.req_to_token_pool.size,
@@ -375,6 +434,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 context_length=self.context_length,
                 max_prompt_rows=self.max_prompt_rows,
                 max_new_tokens_cap=self.max_new_tokens_cap,
+                prefix_cache_enabled=self.prefix_cache_enabled,
+                prefix_cache_prompt_only=self.prefix_cache_prompt_only,
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )

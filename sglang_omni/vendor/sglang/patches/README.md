@@ -4,6 +4,8 @@ Omni carries the runtime changes it needs without waiting for their SGLang PRs t
 
 The GDN patch is the production-source delta from SGLang 9f6678aa to 31913fac, submitted as [SGLang #46619](https://github.com/sgl-project/sglang/pull/46619). It belongs to Omni #3234. It captures the existing GDN prefill chain and adds the FP32 checkpoint plumbing; it does not enable prefix caching.
 
+prompt-only-prefix-cache.patch applies the six-file runtime policy from SGLang 1179c215e8 after the GDN patch. This includes the control-flow cleanup of the policy originally benchmarked at dae7917ffd. It belongs to Omni #3235; the same policy is submitted independently against the unmodified base as [SGLang #46683](https://github.com/sgl-project/sglang/pull/46683). It enables opt-in prompt-only checkpoint tracking and a separate full-attention prefill policy.
+
 Run sgl-omni-prepare-runtime after installing this branch. It copies the installed base into an environment-local directory keyed by source and manifest contents, applies the patches, verifies the result, and writes the environment's activation file. Existing installed or editable SGLang source is never rewritten. Fresh processes import the prepared package; a runtime check before ModelWorker initialization verifies the active module contents.
 
 When the pinned SGLang source gains an equivalent implementation, remove the corresponding patch, update the manifest and dependency pin together, and repeat the runtime/quality checks. A package version string alone does not identify these source changes. Generate patch payloads from the reviewed SGLang commits and update the expected source/output hashes together.

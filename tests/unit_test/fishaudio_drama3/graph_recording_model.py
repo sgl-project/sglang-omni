@@ -195,10 +195,16 @@ class CaptureBreakRecorder:
 class EndOfSpeechControlledLogits(nn.Module):
     """Wraps the logits processor: each row's eos logit comes from a fixed buffer."""
 
-    def __init__(self, logits_processor: LogitsProcessor, eos_token_id: int) -> None:
+    def __init__(
+        self,
+        logits_processor: LogitsProcessor,
+        candidate_token_ids: torch.Tensor,
+        eos_token_id: int,
+    ) -> None:
         super().__init__()
         self.logits_processor = logits_processor
-        self.eos_token_id = eos_token_id
+        self.candidate_token_ids = candidate_token_ids
+        self.eos_column = int((candidate_token_ids == eos_token_id).nonzero().item())
         self.recording_buffers: RecordingBuffers | None = None
 
     def forward(
@@ -213,10 +219,10 @@ class EndOfSpeechControlledLogits(nn.Module):
         assert recording_buffers is not None
         logits = output.next_token_logits
         row_count = logits.shape[0]
-        logits[:, self.eos_token_id] = recording_buffers.end_of_speech_logits[
-            :row_count
-        ]
-        recording_buffers.semantic_logits[:row_count].copy_(logits)
+        logits[:, self.eos_column] = recording_buffers.end_of_speech_logits[:row_count]
+        recording_buffers.semantic_logits[:row_count].index_copy_(
+            1, self.candidate_token_ids, logits
+        )
         return output
 
 
@@ -231,7 +237,9 @@ class GraphRecordingModel(Drama3ForCausalLM):
     ) -> None:
         super().__init__(config, quant_config, prefix)
         self.end_of_speech_logits = EndOfSpeechControlledLogits(
-            self.logits_processor, config.eos_token_id
+            self.logits_processor,
+            self.audio_decoder.main_token_candidate_ids,
+            config.eos_token_id,
         )
         self.logits_processor = self.end_of_speech_logits
         self.recording_buffers: RecordingBuffers | None = None

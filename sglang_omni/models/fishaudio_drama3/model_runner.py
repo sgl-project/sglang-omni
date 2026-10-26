@@ -292,7 +292,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Stage every request's whole frame history; the batch arguments are the
+        """Stage every request's uncached frame suffix; the batch arguments are the
         interface contract."""
         self.prefill_inputs = None
         frame_rows: list[list[int]] = []

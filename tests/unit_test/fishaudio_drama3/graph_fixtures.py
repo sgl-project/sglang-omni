@@ -70,6 +70,7 @@ class GraphEngineSpec(BaseModel):
     context_length: int = CONTEXT_LENGTH
     max_running_requests: int = MAX_RUNNING_REQUESTS
     max_prefill_tokens: int = MAX_PREFILL_TOKENS
+    prefill_cuda_graph_token_counts: list[int] = PREFILL_CUDA_GRAPH_TOKEN_COUNTS
     max_total_tokens: int = MAX_TOTAL_TOKENS
     total_gpu_memory_fraction: float = TOTAL_GPU_MEMORY_FRACTION
     random_seed: int = RANDOM_SEED
@@ -80,6 +81,9 @@ class GraphEngineSpec(BaseModel):
     triton_sampling: bool = False
     tower_fused_layers: bool = True
     enable_async_decode: bool = False
+    prefix_cache_enabled: bool = False
+    prefix_cache_prompt_only: bool = False
+    use_original_tracking_indices: bool = False
     async_decode_min_batch_size: int = 1
     prompts: dict[str, list[list[int]]] = PROMPTS
     scenarios: list[GraphScenario]

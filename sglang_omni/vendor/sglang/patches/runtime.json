@@ -1,7 +1,8 @@
 {
   "base_revision": "9f6678aa3d6b8fd4e898fe0fc0b11b932126cf61",
   "patches": [
-    "gdn-prefill-cuda-graph.patch"
+    "gdn-prefill-cuda-graph.patch",
+    "prompt-only-prefix-cache.patch"
   ],
   "files": {
     "kernels/ops/attention/fla/chunk.py": {
@@ -22,7 +23,7 @@
     },
     "srt/layers/attention/hybrid_linear_attn_backend.py": {
       "source_sha256": "e6f797a346bf7534026c963188e7383ec5eded10b94a75811ddb7867cc9980ef",
-      "patched_sha256": "353e2c52e3977db98326fa3d836283f9ece28c38ae0ef95793ca7a94c0e785c2"
+      "patched_sha256": "c62c209fb5ca63ed43af6689646877fb78e3f341168661699c43781ccb8ef4aa"
     },
     "srt/layers/attention/linear/gdn_backend.py": {
       "source_sha256": "04f4d78226b0c91e97fe5b1768ccba2719bcf1996faffb32e37ef580d66fab13",
@@ -40,17 +41,37 @@
       "source_sha256": "ede52671dd880b4317c2308ad58d21d33544044b7bddda93d24bc08216fa812a",
       "patched_sha256": "5dbae7f83f71e1753e3f8892f663ebea04e22ff17897c62ed13a5f870961452a"
     },
+    "srt/layers/attention/triton_backend.py": {
+      "source_sha256": "2e095cfafcd30ad0e720fd1ecd70c92f1a83f47a86a28da0ab739ab5717100aa",
+      "patched_sha256": "f36bf0346e7ed1f05129de9fb9db4fe2fcec6de9790b23bc412834af2fa42e60"
+    },
     "srt/layers/radix_attention.py": {
       "source_sha256": "32eff23dee5a5035a35499df07dcaf2e1d709fd0d23a1cb282f0cfa4584c2e25",
       "patched_sha256": "32eff23dee5a5035a35499df07dcaf2e1d709fd0d23a1cb282f0cfa4584c2e25"
+    },
+    "srt/managers/schedule_batch.py": {
+      "source_sha256": "d2cf47aa5b1a2d8a93f00a1daa3ee75205b1d24a1016f3ec279a39405c4340fe",
+      "patched_sha256": "0b99fab6fdcf0f253f2bda155d713d4ca4cb6a06234b2ee960d8bb1fc4aad6bc"
     },
     "srt/managers/scheduler.py": {
       "source_sha256": "ec59ba3584cdcc2672e3727a656830fe798c03cc46a5630cda713318351cd0ed",
       "patched_sha256": "ec59ba3584cdcc2672e3727a656830fe798c03cc46a5630cda713318351cd0ed"
     },
+    "srt/managers/scheduler_components/batch_result_processor.py": {
+      "source_sha256": "c446e77cbd2ba7af1c5d6d2b6a0dfd9dc94f2724d862112ff6b2945058c64ad2",
+      "patched_sha256": "7f09d723f8ea42c5ef9eaae670ec20b23f2e43f07d5f6ea19f6dc9d4f2788b83"
+    },
+    "srt/mem_cache/memory_pool.py": {
+      "source_sha256": "81e1667e38379593b2747c33ccbbc2b673dd21aa8b5667a62d0c8aab5285a4af",
+      "patched_sha256": "fe4fc7c3f0f10574d84483c62cf093469d7b19f09cb0699bbf43097b099d95d6"
+    },
     "srt/model_executor/model_runner.py": {
       "source_sha256": "82dbb52e9cb60d59d624431ce18b688a0def08f39ed18c2874e24ad5cbc153bb",
       "patched_sha256": "82dbb52e9cb60d59d624431ce18b688a0def08f39ed18c2874e24ad5cbc153bb"
+    },
+    "srt/model_executor/runner/decode_cuda_graph_runner.py": {
+      "source_sha256": "e4974b367d4ab7324b461520784557d5e962ad1546b28b6379efa5c9d15d2d84",
+      "patched_sha256": "e0496a8ca74ae95f89d4354f91803a125bf033baae24a8f97f1c6f84f07d329b"
     },
     "srt/model_executor/runner/prefill_cuda_graph_runner.py": {
       "source_sha256": "bd205fd950c2deb706b2a7da560b1888d7379bb5b9a887513487464b1eb9f709",

@@ -28,6 +28,7 @@ DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
 DEFAULT_TRITON_SAMPLING = True
 DEFAULT_TOWER_FUSED_LAYERS = True
+DEFAULT_PREFIX_CACHE_PROMPT_ONLY = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
@@ -68,6 +69,7 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     )
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS
+    prefix_cache_prompt_only: bool = DEFAULT_PREFIX_CACHE_PROMPT_ONLY
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
