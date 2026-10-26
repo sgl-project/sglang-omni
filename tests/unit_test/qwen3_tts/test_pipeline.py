@@ -711,6 +711,7 @@ def resolved_qwen3_tts_server_args(
     config["tts_model_type"] = "base"
     config_path.write_text(json.dumps(config))
     builder = Qwen3TtsEngineBuilder()
+    builder.device = "cuda:0"
     builder.checkpoint_dir = str(checkpoint)
     builder.server_args_overrides = {"attention_backend": "fa3", **overrides}
     stage_overrides = build_generation_batch_overrides(
@@ -8731,6 +8732,62 @@ def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
     assert token.item() == 1
 
 
+@pytest.mark.parametrize(
+    ("is_xpu", "device", "overrides", "expected"),
+    [
+        (True, "xpu:0", {}, {"attention_backend": "intel_xpu"}),
+        (
+            True,
+            "xpu:1",
+            {
+                "attention_backend": None,
+                "prefill_attention_backend": None,
+                "decode_attention_backend": None,
+            },
+            {
+                "attention_backend": "intel_xpu",
+                "prefill_attention_backend": None,
+                "decode_attention_backend": None,
+            },
+        ),
+        (True, "cpu", {}, {}),
+        (False, "xpu:0", {}, {}),
+        (
+            True,
+            "xpu:0",
+            {"attention_backend": "triton"},
+            {"attention_backend": "triton"},
+        ),
+        (
+            True,
+            "xpu:0",
+            {"prefill_attention_backend": "triton"},
+            {"prefill_attention_backend": "triton"},
+        ),
+        (
+            True,
+            "xpu:0",
+            {"decode_attention_backend": "triton"},
+            {"decode_attention_backend": "triton"},
+        ),
+    ],
+)
+def test_qwen3_tts_engine_selects_xpu_attention_only_without_an_override(
+    monkeypatch: pytest.MonkeyPatch,
+    is_xpu: bool,
+    device: str,
+    overrides: dict[str, str | None],
+    expected: dict[str, str | None],
+) -> None:
+    monkeypatch.setattr(qwen3_stages.current_platform, "is_xpu", lambda: is_xpu)
+    builder = Qwen3TtsEngineBuilder()
+    builder.device = device
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides == expected
+
+
 @pytest.mark.parametrize("value", [True, 1, "1", "true", " yes ", "on"])
 def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
@@ -8743,7 +8800,9 @@ def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
 def test_qwen3_tts_engine_accepts_disabled_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
+    builder = Qwen3TtsEngineBuilder()
+    builder.device = "cpu"
+    builder.adjust_overrides({"enable_torch_compile": value})
 
 
 def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(

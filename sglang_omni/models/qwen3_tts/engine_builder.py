@@ -376,6 +376,16 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
         else:
             pass
+        if (
+            current_platform.is_xpu()
+            and self.device.split(":")[0] == "xpu"
+            and overrides.get("attention_backend") is None
+            and overrides.get("prefill_attention_backend") is None
+            and overrides.get("decode_attention_backend") is None
+        ):
+            overrides["attention_backend"] = "intel_xpu"
+        else:
+            pass
         # note (ratish): fa4 avoids fa3's per-slot split KV combine but runs FP8 KV only
         # on SM100, so a quantized KV cache keeps the default backend.
         prefill_backend = nested_prefill_overrides(overrides).get(

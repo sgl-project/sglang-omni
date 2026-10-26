@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 import torch
 import torch.nn.functional as F
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import AutoConfig
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
@@ -1250,6 +1252,69 @@ def create_sglang_thinker_executor_from_config(
         overrides["enable_streaming_session"] = True
     else:
         pass
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    if speculative_algorithm.is_none():
+        if draft_model_path is not None:
+            raise ValueError(
+                "speculative_draft_model_path needs a speculative_algorithm"
+            )
+        else:
+            pass
+    else:
+        # note (wilsonzheng0327): the draft worker drives a synchronous loop that
+        # verifies whole blocks, so mixed prefill tails and the lookahead stay off.
+        if not (speculative_algorithm.is_dflash() or speculative_algorithm.is_eagle3()):
+            raise ValueError(
+                "Qwen3-Omni speculative thinker decoding supports DFLASH and EAGLE3, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                f"speculative_algorithm={speculative_algorithm.name} needs "
+                "speculative_draft_model_path"
+            )
+        elif (server_args_overrides or {}).get("enable_mixed_chunk"):
+            raise ValueError(
+                "speculative thinker decoding needs enable_mixed_chunk off"
+            )
+        elif speech_enabled:
+            # note (wilsonzheng0327): with speech output the thinker captures the
+            # talker's accept layer through the same layers_to_capture a draft sets,
+            # and sets it after the draft is built, so the draft would read the wrong
+            # hidden states. The speculative prefill also skips post_prefill, which
+            # stores the talker's multimodal prompt rows. Lifting this needs both
+            # captures side by side and the rows stored on the speculative prefill.
+            raise ValueError(
+                "speculative thinker decoding does not support speech output yet; "
+                "serve the thinker with --text-only"
+            )
+        else:
+            pass
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+        # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
+        # prefill embeddings, which a captured draft prefill graph would ignore.
+        if speculative_algorithm.is_eagle():
+            overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
+        else:
+            pass
+        # The draft has its own positional capacity; the target serves within it.
+        draft_context_length = int(
+            AutoConfig.from_pretrained(
+                draft_model_path,
+                revision=overrides.get("speculative_draft_model_revision"),
+            ).max_position_embeddings
+        )
+        if max_seq_len is not None and max_seq_len > draft_context_length:
+            raise ValueError(
+                f"max_seq_len={max_seq_len} exceeds the draft's "
+                f"{draft_context_length}-token context"
+            )
+        else:
+            max_seq_len = max_seq_len or draft_context_length
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)

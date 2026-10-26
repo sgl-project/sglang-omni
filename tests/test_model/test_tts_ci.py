@@ -36,9 +36,17 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import pytest
+from pydantic import TypeAdapter
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
+from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.eval.benchmark_tts_generation_budget import (
+    DEFAULT_CASES_PATH,
+    GenerationProbeCase,
+    run_generation_probe,
+)
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
@@ -46,6 +54,7 @@ from benchmarks.eval.benchmark_tts_seedtts import (
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_saved_tts_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
+from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechReference
 from tests.test_model.conftest import (
     TTS_STAGE_CONSISTENCY,
     TTS_STAGE_NONSTREAM,
@@ -783,6 +792,67 @@ def wer_input_dirs(
             generated_path = Path(output_dir) / "generated.json"
             assert generated_path.exists(), f"WER metadata missing: {generated_path}"
     return SPEED_OUTPUT_DIRS
+
+
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    "stream",
+    [
+        pytest.param(False, marks=pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)),
+        pytest.param(True, marks=pytest.mark.tts_stage(TTS_STAGE_STREAM)),
+    ],
+)
+def test_qwen3_tts_repeated_short_speech_budget(
+    request: pytest.FixtureRequest, tmp_path: Path, stream: bool
+) -> None:
+    """The server default never cuts repeated short speech that the 2048-frame limit let finish."""
+    if "qwen3-tts" not in TTS_MODEL_PATH.lower():
+        pytest.skip("The codec-frame budget belongs to Qwen3-TTS")
+    else:
+        pass
+    router_server = request.getfixturevalue("router_server")
+    speech_request = CreateSpeechRequest(
+        input="unused", model=TTS_MODEL_PATH, voice=PRESET.voice or "default"
+    )
+    if PRESET.voice_clone:
+        sample = load_seedtts_samples(
+            request.getfixturevalue("dataset_repo"), max_samples=1
+        )[0]
+        speech_request.references = [
+            SpeechReference(audio_path=sample.ref_audio, text=sample.ref_text)
+        ]
+    else:
+        pass
+    cases = TypeAdapter(list[GenerationProbeCase]).validate_json(
+        DEFAULT_CASES_PATH.read_text()
+    )
+    cases = [
+        case
+        for case in cases
+        if case.id in ("short_en", "short_zh", "numbers_en", "mixed_zh")
+    ]
+    output_dir = (
+        Path(resolve_stage_output_dir(tmp_path, f"generation_budget_{stream}"))
+        / f"attempt-{os.environ.get('OMNI_CI_ATTEMPT', '1')}"
+        / "samples"
+    )
+
+    async def run() -> None:
+        async with httpx.AsyncClient(timeout=BENCHMARK_TIMEOUT) as client:
+            results = await run_generation_probe(
+                client,
+                f"http://127.0.0.1:{router_server.port}/v1",
+                speech_request,
+                cases,
+                range(8),
+                stream,
+                output_dir,
+            )
+        failures = [result.model_dump() for result in results if result.errors]
+        assert not failures, f"Generation-budget failures: {failures}"
+
+    asyncio.run(run())
 
 
 @pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)

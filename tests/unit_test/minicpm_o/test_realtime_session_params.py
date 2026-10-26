@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sglang_omni.client.client import Client
+from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
     SAMPLE_RATE,
     UNIT_SAMPLES,
@@ -22,7 +23,7 @@ from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks, SpeechHo
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
@@ -45,21 +46,47 @@ FIRST_RESPONSE = "session-response-0"
 FIRST_ITEM = "session-response-0-message"
 SECOND_RESPONSE = "session-response-1"
 SECOND_ITEM = "session-response-1-message"
-HEARD_PCM = b"\1\0" * 4
-RUNNING_UNIT_PCM = b"\2\0" * 4
-TAIL_PCM = b"\3\0" * 2
-NEXT_REPLY_PCM = b"\4\0" * 4
+# Each spoken unit's audio lasts 10 ms and the tail unit's 5 ms, so the reply's units end at 10, 20 and 25 ms.
+UNIT_AUDIO_MS = 10
+UNIT_AUDIO_SAMPLES = OUTPUT_SAMPLE_RATE * UNIT_AUDIO_MS // 1000
+HEARD_PCM = b"\1\0" * UNIT_AUDIO_SAMPLES
+RUNNING_UNIT_PCM = b"\2\0" * UNIT_AUDIO_SAMPLES
+TAIL_PCM = b"\3\0" * (UNIT_AUDIO_SAMPLES // 2)
+NEXT_REPLY_PCM = b"\4\0" * UNIT_AUDIO_SAMPLES
 
 
-def interrupt_of_turn_1(last_delivered_unit: int) -> tuple[TimedChunk, None, bool]:
-    """The control a stop of turn 1 sends once the client received unit last_delivered_unit."""
+def interrupt_of_turn_1(keep_through_unit: int) -> tuple[TimedChunk, None, bool]:
+    """The control a stop of turn 1 sends, keeping the reply through unit keep_through_unit, the last one the client received unless a held truncate named an earlier one."""
     return (
         TimedChunk(
             CONTROL,
             0,
             0,
             0,
-            {"type": INTERRUPT, "last_delivered_unit": last_delivered_unit},
+            {"type": INTERRUPT, "keep_through_unit": keep_through_unit},
+            format=SESSION_CONTROL,
+            turn=1,
+        ),
+        None,
+        False,
+    )
+
+
+def truncate_of_turn_1(
+    audio_end_ms: float, keep_through_unit: int
+) -> tuple[TimedChunk, None, bool]:
+    """The control a client truncate of turn 1 at audio_end_ms sends, keeping the reply through unit keep_through_unit."""
+    return (
+        TimedChunk(
+            CONTROL,
+            0,
+            0,
+            0,
+            {
+                "type": TRUNCATE,
+                "t_ms": audio_end_ms,
+                "keep_through_unit": keep_through_unit,
+            },
             format=SESSION_CONTROL,
             turn=1,
         ),
@@ -221,6 +248,245 @@ async def test_cancel_without_an_open_reply_sends_no_control() -> None:
 
     assert coordinator.controlled == []
     assert events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("audio_end_ms", "truncate_controls"),
+    [
+        (25.0, []),
+        (30.0, []),
+        (20.0, [truncate_of_turn_1(20.0, 1)]),
+        (15.0, [truncate_of_turn_1(15.0, 0)]),
+        (5.0, [truncate_of_turn_1(5.0, -1)]),
+    ],
+    ids=[
+        "every_received_unit_played",
+        "beyond_the_received_audio",
+        "through_the_second_unit",
+        "inside_the_second_unit",
+        "inside_the_first_unit",
+    ],
+)
+async def test_a_truncate_after_the_stop_keeps_the_reply_through_the_last_unit_the_client_played(
+    audio_end_ms: float, truncate_controls: list[tuple[TimedChunk, None, bool]]
+) -> None:
+    """A client truncate after the stop names the last unit whose audio had fully ended at audio_end_ms: a position inside a unit rounds down to the unit before it, one before the first unit keeps none of the reply, and one at or beyond the received audio sends nothing, since the stop already keeps the reply through the last received unit."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    await run_unit(adapter, coordinator, 1, 1, voice(RUNNING_UNIT_PCM))
+    await run_unit(
+        adapter, coordinator, 2, 1, voice(TAIL_PCM), cancel_at="after_output"
+    )
+    await adapter.truncate(FIRST_ITEM, audio_end_ms)
+    await run_unit(adapter, coordinator, 3, 1, voice(b"", end_of_turn=True))
+    await adapter.close()
+
+    assert coordinator.controlled == [interrupt_of_turn_1(2), *truncate_controls]
+    assert events[-1] == ResponseFinished(
+        FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_of_an_open_reply_sends_nothing_and_later_ones_only_move_back() -> (
+    None
+):
+    """A truncate while the reply is open and not stopped sends nothing and does not bend the stop, which keeps the reply through the last unit the client received; after the stop a truncate sends a control only when it keeps less than what is already kept, so a repeated or later position sends nothing."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    await run_unit(adapter, coordinator, 1, 1, voice(RUNNING_UNIT_PCM))
+    await adapter.truncate(FIRST_ITEM, 10.0)
+    await run_unit(
+        adapter, coordinator, 2, 1, voice(TAIL_PCM), cancel_at="before_output"
+    )
+    await adapter.truncate(FIRST_ITEM, 20.0)
+    await adapter.truncate(FIRST_ITEM, 10.0)
+    await adapter.truncate(FIRST_ITEM, 5.0)
+    await adapter.truncate(FIRST_ITEM, 5.0)
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        interrupt_of_turn_1(1),
+        truncate_of_turn_1(10.0, 0),
+        truncate_of_turn_1(5.0, -1),
+    ]
+    assert events == [
+        ResponseStarted(FIRST_RESPONSE),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, RUNNING_UNIT_PCM),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_late_truncate_of_a_stopped_reply_never_bends_the_stop_of_the_next_one() -> (
+    None
+):
+    """A truncate meant for the stopped reply that arrives once the next reply is open lands nowhere: it sends nothing, and the next reply's stop still keeps that reply through the last unit the client received."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(
+        adapter, coordinator, 0, 1, voice(HEARD_PCM), cancel_at="after_output"
+    )
+    await run_unit(adapter, coordinator, 1, 1, voice(b"", end_of_turn=True))
+    await run_unit(adapter, coordinator, 2, 2, voice(NEXT_REPLY_PCM))
+    await run_unit(adapter, coordinator, 3, 2, voice(NEXT_REPLY_PCM))
+    await adapter.truncate(FIRST_ITEM, 5.0)
+    await adapter.cancel()
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        interrupt_of_turn_1(0),
+        (
+            TimedChunk(
+                CONTROL,
+                0,
+                0,
+                0,
+                {"type": INTERRUPT, "keep_through_unit": 3},
+                format=SESSION_CONTROL,
+                turn=2,
+            ),
+            None,
+            False,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_cuts_a_reply_the_model_ended_until_the_next_reply_starts() -> (
+    None
+):
+    """Once the model ends a reply itself, the usual barge-in of native duplex, a client truncate cuts it like a stopped one: it sends the kept unit, a later position sends nothing, and once the next reply is open a truncate sends nothing."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    await run_unit(
+        adapter, coordinator, 1, 1, voice(RUNNING_UNIT_PCM, end_of_turn=True)
+    )
+    await adapter.truncate(FIRST_ITEM, 10.0)
+    await adapter.truncate(FIRST_ITEM, 20.0)
+    await run_unit(adapter, coordinator, 2, 2, voice(NEXT_REPLY_PCM))
+    await adapter.truncate(SECOND_ITEM, 5.0)
+    await adapter.close()
+
+    assert coordinator.controlled == [truncate_of_turn_1(10.0, 0)]
+    assert events == [
+        ResponseStarted(FIRST_RESPONSE),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, RUNNING_UNIT_PCM),
+        TextFinished(FIRST_RESPONSE, FIRST_ITEM, ""),
+        AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
+        ResponseFinished(FIRST_RESPONSE, FIRST_ITEM, "", True, "completed", "stop"),
+        ResponseStarted(SECOND_RESPONSE),
+        AudioDelta(SECOND_RESPONSE, SECOND_ITEM, NEXT_REPLY_PCM),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_naming_an_earlier_reply_leaves_the_ended_latest_reply_alone() -> (
+    None
+):
+    """Two replies the model ended itself: a truncate naming the first one sends nothing, so its position never cuts the second reply, and a truncate naming the second one cuts that reply."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM, end_of_turn=True))
+    await run_unit(adapter, coordinator, 1, 2, voice(NEXT_REPLY_PCM))
+    await run_unit(adapter, coordinator, 2, 2, voice(NEXT_REPLY_PCM, end_of_turn=True))
+    await adapter.truncate(FIRST_ITEM, 5.0)
+    await adapter.truncate(SECOND_ITEM, 10.0)
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        (
+            TimedChunk(
+                CONTROL,
+                0,
+                0,
+                0,
+                {"type": TRUNCATE, "t_ms": 10.0, "keep_through_unit": 1},
+                format=SESSION_CONTROL,
+                turn=2,
+            ),
+            None,
+            False,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_cuts_the_stopped_reply_until_the_next_reply_starts() -> None:
+    """A truncate that arrives after the stopped reply's response.done still cuts it; one with no reply yet, or after the next reply started, sends nothing and raises nothing."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await adapter.truncate(FIRST_ITEM, 10.0)
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    await run_unit(
+        adapter, coordinator, 1, 1, voice(RUNNING_UNIT_PCM), cancel_at="after_output"
+    )
+    await run_unit(adapter, coordinator, 2, 1, voice(b"", end_of_turn=True))
+    await adapter.truncate(FIRST_ITEM, 10.0)
+    await run_unit(adapter, coordinator, 3, 2, voice(NEXT_REPLY_PCM))
+    await adapter.truncate(SECOND_ITEM, 5.0)
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        interrupt_of_turn_1(1),
+        truncate_of_turn_1(10.0, 0),
+    ]
+    assert events == [
+        ResponseStarted(FIRST_RESPONSE),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, RUNNING_UNIT_PCM),
+        TextFinished(FIRST_RESPONSE, FIRST_ITEM, ""),
+        AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
+        ResponseFinished(
+            FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
+        ),
+        ResponseStarted(SECOND_RESPONSE),
+        AudioDelta(SECOND_RESPONSE, SECOND_ITEM, NEXT_REPLY_PCM),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_unit_delivered_in_several_chunks_is_played_once_its_last_chunk_is() -> (
+    None
+):
+    """A unit whose audio reaches the client in several chunks ends where its last chunk ends, so a truncate between its chunks rounds down to the unit before it."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+    processing = asyncio.create_task(adapter.process(unit(1)))
+    await asyncio.sleep(0)
+    coordinator.voice(1, 1, voice(TAIL_PCM))
+    coordinator.voice(1, 1, voice(TAIL_PCM))
+    await asyncio.sleep(0)
+    await adapter.cancel()
+    coordinator.done(1)
+    await processing
+    await adapter.truncate(FIRST_ITEM, 15.0)
+    await adapter.truncate(FIRST_ITEM, 20.0)
+    await adapter.close()
+
+    assert coordinator.controlled == [
+        interrupt_of_turn_1(1),
+        truncate_of_turn_1(15.0, 0),
+    ]
+    assert events == [
+        ResponseStarted(FIRST_RESPONSE),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, HEARD_PCM),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, TAIL_PCM),
+        AudioDelta(FIRST_RESPONSE, FIRST_ITEM, TAIL_PCM),
+    ]
 
 
 @pytest.mark.asyncio
