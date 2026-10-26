@@ -48,6 +48,7 @@ def test_stage_submit_to_coordinator_completion(streaming):
         )
         await stage.start()
         drainer = asyncio.create_task(stage.drain_outbox())
+        stage.outbox_task = drainer
         try:
             payload = StagePayload(
                 "a", OmniRequest("Hello", {"stream": streaming}), None

@@ -35,7 +35,7 @@ class AudioOutbox(queue.Queue[OutgoingMessage]):
     def _put(
         self, message: OutgoingMessage
     ) -> None:  # noqa: leading-underscore - queue.Queue hook
-        if message.type != "error":
+        if message.type not in {"error", "wakeup"}:
             if self.buffered_chunks >= self.capacity:
                 raise queue.Full
             else:
@@ -47,7 +47,7 @@ class AudioOutbox(queue.Queue[OutgoingMessage]):
 
     def _get(self) -> OutgoingMessage:  # noqa: leading-underscore - queue.Queue hook
         message = super()._get()  # noqa: leading-underscore - queue.Queue hook
-        if message.type != "error":
+        if message.type not in {"error", "wakeup"}:
             self.buffered_chunks -= 1
         else:
             pass

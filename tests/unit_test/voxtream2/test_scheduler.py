@@ -12,7 +12,7 @@ import torch
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.models.voxtream2.backend import VoXtreamBackend
-from sglang_omni.models.voxtream2.scheduler import VoXtreamScheduler
+from sglang_omni.models.voxtream2.scheduler import AudioOutbox, VoXtreamScheduler
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.serve.speech_errors import speech_generation_error
@@ -25,6 +25,19 @@ def message(rid="a", stream=True, inputs="Hello", **params):
 
 def audio(data):
     return np.frombuffer(data["audio_waveform"], dtype=np.float32)
+
+
+def test_shutdown_wakeup_bypasses_full_audio_buffer() -> None:
+    outbox = AudioOutbox(capacity=1)
+    outbox.put_nowait(OutgoingMessage("audio", "stream"))
+    outbox.put_nowait(OutgoingMessage("", "wakeup"))
+    with pytest.raises(queue.Full):
+        outbox.put_nowait(OutgoingMessage("overflow", "stream"))
+    assert outbox.get_nowait().type == "stream"
+    assert outbox.get_nowait().type == "wakeup"
+    outbox.put_nowait(OutgoingMessage("next", "stream"))
+    with pytest.raises(queue.Full):
+        outbox.put_nowait(OutgoingMessage("overflow", "stream"))
 
 
 class Backend:
