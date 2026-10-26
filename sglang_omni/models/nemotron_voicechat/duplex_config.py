@@ -113,13 +113,10 @@ class NemotronVoiceChatDuplexPipelineConfig(PipelineConfig):
                 and engine.max_total_tokens is None
                 and engine.mem_fraction_static == default_memory_fraction
             ):
-                context_length = engine.model_extra.get(
-                    "context_length",
-                    (
-                        THINKER_CONTEXT_LENGTH
-                        if stage_name == "thinker"
-                        else TALKER_CONTEXT_LENGTH
-                    ),
+                context_length = (
+                    THINKER_CONTEXT_LENGTH
+                    if stage_name == "thinker"
+                    else TALKER_CONTEXT_LENGTH
                 )
                 server_args_overrides["max_total_tokens"] = (
                     request_slots * context_length
