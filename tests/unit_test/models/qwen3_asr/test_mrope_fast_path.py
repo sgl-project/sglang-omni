@@ -14,6 +14,7 @@ FAST = mrope_fast_path.fast_compute_mrope_positions
 ORIG = (
     ForwardBatch._compute_mrope_positions
 )  # noqa: leading-underscore  # production name
+ORIG_SPEC = ForwardBatch.compute_spec_mrope_positions
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +26,9 @@ def upstream(monkeypatch):
         ),
     )
     monkeypatch.setattr(mrope_fast_path, "_orig_compute_mrope_positions", ORIG)
+    monkeypatch.setattr(
+        mrope_fast_path, "_original_compute_spec_mrope_positions", ORIG_SPEC
+    )
 
 
 def mm_input(prompt_len: int, *, delta: int = 0, degenerate: bool = True):
@@ -91,3 +95,28 @@ def test_extend_falls_back():
     fast = run(FAST, ForwardMode.EXTEND, [20], mm, **fields)
 
     assert torch.equal(fast, run(ORIG, ForwardMode.EXTEND, [20], mm, **fields))
+
+
+def test_speculative_verify_positions_support_partial_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DFlash verification of four ASR requests must not broadcast four deltas over eight positions."""
+    monkeypatch.setenv("SGLANG_OMNI_ASR_FAST_MROPE", "0")
+    monkeypatch.setattr(ForwardBatch, "compute_spec_mrope_positions", ORIG_SPEC)
+    monkeypatch.setattr(mrope_fast_path, "_original_compute_spec_mrope_positions", None)
+    mrope_fast_path.apply_asr_mrope_fast_path()
+    forward_batch = object.__new__(ForwardBatch)
+    forward_batch.seq_lens = torch.tensor([12, 15, 18, 21])
+    forward_batch.mrope_positions = None
+    positions = torch.arange(32).view(4, 8)
+    batch = SimpleNamespace(
+        multimodal_inputs=[mm_input(8) for _ in range(4)],
+        spec_info=SimpleNamespace(positions=positions),
+    )
+
+    forward_batch.compute_spec_mrope_positions(RUNNER, batch)
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        positions.flatten().unsqueeze(0).expand(3, -1),
+    )
