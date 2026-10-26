@@ -504,11 +504,14 @@ class Client:
             else:
                 pass
 
+        sample_count = max(to_numpy(audio_data).shape)
         return SpeechResult(
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
             sample_rate=sample_rate,
+            duration_s=max(round(sample_count / speed), 1)
+            / (sample_rate or DEFAULT_SAMPLE_RATE),
             usage=last_chunk.usage if last_chunk else None,
             finish_reason=(
                 (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
@@ -663,7 +666,11 @@ class Client:
 
     @staticmethod
     def set_audio_data(chunk: GenerateChunk, data: Mapping[str, object]) -> None:
-        audio_data = data.get("audio_data") or data.get("audio")
+        audio_data = data.get("audio_data")
+        if audio_data is None:
+            audio_data = data.get("audio")
+        else:
+            pass
         if audio_data is None and data.get("audio_waveform") is not None:
             raw = data.get("audio_waveform")
             if isinstance(raw, memoryview):
