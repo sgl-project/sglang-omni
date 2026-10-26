@@ -2120,7 +2120,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             pass
         # note(ratish): 2D rows for the fused add and norm, which every
         # backend's kernel expects and which writes both operands in place.
-        residual = token_embeds.reshape(num_rows, 1, hidden_size)
+        residual = token_embeds.reshape(num_rows, 1, hidden_size).contiguous()
         mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
             if mlp_out is None:
