@@ -70,6 +70,8 @@ from sglang_omni.scheduling.message import (
     ResultOwningScheduler,
     StageScheduler,
 )
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.tensor_parallel_scheduler import TensorParallelScheduler
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
 
 TorchProfiler = current_platform.get_torch_profiler()
@@ -267,6 +269,21 @@ class Stage:
             serving_thread_ready = threading.Event()
             warmup_error: Exception | None = None
 
+            def _report_scheduler_failure(exc: BaseException) -> None:
+                self.running = False
+                loop = self.loop
+                if loop is not None and not loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        self.handle_scheduler_crash(exc), loop
+                    )
+                else:
+                    pass
+
+            if isinstance(self.scheduler, TensorParallelScheduler):
+                self.scheduler.failure_callback = _report_scheduler_failure
+            else:
+                pass
+
             def _run_scheduler() -> None:
                 nonlocal warmup_error
                 try:
@@ -297,15 +314,7 @@ class Stage:
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
-                    self.running = False
-                    loop = self.loop
-                    if loop is not None and not loop.is_closed():
-                        asyncio.run_coroutine_threadsafe(
-                            self.handle_scheduler_crash(exc),
-                            loop,
-                        )
-                    else:
-                        pass
+                    _report_scheduler_failure(exc)
 
             self.scheduler_thread = threading.Thread(
                 target=_run_scheduler,
@@ -390,13 +399,20 @@ class Stage:
             # the thread instead of letting a daemon thread be reclaimed at
             # process exit. A slow thread is logged, not fatal: shutdown
             # correctness must not start depending on this timeout.
+            # note (Wes): TP cleanup waits for dispatched collectives up to the scheduler's collective timeout, so a dead peer cannot hang stop forever.
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
+                join_timeout_s = (
+                    self.scheduler.shutdown_join_timeout_s
+                    if isinstance(self.scheduler, SimpleScheduler)
+                    else None
+                )
+                if join_timeout_s is None:
+                    join_timeout_s = _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                else:
+                    pass
                 try:
-                    await asyncio.to_thread(
-                        scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
-                    )
+                    await asyncio.to_thread(scheduler_thread.join, join_timeout_s)
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
                 else:
@@ -404,7 +420,7 @@ class Stage:
                         logger.warning(
                             "Stage %s scheduler thread did not stop within %gs",
                             self.name,
-                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                            join_timeout_s,
                         )
                     else:
                         self.scheduler_thread = None
@@ -1172,8 +1188,30 @@ class Stage:
 
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
-        if request_id in self.aborted:
+        is_tensor_parallel = isinstance(self.scheduler, TensorParallelScheduler)
+        # note (AuFlow): A follower abort must not skip dispatched collectives.
+        preserve_tp_work = self.role == "follower" and is_tensor_parallel
+        if request_id in self.aborted and not preserve_tp_work:
             return
+        else:
+            pass
+        # note (AuFlow): Reject invalid work before any rank enters collectives.
+        if (
+            self.role != "follower"
+            and is_tensor_parallel
+            and self.scheduler.validate_request is not None
+        ):
+            try:
+                # note (Wes): Validation can decode every reference image, so it runs off the event loop to keep aborts flowing.
+                await asyncio.to_thread(self.scheduler.validate_request, payload)
+            except ValueError as exc:
+                await self.send_failure(request_id, str(exc))
+                return
+            # note (Wes): An abort can land while validation runs, before any rank has the work.
+            if request_id in self.aborted:
+                return
+            else:
+                pass
         else:
             pass
         session_operation = find_session_operation(payload.request.metadata)

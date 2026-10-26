@@ -2,7 +2,8 @@
 """SimpleScheduler — lightweight scheduler for non-AR stages.
 
 For stages that just run a function (preprocessing, encoders, decode, code2wav).
-No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
+No KV cache. The default is one-at-a-time execution, with optional explicit
+batching through batch_compute_fn.
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
@@ -26,8 +27,16 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, Compu
 logger = logging.getLogger(__name__)
 
 
+class BatchKey(Protocol):
+    def __call__(
+        self, payload: StagePayload
+    ) -> tuple[str | int | float | bool | None, ...]:
+        """Return the compatibility key used to group requests into batches."""
+
+
 class RequestArrivalHook(Protocol):
-    def __call__(self, payload: StagePayload) -> None: ...
+    def __call__(self, payload: StagePayload) -> None:
+        """Record a request when it reaches the scheduler."""
 
 
 class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
@@ -36,6 +45,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     Supports sync and async callables for ``new_request`` messages only.
     A batch_compute_fn may return a BaseException in an item's
     result slot to fail only that request while preserving the rest of the batch.
+    A batch_key_fn can keep incompatible requests in separate batches.
+    shutdown_join_timeout_s bounds how long the stage waits for the compute thread on stop; None uses the stage default.
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
@@ -57,11 +68,14 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
         batch_wait_when_idle: bool = True,
+        batch_key_fn: BatchKey | None = None,
         request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        shutdown_on_compute_thread: bool = False,
+        shutdown_join_timeout_s: float | None = None,
         request_arrival_hook: RequestArrivalHook | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -72,6 +86,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
         self.batch_wait_when_idle = bool(batch_wait_when_idle)
+        self.batch_key_fn = batch_key_fn
         self.request_cost_fn = request_cost_fn
         self.max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
@@ -92,6 +107,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.shutdown_callback = shutdown_callback
         self.request_arrival_hook = request_arrival_hook
         self.shutdown_lock = threading.Lock()
+        self.shutdown_join_timeout_s: float | None = shutdown_join_timeout_s
+        self.shutdown_on_compute_thread: bool = shutdown_on_compute_thread
+        self.started: bool = False
+        self.stop_requested: bool = False
         self.aborted: set[str] = set()
         self.abort_lock = threading.Lock()
         self.running = False
@@ -150,6 +169,9 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         else:
             pass
 
+        batch_key = (
+            self.batch_key_fn(first_msg.data) if self.batch_key_fn is not None else None
+        )
         batch_cost = self.message_cost(first_msg)
         deadline: float | None = (
             time.monotonic() + self.max_batch_wait_s
@@ -175,6 +197,19 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     break
 
             if msg.type == "new_request":
+                if self.batch_key_fn is not None:
+                    try:
+                        msg_key = self.batch_key_fn(msg.data)
+                    except (TypeError, ValueError):
+                        self.pending_messages.appendleft(msg)
+                        break
+                    if msg_key != batch_key:
+                        self.pending_messages.appendleft(msg)
+                        break
+                    else:
+                        pass
+                else:
+                    pass
                 if self.max_batch_cost is not None:
                     msg_cost = self.message_cost(msg)
                     if batch and batch_cost + msg_cost > self.max_batch_cost:
@@ -294,11 +329,24 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
-        self.running = True
-        if self.max_concurrency > 1:
-            self.start_concurrent()
-        else:
-            self.start_serial()
+        with self.shutdown_lock:
+            if self.shutdown_on_compute_thread and self.stop_requested:
+                return
+            else:
+                pass
+            self.started = True
+            self.running = True
+        try:
+            if self.max_concurrency > 1:
+                self.start_concurrent()
+            else:
+                self.start_serial()
+        finally:
+            if self.shutdown_on_compute_thread:
+                self.running = False
+                self.run_shutdown_callback()
+            else:
+                pass
 
     def start_serial(self) -> None:
         loop = asyncio.new_event_loop()
@@ -397,8 +445,17 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
 
     def stop(self) -> None:
-        self.running = False
-        self.inbox.put(IncomingMessage(request_id="", type="wakeup"))
+        with self.shutdown_lock:
+            self.running = False
+            self.inbox.put(IncomingMessage(request_id="", type="wakeup"))
+            self.stop_requested = True
+            if self.shutdown_on_compute_thread and self.started:
+                return
+            else:
+                pass
+        self.run_shutdown_callback()
+
+    def run_shutdown_callback(self) -> None:
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None

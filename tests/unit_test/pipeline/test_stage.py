@@ -8,7 +8,8 @@ import logging
 import pickle
 import threading
 import time
-from unittest.mock import Mock
+from typing import Literal
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import torch
@@ -40,6 +41,7 @@ from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.tensor_parallel_scheduler import TensorParallelScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -56,6 +58,114 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+def test_tp_validation_rejects_before_fanout_and_preserves_next_request():
+    calls = [[], []]
+    collective = threading.Barrier(2, timeout=3)
+
+    def compute(rank, payload):
+        calls[rank].append(payload.request_id)
+        collective.wait()
+        return payload
+
+    def validate(payload):
+        if payload.request_id == "invalid":
+            raise ValueError("invalid request parameters")
+        else:
+            pass
+
+    schedulers = [
+        TensorParallelScheduler(
+            lambda payload, rank=rank: compute(rank, payload),
+            shutdown_join_timeout_s=5.0,
+            validate_request=Mock(side_effect=validate),
+        )
+        for rank in range(2)
+    ]
+    follower = make_stage(role="follower", scheduler=schedulers[1])
+    fanout = Mock()
+    leader = make_stage(role="leader", scheduler=schedulers[0], tp_fanout=fanout)
+    leader.send_failure = AsyncMock()
+
+    async def dispatch():
+        await leader.execute(make_stage_payload(request_id="invalid"))
+        leader.send_failure.assert_awaited_once_with(
+            "invalid", "invalid request parameters"
+        )
+        fanout.fanout_work.assert_not_called()
+        assert schedulers[0].inbox.empty()
+        valid = make_stage_payload(request_id="valid")
+        await leader.execute(valid)
+        fanout.fanout_work.assert_called_once_with(valid)
+        await follower.execute(valid)
+        schedulers[1].validate_request.assert_not_called()
+
+    asyncio.run(dispatch())
+    threads = [threading.Thread(target=scheduler.start) for scheduler in schedulers]
+    for scheduler in schedulers:
+        scheduler.stop()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=4)
+    assert all(not thread.is_alive() for thread in threads)
+    assert calls == [["valid"], ["valid"]]
+    assert all(
+        scheduler.outbox.get_nowait().type == "result" for scheduler in schedulers
+    )
+
+
+def test_tp_validation_runs_off_the_event_loop():
+    """Leader validation decoded references on the event loop, stalling aborts."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def validate(payload):
+        entered.set()
+        assert release.wait(2)
+
+    scheduler = TensorParallelScheduler(
+        lambda payload: payload, shutdown_join_timeout_s=5.0, validate_request=validate
+    )
+    leader = make_stage(role="leader", scheduler=scheduler, tp_fanout=Mock())
+
+    async def dispatch():
+        execution = asyncio.create_task(leader.execute(make_stage_payload()))
+        assert await asyncio.to_thread(entered.wait, 2)
+        # The loop can only reach this line while validation is still blocked.
+        release.set()
+        await asyncio.wait_for(execution, timeout=2)
+
+    asyncio.run(dispatch())
+    assert scheduler.inbox.get_nowait().request_id == "req-1"
+
+
+def test_abort_during_tp_validation_skips_dispatch():
+    """An abort that landed during off-loop validation still sent the work to every rank."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def validate(payload):
+        entered.set()
+        assert release.wait(2)
+
+    scheduler = TensorParallelScheduler(
+        lambda payload: payload, shutdown_join_timeout_s=5.0, validate_request=validate
+    )
+    fanout = Mock()
+    leader = make_stage(role="leader", scheduler=scheduler, tp_fanout=fanout)
+
+    async def dispatch():
+        execution = asyncio.create_task(leader.execute(make_stage_payload()))
+        assert await asyncio.to_thread(entered.wait, 2)
+        leader.on_abort("req-1")
+        release.set()
+        await asyncio.wait_for(execution, timeout=2)
+
+    asyncio.run(dispatch())
+    fanout.fanout_work.assert_not_called()
+    assert scheduler.inbox.empty()
 
 
 @pytest.fixture(autouse=True)
@@ -540,6 +650,135 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             release.set()
             if stage_obj.scheduler_thread is not None:
                 await asyncio.to_thread(stage_obj.scheduler_thread.join, 1.0)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("role", ["leader", "follower"])
+def test_tp_failure_reports_before_blocked_cleanup(
+    monkeypatch: pytest.MonkeyPatch, role: Literal["leader", "follower"]
+) -> None:
+    async def run() -> None:
+        cleanup_entered = threading.Event()
+        release_cleanup = threading.Event()
+
+        def compute(request_payload: StagePayload) -> StagePayload:
+            raise RuntimeError("rank-local allocation failed")
+
+        def cleanup() -> None:
+            cleanup_entered.set()
+            assert release_cleanup.wait(5)
+
+        scheduler = TensorParallelScheduler(
+            compute, shutdown_join_timeout_s=5.0, shutdown_callback=cleanup
+        )
+        scheduler.inbox.put(
+            IncomingMessage("req", "new_request", make_stage_payload(request_id="req"))
+        )
+        stage_obj = make_stage(
+            role=role, scheduler=scheduler, control_plane=CloseAwareControlPlane()
+        )
+        monkeypatch.setattr(
+            stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0.01
+        )
+        run_task = asyncio.create_task(stage_obj.run())
+        try:
+            assert await asyncio.to_thread(cleanup_entered.wait, 2)
+            with pytest.raises(RuntimeError) as failure:
+                await asyncio.wait_for(run_task, timeout=2)
+            assert stage_obj.scheduler_crash_error is not None
+            assert scheduler.compute_error is not None
+            assert str(scheduler.compute_error) == "rank-local allocation failed"
+            assert stage_obj.scheduler_crash_error.__cause__ is scheduler.compute_error
+            if stage_obj.background_task_error is None:
+                assert str(failure.value) == "Scheduler thread for stage stage crashed"
+                assert failure.value.__cause__ is stage_obj.scheduler_crash_error
+            else:
+                assert role == "follower"
+                assert failure.value is stage_obj.background_task_error
+                assert str(failure.value) == (
+                    "TP follower stage stage received scheduler error: "
+                    "rank-local allocation failed"
+                )
+            assert scheduler.shutdown_join_timeout_s is None
+            assert stage_obj.scheduler_thread.is_alive()
+        finally:
+            release_cleanup.set()
+            if stage_obj.scheduler_thread is not None:
+                await asyncio.to_thread(stage_obj.scheduler_thread.join, 2)
+            if not run_task.done():
+                run_task.cancel()
+                await asyncio.gather(run_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_stage_stop_waits_past_timeout_for_collective_cleanup(monkeypatch) -> None:
+    async def _run() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        events = []
+
+        def compute(value):
+            entered.set()
+            assert release.wait(3)
+            events.append(value)
+            return value
+
+        scheduler = TensorParallelScheduler(
+            compute,
+            shutdown_join_timeout_s=5.0,
+            shutdown_callback=lambda: events.append("cleanup"),
+        )
+        scheduler.inbox.put(IncomingMessage("req", "new_request", "forward"))
+        stage_obj = make_stage(scheduler=scheduler)
+        monkeypatch.setattr(
+            stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0.01
+        )
+        await stage_obj.start()
+        stop_task = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            stop_task = asyncio.create_task(stage_obj.stop())
+            await asyncio.sleep(0.05)
+            assert not stop_task.done()
+            assert events == []
+        finally:
+            release.set()
+            await asyncio.wait_for(stop_task or stage_obj.stop(), timeout=2)
+        assert events == ["forward", "cleanup"]
+        assert stage_obj.scheduler_thread is None
+
+    asyncio.run(_run())
+
+
+def test_stage_stop_bounds_wedged_collective_cleanup(caplog) -> None:
+    """A TP rank blocked in a collective whose peer died made stage stop wait forever."""
+
+    async def run() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def compute(value):
+            entered.set()
+            assert release.wait(5)
+            return value
+
+        scheduler = TensorParallelScheduler(compute, shutdown_join_timeout_s=0.05)
+        scheduler.inbox.put(IncomingMessage("req", "new_request", "forward"))
+        stage_obj = make_stage(scheduler=scheduler)
+        await stage_obj.start()
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            with caplog.at_level(logging.WARNING):
+                await asyncio.wait_for(stage_obj.stop(), timeout=2)
+            assert "scheduler thread did not stop within 0.05s" in caplog.text
+            assert stage_obj.scheduler_thread is not None
+            assert stage_obj.scheduler_thread.is_alive()
+        finally:
+            release.set()
+            if stage_obj.scheduler_thread is not None:
+                await asyncio.to_thread(stage_obj.scheduler_thread.join, 2)
 
     asyncio.run(run())
 

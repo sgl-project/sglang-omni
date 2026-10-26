@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
 from sglang_omni.config import (
@@ -11,6 +13,16 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
+)
+from sglang_omni.models.sensenova_u1.config import (
+    SenseNovaGenerationFactoryArgs,
+    SenseNovaU1PipelineConfig,
+)
+from tests.unit_test.fixtures.pipeline_fakes import dummy_factory
 
 FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
 
@@ -175,3 +187,102 @@ def test_engine_kv_cache_bytes_rejects_max_total_tokens() -> None:
 
     with pytest.raises(ValueError, match="cannot be set together"):
         EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096)
+
+
+class AuthorConfiguredSenseNova(SenseNovaU1PipelineConfig):
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, str | int | bool]:
+        # note (Wes): The pipeline hook requires a stage name for this model.
+        return {
+            "dtype": "float16",
+            "dit_layerwise_offload": True,
+            "dit_offload_prefetch_size": 3,
+            "dit_layerwise_resident_layers": 2,
+            "dit_layerwise_residency_policy": "strided",
+            "pin_cpu_memory": True,
+        }
+
+
+@pytest.mark.parametrize("round_trip", [False, True])
+@pytest.mark.parametrize("replica", [False, True])
+@pytest.mark.parametrize("selection", ["omitted", "none", "explicit"])
+@pytest.mark.parametrize(
+    "field_name,explicit_value",
+    [
+        ("dtype", "float32"),
+        ("dit_layerwise_offload", False),
+        ("dit_offload_prefetch_size", 0),
+        ("dit_layerwise_resident_layers", 0),
+        ("dit_layerwise_residency_policy", "leading"),
+        ("pin_cpu_memory", False),
+    ],
+)
+def test_sensenova_factory_override_precedence(
+    field_name: str,
+    explicit_value: str | int | bool,
+    selection: Literal["omitted", "none", "explicit"],
+    replica: bool,
+    round_trip: bool,
+) -> None:
+    config = AuthorConfiguredSenseNova(model_path="model")
+    stage = config.stage_named("generate")
+    cooperative_cancellation_kwargs = {"cooperative_cancellation": True}
+    if selection == "omitted":
+        stage.factory = SenseNovaGenerationFactoryArgs(
+            **cooperative_cancellation_kwargs
+        )
+    elif selection == "none":
+        stage.factory = SenseNovaGenerationFactoryArgs.model_validate(
+            {**cooperative_cancellation_kwargs, field_name: None}
+        )
+    else:
+        stage.factory = SenseNovaGenerationFactoryArgs.model_validate(
+            {**cooperative_cancellation_kwargs, field_name: explicit_value}
+        )
+    if round_trip:
+        config = AuthorConfiguredSenseNova.model_validate(config.model_dump())
+        stage = config.stage_named("generate")
+    else:
+        pass
+    if replica:
+        stage = stage.model_copy(update={"name": "generate@r0"})
+    else:
+        pass
+    resolved = apply_typed_stage_kwargs(
+        dummy_factory,
+        resolve_stage_factory_kwargs(stage, config),
+        resolve_stage_typed_kwargs(stage),
+        stage_name=stage.name,
+    )
+    expected = config.stage_factory_kwargs("generate")
+    if selection == "explicit":
+        expected[field_name] = explicit_value
+    else:
+        pass
+    assert {name: resolved[name] for name in expected} == expected
+
+
+@pytest.mark.parametrize("use_none", [False, True])
+def test_sensenova_factory_fallbacks_without_author_overrides(use_none: bool) -> None:
+    config = SenseNovaU1PipelineConfig(model_path="model")
+    stage = config.stage_named("generate")
+    expected = {
+        "dtype": "bfloat16",
+        "dit_layerwise_offload": False,
+        "dit_offload_prefetch_size": 1,
+        "dit_layerwise_resident_layers": 0,
+        "dit_layerwise_residency_policy": "leading",
+        "pin_cpu_memory": False,
+    }
+    if use_none:
+        stage.factory = SenseNovaGenerationFactoryArgs.model_validate(
+            dict.fromkeys(expected)
+        )
+    else:
+        stage.factory = SenseNovaGenerationFactoryArgs()
+    resolved = apply_typed_stage_kwargs(
+        dummy_factory,
+        resolve_stage_factory_kwargs(stage, config),
+        resolve_stage_typed_kwargs(stage),
+        stage_name=stage.name,
+    )
+    assert {name: resolved[name] for name in expected} == expected
