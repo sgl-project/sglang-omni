@@ -2,7 +2,7 @@ from typing import Annotated, ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config.schema import (
+from sglang_omni.config import (
     EngineArgs,
     EngineStageConfig,
     FactoryArgs,
@@ -23,8 +23,8 @@ MODEL_STAGES_PREFIX = "sglang_omni.models.nemotron_voicechat.stages"
 
 
 class Code2WavFactoryArgs(FactoryArgs):
-    chunk_frames: tuple[Annotated[int, Field(strict=True, gt=0)], ...] | None = Field(
-        default=None, min_length=1
+    chunk_frames: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = Field(
+        default=(1, 1, 1, 1, 2, 2, 4), min_length=1
     )
 
 
@@ -88,9 +88,7 @@ def nemotron_voicechat_stages_factory() -> list[StageConfig]:
             name="code2wav",
             process="talker",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_code2wav_executor",
-            factory=Code2WavFactoryArgs(
-                dtype=MODEL_DTYPE, chunk_frames=(1, 1, 1, 1, 2, 2, 4)
-            ),
+            factory=Code2WavFactoryArgs(dtype=MODEL_DTYPE),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,

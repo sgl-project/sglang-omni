@@ -31,20 +31,6 @@ class DecodePayload(Protocol):
     ) -> StagePayload | Coroutine[None, None, StagePayload]: ...
 
 
-def validate_chunk_frames(decoder: CodecDecoder, chunk_frames: tuple[int, ...]) -> None:
-    if not chunk_frames or any(
-        type(frames) is not int or frames < 1 for frames in chunk_frames
-    ):
-        raise ValueError("chunk_frames must contain positive integers")
-    elif (
-        max(chunk_frames) + decoder.required_context_frames(TAIL_HOLDBACK_SAMPLES)
-        > DECODE_WINDOW_FRAMES
-    ):
-        raise ValueError("Chunk plus required context exceeds the decoder window")
-    else:
-        pass
-
-
 class StreamingCodec:
     def __init__(
         self,
@@ -53,7 +39,6 @@ class StreamingCodec:
         *,
         chunk_frames: tuple[int, ...],
     ) -> None:
-        validate_chunk_frames(decoder, chunk_frames)
         self.decoder: CodecDecoder = decoder
         self.device: str | torch.device = device
         self.chunk_frames: tuple[int, ...] = chunk_frames
@@ -69,9 +54,9 @@ class StreamingCodec:
     def push(self, codes_TQ: torch.Tensor) -> list[torch.Tensor]:
         audio_parts: list[torch.Tensor] = []
         for row in codes_TQ.to(self.device):
-            self.window_codes_TQ = torch.cat(
-                (self.window_codes_TQ, row[None])
-            )[-DECODE_WINDOW_FRAMES:]
+            self.window_codes_TQ = torch.cat((self.window_codes_TQ, row[None]))[
+                -DECODE_WINDOW_FRAMES:
+            ]
             self.pushed_frames += 1
             target_frames = self.chunk_frames[
                 min(self.chunk_index, len(self.chunk_frames) - 1)
@@ -85,7 +70,7 @@ class StreamingCodec:
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
-        if self.emitted_samples == self.pushed_frames * self.decoder.samples_per_frame:
+        if not self.pushed_frames:
             return torch.zeros(0)
         else:
             pass
@@ -126,7 +111,13 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         chunk_frames: tuple[int, ...],
         compute_fn: DecodePayload | None,
     ) -> None:
-        validate_chunk_frames(decoder, chunk_frames)
+        if (
+            max(chunk_frames) + decoder.required_context_frames(TAIL_HOLDBACK_SAMPLES)
+            > DECODE_WINDOW_FRAMES
+        ):
+            raise ValueError("Chunk plus required context exceeds the decoder window")
+        else:
+            pass
         super().__init__(compute_fn)
         self.decoder: CodecDecoder = decoder
         self.device: str | torch.device = device
@@ -140,10 +131,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         return payload.request_id in self.states
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        if request_id not in self.states:
-            self.states[request_id] = self.new_state()
-        else:
-            pass
+        self.states.setdefault(request_id, self.new_state())
 
     def clear_stream_state(self, request_id: str) -> None:
         self.states.pop(request_id, None)
@@ -153,11 +141,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         self, request_id: str, item: StreamItem
     ) -> list[OutgoingMessage]:
         assert isinstance(item.data, torch.Tensor)
-        if request_id not in self.states:
-            self.states[request_id] = self.new_state()
-        else:
-            pass
-        state = self.states[request_id]
+        state = self.states.setdefault(request_id, self.new_state())
         audio_parts = state.codec.push(item.data)
         state.audio_parts.extend(audio_parts)
         # Chunks to the coordinator are msgpack'd, so the waveform travels in

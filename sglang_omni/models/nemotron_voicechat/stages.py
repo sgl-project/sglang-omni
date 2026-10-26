@@ -222,7 +222,7 @@ def create_code2wav_executor(
         return payload
 
     return NemotronCode2WavScheduler(
-        decoder, concrete_device, chunk_frames=tuple(chunk_frames), compute_fn=decode
+        decoder, concrete_device, chunk_frames=chunk_frames, compute_fn=decode
     )
 
 
