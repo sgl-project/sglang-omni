@@ -21,6 +21,7 @@ from sglang_omni.pipeline.sessions import (
     check_timing,
     output_chunk,
 )
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import (
     GRAPH_INPUT,
@@ -675,7 +676,7 @@ class SessionGraphRunner(CoordinatorSessions):
         """Count an output against max_output_bytes until the client takes it; over the budget fails the graph."""
         size = wire_size(output.to_dict())
         if graph.output_bytes + size > graph.limits.max_output_bytes:
-            raise RuntimeError(
+            raise SessionOutputBudgetError(
                 f"output of graph node {name!r} exceeds max_output_bytes "
                 f"{graph.limits.max_output_bytes}; the client is not reading"
             )
@@ -747,7 +748,7 @@ class SessionGraphRunner(CoordinatorSessions):
             kind="input_done",
         )
         if graph.outputs.full():
-            raise RuntimeError(
+            raise SessionOutputBudgetError(
                 f"graph node {name!r} confirmed input seq {chunk.seq} while "
                 "max_output_chunks outputs wait for the client"
             )

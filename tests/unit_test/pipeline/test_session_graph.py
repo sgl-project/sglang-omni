@@ -15,6 +15,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.pipeline.sessions import NodeInbox, Session, SessionGraphRuntime
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     ControlEdge,
@@ -257,7 +258,9 @@ def test_graph_outputs_count_against_max_output_bytes_until_the_client_takes_the
     sessions = SessionGraphRunner()
     assert sessions.reserve_graph_output(graph, "right", output) == size
     assert graph.output_bytes == size
-    with pytest.raises(RuntimeError, match="node 'right' exceeds max_output_bytes"):
+    with pytest.raises(
+        SessionOutputBudgetError, match="node 'right' exceeds max_output_bytes"
+    ):
         sessions.reserve_graph_output(graph, "right", output)
 
 

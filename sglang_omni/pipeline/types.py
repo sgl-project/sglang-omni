@@ -19,5 +19,5 @@ class SessionOutputBudgetError(RuntimeError):
     CODE = "output_budget_exhausted"
     MESSAGE = "session output budget exhausted"
 
-    def __init__(self) -> None:
-        super().__init__(self.MESSAGE)
+    def __init__(self, message: str = MESSAGE) -> None:
+        super().__init__(message)
