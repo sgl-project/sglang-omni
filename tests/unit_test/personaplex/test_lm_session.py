@@ -8,7 +8,14 @@ import torch
 
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
-from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
+from sglang_omni.models.personaplex.architecture import (
+    AGENT_STREAM_OFFSET,
+    AUDIO_INITIAL_ID,
+    NUM_STREAMS,
+    TEXT_INITIAL_ID,
+    TEXT_MARKER_IDS,
+    USER_STREAM_OFFSET,
+)
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
@@ -67,14 +74,16 @@ def step(runner, model, request, origin, tokens, prefix_len) -> list[torch.Tenso
     return inputs
 
 
-def run_offline(num_frames: int, tokens: list[int]):
+def run_offline(num_frames: int, tokens: list[int], *, moshi: bool = False):
     model = FakeModel()
     runner = make_runner(model)
     payload = StagePayload(
         "offline",
         request=OmniRequest(inputs={}),
         data=PersonaPlexState(
-            text_prompt_ids=PROMPT_IDS, user_codes=caller_codes(num_frames)
+            text_prompt_ids=[] if moshi else PROMPT_IDS,
+            user_codes=caller_codes(num_frames),
+            moshi=moshi,
         ).to_dict(),
     )
     request = SimpleNamespace(data=build_lm_request(payload, vocab_size=32000))
@@ -99,9 +108,11 @@ def open_adapter(context_length: int = CONTEXT_LENGTH) -> PersonaPlexSessionAdap
     return adapter
 
 
-def unit_payload(index: int, codes: torch.Tensor) -> StagePayload:
+def unit_payload(index: int, codes: torch.Tensor, *, moshi: bool) -> StagePayload:
     state = PersonaPlexState(user_codes=codes)
-    if index == 0:
+    if index == 0 and moshi:
+        state.moshi = True
+    elif index == 0:
         state.text_prompt_ids = PROMPT_IDS
     else:
         pass
@@ -117,15 +128,20 @@ def unit_chunk(index: int) -> TimedChunk:
 class CallDriver:
     """Plays SGLang's streaming session: the history is kept between units."""
 
-    def __init__(self, adapter: PersonaPlexSessionAdapter) -> None:
+    def __init__(
+        self, adapter: PersonaPlexSessionAdapter, *, moshi: bool = False
+    ) -> None:
         self.adapter = adapter
+        self.moshi = moshi
         self.runner = make_runner(FakeModel())
         self.history: list[int] = []
         self.units = 0
 
     def build(self, codes: torch.Tensor) -> SimpleNamespace:
         data = self.adapter.build(
-            CALL, unit_chunk(self.units), unit_payload(self.units, codes)
+            CALL,
+            unit_chunk(self.units),
+            unit_payload(self.units, codes, moshi=self.moshi),
         )
         return SimpleNamespace(data=data)
 
@@ -147,18 +163,30 @@ class CallDriver:
 
 
 @pytest.mark.parametrize(
-    "frames_per_unit", [[1, 1, 1, 1], [2, 1, 1], [1, 3], [4]], ids=str
+    "moshi,frames_per_unit",
+    [
+        (False, [1, 1, 1, 1]),
+        (False, [2, 1, 1]),
+        (False, [1, 3]),
+        (False, [4]),
+        (True, [0, 1, 1, 1]),
+        (True, [0, 3]),
+        (True, [2, 1]),
+    ],
+    ids=str,
 )
-def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int]):
+def test_a_call_steps_exactly_as_the_offline_request(
+    moshi: bool, frames_per_unit: list[int]
+):
     num_caller_frames = sum(frames_per_unit)
     # Note (wilsonzheng0327): Forward j reads caller frame j - 1, so an offline
     # request of F + 1 frames runs the forwards a call runs on F frames.
     tokens = [77 + index for index in range(num_caller_frames + 1)]
     offline_inputs, offline_frames, offline_text, offline_calls = run_offline(
-        num_caller_frames + 1, tokens
+        num_caller_frames + 1, tokens, moshi=moshi
     )
 
-    driver = CallDriver(open_adapter())
+    driver = CallDriver(open_adapter(), moshi=moshi)
     codes = caller_codes(num_caller_frames + 1)
     inputs, frames, text = [], [], ""
     frame, token = 0, 0
@@ -167,7 +195,9 @@ def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int])
         unit_inputs, state = driver.unit(
             codes[frame : frame + count], tokens[token : token + num_tokens]
         )
-        assert state.codes.shape[0] == num_tokens
+        # note (Chen Cheng): A Moshi call's first forward completes no frame.
+        silent = int(moshi and index == 0)
+        assert state.codes.shape[0] == num_tokens - silent
         inputs.extend(unit_inputs)
         frames.append(state.codes)
         text += state.text
@@ -189,6 +219,32 @@ def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int])
     ):
         assert torch.equal(call.text, offline_call.text)
         assert torch.equal(call.forced, offline_call.forced)
+
+
+def test_a_moshi_call_reads_the_caller_frame_it_receives():
+    """Moshi starts from one position with every stream at its initial token and
+    reads a caller frame at the forward its unit triggers; PersonaPlex's prompt
+    and one-frame lag made it answer a frame late."""
+    driver = CallDriver(open_adapter(), moshi=True)
+    first_inputs, first = driver.unit(caller_codes(0), [77])
+    initial_row = torch.full((1, NUM_STREAMS), AUDIO_INITIAL_ID)
+    initial_row[0, 0] = TEXT_INITIAL_ID
+    assert torch.equal(first_inputs[0], initial_row)
+    forced = driver.runner.model.depformer.calls[0].forced[0]
+    assert forced.tolist() == [-1] + [AUDIO_INITIAL_ID] * 7
+    assert first.codes.shape == (0, 8) and first.text == ""
+
+    caller = caller_codes(1)
+    second_inputs, second = driver.unit(caller, [78])
+    row = second_inputs[0][0]
+    assert row[0] == 77
+    assert (
+        row[AGENT_STREAM_OFFSET + 1 : USER_STREAM_OFFSET].tolist()
+        == [AUDIO_INITIAL_ID] * 7
+    )
+    assert row[USER_STREAM_OFFSET] == caller[0, 0]
+    assert row[USER_STREAM_OFFSET + 1 :].tolist() == [AUDIO_INITIAL_ID] * 7
+    assert second.codes.shape == (1, 8) and second.text == "t77"
 
 
 def test_only_the_first_unit_sends_ids():

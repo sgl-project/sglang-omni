@@ -27,6 +27,7 @@ from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.timeline import (
     Timeline,
+    build_moshi_prompt_frames,
     build_prompt_frames,
     build_timeline,
 )
@@ -207,6 +208,10 @@ def lm_sampling_params(
 def timeline_from_state(
     state: PersonaPlexState, user_codes_UK: torch.Tensor
 ) -> Timeline:
+    if state.moshi:
+        return build_timeline(build_moshi_prompt_frames(), user_codes_UK.to(torch.long))
+    else:
+        pass
     voice_codes = state.voice_codes
     prompt = build_prompt_frames(
         voice_frames=int(state.voice_frames),
@@ -300,10 +305,10 @@ def apply_lm_result(data: SGLangARRequestData) -> StagePayload:
     frames = data.talker_model_inputs["frames"]
     timeline = data.talker_model_inputs["timeline"]
     # note (LinzeShi): Audio finishes one step after its undelayed text token.
-    text_ids = [int(timeline.prefill_tokens[-1, 0])] + [
-        int(token) for token in data.output_ids
-    ]
-    state.text_ids = text_ids[: len(frames)]
+    text_ids = [int(timeline.prefill_tokens[-1, 0])]
+    text_ids.extend(int(token) for token in data.output_ids[:-1])
+    # note (Chen Cheng): A Moshi request's first forward completes no frame.
+    state.text_ids = text_ids[len(text_ids) - len(frames) :]
     state.codes = torch.stack(frames) if frames else torch.zeros(0, 8, dtype=torch.long)
     for name in (
         "waveform",

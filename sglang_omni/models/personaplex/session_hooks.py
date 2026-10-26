@@ -133,13 +133,18 @@ class MimiEncodeHooks(SessionHooks):
             state.voice_waveform = None
         else:
             pass
-        if is_empty_end_of_input(chunk):
+        waveform = state.waveform
+        if state.moshi:
+            # note (Chen Cheng): Moshi never reads the first frame, and the
+            # reference server restarts its encoder after it.
+            waveform = waveform[SAMPLES_PER_FRAME:]
+        else:
+            pass
+        if is_empty_end_of_input(chunk) or waveform.numel() == 0:
             state.user_codes = no_codes()
         else:
             codes = self.codec.encode_step(
-                state.waveform.to(device=self.device, dtype=torch.float32).view(
-                    1, 1, -1
-                ),
+                waveform.to(device=self.device, dtype=torch.float32).view(1, 1, -1),
                 self.states[context.session_identity],
             )
             state.user_codes = codes[0].T.cpu()

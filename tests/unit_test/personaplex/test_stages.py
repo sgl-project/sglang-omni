@@ -32,6 +32,11 @@ from sglang_omni.preprocessing import resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_errors import is_bad_request_error
+from tests.unit_test.fixtures.personaplex_checkpoint import (
+    MOSHI_DEPFORMER_STEPS,
+    PERSONAPLEX_DEPFORMER_STEPS,
+    write_lm_weights,
+)
 
 CALLER_SAMPLES = 2000
 
@@ -66,6 +71,7 @@ def preprocess(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "load_audio", load_audio)
     monkeypatch.setattr(stages, "resolve_voice_path", lambda _, voice: f"{voice}.pt")
     monkeypatch.setattr(stages, "load_voice_prompt", load_voice_prompt)
+    write_lm_weights(tmp_path, PERSONAPLEX_DEPFORMER_STEPS)
     scheduler = stages.create_preprocessing_executor(str(tmp_path))
 
     def run(inputs=None, **params):
@@ -152,6 +158,33 @@ def test_caller_audio_follows_the_server_media_policy(
         with pytest.raises(ValueError, match="not within allowed directory"):
             preprocess(inputs=inputs)
     assert preprocess.sources == []
+
+
+def test_a_moshi_checkpoint_opens_without_a_prompt(monkeypatch, tmp_path):
+    """Moshi ships no voices and takes no role prompt; the PersonaPlex defaults
+    failed every request on it."""
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    caller = np.zeros((1, 2 * SAMPLES_PER_FRAME), dtype=np.float32)
+    monkeypatch.setattr(stages, "load_audio", lambda source, **_: caller)
+    write_lm_weights(tmp_path, MOSHI_DEPFORMER_STEPS)
+    scheduler = stages.create_preprocessing_executor(str(tmp_path))
+
+    def run(**params):
+        payload = StagePayload(
+            "r",
+            request=OmniRequest(inputs={"audio_path": "caller.wav"}, params=params),
+            data={},
+        )
+        return PersonaPlexState.from_dict(scheduler.fn(payload).data)
+
+    state = run()
+    assert state.moshi
+    assert state.text_prompt_ids == [] and state.voice_frames == 0
+    assert state.voice_embeddings is None and state.voice_waveform is None
+    for name in ("voice", "text_prompt", "instructions"):
+        with pytest.raises(ValueError, match=f"Moshi takes no {name}") as error:
+            run(**{name: "NATF2"})
+        assert is_bad_request_error(error.value)
 
 
 def test_engine_context_length_reaches_the_builder(monkeypatch):
@@ -241,6 +274,7 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     monkeypatch.setattr(stages, "load_codec", load_codec)
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
+    write_lm_weights(tmp_path, PERSONAPLEX_DEPFORMER_STEPS)
     prompt = stages.create_session_preprocessing_executor(
         str(tmp_path), max_open_sessions=3
     )
@@ -312,6 +346,7 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     cache = Mock()
     monkeypatch.setattr(stages, "StageOutputCache", cache)
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    write_lm_weights(tmp_path, PERSONAPLEX_DEPFORMER_STEPS)
     config = resolve_session_config(
         str(tmp_path),
         preprocessing={"factory": {"voice_prompt_cache_bytes": 1024}},
@@ -427,6 +462,21 @@ def test_mimi_encode_replaces_caller_and_voice_waveforms_with_codes(monkeypatch)
 
     no_voice = run(PersonaPlexState(waveform=torch.ones(SAMPLES_PER_FRAME)))
     assert no_voice.user_codes.shape == (1, 8) and no_voice.voice_codes is None
+
+    # note (Chen Cheng): Moshi never reads the first frame, so a recording is
+    # encoded after it, as a session is.
+    moshi_waveform = torch.cat(
+        [
+            torch.full((SAMPLES_PER_FRAME,), 3.0),
+            torch.full((2 * SAMPLES_PER_FRAME,), 4.0),
+        ]
+    )
+    moshi = run(PersonaPlexState(waveform=moshi_waveform, moshi=True))
+    assert moshi.user_codes.shape == (2, 8) and torch.all(moshi.user_codes == 4)
+    one_frame = run(
+        PersonaPlexState(waveform=torch.ones(SAMPLES_PER_FRAME), moshi=True)
+    )
+    assert one_frame.user_codes.shape == (0, 8)
 
 
 def test_selective_codec_stages_preserve_caller_voice_and_reply(

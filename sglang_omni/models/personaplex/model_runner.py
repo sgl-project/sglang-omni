@@ -276,9 +276,12 @@ class PersonaPlexModelRunner(ModelRunner):
             else:
                 pass
             inputs = data.talker_model_inputs
+            if inputs["agent_rows"] or self.request_timeline(data).first_frame_is_audio:
+                inputs["frames"].append(host_rows[index, 1:])
+                inputs["pending_frames"].append(host_rows[index, 1:])
+            else:
+                pass
             inputs["agent_rows"].append(frames.agent_rows[index])
-            inputs["frames"].append(host_rows[index, 1:])
-            inputs["pending_frames"].append(host_rows[index, 1:])
             self.decode_feedback(data).audio_rng_state = frames.audio_rng_states[index]
 
     def post_decode_launch(

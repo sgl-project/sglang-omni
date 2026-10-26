@@ -30,6 +30,10 @@ from sglang_omni.serve.realtime.types import (
     ProtocolError,
     RuntimeLimits,
 )
+from tests.unit_test.fixtures.personaplex_checkpoint import (
+    PERSONAPLEX_DEPFORMER_STEPS,
+    write_lm_weights,
+)
 
 APP_PATH = Path(__file__).resolve().parents[3] / "playground" / "realtime" / "app.py"
 
@@ -144,6 +148,7 @@ async def test_personaplex_warmup_sends_only_what_the_deployment_declares(
     tmp_path: Path, playground: ModuleType
 ) -> None:
     """The warmup sent MiniCPM-o's greedy, force_listen_count, reference audio and 16 kHz timestamps to any native deployment, so the page never started on PersonaPlex."""
+    write_lm_weights(tmp_path, PERSONAPLEX_DEPFORMER_STEPS)
     (tmp_path / "voices").mkdir()
     (tmp_path / "voices" / "NATF2.pt").write_bytes(b"")
     deployment = create_realtime_deployment(

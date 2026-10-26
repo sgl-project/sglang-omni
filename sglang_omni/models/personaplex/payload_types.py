@@ -14,6 +14,7 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 class PersonaPlexState(DeclarativeStateBase):
     waveform: torch.Tensor | None = wire(None, codec="typed_tensor")
     num_samples: int = wire(0, codec="int")
+    moshi: bool = wire(False, codec="bool")
     text_prompt_ids: list[int] = wire(default_factory=list, codec="list")
     voice_waveform: torch.Tensor | None = wire(None, codec="typed_tensor")
     voice_embeddings: torch.Tensor | None = wire(None, codec="typed_tensor")

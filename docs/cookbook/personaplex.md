@@ -62,6 +62,22 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-personaplex).
 
+## kyutai Moshi
+
+[kyutai/moshiko-pytorch-bf16](https://huggingface.co/kyutai/moshiko-pytorch-bf16) and [kyutai/moshika-pytorch-bf16](https://huggingface.co/kyutai/moshika-pytorch-bf16) are the open Moshi checkpoints PersonaPlex was fine-tuned from. They share its layout and are not gated, and both pipelines serve them:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path kyutai/moshiko-pytorch-bf16 --variant session \
+  --enable-realtime --port 8000
+```
+
+A Moshi checkpoint is recognized by its depformer, which has a step for each agent codebook only. It runs the way the reference Moshi server does:
+
+- There is no voice and no role prompt. A conversation starts from one frame with every stream at its initial token. Requests that set `voice`, `instructions` or `text_prompt` are rejected, and so is a deployment that sets `voice` or `instructions`; a realtime session leaves the client's `instructions` out, and the capabilities list no voices.
+- The caller's codes are read in the frame they arrive in, one frame earlier than PersonaPlex reads them. The first 80 ms of caller audio is never read, and Mimi encodes from the second frame.
+- A session's first unit returns no audio and every later unit 80 ms. An offline reply is two frames shorter than the recording.
+
 ## Request parameters
 
 | Parameter | Effect |

@@ -9,7 +9,7 @@ from sglang_omni.models.personaplex.config import (
     PersonaPlexSessionPipelineConfig,
     PersonaPlexSessionSampling,
 )
-from sglang_omni.models.personaplex.prompts import packaged_voices
+from sglang_omni.models.personaplex.prompts import is_moshi_checkpoint, packaged_voices
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
@@ -32,18 +32,23 @@ from sglang_omni.serve.realtime.types import MS_PER_SECOND, Capabilities
 
 
 def build_session_request(
-    config: PersonaPlexSessionPipelineConfig, session: SessionConfiguration
+    config: PersonaPlexSessionPipelineConfig,
+    session: SessionConfiguration,
+    *,
+    moshi: bool = False,
 ) -> OmniRequest:
     """The deployment's voice, role prompt and sampling under the session's own;
-    the request takes offline PersonaPlex params."""
+    the request takes offline PersonaPlex params. Moshi has no role prompt, so a
+    Moshi session leaves the client's instructions out."""
     extension = session.get("sglang", {})
     params = {
         **config.sampling.model_dump(exclude_none=True),
         **extension.get("sampling", {}),
     }
+    instructions = None if moshi else session.get("instructions", config.instructions)
     for name, value in (
         ("voice", extension.get("voice", config.voice)),
-        ("instructions", session.get("instructions", config.instructions)),
+        ("instructions", instructions),
     ):
         if value is not None:
             params[name] = value
@@ -114,11 +119,20 @@ class PersonaPlexOutputConverter:
 def create_realtime_deployment(
     client: Client, pipeline_config: PersonaPlexSessionPipelineConfig
 ) -> RealtimeDeployment:
+    model_dir = resolve_model_path(pipeline_config.model_path)
+    moshi = is_moshi_checkpoint(model_dir)
+    if moshi and (pipeline_config.voice or pipeline_config.instructions):
+        raise ValueError(
+            "Moshi takes no voice or instructions: its conversations start without a prompt"
+        )
+    else:
+        pass
+
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
             request_builder=lambda session: build_session_request(
-                pipeline_config, session
+                pipeline_config, session, moshi=moshi
             ),
             output_converter=PersonaPlexOutputConverter(),
             input_sample_rate_hz=SAMPLE_RATE,
@@ -133,7 +147,7 @@ def create_realtime_deployment(
             native_unit_ms=SAMPLES_PER_FRAME * MS_PER_SECOND // SAMPLE_RATE,
             tail_policy="pad",
             sampling_parameters=tuple(PersonaPlexSessionSampling.model_fields),
-            voices=packaged_voices(resolve_model_path(pipeline_config.model_path)),
+            voices=() if moshi else packaged_voices(model_dir),
         ),
         adapter_factory=create_adapter,
         limits=runtime_limits_for_pipeline(pipeline_config),

@@ -5,7 +5,8 @@ PersonaPlex ships 18 voices as .pt files inside voices.tgz. Each holds
 the fused input rows the reference stepped through while "listening" to that
 voice, so a packaged voice costs no codec pass. A voice may also be a
 recording, which is loudness-normalised and Mimi-encoded like the reference
-does. The role prompt is SentencePiece text between <system> tags.
+does. The role prompt is SentencePiece text between <system> tags. A kyutai
+Moshi checkpoint opens with neither.
 """
 
 from __future__ import annotations
@@ -20,9 +21,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors import safe_open
 from sentencepiece import SentencePieceProcessor
 
 from sglang_omni.models.personaplex.architecture import (
+    DEPFORMER,
+    MOSHI_WEIGHTS_NAME,
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
     SYSTEM_TAG,
@@ -41,6 +45,21 @@ DEFAULT_TEXT_PROMPT = (
     "in a clear and engaging way."
 )
 DEFAULT_VOICE = "NATF2"
+
+
+def is_moshi_checkpoint(model_dir: str | Path) -> bool:
+    """Whether the checkpoint is kyutai Moshi rather than PersonaPlex.
+
+    Moshi's depformer has a step per agent codebook only, so it reads the
+    caller's codes as input; PersonaPlex trains a step per user codebook too.
+    """
+    with safe_open(
+        str(Path(model_dir) / MOSHI_WEIGHTS_NAME), framework="pt"
+    ) as weights:
+        steps = {
+            name.split(".")[1] for name in weights.keys() if name.startswith("linears.")
+        }
+    return len(steps) == DEPFORMER.steps
 
 
 def load_text_tokenizer(model_dir: str | Path) -> SentencePieceProcessor:
@@ -238,6 +257,7 @@ __all__ = [
     "DEFAULT_VOICE",
     "VoicePrompt",
     "decode_text",
+    "is_moshi_checkpoint",
     "load_text_tokenizer",
     "load_voice_prompt",
     "normalize_loudness",

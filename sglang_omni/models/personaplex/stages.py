@@ -16,6 +16,7 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TOP_K,
     MIMI_WEIGHTS_GLOB,
     SAMPLE_RATE,
+    SAMPLES_PER_FRAME,
 )
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
@@ -41,6 +42,7 @@ from sglang_omni.models.personaplex.prompts import (
     DEFAULT_VOICE,
     VoicePrompt,
     decode_text,
+    is_moshi_checkpoint,
     load_text_tokenizer,
     load_voice_prompt,
     pad_to_whole_frames,
@@ -57,6 +59,7 @@ from sglang_omni.models.personaplex.session_hooks import (
     PromptPreparer,
     encode_waveform,
 )
+from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.transcription import (
     police_request_audio,
@@ -107,7 +110,9 @@ def prompt_preparer(
     *,
     voice_prompt_cache_bytes: int,
 ) -> PromptPreparer:
-    """The role prompt and voice a request asks for, as the LM's prompt state."""
+    """The role prompt and voice a request asks for, as the LM's prompt state;
+    a Moshi checkpoint takes neither."""
+    moshi = is_moshi_checkpoint(model_dir)
 
     def voice_prompt_size(prompt: VoicePrompt) -> int:
         return value_size_bytes((prompt.embeddings, prompt.tail_codes, prompt.waveform))
@@ -119,6 +124,17 @@ def prompt_preparer(
 
     def prepare_prompt(request: OmniRequest) -> PersonaPlexState:
         params = stage_request_params(request.params, PREPROCESSING_STAGE)
+        if moshi:
+            for name in ("voice", "text_prompt", "instructions"):
+                if params.get(name):
+                    raise ValueError(
+                        f"Moshi takes no {name}: its conversations start without a prompt"
+                    )
+                else:
+                    pass
+            return PersonaPlexState(moshi=True)
+        else:
+            pass
         state = PersonaPlexState()
         text_prompt = params.get(
             "text_prompt", params.get("instructions", DEFAULT_TEXT_PROMPT)
@@ -215,7 +231,16 @@ def create_mimi_encode_executor(
     def encode(payload: StagePayload) -> StagePayload:
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
-            state.user_codes = encode_waveform(codec, device, state.waveform)
+            # note (Chen Cheng): Moshi never reads the first frame, so a
+            # recording is encoded after it, as a session is.
+            waveform = (
+                state.waveform[SAMPLES_PER_FRAME:] if state.moshi else state.waveform
+            )
+            state.user_codes = (
+                encode_waveform(codec, device, waveform)
+                if waveform.numel()
+                else no_codes()
+            )
             state.waveform = None
         else:
             pass

@@ -16,6 +16,10 @@ A request's positions are:
 Row P-1+j is the input of forward j (j = 0 being the prefill's
 last row); its prediction is row P+j. Output frame f is complete once
 row f+1 exists: its first codebook lives at f, the rest at f+1.
+
+A Moshi request has a single prompt position, every stream at its initial
+token, and the caller's first frame stands in for its user frame, so forward j
+reads caller frame j where PersonaPlex reads caller frame j - 1.
 """
 
 from __future__ import annotations
@@ -109,6 +113,23 @@ def build_prompt_frames(
     return PromptFrames(text=text, agent=agent, user=user, voice_frames=voice_frames)
 
 
+def build_moshi_prompt_frames() -> PromptFrames:
+    """The one position a Moshi call starts from, every stream at its initial token.
+
+    The agent frame is the initial token too, so the first forward forces it on
+    the delayed codebooks the next position reads.
+    """
+    initial = torch.full(
+        (1, AUDIO_CODEBOOKS_PER_STREAM), AUDIO_INITIAL_ID, dtype=torch.long
+    )
+    return PromptFrames(
+        text=torch.full((1,), TEXT_INITIAL_ID, dtype=torch.long),
+        agent=initial,
+        user=initial.clone(),
+        voice_frames=0,
+    )
+
+
 def voice_tail_codes_from_cache(cache: torch.Tensor, voice_frames: int) -> torch.Tensor:
     """Recover the last two voice frames' codes from a saved prompt cache.
 
@@ -163,6 +184,12 @@ class Timeline:
     user_rows: torch.Tensor
     num_prompt_positions: int
     num_frames: int
+
+    @property
+    def first_frame_is_audio(self) -> bool:
+        """Whether the frame the first forward completes holds codes; a Moshi
+        call's first frame has only the initial token in its first codebook."""
+        return int(self.agent_row_before_start[0]) != AUDIO_INITIAL_ID
 
     def input_position(self, forward_index: int) -> int:
         """Position of the row forward j consumes (j = 0: last prefill row)."""
@@ -283,6 +310,7 @@ __all__ = [
     "REFERENCE_CACHE_POSITIONS",
     "Timeline",
     "UNKNOWN",
+    "build_moshi_prompt_frames",
     "build_prompt_frames",
     "build_timeline",
     "delay_stream",

@@ -157,7 +157,7 @@ The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these di
 | Voice | `sglang.voice` | One of the `voices` in the capabilities |
 | Sampling | `sglang.sampling` | The fields listed under `sampling` above; unset fields keep the deployment defaults |
 
-The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
+The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The open [kyutai Moshi](../cookbook/personaplex.md#kyutai-moshi) checkpoints serve on the same variant without a voice or role prompt; their first unit returns no audio. The transcript is the words the model speaks, streamed word piece by word piece. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
 
 ## Streaming Cascade
 

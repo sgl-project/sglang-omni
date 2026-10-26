@@ -57,6 +57,7 @@ _BAD_REQUEST_MARKERS = (
     "PersonaPlex sampling parameters must be",
     "PersonaPlex takes one caller recording",
     "Unsupported PersonaPlex audio input",
+    "Moshi takes no ",
     "Drama 3 request:",
     "Ming 3 ASR request:",
     "; packaged voices:",

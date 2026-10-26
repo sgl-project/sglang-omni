@@ -5,6 +5,7 @@ import asyncio
 import base64
 from collections.abc import AsyncIterator
 from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,10 +18,15 @@ from sglang_omni.models.personaplex.config import (
     PersonaPlexSessionSampling,
     Variants,
 )
+from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.realtime import (
     PersonaPlexOutputConverter,
     build_session_request,
     create_realtime_deployment,
+)
+from sglang_omni.models.personaplex.stages import (
+    VOICE_PROMPT_CACHE_MAX_BYTES,
+    prompt_preparer,
 )
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -41,6 +47,11 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.utils.imports import import_string
+from tests.unit_test.fixtures.personaplex_checkpoint import (
+    MOSHI_DEPFORMER_STEPS,
+    PERSONAPLEX_DEPFORMER_STEPS,
+    write_lm_weights,
+)
 
 CALL = SessionIdentity("call")
 UNIT_BYTES = SAMPLES_PER_FRAME * 2
@@ -94,6 +105,7 @@ def test_a_call_that_ends_before_any_output_opens_no_response():
 
 @pytest.fixture
 def model_dir(tmp_path):
+    write_lm_weights(tmp_path, PERSONAPLEX_DEPFORMER_STEPS)
     (tmp_path / "voices").mkdir()
     for voice in ("NATF2", "NATM1"):
         (tmp_path / "voices" / f"{voice}.pt").write_bytes(b"")
@@ -121,6 +133,30 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls
     assert isinstance(first, CoordinatorAdapter)
     assert first.client is client
     assert first.output_converter is not second.output_converter
+
+
+def test_a_moshi_deployment_starts_and_opens_sessions_without_a_prompt(tmp_path):
+    """Moshi ships no voices and has no role prompt: listing voices stopped the
+    server from starting, and clients send instructions by default."""
+    write_lm_weights(tmp_path, MOSHI_DEPFORMER_STEPS)
+    config = PersonaPlexSessionPipelineConfig(model_path=str(tmp_path))
+    deployment = create_realtime_deployment(Client(None), config)
+    assert deployment.capabilities.voices == ()
+    request = deployment.adapter_factory().request_builder(
+        {"instructions": "Be brief.", "sglang": {"sampling": {"seed": 7}}}
+    )
+    assert request.params == {"seed": 7}
+    prepare_prompt = prompt_preparer(
+        tmp_path, Mock(), voice_prompt_cache_bytes=VOICE_PROMPT_CACHE_MAX_BYTES
+    )
+    assert prepare_prompt(request) == PersonaPlexState(moshi=True)
+    with pytest.raises(ValueError, match="Moshi takes no voice or instructions"):
+        create_realtime_deployment(
+            Client(None),
+            PersonaPlexSessionPipelineConfig(
+                model_path=str(tmp_path), instructions="Be kind."
+            ),
+        )
 
 
 def test_only_the_session_variant_serves_and_needs_realtime():

@@ -106,6 +106,29 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     assert torch.equal(torch.cat(streamed), whole)
 
 
+def test_a_moshi_call_encodes_from_its_second_frame(random_codec):
+    """Moshi never reads a call's first frame, and the reference server restarts
+    its encoder after it."""
+    frames = 3
+    waveform = torch.randn(frames * SAMPLES_PER_FRAME) * 0.3
+    after_first = random_codec.encode(waveform[SAMPLES_PER_FRAME:].view(1, 1, -1))
+
+    hooks = open_hooks(MimiEncodeHooks(random_codec, torch.device("cpu")))
+    streamed = []
+    for index in range(frames):
+        start = index * SAMPLES_PER_FRAME
+        state = PersonaPlexState(
+            waveform=waveform[start : start + SAMPLES_PER_FRAME], moshi=index == 0
+        )
+        unit_payload = payload(state)
+        hooks.append(unit(index), unit_payload, context([]))
+        streamed.append(PersonaPlexState.from_dict(unit_payload.data).user_codes)
+    hooks.close(CALL)
+
+    assert streamed[0].shape == (0, 8)
+    assert torch.equal(torch.cat(streamed), after_first[0].T)
+
+
 def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
     return MimiDecodeSlots(
         codec,

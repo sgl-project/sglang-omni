@@ -2,7 +2,8 @@
 """The LM side of a full-duplex session: one SGLang streaming-session request per unit.
 
 Forward j reads caller frame j - 1, so after F caller frames a session can run F + 1
-forwards; SGLang extends the retained history by the one position each unit lacks."""
+forwards; SGLang extends the retained history by the one position each unit lacks.
+A Moshi session never reads the first caller frame and reads frame j at forward j."""
 
 from __future__ import annotations
 
@@ -171,7 +172,9 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         text_ids = [history.next_text_id]
         text_ids.extend(int(token) for token in request_data.output_ids)
         history.next_text_id = text_ids.pop()
-        codes = torch.stack(frames).cpu()
+        # note (Chen Cheng): A Moshi session's first forward completes no frame.
+        text_ids = text_ids[len(text_ids) - len(frames) :]
+        codes = torch.stack(frames).cpu() if frames else no_codes()
         frames.clear()
         history.model_inputs["frames"].clear()
         payload = request_data.stage_payload
