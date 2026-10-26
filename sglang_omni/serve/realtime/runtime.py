@@ -290,9 +290,7 @@ class SessionRuntime:
                 else:
                     raise ProtocolError("admission_rejected", str(exc)) from exc
             elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-                raise SessionOpenTimeoutError(
-                    self.limits.cleanup_timeout_s
-                ) from exc
+                raise SessionOpenTimeoutError(self.limits.cleanup_timeout_s) from exc
             else:
                 raise
 

@@ -18,6 +18,7 @@ from starlette.types import Message
 from starlette.websockets import WebSocket
 
 import sglang_omni.serve.realtime.runtime as runtime_module
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client.client import Client
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
@@ -59,6 +60,7 @@ from sglang_omni.serve.realtime.types import (
     OutputSink,
     ProtocolError,
     RuntimeLimits,
+    SessionOpenTimeoutError,
     Unit,
 )
 from tests.unit_test.fixtures.realtime_fakes import FakeClock, HealthCoordinator
@@ -164,8 +166,9 @@ class CommandAdapter(GatedAdapter):
 
 
 class RejectedOpenAdapter(GatedAdmissionAdapter):
-    def __init__(self) -> None:
+    def __init__(self, open_error: Exception | None = None) -> None:
         super().__init__([])
+        self.open_error = open_error if open_error is not None else QueueFullError()
         self.cleanup_started: asyncio.Event = asyncio.Event()
         self.cleanup_release: asyncio.Event = asyncio.Event()
 
@@ -173,7 +176,7 @@ class RejectedOpenAdapter(GatedAdmissionAdapter):
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
     ) -> None:
         await super().open(session_id, config, emit)
-        raise RuntimeError("pipeline unavailable")
+        raise self.open_error
 
     async def close(self) -> None:
         self.cleanup_started.set()
@@ -188,6 +191,7 @@ class StalledClientWebSocket:
         self.frames = frames
         self.sent_events: list[JsonObject] = []
         self.is_reading = asyncio.Event()
+        self.close_frame: tuple[int, str | None] | None = None
 
     async def receive(self) -> dict[str, str]:
         await asyncio.sleep(0)
@@ -200,8 +204,8 @@ class StalledClientWebSocket:
         await self.is_reading.wait()
         self.sent_events.append(json.loads(text))
 
-    async def close(self) -> None:
-        pass
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.close_frame = (code, reason)
 
 
 class GatedWebSocketTransport:
@@ -1046,6 +1050,36 @@ async def test_failed_admission_after_deadline_closes_without_retry(
         )
 
 
+@pytest.mark.parametrize(
+    ("open_error", "expected_error"),
+    [
+        (RuntimeError("backend initialization failed"), RuntimeError),
+        (TimeoutError(), SessionOpenTimeoutError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_backend_failure_after_admission_deadline_keeps_its_error(
+    fake_clock: FakeClock,
+    open_error: Exception,
+    expected_error: type[Exception],
+) -> None:
+    adapter = RejectedOpenAdapter(open_error)
+    adapter.cleanup_release.set()
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, ACTIVITY_LIMITS
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "client_update"))
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 2)
+        adapter.release.set()
+        with pytest.raises(expected_error) as failure:
+            await update_task
+        assert str(failure.value)
+        assert not isinstance(failure.value, ProtocolError)
+        assert runtime.close_task is None
+
+
 @pytest.mark.asyncio
 async def test_repeated_failed_admissions_keep_original_deadline(
     fake_clock: FakeClock,
@@ -1056,7 +1090,7 @@ async def test_repeated_failed_admissions_keep_original_deadline(
         async def open(
             self, session_id: str, config: SessionConfiguration, emit: OutputSink
         ) -> None:
-            raise RuntimeError("pipeline unavailable")
+            raise QueueFullError()
 
     factory_call_count = 0
 

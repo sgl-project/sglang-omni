@@ -515,8 +515,7 @@ def test_backend_open_failure_is_fatal_and_keeps_its_message(
         assert error["error"]["code"] == "internal"
         assert error["sglang"]["fatal"] is True
         events = [error, *receive_until(websocket, "session.closed")]
-        with pytest.raises(WebSocketDisconnect):
-            websocket.receive_json()
+        assert receive_close_frame(websocket) == (1011, "internal")
 
     errors = events_of_type(events, "error")
     assert len(errors) == 1
@@ -548,8 +547,7 @@ def test_open_timeout_is_fatal_and_has_a_message(
         assert error["error"]["code"] == "session_open_timeout"
         assert error["sglang"]["fatal"] is True
         events = [error, *receive_until(websocket, "session.closed")]
-        with pytest.raises(WebSocketDisconnect):
-            websocket.receive_json()
+        assert receive_close_frame(websocket) == (1011, "session_open_timeout")
 
     errors = events_of_type(events, "error")
     assert len(errors) == 1
@@ -571,6 +569,19 @@ def test_open_timeout_is_fatal_and_has_a_message(
     ("adapter", "code", "close_code", "close_reason"),
     [
         (ScriptedAdapter(unconsumed_samples=-1), "internal", 1011, "internal"),
+        *[
+            (
+                ScriptedAdapter(reply=[TurnFailure("server_error", code, "limit")]),
+                code,
+                1008,
+                code,
+            )
+            for code in (
+                "session_idle_timeout",
+                "output_budget_exhausted",
+                "context_limit",
+            )
+        ],
         (
             ScriptedAdapter(reply=[TurnFailure("server_error", "model_crash", "boom")]),
             "model_crash",

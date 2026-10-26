@@ -16,6 +16,7 @@ from starlette.status import (
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.pipeline.types import SessionIdleTimeoutError
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLIENT_CLOSED,
     CLOSE_REASON_DISCONNECT,
@@ -35,6 +36,7 @@ from sglang_omni.serve.realtime.schema import (
 )
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
 from sglang_omni.serve.realtime.types import (
+    ContextLimitError,
     OutputBudgetError,
     ProtocolError,
     failure_code,
@@ -48,6 +50,9 @@ POLICY_CLOSE_REASONS = frozenset(
         CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
         CLOSE_REASON_IDLE_TIMEOUT,
         ContextExhaustedError.CODE,
+        SessionIdleTimeoutError.CODE,
+        ContextLimitError.CODE,
+        OutputBudgetError.CODE,
     }
 )
 
