@@ -135,6 +135,12 @@ quality or a statistically established speedup. Review longer and more varied
 texts before making a performance claim. Artifact configuration contains local
 asset paths; review it before publishing.
 
+Repeatability requires identical waveform lengths and a dtype-dependent absolute
+error bound: 2^-11 for float16, 2^-8 for bfloat16, and 1e-5 for float32. The
+low-precision bounds are half the spacing at unit amplitude. Per-pair maximum
+and RMS errors are saved separately. This permits small decoder rounding
+differences; it does not claim bitwise deterministic output.
+
 After launching the HTTP server with the deployment YAML, run:
 
 ```bash

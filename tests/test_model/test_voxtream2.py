@@ -30,6 +30,11 @@ TEXTS = (
     "Please check the weather before leaving home, and remember to bring your umbrella.",
 )
 SEEDS = (101, 202)
+REPEATABILITY_ATOL = {
+    "float16": 2**-11,
+    "bfloat16": 2**-8,
+    "float32": 1e-5,
+}
 
 
 @dataclass(kw_only=True)
@@ -144,7 +149,25 @@ def test_real_worker_lifecycle(use_cuda_graph: bool) -> None:
                 repeated = generate_and_record(
                     backend, output_dir, f"text-{index}-seed-{seed}-repeat", text, seed
                 )
-                np.testing.assert_allclose(first, repeated, rtol=0, atol=1e-5)
+                assert first.shape == repeated.shape
+                difference = first.astype(np.float64) - repeated
+                (output_dir / f"repeatability-{index}-{seed}.json").write_text(
+                    json.dumps(
+                        {
+                            "dtype": config.dtype,
+                            "absolute_tolerance": REPEATABILITY_ATOL[config.dtype],
+                            "max_absolute_error": float(np.max(np.abs(difference))),
+                            "root_mean_square_error": float(
+                                np.sqrt(np.mean(difference**2))
+                            ),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                np.testing.assert_allclose(
+                    first, repeated, rtol=0, atol=REPEATABILITY_ATOL[config.dtype]
+                )
         cancelled = backend.iter_audio(
             StagePayload("cancelled", OmniRequest(TEXTS[1], {"seed": SEEDS[0]}), None)
         )

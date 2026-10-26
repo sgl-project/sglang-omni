@@ -74,6 +74,9 @@ class VoXtreamScheduler:
 
     requires_tp_work_fanout = True
 
+    def warm_up_serving_thread(self) -> None:
+        """Model initialization belongs to the isolated worker process."""
+
     def __init__(
         self,
         backend: AudioBackend,
