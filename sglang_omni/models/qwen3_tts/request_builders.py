@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -67,6 +68,12 @@ else:
 
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
+# note (luojiaxuan): The 12Hz codec emits one frame per 80 ms of audio.
+QWEN3_TTS_CODEC_FRAMES_PER_S = 12.5
+# note (luojiaxuan): Over 4460 natural stops of Qwen3-TTS-12Hz-1.7B-Base, a target text of n tokens never ran longer than 1.38 s + 0.39 s per token; the default budget allows twice that, so speech at half the slowest observed rate still ends at its codec EOS while a runaway on a few words stops within seconds.
+QWEN3_TTS_SLOWEST_STOP_S = 1.38
+QWEN3_TTS_SLOWEST_STOP_S_PER_TOKEN = 0.39
+QWEN3_TTS_BUDGET_MARGIN = 2.0
 QWEN3_TTS_TASK_BASE = "Base"
 QWEN3_TTS_TASK_CUSTOM_VOICE = "CustomVoice"
 QWEN3_TTS_TASK_VOICE_DESIGN = "VoiceDesign"
@@ -761,6 +768,21 @@ def resolve_x_vector_only_mode(
     return not bool(ref_text)
 
 
+def text_length_budget(text_tokens: int) -> int:
+    """The codec frames a target text of `text_tokens` tokens may take without an explicit max_new_tokens."""
+    return min(
+        QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS,
+        math.ceil(
+            QWEN3_TTS_BUDGET_MARGIN
+            * (
+                QWEN3_TTS_SLOWEST_STOP_S
+                + QWEN3_TTS_SLOWEST_STOP_S_PER_TOKEN * text_tokens
+            )
+            * QWEN3_TTS_CODEC_FRAMES_PER_S
+        ),
+    )
+
+
 def build_generation_kwargs(
     params: Mapping[str, object],
     *,
@@ -781,18 +803,11 @@ def build_generation_kwargs(
             pass
         selected_fields[field] = value
 
-    max_new_tokens = selected_fields.get("max_new_tokens")
-    if max_new_tokens is None:
-        max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
-    else:
-        pass
-    generation_kwargs: dict[str, object] = {"max_new_tokens": int(max_new_tokens)}
+    generation_kwargs: dict[str, object] = {}
     for field in _GENERATION_FIELDS:
-        if field == "max_new_tokens":
-            continue
-        else:
-            pass
-        if field in selected_fields:
+        if field == "max_new_tokens" and field in selected_fields:
+            generation_kwargs[field] = int(selected_fields[field])
+        elif field in selected_fields:
             generation_kwargs[field] = selected_fields[field]
         else:
             pass
@@ -1526,8 +1541,19 @@ def prepare_qwen3_tts_request(
     )
 
     validate_qwen3_tts_model_task(model, state)
+    if "max_new_tokens" in state.generation_kwargs:
+        generation_kwargs = state.generation_kwargs
+    else:
+        # note (luojiaxuan): The default budget counts the target text only; reference text and instructions are prompt, not speech.
+        target_ids = wrapper._tokenize_texts([state.text])[
+            0
+        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        generation_kwargs = {
+            **state.generation_kwargs,
+            "max_new_tokens": text_length_budget(target_ids.shape[-1]),
+        }
     gen_kwargs = wrapper._merge_generate_kwargs(
-        **state.generation_kwargs
+        **generation_kwargs
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if state.task_type == QWEN3_TTS_TASK_BASE:
         (

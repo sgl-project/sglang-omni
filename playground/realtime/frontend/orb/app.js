@@ -330,12 +330,12 @@ const STREAMING_UNIT_MS = 500;
 const NATIVE_PLAYBACK = { jitterMs: JITTER_MS, maxJitterMs: JITTER_MS, maxMs: 2500, keepMs: 1500, catchUp: { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 } };
 const STREAMING_PLAYBACK = { jitterMs: 400, maxJitterMs: 900, maxMs: 3500, keepMs: 2200, catchUp: { slow: 0.5, fast: 1.0, skip: 2.0, slowRate: 1.06, fastRate: 1.12 } };
 
-function configurePlayback(unitMs) {
+function configurePlayback(unitMs, turnBased) {
   if (!playbackNode) return;
   const samples = (ms) => Math.round((playbackContext.sampleRate * ms) / 1000);
   const nativeUnitSamples = Number.isFinite(unitMs) && unitMs > 0 ? samples(unitMs) : 0;
   const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = nativeUnitSamples > 0 && unitMs < STREAMING_UNIT_MS ? STREAMING_PLAYBACK : NATIVE_PLAYBACK;
-  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples });
+  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples, turnBased });
 }
 
 function pcm16ToFloat(bytes, sourceRate, targetRate) {
@@ -357,6 +357,7 @@ function pcm16ToFloat(bytes, sourceRate, targetRate) {
 
 function sessionListeners(activeSession) {
   let boundPlaybackNode = null;
+  let lastResponseId = null;
   return {
     state: (state) => {
       if (state !== "ready") stopCamera();
@@ -367,7 +368,7 @@ function sessionListeners(activeSession) {
       sessionStart = performance.now();
       await ensurePlayback(activeSession.outputRate);
       if (session !== activeSession || !isOpen()) return;
-      configurePlayback(activeSession.unitMs);
+      configurePlayback(activeSession.unitMs, activeSession.turnBased);
       const node = playbackNode;
       if (node !== boundPlaybackNode) {
         boundPlaybackNode = node;
@@ -402,13 +403,16 @@ function sessionListeners(activeSession) {
       awaitingAudio = open;
       setButtons();
       if (playbackNode) {
+        // note (luojiaxuan): turn-based playback never trims, so once the user has taken the turn the previous reply's leftovers are dropped by its id.
+        if (open && activeSession.turnBased && lastResponseId !== null) playbackNode.port.postMessage({ type: "cancel", responseId: lastResponseId });
         if (open) playbackNode.port.postMessage({ type: "open" });
         // A cancelled reply stops now; a completed one plays out what is buffered.
         else if (status === "cancelled") playbackNode.port.postMessage({ type: "cancel", responseId: id });
         else playbackNode.port.postMessage({ type: "flush" });
       }
       // A new answer means whatever is still queued belongs to the previous one.
-      if (open && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open && playbackNode && !activeSession.turnBased) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open) lastResponseId = id;
       renderTranscript();
     },
     text: renderTranscript,

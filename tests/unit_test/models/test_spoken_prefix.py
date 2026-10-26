@@ -35,9 +35,55 @@ from sglang_omni.audio.spoken_prefix import spoken_prefix_end
             "first sentence. second sentence.",
         ),
         ("1 2 3", "", ""),
+        ("long-term plan", "longterm", "long-term"),
+        ("Don’t stop.", "dont", "Don’t"),
+        ("Don't stop.", "don’t", "Don't"),
+        ("foo/bar follows", "foobar", "foo/bar"),
+        ("long-term long-term plan", "longterm plan", "long-term"),
+        ("long-term plan", "longterm longterm plan", "long-term"),
+        ("long-term plan", "long", ""),
+        ("long-term plan", "long term", "long-term"),
+        ("long-term plan", "long time", ""),
+        ("long-term plan", "long long term", ""),
     ],
 )
 def test_the_prefix_stops_at_the_first_unit_the_transcript_does_not_say(
     text, transcript, prefix
 ):
+    assert text[: spoken_prefix_end(text, transcript)] == prefix
+
+
+@pytest.mark.parametrize(
+    "text, transcript, prefix",
+    [
+        ("Go — nowhere else.", "Go now here", "Go"),
+        ("Use long term storage.", "Use long-term storage", "Use long term storage."),
+        ("Use one-time code.", "Use one time code", "Use one-time code."),
+        ("one-time code", "onetime", "one-time"),
+        ("onetime code", "one-time", "onetime"),
+        ("U.S. troops left", "US troops", "U.S. troops"),
+        ("US troops left", "U.S. troops", "US troops"),
+        ("I can go", "I cannot go", "I"),
+        ("I cannot go", "I can", "I"),
+        ("I can-not go", "I can", "I"),
+        ("I can go", "I can-not go", "I"),
+        ("I have twenty-one apples.", "I have twenty one", "I have twenty-one"),
+        ("I have twenty one apples.", "I have twenty-one", "I have twenty one"),
+        ("twenty-one apples", "twenty", ""),
+        ("twenty-one apples", "201", ""),
+        ("201 apples", "twenty-one", ""),
+        ("long term plan", "long-wrong plan", ""),
+        ("long term plan", "long-long-term plan", ""),
+        ("long term plan", "long-term term plan", "long term"),
+        ("ice cream-cone", "ice-cream cone", "ice cream-cone"),
+        ("state-of the-art", "state of-the-art", "state-of the-art"),
+        ("foo-bar baz", "foob arbaz", ""),
+        ("12", "1 2", ""),
+        ("", "", ""),
+    ],
+)
+def test_joined_words_preserve_word_and_number_boundaries(
+    text: str, transcript: str, prefix: str
+) -> None:
+    """Joiner matching accepted separate wrong words and rejected equivalent number words."""
     assert text[: spoken_prefix_end(text, transcript)] == prefix

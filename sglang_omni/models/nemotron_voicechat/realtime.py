@@ -12,7 +12,10 @@ from sglang_omni.models.nemotron_voicechat.payload_types import (
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk, SessionIdentity, SessionLimits
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
-from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    runtime_limits_for_pipeline,
+)
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
@@ -115,7 +118,10 @@ def deployment(
             tail_policy="pad",
         ),
         lambda: make_adapter(client, limits),
-        limits=RuntimeLimits(cleanup_timeout_s=limits.operation_timeout_s),
+        limits=runtime_limits_for_pipeline(
+            pipeline_config,
+            RuntimeLimits(cleanup_timeout_s=limits.operation_timeout_s),
+        ),
         session_limits=limits,
         max_connections=1,
     )

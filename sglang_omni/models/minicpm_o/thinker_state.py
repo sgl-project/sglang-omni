@@ -12,6 +12,16 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 
 
 @dataclass(kw_only=True)
+class SpokenUnit:
+    """The latest unit the model spoke in, the one unit a client stop can still drop from the session, with the sampler state from before it."""
+
+    unit_index: int
+    kept_token_count: int
+    is_turn_ended_at_start: bool
+    generated_history_at_start: list[int]
+
+
+@dataclass(kw_only=True)
 class MiniCPMOThinkerSessionState:
     sampling: MiniCPMODuplexSampling
     is_turn_ended: bool = True
@@ -19,6 +29,10 @@ class MiniCPMOThinkerSessionState:
     is_interrupt_pending: bool = False
     force_listen_counter: int = 0
     generated_history: list[int] = field(default_factory=list)
+    latest_spoken_unit: SpokenUnit | None = None
+    # note (ruoyu): After a stop names a unit the client never received, the next unit keeps this many native tokens and refills the dropped unit with these ids before its own.
+    kept_token_count: int | None = None
+    refill_token_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -34,4 +48,7 @@ class DuplexUnitRequestData(SGLangARRequestData):
     pending_unit_token: int | None = None
     is_listen_forced: bool = False
     is_interrupted: bool = False
+    unit_index: int = 0
+    is_turn_ended_at_start: bool = True
+    generated_history_at_start: list[int] = field(default_factory=list)
     enforce_request_limits: bool = True
