@@ -19,6 +19,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 import pytest
 import torch
+from sglang.srt.arg_groups import mamba_hook
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
@@ -32,6 +33,7 @@ from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, HybridReqToToke
 from sglang.srt.model_executor import model_runner as sglang_model_runner
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.runner import prefill_cuda_graph_runner
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.base import PendingStep
@@ -41,6 +43,7 @@ from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.models.fishaudio_drama3 import engine_builder, sglang_model
 from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
 from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
+from sglang_omni.models.fishaudio_drama3.decode_state import extend_frame_history
 from sglang_omni.models.fishaudio_drama3.engine_builder import (
     DECODE_STEPS_BETWEEN_PREFILLS,
     PREFILL_CUDA_GRAPH_MAX_TOKENS,
@@ -678,6 +681,67 @@ def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
     assert extend_frame_rows(data) == prompt_rows + sampled
 
 
+def test_cached_prompt_identity_and_suffix_staging() -> None:
+    """A cache hit must stage only uncached prompt and generated frames."""
+    request_builder = Drama3RequestBuilder(
+        config=FishOmniConfig(**fish_config_dict()),
+        context_length=CONTEXT_LENGTH,
+        max_prompt_rows=8,
+        max_new_tokens_cap=MAX_NEW_TOKENS_CAP,
+        prefix_cache_enabled=True,
+    )
+    prompt_rows = frame_rows_of([8], seed=3)[0]
+
+    def build_cached_request(frame_rows: list[list[int]]) -> Drama3RequestData:
+        return request_builder(
+            StagePayload(
+                request_id="reused-request-id",
+                request=OmniRequest(inputs="prompt"),
+                data=generation_input(torch.tensor(frame_rows, dtype=torch.int64)),
+            )
+        )
+
+    original_request = build_cached_request(prompt_rows)
+    repeated_request = build_cached_request(prompt_rows)
+    assert (
+        original_request.req.origin_input_ids[:-1]
+        == repeated_request.req.origin_input_ids[:-1]
+    )
+    assert (
+        original_request.req.origin_input_ids[-1]
+        != repeated_request.req.origin_input_ids[-1]
+    )
+    changed_rows = [row.copy() for row in prompt_rows]
+    changed_rows[4][-1] = (changed_rows[4][-1] + 1) % CODEBOOK_SIZE
+    changed_request = build_cached_request(changed_rows)
+    assert (
+        original_request.req.origin_input_ids[:3]
+        == changed_request.req.origin_input_ids[:3]
+    )
+    assert (
+        original_request.req.origin_input_ids[3]
+        != changed_request.req.origin_input_ids[3]
+    )
+    assert (
+        original_request.req.origin_input_ids[4]
+        != changed_request.req.origin_input_ids[4]
+    )
+
+    admitted_for_prefill(repeated_request, 3, len(prompt_rows))
+    assert extend_frame_rows(repeated_request) == prompt_rows[3:]
+    assert extend_frame_history(repeated_request).tolist() == prompt_rows[3:]
+    sampled_frame = [82, 2, 0, 1, 3]
+    repeated_request.req.output_ids.append(sampled_frame[0])
+    repeated_request.frame_rows.append(sampled_frame)
+    admitted_for_prefill(repeated_request, 3, len(prompt_rows) + 1)
+    assert extend_frame_history(repeated_request).tolist() == prompt_rows[3:] + [
+        sampled_frame
+    ]
+    admitted_for_prefill(repeated_request, len(prompt_rows), len(prompt_rows) + 1)
+    assert extend_frame_rows(repeated_request) == [sampled_frame]
+    assert extend_frame_history(repeated_request).tolist() == [sampled_frame]
+
+
 @pytest.mark.parametrize(
     "extend_bounds", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
 )
@@ -685,7 +749,7 @@ def test_prefill_rows_reject_a_partial_extend(extend_bounds: tuple[int, int]) ->
     data = built_request(frame_rows_of([4], seed=4)[0])
     admitted_for_prefill(data, *extend_bounds)
 
-    with pytest.raises(RuntimeError, match="whole sequence"):
+    with pytest.raises(RuntimeError, match="uncached suffix"):
         extend_frame_rows(data)
 
 
@@ -931,7 +995,11 @@ def set_up_mocked_model(
     worker = Mock(spec=ModelWorker)
     worker.model_runner = SimpleNamespace(
         model=model,
-        req_to_token_pool=SimpleNamespace(size=4),
+        req_to_token_pool=Mock(spec=HybridReqToTokenPool, size=4),
+        attn_backend=Mock(
+            spec=HybridLinearAttnBackend,
+            full_attn_backend=Mock(spec=TritonAttnBackend),
+        ),
         token_to_kv_pool=Mock(spec=HybridLinearKVPool),
     )
     builder.setup_model(
@@ -2291,9 +2359,14 @@ def engine_server_args(
         **builder.generation_defaults(dtype="bfloat16"),
     )
     builder.adjust_overrides(generation_overrides)
-    return builder, sglang_backend.build_sglang_server_args(
-        str(checkpoint_dir), context_length=context_length, **generation_overrides
-    )
+    # note (wirybeaver): validate CUDA serving configuration without allocating GPU state.
+    with patch.object(
+        mamba_hook, "get_platform", return_value=SimpleNamespace(is_cuda=True)
+    ):
+        server_args = sglang_backend.build_sglang_server_args(
+            str(checkpoint_dir), context_length=context_length, **generation_overrides
+        )
+    return builder, server_args
 
 
 def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
@@ -2310,6 +2383,93 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     assert max(graph_config.prefill.bs) == PREFILL_CUDA_GRAPH_MAX_TOKENS
     assert server_args.prefill_decode_interval == DECODE_STEPS_BETWEEN_PREFILLS
     assert server_args.enable_gdn_fp32_snapshots
+
+
+def test_prompt_only_cache_clears_tracking_after_prefill_result() -> None:
+    """Keep tracking inputs through prefill publication and out of the next decode."""
+    builder = Drama3EngineBuilder(
+        context_length=32, max_running_requests=1, prefix_cache_prompt_only=True
+    )
+    batch = SimpleNamespace(
+        mamba_track_indices=torch.tensor([3]),
+        mamba_track_mask=torch.tensor([True]),
+        mamba_track_seqlens=torch.tensor([16]),
+        mamba_track_buffer_indices=[0],
+    )
+    published_indices: list[int] = []
+
+    def publish_prefill_result(prefill_batch: SimpleNamespace, result: Mock) -> None:
+        published_indices.extend(prefill_batch.mamba_track_indices.tolist())
+
+    update_decode_checkpoint = Mock()
+    processor = SimpleNamespace(
+        process_batch_result_prefill=publish_prefill_result,
+        _mamba_prefix_cache_update=update_decode_checkpoint,
+    )
+    scheduler = SimpleNamespace(batch_result_processor=processor)
+    builder.post_scheduler_setup(scheduler, Mock(spec=Drama3ModelRunner))
+
+    processor.process_batch_result_prefill(batch, Mock())
+    assert published_indices == [3]
+    assert batch.mamba_track_indices is None
+    assert batch.mamba_track_mask is None
+    assert batch.mamba_track_seqlens is None
+    assert batch.mamba_track_buffer_indices is None
+    processor._mamba_prefix_cache_update(  # noqa: leading-underscore  # native result hook
+        Mock(), batch, Mock(), 0, known_boundary=True
+    )
+    update_decode_checkpoint.assert_not_called()
+
+
+def test_engine_defaults_enable_prompt_only_cache_with_hybrid_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A one-row cache-hit suffix must remain eligible for prefill graph replay."""
+    builder, server_args = engine_server_args(tmp_path, {})
+    builder.validate_before_infrastructure(server_args)
+    assert resolved_view(server_args).mamba_radix_cache_strategy == "extra_buffer"
+    monkeypatch.setattr(prefill_cuda_graph_runner, "is_cuda", lambda: True)
+    graph_config = resolved_view(server_args).cuda_graph_config.prefill
+    assert graph_config.bs.count(1) == 1
+    graph_runner = object.__new__(prefill_cuda_graph_runner.PrefillCudaGraphRunner)
+    graph_runner._is_full_backend = False  # noqa: leading-underscore  # runner contract
+    graph_runner._capture_chunked_prefix = (
+        False  # noqa: leading-underscore  # runner contract
+    )
+    graph_runner.prefill_backend_name = graph_config.backend
+    graph_runner.has_mha_companion_layers = True
+    graph_runner.max_context_size = graph_config.max_context_size
+    graph_runner.max_seq_len = graph_config.max_seq_len
+    graph_runner.max_num_tokens = max(graph_config.bs)
+    graph_runner.capture_num_tokens = graph_config.bs
+    assert graph_runner.can_replay_locally(
+        batch_size=1,
+        num_tokens=1,
+        input_embeds=None,
+        replace_embeds=None,
+        prefix_lens=[128],
+        is_target_verify=False,
+        capture_hidden_mode=None,
+        return_logprob=False,
+    )
+    request_builder, _ = builder.make_adapters(
+        ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    )
+    assert request_builder.prefix_cache_enabled
+    assert request_builder.prefix_cache_prompt_only
+    assert server_args.disable_mamba_decode_tracking
+
+    uncached_builder, uncached_args = engine_server_args(
+        tmp_path, {"disable_radix_cache": True}
+    )
+    uncached_builder.validate_before_infrastructure(uncached_args)
+    uncached_request_builder, _ = uncached_builder.make_adapters(
+        ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    )
+    assert not uncached_builder.prefix_cache_prompt_only
+    assert not uncached_args.disable_mamba_decode_tracking
+    assert not uncached_request_builder.prefix_cache_enabled
+    assert not uncached_request_builder.prefix_cache_prompt_only
 
 
 def test_engine_context_must_fit_the_tower_rope_table(
@@ -2369,7 +2529,10 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("overrides", "error"),
     [
-        ({"disable_radix_cache": False}, "disable_radix_cache"),
+        (
+            {"disable_radix_cache": False, "mamba_radix_cache_strategy": "no_buffer"},
+            "extra_buffer",
+        ),
         ({"chunked_prefill_size": 64}, "chunked_prefill_size"),
         ({"cuda_graph_backend_prefill": "full"}, "breakable CUDA graph"),
         (

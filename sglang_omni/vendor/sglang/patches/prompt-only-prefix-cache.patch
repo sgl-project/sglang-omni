@@ -1,0 +1,103 @@
+diff --git a/srt/arg_groups/field_order.py b/srt/arg_groups/field_order.py
+index b47135a0bf..512ae7be4c 100644
+--- a/srt/arg_groups/field_order.py
++++ b/srt/arg_groups/field_order.py
+@@ -553,5 +553,6 @@ POSITIONAL_FIELD_ORDER = (
+     "aux_hidden_state_capture",
+     "return_aux_hidden_state_layer_ids",
+     "enable_gdn_fp32_snapshots",
++    "disable_mamba_decode_tracking",
+ )
+ # fmt: on
+diff --git a/srt/arg_groups/fields/exec_.py b/srt/arg_groups/fields/exec_.py
+index 1b511395b1..9e728ca1e3 100644
+--- a/srt/arg_groups/fields/exec_.py
++++ b/srt/arg_groups/fields/exec_.py
+@@ -476,6 +476,17 @@ class ExecMamba(msgspec.Struct):
+         doc="Whether the hybrid-mamba radix cache keeps its extra state "
+         "buffer: the radix cache is on and the strategy asks for one.",
+     )
++    enable_mamba_decode_tracking = Derived(
++        fn="sglang.srt.arg_groups.model_override_base.mamba_decode_tracking_of",
++        doc="Whether decode records reusable Mamba checkpoints.",
++    )
++    disable_mamba_decode_tracking: A[
++        bool,
++        Arg(
++            help="Skip decode checkpoint tracking. The caller owns prompt checkpoint publication.",
++            no_cli=True,
++        ),
++    ] = False
+     enable_mamba_extra_buffer_lazy = Derived(
+         fn="sglang.srt.arg_groups.overrides.mamba_extra_buffer_lazy_of",
+         doc="The lazy variant: the strategy is `extra_buffer_lazy` exactly.",
+diff --git a/srt/arg_groups/model_override_base.py b/srt/arg_groups/model_override_base.py
+index 68aa916c84..331bc219e3 100644
+--- a/srt/arg_groups/model_override_base.py
++++ b/srt/arg_groups/model_override_base.py
+@@ -265,6 +265,16 @@ def mamba_extra_buffer_of(cfg: Any) -> bool:
+     )
+ 
+ 
++def mamba_decode_tracking_of(cfg: Any) -> bool:
++    if cfg.disable_mamba_decode_tracking:
++        if cfg.speculative_algorithm is not None:
++            raise ValueError(
++                "Disabling Mamba decode tracking does not support speculative decoding"
++            )
++        return False
++    return mamba_extra_buffer_of(cfg)
++
++
+ def _forces_eagle_topk_one(speculative_algorithm: str) -> bool:
+     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+ 
+diff --git a/srt/layers/attention/triton_backend.py b/srt/layers/attention/triton_backend.py
+index ef19c8cece..cd810a8c1d 100644
+--- a/srt/layers/attention/triton_backend.py
++++ b/srt/layers/attention/triton_backend.py
+@@ -156,6 +156,9 @@ class TritonAttnBackend(AttentionBackend):
+     # can never carry more seqs than the pool.
+     extend_dummy_seqs_capped_by_req_pool: bool = True
+ 
++    # note (wirybeaver): unify prefill without changing decode splitting.
++    use_unified_prefill: bool = False
++
+     def __init__(
+         self,
+         model_runner: ModelRunner,
+@@ -1795,7 +1798,7 @@ class TritonAttnBackend(AttentionBackend):
+             )
+ 
+         # Deterministic mode: use unified 1-stage kernel
+-        if self.enable_deterministic:
++        if self.enable_deterministic or self.use_unified_prefill:
+             return self._forward_extend_unified(
+                 q,
+                 o,
+diff --git a/srt/managers/schedule_batch.py b/srt/managers/schedule_batch.py
+index 0c7e55c08d..ef853120ad 100644
+--- a/srt/managers/schedule_batch.py
++++ b/srt/managers/schedule_batch.py
+@@ -3806,7 +3806,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+                 self.req_pool_indices_cpu,
+             )
+ 
+-        if get_exec().mamba.enable_mamba_extra_buffer:
++        if get_exec().mamba.enable_mamba_decode_tracking:
+             mamba_track_interval = mamba_track_grid(self.tree_cache.page_size)
+ 
+             if len(self.reqs) == 0:
+diff --git a/srt/model_executor/runner/decode_cuda_graph_runner.py b/srt/model_executor/runner/decode_cuda_graph_runner.py
+index 4143788cbd..c3c5f9f3e8 100644
+--- a/srt/model_executor/runner/decode_cuda_graph_runner.py
++++ b/srt/model_executor/runner/decode_cuda_graph_runner.py
+@@ -476,7 +476,7 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
+             )
+ 
+         enable_mamba_track = (
+-            get_exec().mamba.enable_mamba_extra_buffer
++            get_exec().mamba.enable_mamba_decode_tracking
+             and self.model_runner.spec_algorithm.is_none()
+         )
+ 

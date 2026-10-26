@@ -280,8 +280,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Stage every request's whole frame history and the next-frame labels on
-        the host; the batch arguments are the interface contract."""
+        """Stage uncached frame suffixes and next-frame labels on the host."""
         self.prefill_inputs = None
         histories = [
             extend_frame_history(request_data_of(request)) for request in requests

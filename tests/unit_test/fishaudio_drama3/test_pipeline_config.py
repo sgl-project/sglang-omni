@@ -101,6 +101,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "gdn_prefill_cuda_graphs": True,
         "triton_sampling": True,
         "tower_fused_layers": True,
+        "prefix_cache_prompt_only": True,
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
         "stream_stride": 4,
