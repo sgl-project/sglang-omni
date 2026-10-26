@@ -746,6 +746,7 @@ class SGLModelRunner(ModelRunner):
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
+            "LlamaForCausalLMEagle3": "sglang_omni.model_runner.eagle3_draft:OmniLlamaForCausalLMEagle3",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

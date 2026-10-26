@@ -10,11 +10,13 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     COMMIT,
+    CONFIGURE,
     IMAGE,
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TRUNCATE,
@@ -147,6 +149,19 @@ def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:
     assert events(outputs)[2:] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
     append(hooks, context, control_chunk(TRUNCATE, t_ms=100))
     assert outputs[-1].format == TRUNCATE_FORMAT and outputs[-1].payload["turn"] == 1
+
+
+def test_a_client_configure_is_forwarded_to_the_model_node(dialog) -> None:
+    """A configure appended with the audio used to stop at the dialog, so a realtime sampling update never reached the model."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(CONFIGURE, sampling={"max_new_tokens": 16}))
+    assert events(outputs) == [(CONFIGURE, None)]
+    assert outputs[-1].payload == {
+        "type": CONFIGURE,
+        "sampling": {"max_new_tokens": 16},
+    }
+    assert (outputs[-1].format, outputs[-1].t_start_ms) == (SESSION_CONTROL, 20.0)
 
 
 def test_an_empty_commit_and_an_overlong_utterance(dialog) -> None:

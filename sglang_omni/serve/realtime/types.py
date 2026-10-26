@@ -72,6 +72,7 @@ class Capabilities:
     supports_reference_audio: bool = False
     voices: tuple[str, ...] = ()
     supports_instruction_updates: bool = False
+    supports_sampling_updates: bool = False
     supports_truncate: bool = False
     supports_client_commit: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
@@ -138,6 +139,8 @@ class Capabilities:
             strict_order=True,
             sampling_parameters=list(self.sampling_parameters),
             supports_reference_audio=self.supports_reference_audio,
+            supports_instruction_updates=self.supports_instruction_updates,
+            supports_sampling_updates=self.supports_sampling_updates,
         )
 
         if self.voices:

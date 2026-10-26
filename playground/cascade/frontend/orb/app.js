@@ -338,6 +338,7 @@ function sessionListeners() {
       // answer in turns lift the mute at the next response.created; models that
       // stream one response for the whole session lift it once they fall quiet.
       if (mutedResponse) {
+        if (session.turnBased) return;
         mutedQuietMs = rmsOf(samples) < QUIET_RMS ? mutedQuietMs + (samples.length * 1000) / playbackContext.sampleRate : 0;
         if (mutedQuietMs < UNMUTE_QUIET_MS) return;
         mutedResponse = false;
@@ -505,6 +506,7 @@ async function closeNow() {
 function interrupt() {
   mutedResponse = true;
   mutedQuietMs = 0;
+  if (session) session.cancelReply();
   if (playbackNode) playbackNode.port.postMessage({ type: "clear" });
   setButtons();
 }
