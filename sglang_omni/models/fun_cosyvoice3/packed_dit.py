@@ -5,9 +5,9 @@ along the sequence for every per token module, attention within each row."""
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import accumulate, pairwise
 
 import torch
 import torch._dynamo as dynamo
@@ -17,6 +17,7 @@ from sglang.kernels.ops.attention.flash_attention import (
     flash_attn_with_kvcache,
 )
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.srt.utils.common import is_pin_memory_available
 from sglang.srt.utils.custom_op import register_custom_op
 
 from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
@@ -36,6 +37,10 @@ PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
     **DIT_INDUCTOR_OPTIONS,
     "emulate_precision_casts": True,
 }
+
+
+def supports_ragged_attention(device: torch.device) -> bool:
+    return device.type == "cuda" and _is_fa3_supported()
 
 
 def ragged_fa3(
@@ -115,12 +120,17 @@ class PackedRows:
 
 def pack_rows(lengths: Sequence[int], device: torch.device) -> PackedRows:
     lengths = tuple(int(length) for length in lengths)
-    starts_host = F.pad(torch.tensor(lengths, dtype=torch.int64).cumsum(0), (1, 0))
-    starts = starts_host.to(device)
+    pin_memory = is_pin_memory_available(device)
+    starts_host = torch.tensor(
+        (0, *accumulate(lengths)), dtype=torch.int64, pin_memory=pin_memory
+    )
+    starts = starts_host.to(device, non_blocking=True)
     total = int(starts_host[-1])
     row_ids = torch.repeat_interleave(
         torch.arange(len(lengths), device=device),
-        torch.tensor(lengths, dtype=torch.int64, device=device),
+        torch.tensor(lengths, dtype=torch.int64, pin_memory=pin_memory).to(
+            device, non_blocking=True
+        ),
         output_size=total,
     )
     frames = torch.arange(total, device=device)
@@ -197,7 +207,9 @@ class RowAttention:
         self.heads = heads
         width = rows.width
         device = rows.row_ids.device
-        lengths = torch.tensor(rows.lengths, device=device)
+        lengths = torch.tensor(
+            rows.lengths, pin_memory=is_pin_memory_available(device)
+        ).to(device, non_blocking=True)
         keys = torch.arange(width, device=device).unsqueeze(0) < lengths.unsqueeze(1)
         if chunk_size is None:
             mask = keys.unsqueeze(1).expand(-1, width, -1)
@@ -236,12 +248,20 @@ class RaggedRowAttention:
         self.head_dim = head_dim
         device = rows.row_ids.device
         segment_rows, segment_ends, offsets = chunk_segments(rows.lengths, chunk_size)
+        row_starts = rows.starts_host.tolist()
+        pin_memory = is_pin_memory_available(device)
         self.cache_seqlens = torch.tensor(
-            segment_ends, dtype=torch.int32, device=device
-        )
-        self.cu_seqlens_q = torch.tensor(offsets, dtype=torch.int32, device=device)
+            segment_ends, dtype=torch.int32, pin_memory=pin_memory
+        ).to(device, non_blocking=True)
+        self.cu_seqlens_q = torch.tensor(
+            offsets, dtype=torch.int32, pin_memory=pin_memory
+        ).to(device, non_blocking=True)
         self.max_seqlen_q = max(end - start for start, end in pairwise(offsets))
-        starts = rows.starts_host[list(segment_rows)].to(device)
+        starts = torch.tensor(
+            [row_starts[row] for row in segment_rows],
+            dtype=torch.int32,
+            pin_memory=pin_memory,
+        ).to(device, non_blocking=True)
         # note (ratish): FA3 page ids must land inside the packed keys; pad with page 0.
         page = torch.arange(max(segment_ends), dtype=torch.int32, device=device)
         self.page_table = torch.where(
@@ -312,10 +332,13 @@ class PackedDiT:
     order. Attention is ragged on FA3 half-precision CUDA and padded elsewhere.
     """
 
+    block_modulations: tuple[tuple[torch.nn.Parameter, ...], ...]
+    final_modulations: tuple[torch.nn.Parameter, ...]
+
     def __init__(self, dit: torch.nn.Module, *, device: str | torch.device) -> None:
         self.dit = dit
         device = torch.device(device)
-        self.is_ragged = device.type == "cuda" and _is_fa3_supported()
+        self.is_ragged = supports_ragged_attention(device)
         self.is_compiled = False
         # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
         # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
@@ -357,6 +380,36 @@ class PackedDiT:
     @property
     def chunk_size(self) -> int:
         return int(self.dit.static_chunk_size)
+
+    def build_modulations(self, time_span: torch.Tensor, dtype: torch.dtype) -> None:
+        """Every block's and the final layer's AdaLN modulation at each Euler step,
+        once: they read only the step's time, and every solve takes the same steps."""
+        dit = self.dit
+        flow_time = torch.zeros(1, device=time_span.device, dtype=dtype)
+        block_modulations: list[tuple[torch.nn.Parameter, ...]] = []
+        final_modulations: list[torch.nn.Parameter] = []
+        for t, _ in euler_step_times(time_span):
+            flow_time[:] = t
+            time_embedding = dit.time_embed(flow_time)
+            # note (ratish): a Parameter per block, as qkv_weights; a stacked table's rows
+            # compile to one LayerNorm kernel each, and a plain tensor's width to a symbol.
+            block_modulations.append(
+                tuple(
+                    torch.nn.Parameter(
+                        block.attn_norm.linear(block.attn_norm.silu(time_embedding)),
+                        requires_grad=False,
+                    )
+                    for block in dit.transformer_blocks
+                )
+            )
+            final_modulations.append(
+                torch.nn.Parameter(
+                    dit.norm_out.linear(dit.norm_out.silu(time_embedding)),
+                    requires_grad=False,
+                )
+            )
+        self.block_modulations = tuple(block_modulations)
+        self.final_modulations = tuple(final_modulations)
 
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
@@ -426,20 +479,23 @@ class PackedDiT:
         mu: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        t: torch.Tensor,
+        block_modulations: tuple[torch.Tensor, ...],
+        final_modulation: torch.Tensor,
         rows: PackedRows,
         attention: PackedRowAttention,
         rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        """x, mu, cond, spks: (1, total, channels); t: (1,); rope: rope(rows).
-        Returns (1, total, out_channels)."""
+        """x, mu, cond, spks: (1, total, channels); block_modulations: each block's
+        (1, 6 * hidden) at the Euler step, final_modulation: (1, 2 * hidden);
+        rope: rope(rows). Returns (1, total, out_channels)."""
         dit = self.dit
-        t = dit.time_embed(t)
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
         residual = h
         for block_index, block in enumerate(dit.transformer_blocks):
-            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulate_block(
+                block.attn_norm.norm, h, block_modulations[block_index]
+            )
             h = h + gate_msa.unsqueeze(1) * self.attend(
                 block.attn,
                 norm,
@@ -454,7 +510,7 @@ class PackedDiT:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:
             pass
-        h = dit.norm_out(h, t)
+        h = modulate_final(dit.norm_out.norm, h, final_modulation)
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
@@ -532,6 +588,40 @@ def rotated(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tens
     return torch.where(is_rotary, turned, x)
 
 
+def euler_step_times(
+    time_span: torch.Tensor,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Each Euler step's time and size, the time accumulated over the steps
+    rather than read from time_span."""
+    t, dt = time_span[0], time_span[1] - time_span[0]
+    for step in range(1, len(time_span)):
+        yield t, dt
+        t = t + dt
+        if step < len(time_span) - 1:
+            dt = time_span[step + 1] - t
+        else:
+            pass
+
+
+def modulate_block(
+    layer_norm: torch.nn.LayerNorm, x: torch.Tensor, modulation: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """A DiT block's AdaLayerNormZero given its modulation, (1, 6 * hidden)."""
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation.chunk(
+        6, dim=1
+    )
+    x = layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+    return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+
+def modulate_final(
+    layer_norm: torch.nn.LayerNorm, x: torch.Tensor, modulation: torch.Tensor
+) -> torch.Tensor:
+    """The DiT's AdaLayerNormZero_Final given its modulation, (1, 2 * hidden)."""
+    scale, shift = modulation.chunk(2, dim=1)
+    return layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+
+
 def solve_flow_euler_packed(
     estimator: PackedDiT,
     noise: torch.Tensor,
@@ -553,21 +643,19 @@ def solve_flow_euler_packed(
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)
     spks_cfg = torch.cat((spks, torch.zeros_like(spks)), dim=0)
     spks_cfg = spks_cfg[twin_rows.row_ids].unsqueeze(0)
-    flow_time = torch.zeros(1, device=noise.device, dtype=spks.dtype)
     # note(ratish): once per solve and outside the compiled forward,
     # whose graph would otherwise hold RoPE's autocast region and miss the AOT cache.
     angles = angles[:, twin_rows.positions]
     rope = (angles.cos(), angles.sin())
     x = noise
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for step in range(1, len(time_span)):
-        flow_time[:] = t
+    for step, (_, dt) in enumerate(euler_step_times(time_span)):
         vector_field = estimator.forward(
             torch.cat((x, x), dim=1),
             mu_cfg,
             spks_cfg,
             cond_cfg,
-            flow_time,
+            estimator.block_modulations[step],
+            estimator.final_modulations[step],
             twin_rows,
             attention,
             rope,
@@ -575,9 +663,4 @@ def solve_flow_euler_packed(
         conditional = vector_field[:, :total]
         unconditional = vector_field[:, total:]
         x = x + dt * ((1.0 + cfg_rate) * conditional - cfg_rate * unconditional)
-        t = t + dt
-        if step < len(time_span) - 1:
-            dt = time_span[step + 1] - t
-        else:
-            pass
     return x.float()

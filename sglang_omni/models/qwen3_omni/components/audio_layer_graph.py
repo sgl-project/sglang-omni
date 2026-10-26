@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from dataclasses import dataclass
@@ -233,15 +234,24 @@ class AudioLayerGraphRunner:
             return
         else:
             pass
-        for bucket in self.token_buckets:
-            captured = self.capture(bucket)
-            if captured is None:
-                self.disabled_reason = f"capture failed at bucket {bucket}"
-                self.graphs.clear()
-                return
+        gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
+        try:
+            for bucket in self.token_buckets:
+                captured = self.capture(bucket)
+                if captured is None:
+                    self.disabled_reason = f"capture failed at bucket {bucket}"
+                    self.graphs.clear()
+                    return
+                else:
+                    pass
+                self.graphs[bucket] = captured
+        finally:
+            if gc_was_enabled:
+                gc.enable()
             else:
                 pass
-            self.graphs[bucket] = captured
         logger.info(
             "audio layer CUDA graphs captured for buckets %s with %s attention",
             list(self.graphs),

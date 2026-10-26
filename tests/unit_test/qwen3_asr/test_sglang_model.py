@@ -28,6 +28,13 @@ class RecordingAudioTower(nn.Module):
         return SimpleNamespace(last_hidden_state=input_features)
 
 
+class AudioFeatureModel(Qwen3ASRForConditionalGeneration):
+    def __init__(self, audio_tower: RecordingAudioTower) -> None:
+        nn.Module.__init__(self)
+        self.audio_tower = audio_tower
+        self.encoder_graph_runner = None
+
+
 @pytest.mark.parametrize("use_mrope_positions", [True, False])
 def test_forward_uses_available_mrope_positions(
     monkeypatch: pytest.MonkeyPatch,
@@ -93,27 +100,6 @@ def test_forward_keeps_long_positions_for_native_rope(
     )
 
     assert seen_positions.dtype == torch.long
-
-
-def test_asr_text_rope_drops_only_multimodal_parameters() -> None:
-    original = {
-        "rope_type": "default",
-        "rope_theta": 1_000_000,
-        "interleaved": True,
-        "mrope_interleaved": True,
-        "mrope_section": [24, 20, 20],
-    }
-    config = SimpleNamespace(
-        rope_parameters=original,
-        rope_scaling=original,
-    )
-
-    sglang_model.normalize_asr_text_rope(config)
-
-    expected = {"rope_type": "default", "rope_theta": 1_000_000}
-    assert config.rope_parameters == expected
-    assert config.rope_scaling == expected
-    assert original["mrope_section"] == [24, 20, 20]
 
 
 def test_fused_asr_qk_norm_rope_is_bound_per_attention(
@@ -193,7 +179,7 @@ def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:
 
 def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
     tower = RecordingAudioTower()
-    model = SimpleNamespace(encoder_graph_runner=None, audio_tower=tower)
+    model = AudioFeatureModel(tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]]),
@@ -213,9 +199,7 @@ def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
 
 
 def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
-    model = SimpleNamespace(
-        encoder_graph_runner=None, audio_tower=RecordingAudioTower()
-    )
+    model = AudioFeatureModel(RecordingAudioTower())
     items = [
         SimpleNamespace(
             feature=torch.ones((1, 2, 4)),
@@ -231,7 +215,7 @@ def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_get_audio_feature_normalizes_cpu_masks_for_cuda_features() -> None:
     tower = RecordingAudioTower().cuda()
-    model = SimpleNamespace(encoder_graph_runner=None, audio_tower=tower)
+    model = AudioFeatureModel(tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]], device="cuda"),

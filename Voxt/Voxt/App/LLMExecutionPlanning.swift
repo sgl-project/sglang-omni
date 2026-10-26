@@ -173,10 +173,10 @@ extension AppDelegate {
         }
 
         let responseFormat: RemoteLLMRuntimeClient.OpenAICompatibleResponseFormat?
-        if case .remote(let remoteProvider, _) = provider,
+        if case .remote(let remoteProvider, let remoteConfiguration) = provider,
            structuredAnswerOutput,
            remoteProvider == .deepseek || (
-               remoteProvider.usesResponsesAPI &&
+               (remoteConfiguration.usesResponsesAPI(for: remoteProvider) || remoteProvider == .openAI) &&
                LLMProviderCapabilityRegistry.capabilities(for: remoteProvider).supportsResponseFormat
            ) {
             responseFormat = .jsonObject

@@ -119,3 +119,19 @@ python scripts/check_if_else.py --fix
 ```
 
 Run `pre-commit run --all-files` before submitting a change.
+
+## Documentation checks
+
+The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs,
+while allowing text presentation. Only top-level fences indented by up to three spaces
+are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences
+are reported at their opening line. The checker reports file/line diagnostics without
+modifying files (exit 0: clean, 1: violations).
+
+```bash
+python -m pip install -r scripts/requirements-doc-lint.txt
+python scripts/check_doc_style.py
+```
+
+When upgrading `emoji`, recheck the supplements for standalone regional indicators
+and `[0-9#*]` followed by VS16.

@@ -111,15 +111,15 @@ class MiniCPMOVocoderRuntime:
                 prompt=prompt,
                 base_caches=self.token2wav.open_stream(prompt),
             )
-            self.speakers[reference_key] = speaker
         else:
             pass
-        speaker.session_ids.append(session_id)
         state = MiniCPMOVocoderSessionState(
             speaker=speaker,
             caches=clone_caches(speaker.base_caches),
             pre_lookahead_tokens=self.token2wav.flow.pre_lookahead_len,
         )
+        self.speakers[reference_key] = speaker
+        speaker.session_ids.append(session_id)
         self.sessions[session_id] = state
         return state
 
@@ -217,8 +217,8 @@ class MiniCPMOVocoderRuntime:
         else:
             return max(1, unheld_bytes // forward_bytes_per_stream)
 
-    def warm_up(self, reference_audio: bytes) -> None:
-        """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
+    def warm_up(self, reference_audio: bytes, *, capture_chunk_graphs: bool) -> None:
+        """Capture the flow's chunk graphs for this voice if asked, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
         # note (Junnan Li): A forward wider than every graph runs eagerly, and a compiled estimator compiles its equal and ragged forms once each.
         if self.max_open_sessions > CHUNK_GRAPH_MAX_STREAMS:
             forward_stream_counts = (2, CHUNK_GRAPH_MAX_STREAMS + 1)
@@ -248,25 +248,28 @@ class MiniCPMOVocoderRuntime:
         requests = [request for batch in batches for request in batch]
         for request in requests:
             self.open_session(request.session_id, reference_audio=reference_audio)
-        speaker = self.sessions[requests[0].session_id].speaker
-        up_rate = self.token2wav.flow.up_rate
-        widest_graph = min(CHUNK_GRAPH_MAX_STREAMS, self.max_open_sessions)
-        # note (Junnan Li): A steady chunk decodes CODEC_CHUNK_SIZE tokens; a turn's last chunk also decodes its lookahead, at most one token short of a full window.
-        self.token2wav.capture_chunk_graphs(
-            speaker.prompt,
-            speaker.base_caches,
-            stream_counts=tuple(
-                2**power
-                for power in range(widest_graph.bit_length())
-                if 2**power < widest_graph
+        if capture_chunk_graphs:
+            speaker = self.sessions[requests[0].session_id].speaker
+            up_rate = self.token2wav.flow.up_rate
+            widest_graph = min(CHUNK_GRAPH_MAX_STREAMS, self.max_open_sessions)
+            # note (Junnan Li): A steady chunk decodes CODEC_CHUNK_SIZE tokens; a turn's last chunk also decodes its lookahead, at most one token short of a full window.
+            self.token2wav.capture_chunk_graphs(
+                speaker.prompt,
+                speaker.base_caches,
+                stream_counts=tuple(
+                    2**power
+                    for power in range(widest_graph.bit_length())
+                    if 2**power < widest_graph
+                )
+                + (widest_graph,),
+                frame_counts=(
+                    CODEC_CHUNK_SIZE * up_rate,
+                    (CODEC_CHUNK_SIZE + self.token2wav.flow.pre_lookahead_len - 1)
+                    * up_rate,
+                ),
             )
-            + (widest_graph,),
-            frame_counts=(
-                CODEC_CHUNK_SIZE * up_rate,
-                (CODEC_CHUNK_SIZE + self.token2wav.flow.pre_lookahead_len - 1)
-                * up_rate,
-            ),
-        )
+        else:
+            pass
         for batch in batches:
             list(self.synthesize_batch(batch))
         for request in requests:

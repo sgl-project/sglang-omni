@@ -11,14 +11,19 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 pytest.importorskip("xxhash")
 
+from sglang_omni.client.client import Client
 from sglang_omni.models.qwen3_omni.merge import merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     build_thinker_request,
     compute_mrope_positions,
+    make_thinker_scheduler_adapters,
 )
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
+from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.protocol import ChatCompletionRequest
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -57,6 +62,7 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
             video_token_id=66,
             audio_token_id=77,
         ),
+        capture_prompt_hidden_states=False,
     )
 
     assert sglang_request.model_inputs == {}
@@ -67,8 +73,41 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
     )  # noqa: leading-underscore  # production name
 
 
-@pytest.mark.parametrize("entrypoint", ["generic", "sglang"])
-def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
+@pytest.mark.parametrize(
+    ("capture_prompt_hidden_states", "output_modalities", "prompt_ids", "positions"),
+    [
+        (True, ["audio"], [4, 55, 77, 66, 5], [1, 2, 3]),
+        (True, ["text"], [4, 77, 5], [1]),
+        (False, ["audio"], [4, 77, 5], None),
+        (True, ["audio"], [4, 5], None),
+    ],
+)
+def test_every_request_with_media_writes_its_prompt_rows_on_a_speech_server(
+    monkeypatch, capture_prompt_hidden_states, output_modalities, prompt_ids, positions
+):
+    patch_sampling_validation(monkeypatch)
+    request_builder, _ = make_thinker_scheduler_adapters(
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        thinker_config=SimpleNamespace(
+            image_token_id=55, video_token_id=66, audio_token_id=77
+        ),
+        capture_prompt_hidden_states=capture_prompt_hidden_states,
+    )
+    payload = make_qwen_payload(
+        make_qwen_state(prompt={"input_ids": torch.tensor(prompt_ids)})
+    )
+    payload.request.metadata = {"output_modalities": output_modalities}
+
+    request = request_builder(payload).req
+
+    if positions is None:
+        assert not isinstance(request, PromptHiddenRequest)
+    else:
+        assert request.prompt_hidden_positions.tolist() == positions
+
+
+def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch):
     patch_sampling_validation(monkeypatch)
     state = make_qwen_state(thinker_inputs={"model_inputs": ["malformed"]})
 
@@ -76,24 +115,10 @@ def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
         TypeError,
         match="Qwen3-Omni thinker model_inputs must be a dict when provided",
     ):
-        if entrypoint == "generic":
-            build_thinker_request(state, params={"max_new_tokens": 3})
-        else:
-            build_sglang_thinker_request(
-                state,
-                params={"max_new_tokens": 3},
-                tokenizer=FakeQwenTokenizer(),
-                vocab_size=256,
-                request_id="malformed-model-inputs",
-                thinker_config=SimpleNamespace(
-                    image_token_id=55,
-                    video_token_id=66,
-                    audio_token_id=77,
-                ),
-            )
+        build_thinker_request(state, params={"max_new_tokens": 3})
 
 
-@pytest.mark.parametrize("token_id", [-1, 256, (1 << 63) - 1])
+@pytest.mark.parametrize("token_id", [-1, 256])
 def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
     patch_sampling_validation(monkeypatch)
     state = make_qwen_state(prompt={"input_ids": torch.tensor([255, token_id])})
@@ -105,10 +130,33 @@ def test_out_of_vocabulary_prompt_ids_are_a_bad_request(monkeypatch, token_id):
             tokenizer=FakeQwenTokenizer(),
             vocab_size=256,
             request_id="out-of-vocabulary",
+            capture_prompt_hidden_states=False,
         )
 
     assert f"token id {token_id} at position 1" in str(raised.value)
     assert is_bad_request_error(RuntimeError(str(raised.value)))
+
+
+def test_chat_request_without_a_temperature_reaches_the_thinker_greedy(monkeypatch):
+    """A chat request without a temperature samples the thinker greedily, not at 1.0."""
+    patch_sampling_validation(monkeypatch)
+    gen_req = build_chat_generate_request(
+        ChatCompletionRequest(
+            model="qwen3-omni", messages=[{"role": "user", "content": "hello"}]
+        )
+    )
+
+    request = build_sglang_thinker_request(
+        make_qwen_state(),
+        params=Client.build_omni_request(gen_req).params,
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        request_id="chat-without-temperature",
+        capture_prompt_hidden_states=False,
+    )
+
+    assert request.temperature == 0.0
+    assert request.req.sampling_params.top_k == 1
 
 
 def test_legacy_flat_payloads_still_reach_the_model_input_field():

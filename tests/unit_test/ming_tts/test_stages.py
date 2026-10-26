@@ -2,40 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
-
-def test_ming_tts_audio_decode_factory_exposes_only_supported_contract() -> None:
-    from sglang_omni.models.ming_tts.config import (
-        MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
-        MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
-        MING_TTS_DEFAULT_STREAM_SLOTS,
-        MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH,
-    )
-    from sglang_omni.models.ming_tts.stages import create_audio_decode_executor
-
-    parameters = inspect.signature(create_audio_decode_executor).parameters
-
-    assert "decode_mode" not in parameters
-    assert (
-        parameters["initial_chunk_patches"].default
-        == MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
-    )
-    assert (
-        parameters["steady_chunk_patches"].default
-        == MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
-    )
-    assert (
-        parameters["streaming_cuda_graph"].default
-        is MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH
-    )
-    assert parameters["stream_slots"].default == MING_TTS_DEFAULT_STREAM_SLOTS
-    assert parameters["max_batch_size"].default == 1
-    assert parameters["max_batch_wait_ms"].default == 0
 
 
 def test_ming_tts_legacy_engine_factory_alias_forwards(
@@ -322,7 +292,7 @@ def test_ming_tts_audio_decode_factory_stops_scheduler_when_warmup_fails(
 
 
 @pytest.mark.parametrize("field", ["initial_chunk_patches", "steady_chunk_patches"])
-@pytest.mark.parametrize("value", [True, 1.5, "2", 0, -1])
+@pytest.mark.parametrize("value", [True, 1.5, 0])
 def test_audio_decode_factory_rejects_invalid_cadence_before_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
     field: str,

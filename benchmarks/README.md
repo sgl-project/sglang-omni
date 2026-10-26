@@ -364,7 +364,9 @@ only records timestamps; every metric definition lives in
 
 - `first_partial_latency_s`: per segment, from the send time of the packet that
   reached the server's first refresh point (`segment_start + decode_interval_ms`)
-  to the first partial `transcription.segment`.
+  to the first partial `transcription.segment`. `segment_start` is the
+  `audio_start_ms` carried by the segment's own events, so segments opened by
+  a hard cut are measured from the cut.
 - `partial_interval_s`: gaps between consecutive partials of one segment.
 - `final_latency_s`: `input_audio_buffer.committed` to the segment's final event.
 - `done_to_completed_s`: `transcription.done` sent to `transcription.completed`.
@@ -587,6 +589,17 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --output results/minicpmo-v15 --timeout 90
 ```
 
+`--concurrency N` processes up to N variants at once, including post-processing.
+Connections above the server's `max_sessions` may receive HTTP 503; a session
+fails if admission retries are exhausted. Latencies recorded under load are not
+comparable to N=1, and `run.json` gains a `load`
+block (p50/p90/max initial delay, pacing violations, admission diagnostics).
+`load.input_pacing_violations` counts variants with measured out-of-tolerance
+appends; a session that sends no appends is excluded. The
+`load.variants_with_admission_denials` count includes each variant with recorded
+HTTP 503 admission denials once, even if a retry succeeds and the variant passes.
+Final outcomes remain in `summary.variants` and `load.variants_passed`.
+
 Pin the server and model revisions separately. Sending 80 ms transport packets
 does not change MiniCPM-o's one-second native processing unit. The v1.5 scoring
 commands below retain their documented measurement scope; adding a model
@@ -612,17 +625,9 @@ endpoint, one `continuous` session per sample (no clean variant):
 | `synthetic_user_interruption` | user interruption | `interrupt.json` (span plus `context`/`interrupt` text) |
 | `icc_backchannel` | backchannel | none |
 
-It reuses the v1.5 runner, the 80 ms input pacing gate, output reconstruction and
-the `transcribe` step. Non-passing samples stay in the selected denominator, and
+It reuses the v1.5 runner, the 80 ms input pacing gate and output
+reconstruction. Non-passing samples stay in the selected denominator, and
 `record` exits 0 only when every selected sample passes. The dataset is acquired separately.
-
-v1.0 transcribes with Parakeet (`nvidia/parakeet-tdt-0.6b-v2`, the upstream
-ASR) by default. Whisper invents words such as "Thank you." on silent output
-and stretches their timestamps across the whole file, which turns a model that
-correctly stayed quiet into a takeover; pause handling is the task most hurt.
-Parakeet needs NeMo, so run `transcribe` in the scoring venv that the
-[v1.5 runbook](../docs/developer_reference/full_duplex_bench.md) sets up, with a local `.nemo`
-checkpoint. `--asr whisper` remains for diagnostics.
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v10 record \
@@ -633,50 +638,18 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
     --model <served model path or ID> \
     --dataset-revision <release or archive digest> \
     --max-per-subset 2
-
-python -m benchmarks.eval.benchmark_duplex_v10 transcribe \
-    --run results/fdb10-run --output results/fdb10-asr \
-    --model-path /models/parakeet-tdt-0.6b-v2.nemo --device cuda
-
-python -m benchmarks.eval.benchmark_duplex_v10 score \
-    --run results/fdb10-run --output results/fdb10-score \
-    --transcripts results/fdb10-asr \
-    [--backchannel-reference icc_gt_distribution.json]
 ```
 
-`score` (`fdb-v10-synthetic-v4`) reports per-task takeover rate and latency
-from the ASR word timestamps. A takeover is output lasting at least 1 s or
-more than 3 words, as upstream. Every task only counts words starting inside
-the input duration, matching upstream's equal-length `output.wav`.
+`record --concurrency N` processes up to N variants at once, including
+post-processing. Connections above the server's capacity are retried on HTTP
+503. Latencies recorded under load are not comparable to N=1, and `run.json` gains a
+`load` block with the same metric definitions as the v1.5 recorder above.
 
-- Pause handling: any takeover inside the input is a failure.
-- Turn taking and user interruption only count words starting after the user
-  turn or interruption ends; latency is the first such word's start minus that
-  end, reported only for takeovers. Silero VAD on the output gates both: a
-  turn-taking sample whose model is already speaking when the user turn ends is
-  `spoke_before_turn_end` (talking over the user is not a response), an
-  interruption with no model speech at its onset is `not_exercised`, and an
-  interruption the model talks straight through, one VAD segment from before
-  its onset to after its end, is `talked_through`. None of these enter the
-  takeover rate or latency; their counts are reported. A sample whose
-  output speech reaches the input end is flagged `right_censored`.
-- Backchannel runs Silero VAD on the output. It reports backchannel rate and,
-  with `--backchannel-reference` (upstream `icc_gt_distribution.json`), the
-  Jensen-Shannon distance of 0.2 s binned backchannel timing to the human
-  reference; 1 when the model produced none. Without the reference, timing is
-  unscored.
-
-Selected samples without a record count as `missing`; invalid, unqualified or
-untranscribed samples are listed with an `unscored_reason`. This is not the
-upstream evaluation code. Upstream has no speaking gates: a model that talks
-through the user turn or the interruption scores a near-zero latency there,
-and every interruption sample counts. The backchannel classifier differs from upstream
-`eval_backchannel.py`: segments after the input end are ignored and others are
-clipped to it, any takeover segment marks the sample (upstream keeps the
-last segment's verdict and stops at the first segment over 3 s), and a takeover
-segment is not also counted as a backchannel (upstream adds every segment up to
-3 s to the backchannel list, takeover or not). Interruption
-relevance (the upstream GPT-4 rating) is not scored.
+Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
+pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers
+and `unified-score` for the metrics in
+[full_duplex_metrics.md](../docs/developer_reference/full_duplex_metrics.md).
+The [runbook](../docs/developer_reference/full_duplex_bench.md) runs all of them.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

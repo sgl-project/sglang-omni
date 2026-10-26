@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU contracts for Qwen3-Omni vision encoding."""
+"""Contracts for Qwen3-Omni vision encoding."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,18 +17,40 @@ from sglang_omni.models.qwen3_omni.components.vision_encoder import (
     Qwen3OmniVisionEncoder,
 )
 
+GRID_CASES = {
+    "single": [[1, 16, 16]],
+    "single-large": [[1, 64, 98]],
+    "multi-mixed": [[1, 16, 24], [1, 32, 12], [1, 8, 40]],
+    "video": [[4, 16, 20]],
+    "video-plus-image": [[3, 12, 16], [1, 20, 28], [2, 8, 8]],
+    "many": [[1, 24, 24]] * 8,
+}
+DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=[
+            pytest.mark.accelerator,
+            pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+        ],
+    ),
+]
 
-def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
+
+def make_encoder(
+    dtype: torch.dtype, device: str
+) -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
     encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat.__new__(
         vision_compat.Qwen3OmniMoeVisionEncoderCompat
     )
     torch.nn.Module.__init__(encoder)
-    encoder.config = SimpleNamespace(spatial_merge_size=2)
+    encoder.spatial_merge_size = 2
     encoder.num_grid_per_side = 48
     encoder.pos_embed = torch.nn.Embedding(
         48 * 48,
         16,
-        dtype=torch.bfloat16,
+        dtype=dtype,
+        device=device,
     )
     with torch.no_grad():
         values = torch.arange(
@@ -41,19 +63,18 @@ def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
 
 def transformers_5_6_pos_embed_interpolate(
     encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
-    grid_thw: torch.Tensor,
+    grid_thw: list[list[int]],
 ) -> torch.Tensor:
     """Frozen reference for the Transformers 5.6 interpolation implementation."""
-    grid_thw_list = grid_thw.tolist()
-    grid_ts = [row[0] for row in grid_thw_list]
-    grid_hs = [row[1] for row in grid_thw_list]
-    grid_ws = [row[2] for row in grid_thw_list]
+    grid_ts = [row[0] for row in grid_thw]
+    grid_hs = [row[1] for row in grid_thw]
+    grid_ws = [row[2] for row in grid_thw]
     device = encoder.pos_embed.weight.device
 
     idx_list = [[] for _ in range(4)]
     weight_list = [[] for _ in range(4)]
 
-    for _, h, w in grid_thw_list:
+    for _, h, w in grid_thw:
         h_idxs = torch.linspace(0, encoder.num_grid_per_side - 1, h)
         w_idxs = torch.linspace(0, encoder.num_grid_per_side - 1, w)
 
@@ -96,7 +117,7 @@ def transformers_5_6_pos_embed_interpolate(
     patch_pos_embeds = patch_pos_embeds.split([h * w for h, w in zip(grid_hs, grid_ws)])
 
     permuted = []
-    merge_size = encoder.config.spatial_merge_size
+    merge_size = encoder.spatial_merge_size
     for pos_embed, t, h, w in zip(patch_pos_embeds, grid_ts, grid_hs, grid_ws):
         pos_embed = pos_embed.repeat(t, 1)
         pos_embed = (
@@ -115,23 +136,20 @@ def transformers_5_6_pos_embed_interpolate(
     return torch.cat(permuted)
 
 
-@pytest.mark.parametrize(
-    "grid_thw",
-    [
-        [[1, 4, 6]],
-        [[3, 6, 4]],
-        [[1, 4, 6], [2, 6, 8]],
-        [[1, 50, 52]],
-    ],
-    ids=["image", "video", "mixed-grid", "upsampling"],
-)
-def test_interpolation_is_bit_exact_to_transformers_5_6(grid_thw) -> None:
-    encoder = make_encoder()
-    grid = torch.tensor(grid_thw, dtype=torch.long)
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("grid_thw", list(GRID_CASES.values()), ids=list(GRID_CASES))
+def test_position_interpolation_is_bit_exact_to_transformers_5_6(
+    grid_thw: list[list[int]],
+    dtype: torch.dtype,
+    device: str,
+) -> None:
+    encoder = make_encoder(dtype, device)
 
-    expected = transformers_5_6_pos_embed_interpolate(encoder, grid)
-    actual = encoder.legacy_pos_embed_interpolate(grid)
+    expected = transformers_5_6_pos_embed_interpolate(encoder, grid_thw)
+    actual = encoder.interpolate_position_embeddings(grid_thw)
 
+    assert actual.device == encoder.pos_embed.weight.device
     assert torch.equal(actual, expected)
 
 
@@ -169,10 +187,15 @@ def vision_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
         num_position_embeddings=64,
         deepstack_visual_indexes=(0, 1),
     )
+    previous_dtype = torch.get_default_dtype()
     with torch.device("cpu"), torch.random.fork_rng(devices=[]):
         torch.manual_seed(734)
-        encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
-    return encoder.eval().to(torch.bfloat16)
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
+        finally:
+            torch.set_default_dtype(previous_dtype)
+    return encoder.eval()
 
 
 @pytest.mark.parametrize(

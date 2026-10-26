@@ -10,6 +10,7 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from transformers.processing_utils import Unpack
 from transformers.utils.generic import TransformersKwargs, merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
+from transformers.vision_utils import get_vision_cu_seqlens, get_vision_position_ids
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -21,11 +22,10 @@ class VisionRotaryInputs:
 @dataclass(frozen=True, kw_only=True)
 class VisionSequenceMetadata:
     sequence_patch_counts: tuple[int, ...]
-    max_sequence_patch_count: int
 
 
 class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
-    """HF vision encoder with the Transformers 5.6 interpolation arithmetic."""
+    """HF vision encoder with the bilinear position interpolation computed on its device."""
 
     def prepare_position_embeddings(
         self,
@@ -36,89 +36,74 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
 
     def prepare_attention_metadata(
         self,
-        cumulative_sequence_lengths: torch.Tensor,
+        sequence_patch_counts: tuple[int, ...],
     ) -> dict[str, VisionSequenceMetadata]:
+        """The extra attention keywords every block receives."""
         return {}
 
-    def legacy_pos_embed_interpolate(
+    def interpolate_position_embeddings(
         self,
-        grid_thw: torch.Tensor,
+        grid_thw: list[list[int]],
     ) -> torch.Tensor:
-        grid_thw_list = grid_thw.tolist()
-        grid_ts = [row[0] for row in grid_thw_list]
-        grid_hs = [row[1] for row in grid_thw_list]
-        grid_ws = [row[2] for row in grid_thw_list]
+        """Bilinear position embeddings of every grid, in merge-block order, repeated per frame."""
+        side = self.num_grid_per_side
+        merge_size = self.spatial_merge_size
+        hidden_size = self.pos_embed.embedding_dim
         device = self.pos_embed.weight.device
-
-        idx_list = [[] for _ in range(4)]
-        weight_list = [[] for _ in range(4)]
-
-        # Keep these coordinate and weight operations byte-for-byte equivalent
-        # to the Transformers 5.6 implementation. In particular, linspace runs
-        # on CPU and the materialized weights use the embedding table dtype.
-        for _, h, w in grid_thw_list:
-            h_idxs = torch.linspace(0, self.num_grid_per_side - 1, h)
-            w_idxs = torch.linspace(0, self.num_grid_per_side - 1, w)
-
-            h_idxs_floor = h_idxs.int()
-            w_idxs_floor = w_idxs.int()
-            h_idxs_ceil = (h_idxs.int() + 1).clip(max=self.num_grid_per_side - 1)
-            w_idxs_ceil = (w_idxs.int() + 1).clip(max=self.num_grid_per_side - 1)
-
-            dh = h_idxs - h_idxs_floor
-            dw = w_idxs - w_idxs_floor
-
-            base_h = h_idxs_floor * self.num_grid_per_side
-            base_h_ceil = h_idxs_ceil * self.num_grid_per_side
-
-            indices = [
-                (base_h[None].T + w_idxs_floor[None]).flatten(),
-                (base_h[None].T + w_idxs_ceil[None]).flatten(),
-                (base_h_ceil[None].T + w_idxs_floor[None]).flatten(),
-                (base_h_ceil[None].T + w_idxs_ceil[None]).flatten(),
-            ]
-            weights = [
-                ((1 - dh)[None].T * (1 - dw)[None]).flatten(),
-                ((1 - dh)[None].T * dw[None]).flatten(),
-                (dh[None].T * (1 - dw)[None]).flatten(),
-                (dh[None].T * dw[None]).flatten(),
-            ]
-
-            for corner in range(4):
-                idx_list[corner].extend(indices[corner].tolist())
-                weight_list[corner].extend(weights[corner].tolist())
-
-        idx_tensor = torch.tensor(idx_list, dtype=torch.long, device=device)
-        weight_tensor = torch.tensor(
-            weight_list,
-            dtype=self.pos_embed.weight.dtype,
-            device=device,
-        )
-        corners = self.pos_embed(idx_tensor).to(device) * weight_tensor[:, :, None]
-        patch_pos_embeds = corners[0] + corners[1] + corners[2] + corners[3]
-
-        patch_pos_embeds = patch_pos_embeds.split(
-            [h * w for h, w in zip(grid_hs, grid_ws)]
-        )
-
-        patch_pos_embeds_permute = []
-        merge_size = self.config.spatial_merge_size
-        for pos_embed, t, h, w in zip(patch_pos_embeds, grid_ts, grid_hs, grid_ws):
-            pos_embed = pos_embed.repeat(t, 1)
-            pos_embed = (
-                pos_embed.view(
-                    t,
-                    h // merge_size,
-                    merge_size,
-                    w // merge_size,
-                    merge_size,
-                    -1,
-                )
-                .permute(0, 1, 3, 2, 4, 5)
-                .flatten(0, 4)
+        # note (ratish): Transformers 5.6's arithmetic, kept bit for bit; the checkpoint scores lower with one-rounding
+        # bilinear. fp32 linspace coordinates (CUDA's equal the CPU's), corner weights rounded to the table dtype,
+        # the four weighted rows added in order in that dtype.
+        embeddings = []
+        for frames, height, width in grid_thw:
+            rows = torch.linspace(
+                0, side - 1, height, dtype=torch.float32, device=device
             )
-            patch_pos_embeds_permute.append(pos_embed)
-        return torch.cat(patch_pos_embeds_permute)
+            columns = torch.linspace(
+                0, side - 1, width, dtype=torch.float32, device=device
+            )
+            rows_floor = rows.int()
+            columns_floor = columns.int()
+            rows_ceil = (rows_floor + 1).clip(max=side - 1)
+            columns_ceil = (columns_floor + 1).clip(max=side - 1)
+            row_fractions = rows - rows_floor
+            column_fractions = columns - columns_floor
+            row_bases = (rows_floor * side)[:, None]
+            row_ceil_bases = (rows_ceil * side)[:, None]
+            corner_indices = torch.stack(
+                (
+                    row_bases + columns_floor,
+                    row_bases + columns_ceil,
+                    row_ceil_bases + columns_floor,
+                    row_ceil_bases + columns_ceil,
+                )
+            ).reshape(4, -1)
+            corner_weights = (
+                torch.stack(
+                    (
+                        (1 - row_fractions)[:, None] * (1 - column_fractions),
+                        (1 - row_fractions)[:, None] * column_fractions,
+                        row_fractions[:, None] * (1 - column_fractions),
+                        row_fractions[:, None] * column_fractions,
+                    )
+                )
+                .reshape(4, -1)
+                .to(self.pos_embed.weight.dtype)
+            )
+            corners = self.pos_embed(corner_indices) * corner_weights[:, :, None]
+            spatial = corners[0] + corners[1] + corners[2] + corners[3]
+            merged = (
+                spatial.reshape(
+                    height // merge_size,
+                    merge_size,
+                    width // merge_size,
+                    merge_size,
+                    hidden_size,
+                )
+                .permute(0, 2, 1, 3, 4)
+                .reshape(1, -1, hidden_size)
+            )
+            embeddings.append(merged.expand(frames, -1, -1).reshape(-1, hidden_size))
+        return torch.cat(embeddings)
 
     @merge_with_config_defaults
     @capture_outputs
@@ -128,28 +113,36 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
         grid_thw: torch.Tensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | hf_modeling.BaseModelOutputWithDeepstackFeatures:
-        """Run the HF 5.12.1 encoder with legacy positional interpolation."""
-        # HF 5.12 may pass its device-generated interpolation tensors through
-        # kwargs. This compatibility path always recomputes the legacy values.
-        kwargs.pop("bilinear_indices", None)
-        kwargs.pop("bilinear_weights", None)
-        position_ids = hf_modeling.get_vision_position_ids(
-            grid_thw, self.spatial_merge_size, kwargs=kwargs
+        """Run the HF encoder with the positional interpolation computed on its device."""
+        # HF may pass its device-generated interpolation tensors through
+        # kwargs. This compatibility path always recomputes them from the grid.
+        kwargs.pop("interp_indices", None)
+        kwargs.pop("interp_weights", None)
+        # note (ratish): the rotary positions and attention lengths are derived on the host
+        # from the grid; the device receives one copy of each and is never read back.
+        host_grid_thw = grid_thw.cpu()
+        position_ids = get_vision_position_ids(
+            host_grid_thw, self.spatial_merge_size, kwargs=kwargs
         )
-        cu_seqlens = hf_modeling.get_vision_cu_seqlens(grid_thw, kwargs=kwargs)
-
-        attention_metadata_arguments = self.prepare_attention_metadata(cu_seqlens)
+        host_cu_seqlens = get_vision_cu_seqlens(host_grid_thw, kwargs=kwargs)
+        sequence_patch_counts = tuple(
+            (host_cu_seqlens[1:] - host_cu_seqlens[:-1]).tolist()
+        )
+        max_seqlen = max(sequence_patch_counts)
+        attention_metadata_arguments = self.prepare_attention_metadata(
+            sequence_patch_counts
+        )
+        device = hidden_states.device
+        cu_seqlens = host_cu_seqlens.to(device, non_blocking=True)
+        position_ids = position_ids.to(device, non_blocking=True)
 
         hidden_states = self.patch_embed(hidden_states)
-        pos_embeds = self.legacy_pos_embed_interpolate(grid_thw)
+        pos_embeds = self.interpolate_position_embeddings(host_grid_thw.tolist())
         hidden_states = hidden_states + pos_embeds.to(hidden_states.dtype)
-        rotary_pos_emb = self.rotary_pos_emb(position_ids)
+        cos, sin = self.rotary_pos_emb(hidden_states, position_ids)
 
         seq_len, _ = hidden_states.size()
         hidden_states = hidden_states.reshape(seq_len, -1)
-        rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
-        emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
-        cos, sin = emb.cos(), emb.sin()
         position_embeddings = self.prepare_position_embeddings(cos, sin)
 
         deepstack_feature_lists = []
@@ -157,6 +150,7 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
             hidden_states = block(
                 hidden_states,
                 cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
                 position_embeddings=position_embeddings,
                 **attention_metadata_arguments,
                 **kwargs,

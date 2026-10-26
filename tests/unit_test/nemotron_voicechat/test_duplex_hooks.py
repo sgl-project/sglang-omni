@@ -14,8 +14,11 @@ from sglang_omni.models.nemotron_voicechat.duplex_hooks import (
     CodecHooks,
     PerceptionHooks,
 )
+from sglang_omni.models.tools.runner import ToolRunner
+from sglang_omni.models.tools.session import ToolHooks
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import TOOL, TOOL_CALL, TOOL_RESPONSE
 from sglang_omni.scheduling.session import SessionContext
 
 
@@ -43,7 +46,7 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
         "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
         Mock(return_value=stream),
     )
-    hooks = PerceptionHooks(Mock())
+    hooks = PerceptionHooks(Mock(), max_open_sessions=1)
     session_identity = SessionIdentity("perception")
     hooks.open(session_identity, OmniRequest(None))
     context = SessionContext(
@@ -54,7 +57,21 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
     first_output = hooks.append(
         audio_chunk(b"\x00\x80" * 1280), stage_payload(), context
     )
+    response = {"responses": [{"id": "call_1_0", "name": "f", "response": 1}]}
+    for turn in (41, 42, 42):
+        payload = response if turn == 42 else {"responses": [{"id": "stale"}]}
+        hooks.control(
+            session_identity,
+            TimedChunk(TOOL, 0, 0, 0, payload, TOOL_RESPONSE, turn=turn),
+        )
+    hooks.control(
+        session_identity,
+        TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=41),
+    )
     second_output = hooks.append(audio_chunk(), stage_payload(), context)
+    assert second_output.data["tool_response"] == {
+        "responses": response["responses"] * 2
+    }
     final_output = hooks.append(audio_chunk(b"", eos=True), stage_payload(), context)
     torch.testing.assert_close(first_output.data["acoustic"], -torch.ones(1, 4))
     torch.testing.assert_close(second_output.data["acoustic"], torch.zeros(1, 4))
@@ -62,8 +79,57 @@ def test_perception_preserves_pcm_and_drains_without_an_extra_frame(
     assert final_output.data == {"acoustic": None, "eos": True}
     with pytest.raises(ValueError, match="already ended"):
         hooks.append(audio_chunk(), stage_payload(), context)
+    # note (Junnan Li): A tool response can return after the user's audio ended; it must not fail the session.
+    hooks.control(
+        session_identity,
+        TimedChunk(TOOL, 0, 0, 0, {"responses": []}, TOOL_RESPONSE, turn=1),
+    )
     hooks.close(session_identity)
     assert hooks.usage(session_identity).bytes == 0
+
+
+def test_perception_sessions_own_independent_stream_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_stream = Mock(spec=StreamingPerception)
+    first_stream.push.return_value = torch.full((1, 4), 1.0)
+    second_stream = Mock(spec=StreamingPerception)
+    second_stream.push.return_value = torch.full((1, 4), 2.0)
+    monkeypatch.setattr(
+        "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
+        Mock(side_effect=[first_stream, second_stream]),
+    )
+    hooks = PerceptionHooks(Mock(), max_open_sessions=2)
+    first_session = SessionIdentity("first")
+    second_session = SessionIdentity("second")
+    hooks.open(first_session, OmniRequest(None))
+    hooks.open(second_session, OmniRequest(None))
+
+    def session_context(session_identity: SessionIdentity) -> SessionContext:
+        return SessionContext(
+            session_identity=session_identity,
+            cancelled=threading.Event(),
+            emit=Mock(),
+        )
+
+    first_output = hooks.append(
+        audio_chunk(b"\x01\x00" * 1280),
+        stage_payload(),
+        session_context(first_session),
+    )
+    second_output = hooks.append(
+        audio_chunk(b"\x02\x00" * 1280),
+        stage_payload(),
+        session_context(second_session),
+    )
+    torch.testing.assert_close(first_output.data["acoustic"], torch.full((1, 4), 2.0))
+    torch.testing.assert_close(second_output.data["acoustic"], torch.full((1, 4), 1.0))
+    first_stream.push.assert_called_once()
+    second_stream.push.assert_called_once()
+
+    hooks.close(first_session)
+    hooks.close(second_session)
+    assert len(hooks.available_streams) == 2
 
 
 @pytest.mark.parametrize(
@@ -86,7 +152,7 @@ def test_perception_rejects_invalid_audio_before_model_execution(
         "sglang_omni.models.nemotron_voicechat.duplex_hooks.GraphPerception",
         Mock(return_value=stream),
     )
-    hooks = PerceptionHooks(Mock())
+    hooks = PerceptionHooks(Mock(), max_open_sessions=1)
     session_identity = SessionIdentity("invalid-input")
     hooks.open(session_identity, OmniRequest(None))
     context = SessionContext(
@@ -172,6 +238,68 @@ def test_codec_memory_stays_bounded_and_reopen_clears_audio_history() -> None:
     assert output.data["pcm"] == bytes((1764 - 256) * 2)
 
 
+@pytest.mark.parametrize("reply_turn", [None, 42])
+def test_codec_preserves_reply_turn_separately_from_call_ids(reply_turn) -> None:
+    hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
+    session_identity = SessionIdentity("tool-codec")
+    hooks.open(session_identity, OmniRequest(None))
+    emitted: list[TimedChunk] = []
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=emitted.append,
+    )
+    calls = [{"name": "f", "arguments": {"x": 1}}, {"name": "g", "arguments": {}}]
+    hooks.append(
+        TimedChunk("audio", 8000, 80, 100, bytes(2560), "pcm16", turn=reply_turn),
+        stage_payload(
+            {"codes": torch.zeros(1, 1, dtype=torch.long), "tool_calls": calls}
+        ),
+        context,
+    )
+    hooks.append(
+        TimedChunk("audio", 8080, 80, 101, bytes(2560), "pcm16", turn=reply_turn),
+        stage_payload(
+            {"codes": torch.zeros(1, 1, dtype=torch.long), "tool_calls": calls[:1]}
+        ),
+        context,
+    )
+    tool_chunks = [chunk for chunk in emitted if chunk.format == TOOL_CALL]
+    assert [chunk.modality for chunk in tool_chunks] == [TOOL, TOOL]
+    assert tool_chunks[0].payload == {
+        "calls": [
+            {"id": "call_1_0", "name": "f", "arguments": {"x": 1}},
+            {"id": "call_1_1", "name": "g", "arguments": {}},
+        ]
+    }
+    assert [chunk.turn for chunk in emitted] == [reply_turn] * 4
+    assert tool_chunks[1].payload["calls"][0]["id"] == "call_2_0"
+    assert [chunk.format for chunk in emitted if chunk.format != TOOL_CALL] == [
+        "voicechat",
+        "voicechat",
+    ]
+
+    assert [chunk.t_start_ms for chunk in emitted] == [8000, 8000, 8080, 8080]
+    assert [chunk.seq for chunk in emitted] == [100, 100, 101, 101]
+    assert all(chunk.duration_ms == 0 for chunk in tool_chunks)
+    responses = []
+    tool_hooks = ToolHooks(
+        ToolRunner({"f": lambda arguments: arguments, "g": lambda arguments: arguments})
+    )
+    tool_context = SessionContext(
+        session_identity=SessionIdentity("tools"),
+        cancelled=threading.Event(),
+        emit=responses.append,
+    )
+    for tool_chunk in tool_chunks:
+        tool_hooks.append(tool_chunk, stage_payload(), tool_context)
+    assert [response.turn for response in responses] == [reply_turn, reply_turn]
+    assert [response["id"] for response in responses[0].payload["responses"]] == [
+        "call_1_0",
+        "call_1_1",
+    ]
+
+
 def test_codec_empty_session_drains_without_audio() -> None:
     hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
     session_identity = SessionIdentity("empty-codec")
@@ -188,6 +316,44 @@ def test_codec_empty_session_drains_without_audio() -> None:
     assert output.data["pcm"] == b""
     assert emitted_chunks[-1].eos
     assert emitted_chunks[-1].duration_ms == 0
+
+
+def test_codec_sessions_keep_history_and_completion_independent() -> None:
+    hooks = CodecHooks(ConstantFrameDecoder(), "cpu")
+    first_session = SessionIdentity("first-codec")
+    second_session = SessionIdentity("second-codec")
+    hooks.open(first_session, OmniRequest(None))
+    hooks.open(second_session, OmniRequest(None))
+
+    def session_context(session_identity: SessionIdentity) -> SessionContext:
+        return SessionContext(
+            session_identity=session_identity,
+            cancelled=threading.Event(),
+            emit=Mock(),
+        )
+
+    first_output = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[1]])}),
+        session_context(first_session),
+    )
+    second_output = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[2]])}),
+        session_context(second_session),
+    )
+    assert first_output.data["pcm"] != second_output.data["pcm"]
+    hooks.append(
+        audio_chunk(b"", eos=True),
+        stage_payload({"eos": True}),
+        session_context(first_session),
+    )
+    continued = hooks.append(
+        audio_chunk(),
+        stage_payload({"codes": torch.tensor([[3]])}),
+        session_context(second_session),
+    )
+    assert continued.data["pcm"]
 
 
 @pytest.mark.accelerator

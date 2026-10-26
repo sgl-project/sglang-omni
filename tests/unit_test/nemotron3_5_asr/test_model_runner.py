@@ -5,16 +5,35 @@ from __future__ import annotations
 
 import threading
 from typing import Literal, TypedDict
+from unittest.mock import Mock
 
 import numpy as np
+import pytest
 import torch
 from numpy.typing import NDArray
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
+from sglang_omni.models.nemotron3_5_asr import encoder
+from sglang_omni.models.nemotron3_5_asr.encoder import (
+    CapturedEncoderBatch,
+    NemotronStreamingEncoderGraphRunner,
+    encode_pooled_streaming_batch,
+)
+from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
+    EncoderPoolLayout,
+    NemotronEncoderStatePool,
+)
 from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
 from sglang_omni.models.nemotron3_5_asr.request_builders import Nemotron3_5ASRRequest
 from sglang_omni.proto.request import OmniRequest, StagePayload
+
+ENCODER_POOL_LAYOUT = EncoderPoolLayout(
+    attention_shape=(1, 1, 4, 2),
+    convolution_shapes={"conv.0": (2, 2)},
+    dtype=torch.float32,
+    device=torch.device("cpu"),
+)
 
 
 class ProcessorCall(TypedDict):
@@ -127,6 +146,8 @@ def make_runner() -> tuple[Nemotron3_5ASRModelRunner, FakeProcessor, FakeModel]:
     runner.processor = processor
     runner.model = model
     runner.model_lock = threading.Lock()
+    runner.encoder_state_pool = None
+    runner.encoder_graph_runner = None
     return runner, processor, model
 
 
@@ -173,3 +194,47 @@ def test_batch_groups_token_limits_without_changing_request_order() -> None:
     assert [call["input_features"].shape[0] for call in model.calls] == [2, 1]
     assert model.calls[0]["input_features"].dtype == runner.dtype
     assert model.calls[0]["prompt_ids"].dtype == torch.long
+
+
+@pytest.mark.parametrize("execution", ["replay", "first", "uncaptured_batch"])
+def test_streaming_encoder_routes_graph_and_eager_batches(
+    monkeypatch: pytest.MonkeyPatch,
+    execution: Literal["replay", "first", "uncaptured_batch"],
+) -> None:
+    pool = NemotronEncoderStatePool(ENCODER_POOL_LAYOUT, 2)
+    model = Mock(training=False)
+    graph_runner = object.__new__(NemotronStreamingEncoderGraphRunner)
+    graph_runner.subsequent_mel_frames = 32
+    graph = Mock()
+    graph_runner.captured_batches = {
+        1: CapturedEncoderBatch(
+            input_features=torch.empty(1, 32, 4),
+            prompt_ids=torch.empty(1, dtype=torch.long),
+            slot_ids=torch.empty(1, dtype=torch.long),
+            encoded_frames=torch.empty(1, 4, 8),
+            graph=graph,
+        )
+    }
+    batch_size = 2 if execution == "uncaptured_batch" else 1
+    slots = [pool.acquire() for _ in range(batch_size)]
+    for slot in slots:
+        slot.seen_frames = 0 if execution == "first" else 4
+    eager = Mock(return_value=torch.empty(batch_size, 4, 8))
+    monkeypatch.setattr(encoder, "encode_pooled_windows", eager)
+
+    encode_pooled_streaming_batch(
+        model,
+        [torch.zeros(1, 32, 4) for _ in slots],
+        torch.zeros(batch_size, dtype=torch.long),
+        encoder_slots=slots,
+        num_lookahead_tokens=3,
+        graph_runner=graph_runner,
+    )
+
+    if execution == "replay":
+        graph.replay.assert_called_once_with()
+        eager.assert_not_called()
+    else:
+        graph.replay.assert_not_called()
+        eager.assert_called_once()
+    pool.close()

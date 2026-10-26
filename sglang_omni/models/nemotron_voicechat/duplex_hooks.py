@@ -20,9 +20,20 @@ from sglang_omni.models.nemotron_voicechat.conformer import (
     StreamingPerception,
 )
 from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
-from sglang_omni.models.nemotron_voicechat.payload_types import OUTPUT_SAMPLE_RATE
+from sglang_omni.models.nemotron_voicechat.payload_types import (
+    OUTPUT_SAMPLE_RATE,
+    TOOL_CALLS,
+    VOICECHAT_FORMAT,
+)
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import (
+    INTERRUPT,
+    TOOL,
+    TOOL_CALL,
+    TOOL_RESPONSE,
+    control_type,
+)
 from sglang_omni.scheduling.session import SessionContext, SessionHooks
 
 PCM16_SAMPLE_BYTES = 2
@@ -34,17 +45,26 @@ PCM16_OUTPUT_SCALE = 32767
 class PerceptionState:
     stream: StreamingPerception
     is_ended: bool = False
+    # note (Junnan Li): Tool responses taken as controls, handed to the thinker with the next frame.
+    tool_responses: list[TimedChunk] = field(default_factory=list)
 
 
 class PerceptionHooks(SessionHooks):
-    def __init__(self, model: AudioPerception) -> None:
-        self.model = model
-        self.stream = GraphPerception(model)
+    def __init__(self, model: AudioPerception, *, max_open_sessions: int) -> None:
+        self.available_streams = [
+            GraphPerception(model) for _ in range(max_open_sessions)
+        ]
         self.states: dict[SessionIdentity, PerceptionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.stream.reset()
-        self.states[session_identity] = PerceptionState(stream=self.stream)
+        stream = self.available_streams.pop()
+        stream.reset()
+        self.states[session_identity] = PerceptionState(stream=stream)
+
+    def warm_up(self) -> None:
+        for stream in self.available_streams:
+            stream.push(torch.zeros(SAMPLES_PER_FRAME, device=stream.device))
+            stream.reset()
 
     @torch.inference_mode()
     def append(
@@ -83,10 +103,41 @@ class PerceptionHooks(SessionHooks):
         state.is_ended = chunk.eos
         # The encoder's flush row is not a model frame; EOS must not add one.
         payload.data = {"acoustic": acoustic_features, "eos": chunk.eos}
+        if state.tool_responses:
+            payload.data[TOOL_RESPONSE] = {
+                "responses": [
+                    response
+                    for tool_response in state.tool_responses
+                    for response in tool_response.payload["responses"]
+                ]
+            }
+            state.tool_responses = []
+        else:
+            pass
         return payload
 
+    def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
+        """Hold a tool response for the next frame; one that arrives after the input ended is never consumed."""
+        state = self.states[session_identity]
+        if event.format == TOOL_RESPONSE and not state.is_ended:
+            assert isinstance(event.payload, dict)
+            state.tool_responses.append(event)
+        elif control_type(event) == INTERRUPT and event.turn is not None:
+            state.tool_responses = [
+                response
+                for response in state.tool_responses
+                if response.turn != event.turn
+            ]
+        else:
+            pass
+
     def close(self, session_identity: SessionIdentity) -> None:
-        self.states.pop(session_identity, None)
+        state = self.states.pop(session_identity, None)
+        if state is not None:
+            state.stream.reset()
+            self.available_streams.append(state.stream)
+        else:
+            pass
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         state = self.states.get(session_identity)
@@ -112,6 +163,7 @@ class CodecState:
     frame_count: int = 0
     emitted_samples: int = 0
     is_ended: bool = False
+    tool_call_count: int = 0
 
 
 class CodecHooks(SessionHooks):
@@ -148,11 +200,11 @@ class CodecHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         state = self.states[context.session_identity]
+        model_output = payload.data
         if state.is_ended:
             raise ValueError("VoiceChat codec already ended")
         else:
             pass
-        model_output = payload.data
         codes = model_output.get("codes")
         if codes is not None:
             state.code_frames.append(codes.reshape(-1).to(self.device))
@@ -196,10 +248,32 @@ class CodecHooks(SessionHooks):
                 len(pcm) * 1000 / (PCM16_SAMPLE_BYTES * OUTPUT_SAMPLE_RATE),
                 chunk.seq,
                 payload.data,
-                format="voicechat",
+                format=VOICECHAT_FORMAT,
                 eos=eos,
+                turn=chunk.turn,
             )
         )
+        tool_calls = model_output.get(TOOL_CALLS)
+        if tool_calls:
+            state.tool_call_count += 1
+            context.emit(
+                TimedChunk(
+                    TOOL,
+                    chunk.t_start_ms,
+                    0,
+                    chunk.seq,
+                    {
+                        "calls": [
+                            {"id": f"call_{state.tool_call_count}_{index}", **call}
+                            for index, call in enumerate(tool_calls)
+                        ]
+                    },
+                    format=TOOL_CALL,
+                    turn=chunk.turn,
+                )
+            )
+        else:
+            pass
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:

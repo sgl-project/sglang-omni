@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
+from tokenizers.normalizers import NFC
 from transformers import PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
@@ -123,5 +124,28 @@ def test_invalid_transcription_upload_reports_decode_error(
     )
 
     with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        asyncio.run(audio_preprocessor(payload))
+    audio_preprocessor.processor.assert_not_called()
+
+
+def test_oversized_transcription_context_is_rejected_before_decoding_audio(
+    audio_preprocessor: Qwen3OmniPreprocessor,
+) -> None:
+    audio_preprocessor.max_seq_len = 64
+    audio_preprocessor.max_token_chars = 4
+    audio_preprocessor.normalizer = NFC()
+    payload = StagePayload(
+        request_id="transcription-oversized-context",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"invalid audio"},
+            params={"prompt": "x" * 100_000, "max_new_tokens": 8},
+        ),
+        data=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"is longer than the model's context length \(64 tokens\)",
+    ):
         asyncio.run(audio_preprocessor(payload))
     audio_preprocessor.processor.assert_not_called()

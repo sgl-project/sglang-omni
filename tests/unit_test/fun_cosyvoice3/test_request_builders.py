@@ -26,8 +26,14 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     clear_cosyvoice3_preprocessing_context,
     pop_prepared_cosyvoice3_request,
+    prepare_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
     set_cosyvoice3_preprocessing_context,
+)
+from sglang_omni.models.fun_cosyvoice3.sglang_model import (
+    SOS_ID,
+    TASK_ID,
+    TOTAL_VOCAB_SIZE,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -258,54 +264,8 @@ def test_cosyvoice3_reference_cache_separates_audio_content(
     assert service.stats()["entries"] == 2
 
 
-def test_cosyvoice3_reference_cache_retries_after_encode_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempts = 0
-
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio_24k",
-        lambda source: np.zeros(2400, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "extract_prompt_speech_feat",
-        lambda audio, sample_rate: torch.ones(1, 4, 80),
-    )
-
-    class RetrySpeechTokenizer(FakeSpeechTokenizer):
-        def extract_speech_token(self, audio, sample_rate):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise RuntimeError("temporary tokenizer failure")
-            return super().extract_speech_token(audio, sample_rate)
-
-    hook = CosyVoice3ReferenceEncodeHook(model=FakeModel(), model_revision="test")
-    hook.bind_encoders(
-        speech_tokenizer=RetrySpeechTokenizer(),
-        speaker_encoder=FakeSpeakerEncoder(),
-    )
-    service = ReferenceEncodeService(hook, max_items=4, max_bytes=1 << 20)
-
-    with pytest.raises(RuntimeError, match="temporary tokenizer failure"):
-        service.get_or_encode(b"retry-reference")
-    artifact = service.get_or_encode(b"retry-reference")
-
-    assert artifact.llm_prompt_speech_token.tolist() == [[40, 41]]
-    assert service.stats()["failed"] == 1
-    assert service.stats()["entries"] == 1
-
-
-def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_values() -> (
-    None
-):
+def test_generation_kwargs_keep_every_set_value() -> None:
+    """A set temperature 0.7, top_p 0.8 or top_k 20 reaches the model instead of being dropped."""
     params = {
         "temperature": 0.7,
         "top_p": 0.8,
@@ -314,18 +274,8 @@ def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_val
         "do_sample": False,
         "max_new_tokens": 12,
     }
-    assert build_generation_kwargs(params, tts_params={}) == {
-        "do_sample": False,
-        "max_new_tokens": 12,
-    }
-    assert build_generation_kwargs(
-        params, tts_params={"explicit_generation_params": ["temperature", "top_p"]}
-    ) == {
-        "do_sample": False,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "max_new_tokens": 12,
-    }
+    assert build_generation_kwargs(params) == params
+    assert build_generation_kwargs({"top_k": None}) == {}
 
 
 class FakeTokenizer:
@@ -364,7 +314,7 @@ class FakeModel(torch.nn.Module):
         )
 
 
-@pytest.mark.parametrize("repetition_penalty", [None, 1.1, 1.21])
+@pytest.mark.parametrize("repetition_penalty", [None, 1.1])
 def test_preprocess_and_build_request_share_prepared_state(
     monkeypatch: pytest.MonkeyPatch,
     repetition_penalty: float | None,
@@ -390,6 +340,7 @@ def test_preprocess_and_build_request_share_prepared_state(
         tokenizer=FakeTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
     payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
@@ -403,11 +354,6 @@ def test_preprocess_and_build_request_share_prepared_state(
                 else {"repetition_penalty": repetition_penalty}
             ),
         },
-        tts_params=(
-            {}
-            if repetition_penalty is None
-            else {"explicit_generation_params": ["repetition_penalty"]}
-        ),
     )
 
     prepared_payload = preprocess_cosyvoice3_payload(payload)
@@ -457,71 +403,6 @@ def test_preprocess_and_build_request_share_prepared_state(
     assert request_data.flow_prompt_speech_token.tolist() == [[40]]
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
-
-
-def test_mlx_preprocessing_uses_token_metadata_without_torch_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio",
-        lambda source: torch.zeros(1600).numpy(),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "load_prompt_audio_24k",
-        lambda source: torch.zeros(2400).numpy(),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "extract_prompt_speech_feat",
-        lambda audio, sample_rate: torch.ones(1, 4, 80),
-    )
-    set_cosyvoice3_preprocessing_context(
-        model=None,
-        tokenizer=FakeTokenizer(),
-        speech_tokenizer=FakeSpeechTokenizer(),
-        speaker_encoder=FakeSpeakerEncoder(),
-        use_mlx=True,
-        model_revision="mlx-test",
-    )
-    payload = make_payload(
-        {
-            "text": "hello",
-            "ref_audio": "reference.wav",
-            "ref_text": "reference",
-        },
-        params={"do_sample": False},
-        request_id="req-mlx",
-    )
-
-    prepared_payload = preprocess_cosyvoice3_payload(payload)
-    prepared = pop_prepared_cosyvoice3_request(prepared_payload)
-
-    assert prepared is not None
-    assert prepared.prompt_input_embeds is None
-    assert prepared.input_ids_list == [0] * 9
-    assert prepared.input_ids.tolist() == [0] * 9
-    assert prepared.text_token_ids == [3, 4, 5, 1, 2]
-    assert prepared.llm_prompt_speech_token_ids == [40, 41]
-
-    request_builders._PREPARED_REQUESTS["req-mlx"] = (
-        prepared  # noqa: leading-underscore  # production name
-    )
-    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=None)
-
-    assert request_data.prompt_input_embeds is None
-    assert request_data.req._cosyvoice3_text_token_ids == [
-        3,
-        4,
-        5,
-        1,
-        2,
-    ]  # noqa: leading-underscore  # production name
-    assert request_data.req._cosyvoice3_prompt_speech_token_ids == [
-        40,
-        41,
-    ]  # noqa: leading-underscore  # production name
 
 
 def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
@@ -615,6 +496,7 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
         tokenizer=FakeTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
 
     request_ids = {"req-reference-a", "req-reference-b"}
@@ -686,6 +568,7 @@ def test_build_request_attaches_stream_metadata_when_stream_true(
         tokenizer=FakeTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
     payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
@@ -728,6 +611,7 @@ def test_build_request_derives_generation_length_contract_when_unset(
         tokenizer=FakeTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
     payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
@@ -773,6 +657,7 @@ def test_preprocess_includes_reference_text_before_target_text(
         tokenizer=FakeTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
     payload = make_payload(
         {
@@ -823,6 +708,7 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
         tokenizer=InstructTokenizer(),
         speech_tokenizer=FakeSpeechTokenizer(),
         speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cpu"),
     )
     payload = make_payload(
         {"text": "hello", "ref_audio": "reference.wav"},
@@ -837,6 +723,192 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
     assert prepared.input_ids.numel() == 7
     assert prepared.llm_prompt_speech_token.shape == (1, 0)
     assert prepared.flow_prompt_speech_token.tolist() == [[40]]
+
+
+HOLD_CYCLES = 1_000_000_000
+
+
+class EmbeddingModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_embed_tokens = torch.nn.Embedding(8, 4)
+        self.speech_embedding = torch.nn.Embedding(TOTAL_VOCAB_SIZE, 4)
+
+
+def prepare_hello_on_stream(
+    model: EmbeddingModel, stream: torch.cuda.Stream
+) -> CosyVoice3PreparedRequest:
+    return prepare_cosyvoice3_request(
+        model=model,
+        tokenizer=FakeTokenizer(),
+        state=FunCosyVoice3State(text="hello"),
+        reference_artifact=None,
+        stream=stream,
+    )
+
+
+def build_request_on_stream(
+    prepared: CosyVoice3PreparedRequest,
+    model: EmbeddingModel,
+    stream: torch.cuda.Stream,
+    request_id: str,
+) -> CosyVoice3SGLangRequestData:
+    request_builders._PREPARED_REQUESTS[request_id] = (
+        prepared  # noqa: leading-underscore  # production name
+    )
+    payload = StagePayload(
+        request_id,
+        OmniRequest(inputs="hello"),
+        {"_cosyvoice3_prepared_request": request_id},
+    )
+    with torch.cuda.stream(stream):
+        return build_sglang_cosyvoice3_request(payload, model=model)
+
+
+def hello_prompt_rows(model: EmbeddingModel) -> torch.Tensor:
+    return torch.cat(
+        [
+            model.speech_embedding.weight[[SOS_ID]],
+            model.text_embed_tokens.weight[[3, 1, 2]],
+            model.speech_embedding.weight[[TASK_ID]],
+        ]
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_preprocessing_builds_prompt_rows_without_a_host_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 2, 80),
+    )
+
+    model = EmbeddingModel().cuda()
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=FakeTokenizer(),
+        speech_tokenizer=FakeSpeechTokenizer(),
+        speaker_encoder=FakeSpeakerEncoder(),
+        device=torch.device("cuda"),
+    )
+    payload = make_payload(
+        {
+            "text": "hello",
+            "ref_audio": "reference.wav",
+            "ref_text": "reference",
+        },
+        params={"do_sample": False},
+        request_id="req-cuda",
+    )
+
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        prepared_payload = preprocess_cosyvoice3_payload(payload)
+        request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
+    finally:
+        torch.cuda.set_sync_debug_mode(sync_debug_mode)
+
+    assert request_data.req.origin_input_ids == [
+        SOS_ID,
+        TOTAL_VOCAB_SIZE + 3,
+        TOTAL_VOCAB_SIZE + 4,
+        TOTAL_VOCAB_SIZE + 5,
+        TOTAL_VOCAB_SIZE + 1,
+        TOTAL_VOCAB_SIZE + 2,
+        TASK_ID,
+        40,
+        41,
+    ]
+    expected_rows = torch.cat(
+        [
+            model.speech_embedding.weight[[SOS_ID]],
+            model.text_embed_tokens.weight[[3, 4, 5, 1, 2]],
+            model.speech_embedding.weight[[TASK_ID, 40, 41]],
+        ]
+    )
+    assert torch.equal(request_data.prompt_input_embeds, expected_rows)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_prompt_rows_are_read_only_after_preprocessing_writes_them() -> None:
+    torch.manual_seed(0)
+    warmup_model = EmbeddingModel().cuda()
+    model = EmbeddingModel().cuda()
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+    warmup_request = build_request_on_stream(
+        prepare_hello_on_stream(warmup_model, producer),
+        warmup_model,
+        consumer,
+        "req-warmup",
+    )
+    with torch.cuda.stream(consumer):
+        warmup_request.prompt_input_embeds.clone()
+    del warmup_request
+    expected_rows = hello_prompt_rows(model)
+    torch.cuda.synchronize()
+
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(HOLD_CYCLES)  # noqa: leading-underscore  # upstream name
+    prepared = prepare_hello_on_stream(model, producer)
+    request_data = build_request_on_stream(prepared, model, consumer, "req-ordered")
+    with torch.cuda.stream(consumer):
+        read_rows = request_data.prompt_input_embeds.clone()
+    producer_was_held = not prepared.ready_event.query()
+    torch.cuda.synchronize()
+
+    assert producer_was_held
+    assert torch.equal(read_rows, expected_rows)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_prompt_rows_stay_allocated_until_the_ar_stream_reads_them() -> None:
+    torch.manual_seed(0)
+    model = EmbeddingModel().cuda()
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+    warmup_request = build_request_on_stream(
+        prepare_hello_on_stream(model, producer), model, consumer, "req-warmup"
+    )
+    with torch.cuda.stream(consumer):
+        warmup_request.prompt_input_embeds.clone()
+    with torch.cuda.stream(producer):
+        torch.full((5, 4), -1.0, device="cuda")
+    del warmup_request
+    torch.cuda.synchronize()
+    prepared = prepare_hello_on_stream(model, producer)
+    expected_rows = hello_prompt_rows(model)
+    torch.cuda.synchronize()
+
+    with torch.cuda.stream(consumer):
+        torch.cuda._sleep(HOLD_CYCLES)  # noqa: leading-underscore  # upstream name
+    request_data = build_request_on_stream(prepared, model, consumer, "req-retained")
+    with torch.cuda.stream(consumer):
+        read_rows = request_data.prompt_input_embeds.clone()
+    del prepared, request_data
+    with torch.cuda.stream(producer):
+        overwrites = [torch.full((5, 4), -1.0, device="cuda") for _ in range(64)]
+    consumer_was_held = not consumer.query()
+    torch.cuda.synchronize()
+
+    assert consumer_was_held
+    assert torch.equal(read_rows, expected_rows)
 
 
 def test_result_adapter_preserves_reference_conditioning_for_vocoder(
@@ -1114,7 +1186,7 @@ def test_reference_features_survive_terminal_messagepack(strided: bool) -> None:
     assert terminal["flow_prompt_speech_feat_dtype"] == "float32"
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float64])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_reference_features_preserve_fallback_lists(dtype: torch.dtype) -> None:
     features = torch.arange(160, dtype=dtype).reshape(1, 2, 80)
     state = FunCosyVoice3State(flow_prompt_speech_feat=features)

@@ -584,6 +584,22 @@ extension RemoteProviderConfigurationSheet {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 8) {
+                Text(AppLocalization.localizedString("API Format"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                SettingsMenuPicker(
+                    selection: $openAIAPIFormat,
+                    options: OpenAIAPIFormat.allCases.map { SettingsMenuOption(value: $0.rawValue, title: $0.title) },
+                    selectedTitle: (OpenAIAPIFormat(rawValue: openAIAPIFormat) ?? .automatic).title,
+                    width: 240
+                )
+                Text(AppLocalization.localizedString("Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 Text(AppLocalization.localizedString("Verbosity"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

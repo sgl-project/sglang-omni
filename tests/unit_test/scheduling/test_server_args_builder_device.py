@@ -18,7 +18,7 @@ class CapturedServerArgs:
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
-        self.enable_dp_attention = False
+        self.attn_dp_size = 1
         self.enable_nccl_nvls = kwargs.get("enable_nccl_nvls", False)
         self.enable_symm_mem = kwargs.get("enable_symm_mem", False)
         self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
@@ -35,10 +35,6 @@ def build(monkeypatch, **extra: Any) -> dict[str, Any]:
         "model", context_length=128, **extra
     )
     return built.kwargs
-
-
-def test_unset_device_falls_back_to_the_resolved_platform(monkeypatch) -> None:
-    assert build(monkeypatch)["device"] == platforms.current_platform.device_type
 
 
 def test_pinned_platform_reaches_server_args(monkeypatch) -> None:

@@ -85,6 +85,9 @@ class NemotronBatchEngine:
             + max_history_tokens * 96
             + max_text_bytes * 12
         )
+        runner.configure_encoder_state_pool(
+            min(max_open_sessions, max_state_bytes // self.session_reservation_bytes)
+        )
         self.condition = threading.Condition()
         self.commands: deque[ModelTask] = deque()
         self.tasks: dict[Future[TaskResult], ModelTask] = {}
@@ -216,7 +219,11 @@ class NemotronBatchEngine:
         self, identity: SessionIdentity, error: BaseException | None = None
     ) -> None:
         task = self.ready.pop(identity, None)
-        self.states.pop(identity, None)
+        state = self.states.pop(identity, None)
+        if state is not None:
+            state.decode.release_encoder_state()
+        else:
+            pass
         with self.condition:
             self.usage_snapshots.pop(identity, None)
         if task is not None:
@@ -305,6 +312,10 @@ class NemotronBatchEngine:
             self.publish_usage(identity, state)
         else:
             state.trim_pcm()
+            if state.is_input_done or state.has_reached_decode_limit:
+                state.decode.release_encoder_state()
+            else:
+                pass
             self.publish_usage(identity, state)
             self.ready.pop(identity, None)
             self.finish(
@@ -524,5 +535,7 @@ class NemotronBatchEngine:
                 self.usage_snapshots.clear()
             self.ready.clear()
             self.offline.clear()
+            for state in self.states.values():
+                state.decode.release_encoder_state()
             self.states.clear()
             self.runner.close()

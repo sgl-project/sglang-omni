@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypedDict
 from urllib.parse import urlparse
 
-from pydantic import ValidationError
+from pydantic import AliasChoices, BaseModel, ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
@@ -76,7 +76,6 @@ class RequiredTTSParams(TypedDict):
 
 
 class TTSParams(RequiredTTSParams, total=False):
-    explicit_generation_params: list[str]
     task_type: str
     language: str
     instructions: str
@@ -143,6 +142,7 @@ class SpeechRequestValidator:
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
         tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+        supported_speech_fields: frozenset[str] | None = None,
     ) -> None:
         if tts_batch_max_items < 1:
             raise ValueError("tts_batch_max_items must be greater than 0")
@@ -206,6 +206,7 @@ class SpeechRequestValidator:
             reject_unsafe_remote_addresses=True,
         )
         self.tts_batch_max_items = int(tts_batch_max_items)
+        self.supported_speech_fields = supported_speech_fields
 
     def parse_request(self, payload: object) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""
@@ -223,6 +224,7 @@ class SpeechRequestValidator:
             key: value for key, value in payload.items() if key != "items"
         }
         self.validate_raw_payload(default_payload)
+        self.validate_supported_fields(default_payload, CreateSpeechBatchRequest)
         try:
             request = CreateSpeechBatchRequest.model_validate(payload)
         except ValidationError as exc:
@@ -270,6 +272,7 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_raw_payload(payload)
+        self.validate_supported_fields(payload, CreateSpeechRequest)
         try:
             request = CreateSpeechRequest.model_validate(payload)
         except ValidationError as exc:
@@ -715,6 +718,11 @@ class SpeechRequestValidator:
         *,
         index: int,
     ) -> CreateSpeechRequest:
+        self.validate_supported_fields(
+            item.model_dump(exclude_unset=True),
+            SpeechBatchItem,
+            prefix=f"items.{index}.",
+        )
         payload = batch.model_dump(exclude={"items"}, exclude_none=True)
         item_payload = item.model_dump(exclude_none=True)
         payload.update(item_payload)
@@ -912,6 +920,54 @@ class SpeechRequestValidator:
             else:
                 pass
 
+    def validate_supported_fields(
+        self,
+        payload: Mapping[str, object],
+        protocol: type[BaseModel],
+        *,
+        prefix: str = "",
+    ) -> None:
+        """Refuse fields this entry would drop or the pipeline does not support,
+        when it declares supported_speech_fields; null leaves a protocol field
+        unset, while an unknown field is refused even when null."""
+        supported_fields = self.supported_speech_fields
+        if supported_fields is None:
+            return
+        else:
+            pass
+        field_names = accepted_field_names(protocol)
+        reference_field_names = accepted_field_names(SpeechReference)
+        for key, value in payload.items():
+            path = f"{prefix}{key}"
+            field_name = field_names.get(key)
+            if field_name is None:
+                raise bad_request(f"unknown speech request field: {path}", param=path)
+            elif value is None:
+                pass
+            elif field_name not in supported_fields:
+                raise bad_request(f"{path} is not supported by this model", param=path)
+            elif field_name == "references" and isinstance(value, list):
+                for index, reference in enumerate(value):
+                    unknown_keys = (
+                        [
+                            reference_key
+                            for reference_key in reference
+                            if reference_key not in reference_field_names
+                        ]
+                        if isinstance(reference, Mapping)
+                        else []
+                    )
+                    if unknown_keys:
+                        reference_path = f"{path}.{index}.{unknown_keys[0]}"
+                        raise bad_request(
+                            f"unknown speech reference field: {reference_path}",
+                            param=reference_path,
+                        )
+                    else:
+                        pass
+            else:
+                pass
+
     def normalize_speech_reference(self, reference: SpeechReference) -> SpeechReference:
         updates: dict[str, str | None] = {
             field_name: None for field_name in _REFERENCE_AUDIO_FIELDS
@@ -980,21 +1036,6 @@ class SpeechRequestValidator:
             pass
 
 
-def explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
-    return sorted(
-        field
-        for field in (
-            "max_new_tokens",
-            "temperature",
-            "top_p",
-            "top_k",
-            "repetition_penalty",
-            "seed",
-        )
-        if field in request.model_fields_set
-    )
-
-
 def build_tts_params(
     request: CreateSpeechRequest,
     *,
@@ -1005,11 +1046,6 @@ def build_tts_params(
         "response_format": request.response_format,
         "speed": request.speed,
     }
-    generation_params = explicit_generation_params(request)
-    if generation_params:
-        tts_params["explicit_generation_params"] = generation_params
-    else:
-        pass
     if request.task_type is not None:
         tts_params["task_type"] = request.task_type
     else:
@@ -1075,34 +1111,14 @@ def build_tts_params(
 
 
 def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
-    sampling = SamplingParams(
-        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    return SamplingParams(
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        repetition_penalty=request.repetition_penalty,
+        seed=request.seed,
+        max_new_tokens=request.max_new_tokens,
     )
-    if request.max_new_tokens is not None:
-        sampling.max_new_tokens = request.max_new_tokens
-    else:
-        pass
-    if request.temperature is not None:
-        sampling.temperature = request.temperature
-    else:
-        pass
-    if request.top_p is not None:
-        sampling.top_p = request.top_p
-    else:
-        pass
-    if request.top_k is not None:
-        sampling.top_k = request.top_k
-    else:
-        pass
-    if request.repetition_penalty is not None:
-        sampling.repetition_penalty = request.repetition_penalty
-    else:
-        pass
-    if request.seed is not None:
-        sampling.seed = request.seed
-    else:
-        pass
-    return sampling
 
 
 def build_speech_prompt(
@@ -1377,6 +1393,25 @@ def validation_error_message(exc: ValidationError) -> str:
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     message = first_error.get("msg") or "invalid speech request"
     return f"{location}: {message}" if location else str(message)
+
+
+def accepted_field_names(protocol: type[BaseModel]) -> dict[str, str]:
+    """Every key the protocol accepts, field names and aliases, mapped to its field."""
+    field_names: dict[str, str] = {}
+    for field_name, field_info in protocol.model_fields.items():
+        field_names[field_name] = field_name
+        alias = field_info.validation_alias
+        if isinstance(alias, AliasChoices):
+            for choice in alias.choices:
+                if isinstance(choice, str):
+                    field_names[choice] = field_name
+                else:
+                    pass
+        elif isinstance(alias, str):
+            field_names[alias] = field_name
+        else:
+            pass
+    return field_names
 
 
 def validation_error_param(

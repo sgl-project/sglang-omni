@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
-from transformers import AutoFeatureExtractor, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -37,7 +37,6 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.fun_asr.sglang_model import (
         FunAsrNanoForConditionalGeneration,
@@ -119,7 +118,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.tokenizer = AutoTokenizer.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
-        self.feature_extractor = AutoFeatureExtractor.from_pretrained(
+        self.feature_extractor = FunAsrNanoFeatureExtractor.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
         encoder_token_count = int(
@@ -133,13 +132,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         )
 
     def uses_torch_mps(self) -> bool:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        return (
-            not use_mlx()
-            and self.device is not None
-            and self.device.split(":")[0] == "mps"
-        )
+        return self.device is not None and self.device.split(":")[0] == "mps"
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if self.uses_torch_mps():
@@ -168,12 +161,6 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                 )
             else:
                 pass
-            if getattr(server_args, "mlx_enable_sampling", False):
-                raise ValueError(
-                    "Fun-ASR Apple currently requires mlx_enable_sampling=False"
-                )
-            else:
-                pass
             if server_args.quantization is not None:
                 raise ValueError(
                     "Fun-ASR Apple currently requires unquantized HF weights"
@@ -186,7 +173,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[request_builders.FunASRRequestData]:
         if self.uses_torch_mps():
@@ -203,7 +190,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -226,15 +213,6 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
-            raise ValueError(
-                "Fun-ASR MLX support is not available yet; set SGLANG_USE_MLX=0 "
-                "for Torch/MPS"
-            )
-        else:
-            pass
         if self.uses_torch_mps():
             # Audio embeddings are inserted only at first prefill. Token-only
             # prefix reuse and split prefill cannot reconstruct that sidecar.

@@ -1,4 +1,4 @@
-// Voice page for a native full-duplex /v1/realtime session, proxied by playground/realtime/app.py.
+// Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
 import { DuplexSession } from "./session.js";
 import { Camera } from "./camera.js";
 import { Orb } from "./orb.js";
@@ -22,7 +22,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "outputRow", "setOutput", "setMic", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -51,6 +51,7 @@ let captureNode = null;
 let micAnalyser = null;
 let playbackContext = null;
 let playbackNode = null;
+let playbackGeneration = 0;
 let playbackAnalyser = null;
 let playbackRate = 24000;
 let eventChain = Promise.resolve();
@@ -156,11 +157,23 @@ function mood(micLevel, modelLevel, now) {
     if (remoteBusy) return { mood: "idle", level: 0, line: "Someone else is talking to it, try again soon" };
     return { mood: "idle", level: 0, line: "" };
   }
+  if (session.turnBased) return turnMood(micLevel, modelLevel, now);
   if (now - lastModelLoudAt < MODEL_HOLD_MS) return { mood: "speaking", level: modelLevel, line: "" };
   if (muted) return { mood: "idle", level: 0, line: "Microphone muted" };
   if (!captureStream) return { mood: "idle", level: 0, line: startingMic ? "Allow the microphone to start" : "Microphone off" };
   if (now - lastMicLoudAt < MIC_HOLD_MS) return { mood: "user", level: micLevel, line: "Listening" };
   if (session.responseOpen && awaitingAudio) return { mood: "thinking", level: 0, line: "Thinking…" };
+  return { mood: "listening", level: micLevel, line: "Listening" };
+}
+
+// Turn-based servers announce the user's speech and the reply, so the orb follows those events;
+// the output level only covers the tail still playing after response.done.
+function turnMood(micLevel, modelLevel, now) {
+  if (session.userSpeaking) return { mood: "user", level: micLevel, line: "Listening" };
+  if (session.responseOpen && awaitingAudio) return { mood: "thinking", level: 0, line: "Thinking…" };
+  if (session.responseOpen || now - lastModelLoudAt < MODEL_HOLD_MS) return { mood: "speaking", level: modelLevel, line: "" };
+  if (muted) return { mood: "idle", level: 0, line: "Microphone muted" };
+  if (!captureStream) return { mood: "idle", level: 0, line: startingMic ? "Allow the microphone to start" : "Microphone off" };
   return { mood: "listening", level: micLevel, line: "Listening" };
 }
 
@@ -289,6 +302,7 @@ async function ensurePlayback(rate) {
     await playbackContext.resume();
     return;
   }
+  if (playbackNode) playbackNode.port.onmessage = null;
   if (playbackContext) await playbackContext.close().catch(() => {});
   playbackRate = rate;
   playbackContext = new AudioContext({ sampleRate: rate, latencyHint: "interactive" });
@@ -313,13 +327,15 @@ function rmsOf(samples) {
 
 // Sub-second streaming units stall on every network hiccup, so they get a deeper adaptive jitter buffer.
 const STREAMING_UNIT_MS = 500;
+const NATIVE_PLAYBACK = { jitterMs: JITTER_MS, maxJitterMs: JITTER_MS, maxMs: 2500, keepMs: 1500, catchUp: { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 } };
 const STREAMING_PLAYBACK = { jitterMs: 400, maxJitterMs: 900, maxMs: 3500, keepMs: 2200, catchUp: { slow: 0.5, fast: 1.0, skip: 2.0, slowRate: 1.06, fastRate: 1.12 } };
 
-function configurePlayback(unitMs) {
-  if (!playbackNode || !(unitMs > 0) || unitMs >= STREAMING_UNIT_MS) return;
+function configurePlayback(unitMs, turnBased) {
+  if (!playbackNode) return;
   const samples = (ms) => Math.round((playbackContext.sampleRate * ms) / 1000);
-  const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = STREAMING_PLAYBACK;
-  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp });
+  const nativeUnitSamples = Number.isFinite(unitMs) && unitMs > 0 ? samples(unitMs) : 0;
+  const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = nativeUnitSamples > 0 && unitMs < STREAMING_UNIT_MS ? STREAMING_PLAYBACK : NATIVE_PLAYBACK;
+  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples, turnBased });
 }
 
 function pcm16ToFloat(bytes, sourceRate, targetRate) {
@@ -339,7 +355,9 @@ function pcm16ToFloat(bytes, sourceRate, targetRate) {
   return target;
 }
 
-function sessionListeners() {
+function sessionListeners(activeSession) {
+  let boundPlaybackNode = null;
+  let lastResponseId = null;
   return {
     state: (state) => {
       if (state !== "ready") stopCamera();
@@ -348,16 +366,28 @@ function sessionListeners() {
     },
     granted: async () => {
       sessionStart = performance.now();
-      await ensurePlayback(session.outputRate);
-      configurePlayback(session.unitMs);
+      await ensurePlayback(activeSession.outputRate);
+      if (session !== activeSession || !isOpen()) return;
+      configurePlayback(activeSession.unitMs, activeSession.turnBased);
+      const node = playbackNode;
+      if (node !== boundPlaybackNode) {
+        boundPlaybackNode = node;
+        const generation = ++playbackGeneration;
+        node.port.onmessage = ({ data }) => {
+          if (session !== activeSession || playbackNode !== node || data.type !== "status" || data.generation !== generation) return;
+          const { droppedMs, rate, queueMs, targetMs, playedMs, buffering, underruns, outputRms, responseOpen } = data;
+          activeSession.record("local", { type: "playback.status", generation, droppedMs, rate, queueMs, targetMs, playedMs, buffering, underruns, outputRms, responseOpen });
+        };
+        node.port.postMessage({ type: "reset", generation });
+      }
       setButtons();
       // One tap starts everything: the microphone follows the grant.
       startMic().catch((error) => warn(`Microphone: ${error.message}`, true));
     },
-    audio: (bytes) => {
+    audio: ({ bytes, responseId }) => {
       if (!playbackNode) return;
       awaitingAudio = false;
-      const samples = pcm16ToFloat(bytes, session.outputRate, playbackContext.sampleRate);
+      const samples = pcm16ToFloat(bytes, activeSession.outputRate, playbackContext.sampleRate);
       // After a local interrupt, drop what the model is still saying. Models that
       // answer in turns lift the mute at the next response.created; models that
       // stream one response for the whole session lift it once they fall quiet.
@@ -366,15 +396,23 @@ function sessionListeners() {
         if (mutedQuietMs < UNMUTE_QUIET_MS) return;
         mutedResponse = false;
       }
-      playbackNode.port.postMessage({ type: "push", samples }, [samples.buffer]);
+      playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
     },
-    response: ({ open }) => {
+    response: ({ open, id, status }) => {
       if (open) mutedResponse = false;
       awaitingAudio = open;
       setButtons();
-      if (playbackNode) playbackNode.port.postMessage({ type: open ? "open" : "flush" });
+      if (playbackNode) {
+        // note (luojiaxuan): turn-based playback never trims, so once the user has taken the turn the previous reply's leftovers are dropped by its id.
+        if (open && activeSession.turnBased && lastResponseId !== null) playbackNode.port.postMessage({ type: "cancel", responseId: lastResponseId });
+        if (open) playbackNode.port.postMessage({ type: "open" });
+        // A cancelled reply stops now; a completed one plays out what is buffered.
+        else if (status === "cancelled") playbackNode.port.postMessage({ type: "cancel", responseId: id });
+        else playbackNode.port.postMessage({ type: "flush" });
+      }
       // A new answer means whatever is still queued belongs to the previous one.
-      if (open && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open && playbackNode && !activeSession.turnBased) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open) lastResponseId = id;
       renderTranscript();
     },
     text: renderTranscript,
@@ -401,10 +439,11 @@ async function connect() {
   session = null;
   renderTranscript();
   warn("");
-  if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
+  if (playbackNode) playbackNode.port.postMessage({ type: "reset", generation: ++playbackGeneration });
   setButtons();
   let activeSocket = null;
   try {
+    await eventChain;
     // Open playback inside the click so Chrome's autoplay policy lets it run.
     await ensurePlayback(playbackRate);
     activeSocket = new WebSocket(wsUrl());
@@ -416,8 +455,9 @@ async function connect() {
       outputModalities: options.outputModalities,
       instructions: options.instructions,
       extension: options.extension,
-      listeners: sessionListeners(),
+      turnDetection: options.turnDetection,
     });
+    activeSession.listeners = sessionListeners(activeSession);
     session = activeSession;
     lastSession = activeSession;
     ui.traceBtn.hidden = false;
@@ -431,7 +471,7 @@ async function connect() {
     activeSocket.addEventListener("message", (message) => {
       eventChain = eventChain.then(async () => {
         if (socket !== activeSocket) return;
-        activeSession.handle(JSON.parse(message.data));
+        await activeSession.handle(JSON.parse(message.data));
       }).catch((error) => warn(`Server event: ${error.message}`));
     });
     activeSocket.addEventListener("error", () => {
@@ -446,7 +486,7 @@ async function connect() {
       stopCamera();
       if (CLOSE_MESSAGES[event.code]) warn(CLOSE_MESSAGES[event.code], true);
       if (event.code === 4429) remoteBusy = true;
-      if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
+      if (playbackNode) playbackNode.port.postMessage({ type: "reset", generation: ++playbackGeneration });
       setButtons();
       pollStatus();
     });

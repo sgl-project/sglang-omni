@@ -9,7 +9,7 @@ description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
@@ -20,10 +20,10 @@ dependencies = [
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
     "pybase64>=1.4.0",        # Fast base64 decoding for inline media payloads
-    "torch==2.13.0",
-    "torchvision==0.28.0",
+    "torch==2.14.1",
+    "torchvision==0.29.1",
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers==5.12.1",  # Match the pinned sglang stack
+    "transformers==5.19.0",  # Match the pinned sglang stack
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
@@ -32,15 +32,14 @@ dependencies = [
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
-    "sglang==0.5.21; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "mlx>=0.32.0; sys_platform == 'darwin' and platform_machine == 'arm64'",  # floor enforced by SGLang's MLX runtime gate
-    "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "flashinfer_python[cu13]==0.6.18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
+    "sglang==0.5.22; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "torch_memory_saver==0.0.10; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "flashinfer_python[cu13]==0.7.1; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
     "imageio-ffmpeg==0.5.1", # Pinned with the sglang diffusion extra
-    "flash-attn-4>=4.0.0b18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Required by sglang, pairs with cutlass-dsl 4.6.2
+    "flash-attn-4>=4.0.0b18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Required by sglang, pairs with cutlass-dsl 4.8.0
     "kernels>=0.14.1,<0.15; sys_platform != 'darwin' or platform_machine != 'arm64'",  # Match the pinned sglang stack
     "nixl-cu13>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
     "mooncake-transfer-engine-cuda13>=0.3.10; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
@@ -53,6 +52,8 @@ dependencies = [
     # a port.
     "sox>=1.4.1",
     "av>=16.1.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "audioread>=3.0.0",
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
@@ -85,7 +86,7 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "torchaudio==2.11.0",
-    "torchcodec==0.15.0",
+    "torchcodec==0.17.0",
     # Gradio playground
     "gradio>=4.0.0",
     # note (yexiaodong): dots.tts pulls Pynini, whose OpenFst build is not
@@ -93,6 +94,7 @@ dependencies = [
     "dots.tts==0.2.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
+    "torchdiffeq>=0.2.4",     # LLaDA2-Uni image decoder sampling
     "x-transformers",          # Ming talker rotary embeddings
     # note (yexiaodong): ZONOS2 text normalization pulls Pynini/OpenFst, which
     # has no usable Apple arm64 wheel and is unrelated to the Qwen3-ASR path.
@@ -123,9 +125,17 @@ minicpm-o = [
     "onnx>=1.18.0",
 ]
 
+# Drama 3 vocoder imports dac and audiotools. These stay out of the base
+# dependencies, so `uv pip install -e .` for other models is unchanged.
+# descript-audiotools pins protobuf<3.20; tool.uv.override-dependencies keeps
+# the project protobuf pin when uv installs this extra.
+fishaudio = [
+    "descript-audiotools==0.7.2",
+    "descript-audio-codec==1.0.0",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -173,17 +183,13 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"!{sglang_omni,sglang_omni_router/python}/**" = ["ANN401"]
+"!sglang_omni/**" = ["ANN401"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
-    "sglang_omni_router.python",
-    "sglang_omni_router.python.*",
-    "sglang_omni_mlx",
-    "sglang_omni_mlx.*",
 ]
 namespaces = true
 

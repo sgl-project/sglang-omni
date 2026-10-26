@@ -1322,7 +1322,7 @@
 "Clear one or more filters to view more models." = "Clear one or more filters to view more models.";
 "Cloud" = "Cloud";
 "Configure the speech path, translation engine, target language, and prompt behavior for translation mode." = "Configure the speech path, translation engine, target language, and prompt behavior for translation mode.";
-"Configure this provider in Model settings first." = "Configure this provider in Model settings first.";
+"Configure this provider in Model settings first." = "Not configured";
 "Configured" = "Configured";
 "Experimental" = "Beta";
 "Enable LLM Enhancement" = "Enable LLM Enhancement";
@@ -1331,7 +1331,7 @@
 "Fast" = "Fast";
 "In Use" = "In Use";
 "Install" = "Install";
-"Install this model in Model settings first." = "Install this model in Model settings first.";
+"Install this model in Model settings first." = "Not installed";
 "LLM" = "LLM";
 "LLM Model" = "LLM Model";
 "Local LLM" = "Local LLM";
@@ -1386,6 +1386,9 @@
 "Translation Model" = "Translation Model";
 "Translation will keep using the best compatible model automatically." = "Translation will keep using the best compatible model automatically.";
 "Unavailable" = "Unavailable";
+"This model is temporarily unavailable while Native Omni support is being added. Choose another ASR model." = "This model is temporarily unavailable while Native Omni support is being added. Choose another ASR model.";
+"Local Native Omni models require Apple Silicon. Choose a Remote ASR provider or Direct Dictation." = "Local Native Omni models require Apple Silicon. Choose a Remote ASR provider or Direct Dictation.";
+"The Native Omni runtime is unavailable. Reinstall Voxt or configure the development runtime." = "The Native Omni runtime is unavailable. Reinstall Voxt or configure the development runtime.";
 "Uninstall" = "Uninstall";
 "Usage" = "Usage";
 "Use" = "Use";
@@ -2375,3 +2378,7 @@
 "Open Notes from the main window" = "Open Notes from the main window";
 "Try Later" = "Try Later";
 "Less" = "Less";
+
+"API Format" = "API Format";
+
+"Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";

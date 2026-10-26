@@ -64,10 +64,17 @@ extension RemoteLLMRuntimeClient {
     func requestMaxTokensDescription(
         provider: RemoteLLMProvider,
         usesResponsesAPI: Bool,
-        tuning: GenerationTuning
+        tuning: GenerationTuning,
+        configuredMaxOutputTokens: Int? = nil,
+        endpoint: String = ""
     ) -> String {
         if usesResponsesAPI && provider == .codex {
             return "auto"
+        }
+        if usesResponsesAPI && provider == .openAI,
+           let host = URL(string: endpoint)?.host,
+           host.lowercased() != "api.openai.com" {
+            return configuredMaxOutputTokens.map { "\(max(1, $0))" } ?? "auto"
         }
         return "\(tuning.maxTokens)"
     }

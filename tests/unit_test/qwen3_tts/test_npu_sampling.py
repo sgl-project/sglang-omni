@@ -88,6 +88,17 @@ def test_float32_seeded_sampling_is_repeatable() -> None:
     torch.testing.assert_close(first, second, rtol=0, atol=0)
     assert first.dtype == torch.long
     assert first.shape == (2,)
+    expected = []
+    for row, (seed, position) in enumerate(zip(seeds.tolist(), positions.tolist())):
+        hashes = torch.tensor(
+            [reference_hash(seed, position, column) for column in range(3)],
+            dtype=torch.int64,
+        )
+        uniform = hashes.to(dtype=torch.float32) / float(UINT32_MASK)
+        uniform.clamp_(min=torch.finfo(torch.float32).tiny, max=1.0 - 2.0**-24)
+        gumbel = -torch.log(-torch.log(uniform))
+        expected.append(int(torch.argmax(logprobs[row] + gumbel)))
+    assert first.tolist() == expected
 
 
 def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
@@ -106,6 +117,13 @@ def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
     )
 
     assert observed_dtypes == [torch.float32, torch.float32]
+    sampling_kernels.seeded_gumbel_argmax_float32(
+        torch.tensor([[0.0, -1.0]], dtype=torch.bfloat16),
+        torch.tensor([5], dtype=torch.int64),
+        torch.tensor([7], dtype=torch.int64),
+    )
+
+    assert observed_dtypes == [torch.float32] * 4
 
 
 def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:
@@ -165,6 +183,62 @@ def test_sorted_seeded_sampler_executes_float32_path_on_npu() -> None:
     assert sampled is not None
     assert sampled.device.type == "npu"
     assert sampled.cpu().tolist() == [9]
+
+
+@pytest.mark.skipif(not npu_available(), reason="requires Ascend NPU")
+@pytest.mark.parametrize("batch_size,num_cols", [(1, 64), (4, 257), (16, 2048)])
+def test_npu_hash_graph_replay_preserves_seed_bits(
+    batch_size: int, num_cols: int
+) -> None:
+    seeds_cpu = torch.tensor([0, -1, 2**40 + 123, -(2**63)] * 4, dtype=torch.int64)[
+        :batch_size
+    ]
+    positions_cpu = torch.arange(batch_size, dtype=torch.int64) + 1707985137
+    seeds, positions = seeds_cpu.npu(), positions_cpu.npu()
+    for _ in range(2):
+        sampling_kernels.murmur_hash32_pytorch(seeds, positions, num_cols)
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = sampling_kernels.murmur_hash32_pytorch(seeds, positions, num_cols)
+    for _ in range(32):
+        seeds_cpu = seeds_cpu.roll(1)
+        seeds.copy_(seeds_cpu)
+        positions_cpu += 1
+        positions.copy_(positions_cpu)
+        graph.replay()
+        expected = sampling_kernels.murmur_hash32_pytorch(
+            seeds_cpu, positions_cpu, num_cols
+        )
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not npu_available(), reason="requires Ascend NPU")
+def test_npu_seeded_sampling_graph_replay_uses_updated_inputs() -> None:
+    generator = torch.Generator().manual_seed(5678)
+    logprobs_cpu = torch.randn(16, 50, generator=generator)
+    seeds_cpu = torch.tensor([0, -1, 2**40 + 123, -(2**63)] * 4)
+    positions_cpu = torch.arange(16, dtype=torch.int64)
+    logprobs = logprobs_cpu.npu()
+    seeds, positions = seeds_cpu.npu(), positions_cpu.npu()
+    for _ in range(2):
+        sampling_kernels.seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = sampling_kernels.seeded_gumbel_argmax_float32(
+            logprobs, seeds, positions
+        )
+    for _ in range(32):
+        logprobs_cpu = torch.randn(16, 50, generator=generator)
+        seeds_cpu = seeds_cpu.roll(1)
+        positions_cpu += 1
+        logprobs.copy_(logprobs_cpu)
+        seeds.copy_(seeds_cpu)
+        positions.copy_(positions_cpu)
+        graph.replay()
+        expected = sampling_kernels.seeded_gumbel_argmax_float32(
+            logprobs_cpu, seeds_cpu, positions_cpu
+        )
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
 
 def test_npu_sampling_dispatch_does_not_capture_cpu() -> None:
