@@ -302,6 +302,7 @@ async def run_session(
                     else:
                         pass
                     admitted = await settle("session.updated")
+                    # note (IcyDesert): The manifest retry limit now spans HTTP and session rejections; older recordings used separate budgets.
                     while rejected.is_set() and admission_denials <= ADMISSION_RETRIES:
                         rejected.clear()
                         # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.

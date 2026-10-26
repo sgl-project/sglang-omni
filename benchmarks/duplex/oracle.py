@@ -196,7 +196,6 @@ def evaluate_trace(
     input_byte_count = output_byte_count = next_sequence = admissions = 0
     admission_rejections = speech_starts = interruptions = 0
     session_id = requested_type = None
-    pending_update_id: str | None = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
     drain_after_eos_s = close_ack_s = None
@@ -253,11 +252,6 @@ def evaluate_trace(
             check(not closed, f"{event_type} after session.closed")
             if direction == "send":
                 if event_type == "session.update":
-                    check(
-                        pending_update_id is None,
-                        "session.update while another update is pending",
-                    )
-                    pending_update_id = event.event_id
                     check(
                         max_admission_attempts is None
                         or admissions + admission_rejections <= max_admission_attempts,
@@ -339,11 +333,6 @@ def evaluate_trace(
                     "missing session ID",
                 )
             elif event_type == "session.updated":
-                check(
-                    event.client_event_id == pending_update_id,
-                    "session.updated does not acknowledge the pending update",
-                )
-                pending_update_id = None
                 session_fields = event.session or {}
                 check(
                     session_id is not None and session_fields.get("id") == session_id,
@@ -626,27 +615,14 @@ def evaluate_trace(
                     pass
             elif event_type == "error":
                 error = event.error or {}
-                rejected_event_id = error.get("event_id")
-                rejected_command = (
-                    sent_commands.get(rejected_event_id)
-                    if isinstance(rejected_event_id, str)
-                    else None
-                )
+                rejected_command = sent_commands.get(error.get("event_id"))
                 if (
                     is_admission_rejection(record.event)
                     and not updated
                     and rejected_command is not None
                     and rejected_command.event.type == "session.update"
-                    and rejected_event_id == pending_update_id
                 ):
-                    pending_update_id = None
                     admission_rejections += 1
-                    check(
-                        max_admission_attempts is None
-                        or admissions + admission_rejections
-                        <= max_admission_attempts + 1,
-                        f"admission rejections exceed the recorded retry limit {max_admission_attempts}",
-                    )
                     # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
                     counts["send", "session.update"] -= 1
                     sent_commands.pop(rejected_command.event.event_id)

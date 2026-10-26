@@ -327,7 +327,8 @@ def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> N
     assert level["sessions_failed"] == 1
     assert level["sessions_rejected"] == 1
     assert level["sessions_with_admission_events"] == 3
-    assert level["admission_rejections"] == 3
+    assert level["sessions_with_admission_rejections"] == 3
+    assert "admission_rejections" not in level
     assert level["admission_denial_events"] == 6
     assert level["units_expected"] == 9
     assert level["units_missed"] == 6

@@ -321,7 +321,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         "admission_denials": sessions_with_http_denials,
         "sessions_rejected": sessions_rejected,
         "sessions_with_admission_events": sessions_with_admission_events,
-        "admission_rejections": sessions_with_admission_rejections,
+        "sessions_with_admission_rejections": sessions_with_admission_rejections,
         "http_admission_denial_events": http_admission_denial_events,
         "session_admission_rejection_events": session_admission_rejection_events,
         "admission_denial_events": http_admission_denial_events
