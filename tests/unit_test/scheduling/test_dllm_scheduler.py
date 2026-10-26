@@ -523,15 +523,14 @@ def run_tp_abort_rank(rank: int, rendezvous: str, stop_follower_early: bool) -> 
         scheduler.uncond_rids = set(group_ids[1:])
         scheduler.request_builder = lambda rid: SimpleNamespace(req=ReqDouble(rid=rid))
         released: list[str] = []
-        scheduler.tp_worker = SimpleNamespace(
-            model_runner=SimpleNamespace(
-                tp_group=SimpleNamespace(
-                    rank=rank, ranks=[0, 1], cpu_group=dist.group.WORLD
-                ),
-            ),
+        parallel = SimpleNamespace(
+            tp_group=SimpleNamespace(
+                rank=rank, ranks=[0, 1], cpu_group=dist.group.WORLD
+            )
         )
         scheduler.tree_cache = None
         with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(dllm_scheduler_module, "get_parallel", lambda: parallel)
             patch.setattr(
                 dllm_scheduler_module,
                 "release_kv_once",

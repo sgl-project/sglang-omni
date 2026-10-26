@@ -26,9 +26,8 @@ from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_schedule
-from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.runtime_context import get_parallel, get_schedule
+from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils import broadcast_pyobj
@@ -176,7 +175,7 @@ class DllmScheduler:
         running = self.running
         if self.tp_size > 1:
             # note (Anmuliar): All ranks must cancel and stop at the same forward boundary.
-            group = self.tp_worker.model_runner.tp_group
+            group = get_parallel().tp_group
             running, aborted, messages = broadcast_pyobj(
                 [running, aborted, messages] if self.tp_rank == 0 else [],
                 group.rank,
@@ -274,8 +273,6 @@ class DllmScheduler:
             else:
                 pass
         self.staging_queue = new_staging
-
-        return True
 
         for rid in aborted:
             self.rid_to_req_data.pop(rid, None)

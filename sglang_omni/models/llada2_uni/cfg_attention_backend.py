@@ -15,13 +15,9 @@ from sglang.srt.layers.attention.flashinfer_backend import (
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
-)
-from sglang.srt.model_executor.model_runner import ModelRunner
-from sglang.srt.server_args import (
-    ATTENTION_BACKEND_CHOICES,
-    add_attention_backend_choices,
 )
 
 CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
@@ -120,6 +116,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
             not self.use_paged,
             None,
             fixed_split_size=self.prefill_split_tile_size,
+            plan=forward_batch.kv_loc_plan,
         )
 
     def init_forward_metadata(self, forward_batch: ForwardBatch) -> None:

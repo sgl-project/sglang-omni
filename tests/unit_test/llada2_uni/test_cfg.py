@@ -264,6 +264,15 @@ def test_attention_masks_local_and_cached_padding() -> None:
     assert not backend.cfg_local_left_pad_active
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
 
+    batch.batch_size = 2
+    backend.cfg_replay_batch = batch
+    backend.dllm_config = NS(block_size=4)
+    backend.prefill_cuda_graph_metadata = {2: backend.prefill_wrappers_paged}
+    backend.use_paged = False
+    backend.init_forward_metadata_out_graph(batch)
+    assert begin_forward.call_args.args[3].tolist() == [8, 2]
+    assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
+
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlashInfer requires CUDA")
