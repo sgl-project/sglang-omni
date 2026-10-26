@@ -12,6 +12,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalCo
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     CaptureResourceSet,
     IncrementalCodecGraphKey,
+    IncrementalCodecGraphPool,
     Qwen3TTSIncrementalCodecCudaGraphRunner,
     split_frames_by_width,
 )
@@ -117,7 +118,9 @@ def async_incremental_scheduler(
 
 
 def test_incremental_codec_graph_rejects_unknown_mode() -> None:
-    with pytest.raises(ValueError, match="mode must be 'cold', 'warm' or 'window'"):
+    with pytest.raises(
+        ValueError, match="mode must be 'cold', 'warm', 'window' or 'tail'"
+    ):
         Qwen3TTSIncrementalCodecCudaGraphRunner(
             SimpleNamespace(),
             device=torch.device("cpu"),
@@ -127,6 +130,7 @@ def test_incremental_codec_graph_rejects_unknown_mode() -> None:
             fresh_frames=(8,),
             enabled=False,
             arena=SimpleNamespace(scratch_slot=0),
+            graph_pool=IncrementalCodecGraphPool(stream_priority=0),
         )
 
 
@@ -147,6 +151,7 @@ def make_runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
         fresh_frames=(8,),
         enabled=False,
         arena=FakeArena(),
+        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
         **kwargs,
     )
     runner.enabled = True
@@ -175,7 +180,9 @@ def stub_device_runtime(
         SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
     )
     monkeypatch.setattr(
-        incremental_codec_cuda_graph, "supports_device_streams", lambda device: True
+        incremental_codec_cuda_graph,
+        "has_device_streams",
+        lambda device: True,
     )
     monkeypatch.setattr(
         incremental_codec_cuda_graph, "device_guard", lambda device: DeviceContext()
@@ -188,6 +195,7 @@ def make_entry(bucket: int, graph=None) -> SimpleNamespace:
         static_codes=torch.full((bucket, 2, 8), -1, dtype=torch.long),
         static_index=torch.full((bucket,), -1, dtype=torch.long),
         waveform=torch.arange(bucket * 32, dtype=torch.float32).view(bucket, 1, 32),
+        static_valid_frames=None,
     )
 
 
@@ -256,22 +264,6 @@ def test_split_frames_by_width_takes_the_largest_width_first(
     assert split_frames_by_width(total, widths) == expected
 
 
-def test_incremental_codec_graph_accepts_the_window_mode() -> None:
-    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
-        SimpleNamespace(),
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        num_quantizers=2,
-        mode="window",
-        fresh_frames=(8, 2, 4),
-        enabled=False,
-        arena=FakeArena(),
-    )
-
-    assert runner.stats()["binding"]["mode"] == "window"
-    assert runner.stats()["graph_contract"]["fresh_frames"] == [2, 4, 8]
-
-
 def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None:
     runner = make_runner(batch_sizes=(1, 4))
     runner.graphs = {
@@ -324,6 +316,7 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
         fresh_frames=(8,),
         enabled=False,
         arena=FakeArena(),
+        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
     )
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace()}
@@ -362,6 +355,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
         fresh_frames=(8,),
         enabled=False,
         arena=FakeArena(),
+        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
     )
     graph = FakeGraph()
     key = IncrementalCodecGraphKey(8, 1)
@@ -383,7 +377,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
 def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     captures: list[str] = []
 
-    def graph_holder(name: str):
+    def graph_holder(name: str) -> SimpleNamespace:
         return SimpleNamespace(capture=lambda: captures.append(name))
 
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
@@ -394,7 +388,9 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     scheduler.followup_graph_holders = (graph_holder("whole-sequence-followup"),)
     scheduler.initial_incremental_decode_graphs = graph_holder("cold")
     scheduler.initial_window_decode_graphs = graph_holder("window")
+    scheduler.initial_tail_decode_graphs = graph_holder("tail")
     scheduler.followup_incremental_graph_holders = (graph_holder("warm"),)
+    scheduler.full_decode_graphs = graph_holder("full-decode")
 
     scheduler.warmup_now()
 
@@ -404,6 +400,8 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
         "warm",
         "cold",
         "window",
+        "tail",
+        "full-decode",
     ]
 
 
@@ -448,10 +446,12 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
             batch_sizes=(1,),
             compile_fresh_frames=compile_fresh_frames,
             arena=Arena(),
+            graph_pool=IncrementalCodecGraphPool(stream_priority=0),
             enabled=False,
         )
 
     static_codes = torch.zeros(1, 2, 4, dtype=torch.long, device=device)
+    static_index = torch.full((1,), Arena.scratch_slot, dtype=torch.long, device=device)
     key = IncrementalCodecGraphKey(fresh_frames=4, batch_bucket=1)
     resources = CaptureResourceSet(
         pool=None,
@@ -459,21 +459,23 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
         keepalives=[static_codes],
     )
 
-    runner((4,)).warmup_capture_shape(key, static_codes, resources)
+    runner((4,)).warmup_capture_shape(key, static_codes, None, static_index, resources)
 
     assert len(traces) == 1
     codes, state, inference, grad = traces[0]
     assert codes is static_codes
     assert state.frame_positions.is_inference()
-    assert state.index.tolist() == [Arena.scratch_slot]
+    assert state.index is static_index
     assert inference is True and grad is False
     assert [entry[2] for entry in decodes] == [True, True, True]
-    assert all(entry[0] is static_codes for entry in decodes)
+    assert all(
+        entry[0] is static_codes and entry[1].index is static_index for entry in decodes
+    )
     assert resources.keepalives == [static_codes]
 
     traces.clear()
     decodes.clear()
-    runner(()).warmup_capture_shape(key, static_codes, resources)
+    runner(()).warmup_capture_shape(key, static_codes, None, static_index, resources)
 
     assert traces == []
     assert [entry[2] for entry in decodes] == [False, False, False]

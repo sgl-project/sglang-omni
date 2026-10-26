@@ -15,7 +15,12 @@ from typing import Literal, Protocol, TypedDict
 
 import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
-from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+
+try:
+    from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+except ImportError:
+    # note (cocoa): NPU stacks on PyTorch 2.10 do not expose XPU graph types.
+    XpuGraphPoolHandle = tuple[int, int]
 
 
 class CudaCaptureKwargs(TypedDict, total=False):
@@ -122,7 +127,11 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        with torch.npu.graph(npu_graph=graph, **kwargs):
+        capture = torch.npu.graph(npu_graph=graph, **kwargs)
+        with ExitStack() as stack:
+            # note (cocoa): NPU capture caches tensors updated outside inference mode.
+            with torch.inference_mode(False):
+                stack.enter_context(capture)
             yield graph
 
 

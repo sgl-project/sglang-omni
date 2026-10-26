@@ -1,4 +1,4 @@
-// Protocol state for one native full-duplex realtime session; no DOM, no audio.
+// Protocol state for one realtime session (native full duplex or turn based); no DOM, no audio.
 // app.js wires it to the page; the Node tests drive it with a fake socket.
 
 // The server grants the input rate in session.updated; this is only the fallback.
@@ -37,13 +37,15 @@ export function base64ToBytes(encoded) {
 
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
-  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...).
-  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, listeners = {} }) {
+  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...);
+  // turnDetection as session.audio.input.turn_detection.
+  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
     this.transport = transport;
     this.now = now;
     this.outputModalities = outputModalities;
     this.instructions = instructions;
     this.extension = extension;
+    this.turnDetection = turnDetection;
     this.listeners = listeners;
     this.state = "connecting";
     this.sessionId = null;
@@ -59,6 +61,9 @@ export class DuplexSession {
     this.units = [];
     this.unitAudio = new Map();
     this.responseOpen = false;
+    this.responseId = null;
+    // Turn-based servers report the user's speech from their VAD.
+    this.userSpeaking = false;
     this.transcript = "";
     this.lastLatencyMs = null;
     this.errors = [];
@@ -94,6 +99,10 @@ export class DuplexSession {
     return { sent: this.frames.length, accepted, rejected, skipped: this.framesSkipped };
   }
 
+  get turnBased() {
+    return Boolean(this.granted) && this.granted.interaction === "turn_based";
+  }
+
   get unitMs() {
     return this.granted ? this.granted.native_unit_ms : null;
   }
@@ -115,7 +124,7 @@ export class DuplexSession {
 
   emit(name, payload) {
     const listener = this.listeners[name];
-    if (listener) listener(payload);
+    if (listener) return listener(payload);
   }
 
   record(direction, event, extra = null) {
@@ -279,7 +288,7 @@ export class DuplexSession {
     return found;
   }
 
-  handle(event) {
+  async handle(event) {
     this.record("receive", event);
     const extension = event.sglang || {};
     switch (event.type) {
@@ -288,6 +297,7 @@ export class DuplexSession {
         this.state = "negotiating";
         const session = { output_modalities: this.outputModalities };
         if (this.instructions) session.instructions = this.instructions;
+        if (this.turnDetection) session.audio = { input: { turn_detection: this.turnDetection } };
         if (this.extension && Object.keys(this.extension).length) session.sglang = this.extension;
         this.send("session.update", { session });
         break;
@@ -312,7 +322,7 @@ export class DuplexSession {
           this.image = null;
           this.stopFrames();
         }
-        this.emit("granted", this.granted);
+        await this.emit("granted", this.granted);
         this.emit("image", this.image);
         break;
       }
@@ -336,15 +346,20 @@ export class DuplexSession {
         }
         break;
       }
+      case "input_audio_buffer.speech_started":
+      case "input_audio_buffer.speech_stopped":
+        this.userSpeaking = event.type === "input_audio_buffer.speech_started";
+        break;
       case "response.created":
         this.responseOpen = true;
-        this.emit("response", { open: true, id: event.response && event.response.id });
+        this.responseId = (event.response && event.response.id) || null;
+        this.emit("response", { open: true, id: this.responseId });
         break;
       case "response.output_audio.delta": {
         const bytes = base64ToBytes(event.delta || "");
         const unitId = extension.unit_id || "unknown";
         this.unitAudio.set(unitId, (this.unitAudio.get(unitId) || 0) + bytes.byteLength / 2);
-        this.emit("audio", bytes);
+        this.emit("audio", { bytes, responseId: event.response_id || this.responseId });
         break;
       }
       case "response.output_text.delta":
@@ -354,6 +369,7 @@ export class DuplexSession {
         break;
       case "response.done":
         this.responseOpen = false;
+        this.responseId = null;
         if (this.transcript && !this.transcript.endsWith("\n")) this.transcript += "\n";
         this.emit("response", { open: false, id: event.response && event.response.id, status: event.response && event.response.status });
         break;

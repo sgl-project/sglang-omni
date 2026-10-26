@@ -273,53 +273,16 @@ class CustomLLMModelManager: ObservableObject {
             VoxtLog.llmDebug(
                 "Custom LLM \(request.kind.logLabel) completed. repo=\(request.repo), outputChars=\(cleaned.count), elapsedMs=\(modelElapsedMs), totalElapsedMs=\(totalElapsedMs)"
             )
-            var diagnostics = CustomLLMRunDiagnostics(
-                repo: request.repo,
-                taskLabel: request.kind.logLabel,
+            lastRunDiagnostics = CustomLLMRequestDiagnostics.make(
+                for: request,
                 containerLoadSource: containerSnapshot.source,
-                containerLoadMs: containerSnapshot.elapsedMs,
-                setupMs: max(0, setupMs),
-                modelElapsedMs: modelElapsedMs,
-                totalElapsedMs: totalElapsedMs,
-                firstChunkMs: firstChunkLatencyMs,
-                overallFirstChunkMs: firstChunkLatencyMs.map { max(0, containerSnapshot.elapsedMs + max(0, setupMs) + $0) },
-                promptTokens: nil,
-                completionTokens: nil,
-                prefillMs: nil,
-                generationMs: nil,
-                modelOverheadMs: nil,
-                totalOverheadMs: nil
+                containerLoadMilliseconds: containerSnapshot.elapsedMs,
+                setupMilliseconds: setupMs,
+                modelElapsedMilliseconds: modelElapsedMs,
+                totalElapsedMilliseconds: totalElapsedMs,
+                firstChunkMilliseconds: firstChunkLatencyMs,
+                completionInfo: completionInfo
             )
-            if let completionInfo {
-                let firstChunkText = firstChunkLatencyMs.map(String.init) ?? "n/a"
-                let promptTPS = String(format: "%.1f", completionInfo.promptTokensPerSecond)
-                let generationTPS = String(format: "%.1f", completionInfo.tokensPerSecond)
-                let prefillMs = Int((completionInfo.promptTime * 1000).rounded())
-                let generationMs = Int((completionInfo.generateTime * 1000).rounded())
-                let modelOverheadMs = max(0, modelElapsedMs - prefillMs - generationMs)
-                let totalOverheadMs = max(0, totalElapsedMs - prefillMs - generationMs)
-                diagnostics = CustomLLMRunDiagnostics(
-                    repo: request.repo,
-                    taskLabel: request.kind.logLabel,
-                    containerLoadSource: containerSnapshot.source,
-                    containerLoadMs: containerSnapshot.elapsedMs,
-                    setupMs: max(0, setupMs),
-                    modelElapsedMs: modelElapsedMs,
-                    totalElapsedMs: totalElapsedMs,
-                    firstChunkMs: firstChunkLatencyMs,
-                    overallFirstChunkMs: firstChunkLatencyMs.map { max(0, containerSnapshot.elapsedMs + max(0, setupMs) + $0) },
-                    promptTokens: completionInfo.promptTokenCount,
-                    completionTokens: completionInfo.generationTokenCount,
-                    prefillMs: prefillMs,
-                    generationMs: generationMs,
-                    modelOverheadMs: modelOverheadMs,
-                    totalOverheadMs: totalOverheadMs
-                )
-                VoxtLog.llmDebug(
-                    "Custom LLM \(request.kind.logLabel) metrics. repo=\(request.repo), containerSource=\(containerSnapshot.source.rawValue), containerLoadMs=\(containerSnapshot.elapsedMs), setupMs=\(max(0, setupMs)), firstChunkMs=\(firstChunkText), overallFirstChunkMs=\(diagnostics.overallFirstChunkMs.map(String.init) ?? "n/a"), promptTokens=\(completionInfo.promptTokenCount), generationTokens=\(completionInfo.generationTokenCount), prefillMs=\(prefillMs), generationMs=\(generationMs), modelOverheadMs=\(modelOverheadMs), totalOverheadMs=\(totalOverheadMs), promptTPS=\(promptTPS), generationTPS=\(generationTPS), stopReason=\(completionInfo.stopReason)"
-                )
-            }
-            lastRunDiagnostics = diagnostics
             VoxtLog.llm(
                 """
                 Custom LLM \(request.kind.logLabel) output. repo=\(request.repo)
@@ -907,130 +870,57 @@ class CustomLLMModelManager: ObservableObject {
         )
         VoxtLog.modelInfo("Custom LLM download started: repo=\(context.repoID.description), files=\(context.entries.count), baseURL=\(baseURL.absoluteString)")
 
-        let totalBytes = context.totalBytes
-        let totalFiles = context.entries.count
-        var completedBytes: Int64 = 0
-
-        try Task.checkCancellation()
-        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-        for (index, entry) in context.entries.enumerated() {
-            let expectedFileBytes = max(entry.size ?? 0, 0)
-            let progress = Progress(totalUnitCount: max(expectedFileBytes, 1))
-            let fileBaseCompleted = completedBytes
-            setDownloadingState(
-                progress: min(1, Double(completedBytes) / Double(totalBytes)),
-                completed: min(completedBytes, totalBytes),
-                total: totalBytes,
-                currentFile: entry.path,
-                completedFiles: index,
-                totalFiles: totalFiles,
-                for: canonicalRepo
-            )
-
-            let destination = try CustomLLMModelStorageSupport.destinationFileURL(
-                for: entry.path,
-                under: modelDir
-            )
-            if MLXModelDownloadSupport.canReuseExistingDownload(
-                at: destination,
-                expectedSize: entry.size,
-                fileManager: .default
-            ) {
-                let delta = max(expectedFileBytes, Int64((try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
-                completedBytes += max(delta, 0)
+        return try await CustomLLMModelDownloadAttempt.run(
+            context: context,
+            baseURL: baseURL,
+            directory: modelDir,
+            userAgent: Self.hubUserAgent,
+            bearerToken: token
+        ) { event in
+            switch event {
+            case .updated(let fraction, let completedBytes, let totalBytes, let currentFile, let completedFiles, let totalFiles):
                 setDownloadingState(
-                    progress: min(1, Double(completedBytes) / Double(totalBytes)),
-                    completed: min(completedBytes, totalBytes),
+                    progress: fraction,
+                    completed: completedBytes,
                     total: totalBytes,
-                    currentFile: nil,
-                    completedFiles: index + 1,
+                    currentFile: currentFile,
+                    completedFiles: completedFiles,
                     totalFiles: totalFiles,
                     for: canonicalRepo
                 )
-                VoxtLog.modelInfo("Custom LLM download resume reused existing file: \(entry.path)", verbose: true)
-                continue
-            }
-            cancelDownloadProgressTask(for: canonicalRepo)
-            downloadProgressTasksByRepo[canonicalRepo] = Task { [weak self] in
-                let startTime = Date()
-                while !Task.isCancelled {
-                    await MainActor.run {
-                        guard !Task.isCancelled, let self else { return }
-                        let effectiveCurrentFileCompleted = ModelDownloadProgress.inFlightBytes(
-                            progress: progress,
-                            expectedFileBytes: expectedFileBytes,
-                            startTime: startTime
-                        )
-                        let aggregateCompleted = min(
-                            fileBaseCompleted + effectiveCurrentFileCompleted,
-                            totalBytes
-                        )
-                        self.setDownloadingState(
-                            progress: min(1, Double(aggregateCompleted) / Double(totalBytes)),
-                            completed: aggregateCompleted,
-                            total: totalBytes,
-                            currentFile: entry.path,
-                            completedFiles: index,
-                            totalFiles: totalFiles,
-                            for: canonicalRepo
-                        )
+            case .transferStarted(let progress, let expectedFileBytes, let fileBaseCompleted, let totalBytes, let currentFile, let completedFiles, let totalFiles):
+                cancelDownloadProgressTask(for: canonicalRepo)
+                downloadProgressTasksByRepo[canonicalRepo] = Task { [weak self] in
+                    let startTime = Date()
+                    while !Task.isCancelled {
+                        await MainActor.run {
+                            guard !Task.isCancelled, let self else { return }
+                            let effectiveCurrentFileCompleted = ModelDownloadProgress.inFlightBytes(
+                                progress: progress,
+                                expectedFileBytes: expectedFileBytes,
+                                startTime: startTime
+                            )
+                            let aggregateCompleted = min(
+                                fileBaseCompleted + effectiveCurrentFileCompleted,
+                                totalBytes
+                            )
+                            self.setDownloadingState(
+                                progress: min(1, Double(aggregateCompleted) / Double(totalBytes)),
+                                completed: aggregateCompleted,
+                                total: totalBytes,
+                                currentFile: currentFile,
+                                completedFiles: completedFiles,
+                                totalFiles: totalFiles,
+                                for: canonicalRepo
+                            )
+                        }
+                        try? await Task.sleep(for: .milliseconds(200))
                     }
-                    try? await Task.sleep(for: .milliseconds(200))
                 }
+            case .transferFinished:
+                cancelDownloadProgressTask(for: canonicalRepo)
             }
-
-            try await downloadEntryWithRetry(
-                context: context,
-                entryPath: entry.path,
-                destination: destination,
-                progress: progress,
-                baseURL: baseURL,
-                bearerToken: token
-            )
-            cancelDownloadProgressTask(for: canonicalRepo)
-
-            let delta = max(expectedFileBytes, max(progress.completedUnitCount, 0))
-            completedBytes += max(delta, 0)
-            setDownloadingState(
-                progress: min(1, Double(completedBytes) / Double(totalBytes)),
-                completed: min(completedBytes, totalBytes),
-                total: totalBytes,
-                currentFile: nil,
-                completedFiles: index + 1,
-                totalFiles: totalFiles,
-                for: canonicalRepo
-            )
         }
-
-        return modelDir
-    }
-
-    private func downloadEntryWithRetry(
-        context: CustomLLMModelDownloadSupport.DownloadContext,
-        entryPath: String,
-        destination: URL,
-        progress: Progress,
-        baseURL: URL,
-        bearerToken: String?
-    ) async throws {
-        let remoteURL = try MLXModelDownloadSupport.fileResolveURL(
-            baseURL: baseURL,
-            repo: context.repoID.description,
-            path: entryPath
-        )
-        _ = try await ResumableModelDownloadSupport.download(
-            ResumableDownloadDescriptor(
-                sourceURL: remoteURL,
-                destinationURL: destination,
-                relativePath: entryPath,
-                expectedSize: progress.totalUnitCount > 1 ? progress.totalUnitCount : nil,
-                userAgent: Self.hubUserAgent,
-                bearerToken: bearerToken,
-                disableProxy: MLXModelDownloadSupport.isMirrorHost(baseURL)
-            ),
-            progress: progress
-        )
     }
 
     @discardableResult

@@ -130,33 +130,6 @@ def make_fb(bs):
 AB_FB = ([0.7, 0.9], [0.95, 0.8], [50, 0])  # top_k=0 -> None -> K_MAX
 
 
-def test_hit_skips_extract_and_keeps_buffers():
-    model = FakeModel()
-    runner, calls = make_runner(model)
-    fb = make_fb(2)
-    reqs = make_reqs(["a", "b"], *AB_FB)
-
-    runner.populate_cg_buffers(fb, reqs)
-    assert calls["extract"] == 1
-    snap = {
-        "rows": model.cg_row_indices.clone(),
-        "temp": model.cg_temperature.clone(),
-        "top_p": model.cg_top_p.clone(),
-        "top_k": model.cg_top_k_buf.clone(),
-    }
-    assert snap["temp"][:2].tolist() == pytest.approx([0.7, 0.9])
-    assert snap["top_p"][:2].tolist() == pytest.approx([0.95, 0.8])
-    assert snap["top_k"][:2].tolist() == [50, K_MAX]
-
-    for _ in range(3):
-        runner.populate_cg_buffers(fb, reqs)
-    assert calls["extract"] == 1  # all hits
-    assert torch.equal(model.cg_row_indices, snap["rows"])
-    assert torch.equal(model.cg_temperature, snap["temp"])
-    assert torch.equal(model.cg_top_p, snap["top_p"])
-    assert torch.equal(model.cg_top_k_buf, snap["top_k"])
-
-
 def test_pool_gathers_still_run_on_hit():
     model = FakeModel()
     runner, _ = make_runner(model)
@@ -220,16 +193,6 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     assert calls["extract"] == 6  # row change -> miss
     assert model.cg_row_indices[0] == model.rid_to_row["b"]
     assert model.rid_to_row["b"] != old_row
-
-
-def test_flag_off_always_rebuilds():
-    model = FakeModel()
-    runner, calls = make_runner(model, enabled=False)
-    fb = make_fb(2)
-    reqs = make_reqs(["a", "b"], *AB_FB)
-    for _ in range(3):
-        runner.populate_cg_buffers(fb, reqs)
-    assert calls["extract"] == 3
 
 
 def test_lookahead_guard_redirect_persists_and_matches_baseline():

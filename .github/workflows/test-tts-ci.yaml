@@ -4,25 +4,9 @@ on:
   workflow_call:
     inputs:
       tts_ci_model:
-        description: TTS CI model preset selected by the parent pick-tts-model job.
+        description: TTS CI model preset selected by the parent omni-ci preflight.
         type: string
         default: higgs
-      tts_mps_config:
-        description: >-
-          MPS-DP config for stage 5. Empty skips that stage.
-        type: string
-        required: false
-        default: ""
-      tts_mps_model:
-        description: >-
-          Model the stage 5 pool runs. Differs from tts_ci_model when the
-          selected model is gated as a single instance and borrows a pool.
-        type: string
-        required: false
-        default: ""
-      exact_sha:
-        type: string
-        required: true
       omni_ci_home:
         description: PR-scoped CI home from the parent omni-ci workflow.
         type: string
@@ -39,9 +23,7 @@ env:
 # DAG:
 #   stage-1-non-streaming -> stage-2-streaming -> stage-3-consistency
 #     -> stage-4-serving
-# Note (Jiaxin Deng): Stage 5 is a reusable MPS validation boundary after the
-# canonical DAG, so future model families can join it without perturbing Stage 1-4.
-#   stage-4-serving -> stage-5-mps
+# The MPS validation runs separately in test-mps-ci.yaml.
 
 jobs:
   stage-1-non-streaming:
@@ -49,7 +31,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -118,7 +100,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -176,7 +158,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -241,7 +223,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -296,7 +278,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -346,131 +328,3 @@ jobs:
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-if-no-files-found: error
           summary-only: "true"
-
-  stage-5-mps:
-    name: stage 5 - MPS
-    needs: stage-4-serving
-    # Note (Jiaxin Deng): the pool model is resolved in preflight and can
-    # differ from the rotation model, so every stage 5 reference below reads
-    # tts_mps_model rather than tts_ci_model.
-    if: always() && !cancelled() && inputs.tts_mps_config != ''
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 25
-    container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
-      options: >-
-        --rm
-        --cap-add SYS_NICE
-        -e NVIDIA_VISIBLE_DEVICES
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    env:
-      TTS_MPS_OUTPUT_ROOT: >-
-        ${{ inputs.omni_ci_home != ''
-            && inputs.omni_ci_home
-            || format('/data/omni-ci/run-{0}', github.run_id) }}/tts-stage-results/mps-nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-      TTS_MPS_STATE_ROOT: >-
-        ${{ inputs.omni_ci_home != ''
-            && inputs.omni_ci_home
-            || format('/data/omni-ci/run-{0}', github.run_id) }}/tts-mps-state
-      TTS_MPS_RUN_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
-      TTS_MPS_GPU_ID: "0"
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.exact_sha }}
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Prepare exact-sha Rust router
-        shell: bash
-        run: |
-          binary="$(bash .github/scripts/prepare_rust_router.sh build)"
-          echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
-
-      - name: Prepare speaker similarity assets
-        shell: bash
-        run: |
-          source omni/bin/activate
-          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-
-      - name: Initialize TTS MPS evidence
-        shell: bash
-        run: |
-          source omni/bin/activate
-          python -m tests.utils.tts_mps_runtime initialize \
-            --summary "${TTS_MPS_OUTPUT_ROOT}/tts_mps_summary.json" \
-            --exact-sha "${{ inputs.exact_sha }}" \
-            --run-id "${TTS_MPS_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --selected-model "${{ inputs.tts_mps_model }}"
-
-      - name: Run TTS MPS non-streaming validation
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          "${OMNI_CI_PYTHON}" -m pytest tests/test_ci/test_tts_mps_dp2.py -v -s -x
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-          TTS_CI_MODEL: ${{ inputs.tts_mps_model }}
-          TTS_MPS_CONFIG: ${{ inputs.tts_mps_config }}
-          TTS_MPS_EXACT_SHA: ${{ inputs.exact_sha }}
-          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-
-      - name: Finalize TTS MPS cleanup evidence
-        if: always()
-        shell: bash
-        run: |
-          source omni/bin/activate
-          python -m tests.utils.tts_mps_runtime finalize \
-            --summary "${TTS_MPS_OUTPUT_ROOT}/tts_mps_summary.json" \
-            --repo "${GITHUB_WORKSPACE}" \
-            --output "${TTS_MPS_OUTPUT_ROOT}" \
-            --state-root "${TTS_MPS_STATE_ROOT}" \
-            --run-id "${TTS_MPS_RUN_ID}" \
-            --config "${{ inputs.tts_mps_config }}" \
-            --gpu-id "${TTS_MPS_GPU_ID}"
-
-      - name: Post-stage cleanup fallback
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: TTS MPS non-streaming validation
-          artifact-search-root: ${{ env.TTS_MPS_OUTPUT_ROOT }}
-          summary-only: "true"
-
-      - name: Upload TTS MPS evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tts-stage-mps-nonstream-evidence
-          # Evidence only: the canonical directory also holds 1088 generated
-          # wavs, which the other TTS stages likewise never upload.
-          path: |
-            ${{ env.TTS_MPS_OUTPUT_ROOT }}/*.json
-            ${{ env.TTS_MPS_OUTPUT_ROOT }}/*.jsonl
-            ${{ env.TTS_MPS_OUTPUT_ROOT }}/canonical/*.json
-            ${{ env.TTS_MPS_OUTPUT_ROOT }}/overlap-canary/*.json
-            ${{ env.TTS_MPS_OUTPUT_ROOT }}/raw/**
-          if-no-files-found: error
-          retention-days: 7
-          overwrite: true
-
-      - name: Remove TTS MPS run outputs
-        if: always()
-        shell: bash
-        run: |
-          # Evidence is uploaded above; leaving the generated audio behind
-          # accumulates one attempt-sized copy per rerun in the CI home.
-          rm -rf "${TTS_MPS_OUTPUT_ROOT}" "${TTS_MPS_STATE_ROOT}"

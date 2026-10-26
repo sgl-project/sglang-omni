@@ -366,6 +366,18 @@ class ShutdownMessage:
 
 
 @dataclass
+class FreezeGCMessage:
+    """Freeze the stage process's heap once the server is warmed up."""
+
+    def to_dict(self) -> dict[str, str]:
+        return {"type": "freeze_gc"}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "FreezeGCMessage":
+        return cls()
+
+
+@dataclass
 class ProfilerStartMessage:
     """Profiler start for a stage."""
 
@@ -449,6 +461,7 @@ def parse_message(
     | StreamMessage
     | SubmitMessage
     | ShutdownMessage
+    | FreezeGCMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
 ):
@@ -472,6 +485,8 @@ def parse_message(
         return SubmitMessage.from_dict(d)
     elif msg_type == "shutdown":
         return ShutdownMessage.from_dict(d)
+    elif msg_type == "freeze_gc":
+        return FreezeGCMessage.from_dict(d)
     elif msg_type == "profiler_start":
         return ProfilerStartMessage.from_dict(d)
     elif msg_type == "profiler_stop":

@@ -194,9 +194,7 @@ extension AppDelegate {
 
     func setupEscapeKeyMonitoring() {
         refreshOverlayShortcutEventGate()
-        // Global NSEvent monitors require Input Monitoring on some macOS
-        // versions. Global Escape is handled by HotkeyManager's Accessibility-
-        // backed event tap; keep only the local monitor as an in-app fallback.
+        // Global Escape uses HotkeyManager's validated event tap; this monitor covers in-app events.
         let overlayShortcutEventGate = self.overlayShortcutEventGate
         localEscapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard overlayShortcutEventGate.shouldDispatch(event) else { return event }

@@ -30,7 +30,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTe
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
-from sglang.srt.runtime_context import max_prefill_buffer_tokens
+from sglang.srt.runtime_context import get_exec, max_prefill_buffer_tokens
 from sglang.srt.utils import add_prefix, logger
 from transformers import PretrainedConfig
 
@@ -38,6 +38,10 @@ from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
     install_thinker_fused_rope,
 )
 from sglang_omni.quantization import get_weight_preprocessor
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 
 
 def config_uses_mrope(config: PretrainedConfig) -> bool:
@@ -146,6 +150,24 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         # Existing Qwen thinker runner/hook code expects model.thinker.model.
         return self
 
+    def set_talker_layers_to_capture(self) -> None:
+        """Capture, in every forward and every graph, the hidden state HF hands the talker: the
+        residual entering its accept layer. Called before graph capture."""
+        accept_hidden_layer = self.root_config.talker_config.accept_hidden_layer
+        if not 0 <= accept_hidden_layer <= self.config.num_hidden_layers:
+            raise ValueError(
+                f"Talker accept_hidden_layer {accept_hidden_layer} is outside "
+                f"[0, {self.config.num_hidden_layers}]"
+            )
+        else:
+            pass
+        # Note (wenyao): the final layer uses normalized output; auxiliary states hold layer inputs.
+        self.model.layers_to_capture = (
+            [accept_hidden_layer]
+            if accept_hidden_layer < self.config.num_hidden_layers
+            else []
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -191,17 +213,33 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 marked_live_rows.is_live_row = None
             else:
                 pass
+        aux_hidden_states = None
+        if isinstance(hidden_states, tuple):
+            hidden_states, aux_hidden_states = hidden_states
+        else:
+            pass
         return self.logits_processor(
             input_ids,
             hidden_states,
             self.lm_head,
             forward_batch,
+            aux_hidden_states=aux_hidden_states,
         )
 
     @torch.no_grad()
     def precompile_kernels_after_loading(self) -> None:
-        """Run one MoE layer on zero rows once per fused MoE kernel variant that a forward
-        up to the prefill ceiling reaches, so no request waits for one to compile."""
+        """Load FlashInfer's sampling module when it draws the unseeded requests, and run
+        one MoE layer on zero rows once per fused MoE kernel variant that a forward up to
+        the prefill ceiling reaches, so no request waits for either."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.lm_head.weight.device,
+                vocab_size=self.config.vocab_size,
+                should_load_flashinfer_sampling=(
+                    get_exec().kernel.sampling_backend == "flashinfer"
+                ),
+            )
+        )
         moe = next(
             layer.mlp
             for layer in self.model.layers

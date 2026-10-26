@@ -151,7 +151,7 @@ def build_sglang_thinker_request(
     max_new_tokens = (
         1 if known_tts_output_ids is not None else params.get("max_new_tokens", 2048)
     )
-    temperature = params.get("temperature", 0.0)
+    temperature = params.get("temperature", 1.0)
     thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
     length_penalty = thinker_params.get("length_penalty", 1.0)
     if not 0.0 < length_penalty:

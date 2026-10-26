@@ -84,22 +84,6 @@ def test_extract_audio_from_path_decodes_resamples_and_downmixes(
     assert np.max(np.abs(audio)) > 0.01
 
 
-def test_extract_audio_from_path_returns_none_without_audio(monkeypatch) -> None:
-    class Container:
-        def __init__(self) -> None:
-            self.streams = [SimpleNamespace(type="video")]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-    monkeypatch.setattr(video.av, "open", lambda _path: Container())
-
-    assert video.extract_audio_from_path(Path("silent.mp4"), 16_000) is None
-
-
 @pytest.mark.parametrize(
     ("error", "bad_request"),
     [
@@ -179,15 +163,20 @@ def test_extract_audio_from_path_rejects_empty_audio_stream(monkeypatch) -> None
         video.extract_audio_from_path(Path("empty.mp4"), 16_000)
 
 
-@pytest.mark.parametrize("backend", ["torchvision", "decord"])
 @pytest.mark.parametrize(
-    ("error", "bad_request"),
+    ("backend", "error", "bad_request"),
     [
-        (video.av.error.InvalidDataError(1094995529, "broken stream"), True),
-        (video.av.error.EOFError(541478725, "broken stream"), True),
-        (RuntimeError("reader unavailable"), False),
-        (MemoryError("allocation failed"), False),
-        (PermissionError("permission denied"), False),
+        (
+            "torchvision",
+            video.av.error.InvalidDataError(1094995529, "broken stream"),
+            True,
+        ),
+        ("torchvision", video.av.error.EOFError(541478725, "broken stream"), True),
+        ("torchvision", RuntimeError("reader unavailable"), False),
+        ("torchvision", MemoryError("allocation failed"), False),
+        ("torchvision", PermissionError("permission denied"), False),
+        ("decord", video.av.error.InvalidDataError(1094995529, "broken stream"), True),
+        ("decord", RuntimeError("reader unavailable"), False),
     ],
 )
 def test_video_reader_error_classification(

@@ -15,8 +15,12 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    session_projected_prefill_rows,
+)
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     SchedulerOutput,
@@ -33,7 +37,6 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
-    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 else:
     pass
 
@@ -232,7 +235,7 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         self.put_code_messages(code_messages)
 
     def put_code_messages(self, code_messages: list[OutgoingMessage]) -> None:
-        """Send the messages with one ready event recorded after all their codes.
+        """Send the messages in one put with one ready event for all their codes.
 
         The event is recorded once every snapshot and stack the messages carry
         is enqueued, and before any message is visible to the consumer. Only a
@@ -252,8 +255,7 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
                 message.metadata["codes_ready_event"] = codes_ready_event
         else:
             pass
-        for message in code_messages:
-            self.outbox.put(message)
+        put_messages(self.outbox, code_messages)
 
     @staticmethod
     def is_streaming(data: SGLangARRequestData) -> bool:
@@ -369,16 +371,31 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
             pass
 
         parts: list[torch.Tensor] = []
-        for sched_req in requests:
-            req = sched_req.data.req
-            prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_range.length)
-            part = self.projected_prefill_slice(
-                sched_req=sched_req,
-                prefix_len=prefix_len,
-                extend_len=extend_len,
-                device=forward_batch.input_ids.device,
-            )
+        # note (ratish): a row's prefix and extend length live on the batch; a decode
+        # tail mixed into a prefill batch keeps Req.prefix_len at its last prefill.
+        for sched_req, prefix_len, extend_len in zip(
+            requests,
+            forward_batch.extend_prefix_lens_cpu,
+            forward_batch.extend_seq_lens_cpu,
+            strict=True,
+        ):
+            if sched_req.data.session_embedding_spans:
+                # Note (Junnan Li): A session unit's projected prompt rides the native request as embedding spans.
+                part = session_projected_prefill_rows(
+                    sched_req.data,
+                    self.model.get_input_embeddings(),
+                    device=forward_batch.input_ids.device,
+                    dtype=self.model.activation_dtype,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                )
+            else:
+                part = self.projected_prefill_slice(
+                    sched_req=sched_req,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                    device=forward_batch.input_ids.device,
+                )
             if part is not None and part.shape[0] > 0:
                 parts.append(part)
             else:

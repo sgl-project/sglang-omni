@@ -140,13 +140,17 @@ enum RecordingStartPlanner {
         isSelectedModelDownloaded: Bool,
         state: MLXModelManager.ModelState
     ) -> DownloadableModelAvailability {
-        availability(
-            selectedIdentifier: selectedRepo,
-            activeIdentifier: activeDownloadRepo,
-            isSelectedModelDownloaded: isSelectedModelDownloaded,
-            canonicalize: MLXModelManager.canonicalModelRepo,
-            state: state
-        )
+        if let selectedRepo, let reason = OmniASRBackend.unavailabilityReason(for: selectedRepo) {
+            return .unavailable(reason)
+        } else {
+            return availability(
+                selectedIdentifier: selectedRepo,
+                activeIdentifier: activeDownloadRepo,
+                isSelectedModelDownloaded: isSelectedModelDownloaded,
+                canonicalize: MLXModelManager.canonicalModelRepo,
+                state: state
+            )
+        }
     }
 
 

@@ -13,18 +13,10 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
 )
-from sglang_omni.models.minicpm_o.duplex_sampler import (
-    build_forbidden_token_index,
-    duplex_sample,
-)
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
-from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
-    MiniCPMOThinkerModelRunner,
-)
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
-from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
@@ -104,57 +96,6 @@ def unit_payload(data: PerceptionStepPlan | None = None) -> StagePayload:
     return StagePayload(
         "unit", OmniRequest(None, params=MiniCPMODuplexSampling().model_dump()), data
     )
-
-
-@pytest.mark.parametrize(
-    ("use_runner", "max_new_tokens", "generation_step", "closes"),
-    [
-        (True, 20, 0, False),
-        (False, 20, 0, False),
-        (False, 5, 4, True),
-        (False, 6, 4, False),
-    ],
-)
-def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
-    use_runner: bool, max_new_tokens: int, generation_step: int, closes: bool
-) -> None:
-    """Both init paths keep the checkpoint mask; the token budget closes the chunk."""
-    tokenizer = Mock(unk_token_id=0, bad_token_ids=[7, 8, 94])
-    tokenizer.convert_tokens_to_ids.side_effect = dict(
-        zip(REQUIRED_SPECIAL_TOKENS, range(100, 116))
-    ).__getitem__
-    if use_runner:
-        runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
-        runner.special_tokens = None
-        runner.eos_token_ids = []
-        special = runner.resolve_special_tokens(
-            SimpleNamespace(req=Mock(tokenizer=tokenizer))
-        )
-    else:
-        special = ThinkerAdapter(tokenizer, 128).special
-    logits = torch.full((128,), -torch.inf)
-    logits[7] = 100.0
-    logits[special.tts_pad] = 99.0
-    logits[42] = 0.0
-    state = MiniCPMOThinkerSessionState(
-        sampling=MiniCPMODuplexSampling(
-            greedy=True,
-            top_k=1,
-            repetition_penalty=1.0,
-            max_new_tokens_per_unit=max_new_tokens,
-        )
-    )
-    token_id = duplex_sample(
-        logits,
-        state,
-        special_tokens=special,
-        forbidden_token_index=build_forbidden_token_index(
-            special, 128, torch.device("cpu")
-        ),
-        generation_step=generation_step,
-        is_listen_forced=False,
-    )
-    assert token_id == (special.chunk_eos if closes else 42)
 
 
 @pytest.mark.parametrize(
@@ -330,6 +271,7 @@ def test_image_audio_commit_atomically(
         origin_input_ids=[7] * 12 + list(request.req.origin_input_ids), to_finish=None
     )
     bridge = ARSessionBridge.__new__(ARSessionBridge)
+    bridge.adapter = adapter
     bridge.drain = Mock()
     bridge.sessions = {IDENTITY.id: session}
     bridge.units_by_request_id = {"unit": unit}

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.5 discovery, audio normalization and the session runner."""
 
 from __future__ import annotations
 
@@ -6,6 +7,8 @@ import asyncio
 import base64
 import itertools
 import json
+import time
+from http import HTTPStatus
 from pathlib import Path
 
 import numpy as np
@@ -14,65 +17,21 @@ import soundfile
 import websockets
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
+from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
-from benchmarks.duplex.client import PACKET_MS
+from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
-from tests.unit_test.benchmarks.test_duplex_client import FIXTURE_PCM, DuplexPeer
-
-SERVER_REVISION = "e1b9c9c674b1187918593257906ee6e8cc6a13da"
-SERVER = {
-    "revision": SERVER_REVISION,
-    "revision_source": "operator_supplied",
-    "model": "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B",
-}
-FIXTURE_SAMPLES = np.frombuffer(FIXTURE_PCM, dtype="<i2")
-EXTRA_TEXT = {
-    "user_interruption": {"current_turn_text": "wait, actually"},
-    "user_backchannel": {"backchannel_text": "yeah"},
-    "talking_to_other": {"current_turn_text": "one second"},
-    "background_speech": {"background_text": "it is raining"},
-}
-
-
-def write_sample(
-    root: Path,
-    subset: str,
-    name: str,
-    *,
-    metadata: dict[str, JsonValue] | None = None,
-) -> Path:
-    sample_dir = root / subset / name
-    sample_dir.mkdir(parents=True)
-    for filename in ("input.wav", "clean_input.wav"):
-        soundfile.write(
-            str(sample_dir / filename), FIXTURE_SAMPLES, 16000, subtype="PCM_16"
-        )
-    metadata = {
-        "context_text": "hello",
-        **EXTRA_TEXT[subset],
-        "timestamps": [0.1, 0.3],
-        **(metadata or {}),
-    }
-    (sample_dir / "metadata.json").write_text(json.dumps(metadata))
-    for filename in ("input.json", "clean_input.json"):
-        (sample_dir / filename).write_text(
-            json.dumps(
-                {
-                    "text": "hello",
-                    "chunks": [{"text": "hello", "timestamp": [0.0, 0.1]}],
-                }
-            )
-        )
-    return sample_dir
-
-
-def write_dataset(root: Path, names: tuple[str, ...] = ("1",)) -> None:
-    for subset in SUBSETS:
-        for name in names:
-            write_sample(root, subset, name)
+from tests.unit_test.fixtures.duplex_fakes import (
+    FIXTURE_PCM,
+    FIXTURE_SAMPLES,
+    SERVER,
+    DuplexPeer,
+    write_dataset,
+    write_sample,
+)
 
 
 def test_discovery_covers_four_subsets_deterministically(tmp_path: Path) -> None:
@@ -592,6 +551,234 @@ def test_run_samples_rejects_timeouts_past_the_session_deadline(
                 server=SERVER,
                 dataset_revision="fixture",
                 timeout_s=230.5,
+            )
+        )
+    assert not (tmp_path / "never").exists()
+
+
+# note (wenyao): the real server counts a closing session until its teardown ends.
+SESSION_TEARDOWN_HOLD_S = 1.5
+
+
+class CappedPeerServer:
+    """Fake native peers behind a session cap, counting what is open at once."""
+
+    def __init__(
+        self,
+        capacity: int | None = None,
+        hold_s: float = 0.0,
+        initial_denials: int = 0,
+    ) -> None:
+        self.capacity = capacity
+        self.hold_s = hold_s
+        self.initial_denials = initial_denials
+        self.open_count = 0
+        self.peak_open = 0
+        self.denials = 0
+
+    def process_request(
+        self, connection: ServerConnection, request: Request
+    ) -> Response | None:
+        if self.denials < self.initial_denials or (
+            self.capacity is not None and self.open_count >= self.capacity
+        ):
+            self.denials += 1
+            return connection.respond(
+                HTTPStatus.SERVICE_UNAVAILABLE, "connection capacity exhausted\n"
+            )
+        else:
+            self.open_count += 1
+            self.peak_open = max(self.peak_open, self.open_count)
+            return None
+
+    async def handler(self, websocket: ServerConnection) -> None:
+        try:
+            await DuplexPeer().handler(websocket)
+        finally:
+            await asyncio.sleep(self.hold_s)
+            self.open_count -= 1
+
+    async def record(self, dataset: Path, output: Path, **kwargs) -> dict:
+        async with websockets.serve(
+            self.handler, "127.0.0.1", 0, process_request=self.process_request
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await run_samples(
+                dataset,
+                url=f"ws://127.0.0.1:{port}/v1/realtime",
+                output=output,
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=5.0,
+                **kwargs,
+            )
+
+
+def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer()
+
+    result = asyncio.run(peer_server.record(dataset, output, concurrency=2))
+
+    assert peer_server.peak_open == 2 and peer_server.denials == 0
+    assert result["summary"]["variants"]["pass"] == 8
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["config"]["concurrency"] == 2
+    sessions = [
+        variant["session"]
+        for sample in result["samples"]
+        for variant in sample["variants"].values()
+    ]
+    assert {session["open_sessions_at_start"] for session in sessions} == {0, 1}
+    assert all(session["finished_s"] > session["started_s"] for session in sessions)
+    load = result["load"]
+    assert load["concurrency"] == 2
+    assert load["initial_delay_s"]["count"] == 8
+    assert load["initial_delay_s"]["p50"] <= load["initial_delay_s"]["p90"]
+    assert load["initial_delay_s"]["p90"] <= load["initial_delay_s"]["max"]
+    assert load["input_pacing_violations"] == 0
+    assert load["max_input_pacing_deviation_s"] <= PACKET_MS / 1000
+    assert load["variants_with_admission_denials"] == 0
+    assert load["variants_passed"] == 8
+    assert load["recording_wall_s"] == max(
+        session["finished_s"] for session in sessions
+    )
+    assert load["recording_wall_s"] < 4.5
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+def test_slow_report_write_does_not_delay_another_sessions_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    sample_directory = write_sample(dataset, "user_interruption", "1")
+    soundfile.write(
+        str(sample_directory / "clean_input.wav"),
+        np.tile(FIXTURE_SAMPLES, 2),
+        16000,
+        subtype="PCM_16",
+    )
+    write_json = v15_runner.write_json
+
+    def slow_report_write(path: Path, value: JsonValue) -> None:
+        if path.name == "report.json":
+            time.sleep(0.25)
+        else:
+            pass
+        write_json(path, value)
+
+    monkeypatch.setattr(v15_runner, "write_json", slow_report_write)
+    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+
+    assert result["load"]["input_pacing_violations"] == 0
+    assert result["summary"]["variants"]["pass"] == 2
+    for variant in result["samples"][0]["variants"].values():
+        report = json.loads((output / variant["directory"] / "report.json").read_text())
+        assert report["cases"][0]["status"] == "pass"
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
+    tmp_path: Path,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer(capacity=1, hold_s=SESSION_TEARDOWN_HOLD_S)
+
+    result = asyncio.run(
+        peer_server.record(
+            dataset,
+            output,
+            sample_ids=["user_interruption/1", "user_backchannel/1"],
+            concurrency=2,
+        )
+    )
+
+    assert result["status"] == "complete"
+    assert peer_server.peak_open == 1 and peer_server.denials >= 4
+    variants = [
+        variant
+        for sample in result["samples"]
+        for variant in sample["variants"].values()
+    ]
+    denied = [variant for variant in variants if variant["status"] == "fail"]
+    assert denied and all(
+        any("admission denied" in violation for violation in variant["violations"])
+        and variant["output"]["admission_denials"] == ADMISSION_RETRIES
+        for variant in denied
+    )
+    assert all(
+        variant["status"] == "pass" for variant in variants if variant not in denied
+    )
+    assert result["load"]["variants_with_admission_denials"] == len(denied)
+    assert result["load"]["variants_passed"] == len(variants) - len(denied)
+    assert result["load"]["input_pacing_violations"] == 0
+
+
+def test_load_counts_a_recovered_variant_once_after_multiple_denials(
+    tmp_path: Path,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peer_server = CappedPeerServer(initial_denials=2)
+
+    result = asyncio.run(
+        peer_server.record(dataset, output, sample_ids=["user_interruption/1"])
+    )
+
+    variants = result["samples"][0]["variants"].values()
+    assert [variant["output"]["admission_denials"] for variant in variants] == [2, 0]
+    assert all(variant["status"] == "pass" for variant in variants)
+    assert result["load"]["variants_with_admission_denials"] == 1
+    assert result["load"]["variants_passed"] == 2
+    assert result["load"]["input_pacing_violations"] == 0
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+@pytest.mark.parametrize(
+    "max_deviation_s,within_tolerance,expected_violations",
+    [(None, False, 0), (0.0, True, 0), (0.1, False, 1)],
+)
+def test_load_counts_only_measured_pacing_violations(
+    max_deviation_s: float | None,
+    within_tolerance: bool,
+    expected_violations: int,
+) -> None:
+    samples = [
+        {
+            "variants": {
+                "overlap": {
+                    "input_timing": {
+                        "max_abs_deviation_s": max_deviation_s,
+                        "within_tolerance": within_tolerance,
+                    },
+                    "output": None,
+                    "session": None,
+                    "errors": [],
+                    "status": "fail",
+                }
+            }
+        }
+    ]
+
+    assert (
+        v15_runner.summarize_load(samples, 1)["input_pacing_violations"]
+        == expected_violations
+    )
+
+
+def test_run_samples_rejects_a_concurrency_below_one(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="concurrency must be at least 1"):
+        asyncio.run(
+            run_samples(
+                tmp_path,
+                url="ws://127.0.0.1:1/v1/realtime",
+                output=tmp_path / "never",
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=5.0,
+                concurrency=0,
             )
         )
     assert not (tmp_path / "never").exists()

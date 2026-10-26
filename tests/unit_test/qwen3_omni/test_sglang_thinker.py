@@ -11,7 +11,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
+transformers = pytest.importorskip("transformers")
 
+from flashinfer.sampling import get_sampling_module
 from sglang.kernels.ops.moe.fused_moe_triton_kernels import fused_moe_kernel
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
 from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe import fused_experts
@@ -36,6 +38,7 @@ from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
+    Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTextConfig,
     Qwen3OmniMoeThinkerConfig,
 )
@@ -128,6 +131,36 @@ def test_real_qwen_config_drives_prefill_positions(
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 
+def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta() -> (
+    None
+):
+    """A talker config rebuilt from transformers' to_dict keeps the M-RoPE sections and the theta
+    that transformers serializes under rope_parameters."""
+    hf_text_config = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "rope_parameters": {
+            "rope_type": "default",
+            "mrope_section": [1, 1, 2],
+            "interleaved": True,
+            "rope_theta": 123456.0,
+        },
+    }
+    serialized = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config=hf_text_config
+    ).to_dict()
+
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized)
+
+    assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
+    assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
+    assert rebuilt.text_config.rope_theta == 123456.0
+
+
 def test_outer_thinker_forward_accepts_sidecar_request_identity():
     seen: dict[str, object] = {}
 
@@ -138,7 +171,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = fake_model
-    wrapper.logits_processor = lambda *args: args[0]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[0]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     wrapper.decode_live_rows = DecodeLiveRows()
@@ -236,7 +269,7 @@ def make_bare_wrapper(error: RuntimeError | None = None) -> Qwen3OmniThinkerForC
     torch.nn.Module.__init__(wrapper)
     wrapper.decode_live_rows = DecodeLiveRows()
     wrapper.model = RecordingTextModel(wrapper.decode_live_rows, error)
-    wrapper.logits_processor = lambda *args: args[1]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[1]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     return wrapper
@@ -256,6 +289,29 @@ def run_forward(
             out_cache_loc=torch.tensor(out_cache_loc),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("accept_hidden_layer", "expected_layers"),
+    [(2, [2]), (4, []), (5, None)],
+)
+def test_the_thinker_captures_the_talkers_accept_layer_in_every_forward(
+    accept_hidden_layer: int, expected_layers: list[int] | None
+) -> None:
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.root_config = SimpleNamespace(
+        talker_config=SimpleNamespace(accept_hidden_layer=accept_hidden_layer)
+    )
+    wrapper.config = SimpleNamespace(num_hidden_layers=4)
+    wrapper.model = SimpleNamespace(layers_to_capture=[])
+
+    if expected_layers is None:
+        with pytest.raises(ValueError, match="accept_hidden_layer"):
+            wrapper.set_talker_layers_to_capture()
+    else:
+        wrapper.set_talker_layers_to_capture()
+        assert wrapper.model.layers_to_capture == expected_layers
 
 
 @pytest.mark.parametrize(
@@ -281,20 +337,6 @@ def test_thinker_forward_marks_decode_rows_by_their_kv_slot(
     else:
         assert seen_mask.tolist() == expected_live_rows
     assert wrapper.decode_live_rows.is_live_row is None
-
-
-def test_decode_mask_ends_with_its_forward_so_a_direct_prefill_routes_as_before() -> (
-    None
-):
-    wrapper = make_bare_wrapper()
-    run_forward(wrapper, ForwardMode.DECODE, [7, 3])
-    prefill_routing = make_topk_output(5)
-
-    routed = PaddedRowsTopK(FixedTopK(prefill_routing), wrapper.decode_live_rows)(
-        torch.zeros(5, 8), prefill_routing.router_logits
-    )
-
-    assert routed is prefill_routing
 
 
 def test_decode_mask_is_cleared_when_the_model_call_fails() -> None:
@@ -384,8 +426,9 @@ def thinker_with_moe(
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = SimpleNamespace(layers=[layer])
+    wrapper.lm_head = SimpleNamespace(weight=w13_weight)
     wrapper.config = SimpleNamespace(
-        num_experts_per_tok=top_k, hidden_size=w13_weight.shape[2]
+        num_experts_per_tok=top_k, hidden_size=w13_weight.shape[2], vocab_size=64
     )
     return wrapper
 
@@ -400,9 +443,33 @@ def test_precompile_runs_no_moe_pass_on_a_backend_other_than_triton() -> None:
         lambda hidden: token_counts.append(hidden.shape[0]),
     )
 
-    wrapper.precompile_kernels_after_loading()
+    with get_context().override_server_args(sampling_backend="pytorch"):
+        wrapper.precompile_kernels_after_loading()
 
     assert token_counts == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("sampling_backend", ["pytorch", "flashinfer"])
+def test_thinker_load_hook_loads_flashinfer_sampling_only_for_its_backend(
+    sampling_backend: str,
+) -> None:
+    wrapper = thinker_with_moe(
+        MoeRunnerBackend.FLASHINFER_CUTLASS,
+        torch.zeros(128, 16, 8, dtype=torch.bfloat16, device="cuda"),
+        torch.zeros(128, 8, 8, dtype=torch.bfloat16, device="cuda"),
+        8,
+        lambda hidden: None,
+    )
+    get_sampling_module.cache_clear()
+
+    with get_context().override_server_args(sampling_backend=sampling_backend):
+        wrapper.precompile_kernels_after_loading()
+
+    assert get_sampling_module.cache_info().currsize == int(
+        sampling_backend == "flashinfer"
+    )
 
 
 @pytest.mark.accelerator

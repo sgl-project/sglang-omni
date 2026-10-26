@@ -4,6 +4,37 @@ import XCTest
 
 @MainActor
 final class RemoteLLMRuntimeClientFailureTests: XCTestCase {
+    func testExplicitChatFormatUsesChatWirePayloadThroughEnhancementEntryPoint() async throws {
+        let fixture = Fixture(replies: [.body(#"{"choices":[{"message":{"content":"corrected"},"finish_reason":"stop"}]}"#)])
+        var configuration = fixture.configuration(provider: .openAI, path: "/v1/responses")
+        configuration.model = "custom-reasoning-model"
+        configuration.openAIAPIFormat = OpenAIAPIFormat.chatCompletions.rawValue
+        configuration.generationSettings.thinking = .init(mode: .effort, effort: "max", budgetTokens: nil, exposeReasoning: false)
+        let result = try await fixture.client.enhance(userPrompt: "raw input", provider: .openAI, configuration: configuration)
+        XCTAssertEqual(result, "corrected")
+        let request = try XCTUnwrap(fixture.script.requests.first)
+        let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(request.url?.path, "/v1/chat/completions")
+        XCTAssertEqual(payload["reasoning_effort"] as? String, "max")
+        XCTAssertEqual(payload["messages"] as? [[String: String]], [["role": "user", "content": "raw input"]])
+        for field in ["input", "instructions", "reasoning", "max_tokens", "max_output_tokens", "temperature", "top_p"] { XCTAssertNil(payload[field], field) }
+    }
+
+    func testExplicitResponsesFormatUsesResponsesWirePayloadThroughEnhancementEntryPoint() async throws {
+        let fixture = Fixture(replies: [.body(#"{"id":"response-test","status":"completed","output_text":"corrected"}"#)])
+        var configuration = fixture.configuration(provider: .openAI, path: "/v1/chat/completions")
+        configuration.model = "custom-reasoning-model"
+        configuration.openAIAPIFormat = OpenAIAPIFormat.responses.rawValue
+        configuration.generationSettings.thinking = .init(mode: .effort, effort: "high", budgetTokens: nil, exposeReasoning: false)
+        let result = try await fixture.client.enhance(userPrompt: "raw input", provider: .openAI, configuration: configuration)
+        XCTAssertEqual(result, "corrected")
+        let request = try XCTUnwrap(fixture.script.requests.first)
+        let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(request.url?.path, "/v1/responses")
+        XCTAssertEqual(payload["input"] as? String, "raw input")
+        XCTAssertEqual((payload["reasoning"] as? [String: String])?["effort"], "high")
+        for field in ["messages", "reasoning_effort", "max_tokens", "max_output_tokens", "temperature", "top_p"] { XCTAssertNil(payload[field], field) }
+    }
     func testChatStreamFailureBeforeTextFallsBackToJSONOnce() async throws {
         let fixture = Fixture(replies: [.body("data: {\"error\":{\"message\":\"stream unsupported\"}}\n\n"), .body(#"{"choices":[{"message":{"content":"final"}}]}"#)])
         let result = try await chat(fixture)
@@ -128,8 +159,21 @@ nonisolated private final class Script: @unchecked Sendable {
     var requests: [URLRequest] { lock.withLock { recorded } }
     init(replies: [Reply], onStart: (@Sendable () -> Void)?) { self.replies = replies; self.onStart = onStart }
     func next(_ request: URLRequest) -> Reply {
-        lock.withLock {
-            recorded.append(request)
+        var capturedRequest = request
+        if capturedRequest.httpBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            var readCount = stream.read(&buffer, maxLength: buffer.count)
+            while readCount > 0 {
+                body.append(contentsOf: buffer.prefix(readCount))
+                readCount = stream.read(&buffer, maxLength: buffer.count)
+            }
+            capturedRequest.httpBody = body
+        }
+        return lock.withLock {
+            recorded.append(capturedRequest)
             return replies.isEmpty ? .failure(.badServerResponse) : replies.removeFirst()
         }
     }

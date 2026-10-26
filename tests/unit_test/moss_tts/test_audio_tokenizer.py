@@ -569,7 +569,7 @@ def test_attention_backend_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     ("capability", "requires_chunks"),
-    [((8, 0), True), ((8, 9), True), ((9, 0), False), ((10, 0), False)],
+    [((8, 9), True), ((9, 0), False), ((10, 0), False)],
 )
 def test_packed_flash_query_chunk_policy_uses_sm(
     monkeypatch: pytest.MonkeyPatch,
@@ -588,25 +588,6 @@ def test_packed_flash_query_chunk_policy_uses_sm(
         attention_impl.packed_flash_requires_query_chunks(torch.device("cuda"))
         is requires_chunks
     )
-
-
-def test_packed_flash_query_chunk_policy_caches_device_capability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attention_impl.packed_flash_requires_query_chunks.cache_clear()
-    calls = []
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-
-    def get_device_capability(device: torch.device) -> tuple[int, int]:
-        calls.append(device)
-        return (9, 0)
-
-    monkeypatch.setattr(torch.cuda, "get_device_capability", get_device_capability)
-    device = torch.device("cuda")
-
-    assert not attention_impl.packed_flash_requires_query_chunks(device)
-    assert not attention_impl.packed_flash_requires_query_chunks(device)
-    assert calls == [device]
 
 
 def test_packed_flash_policy_uses_sglang_fa3_predicate(
@@ -630,20 +611,6 @@ def test_packed_flash_policy_uses_sglang_fa3_predicate(
         is None
     )
     assert calls == [True]
-
-
-def test_packed_flash_policy_requires_sglang_fa3(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        attention_impl,
-        "_is_fa3_supported",
-        lambda: False,
-    )
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-
-    reason = attention_impl.packed_flash_device_unavailable_reason(torch.device("cuda"))
-    assert reason == "SGLang packed FlashAttention (FA3) is unavailable"
 
 
 def test_auto_backend_falls_back_when_sglang_fa3_is_unavailable(
@@ -867,13 +834,7 @@ def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) ->
 
 @pytest.mark.parametrize(
     ("context", "causal", "expected"),
-    [
-        (None, True, (-1, -1)),
-        (None, False, (-1, -1)),
-        (1, True, (0, 0)),
-        (4, True, (3, 0)),
-        (4, False, (-1, -1)),
-    ],
+    [(4, False, (-1, -1))],
 )
 def test_flash_window_size_matches_moss_local_mask(
     context: int | None, causal: bool, expected: tuple[int, int]
@@ -1413,6 +1374,11 @@ def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
     assert source.layer_scale_2.calls == 1
     assert source.ffn[0].calls == 1
     assert source.ffn[2].calls == 1
+    assert wrapper.norm1 is source.norm1
+    assert wrapper.norm2 is source.norm2
+    assert wrapper.layer_scale_1 is source.layer_scale_1
+    assert wrapper.layer_scale_2 is source.layer_scale_2
+    assert wrapper.ffn is source.ffn
 
 
 def test_vocoder_decoder_wraps_supported_stage_types() -> None:

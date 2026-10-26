@@ -74,8 +74,9 @@ def make_cfg_group(size: int) -> list[LLaDA2UniRequest]:
     return requests
 
 
-@pytest.mark.parametrize("size", [1, 2, 3])
-@pytest.mark.parametrize("rescale", [0.0, 1.0])
+@pytest.mark.parametrize(
+    ("size", "rescale"), [(1, 0.0), (2, 0.0), (3, 0.0), (2, 1.0), (3, 1.0)]
+)
 def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
     algorithm = LowConfidenceCFG(make_config())
     algorithm.threshold = 0.94 if size == 3 else 0.8
@@ -222,6 +223,7 @@ def test_attention_masks_local_and_cached_padding() -> None:
         seq_lens=torch.tensor([8, 8]),
         extend_prefix_lens=torch.tensor([4, 4]),
         req_pool_indices=torch.tensor([0, 1]),
+        kv_loc_plan=None,
     )
 
     backend.init_forward_metadata(batch)
@@ -315,6 +317,8 @@ def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) ->
             req_pool_indices=torch.arange(2, dtype=torch.int32, device=device),
             out_cache_loc=slots[:, prefix : prefix + block_size].flatten(),
         )
+        translator = backend.kv_index_translator
+        translator.own_plan(batch).bind(batch, translator)
         queries = torch.randn(
             2,
             block_size,

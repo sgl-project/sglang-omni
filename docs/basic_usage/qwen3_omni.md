@@ -6,6 +6,20 @@ This guide uses [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Inst
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+## Server Readiness
+
+Before it reports ready, the server sends itself a chat request with a small
+image, one second of audio and a short instruction (text and audio output in
+speech mode, text output in text-only mode, at most 8 new tokens from each
+stage that generates tokens), once per replica of its most
+replicated process, one after another, so that every replica serves one.
+`/health` returns 503 with status `starting` until these requests have passed
+through every stage, so the one-time kernel builds of that request path happen
+before the first user request. Inputs of other shapes, such as video or a large
+concurrent batch, can still build a kernel variant on first use. A failed
+warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600)
+bounds each request, and `--skip-server-warmup` reports ready without them.
+
 ## Text-Only Mode
 
 Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal input (text, image, audio) and produces text output only.
@@ -476,6 +490,8 @@ To enable `semantic_vad`, provision the BSD-2 licensed
 to its path (file or containing directory). The server never downloads it and
 verifies its SHA-256 on load. If the model is missing or invalid, the
 endpoint still works — semantic requests just fall back to `server_vad`.
+
+On the Session graph (`examples/qwen3_omni/session_h200.yaml`), `semantic_vad` is a node: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session` and publish `turn_detection: [session]` in place of `vad: [session]`; the stage loads the model from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy. See [Turn detection node](../developer_reference/full_duplex_interactive_model.md#turn-detection-node).
 
 Text arrives in `response.text.delta` events; spoken output arrives as
 base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
