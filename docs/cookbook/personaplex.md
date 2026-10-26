@@ -62,6 +62,8 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-personaplex).
 
+Before reporting ready, the session LM runs an unseeded synthetic prompt prefill followed by a seeded one-row extend through its runner, including the Depformer, at every batch size up to the configured LM capacity (`max_sessions + 1` by default). Sampling receives the same batch and vocabulary dimensions in both steps, so this covers both default text/audio sampling modes without repeating the LM forwards for each seed mode. Startup logs report the warmup duration. Temporary requests and KV are released after device work completes, random-number generator state is restored, and a warmup failure fails startup.
+
 ## Request parameters
 
 | Parameter | Effect |
@@ -104,6 +106,13 @@ The fixed caller-frame budget still determines the number of generated frames.
 
 ```bash
 pytest tests/unit_test/personaplex/ -q
+```
+
+The real-model warmup regression checks all prompt/extend and seeded/unseeded combinations at batch sizes 1, 2 and 3 after reduced warmup, rejecting new Torch Dynamo compilation and checking RNG and allocator restoration. It requires CUDA and a local checkpoint; without the checkpoint setting it skips instead of downloading weights.
+
+```bash
+PERSONAPLEX_PARITY_CHECKPOINT=/path/to/personaplex \
+  pytest tests/unit_test/personaplex/test_warmup.py::test_reduced_warmup_leaves_no_cold_sampling_combination -q
 ```
 
 ### Reference parity
