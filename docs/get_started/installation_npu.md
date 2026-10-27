@@ -217,3 +217,13 @@ To run the installation:
 # Specify your device type as the first argument (910b or A3)
 bash scripts/npu/install_npu_torchcodec.sh A3
 ```
+
+## Qwen3-ASR graph execution
+
+Qwen3-ASR pre-LM encoding and language-model execution submit work on separate NPU streams. With encoder, decode, or prefill graphs enabled, a shared Host task queue can couple those submission paths and cause stalls. Per-stream Host queues let each stream submit work independently; they do not replace device-stream synchronization.
+
+For normal pipeline launches, `PER_STREAM_QUEUE=1` is set by default before spawning the worker process. Leave `TASK_QUEUE_ENABLE` unset (its runtime default is `1`) or explicitly set it to `1`, and leave `ASCEND_LAUNCH_BLOCKING` unset or set it to `0` to retain asynchronous launches. Existing shell and pipeline environment settings take precedence over the default.
+
+When pre-LM encoding and any encoder, decode, or prefill graph backend are enabled on NPU, startup rejects incompatible queue or launch-blocking settings instead of silently overriding them. This check does not apply when pre-LM encoding is disabled or all three graph paths are disabled. For direct engine construction outside the pipeline launcher, configure these variables before initializing the NPU runtime; the engine validates them but does not supply the pipeline's default.
+
+Use a torch_npu build that supports per-stream Host task queues. The feature is experimental and does not support process-level online recovery. Although per-stream queues support TaskQueue modes `1` and `2`, NPU graph capture rejects mode `2`; this graph configuration therefore requires mode `1`. Mode `0` disables the per-stream queues required by this path. Additional queue threads and cross-stream event ordering may add overhead. See the [TorchNPU stream-level TaskQueue documentation](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md) for runtime constraints.

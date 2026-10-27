@@ -704,6 +704,21 @@ def make_arena(
     return incremental, arena
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
+def test_codec_state_arena_stages_indices_on_npu() -> None:
+    device = torch.device("npu", torch.npu.current_device())
+    incremental = Qwen3TTSIncrementalDecoder(Decoder().to(device).eval())
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=4, device=device, dtype=torch.float32
+    )
+
+    index = arena.stage_index([1, 3])
+
+    assert index.device.type == "npu"
+    assert index.tolist() == [1, 3]
+
+
 def state_rows(
     state: Qwen3TTSIncrementalCodecState,
 ) -> tuple[
@@ -985,9 +1000,25 @@ def test_first_decode_from_its_reach_matches_the_whole_reference(
 @pytest.fixture(params=("cuda", "npu"))
 def codec_graph_device(request: pytest.FixtureRequest) -> torch.device:
     if request.param == "npu":
-        pytest.importorskip("torch_npu")
+        if not current_platform.is_npu():
+            pytest.skip("NPU platform is required")
+        else:
+            pass
+        torch_npu = pytest.importorskip("torch_npu")
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        request.addfinalizer(
+            lambda: torch.npu.set_option(
+                {"ALLOW_INTERNAL_FORMAT": previous_internal_format}
+            )
+        )
+        torch.npu.config.allow_internal_format = False
     else:
-        pass
+        if not current_platform.is_cuda():
+            pytest.skip("CUDA platform is required")
+        else:
+            pass
     device_module = torch.get_device_module(request.param)
     if not device_module.is_available():
         pytest.skip(f"{request.param} is unavailable")

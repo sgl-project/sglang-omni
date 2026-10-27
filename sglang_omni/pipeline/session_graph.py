@@ -30,6 +30,7 @@ from sglang_omni.proto.session import (
     SessionIdentity,
     SessionLimits,
     TimedChunk,
+    fragment_chunk,
     wire_size,
 )
 from sglang_omni.proto.streams import (
@@ -433,10 +434,15 @@ class SessionGraphRunner(CoordinatorSessions):
         graph.eos_wake.set()
 
     async def forward_graph_inputs(self, graph: SessionGraphRuntime, name: str) -> None:
-        """Append one node's inbox in that node's own seq order; a chunk leaves the inbox once its node session accepts it."""
+        """Append one node's inbox in that node's own seq order; a chunk leaves the inbox once its node session accepts it.
+
+        A node's chunk over the node session's max_chunk_bytes leaves the
+        inbox as its fragments start to enter; the client's input was
+        admitted within the same bound.
+        """
         identity = graph.nodes[name]
         inbox = graph.inboxes[name]
-        loop = asyncio.get_running_loop()
+        max_chunk_bytes = self.sessions[identity.id].limits.max_chunk_bytes
         seq = 0
         deadline: float | None = None
         while True:
@@ -469,18 +475,22 @@ class SessionGraphRunner(CoordinatorSessions):
                     pass
             else:
                 pass
+            if (
+                client_seq is None
+                and wire_size(replace(chunk, seq=seq).to_dict()) > max_chunk_bytes
+            ):
+                inbox.queued.popleft()
+                inbox.counts[source] -= 1
+                inbox.wake.set()
+                seq = await self.append_fragments(graph, name, chunk, seq)
+                deadline = None
+                continue
+            else:
+                pass
             try:
                 await self.append_session(identity, replace(chunk, seq=seq))
             except QueueFullError:
-                if deadline is None:
-                    deadline = loop.time() + graph.limits.operation_timeout_s
-                elif loop.time() >= deadline:
-                    raise TimeoutError(
-                        f"graph node {name!r} rejected input seq {seq} for "
-                        f"{graph.limits.operation_timeout_s} s"
-                    ) from None
-                else:
-                    pass
+                deadline = self.full_input_deadline(graph, name, seq, deadline)
                 await asyncio.sleep(FULL_QUEUE_RETRY_S)
             else:
                 # Note (Junnan Li): The append completes without yielding, so the head is still the chunk it took.
@@ -493,6 +503,56 @@ class SessionGraphRunner(CoordinatorSessions):
                     pass
                 seq += 1
                 deadline = None
+
+    async def append_fragments(
+        self, graph: SessionGraphRuntime, name: str, chunk: TimedChunk, seq: int
+    ) -> int:
+        """Append a node's chunk over max_chunk_bytes to node `name` as fragments from `seq`; returns the seq after the last one taken.
+
+        Every fragment but the last continues: the node session sends it to
+        its route's first owner, which holds it until the append of the last
+        restores the chunk. Once the chunk's turn is interrupted at `name`,
+        no more of its fragments enter, and the first owner drops the ones
+        it holds when input of another turn arrives.
+        """
+        identity = graph.nodes[name]
+        fragments = fragment_chunk(
+            chunk, seq, self.sessions[identity.id].limits.max_chunk_bytes
+        )
+        fragment, continues = next(fragments)
+        deadline: float | None = None
+        while not self.is_interrupted(graph, name, chunk):
+            try:
+                await self.append_session(identity, fragment, continues=continues)
+            except QueueFullError:
+                deadline = self.full_input_deadline(graph, name, fragment.seq, deadline)
+                await asyncio.sleep(FULL_QUEUE_RETRY_S)
+            else:
+                if continues:
+                    fragment, continues = next(fragments)
+                    deadline = None
+                else:
+                    return fragment.seq + 1
+        return fragment.seq
+
+    def full_input_deadline(
+        self,
+        graph: SessionGraphRuntime,
+        name: str,
+        seq: int,
+        deadline: float | None,
+    ) -> float:
+        """When node `name` must have taken input seq `seq` it refused as full; past it, the refusal fails the graph."""
+        now = asyncio.get_running_loop().time()
+        if deadline is None:
+            return now + graph.limits.operation_timeout_s
+        elif now >= deadline:
+            raise TimeoutError(
+                f"graph node {name!r} rejected input seq {seq} for "
+                f"{graph.limits.operation_timeout_s} s"
+            ) from None
+        else:
+            return deadline
 
     async def route_graph_outputs(self, graph: SessionGraphRuntime, name: str) -> None:
         """Deliver one node's outputs to its readers and, when published, to the client.

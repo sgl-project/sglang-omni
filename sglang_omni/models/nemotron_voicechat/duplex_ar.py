@@ -11,6 +11,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
@@ -238,9 +239,13 @@ class FrameAdapter(ARSessionAdapter):
     ) -> SGLangARRequestData:
         state = self.states[session_identity]
         new_position_count = fusion_rows.shape[0]
-        if state.position_count + new_position_count + 1 > self.context_length:
-            raise ValueError(
-                "VoiceChat session context limit reached; start a new session"
+        positions = state.position_count + new_position_count + 1
+        # note (Junnan Li): SGLang holds at most context_length - 1 tokens per request.
+        if positions > self.context_length - 1:
+            raise ContextExhaustedError(
+                f"{ContextExhaustedError.CODE}: VoiceChat session needs {positions} "
+                f"positions but the context holds {self.context_length - 1}; "
+                "start a new session"
             )
         else:
             pass

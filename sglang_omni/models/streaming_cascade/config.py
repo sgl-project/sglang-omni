@@ -448,11 +448,20 @@ class ComponentGraphConfig(BaseModel):
             )
             if any(node.has_option(f) for node in self.nodes for f in fields)
         )
+        # Note (ruoyu): A client interrupt travels the control edges from the input, so a graph without one fails the control; the other controls ride with the appended audio.
+        if any(
+            edge.source == GRAPH_INPUT and edge.event == INTERRUPT
+            for node in self.nodes
+            for edge in node.controls
+        ):
+            controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
+        else:
+            controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
             unit_ms=unit_ms,
-            controls=frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE}),
+            controls=controls,
             hot_settings=hot_settings,
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()

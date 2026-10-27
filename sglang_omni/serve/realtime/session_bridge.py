@@ -124,6 +124,7 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         supports_instruction_updates="instructions" in ports.hot_settings,
         supports_sampling_updates="sampling" in ports.hot_settings,
         supports_truncate=TRUNCATE in ports.controls,
+        supports_cancel=INTERRUPT in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
     )
 

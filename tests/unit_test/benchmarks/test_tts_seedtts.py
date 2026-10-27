@@ -183,7 +183,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     "model, max_new_tokens",
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
-        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -494,7 +494,7 @@ def test_results_config_records_sampling_and_omits_fingerprint() -> None:
     "model, max_new_tokens",
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
-        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
     ],
 )
 def test_results_config_records_the_resolved_max_new_tokens(

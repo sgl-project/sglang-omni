@@ -19,6 +19,10 @@ MODEL_PATH="$(
 )"
 ```
 
+### Ascend NPU graph execution
+
+See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
+
 <a id="apple-silicon-torch-mps"></a>
 
 ### Apple Silicon

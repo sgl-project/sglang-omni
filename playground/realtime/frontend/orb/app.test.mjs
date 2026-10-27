@@ -8,23 +8,29 @@ import { DuplexSession } from "./session.js";
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 const workletSource = readFileSync(new URL("./worklet.js", import.meta.url), "utf8");
 
-function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptions = {} } = {}) {
+// elements receives the page's elements by id, so a test can read a control's state or label; microphone grants a fake
+// microphone whose capture node a test feeds frames; the clock is performance.now, advanced by advance(ms).
+function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptions = {}, elements = new Map(), microphone = false } = {}) {
   const nodes = [];
   const sockets = [];
-  const elements = new Map();
+  const clock = { now: 12345 };
   let microphoneRequests = 0;
   const context = vm.createContext({
     DuplexSession,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search: "" },
     URLSearchParams,
-    performance: { now: () => 12345 },
-    navigator: { mediaDevices: { getUserMedia: async () => { microphoneRequests += 1; throw new Error("No microphone in playback test"); } } },
+    performance: { now: () => clock.now },
+    navigator: { mediaDevices: { getUserMedia: async () => {
+      microphoneRequests += 1;
+      if (!microphone) throw new Error("No microphone in playback test");
+      return { getTracks: () => [] };
+    } } },
     document: {
       documentElement: { dataset: {} },
       addEventListener() {},
       getElementById: (id) => {
-        if (!elements.has(id)) elements.set(id, { dataset: {}, addEventListener() {}, setAttribute() {} });
+        if (!elements.has(id)) elements.set(id, { dataset: {}, attributes: {}, listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }, setAttribute(name, value) { this.attributes[name] = value; } });
         return elements.get(id);
       },
     },
@@ -41,6 +47,7 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
       lock() {}
       sessionOptions() { return sessionOptions; }
       micConstraint() { return {}; }
+      async refreshDevices() {}
     },
     AudioContext: class {
       constructor({ sampleRate }) {
@@ -51,10 +58,13 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
       async resume() {}
       async close() {}
       createAnalyser() { return {}; }
+      createMediaStreamSource() { return { connect: (node) => node }; }
+      createGain() { return { gain: {} }; }
     },
     AudioWorkletNode: class {
-      constructor(audioContext) {
+      constructor(audioContext, name) {
         this.context = audioContext;
+        this.name = name;
         this.messages = [];
         const node = this;
         const processors = new Map();
@@ -103,6 +113,8 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
   });
   vm.runInContext(appSource, context);
   return {
+    run: (code) => vm.runInContext(code, context),
+    advance: (milliseconds) => { clock.now += milliseconds; },
     nodes,
     sockets,
     get microphoneRequests() { return microphoneRequests; },
@@ -227,6 +239,13 @@ test("backend switches preserve turn-based buffered replies and restore native c
     socket.receive({ type: "response.output_audio.delta", response_id: "stop", delta: Buffer.alloc(48000, 32).toString("base64") });
     await app.settled();
     assert.ok(node.render(24000).every((sample) => sample === 0));
+    // Note (ruoyu): After a stop only the user's next utterance lifts the mute, so the reply that plays follows one.
+    app.advance(100);
+    if (interaction === "turn_based") {
+      socket.receive({ type: "input_audio_buffer.speech_started", item_id: "item_user", audio_start_ms: 0 });
+    } else {
+      app.run("lastInputSpeechAt = performance.now()");
+    }
     socket.receive({ type: "response.created", response: { id: "resume" } });
     socket.receive({ type: "response.output_audio.delta", response_id: "resume", delta: Buffer.alloc(24000, 32).toString("base64") });
     socket.receive({ type: "response.done", response: { id: "resume", status: "completed" } });
@@ -348,4 +367,151 @@ test("the first session.update carries what the settings panel chose, turn detec
     audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 800 } } },
     sglang: { voice: "NATM1", sampling: { temperature: 0.5 } },
   });
+});
+
+// The stop button follows the grant: it stops the reply on the server where supports_cancel is true and only mutes playback
+// elsewhere. Either way the mute outlives the response id, since a stopped model may continue its answer under a new one, and
+// lifts only when the user speaks again: the server's speech_started on a turn-based deployment, the microphone on a native one.
+test("the stop button cancels only where granted, mutes every response id until the user speaks again, and reports Stopped only after the cancelled response.done", async () => {
+  const speech = Buffer.alloc(48000, 32).toString("base64");
+  const quiet = Buffer.alloc(48000, 0).toString("base64");
+  for (const [interaction, supportsCancel] of [["turn_based", true], ["native", false]]) {
+    const elements = new Map();
+    const app = createApp({ elements, microphone: true });
+    await app.connect();
+    const socket = app.sockets.at(-1);
+    socket.open();
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { interaction, native_unit_ms: 1000, input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 }, supports_cancel: supportsCancel } } } });
+    await app.settled();
+    // The microphone starts after the grant, outside the event chain.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const capture = app.nodes.find((node) => node.name === "capture-processor");
+    const playback = app.nodes[0];
+    const button = elements.get("interruptBtn");
+    const cancels = () => socket.sent.filter((event) => event.type === "response.cancel").length;
+    const pushes = () => playback.messages.filter((message) => message.type === "push").length;
+    const line = () => app.run("mood(0, 0, performance.now()).line");
+    const microphone = (rms) => capture.port.onmessage({ data: { type: "frame", frame: new Int16Array(1280).buffer, rms } });
+    assert.equal(button.title, supportsCancel ? "Stop the current answer" : "Mute the current answer here (the model keeps talking)");
+    assert.equal(button.attributes["aria-label"], button.title);
+
+    socket.receive({ type: "response.created", response: { id: "first" } });
+    await app.settled();
+    app.run("tick()");
+    // A reply the server can stop is offered before it is audible; a local mute has nothing to mute yet.
+    assert.equal(button.disabled, !supportsCancel);
+    socket.receive({ type: "response.output_audio.delta", response_id: "first", delta: speech });
+    await app.settled();
+    assert.equal(pushes(), 1);
+    app.advance(100);
+    button.listeners.click();
+    button.listeners.click();
+    assert.equal(cancels(), supportsCancel ? 1 : 0);
+    assert.equal(line(), supportsCancel ? "Stopping…" : "Muted until you speak");
+    socket.receive({ type: "response.done", response: { id: "first", status: supportsCancel ? "cancelled" : "completed" } });
+    await app.settled();
+    assert.equal(line(), supportsCancel ? "Stopped" : "Muted until you speak");
+
+    // The model goes on under a new response id while the microphone carries only silence: nothing is played.
+    app.advance(1200);
+    microphone(0);
+    socket.receive({ type: "response.created", response: { id: "continued" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "continued", delta: speech });
+    socket.receive({ type: "response.output_audio.delta", response_id: "continued", delta: quiet });
+    socket.receive({ type: "response.output_audio.delta", response_id: "continued", delta: speech });
+    await app.settled();
+    assert.equal(pushes(), 1);
+    app.advance(2000);
+    assert.equal(line(), "Muted until you speak");
+    socket.receive({ type: "response.done", response: { id: "continued", status: "completed" } });
+    await app.settled();
+
+    // A genuinely new utterance lifts the mute and its reply plays.
+    app.advance(5000);
+    if (supportsCancel) {
+      socket.receive({ type: "input_audio_buffer.speech_started", item_id: "item_user_1", audio_start_ms: 9000 });
+      socket.receive({ type: "input_audio_buffer.speech_stopped", item_id: "item_user_1", audio_end_ms: 10000 });
+    } else {
+      microphone(0.3);
+    }
+    socket.receive({ type: "response.created", response: { id: "answer" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "answer", delta: speech });
+    await app.settled();
+    assert.equal(pushes(), 2);
+    // The reply is heard again: the orb follows the open reply on a turn-based server and the microphone on a native one.
+    assert.equal(app.run("mood(0, 0, performance.now()).mood"), supportsCancel ? "speaking" : "listening");
+    if (supportsCancel) {
+      // A reply that ends on its own while its stop is pending was not stopped by the server.
+      app.advance(100);
+      button.listeners.click();
+      assert.equal(cancels(), 2);
+      assert.equal(line(), "Stopping…");
+      socket.receive({ type: "response.done", response: { id: "answer", status: "completed" } });
+      await app.settled();
+      assert.equal(line(), "Muted until you speak");
+    }
+    await socket.close();
+  }
+});
+
+test("the muted line clears as soon as the user speaks after a stop, before the next reply's audio", async () => {
+  const speech = Buffer.alloc(48000, 32).toString("base64");
+  for (const [interaction, supportsCancel] of [["turn_based", true], ["native", true], ["native", false]]) {
+    const elements = new Map();
+    const app = createApp({ elements, microphone: true });
+    await app.connect();
+    const socket = app.sockets.at(-1);
+    socket.open();
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { interaction, native_unit_ms: 1000, input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 }, supports_cancel: supportsCancel } } } });
+    await app.settled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const capture = app.nodes.find((node) => node.name === "capture-processor");
+    const line = () => app.run("mood(0, 0, performance.now()).line");
+    socket.receive({ type: "response.created", response: { id: "first" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "first", delta: speech });
+    await app.settled();
+    app.advance(100);
+    elements.get("interruptBtn").listeners.click();
+    if (supportsCancel) {
+      socket.receive({ type: "response.done", response: { id: "first", status: "cancelled" } });
+      await app.settled();
+    }
+    app.advance(5000);
+    assert.equal(line(), "Muted until you speak");
+    if (interaction === "turn_based") {
+      socket.receive({ type: "input_audio_buffer.speech_started", item_id: "item_user_1", audio_start_ms: 9000 });
+    } else {
+      capture.port.onmessage({ data: { type: "frame", frame: new Int16Array(1280).buffer, rms: 0.3 } });
+    }
+    await app.settled();
+    assert.notEqual(line(), "Muted until you speak");
+    await socket.close();
+  }
+});
+
+test("a stop's mute does not carry into the next session", async () => {
+  const speech = Buffer.alloc(48000, 32).toString("base64");
+  const elements = new Map();
+  const app = createApp({ elements });
+  await app.connect();
+  const socket = app.sockets.at(-1);
+  socket.open();
+  socket.receive({ type: "session.updated", session: { sglang: { granted: { interaction: "native", native_unit_ms: 1000, input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } } } } });
+  socket.receive({ type: "response.created", response: { id: "first" } });
+  socket.receive({ type: "response.output_audio.delta", response_id: "first", delta: speech });
+  await app.settled();
+  app.advance(100);
+  elements.get("interruptBtn").listeners.click();
+  await socket.close();
+
+  await app.connect();
+  const next = app.sockets.at(-1);
+  next.open();
+  next.receive({ type: "session.updated", session: { sglang: { granted: { interaction: "native", native_unit_ms: 1000, input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } } } } });
+  next.receive({ type: "response.created", response: { id: "opening" } });
+  next.receive({ type: "response.output_audio.delta", response_id: "opening", delta: speech });
+  await app.settled();
+  const playback = app.nodes[0];
+  assert.equal(playback.messages.filter((message) => message.type === "push").length, 2);
+  assert.notEqual(app.run("mood(0, 0, performance.now()).line"), "Muted until you speak");
 });

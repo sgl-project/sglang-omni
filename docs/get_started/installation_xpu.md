@@ -185,6 +185,8 @@ See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request paramete
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
+Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.
+
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
 Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
