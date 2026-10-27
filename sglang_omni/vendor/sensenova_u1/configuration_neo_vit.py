@@ -2,15 +2,18 @@
 
 import os
 from collections.abc import Sequence
-from typing import Any, Union
+from typing import Union
 
+from pydantic import JsonValue
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
 
-def _as_singleton_tuple(value: Any) -> tuple[Any, ...]:
+def _as_singleton_tuple(
+    value: JsonValue | tuple[JsonValue, ...],
+) -> tuple[JsonValue, ...]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         if len(value) == 1:
             return _as_singleton_tuple(value[0])

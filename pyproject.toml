@@ -184,7 +184,6 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "!sglang_omni/**" = ["ANN401"]
-"sglang_omni/vendor/sensenova_u1/**" = ["ANN401"]
 
 [tool.setuptools.packages.find]
 where = ["."]

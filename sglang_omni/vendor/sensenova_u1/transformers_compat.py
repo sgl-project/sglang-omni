@@ -10,6 +10,8 @@ from typing import Any, Callable
 
 import torch
 from packaging.version import Version
+from transformers.cache_utils import Cache
+from transformers.configuration_utils import PretrainedConfig
 
 try:
     from transformers.utils.generic import merge_with_config_defaults
@@ -30,11 +32,11 @@ def _parameter_names(callable_: Callable[..., Any]) -> frozenset[str]:
 def causal_mask_kwargs(
     mask_factory: Callable[..., Any],
     *,
-    config: Any,
+    config: PretrainedConfig,
     inputs_embeds: torch.Tensor,
     attention_mask: torch.Tensor | None,
     cache_position: torch.Tensor,
-    past_key_values: Any,
+    past_key_values: Cache | None,
     position_ids: torch.Tensor,
 ) -> dict[str, Any]:
     """Build arguments accepted by the installed ``create_causal_mask``.
