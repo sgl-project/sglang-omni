@@ -300,6 +300,7 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | --- | --- | --- | --- | --- | --- | --- |
 | `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
+| `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
@@ -469,6 +470,19 @@ Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?model=<
 | `base_url` | string, `ws://` or `wss://` | required | The transcription server. |
 | `model` | string | required | Sent as the `model` query parameter. |
 | `api_key_env` | string | `OPENAI_API_KEY` | Environment variable whose value is sent as a bearer token; nothing is sent when it is unset. |
+| `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
+
+### `streaming_transcription`
+
+Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?intent=transcription&model=<model>` of an SGLang-Omni ASR server that declares realtime transcription, such as Qwen3-ASR started with `--enable-realtime`. The node cuts the utterances, so each session runs without server VAD: the node sends the utterance's audio, then `transcription.done`. Every `transcription.segment` that is not final becomes a partial transcript, and `transcription.completed` becomes the final transcript with the language the service heard. A segment the service cuts at its maximum length (30 s for Qwen3-ASR) starts the partial text again; the final transcript joins every segment.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `ws://` or `wss://` | required | The ASR server. |
+| `model` | string | required | Sent as the `model` query parameter. |
+| `language` | string | `""` | Sent as the session's `language` hint when set. |
+| `decode_interval_ms` | integer > 0, or null | null | Audio between partial transcripts, sent in the session's `session.update`; null keeps the server's default (2000 ms for Qwen3-ASR), and the server refuses less than 200 ms. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
 
 ### `openai_transcription`
@@ -676,7 +690,7 @@ Every failure ends the realtime session with an `error` event.
 - `turn_detection: null` sent after the VAD has already reported speech in the session: the recognizer keeps waiting for speech boundaries, and each `input_audio_buffer.commit` then ends an empty turn (`empty_turn`). Turn detection off from the first `session.update` works as intended; `running_transcript` ends utterances at a commit either way.
 - `input_audio_buffer.commit` is granted in every profile (`client_commit: true`); with the VAD on, it also ends an open utterance.
 - `max_text_chars` at or above `max_history_chars` loads, and then every turn fails with `conversation exceeds max_history_chars`.
-- A reasoning language model that thinks by default speaks its reasoning unless `extra_body` turns thinking off, as `chat_template_kwargs: {enable_thinking: false}` does in `qwen3-asr-qwen3.8-27b-vivian`.
+- A reasoning language model can still open a think block of its own with `chat_template_kwargs: {enable_thinking: false}`. With `--reasoning-parser` on its server the block goes to `reasoning_content`, which the cascade never reads; without it the block is spoken and kept in the history.
 - A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is.
 - Speech always interrupts a running reply; `interrupt_response` does not change that.
 
@@ -713,7 +727,7 @@ with further fields omitted here. `turn_control` is `[null]` for a profile witho
 
 ### Known Limitations
 
-- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content, so a model that thinks by default needs `enable_thinking: false` in the node's `extra_body` (as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
+- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
 - **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
 - **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
 

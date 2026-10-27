@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.model_executor.cuda_graph_config import Backend
+from sglang.srt.utils import common as sglang_common
 
 from sglang_omni.scheduling.generation_batch_policy import (
     get_decode_cuda_graph_max_bs,
@@ -24,9 +25,11 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.utils import gpu_compat
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     apply_torch_compile_cache_env,
+    get_gpu_compat_env_defaults,
 )
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
@@ -156,9 +159,42 @@ def test_server_args_builder_pins_torchinductor_cache_directory_when_unset(
 
 
 def test_gpu_compat_env_defaults_pin_torchinductor_cache_directory_when_unset() -> None:
-    # note (zhaochenyang20): a set FlashInfer key skips the GPU topology probe.
-    env = {"FLASHINFER_USE_CUDA_NORM": "0"}
+    # note (zhaochenyang20): set FlashInfer keys skip the GPU topology probes.
+    env = {"FLASHINFER_USE_CUDA_NORM": "0", "FLASHINFER_CUDA_ARCH_LIST": "9.0a"}
 
     apply_gpu_compat_env_defaults(env)
 
     assert env["TORCHINDUCTOR_CACHE_DIR"] == DEFAULT_TORCHINDUCTOR_CACHE_DIRECTORY
+
+
+@pytest.mark.parametrize(
+    ("capability", "cuda_arch"),
+    [((12, 0), "12.0a"), ((10, 0), "10.0a"), ((9, 0), "9.0a"), ((8, 6), "8.6")],
+)
+def test_gpu_compat_env_defaults_match_sglang_flashinfer_arch(
+    monkeypatch: pytest.MonkeyPatch,
+    capability: tuple[int, int],
+    cuda_arch: str,
+) -> None:
+    monkeypatch.setattr(gpu_compat, "get_compute_capability", lambda *_: capability)
+    monkeypatch.setattr(
+        sglang_common.torch.cuda, "get_device_capability", lambda *_: capability
+    )
+    monkeypatch.setattr(sglang_common, "is_flashinfer_available", lambda: True)
+    # note (Junnan Li): setenv registers the key, so the value set_cuda_arch writes is undone.
+    monkeypatch.setenv("FLASHINFER_CUDA_ARCH_LIST", "")
+    sglang_common.set_cuda_arch()
+
+    assert get_gpu_compat_env_defaults({"FLASHINFER_USE_CUDA_NORM": "0"}) == {
+        "FLASHINFER_CUDA_ARCH_LIST": os.environ["FLASHINFER_CUDA_ARCH_LIST"]
+    }
+    assert os.environ["FLASHINFER_CUDA_ARCH_LIST"] == cuda_arch
+
+
+def test_gpu_compat_env_defaults_keep_set_flashinfer_arch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_compat, "get_compute_capability", lambda *_: (12, 0))
+    env = {"FLASHINFER_USE_CUDA_NORM": "0", "FLASHINFER_CUDA_ARCH_LIST": "12.0f"}
+
+    assert get_gpu_compat_env_defaults(env) == {}
