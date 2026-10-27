@@ -347,6 +347,7 @@ if HAS_TRITON:
         HEAD_DIM: tl.constexpr,
         NUM_Q_HEADS: tl.constexpr,
         NUM_KV_HEADS: tl.constexpr,
+        Q_ROW_STRIDE: tl.constexpr,
         BLOCK_Q: tl.constexpr,
         BLOCK_S: tl.constexpr,
         USE_GDC: tl.constexpr,
@@ -355,7 +356,7 @@ if HAS_TRITON:
         q heads as the rows of one MMA tile against its cache slots, the token t seeing
         the slots below end - T + t + 1; scores and softmax in fp32, the unnormalized
         weights rounded to bf16 for the product with the values, then divided by their
-        fp32 sum; OUT laid out as Q."""
+        fp32 sum; Q's rows Q_ROW_STRIDE elements apart, OUT's rows packed."""
         row_group = tl.program_id(0)
         kv_head = tl.program_id(1)
         GROUP: tl.constexpr = NUM_Q_HEADS // NUM_KV_HEADS
@@ -369,6 +370,11 @@ if HAS_TRITON:
         token = rq // GROUP
         is_query = rq < T * GROUP
         q_offsets = (
+            (row_group * T + token)[:, None] * Q_ROW_STRIDE
+            + (kv_head * GROUP + rq % GROUP)[:, None] * HEAD_DIM
+            + rd[None, :]
+        )
+        out_offsets = (
             (row_group * T + token)[:, None] * (NUM_Q_HEADS * HEAD_DIM)
             + (kv_head * GROUP + rq % GROUP)[:, None] * HEAD_DIM
             + rd[None, :]
@@ -387,7 +393,7 @@ if HAS_TRITON:
         scores = tl.where(visible, scores, float("-inf"))
         weights = libdevice.exp(scores - tl.max(scores, 1)[:, None])
         attended = tl.dot(weights.to(tl.bfloat16), v) / tl.sum(weights, 1)[:, None]
-        tl.store(OUT + q_offsets, attended.to(tl.bfloat16), mask=is_query[:, None])
+        tl.store(OUT + out_offsets, attended.to(tl.bfloat16), mask=is_query[:, None])
         # note (ratish): released after the store, so o_proj's waiting programs do not hold
         # the SM slots the attention's later waves need.
         if USE_GDC:
@@ -833,7 +839,8 @@ def decode_attention(
 ) -> None:
     """attention_output = softmax(q k^T / sqrt(head dim)) v over each row's slots up to
     its position, causal within a row group. q and attention_output are (rows, q heads *
-    head dim); the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
+    head dim), q with unit column stride and attention_output contiguous; the caches are
+    (rows // tokens_per_row, slots, kv heads, head dim)."""
     num_kv_heads, head_dim = k_cache.shape[2:]
     use_gdc = is_arch_support_pdl()
     decode_attention_kernel[(q.shape[0] // tokens_per_row, num_kv_heads)](
@@ -850,6 +857,7 @@ def decode_attention(
         HEAD_DIM=head_dim,
         NUM_Q_HEADS=q.shape[1] // head_dim,
         NUM_KV_HEADS=num_kv_heads,
+        Q_ROW_STRIDE=q.stride(0),
         BLOCK_Q=ATTENTION_ROWS,
         BLOCK_S=triton.next_power_of_2(k_cache.shape[1]),
         USE_GDC=use_gdc,

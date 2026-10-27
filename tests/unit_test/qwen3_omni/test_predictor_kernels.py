@@ -704,18 +704,19 @@ def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
     generator = torch.Generator(device=device).manual_seed(34)
     row_groups = 3
     end = cache_len + tokens_per_row
-    q = torch.randn(
+    qkv = torch.randn(
         row_groups * tokens_per_row,
-        NUM_HEADS * HEAD_DIM,
+        (NUM_HEADS + 2 * num_kv_heads) * HEAD_DIM,
         device=device,
         generator=generator,
     ).to(DTYPE)
+    q = qkv[:, : NUM_HEADS * HEAD_DIM]
     cache_shape = (row_groups, PREDICTOR_LEN, num_kv_heads, HEAD_DIM)
     k_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
     v_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
     k_cache[:, end:] = float("nan")
     v_cache[:, end:] = float("nan")
-    attention_output = torch.empty_like(q)
+    attention_output = torch.empty(q.shape, device=device, dtype=DTYPE)
     decode_attention(
         q=q,
         tokens_per_row=tokens_per_row,

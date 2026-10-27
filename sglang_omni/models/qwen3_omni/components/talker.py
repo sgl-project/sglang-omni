@@ -1898,7 +1898,7 @@ class Qwen3OmniTalker(nn.Module):
                 batch_size * seq_len, attn.num_heads * attn.head_dim
             )
             decode_attention(
-                q=q.contiguous(),
+                q=q,
                 tokens_per_row=seq_len,
                 k_cache=self.predictor_k_cache[layer_idx, :batch_size],
                 v_cache=self.predictor_v_cache[layer_idx, :batch_size],
