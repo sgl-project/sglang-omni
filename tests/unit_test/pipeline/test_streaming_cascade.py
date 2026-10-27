@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
+import json
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -31,9 +32,12 @@ from sglang_omni.proto.streams import (
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
     control_type,
 )
-from tests.unit_test.fixtures.cascade_fakes import PNG_DOT
+from tests.unit_test.fixtures.cascade_fakes import PNG_DOT, tiny_mp4
 
 
 @pytest.mark.asyncio
@@ -597,4 +601,59 @@ async def test_a_picture_a_tool_made_is_published_with_its_call_in_the_turn_that
             "content": '{"drew": "a cat"}',
             "tool_call_id": "call_1",
         }
+        assert session.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["video_tool"], indirect=True)
+async def test_a_clip_a_video_node_shoots_reaches_the_client_in_pieces_before_its_turn_reports_it(
+    backends, backend_requests
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        progress = [
+            (o.payload["clip"], o.payload["status"])
+            for o in session.outputs
+            if o.format == VIDEO_PROGRESS
+        ]
+        assert progress[0] == (1, "queued") and progress[-1] == (1, "done")
+        assert {status for _, status in progress[1:-1]} == {"generating"}
+        pieces = [o for o in session.outputs if o.format == VIDEO_CLIP]
+        assert [o.payload["piece"] for o in pieces] == list(range(len(pieces)))
+        assert all(o.modality == VIDEO and o.turn is None for o in pieces)
+        assert b"".join(o.payload["data"] for o in pieces) == tiny_mp4()
+        assert pieces[0].payload["pieces"] == len(pieces)
+        assert (
+            pieces[0].payload["width"] == 32
+            and pieces[0].payload["prompt"] == "a beach"
+        )
+        order = [
+            (control_type(o) or o.format)
+            for o in session.outputs
+            if o.kind == "data"
+            and (o.format == VIDEO_CLIP or control_type(o) in (TURN_STARTED, TURN_DONE))
+        ]
+        assert order == [
+            TURN_STARTED,
+            TURN_DONE,
+            *([VIDEO_CLIP] * len(pieces)),
+            TURN_STARTED,
+            TURN_DONE,
+        ]
+        [job] = [request for request in backend_requests if "task" in request]
+        assert (
+            job["task"] == "t2va" and job["conditions"] == [] and job["model"] == "h3"
+        )
+        result = json.loads(messages[1][-1]["content"])
+        assert messages[1][-1]["tool_call_id"] == "call_1"
+        assert result["clip"] == 1 and result["prompt"] == "a beach"
+        assert result["continues"] is False
         assert session.error is None

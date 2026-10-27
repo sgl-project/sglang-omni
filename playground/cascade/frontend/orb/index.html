@@ -89,6 +89,10 @@
     .picture img, .shot img { display: block; width: 100%; border-radius: 14px; box-shadow: var(--shadow); }
     .picture figcaption, .shot figcaption { margin-top: 6px; color: var(--muted); font-size: .8rem; line-height: 1.4; text-align: center; }
     .shot { width: min(300px, 100%); margin: 0 auto 12px; }
+    .scene { flex: none; width: min(448px, 90vw); margin: 0; }
+    .scene video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; background: #000; box-shadow: var(--shadow); }
+    .scene figcaption { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; color: var(--muted); font-size: .8rem; line-height: 1.4; }
+    .scene .text-btn[aria-pressed="true"] { background: var(--primary); color: var(--primary-text); }
     .warning {
       position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 32px));
       padding: 10px 14px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--border);
@@ -187,6 +191,10 @@
     <figure id="picture" class="picture" hidden>
       <img id="pictureImg" alt="">
       <figcaption id="pictureCaption"></figcaption>
+    </figure>
+    <figure id="scene" class="scene" hidden>
+      <video id="sceneVideo" muted playsinline controls></video>
+      <figcaption><span id="sceneLine"></span><button id="sceneSound" class="text-btn" type="button" aria-pressed="false">Sound</button></figcaption>
     </figure>
   </main>
 

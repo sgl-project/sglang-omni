@@ -27,7 +27,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
 from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
-from sglang_omni.models.streaming_cascade.tools import ToolsConfig, ToolSettings
+from sglang_omni.models.streaming_cascade.tools import ToolLifecycle, ToolsConfig
+from sglang_omni.models.streaming_cascade.video import OpenAIVideoConfig
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -198,6 +199,16 @@ class NodeSettings(BaseModel):
 
     def has_option(self, name: str) -> bool:
         return name in type(self.component).model_fields
+
+
+def implemented_tools(component: ComponentConfig) -> dict[str, ToolLifecycle]:
+    """The tools a provider node implements, with their lifecycle: a tools node its functions, a video node its one tool."""
+    if isinstance(component, ToolsConfig):
+        return dict(component.tools)
+    elif isinstance(component, OpenAIVideoConfig):
+        return {component.tool: component.lifecycle}
+    else:
+        return {}
 
 
 def unusable_inputs(
@@ -405,18 +416,25 @@ class ComponentGraphConfig(BaseModel):
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
 
-    def tool_settings(self, caller: str) -> dict[str, ToolSettings]:
-        """The settings of each tool the tools nodes run for the calls of node `caller`."""
+    def tool_providers(self, caller: str) -> list[NodeSettings]:
+        """The nodes answering the calls of node `caller`: the tools nodes and the video nodes reading them."""
+        return [
+            node
+            for node in self.nodes
+            if isinstance(node.component, (ToolsConfig, OpenAIVideoConfig))
+            and TOOL_CALL in node.edges().get(caller, ())
+        ]
+
+    def tool_settings(self, caller: str) -> dict[str, ToolLifecycle]:
+        """The lifecycle of each tool the providers implement for the calls of node `caller`."""
         return {
             name: tool
-            for node in self.nodes
-            if isinstance(node.component, ToolsConfig)
-            and TOOL_CALL in node.edges().get(caller, ())
-            for name, tool in node.component.tools.items()
+            for node in self.tool_providers(caller)
+            for name, tool in implemented_tools(node.component).items()
         }
 
     def check_tools(self) -> None:
-        """A generator that offers tools needs a tools node implementing them and the node that opens turns reading its calls and the tools node's responses, or a call would end nothing."""
+        """A generator that offers tools needs one node implementing each of them and the node that opens turns reading its calls and every provider's responses, or a call would end nothing."""
         for caller in self.nodes:
             if not isinstance(caller.component, OpenAIChatGeneratorConfig):
                 continue
@@ -424,20 +442,22 @@ class ComponentGraphConfig(BaseModel):
                 continue
             else:
                 pass
-            executors = [
-                node
-                for node in self.nodes
-                if isinstance(node.component, ToolsConfig)
-                and TOOL_CALL in node.edges().get(caller.name, ())
-            ]
+            executors = self.tool_providers(caller.name)
             openers = [
                 node
                 for node in self.nodes
                 if node.opens_turns and TOOL_CALL in node.edges().get(caller.name, ())
             ]
+            implementations = [
+                name
+                for executor in executors
+                for name in implemented_tools(executor.component)
+            ]
             unimplemented = sorted(
-                {tool.name for tool in caller.component.tools}
-                - set().union(*(executor.component.tools for executor in executors))
+                {tool.name for tool in caller.component.tools} - set(implementations)
+            )
+            twice = sorted(
+                {name for name in implementations if implementations.count(name) > 1}
             )
             unread = sorted(
                 f"{executor.name}:{TOOL_RESPONSE}"
@@ -452,6 +472,10 @@ class ComponentGraphConfig(BaseModel):
             elif unimplemented:
                 raise ValueError(
                     f"no tools node reading {caller.name!r} implements {unimplemented}"
+                )
+            elif twice:
+                raise ValueError(
+                    f"the nodes reading {caller.name}:{TOOL_CALL} implement {twice} twice"
                 )
             elif not openers:
                 raise ValueError(

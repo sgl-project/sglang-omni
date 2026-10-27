@@ -47,6 +47,9 @@ from sglang_omni.proto.streams import (
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
     ImagePort,
     SessionPorts,
 )
@@ -67,6 +70,8 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
     TurnFailure,
+    VideoPiece,
+    VideoProgress,
 )
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
@@ -180,6 +185,8 @@ class SessionBridge(InteractionAdapter):
             (TRANSCRIPT, TRANSCRIPT_FORMAT): self.on_transcript,
             (TEXT, TEXT_DELTA): self.on_text_delta,
             (IMAGE, TOOL_IMAGE): self.on_tool_image,
+            (VIDEO, VIDEO_CLIP): self.on_video_clip,
+            (VIDEO, VIDEO_PROGRESS): self.on_video_progress,
             (CONTROL, SESSION_CONTROL): self.on_control,
         }
         if ports.output is not None:
@@ -460,6 +467,36 @@ class SessionBridge(InteractionAdapter):
             )
         )
         return events
+
+    def on_video_clip(self, output: OutputChunk) -> list[OutputEvent]:
+        """A piece of a clip belongs to the session, not to a response: a clip finishes between turns, and the turn that speaks about it follows."""
+        payload = output.payload
+        return [
+            VideoPiece(
+                payload["call_id"],
+                payload["clip"],
+                payload["piece"],
+                payload["pieces"],
+                payload["mime_type"],
+                payload["data"],
+                payload["duration_s"],
+                payload["width"],
+                payload["height"],
+                payload["fps"],
+                payload["prompt"],
+            )
+        ]
+
+    def on_video_progress(self, output: OutputChunk) -> list[OutputEvent]:
+        payload = output.payload
+        return [
+            VideoProgress(
+                payload["call_id"],
+                payload["clip"],
+                payload["status"],
+                payload["percent"],
+            )
+        ]
 
     def on_audio(self, output: OutputChunk) -> list[OutputEvent]:
         events = self.start_response(output.turn)

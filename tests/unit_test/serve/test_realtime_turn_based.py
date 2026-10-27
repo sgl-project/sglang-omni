@@ -16,6 +16,8 @@ from sglang_omni.serve.realtime.output import (
     ResponseProgress,
     SpeechStarted,
     SpeechStopped,
+    VideoPiece,
+    VideoProgress,
 )
 from sglang_omni.serve.realtime.output_buffer import ENVELOPE_BYTES, envelope_size_bytes
 from sglang_omni.serve.realtime.projection import project_output
@@ -220,6 +222,34 @@ def test_a_picture_projects_to_a_response_event_and_counts_its_data():
         "data": "AAAA",
     }
     assert envelope_size_bytes(Envelope(event=picture)) == len("AAAA") + ENVELOPE_BYTES
+
+
+def test_video_pieces_and_progress_project_to_session_events():
+    piece = VideoPiece(
+        "call_a", 2, 0, 3, "video/mp4", b"\x00\x01\x02", 4.5, 896, 512, 24.0, "a beach"
+    )
+    assert project_output(piece) == {
+        "type": "sglang.video.delta",
+        "call_id": "call_a",
+        "clip": 2,
+        "piece": 0,
+        "pieces": 3,
+        "mime_type": "video/mp4",
+        "data": "AAEC",
+        "duration_s": 4.5,
+        "width": 896,
+        "height": 512,
+        "fps": 24.0,
+        "prompt": "a beach",
+    }
+    assert envelope_size_bytes(Envelope(event=piece)) == 4 + ENVELOPE_BYTES
+    assert project_output(VideoProgress("call_a", 2, "generating", 40)) == {
+        "type": "sglang.video.progress",
+        "call_id": "call_a",
+        "clip": 2,
+        "status": "generating",
+        "percent": 40,
+    }
 
 
 class PlainAdapter(InteractionAdapter):

@@ -7,6 +7,7 @@ export const PACKET_MS = 80;
 const MAX_UNITS_SHOWN = 200;
 const MAX_REPLIES_KEPT = 20;
 const MAX_PICTURES_KEPT = 20;
+const MAX_CLIPS_KEPT = 10;
 
 export function bytesToBase64(bytes) {
   let binary = "";
@@ -106,6 +107,9 @@ export class DuplexSession {
     this.lastReplyId = null;
     // The pictures tools made, in arrival order, each with the call that asked for it.
     this.pictures = [];
+    // The scene a video node shoots: its clips, each assembled from its pieces, in arrival order, and how far the clip in generation is.
+    this.clips = [];
+    this.sceneProgress = null;
   }
 
   reply(responseId) {
@@ -355,6 +359,34 @@ export class DuplexSession {
         this.pictures.push(picture);
         if (this.pictures.length > MAX_PICTURES_KEPT) this.pictures.splice(0, this.pictures.length - MAX_PICTURES_KEPT);
         this.emit("picture", picture);
+        break;
+      }
+      case "sglang.video.progress":
+        this.sceneProgress = { callId: event.call_id, clip: event.clip, status: event.status, percent: event.percent };
+        this.emit("scene", this.sceneProgress);
+        break;
+      case "sglang.video.delta": {
+        let clip = this.clips.find((entry) => entry.callId === event.call_id);
+        if (!clip) {
+          clip = { callId: event.call_id, clip: event.clip, mimeType: event.mime_type, pieces: new Array(event.pieces).fill(null), received: 0, durationS: event.duration_s, width: event.width, height: event.height, fps: event.fps, prompt: event.prompt, bytes: null };
+          this.clips.push(clip);
+          if (this.clips.length > MAX_CLIPS_KEPT) this.clips.shift();
+        }
+        if (event.piece < clip.pieces.length && clip.pieces[event.piece] === null) {
+          clip.pieces[event.piece] = base64ToBytes(event.data || "");
+          clip.received += 1;
+        }
+        if (clip.bytes === null && clip.received === clip.pieces.length) {
+          const bytes = new Uint8Array(clip.pieces.reduce((total, piece) => total + piece.byteLength, 0));
+          let offset = 0;
+          for (const piece of clip.pieces) {
+            bytes.set(piece, offset);
+            offset += piece.byteLength;
+          }
+          clip.bytes = bytes;
+          clip.pieces = [];
+          this.emit("clip", clip);
+        }
         break;
       }
       case "response.done": {

@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -24,21 +24,31 @@ from sglang_omni.proto.tools import (
 )
 from sglang_omni.scheduling.session import ChunkEmitter
 
+if TYPE_CHECKING:
+    from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+else:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
-class ToolSettings(BaseModel):
-    """One tool: `path` imports the Python function running it, which takes the call's arguments as a mapping and returns JSON data, or a `ToolResult` with images for the client beside the data, synchronous or async. The reply that calls an `awaited` tool stays open until the result continues it; a call of an unawaited tool ends the reply, and its result opens a reply of its own once the dialog is idle. When the user interrupts the reply that made a call, `on_interrupt` cancels the call or retains it, and a retained call's result opens a reply of its own too."""
+class ToolLifecycle(BaseModel):
+    """How the dialog and the generator treat the calls of one tool. The reply that calls an `awaited` tool stays open until the result continues it; a call of an unawaited tool ends the reply, and its result opens a reply of its own once the dialog is idle. When the user interrupts the reply that made a call, `on_interrupt` cancels the call or retains it, and a retained call's result opens a reply of its own too."""
 
     model_config = ConfigDict(extra="forbid")
 
-    path: str = Field(min_length=1)
     awaited: bool = True
     on_interrupt: Literal["cancel", "retain"] = "cancel"
 
 
+class ToolSettings(ToolLifecycle):
+    """One tool of a tools node: `path` imports the Python function running it, which takes the call's arguments as a mapping and returns JSON data, or a `ToolResult` with images for the client beside the data, synchronous or async."""
+
+    path: str = Field(min_length=1)
+
+
 class ToolsConfig(ComponentConfig):
-    """`tools` maps each tool name to its settings, or to its import path alone for an awaited tool an interrupt cancels; every tool a generator of the Session offers must be among them. A call that takes longer than `timeout_s` answers with an error."""
+    """`tools` maps each tool name to its settings, or to its import path alone for an awaited tool an interrupt cancels; every tool a generator of the Session offers must be among them or implemented by another node reading the generator's calls. A call that takes longer than `timeout_s` answers with an error."""
 
     kind: Literal["tools"] = "tools"
     tools: dict[str, ToolSettings] = Field(min_length=1)
@@ -63,7 +73,8 @@ class Tools(StreamComponent):
     `interrupt` control of a turn cancels the turn's running calls whose
     tools an interrupt cancels and leaves the retained ones running, a
     call that outlasts the node's timeout answers with an error, and the
-    end of the input waits for the calls still running.
+    end of the input waits for the calls still running. A call of a tool
+    another node of the graph implements is left to that node.
     """
 
     def __init__(self, config: ToolsConfig) -> None:
@@ -75,6 +86,17 @@ class Tools(StreamComponent):
         self.running: dict[
             asyncio.Task[None], tuple[int | None, ToolSettings | None]
         ] = {}
+        # The tools other nodes implement among the calls this node reads.
+        self.foreign: frozenset[str] = frozenset()
+
+    def place(self, settings: "ComponentGraphConfig", name: str) -> None:
+        self.foreign = frozenset(
+            tool_name
+            for source, formats in settings.node(name).edges().items()
+            if TOOL_CALL in formats
+            for tool_name in settings.tool_settings(source)
+            if tool_name not in self.config.tools
+        )
 
     def can_replace(self) -> bool:
         return not self.running
@@ -86,6 +108,10 @@ class Tools(StreamComponent):
             async for chunk in inputs:
                 if chunk.format == TOOL_CALL:
                     for call in tool_calls_of(chunk):
+                        if call.name in self.foreign:
+                            continue
+                        else:
+                            pass
                         task = asyncio.create_task(self.answer(call, chunk.turn, emit))
                         self.running[task] = (
                             chunk.turn,

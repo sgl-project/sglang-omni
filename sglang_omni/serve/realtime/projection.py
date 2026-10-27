@@ -34,6 +34,8 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
     TurnFailure,
+    VideoPiece,
+    VideoProgress,
 )
 from sglang_omni.serve.realtime.schema import (
     AudioConfig,
@@ -139,6 +141,16 @@ class ServerEvent(TypedDict, total=False):
     arguments: object
     mime_type: str
     data: str
+    clip: int
+    piece: int
+    pieces: int
+    duration_s: float
+    width: int
+    height: int
+    fps: float
+    prompt: str
+    status: str
+    percent: int
 
 
 def project_output(
@@ -244,6 +256,29 @@ def project_output(
             arguments=event.arguments,
             mime_type=event.mime_type,
             data=event.data,
+        )
+    elif isinstance(event, VideoPiece):
+        return dict(
+            type="sglang.video.delta",
+            call_id=event.call_id,
+            clip=event.clip,
+            piece=event.piece,
+            pieces=event.pieces,
+            mime_type=event.mime_type,
+            data=base64.b64encode(event.data).decode("ascii"),
+            duration_s=event.duration_s,
+            width=event.width,
+            height=event.height,
+            fps=event.fps,
+            prompt=event.prompt,
+        )
+    elif isinstance(event, VideoProgress):
+        return dict(
+            type="sglang.video.progress",
+            call_id=event.call_id,
+            clip=event.clip,
+            status=event.status,
+            percent=event.percent,
         )
     elif isinstance(event, TurnFailure):
         return dict(

@@ -38,6 +38,7 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizerConfig,
 )
 from sglang_omni.models.streaming_cascade.tools import Tools, ToolsConfig, probe_tools
+from sglang_omni.models.streaming_cascade.video import OpenAIVideo, OpenAIVideoConfig
 from sglang_omni.proto.streams import (
     MESSAGES,
     PCM16,
@@ -52,6 +53,8 @@ from sglang_omni.proto.streams import (
     TOOL_RESPONSE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
 )
 from sglang_omni.utils.imports import import_string
 
@@ -207,6 +210,13 @@ COMPONENTS.register(
     consumes=frozenset({TOOL_CALL}),
     produces=frozenset({TOOL_RESPONSE}),
     probe=probe_tools,
+)
+COMPONENTS.register(
+    OpenAIVideoConfig,
+    OpenAIVideo,
+    consumes=frozenset({TOOL_CALL}),
+    produces=frozenset({TOOL_RESPONSE, VIDEO_CLIP, VIDEO_PROGRESS}),
+    probe=probe_openai_service,
 )
 COMPONENTS.register(
     OpenAISpeechSynthesizerConfig,

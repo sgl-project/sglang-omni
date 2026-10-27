@@ -5,6 +5,7 @@ import asyncio
 import base64
 import io
 import json
+import math
 import re
 import wave
 from dataclasses import replace
@@ -51,7 +52,7 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.models.streaming_cascade.tools import ToolSettings
+from sglang_omni.models.streaming_cascade.tools import ToolLifecycle, ToolSettings
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import ControlEdge, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -78,6 +79,9 @@ from sglang_omni.proto.streams import (
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
     AudioPort,
     SessionPorts,
     control_type,
@@ -3348,3 +3352,464 @@ async def test_closing_the_tools_node_cancels_its_running_calls_without_answerin
     task.cancel()
     await asyncio.wait({task})
     assert task.cancelled() and not node.running and outputs == []
+
+
+VIDEO_FUNCTION = {
+    "name": "generate_video",
+    "description": "Shoot the next clip of the scene.",
+    "parameters": {
+        "type": "object",
+        "properties": {"prompt": {"type": "string"}, "new_scene": {"type": "boolean"}},
+    },
+}
+VIDEO_SERVICE = {"base_url": "http://video/v1", "model": "h3"}
+VIDEO_LIFECYCLE = ToolLifecycle(awaited=False, on_interrupt="retain")
+
+
+def video_wiring(**options) -> dict:
+    """The tool wiring with a video node answering generate_video beside the tools node's lookup, the dialog reading both providers."""
+    nodes = tool_wiring()
+    return {
+        **nodes,
+        "llm": {**nodes["llm"], "tools": [LOOKUP_FUNCTION, VIDEO_FUNCTION]},
+        "dialog": {
+            **nodes["dialog"],
+            "inputs": [
+                *nodes["dialog"]["inputs"],
+                {
+                    "source": "video:tool_response",
+                    "feedback": True,
+                    "overflow": "drop_oldest",
+                    "capacity": 1024,
+                },
+            ],
+        },
+        "video": {
+            "kind": "openai_video",
+            "inputs": nodes["tools"]["inputs"],
+            **VIDEO_SERVICE,
+            **options,
+        },
+    }
+
+
+def video_service(content: bytes, *, outcome: str = "completed", polls: int = 2):
+    """A mock of the video job API: each POST queues a job that is in progress for `polls` polls and then has `outcome`; returns the transport and the requests it saw."""
+    requests: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST" and request.url.path == "/v1/videos":
+            jobs = sum(1 for r in requests if r.method == "POST")
+            return httpx.Response(
+                200, json={"id": f"vid_{jobs}", "status": "queued", "progress": 0}
+            )
+        elif request.method == "DELETE":
+            return httpx.Response(200, json={"status": "deleted"})
+        elif request.url.path.endswith("/content"):
+            return httpx.Response(
+                200, content=content, headers={"Content-Type": "video/mp4"}
+            )
+        else:
+            job = request.url.path.rsplit("/", 1)[-1]
+            seen = sum(
+                1
+                for r in requests
+                if r.method == "GET" and r.url.path.endswith(f"/{job}")
+            )
+            if seen <= polls:
+                status = {
+                    "id": job,
+                    "status": "in_progress",
+                    "progress": 50 * seen // polls,
+                }
+            else:
+                status = {"id": job, "status": outcome, "progress": 100}
+                if outcome == "failed":
+                    status["error"] = {"message": "no film"}
+                else:
+                    pass
+            return httpx.Response(200, json=status)
+
+    return httpx.MockTransport(answer), requests
+
+
+def video_node(transport, **options):
+    node = build(
+        {
+            "kind": "openai_video",
+            **VIDEO_SERVICE,
+            "poll_interval_s": 0.01,
+            "piece_bytes": 100,
+            "timeout_s": 2,
+            **options,
+        }
+    )
+    node.client = httpx.AsyncClient(transport=transport)
+    return node
+
+
+def video_call(call_id: str, prompt: str, **arguments) -> TimedChunk:
+    return tool_call_chunk(
+        [
+            ToolCall(
+                id=call_id,
+                name="generate_video",
+                arguments={"prompt": prompt, **arguments},
+            )
+        ],
+        1,
+    )
+
+
+def video_events(outputs: list[TimedChunk]) -> list[tuple]:
+    """Each video output as (format, call id, clip, status or piece), and each tool response as ('response', call id, response)."""
+    events: list[tuple] = []
+    for o in outputs:
+        if o.format == VIDEO_PROGRESS:
+            events.append(
+                (
+                    VIDEO_PROGRESS,
+                    o.payload["call_id"],
+                    o.payload["clip"],
+                    o.payload["status"],
+                )
+            )
+        elif o.format == VIDEO_CLIP:
+            events.append(
+                (
+                    VIDEO_CLIP,
+                    o.payload["call_id"],
+                    o.payload["clip"],
+                    o.payload["piece"],
+                )
+            )
+        else:
+            events.extend(("response", r.id, r.response) for r in tool_responses_of(o))
+    return events
+
+
+async def shot_all(node, requests, clips: int) -> None:
+    """Hold the node's input open until `clips` files were downloaded and the worker is idle."""
+    while (
+        sum(1 for r in requests if r.url.path.endswith("/content")) < clips
+        or node.job_id is not None
+    ):
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_the_video_node_shoots_a_clip_per_call_in_order_and_continues_the_scene_from_the_last_frame():
+    content = cascade_fakes.tiny_mp4()
+    transport, requests = video_service(content)
+    node = video_node(transport)
+    outputs = await drain(
+        node,
+        [
+            video_call("call_a", "a beach"),
+            video_call("call_b", "rain"),
+            lambda: shot_all(node, requests, 2),
+        ],
+    )
+    events = video_events(outputs)
+    pieces = math.ceil(len(content) / 100)
+    for call_id, clip in (("call_a", 1), ("call_b", 2)):
+        own = [event for event in events if event[1] == call_id]
+        assert own == [
+            (VIDEO_PROGRESS, call_id, clip, "queued"),
+            *([(VIDEO_PROGRESS, call_id, clip, "generating")] * 3),
+            *((VIDEO_CLIP, call_id, clip, piece) for piece in range(pieces)),
+            (VIDEO_PROGRESS, call_id, clip, "done"),
+            own[-1],
+        ]
+    assert [e[1] for e in events if e[0] == "response"] == ["call_a", "call_b"]
+    first, second = (e[2] for e in events if e[0] == "response")
+    assert first == {
+        "clip": 1,
+        "status": "playing for the user",
+        "seconds": pytest.approx(0.1, abs=0.1),
+        "prompt": "a beach",
+        "continues": False,
+    }
+    assert second["clip"] == 2 and second["continues"] is True
+    assert [
+        o.payload["percent"]
+        for o in outputs
+        if o.format == VIDEO_PROGRESS and o.payload["call_id"] == "call_a"
+    ] == [0, 0, 25, 50, 100]
+    clip_a = [o for o in outputs if o.format == VIDEO_CLIP and o.payload["clip"] == 1]
+    assert b"".join(o.payload["data"] for o in clip_a) == content
+    assert all(o.modality == VIDEO and o.turn is None for o in clip_a)
+    assert clip_a[0].payload == {
+        "call_id": "call_a",
+        "clip": 1,
+        "piece": 0,
+        "pieces": pieces,
+        "mime_type": "video/mp4",
+        "data": content[:100],
+        "duration_s": pytest.approx(0.1, abs=0.1),
+        "width": 32,
+        "height": 32,
+        "fps": 24.0,
+        "prompt": "a beach",
+    }
+    jobs = [json.loads(r.content) for r in requests if r.method == "POST"]
+    assert jobs[0] == {
+        "model": "h3",
+        "prompt": "a beach",
+        "seconds": 4,
+        "task": "t2va",
+        "conditions": [],
+        "target": {"short_edge": 384, "aspect_ratio": "16:9", "duration_seconds": 4.0},
+        "num_outputs_per_prompt": 1,
+    }
+    assert jobs[1]["task"] == "fl2va" and jobs[1]["target"]["aspect_ratio"] == "auto"
+    [keyframe] = jobs[1]["conditions"]
+    assert keyframe["role"] == "keyframe" and keyframe["frame_index"] == 0
+    assert keyframe["uri"].startswith("data:image/png;base64,")
+    assert base64.b64decode(keyframe["uri"].split(",", 1)[1]).startswith(b"\x89PNG")
+    assert not node.numbers and node.queued.empty()
+
+
+@pytest.mark.asyncio
+async def test_a_new_scene_starts_from_nothing_and_steps_pass_to_the_service():
+    transport, requests = video_service(cascade_fakes.tiny_mp4())
+    node = video_node(transport, num_inference_steps=8)
+    await drain(
+        node,
+        [
+            video_call("call_a", "a beach"),
+            video_call("call_b", "a city", new_scene=True),
+            lambda: shot_all(node, requests, 2),
+        ],
+    )
+    jobs = [json.loads(r.content) for r in requests if r.method == "POST"]
+    assert [job["task"] for job in jobs] == ["t2va", "t2va"]
+    assert [job["num_inference_steps"] for job in jobs] == [8, 8]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["failed", "timeout"])
+async def test_a_clip_that_fails_or_times_out_answers_with_an_error_and_deletes_its_job(
+    outcome,
+):
+    if outcome == "failed":
+        transport, requests = video_service(b"", outcome="failed")
+        node = video_node(transport)
+    else:
+        transport, requests = video_service(b"", polls=10**6)
+        node = video_node(transport, timeout_s=0.1)
+
+    async def answered() -> None:
+        while node.job_id is not None or node.numbers:
+            await asyncio.sleep(0.01)
+
+    outputs = await drain(node, [video_call("call_a", "a beach"), answered])
+    events = video_events(outputs)
+    assert events[-2] == (VIDEO_PROGRESS, "call_a", 1, "failed")
+    [response] = [e[2] for e in events if e[0] == "response"]
+    if outcome == "failed":
+        assert (
+            "the video job failed" in response["error"]
+            and "no film" in response["error"]
+        )
+    else:
+        assert response["error"] == "generate_video gave no clip within 0.1 s"
+    assert not any(e[0] == VIDEO_CLIP for e in events)
+    assert [r.url.path for r in requests if r.method == "DELETE"] == [
+        "/v1/videos/vid_1"
+    ]
+    assert node.keyframe is None
+
+
+@pytest.mark.asyncio
+async def test_closing_the_video_node_deletes_the_job_of_the_clip_in_generation():
+    transport, requests = video_service(b"", polls=10**6)
+    node = video_node(transport)
+    outputs: list[TimedChunk] = []
+
+    async def inputs():
+        yield video_call("call_a", "a beach")
+        await asyncio.Event().wait()
+
+    task = asyncio.ensure_future(node.process(inputs(), outputs.append))
+    while node.job_id is None:
+        await asyncio.sleep(0.01)
+    await node.close()
+    task.cancel()
+    await asyncio.wait({task})
+    assert [r.url.path for r in requests if r.method == "DELETE"] == [
+        "/v1/videos/vid_1"
+    ]
+    assert not any(e[0] == "response" for e in video_events(outputs))
+
+
+@pytest.mark.asyncio
+async def test_the_providers_of_a_generator_share_its_calls_and_the_dialog_takes_the_video_tools_lifecycle():
+    settings = declared(nodes=video_wiring()).component_graph()
+    assert settings.tool_settings("llm") == {
+        "lookup": ToolSettings(path=LOOKUP_IMPLEMENTATION),
+        "generate_video": VIDEO_LIFECYCLE,
+    }
+    assert [node.name for node in settings.tool_providers("llm")] == ["tools", "video"]
+    tools = build(settings.node("tools").component)
+    tools.place(settings, "tools")
+    assert tools.foreign == {"generate_video"}
+    outputs = await drain(
+        tools,
+        [
+            tool_call_chunk(
+                [
+                    lookup_call("call_a", "Paris"),
+                    ToolCall(
+                        id="call_b", name="generate_video", arguments={"prompt": "x"}
+                    ),
+                ],
+                1,
+            )
+        ],
+    )
+    assert [r.id for o in outputs for r in tool_responses_of(o)] == ["call_a"]
+    dialog = build({"kind": "dialog"})
+    dialog.place(settings, "dialog")
+    assert dialog.tools["generate_video"] == VIDEO_LIFECYCLE
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("film a beach", True),
+            text_chunk("Shooting.", 1),
+            video_call("call_a", "a beach"),
+            control_chunk(TURN_DONE, turn=1),
+            tool_response_chunk(
+                [
+                    ToolResponse(
+                        id="call_a",
+                        name="generate_video",
+                        response={
+                            "clip": 1,
+                            "seconds": 4.5,
+                            "prompt": "a beach",
+                            "continues": False,
+                        },
+                    )
+                ],
+                None,
+            ),
+            text_chunk("Here is the beach.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert turn_events(outputs)[3:] == [
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (MESSAGES, 2),
+    ]
+    assert prompts(outputs)[1][-1] == (
+        "tool",
+        '{"clip": 1, "seconds": 4.5, "prompt": "a beach", "continues": false}',
+    )
+
+
+@pytest.mark.parametrize(
+    "nodes, message",
+    [
+        (
+            video_wiring(),
+            None,
+        ),
+        (
+            {
+                **video_wiring(),
+                "tools": {
+                    **video_wiring()["tools"],
+                    "tools": {
+                        "lookup": LOOKUP_IMPLEMENTATION,
+                        "generate_video": LOOKUP_IMPLEMENTATION,
+                    },
+                },
+            },
+            r"implement \['generate_video'\] twice",
+        ),
+        (
+            {
+                **video_wiring(),
+                "dialog": {
+                    **video_wiring()["dialog"],
+                    "inputs": video_wiring()["dialog"]["inputs"][:-1],
+                },
+            },
+            r"must read \['video:tool_response'\]",
+        ),
+        (
+            {
+                **{
+                    name: node
+                    for name, node in video_wiring().items()
+                    if name != "tools"
+                },
+                "llm": {**video_wiring()["llm"], "tools": [VIDEO_FUNCTION]},
+                "dialog": {
+                    **video_wiring()["dialog"],
+                    "inputs": [
+                        entry
+                        for entry in video_wiring()["dialog"]["inputs"]
+                        if not (
+                            isinstance(entry, dict)
+                            and entry.get("source") == "tools:tool_response"
+                        )
+                    ],
+                },
+            },
+            None,
+        ),
+    ],
+)
+def test_video_node_declarations(nodes, message):
+    if message is None:
+        settings = declared(nodes=nodes).component_graph()
+        assert "generate_video" in settings.tool_settings("llm")
+    else:
+        with pytest.raises(ValueError, match=message):
+            declared(nodes=nodes)
+
+
+def test_the_video_profile_offers_the_scene_beside_the_other_tools():
+    config = profile_config("qwen3-asr-qwen3.8-27b-vivian-video")
+    settings = config.component_graph()
+    assert [tool.name for tool in settings.node("llm").component.tools] == [
+        "get_weather",
+        "search_wikipedia",
+        "generate_image",
+        "generate_video",
+    ]
+    assert settings.tool_settings("llm")["generate_video"] == VIDEO_LIFECYCLE
+    video = settings.node("video").component
+    assert (
+        video.model,
+        video.seconds,
+        video.short_edge,
+        video.num_inference_steps,
+    ) == (
+        "OpenVDN/vdn-minimax-h3",
+        4,
+        384,
+        8,
+    )
+    service = next(service for service in config.services if service.name == "video")
+    assert service.command[:4] == [
+        "sglang",
+        "serve",
+        "--model-path",
+        "OpenVDN/vdn-minimax-h3",
+    ]
+    assert service.command[-10:-6] == [
+        "--quantization",
+        "fp8",
+        "--performance-mode",
+        "speed",
+    ]
+    assert service.port == 8030 and service.env == {"CUDA_VISIBLE_DEVICES": "2,3"}
+    assert config.session_publish["video"] == [VIDEO_CLIP, VIDEO_PROGRESS]
+    assert config.session_limits().max_output_bytes == 32 * 1024 * 1024
+    graph = config.session_graph()
+    assert graph.nodes["dialog"].bound("video").feedback

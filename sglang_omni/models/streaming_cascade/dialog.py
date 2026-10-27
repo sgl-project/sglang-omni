@@ -19,7 +19,7 @@ from sglang_omni.models.streaming_cascade.base import (
     control_chunk,
     messages_chunk,
 )
-from sglang_omni.models.streaming_cascade.tools import ToolSettings
+from sglang_omni.models.streaming_cascade.tools import ToolLifecycle
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     COMMIT,
@@ -218,8 +218,8 @@ class Dialog(StreamComponent):
         # The calls of ended replies still running, whose results report in a turn of their own, and the results waiting for that turn, each with its call.
         self.running_calls: dict[str, ToolCall] = {}
         self.arrived: list[tuple[ToolCall, ToolResponse]] = []
-        # Each tool's settings, from the tools nodes answering the calls this dialog reads; a tool they lack is awaited and cancelled.
-        self.tools: dict[str, ToolSettings] = {}
+        # Each tool's lifecycle, from the nodes answering the calls this dialog reads; a tool they lack is awaited and cancelled.
+        self.tools: dict[str, ToolLifecycle] = {}
         self.turns = 0
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
         self.progress: list[tuple[int, float]] = []

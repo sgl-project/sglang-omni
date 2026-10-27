@@ -127,6 +127,19 @@ test("the page shows the latest picture a tool made with the request it was made
   assert.equal(app.elements.get("pictureCaption").textContent, "a cat");
 });
 
+test("the page says which clip of the scene is being shot", async () => {
+  const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null });
+  const { socket } = await firstSessionUpdate(app);
+  assert.equal(app.elements.get("scene").hidden, true);
+  socket.receive({ type: "sglang.video.progress", call_id: "call_a", clip: 2, status: "generating", percent: 40 });
+  await app.settled();
+  assert.equal(app.elements.get("scene").hidden, false);
+  assert.equal(app.elements.get("sceneLine").textContent, "Shooting scene 2 (40%)");
+  socket.receive({ type: "sglang.video.progress", call_id: "call_a", clip: 2, status: "failed", percent: 0 });
+  await app.settled();
+  assert.equal(app.elements.get("sceneLine").textContent, "Scene 2 failed");
+});
+
 test("the page offers no text-only replies, since its captions and truncate follow audio playback", () => {
   const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null });
   assert.equal(app.panelOptions.length, 1);

@@ -76,6 +76,25 @@ test("a picture a tool made joins its reply and the session's pictures with the 
   assert.deepEqual(announced, [picture]);
 });
 
+test("a clip arrives in pieces and is announced once whole, with the scene's progress kept", () => {
+  const clips = [];
+  const scenes = [];
+  const session = new DuplexSession({ transport: () => {}, now: () => 0, listeners: { clip: (clip) => clips.push(clip), scene: (progress) => scenes.push(progress) } });
+  session.handle({ type: "sglang.video.progress", call_id: "call_a", clip: 1, status: "generating", percent: 40 });
+  assert.deepEqual(session.sceneProgress, { callId: "call_a", clip: 1, status: "generating", percent: 40 });
+  assert.equal(scenes.length, 1);
+  const piece = (index, data) => ({ type: "sglang.video.delta", call_id: "call_a", clip: 1, piece: index, pieces: 2, mime_type: "video/mp4", data, duration_s: 4.5, width: 896, height: 512, fps: 24, prompt: "a beach" });
+  session.handle(piece(1, "AwQ="));
+  assert.equal(clips.length, 0);
+  session.handle(piece(0, "AQI="));
+  session.handle(piece(0, "AQI="));
+  assert.equal(clips.length, 1);
+  assert.deepEqual([...clips[0].bytes], [1, 2, 3, 4]);
+  assert.equal(clips[0].prompt, "a beach");
+  assert.equal(clips[0].mimeType, "video/mp4");
+  assert.equal(session.clips.length, 1);
+});
+
 test("an interruption freezes the heard text where the truncate cuts the reply", () => {
   const { session, sent } = openSession();
   session.played("resp_0", 600, false);

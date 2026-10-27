@@ -10,6 +10,7 @@ from sglang_omni.proto.session import OutputChunk, TimedChunk
 
 AUDIO = "audio"
 IMAGE = "image"
+VIDEO = "video"
 TEXT = "text"
 TRANSCRIPT = "transcript"
 CONTROL = "control"
@@ -37,6 +38,10 @@ TOOL_CALL = "tool_call"
 TOOL_RESPONSE = "tool_response"
 # {"call_id": str, "name": str, "arguments": object, "mime_type": str, "data": str}; one image a tool made, as base64, with the call that asked for it
 TOOL_IMAGE = "tool_image"
+# {"call_id": str, "clip": int, "piece": int, "pieces": int, "mime_type": str, "data": bytes, "duration_s": float, "width": int, "height": int, "fps": float, "prompt": str}; one piece of the file of one clip of a scene, in piece order
+VIDEO_CLIP = "video_clip"
+# {"call_id": str, "clip": int, "status": "queued" | "generating" | "done" | "failed", "percent": int}; how far the clip of a call is
+VIDEO_PROGRESS = "video_progress"
 SESSION_CONTROL = "session"  # {"type": <control type>, ...}
 # `turn_detection.type` of a realtime session: speech boundaries end turns, or an end-of-turn model holds a turn across a pause
 SERVER_VAD = "server_vad"

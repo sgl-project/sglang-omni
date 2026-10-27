@@ -79,6 +79,33 @@ class ResponseFinished(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class VideoPiece:
+    """One piece of the file of one clip of the scene a video node shoots, with the call that asked for the clip; the pieces of a clip arrive in order."""
+
+    call_id: str
+    clip: int
+    piece: int
+    pieces: int
+    mime_type: str
+    data: bytes
+    duration_s: float
+    width: int
+    height: int
+    fps: float
+    prompt: str
+
+
+@dataclass(frozen=True)
+class VideoProgress:
+    """How far the clip of a call is: queued, generating with a percentage, done or failed."""
+
+    call_id: str
+    clip: int
+    status: str
+    percent: int
+
+
+@dataclass(frozen=True)
 class TurnFailure:
     error_type: str
     code: str
@@ -118,6 +145,8 @@ OutputEvent = (
     | OutputImage
     | AudioFinished
     | ResponseFinished
+    | VideoPiece
+    | VideoProgress
     | TurnFailure
     | SpeechStarted
     | SpeechStopped

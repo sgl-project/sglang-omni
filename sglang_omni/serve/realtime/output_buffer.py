@@ -20,6 +20,7 @@ from sglang_omni.serve.realtime.output import (
     ResponseStatus,
     TextDelta,
     TextFinished,
+    VideoPiece,
 )
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
@@ -43,6 +44,8 @@ def envelope_size_bytes(envelope: Envelope) -> int:
         return len(event.text.encode()) + ENVELOPE_BYTES
     elif isinstance(event, OutputImage):
         return len(event.data) + ENVELOPE_BYTES
+    elif isinstance(event, VideoPiece):
+        return math.ceil(len(event.data) / 3) * 4 + ENVELOPE_BYTES
     else:
         return ENVELOPE_BYTES
 
