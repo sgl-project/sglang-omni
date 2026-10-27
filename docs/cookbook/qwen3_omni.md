@@ -181,7 +181,7 @@ sgl-omni serve \
 
 - **Context.** The thinker serves within the draft's context (8,192 tokens for both drafts), and a request whose prompt plus `max_tokens` exceeds it, less a few tokens each step reserves, is rejected with an error. Setting `--preprocessing.factory.max_seq_len 8192` rejects most of them before the thinker.
 - **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers apply penalties once per verify block, drop `min_p`, and skip the sampler that records logprobs. Rollout `/generate` requests default to `return_logprob: true`, so they must send `false`.
-- **Scheduling.** Async decode is turned off, and setting `enable_mixed_chunk` is rejected. EAGLE3 also runs prefill without CUDA graphs, since its draft extends on the composed multimodal embeddings. Sessions and weight updates are refused while a draft is loaded.
+- **Scheduling.** Async decode is turned off, and setting `enable_mixed_chunk` is rejected. Sessions and weight updates are refused while a draft is loaded.
 - **Speech output.** A draft is refused on a speech server for now. The thinker captures the layer the talker reads through the same hidden-state capture the drafts use, and the speculative prefill does not store the talker's prompt rows, so serve with `--text-only`.
 
 Text-only ASR on LibriSpeech test-clean (`--text-only`, thinker on one H200 141GB with FA3 and SGLang 0.5.22, greedy, `max_tokens 200`), in requests per second; concurrency 1 over all 2,620 utterances, concurrency 4 and 8 over the two halves, each on a server that has not seen them:
@@ -192,4 +192,4 @@ Text-only ASR on LibriSpeech test-clean (`--text-only`, thinker on one H200 141G
 | 4 | 16.45 | 24.41 (1.48x) | 12.06 (0.73x) |
 | 8 | 24.00 | 36.17 (1.51x) | 18.05 (0.75x) |
 
-DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. EAGLE3 trails at concurrency 4 and 8 because its draft runs prefill without CUDA graphs. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.
+DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.
