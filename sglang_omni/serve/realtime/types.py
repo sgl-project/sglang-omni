@@ -13,6 +13,13 @@ from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_SESSION_UPDATE_TIMEOUT_S,
 )
+from sglang_omni.serve.realtime.constants import (
+    CLOSE_REASON_CONTEXT_LIMIT,
+    CLOSE_REASON_INTERNAL,
+    CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
+    CLOSE_REASON_SESSION_IDLE_TIMEOUT,
+    CLOSE_REASON_SESSION_OPEN_TIMEOUT,
+)
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
@@ -40,7 +47,6 @@ class ProtocolError(ValueError):
 class ContextLimitError(RuntimeError):
     """A single response's text outgrew max_history_chars."""
 
-    CODE = "context_limit"
     MESSAGE = "response text context limit"
 
     def __init__(self) -> None:
@@ -50,7 +56,6 @@ class ContextLimitError(RuntimeError):
 class OutputBudgetError(RuntimeError):
     """Session output outgrew its bounded buffer."""
 
-    CODE = "output_budget_exhausted"
     MESSAGE = "outbound event budget exhausted"
 
     def __init__(self, message: str = MESSAGE) -> None:
@@ -60,27 +65,22 @@ class OutputBudgetError(RuntimeError):
 class SessionOpenTimeoutError(TimeoutError):
     """The backend did not finish opening a realtime session in time."""
 
-    CODE = "session_open_timeout"
-
     def __init__(self, open_timeout_s: float) -> None:
         super().__init__(f"session open exceeded {open_timeout_s:g} s")
 
 
 def failure_code(exc: Exception) -> str:
     """Client-facing error code of a server-side session failure."""
-    if isinstance(
-        exc,
-        (
-            ContextLimitError,
-            OutputBudgetError,
-            SessionIdleTimeoutError,
-            SessionOpenTimeoutError,
-            SessionOutputBudgetError,
-        ),
-    ):
-        return exc.CODE
+    if isinstance(exc, ContextLimitError):
+        return CLOSE_REASON_CONTEXT_LIMIT
+    elif isinstance(exc, (OutputBudgetError, SessionOutputBudgetError)):
+        return CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED
+    elif isinstance(exc, SessionIdleTimeoutError):
+        return CLOSE_REASON_SESSION_IDLE_TIMEOUT
+    elif isinstance(exc, SessionOpenTimeoutError):
+        return CLOSE_REASON_SESSION_OPEN_TIMEOUT
     else:
-        return "internal"
+        return CLOSE_REASON_INTERNAL
 
 
 def samples_to_ms(sample_count: int, sample_rate_hz: int) -> float:

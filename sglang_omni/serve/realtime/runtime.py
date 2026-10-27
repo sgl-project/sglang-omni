@@ -271,7 +271,7 @@ class SessionRuntime:
         candidate: SessionConfiguration,
         event_id: str,
     ) -> bool:
-        """Open the adapter; return False if failed admission expires after cleanup."""
+        """Open the adapter; return False if failed admission expires after cleanup, raise SessionOpenTimeoutError if the open outlasts cleanup_timeout_s."""
         try:
             await asyncio.wait_for(
                 adapter.open(self.session_id, candidate, self.emit),
@@ -289,7 +289,7 @@ class SessionRuntime:
                     return False
                 else:
                     raise ProtocolError("admission_rejected", str(exc)) from exc
-            elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            elif isinstance(exc, TimeoutError):
                 raise SessionOpenTimeoutError(self.limits.cleanup_timeout_s) from exc
             else:
                 raise
@@ -629,7 +629,7 @@ class SessionRuntime:
                 code = failure_code(exc)
             logger.error(
                 f"Realtime session {self.session_id} input pump failed: {exc}",
-                exc_info=code == "internal",
+                exc_info=code == CLOSE_REASON_INTERNAL,
             )
             self.fail(str(exc), code)
 

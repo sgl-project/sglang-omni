@@ -814,6 +814,18 @@ def test_a_drop_oldest_append_that_cannot_confirm_the_dropped_input_changes_noth
     assert graph.pending_input_done == {1: 2}
 
 
+def test_an_input_confirmation_that_finds_the_output_queue_full_exhausts_the_output_budget():
+    sessions = SessionGraphRunner()
+    graph = input_runtime(
+        {name: SessionNode((name,), ("input",)) for name in NODES},
+        SessionLimits(max_output_chunks=1),
+    )
+    graph.outputs.put_nowait(None)
+    with pytest.raises(SessionOutputBudgetError, match="confirmed input seq 0"):
+        sessions.emit_graph_input_done(graph, "left", chunk(0))
+    assert graph.next_output == 0
+
+
 def test_control_edge_does_not_address_internal_stages():
     with pytest.raises(ValueError, match="target_stages"):
         SessionControlEdgeConfig(

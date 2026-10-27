@@ -572,13 +572,14 @@ class CoordinatorSessions:
                     and session.pending[0].chunk.seq >= session.control_barriers[0][0]
                 ):
                     session.wake.clear()
-                    wake_task = asyncio.create_task(session.wake.wait())
-                    done, _ = await asyncio.wait(
-                        {wake_task}, timeout=session.limits.idle_timeout_s
-                    )
-                    if not done:
-                        wake_task.cancel()
-                        raise SessionIdleTimeoutError(session.limits.idle_timeout_s)
+                    try:
+                        await asyncio.wait_for(
+                            session.wake.wait(), session.limits.idle_timeout_s
+                        )
+                    except TimeoutError as exc:
+                        raise SessionIdleTimeoutError(
+                            session.limits.idle_timeout_s
+                        ) from exc
                     else:
                         continue
                 else:

@@ -16,11 +16,14 @@ from starlette.status import (
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sglang_omni.admission import ContextExhaustedError
-from sglang_omni.pipeline.types import SessionIdleTimeoutError
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLIENT_CLOSED,
+    CLOSE_REASON_CONTEXT_LIMIT,
     CLOSE_REASON_DISCONNECT,
     CLOSE_REASON_IDLE_TIMEOUT,
+    CLOSE_REASON_INTERNAL,
+    CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
+    CLOSE_REASON_SESSION_IDLE_TIMEOUT,
     CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
 )
 from sglang_omni.serve.realtime.control import ControlEvent, Failure
@@ -36,7 +39,6 @@ from sglang_omni.serve.realtime.schema import (
 )
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
 from sglang_omni.serve.realtime.types import (
-    ContextLimitError,
     OutputBudgetError,
     ProtocolError,
     failure_code,
@@ -49,10 +51,10 @@ POLICY_CLOSE_REASONS = frozenset(
     {
         CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
         CLOSE_REASON_IDLE_TIMEOUT,
+        CLOSE_REASON_SESSION_IDLE_TIMEOUT,
+        CLOSE_REASON_CONTEXT_LIMIT,
+        CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
         ContextExhaustedError.CODE,
-        SessionIdleTimeoutError.CODE,
-        ContextLimitError.CODE,
-        OutputBudgetError.CODE,
     }
 )
 
@@ -192,13 +194,15 @@ class SharedRealtimeSession:
                         Failure(exc.code, str(exc), False, event_id, exc.param)
                     )
                 except OutputBudgetError as budget_error:
-                    self.runtime.fail(str(budget_error), budget_error.CODE)
+                    self.runtime.fail(
+                        str(budget_error), CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED
+                    )
                     return False
             except Exception as exc:
                 code = failure_code(exc)
                 logger.error(
                     f"Realtime session {self.session_id} dispatch failed: {exc}",
-                    exc_info=code == "internal",
+                    exc_info=code == CLOSE_REASON_INTERNAL,
                 )
                 self.runtime.fail(str(exc), code, event_id=event_id)
                 return False

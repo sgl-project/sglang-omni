@@ -621,6 +621,25 @@ def test_adapter_failure_closes_the_session_with_fatal_error(
     assert close_frame == (close_code, close_reason)
 
 
+def test_a_response_outgrowing_max_history_chars_closes_the_session_with_context_limit() -> (
+    None
+):
+    adapter = ScriptedAdapter(reply=text_reply("x" * 9, is_finished=True))
+    with build_test_client(
+        adapter, limits=RuntimeLimits(max_history_chars=8)
+    ).websocket_connect("/v1/realtime") as websocket:
+        open_session(websocket)
+        append_audio(websocket, b"\1" * UNIT_BYTES, 0)
+        events = receive_until(websocket, "session.closed")
+        close_frame = receive_close_frame(websocket)
+
+    error = events_of_type(events, "error")[0]
+    assert error["sglang"]["fatal"] is True
+    assert error["error"]["code"] == "context_limit"
+    assert events[-1]["reason"] == "context_limit"
+    assert close_frame == (1008, "context_limit")
+
+
 @pytest.mark.parametrize(
     ("close_reason", "should_stall_close"),
     [("client_closed", False), ("context_exhausted", True)],

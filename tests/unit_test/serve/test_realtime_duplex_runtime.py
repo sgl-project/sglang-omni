@@ -184,8 +184,7 @@ class RejectedOpenAdapter(GatedAdmissionAdapter):
 
 
 class StalledClientWebSocket:
-    """Plays scripted frames, yielding between them like a socket read, and holds
-    every server frame until it reads."""
+    """Plays scripted frames, yielding between them like a socket read, and holds every server frame until it reads."""
 
     def __init__(self, frames: list[str]) -> None:
         self.frames = frames
