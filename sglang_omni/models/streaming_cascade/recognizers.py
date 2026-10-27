@@ -474,7 +474,6 @@ class StreamingTranscriptionRecognizer(RealtimeWebSocketRecognizer):
         elif event_type == "transcription.segment":
             segment = TranscriptionSegmentEvent.model_validate(event)
             if not segment.is_final:
-                exchange.text = segment.text
                 return [transcript_chunk(segment.text, False)]
             else:
                 pass
