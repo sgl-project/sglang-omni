@@ -180,15 +180,13 @@ Supported Models
    developer_reference/main.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
-   developer_reference/full_duplex_interactive_model.md
    developer_reference/config.md
    developer_reference/adding_parameters.md
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
-   developer_reference/full_duplex_bench.md
-   developer_reference/full_duplex_metrics.md
+   developer_reference/full_duplex_guide.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
