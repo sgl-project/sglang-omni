@@ -85,19 +85,10 @@ class GpuDiagnosticsReport(TypedDict):
     warnings: list[str]
 
 
-# Each vendor masks its cards with its own variable, and the mask is what
-# decides the logical-to-physical mapping this report prints.
 VISIBLE_DEVICES_VARIABLES = {
-    "cuda": "CUDA_VISIBLE_DEVICES",
     "xpu": "ZE_AFFINITY_MASK",
     "npu": "ASCEND_RT_VISIBLE_DEVICES",
 }
-DEFAULT_VISIBLE_DEVICES_VARIABLE = "CUDA_VISIBLE_DEVICES"
-# Level Zero admits each card named in ZE_AFFINITY_MASK once, in ascending
-# order, however often and in whatever order it was written, so
-# ZE_AFFINITY_MASK=5,2,2 makes physical 2 the logical 0 and physical 5 the
-# logical 1. CUDA_VISIBLE_DEVICES honours the written order instead.
-ASCENDING_VISIBLE_MASK_DEVICES = frozenset({"xpu"})
 
 _BACKENDS = (
     ("attention", "flash-attn-4", "flash_attn.cute"),
@@ -442,7 +433,8 @@ def accelerator_logical_devices(
     else:
         pass
 
-    if device_type in ASCENDING_VISIBLE_MASK_DEVICES and all(
+    # note (siju): Level Zero admits each masked card once, in ascending order.
+    if device_type == "xpu" and all(
         isinstance(entry, int) for entry in visible_devices
     ):
         visible_devices = sorted(set(visible_devices))
@@ -464,25 +456,18 @@ def accelerator_logical_devices(
             if logical_index < len(visible_devices)
             else logical_index
         )
-        if properties is not None and driver_version is None:
-            driver_version = getattr(properties, "driver_version", None)
+        if device_type == "xpu" and properties is not None and driver_version is None:
+            driver_version = properties.driver_version
         else:
             pass
         uuid = normalize_uuid(getattr(properties, "uuid", None))
-        # A driver query, so it reports host-wide free memory the way NVML does
-        # on the CUDA arm; the allocator view would only see this process.
-        mem_get_info = getattr(device_module, "mem_get_info", None)
         free_memory_bytes = None
-        if mem_get_info is None:
-            pass
-        else:
-            try:
-                free_memory_bytes = int(mem_get_info(logical_index)[0])
-            except Exception as exc:
-                warnings.append(
-                    f"free memory on {device_type}:{logical_index} is "
-                    f"unavailable: {exc}"
-                )
+        try:
+            free_memory_bytes = device_module.mem_get_info(logical_index)[0]
+        except Exception as exc:
+            warnings.append(
+                f"free memory on {device_type}:{logical_index} is unavailable: {exc}"
+            )
         devices.append(
             {
                 "logical_index": logical_index,
@@ -512,18 +497,12 @@ def collect_gpu_diagnostics(
     source_env = os.environ if env is None else env
     device_type = current_platform.device_type
     visible_variable = VISIBLE_DEVICES_VARIABLES.get(
-        device_type, DEFAULT_VISIBLE_DEVICES_VARIABLE
+        device_type, "CUDA_VISIBLE_DEVICES"
     )
     visible_value = source_env.get(visible_variable)
-    # An unset mask must parse as "no mask": None would make the parser read the
-    # process's CUDA_VISIBLE_DEVICES, which says nothing about another vendor's
-    # cards and would relabel them.
     visible_devices = parse_cuda_visible_devices(visible_value or "")
     torch = torch_module or importlib.import_module("torch")
 
-    # Only these have a device module to enumerate. Anything else, including the
-    # base platform SGLang falls back to when no card is visible, stays on NVML,
-    # which can still report the driver of a CUDA host torch cannot use.
     if current_platform.is_xpu() or current_platform.is_npu():
         warnings: list[str] = []
         devices, driver_version = accelerator_logical_devices(
