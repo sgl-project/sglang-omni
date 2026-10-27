@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    DEFAULT_MAX_SESSIONS,
     NemotronVoiceChatDuplexPipelineConfig,
 )
 from sglang_omni.models.nemotron_voicechat.payload_types import (
@@ -126,7 +127,9 @@ async def warmup_realtime(realtime_deployment: RealtimeDeployment) -> None:
 
 
 async def run(arguments: argparse.Namespace) -> None:
-    config = NemotronVoiceChatDuplexPipelineConfig(model_path=arguments.model_path)
+    config = NemotronVoiceChatDuplexPipelineConfig(
+        model_path=arguments.model_path, max_sessions=arguments.max_sessions
+    )
     if arguments.talker_attention:
         config.stages[2].engine.attention_backend = arguments.talker_attention
     else:
@@ -140,12 +143,13 @@ async def run(arguments: argparse.Namespace) -> None:
             await warmup_realtime(
                 deployment(
                     client,
+                    config,
                     session_limits=SessionLimits(operation_timeout_s=WARMUP_TIMEOUT_S),
                 )
             )
         else:
             pass
-        realtime_deployment = deployment(client)
+        realtime_deployment = deployment(client, config)
         if arguments.serve:
             app = create_app(
                 client,
@@ -272,6 +276,7 @@ if __name__ == "__main__":
         help="skip startup warmup (requires populated kernel caches)",
     )
     parser.add_argument("--port", type=int, default=8097)
+    parser.add_argument("--max-sessions", type=int, default=DEFAULT_MAX_SESSIONS)
     parser.add_argument("--talker-attention", choices=["triton", "torch_native"])
     asyncio.run(run(parser.parse_args()))
 else:

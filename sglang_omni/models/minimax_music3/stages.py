@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from typing import Literal
 
 import torch
 
@@ -45,6 +46,9 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: Mapping[str, object] | None = None,
+    enable_serial_offload: bool = False,
+    serial_offload_source: Literal["mmap", "ram"] = "mmap",
+    serial_offload_cache_dir: str | None = None,
 ):
     if not (
         current_platform.is_cuda()
@@ -66,7 +70,10 @@ def create_ar_executor(
     else:
         pass
     builder = MiniMaxMusic3EngineBuilder(
-        max_running_requests=max(int(max_concurrency), 1)
+        max_running_requests=max(int(max_concurrency), 1),
+        enable_serial_offload=enable_serial_offload,
+        serial_offload_source=serial_offload_source,
+        serial_offload_cache_dir=serial_offload_cache_dir,
     )
     scheduler = builder.build(
         model_path,
@@ -99,6 +106,7 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
+    enable_serial_offload: bool = False,
 ) -> MiniMaxMusic3AcousticScheduler:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -119,6 +127,7 @@ def create_dit_dav_executor(
         cache_dit_max_warmup_steps=cache_dit_max_warmup_steps,
         cache_dit_residual_diff_threshold=cache_dit_residual_diff_threshold,
         cache_dit_max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
+        serial_offload=enable_serial_offload,
     )
     logger.info(
         f"MiniMax Music 3 acoustic executor ready device={decoder.device} dtype={decoder.dtype} dit_steps={decoder.dit_steps} dit_cfg_scale={decoder.dit_cfg_scale:.3f} attention_backend={decoder.attention_backend} compile_acoustic={decoder.compile_acoustic} sample_rate={OUTPUT_SAMPLE_RATE}"

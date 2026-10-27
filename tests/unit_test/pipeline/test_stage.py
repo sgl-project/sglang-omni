@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import pickle
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -14,13 +16,25 @@ import torch
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef, TransportKind
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage import runtime as stage_runtime_module
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.proto import DataReadyMessage, ShutdownMessage, SubmitMessage
+from sglang_omni.proto import (
+    DataReadyMessage,
+    ShutdownMessage,
+    StagePayload,
+    SubmitMessage,
+)
+from sglang_omni.proto.session import (
+    SESSION_METADATA_KEY,
+    SessionIdentity,
+    SessionOperation,
+    TimedChunk,
+)
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -258,15 +272,18 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
     async def run() -> None:
         scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        reported = threading.Event()
         stage_obj = make_stage(
             scheduler=scheduler,
             control_plane=CloseAwareControlPlane(),
+            process_failure_callback=reported.set,
         )
 
         with pytest.raises(RuntimeError, match="Scheduler thread"):
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+        assert reported.is_set()
 
     asyncio.run(run())
 
@@ -281,6 +298,28 @@ class BlockingWarmUpHooks(SessionHooks):
         self.warm_up_thread_names.append(threading.current_thread().name)
         self.entered.set()
         self.release.wait()
+
+
+def test_stage_start_propagates_warmup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(
+        scheduler,
+        "warm_up_serving_thread",
+        Mock(
+            spec=scheduler.warm_up_serving_thread,
+            side_effect=RuntimeError("warmup failed"),
+        ),
+    )
+
+    async def run() -> None:
+        stage = make_stage(scheduler=scheduler)
+        try:
+            with pytest.raises(RuntimeError, match="warmup failed"):
+                await asyncio.wait_for(stage.start(), timeout=2.0)
+        finally:
+            await stage.stop()
+
+    asyncio.run(run())
 
 
 def test_stage_starts_only_after_its_session_hooks_warm_the_scheduler_thread() -> None:
@@ -559,6 +598,68 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         stream_ref = DataRef.from_dict(msg.data_ref)
         assert stream_ref.metadata["token_id"] == 1
         assert [ref.path for ref in stream_ref.metadata_tensors] == ["hidden"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("legacy_header", [False, True])
+def test_payload_header_round_trips_binary_control_plane(
+    legacy_header: bool,
+) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_stage_payload(
+            request_id="binary-header",
+            data={"hidden": torch.arange(32, dtype=torch.bfloat16).reshape(4, 8)},
+        )
+        payload.request.params = {"seed": 42, "temperature": 0.7}
+        payload.request.metadata = {"ref_audio": b"\x00\xff\x01" * 4096}
+        reference, operation = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.SHM
+        )
+        assert isinstance(reference.header, bytes)
+        serialized = reference.to_dict()
+        if legacy_header:
+            serialized["header"] = base64.b64encode(reference.header).decode("ascii")
+        else:
+            pass
+        message = DataReadyMessage(
+            request_id=payload.request_id,
+            from_stage="thinker",
+            to_stage="talker",
+            data_ref=serialized,
+        )
+        received = deserialize_message(serialize_message(message))
+        received_reference = DataRef.from_dict(received.data_ref)
+        assert received_reference.header == reference.header
+        restored = await stage_io.read_payload(
+            relay, payload.request_id, received_reference
+        )
+        assert tensor_equal(restored.data, payload.data)
+        assert restored.request.params == payload.request.params
+        assert restored.request.metadata == payload.request.metadata
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid_header", [42, [], {}, bytearray(b"header")])
+def test_payload_header_rejects_invalid_wire_type(invalid_header) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        reference, operation = await stage_io.write_payload(
+            relay,
+            "invalid-header",
+            make_stage_payload(request_id="invalid-header"),
+            transport=TransportKind.SHM,
+        )
+        serialized = reference.to_dict()
+        serialized["header"] = invalid_header
+        with pytest.raises(TypeError, match="header must be"):
+            DataRef.from_dict(serialized)
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
 
     asyncio.run(run())
 
@@ -1786,5 +1887,59 @@ def test_result_resources_survive_partial_fanout():
             await stage_obj.route_result("request", {"output": "value"})
         assert sent == ["first"]
         assert released == [True]
+
+    asyncio.run(run())
+
+
+def session_append_payload(request_id: str, stages: tuple[str, ...]) -> StagePayload:
+    chunk = TimedChunk("text", 0, 0, 1, {"text": "hi"}, format="text.delta", turn=1)
+    operation = SessionOperation("append", SessionIdentity("tts"), stages, chunk)
+    payload = make_stage_payload(request_id=request_id, data={"codes": [1]})
+    payload.request.metadata[SESSION_METADATA_KEY] = operation.to_dict()
+    return payload
+
+
+def test_a_session_append_reaches_the_next_owner_before_the_stream() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["vocoder"],
+        )
+        payload = session_append_payload("req-route", ("tts_engine", "vocoder"))
+        await sender.execute(payload)
+        assert [target for target, _, _ in control_plane.sent_to_stage] == ["vocoder"]
+        await sender.route_result("req-route", payload)
+        assert control_plane.completions == []
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "vocoder",
+            "vocoder",
+        ]
+        assert control_plane.sent_to_stage[1][2].is_done
+
+    asyncio.run(run())
+
+
+def test_session_route_rejects_a_stream_edge_off_the_route() -> None:
+    async def run() -> None:
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="tts_engine",
+            get_next=lambda request_id, output: "vocoder",
+            endpoints={"vocoder": "inproc://vocoder", "monitor": "inproc://monitor"},
+            relay=FakeRelay(),
+            control_plane=control_plane,
+            stream_targets=["monitor"],
+        )
+        await sender.route_result(
+            "req-off", session_append_payload("req-off", ("tts_engine", "vocoder"))
+        )
+        assert [msg.success for msg in control_plane.completions] == [False]
+        assert "linear payload edges" in control_plane.completions[0].error
 
     asyncio.run(run())

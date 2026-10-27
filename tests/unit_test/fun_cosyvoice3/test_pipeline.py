@@ -120,8 +120,8 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
 
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
-        "vocoder",
         "tts_engine",
+        "vocoder",
     ]
     assert [stage.process for stage in config.stages] == [
         "pipeline",
@@ -153,11 +153,12 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "enable_flow_cuda_graph": True,
         "enable_flow_prefix_cuda_graph": True,
         "enable_flow_whole_history_cuda_graph": True,
+        "enable_hift_cuda_graph": True,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
-        "flow_prefix_cache_gb": 24.0,
+        "flow_prefix_cache_gb": None,
     }
 
     build_compiled_process_topology(config)

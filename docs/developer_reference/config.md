@@ -217,6 +217,12 @@ Class-level hooks a model config may declare:
 - `tensor_parallel_server_args_overrides(stage_name, tp_size)` /
   `topology_gated_custom_all_reduce_stages()` — engine overrides derived from
   the resolved TP topology at launch.
+- `entry_stage_admission_limit()` returns how many requests one entry stage
+  replica admits at once when that stage owns admission, such as a UMM
+  controller. The coordinator caps in-flight requests at this value times the
+  entry process replicas, or at the running+queued capacity of an engine stage
+  when that is lower, since the entry stage may send any request to any engine
+  stage. `None` (the default) derives the cap from the generation engine.
 
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
@@ -250,13 +256,15 @@ rejected from the author channel.
 ### Device and GPU placement contract
 
 A stage's card is placement's decision, made in the parent process from
-`stage.gpu` (or `processes.<name>.replica_devices` for a replicated process)
+`stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica)
 and handed to the factory as `gpu_id`. The factory's `device` argument is
 only ever a device type: `cpu` to keep a stage on the host, or a platform
 type such as `cuda`/`npu` that must match the host. It never carries an
 index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
 two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
 (`sglang_omni/config/schema.py`), because those are injected by placement.
+
+Replica devices take precedence over stage GPU IDs regardless of YAML/CLI precedence. Expansion logs the overridden stage GPU and effective replica assignments; CPU stages are unchanged. No special GPU sentinel is needed.
 
 Inside a factory the two values meet in one helper:
 

@@ -19,6 +19,7 @@ from benchmarks.duplex.oracle_models import (
     StatusDetails,
     TraceRecord,
     WireEvent,
+    turn_detection_type,
 )
 from benchmarks.duplex.profiles import (
     DEFAULT_PROFILE,
@@ -66,6 +67,37 @@ TERMINAL_REASONS = {
     "stop": ("completed", "sglang.input_audio.end"),
     "client_closed": ("cancelled", "session.close"),
 }
+# note (luojiaxuan): A native reply whose turn ended before its talker spoke all of its text ends incomplete, where it would end completed/stop; no client command causes it.
+NATIVE_CUT_TERMINAL = ("incomplete", "max_output_tokens")
+NATIVE_ENDED_TERMINALS = {("completed", "stop"), NATIVE_CUT_TERMINAL}
+
+# note (luojiaxuan): A turn-based server takes turns by server VAD and flushes the
+# partial last unit; whether it truncates a cancelled reply, accepts client
+# commits or also offers client turn control depends on the deployment, so those
+# grants are checked only for what the recorder uses: server_vad turns.
+TURN_BASED_DEPLOYMENT_GRANTS = ("supports_truncate", "client_commit")
+TURN_BASED_CAPABILITIES = {
+    **{
+        name: value
+        for name, value in REQUIRED_CAPABILITIES.items()
+        if name not in TURN_BASED_DEPLOYMENT_GRANTS
+    },
+    "interaction": "turn_based",
+    "native_full_duplex": False,
+    "tail_policy": "flush",
+}
+# note (luojiaxuan): A turn-based reply whose talker stopped at its token budget ends incomplete.
+TURN_BASED_TERMINALS = {
+    ("completed", "stop"),
+    ("completed", "empty_turn"),
+    ("incomplete", "max_output_tokens"),
+}
+TURN_BASED_INTERRUPTED_TERMINAL = ("cancelled", "interrupted")
+TURN_BASED_OBSERVATIONS = (
+    "input_audio_buffer.speech_stopped",
+    "conversation.item.input_audio_transcription.delta",
+    "conversation.item.input_audio_transcription.completed",
+)
 
 MEDIA_DELTAS = (
     "response.output_audio.delta",
@@ -116,10 +148,11 @@ def evaluate_trace(
         )
     else:
         pass
+    turn_based = profile_contract.protocol == "turn_based"
     unit_duration_ms = profile_contract.native_unit_ms
     input_bytes_per_unit = INPUT_SAMPLE_RATE * unit_duration_ms // 1000 * 2
     required_capabilities = {
-        **REQUIRED_CAPABILITIES,
+        **(TURN_BASED_CAPABILITIES if turn_based else REQUIRED_CAPABILITIES),
         "native_unit_ms": unit_duration_ms,
         "output_audio_format": {
             "type": "audio/pcm",
@@ -143,7 +176,8 @@ def evaluate_trace(
     audio_times: list[float] = []
     units: list[tuple[int, float]] = []
     input_byte_count = output_byte_count = next_sequence = admissions = 0
-    session_id = None
+    speech_starts = interruptions = 0
+    session_id = requested_type = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
     drain_after_eos_s = close_ack_s = None
@@ -203,6 +237,16 @@ def evaluate_trace(
                     check(
                         session_id is not None, "session.update before session.created"
                     )
+                    if turn_based:
+                        requested_type = turn_detection_type(
+                            event.session, "turn_based"
+                        )
+                        check(
+                            isinstance(requested_type, str),
+                            "configure update lacks audio.input.turn_detection.type",
+                        )
+                    else:
+                        pass
                 elif event_type == "input_audio_buffer.append":
                     check(updated, "audio input before session.updated")
                     check(
@@ -290,12 +334,35 @@ def evaluate_trace(
                             == required_value,
                             f"unsupported capability: {capability_name}",
                         )
+                    if turn_based:
+                        for capability_name in TURN_BASED_DEPLOYMENT_GRANTS:
+                            check(
+                                type(granted_capabilities.get(capability_name)) is bool,
+                                f"unsupported capability: {capability_name}",
+                            )
+                        turn_control = granted_capabilities.get("turn_control")
+                        check(
+                            isinstance(turn_control, list)
+                            and "server_vad" in turn_control,
+                            "unsupported capability: turn_control",
+                        )
+                    else:
+                        pass
                     modalities = granted_capabilities.get("output_modalities")
                     check(
                         isinstance(modalities, list)
                         and all(isinstance(item, str) for item in modalities)
                         and "audio" in modalities,
                         "unsupported capability: output_modalities",
+                    )
+                else:
+                    pass
+                if turn_based:
+                    echoed_type = turn_detection_type(session_fields, "turn_based")
+                    check(
+                        echoed_type == requested_type,
+                        f"turn_detection.type {echoed_type!r} does not echo the "
+                        f"requested {requested_type!r}",
                     )
                 else:
                     pass
@@ -317,7 +384,10 @@ def evaluate_trace(
                     event.accepted_end_ms == input_byte_count / INPUT_BYTES_PER_MS,
                     "ended input duration mismatch",
                 )
-                check(event.tail_policy == "pad", "ended tail policy mismatch")
+                check(
+                    event.tail_policy == required_capabilities["tail_policy"],
+                    "ended tail policy mismatch",
+                )
                 ended = True
             elif event_type == "sglang.input_audio.drained":
                 check(ended, "input drained before ended receipt")
@@ -331,9 +401,13 @@ def evaluate_trace(
                     "drained consumed duration mismatch",
                 )
                 check(event.discarded_ms == 0, "accepted input was discarded")
+                # note (luojiaxuan): pad fills the last unit with silence; flush
+                # processes it short.
                 expected_padding = (
                     math.ceil(expected_ms / unit_duration_ms) * unit_duration_ms
                     - expected_ms
+                    if required_capabilities["tail_policy"] == "pad"
+                    else 0
                 )
                 check(event.padding_ms == expected_padding, "drained padding mismatch")
                 drained = True
@@ -359,6 +433,10 @@ def evaluate_trace(
                         "native unit media time is not unit-aligned",
                     )
                     units.append((unit_index, media.duration_ms))
+            elif turn_based and event_type == "input_audio_buffer.speech_started":
+                speech_starts += 1
+            elif turn_based and event_type in TURN_BASED_OBSERVATIONS:
+                pass
             elif event_type == "response.created":
                 check(updated, "response before session.updated")
                 if event.response is None:
@@ -373,6 +451,17 @@ def evaluate_trace(
                         "invalid created response status",
                     )
                     response_states[event.response.id] = ResponseState()
+            elif turn_based and event_type in (
+                "sglang.response.progress",
+                "sglang.response.heard",
+            ):
+                # note (luojiaxuan): a server with an alignment node reports how far
+                # a reply's delivered audio covers its text; it changes no state.
+                # note (Haoling Pu): sglang.response.heard, sent after a truncate, changes no state either.
+                check(
+                    event.response_id in response_states,
+                    f"{event_type}: unknown response",
+                )
             elif event_type.startswith("response."):
                 close_requests = counts["send", "session.close"]
                 check(
@@ -394,11 +483,32 @@ def evaluate_trace(
                             event.response.status_details if event.response else None
                         )
                         reason = details.reason if details is not None else None
-                        check(
-                            reason in TERMINAL_REASONS,
-                            f"unsupported response terminal reason: {reason}",
-                        )
-                        if reason in TERMINAL_REASONS:
+                        if (
+                            turn_based
+                            and (status, reason) == TURN_BASED_INTERRUPTED_TERMINAL
+                        ):
+                            # note (luojiaxuan): The server can put a reply on the
+                            # wire after the speech_started that cancels it, so each
+                            # interruption is matched to its own earlier speech_started
+                            # rather than to one during the response.
+                            check(
+                                interruptions < speech_starts,
+                                f"response {response_id} cancelled by an interruption "
+                                "without a preceding speech_started",
+                            )
+                            interruptions += 1
+                        elif turn_based:
+                            check(
+                                (status, reason) in TURN_BASED_TERMINALS,
+                                f"unsupported response terminal {status}/{reason}",
+                            )
+                        else:
+                            check(
+                                reason in TERMINAL_REASONS
+                                or (status, reason) == NATIVE_CUT_TERMINAL,
+                                f"unsupported response terminal reason: {reason}",
+                            )
+                        if not turn_based and reason in TERMINAL_REASONS:
                             expected_status, required_command_type = TERMINAL_REASONS[
                                 reason
                             ]
@@ -417,7 +527,8 @@ def evaluate_trace(
                             pass
                         # note (wenyao): The pump consumes EOS before enqueueing drain.
                         check(
-                            reason != "stop" or not drained,
+                            (status, reason) not in NATIVE_ENDED_TERMINALS
+                            or not drained,
                             "native completed terminal after the drain receipt",
                         )
                         check(
@@ -549,11 +660,19 @@ def evaluate_trace(
         else:
             pass
     for response_id, response_state in response_states.items():
-        check(
-            response_state.terminal == "completed" and response_state.reason == "stop",
-            f"response {response_id} ended {response_state.terminal}/{response_state.reason}, "
-            "expected completed/stop",
-        )
+        if turn_based:
+            check(
+                response_state.terminal is not None,
+                f"response {response_id} has no response.done",
+            )
+        else:
+            check(
+                (response_state.terminal, response_state.reason)
+                in NATIVE_ENDED_TERMINALS,
+                f"response {response_id} ended {response_state.terminal}/"
+                f"{response_state.reason}, expected completed/stop or "
+                "incomplete/max_output_tokens",
+            )
     coverage = {
         "input_output_overlap": bool(audio_times)
         and any(
@@ -575,6 +694,14 @@ def evaluate_trace(
         "input_output_overlap": coverage["input_output_overlap"],
         "drain_after_eos_s": drain_after_eos_s,
         "close_ack_s": close_ack_s,
+        **(
+            {
+                "responses_created": len(response_states),
+                "responses_interrupted": interruptions,
+            }
+            if turn_based
+            else {}
+        ),
     }
     return {
         "status": (

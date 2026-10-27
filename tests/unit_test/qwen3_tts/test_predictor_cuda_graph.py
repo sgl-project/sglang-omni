@@ -21,7 +21,10 @@ import torch
 from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.layers.activation import SiluAndMul
-from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.quantization.unquant import (
+    Bf16GemmBackend,
+    UnquantizedLinearMethod,
+)
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,
@@ -32,7 +35,10 @@ from sglang.srt.runtime_context import get_context
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSTalker,
+)
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -72,8 +78,8 @@ class TupleLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
-        self.quant_method = sglang_model_module.UnquantizedLinearMethod()
-        self.tp_size = 1
+        self.quant_method = UnquantizedLinearMethod()
+        self.tp_group = None
 
     @property
     def weight(self) -> torch.Tensor:
@@ -163,6 +169,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         MAX_BS, device=device, dtype=torch.long
     )
     talker.sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     talker.sub_seed_offsets = torch.arange(
         1, NUM_CODE_GROUPS, device=device, dtype=torch.long
     )
@@ -197,12 +205,9 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         model=SimpleNamespace(
             layers=[layer],
             norm=RMSNorm(HIDDEN, eps=1e-6).to(device, DTYPE),
-            codec_embedding=nn.ModuleList(
-                [
-                    nn.Embedding(PRED_VOCAB, HIDDEN).to(device, DTYPE)
-                    for _ in range(NUM_CODE_GROUPS - 1)
-                ]
-            ),
+            codec_embedding=Qwen3TTSCodecTables(
+                NUM_CODE_GROUPS - 1, PRED_VOCAB, HIDDEN
+            ).to(device, DTYPE),
         ),
         lm_head=nn.ModuleList(
             [
@@ -379,7 +384,11 @@ def test_missing_embedding_buffer_uses_original_graph_path():
 def with_projected_tables(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
     device = talker.predictor_k_cache.device
     talker.predictor_projected_embeddings = torch.empty(
-        NUM_CODE_GROUPS - 2, PRED_VOCAB, HIDDEN, device=device, dtype=DTYPE
+        NUM_CODE_GROUPS - 2,
+        talker.config.code_predictor_config.vocab_size,
+        HIDDEN,
+        device=device,
+        dtype=DTYPE,
     )
     talker.predictor_projected_buffer = torch.empty(
         MAX_BS, HIDDEN, device=device, dtype=DTYPE
@@ -434,6 +443,59 @@ def test_projected_tables_decode_the_codes_the_projection_decodes(batch_size: in
     assert torch.equal(table_embeds, projection_embeds)
 
 
+def with_checkpoint_vocab(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
+    device = talker.predictor_k_cache.device
+    talker.config.code_predictor_config.vocab_size = CHECKPOINT_VOCAB
+    talker.code_predictor.model.codec_embedding = Qwen3TTSCodecTables(
+        NUM_CODE_GROUPS - 1, CHECKPOINT_VOCAB, HIDDEN
+    ).to(device, DTYPE)
+    talker.code_predictor.lm_head = nn.ModuleList(
+        [
+            TupleLinear(HIDDEN, CHECKPOINT_VOCAB).to(device, DTYPE)
+            for _ in range(NUM_CODE_GROUPS - 1)
+        ]
+    )
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+@pytest.mark.parametrize("projected", [False, True])
+def test_sampled_codebook_steps_match_the_separate_sampler_and_gather(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, projected: bool
+):
+    if torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("the split sampler runs on sm_90")
+    else:
+        pass
+    device = torch.device("cuda")
+    requests = uniform_requests(batch_size, top_k=50, top_p=0.9)
+    talkers = []
+    for _ in range(2):
+        talker = with_checkpoint_vocab(build_talker(device))
+        talker = with_projected_tables(talker) if projected else talker
+        talker.prepare_decode_buffers(requests)
+        talkers.append(talker)
+    fused_talker, separate_talker = talkers
+    object.__delattr__(separate_talker, "predictor_embedding_buffer")
+    layer0, hidden, positions = step_inputs(batch_size, device)
+    separate_eager = run_eager(separate_talker, layer0, hidden, positions)
+    separate_graph = run_forward(separate_talker, layer0, hidden, positions)
+
+    def sampler_outside_the_codebook_step(self, logits, *, sub_positions):
+        raise AssertionError("a sampled codebook step ran the sampler on its own")
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "sample_subtalker_token", sampler_outside_the_codebook_step
+    )
+    fused_eager = run_eager(fused_talker, layer0, hidden, positions)
+    fused_graph = run_forward(fused_talker, layer0, hidden, positions)
+
+    for codes, embeds in (fused_eager, fused_graph, separate_graph):
+        assert torch.equal(codes, separate_eager[0])
+        assert torch.equal(embeds, separate_eager[1])
+
+
 @pytest.mark.accelerator
 def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     monkeypatch: pytest.MonkeyPatch,
@@ -447,16 +509,13 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     projection = nn.Linear(
         CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
     ).to(device, DTYPE)
-    embeddings = nn.ModuleList(
-        [
-            nn.Embedding(CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(device, DTYPE)
-            for _ in range(3)
-        ]
+    codec_tables = Qwen3TTSCodecTables(3, CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(
+        device, DTYPE
     )
-    talker.code_predictor.model.codec_embedding = embeddings
+    talker.code_predictor.model.codec_embedding = codec_tables
     talker.code_predictor.project_input = projection
     talker.predictor_projected_embeddings = torch.empty(
-        len(embeddings) - 1,
+        codec_tables.weight.shape[0] - 1,
         CHECKPOINT_VOCAB,
         CHECKPOINT_PREDICTOR_HIDDEN,
         device=device,
@@ -470,7 +529,7 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
     accumulation = accumulation / (1 - accumulation)
     for index, table in enumerate(talker.predictor_projected_embeddings):
-        rows = embeddings[index].weight[codes].float()
+        rows = codec_tables.weight[index][codes].float()
         reference = torch.nn.functional.linear(rows, weight, bias)
         magnitude = rows.abs() @ weight.abs().T + bias.abs()
         rounding_bound = (

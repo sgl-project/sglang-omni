@@ -716,6 +716,8 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
         "timing",
         "reference-asr",
         "unified-score",
+        "transcribe",
+        "score",
     ]
     assert calls[2][0][1:3] == ["-m", V10_CLI]
     assert calls[2][1] == settings.gpu
@@ -728,7 +730,13 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
     (settings.repeat_dir(1) / "v10" / "reference" / "asr.json").write_text("{}")
     calls.clear()
     asr_module.asr(settings, 1, False)
-    assert [command[3] for command, _ in calls] == ["asr", "timing", "unified-score"]
+    assert [command[3] for command, _ in calls] == [
+        "asr",
+        "timing",
+        "unified-score",
+        "transcribe",
+        "score",
+    ]
 
     (settings.repeat_dir(1) / "v10" / "reference" / "asr.json").unlink()
     calls.clear()
@@ -743,7 +751,7 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
     failing.append("unified-score")
     with pytest.raises(SystemExit, match="v1.0 unified scoring failed.*backfill"):
         asr_module.asr(settings, 1, False)
-    assert [command[3] for command, _ in calls][-2:] == [
+    assert [command[3] for command, _ in calls][-4:-2] == [
         "reference-asr",
         "unified-score",
     ]
@@ -754,7 +762,12 @@ def test_asr_runs_the_v10_pass_after_the_v15_phases_and_names_its_log(
     v15_only = load_settings("v15-only")
     stage_scored_repeat(v15_only, None)
     asr_module.asr(v15_only, 1, False)
-    assert [command[3] for command, _ in calls] == ["asr", "timing"]
+    assert [command[3] for command, _ in calls] == [
+        "asr",
+        "timing",
+        "transcribe",
+        "score",
+    ]
     assert not any(V10_CLI in command for command, _ in calls)
 
 
@@ -797,8 +810,9 @@ def test_two_visible_gpus_record_on_both_and_transcribe_on_the_first(
     scored = load_settings("scored")
     stage_scored_repeat(scored, V10_IDS)
     asr_module.asr(scored, 1, False)
-    # note (luojiaxuan): v1.5 ASR, v1.5 timing, v1.0 ASR, v1.0 unified scoring.
-    assert visible == ["0", "", "0", ""]
+    # note (luojiaxuan): v1.5 ASR, v1.5 timing, v1.0 ASR, v1.0 unified scoring,
+    # then the two listening phases.
+    assert visible == ["0", "", "0", "", "0", "0"]
 
 
 def stub_judge_phases(
@@ -966,6 +980,62 @@ def test_judge_stops_with_the_server_log_once_the_judge_server_exits(
     assert exits_during in calls[-1]
 
 
+def test_asr_scores_listening_in_the_scoring_venv_then_the_serving_venv(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    failing = []
+
+    def run(command: list[str], visible_gpus: str | None = None) -> bool:
+        calls.append((command, visible_gpus))
+        return command[3] not in failing
+
+    monkeypatch.setattr(asr_module, "run_command", run)
+    repeat_dir = stage_scored_repeat(settings, V10_IDS)
+    asr_module.asr(settings, 1, False)
+    (transcribe, transcribe_gpus), (score, score_gpus) = calls[-2:]
+    out = str(repeat_dir / "listening")
+    assert transcribe[:4] == [
+        str(settings.scoring_python),
+        "-m",
+        "benchmarks.eval.benchmark_duplex_listening",
+        "transcribe",
+    ]
+    assert transcribe[4:] == [
+        "--manifest",
+        str(repeat_dir / "reference-audio" / "reference-manifest.json"),
+        "--manifest",
+        str(repeat_dir / "v10" / "reference" / "manifest.json"),
+        "--out",
+        out,
+        "--nemo",
+        str(settings.parakeet_nemo),
+        "--nemo-sha256",
+        PARAKEET_SHA256,
+        "--device",
+        "cuda",
+    ]
+    assert score == [
+        sys.executable,
+        "-m",
+        "benchmarks.eval.benchmark_duplex_listening",
+        "score",
+        "--out",
+        out,
+        "--device",
+        "cuda",
+    ]
+    assert transcribe_gpus == score_gpus == settings.gpu
+
+    calls.clear()
+    failing.append("transcribe")
+    with pytest.raises(
+        SystemExit, match="listening-quality phase failed.*asr --run-name"
+    ):
+        asr_module.asr(settings, 1, False)
+    assert [command[3] for command, _ in calls][-1] == "transcribe"
+
+
 def test_asr_and_judge_run_only_the_v10_phases_for_a_v10_only_repeat(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -977,7 +1047,12 @@ def test_asr_and_judge_run_only_the_v10_phases_for_a_v10_only_repeat(
         lambda command, **_: asr_calls.append(command) or True,
     )
     asr_module.asr(settings, 1, False)
-    assert [command[3] for command in asr_calls] == ["reference-asr", "unified-score"]
+    assert [command[3] for command in asr_calls] == [
+        "reference-asr",
+        "unified-score",
+        "transcribe",
+        "score",
+    ]
     (repeat_dir / "v10" / "reference" / "asr.json").write_text("{}")
     judge_calls = stub_judge_phases(monkeypatch, failing_subset=None)
     judge_module.judge(settings, 1, False)

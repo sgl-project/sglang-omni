@@ -38,6 +38,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph imp
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
+from sglang_omni.platforms import current_platform
+from sglang_omni.utils.audio import load_with_torchaudio
 
 # note (Junnan Li): stepaudio2 Token2wav keeps the prompt plus this many frames so positions stay in range.
 FLOW_CACHE_TAIL_FRAMES = 100
@@ -245,7 +247,13 @@ class Token2Wav(torch.nn.Module):
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:
-        audio, sample_rate = torchaudio.load(source)
+        # note (guomangmang): NPU lacks torchcodec, so use the soundfile fallback.
+        if current_platform.is_npu():
+            audio, sample_rate = load_with_torchaudio(
+                source, source_name="MiniCPM-o reference"
+            )
+        else:
+            audio, sample_rate = torchaudio.load(source)
         if sample_rate != 16000:
             speech = torchaudio.transforms.Resample(sample_rate, 16000)(audio)
         else:

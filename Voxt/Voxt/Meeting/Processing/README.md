@@ -26,7 +26,7 @@ File speaker analysis now uses an operation-owned Sortformer engine with bounded
 
 `MeetingImportedFilePipeline` owns one import's transcriber, temporary audio and model use; it does not mutate live coordinator engine/transcriber fields. Prepared queue inputs are borrowed read-only for analysis. Only after successful analysis, and when history audio storage was enabled at analysis start, is an independent archive copy created for history's move-based import. Failed/cancelled analysis no longer copies the entire WAV unnecessarily; disabled audio storage skips the copy. Cleanup removes only operation-owned temporary files, never the queue cache.
 
-File-task logs stay at lifecycle boundaries: preparation, analysis stages, resource waits, failures and completion. Per-window, per-feed and allocator snapshots are opt-in through `VOXT_FILE_TASK_TRACE=1`; task identity lives independently in `MeetingFileTaskContext`.
+File-task logs stay at lifecycle boundaries: preparation, analysis stages, resource waits, failures and completion. Task identity lives independently in `MeetingFileTaskContext`. The unconnected per-feed trace facility has been retired; `VOXT_FILE_TASK_TRACE` does not enable additional production events.
 
 Implementation details, remaining limitations and pending macOS acceptance: [File preprocessing resource safety](../../../docs/FilePreprocessingResourceSafety.zh-CN.md).
 

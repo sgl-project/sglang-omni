@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from array import array
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +28,11 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
     FunCosyVoice3SGLangModel,
 )
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
+from tests.unit_test.fixtures.accelerator import require_cuda
+from tests.unit_test.fun_cosyvoice3.prefill_graph_engine import PrefillRecord
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ENGINE_TIMEOUT_SECONDS = 900
 
 
 def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
@@ -52,6 +60,8 @@ def test_cosyvoice3_runner_reads_cuda_token_ids_through_pinned_staging() -> None
     runner.outbox = None
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     requests = [
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
@@ -317,6 +327,8 @@ def test_cosyvoice3_seeded_ras_redraw_of_a_row_subset_matches_the_full_draw() ->
     runner = object.__new__(FunCosyVoice3ModelRunner)
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(sampler=SimpleNamespace(use_ascend_backend=False))
     )
@@ -494,9 +506,7 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
     requests = [
         SimpleNamespace(
             data=SimpleNamespace(
-                req=SimpleNamespace(
-                    extend_range=SimpleNamespace(length=2), prefix_indices=[99]
-                ),
+                req=SimpleNamespace(extend_len=2, prefix_len=1),
                 prompt_input_embeds=torch.arange(12, dtype=torch.float32).reshape(3, 4),
             )
         )
@@ -507,4 +517,46 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
 
     assert torch.equal(
         result, torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.float32)
+    )
+
+
+@pytest.mark.accelerator
+def test_cuda_prefill_graphs_replay_the_composed_rows_as_the_eager_forward(
+    tmp_path: Path,
+) -> None:
+    require_cuda()
+    output_path = tmp_path / "prefills.pt"
+    engine = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tests.unit_test.fun_cosyvoice3.prefill_graph_engine",
+            "--checkpoint-directory",
+            str(tmp_path / "checkpoint"),
+            "--output",
+            str(output_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=ENGINE_TIMEOUT_SECONDS,
+    )
+    assert engine.returncode == 0, engine.stdout[-4000:] + engine.stderr[-4000:]
+    records = [
+        PrefillRecord(**record) for record in torch.load(output_path, weights_only=True)
+    ]
+
+    assert all(record.is_graph_replay for record in records)
+    for record in records:
+        torch.testing.assert_close(
+            record.graph_hidden_states, record.eager_hidden_states
+        )
+    assert any(len(record.extend_token_counts) > 1 for record in records)
+    assert any(
+        record.extend_token_counts == [1] and record.prefix_token_counts[0] > 0
+        for record in records
+    )
+    assert any(
+        record.extend_token_counts[0] > 1 and record.prefix_token_counts[0] > 0
+        for record in records
     )

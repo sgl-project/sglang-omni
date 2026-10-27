@@ -8,18 +8,18 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from sglang_omni.serve.realtime.semantic_vad import (
-    SemanticTurnDetector,
-    SemanticVADConfig,
-)
-from sglang_omni.serve.realtime.smart_turn import (
+from sglang_omni.audio.semantic_vad import SemanticTurnDetector, SemanticVADConfig
+from sglang_omni.audio.smart_turn import (
     SMART_TURN_MODEL_ENV,
+    SMART_TURN_MODEL_FILENAME,
     SMART_TURN_MODEL_SHA256,
     SmartTurnEOU,
     load_smart_turn,
+    resolve_model_path,
 )
+from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, Emit, VADEvent
+from sglang_omni.models.turn_detection.node import SMART_TURN_MODEL_REPO
 from sglang_omni.serve.realtime.turn_detector import build_turn_detector
-from sglang_omni.serve.realtime.vad import VAD_FRAME_SAMPLES, Emit, VADEvent
 
 
 class FakeSpeechModel:
@@ -177,3 +177,16 @@ def test_smart_turn_loader_is_local_and_checksum_pinned(tmp_path, monkeypatch):
     assert len(SMART_TURN_MODEL_SHA256) == 64
     with pytest.raises(ValueError, match="checksum mismatch"):
         load_smart_turn()
+
+
+def test_smart_turn_model_path_names_a_local_file_or_its_hugging_face_repository(
+    tmp_path,
+):
+    local = tmp_path / SMART_TURN_MODEL_FILENAME
+    local.write_bytes(b"onnx")
+    assert resolve_model_path(tmp_path) == local
+    with patch(
+        "sglang_omni.audio.smart_turn.hf_hub_download", return_value=str(local)
+    ) as download:
+        assert resolve_model_path(SMART_TURN_MODEL_REPO) == local
+    download.assert_called_once_with(SMART_TURN_MODEL_REPO, SMART_TURN_MODEL_FILENAME)

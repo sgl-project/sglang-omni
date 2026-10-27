@@ -15,7 +15,12 @@ from sglang.srt.runtime_context import get_context, get_schedule
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
+from sglang_omni.models.qwen3_omni.config import TALKER_MAX_RUNNING_REQUESTS
 from sglang_omni.platforms import current_platform
+
+
+def thinker_sampling_backend() -> str:
+    return "flashinfer" if current_platform.is_cuda() else "pytorch"
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +176,7 @@ def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
         assert context_length is None
-        assert overrides["sampling_backend"] == "pytorch"
+        assert overrides["sampling_backend"] == thinker_sampling_backend()
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
             sampling_backend=overrides["sampling_backend"],
@@ -328,6 +333,7 @@ def make_hybrid_configurator(
     configurator.attn_dp_size = 1
     configurator.spec_algorithm = SimpleNamespace(is_none=lambda: True)
     configurator.model_config = SimpleNamespace(hf_config=SimpleNamespace())
+    configurator.extra_mamba_cache_bytes_per_req = 0
     return configurator
 
 
@@ -466,7 +472,7 @@ def test_qwen_colocated_thinker_startup_threads_effective_budget(
     assert scheduler_calls == [
         {
             "mem_fraction_static": 0.70,
-            "sampling_backend": "pytorch",
+            "sampling_backend": thinker_sampling_backend(),
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.70,
         }
@@ -492,13 +498,92 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     assert scheduler_calls == [
         {
             "mem_fraction_static": 0.75,
-            "sampling_backend": "pytorch",
+            "sampling_backend": thinker_sampling_backend(),
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.75,
         }
     ]
     assert "effective_total_gpu_memory_fraction=0.75" in caplog.text
     assert "encoder_mem_reserve=0.0" in caplog.text
+
+
+@pytest.mark.parametrize("speculative_algorithm", ["DFLASH", "EAGLE3"])
+def test_a_speech_thinker_refuses_a_speculative_draft(
+    monkeypatch, speculative_algorithm: str
+) -> None:
+    """The talker's prompt capture shares the layers a draft reads, so speech output
+    is refused before the draft loads."""
+    patch_thinker_startup(monkeypatch)
+
+    with pytest.raises(ValueError, match="does not support speech output"):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy",
+            speech_enabled=True,
+            server_args_overrides={
+                "speculative_algorithm": speculative_algorithm,
+                "speculative_draft_model_path": "draft",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("speculative_overrides", "message"),
+    [
+        ({"speculative_draft_model_path": "draft"}, "needs a speculative_algorithm"),
+        ({"speculative_algorithm": "DFLASH"}, "needs speculative_draft_model_path"),
+        ({"speculative_algorithm": "EAGLE3"}, "needs speculative_draft_model_path"),
+        (
+            {"speculative_algorithm": "NGRAM", "speculative_draft_model_path": "draft"},
+            "supports DFLASH and EAGLE3",
+        ),
+        (
+            {
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+            },
+            "supports DFLASH and EAGLE3",
+        ),
+    ],
+)
+def test_the_thinker_checks_the_speculative_algorithm_and_draft_together(
+    monkeypatch, speculative_overrides: dict[str, str], message: str
+) -> None:
+    """Speculation is on whenever an algorithm is set, so an algorithm without its
+    draft, or one the thinker does not serve, cannot skip the speculative guards."""
+    patch_thinker_startup(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy", server_args_overrides=speculative_overrides
+        )
+
+
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+def test_session_thinker_hands_continuation_aware_admission_to_its_scheduler(
+    monkeypatch, continuation_aware_admission: bool
+) -> None:
+    patch_thinker_startup(monkeypatch)
+    scheduler_kwargs: list[dict[str, object]] = []
+
+    def create_thinker_scheduler(server_args, gpu_id, **kwargs):
+        scheduler_kwargs.append(kwargs)
+        return publish_for(server_args)
+
+    monkeypatch.setattr(
+        qwen_stages, "create_thinker_scheduler", create_thinker_scheduler
+    )
+
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        execution_mode="session",
+        total_gpu_memory_fraction=0.75,
+        continuation_aware_admission=continuation_aware_admission,
+    )
+
+    assert (
+        scheduler_kwargs[-1]["continuation_aware_admission"]
+        is continuation_aware_admission
+    )
 
 
 def test_qwen_thinker_threads_explicit_generation_batch_policy(monkeypatch) -> None:
@@ -626,7 +711,9 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         lambda gpu_id: None,
     )
 
-    qwen_stages.create_talker_ar_executor_from_config("dummy")
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", max_running_requests=TALKER_MAX_RUNNING_REQUESTS
+    )
 
     prefill_ladder = qwen_stages.build_default_prefill_cuda_graph_bs(
         qwen_stages.TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
@@ -731,7 +818,13 @@ def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:
     assert result.stdout.strip().splitlines()[-1] == "ABSENT"
 
 
-def talker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, object]:
+def talker_overrides(
+    monkeypatch,
+    *,
+    allows: bool,
+    max_running_requests: int = TALKER_MAX_RUNNING_REQUESTS,
+    **kwargs,
+) -> dict[str, object]:
     captured: list[dict[str, object]] = []
 
     def recording_builder(model_path, context_length, **overrides):
@@ -766,7 +859,9 @@ def talker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, object
     )
     monkeypatch.setattr(current_platform, "enable_talker_graph", lambda: allows)
 
-    qwen_stages.create_talker_ar_executor_from_config("dummy", **kwargs)
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", max_running_requests=max_running_requests, **kwargs
+    )
     return captured[-1]
 
 
@@ -779,6 +874,23 @@ def test_talker_decode_graph_follows_the_platform_gate(
     assert overrides["disable_cuda_graph"] is expected
 
 
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected"),
+    [(None, 40), ({"max_running_requests": 24}, 24)],
+)
+def test_the_talker_runs_its_cap_unless_the_engine_overrides_it(
+    monkeypatch, server_args_overrides: dict[str, int] | None, expected: int
+) -> None:
+    overrides = talker_overrides(
+        monkeypatch,
+        allows=True,
+        max_running_requests=40,
+        server_args_overrides=server_args_overrides,
+    )
+
+    assert overrides["max_running_requests"] == expected
+
+
 def test_talker_graph_stays_available_to_an_explicit_override(monkeypatch) -> None:
     """The stage note promises engine.disable_cuda_graph wins."""
     overrides = talker_overrides(
@@ -788,3 +900,25 @@ def test_talker_graph_stays_available_to_an_explicit_override(monkeypatch) -> No
     )
 
     assert overrides["disable_cuda_graph"] is False
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "overrides", "expected"),
+    [
+        (True, {"enable_torch_compile": True}, False),
+        (True, None, False),
+        (False, {"enable_torch_compile": True}, True),
+    ],
+)
+def test_torch_compile_is_disabled_on_npu(
+    monkeypatch,
+    is_npu: bool,
+    overrides: dict[str, object] | None,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_npu", lambda: is_npu)
+
+    result = qwen_stages.disable_torch_compile_on_npu(overrides)
+
+    assert result is not None
+    assert result["enable_torch_compile"] is expected

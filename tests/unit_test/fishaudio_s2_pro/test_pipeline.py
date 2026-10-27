@@ -947,6 +947,8 @@ def run_s2pro_engine_with_fake_buffers(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
@@ -1373,6 +1375,48 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     third = service.get_or_encode({"audio_path": str(ref_path)})
     assert torch.equal(third, torch.tensor([[2, 3]], dtype=torch.long))
     assert codec.calls == 2
+
+
+def test_fish_reference_data_url_path_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
+
+    payload = base64.b64encode(b"uploaded-voice").decode("ascii")
+    data_url = f"data:audio/wav;base64,{payload}"
+
+    def load_audio(path: str, *, target_sample_rate: int, mono: bool):
+        assert path == data_url
+        return np.zeros(8, dtype=np.float32)
+
+    monkeypatch.setattr(s2pro_stages, "load_audio", load_audio)
+
+    class Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode(self, audios: torch.Tensor, audio_lengths: torch.Tensor):
+            del audios, audio_lengths
+            self.calls += 1
+            return torch.tensor([[5, 6]], dtype=torch.long), None
+
+    codec = Codec()
+    service = ReferenceEncodeService(
+        FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        max_items=16,
+        max_bytes=1024,
+    )
+
+    # The speech service sends an uploaded voice as a data URL in audio_path.
+    reference = {"audio_path": data_url, "data": payload, "media_type": "audio/wav"}
+    first = service.get_or_encode(reference)
+    second = service.get_or_encode(reference)
+
+    assert torch.equal(first, second)
+    assert service.stats()["entries"] == 1
+    assert codec.calls == 1
 
 
 def tiny_fish_omni_config(*, with_audio_decoder: bool = True):

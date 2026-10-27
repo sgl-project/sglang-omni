@@ -23,6 +23,7 @@ def create_talker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     session_mode: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a codec scheduler with per-request condition embeddings."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -39,13 +40,19 @@ def create_talker_scheduler(
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
     )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
+    from sglang_omni.utils import cuda_graph_batch_validator
     from sglang_omni.vendor.sglang.server_args import override_server_args
 
     want_cuda_graph = not bool(resolved_view(server_args).disable_cuda_graph)
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     # note (MayDomine): condition embeddings require an uncached, unsplit prefill.
     override_server_args(
         server_args,
@@ -70,6 +77,7 @@ def create_talker_scheduler(
         weight_prefix=None,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=want_cuda_graph,
+        enable_prefill_input_embeds=prefill_graph_backend == CudaGraphBackend.BREAKABLE,
     )
 
     model = model_worker.model_runner.model
@@ -79,6 +87,13 @@ def create_talker_scheduler(
     model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         init_sglang_cuda_graphs(model_worker)
+        if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+            cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+                model_worker.model_runner,
+                operator_selected=operator_selected_prefill_backend,
+            )
+        else:
+            pass
     else:
         pass
 

@@ -39,7 +39,12 @@ _BUFFER_PROBES: dict[str, BufferProbe] = {
         note="sampler pool = max_running_requests + 1 (one reserved padding row)",
     ),
     "Qwen3TTSTalker": BufferProbe(
-        (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
+        (
+            (
+                "decode_feedback_embedding.weight",
+                lambda m: m.decode_feedback_embedding.weight.shape[0],
+            ),
+        )
     ),
     "MossTTSDelaySGLangModel": BufferProbe(
         (

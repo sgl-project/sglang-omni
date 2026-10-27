@@ -10,7 +10,7 @@ import pytest
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
-from sglang_omni.models.cosmos3.stages import (
+from sglang_omni.native_generation.stage import (
     NativeGenerationScheduler,
     build_sampling_params,
 )
@@ -314,7 +314,7 @@ def test_abort_between_native_completion_and_omni_emission_releases_media(tmp_pa
 
 @pytest.mark.parametrize("inside", [True, False])
 def test_media_paths_follow_the_server_media_policy(tmp_path, monkeypatch, inside):
-    from sglang_omni.models.cosmos3 import stages
+    from sglang_omni.native_generation import stage
     from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 
     allowed = tmp_path / "media"
@@ -322,7 +322,7 @@ def test_media_paths_follow_the_server_media_policy(tmp_path, monkeypatch, insid
     image = (allowed if inside else tmp_path) / "input.png"
     image.write_bytes(b"image")
     connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    monkeypatch.setattr(stages, "get_global_resource_connector", lambda: connector)
+    monkeypatch.setattr(stage, "get_global_resource_connector", lambda: connector)
     output = tmp_path / "outputs"
     output.mkdir()
     generator = Generator(None)

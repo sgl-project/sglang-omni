@@ -140,10 +140,6 @@ final class TranscriptionDetailViewModel: ObservableObject {
         }
     }
 
-    func refreshProviderStatus() {
-        providerStatus = followUpStatusProvider(entry)
-    }
-
     func send() {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }

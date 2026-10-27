@@ -1,6 +1,5 @@
 import XCTest
 @testable import Voxt
-import MLXAudioSTT
 
 final class MeetingMLXSegmentMappingTests: XCTestCase {
     func testStructuredOutputRequiresFinalChunkAndReliableTiming() {

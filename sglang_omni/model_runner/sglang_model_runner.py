@@ -75,14 +75,18 @@ class FlashInferSeededSampler(Sampler):
         positions: torch.Tensor,
         simple_sampling_case: bool,
     ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
-        if simple_sampling_case or sampling_info.sampling_seed is None:
+        if simple_sampling_case or (
+            sampling_info.sampling_seed is None
+            and not sampling_info.need_min_p_sampling
+        ):
             return super()._sample_from_probs(  # noqa: leading-underscore
                 probs, sampling_info, positions, simple_sampling_case
             )
         else:
             pass
         # note (ratish): FlashInfer seeds a batch from its first row's seed and each
-        # row's index, so a request seed takes the PyTorch backend's draw and mask.
+        # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
+        # row of the batch, so either batch takes the PyTorch backend's draw and mask.
         capture_rows = sampling_info.sampling_mask_batch_indices
         sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
             probs,
@@ -611,6 +615,12 @@ class SGLModelRunner(ModelRunner):
             return layers
         else:
             extra_layers = self.extra_prefill_graph_attention_layers
+            if self.model_arch_override == "WhisperForConditionalGeneration":
+                extra_layers = [
+                    layer.encoder_attn.attn for layer in self.model.model.decoder.layers
+                ] + extra_layers
+            else:
+                pass
             return AttentionAndMoeLayers(
                 attention_layers=[*layers.attention_layers, *extra_layers],
                 moe_layers=layers.moe_layers,
@@ -730,12 +740,14 @@ class SGLModelRunner(ModelRunner):
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
+            "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
+            "LlamaForCausalLMEagle3": "sglang_omni.model_runner.eagle3_draft:OmniLlamaForCausalLMEagle3",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

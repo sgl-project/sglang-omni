@@ -67,7 +67,7 @@ def samples(count: int, amplitude: int) -> bytes:
 
 
 class LegacyPeer:
-    """Fake LegacyRealtimeFacade: beta session object, response.audio.delta at 24 kHz."""
+    """Fake legacy realtime server: beta session object, response.audio.delta at 24 kHz."""
 
     def __init__(self, mode: PeerMode = "healthy") -> None:
         self.mode = mode

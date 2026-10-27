@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.cosmos3.stages import NativeGenerationScheduler
+from sglang_omni.native_generation.stage import NativeGenerationScheduler
 from sglang_omni.pipeline.control_plane import PushSocket, StageControlPlane
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, StagePayload

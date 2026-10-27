@@ -1,4 +1,4 @@
-# 🚀 Installation — Intel XPU
+# Installation — Intel XPU
 
 Installs `sglang-omni` for **Intel GPUs (XPU)**. The default
 [installation](./installation.md) pins CUDA-only wheels and would clobber a `torch+xpu` stack.
@@ -36,7 +36,7 @@ families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
 ```bash
 docker build -f docker/xpu.Dockerfile -t sglang-omni:xpu .
@@ -46,7 +46,7 @@ docker run -it --device /dev/dri --shm-size 32g --ipc host --network host sglang
 Built on Intel Deep Learning Essentials with the `+xpu` torch wheels. It deliberately does **not**
 source oneAPI — see [Runtime environment](#runtime-environment-important).
 
-## 🛠️ Option B: Install into an existing XPU env (recommended here)
+## Option B: Install into an existing XPU env (recommended here)
 
 The helper swaps in `pyproject_xpu.toml`, installs with the XPU index, then restores the CUDA one:
 
@@ -87,7 +87,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.21   # the pinned release
+git checkout v0.5.22   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -185,10 +185,12 @@ See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request paramete
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
+Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.
+
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
 Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
-would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
+would replace this project's 5.19.0, and resolving `sox` lifts `numpy` past the
 `numba==0.65.1` ceiling. See
 [docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
@@ -457,6 +459,42 @@ python examples/run_nemotron_voicechat.py \
   --talker.engine.mem_fraction_static 0.50
 ```
 
+### Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)
+
+The `audar-tts` extra builds `llama-cpp-python` for the CPU and pins `torchao==0.13.0`
+rather than an `+xpu` build. Build a SYCL wheel of the same version instead, with
+oneAPI sourced in the build shell only. `GGML_OPENMP=OFF` avoids a `libiomp5.so` the
+environment does not ship, and `GGML_SYCL_DNN=OFF` avoids a second SYCL runtime. Then
+install it, NeuCodec, and the XPU build of `torchao` whose `nf4tensor` module
+NeuCodec's `torchtune` imports, all with `--no-deps`:
+
+```bash
+(
+  source /opt/intel/oneapi/setvars.sh --force
+  CMAKE_ARGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
+    -DGGML_SYCL_DNN=OFF -DGGML_OPENMP=OFF -DLLAVA_BUILD=OFF" \
+    pip wheel --no-deps --no-binary llama-cpp-python llama-cpp-python==0.3.34 -w wheels/
+)
+pip install --no-deps wheels/llama_cpp_python-0.3.34-*.whl
+pip install --no-deps --extra-index-url https://download.pytorch.org/whl/xpu \
+  torchao==0.17.0+xpu neucodec==0.0.6 torchtune==0.6.1 torchdata==0.11.0 \
+  vector-quantize-pytorch==1.17.8 local-attention==1.11.2 \
+  hyper-connections==0.4.11 torch-einops-utils==0.1.31
+```
+
+`neuphonic/neucodec` is gated on Hugging Face, so accept its terms and export
+`HF_TOKEN` before the first start. Reference clips must be 5-15 seconds long.
+
+```bash
+sgl-omni serve --config examples/configs/audar_tts_turbo.yaml \
+  --allowed-local-media-path /path/to/references --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"مرحبا، أهلا وسهلا بكم.","response_format":"wav",
+       "ref_audio":"file:///path/to/references/voice.wav","ref_text":"reference transcript"}' \
+  -o out.wav
+```
+
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
@@ -534,8 +572,8 @@ so concurrent requests raise throughput almost linearly.
 
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
-alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu` 0.3.0
-wheel that SGLang v0.5.21 pins; older sgl-kernel builds fail with
+alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu`
+wheel that SGLang v0.5.22 pins (0.4.0); sgl-kernel builds older than 0.3.0 fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800
@@ -558,7 +596,7 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
 > Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;

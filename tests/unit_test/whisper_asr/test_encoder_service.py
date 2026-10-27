@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
+import queue
 import threading
 import time
 from collections.abc import Iterator
@@ -19,6 +22,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     expected_audio_tokens,
 )
+from sglang_omni.scheduling.pre_lm_encoder import QueueEntry, QueueSignal
 
 HIDDEN_SIZE = 8
 TOKENS = 4
@@ -374,3 +378,85 @@ def test_batched_encode_retries_per_item_on_multi_failure() -> None:
     assert not errors, errors
     assert all(item.precomputed_embeddings is not None for item in items)
     assert model.encode_calls == 4
+
+
+@pytest.mark.parametrize("fail_multi_item", [False, True])
+def test_pipelined_worker_delivers_completed_outputs_and_preserves_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_multi_item: bool,
+) -> None:
+    """Launching a later batch must not publish or cache unfinished encoder states."""
+    model = StubModel()
+    service = make_service(model, max_batch_size=2 if fail_multi_item else 1)
+    service.close()
+    service.queue = queue.Queue()
+    service.pipeline_batches = True
+    model.encoder.fail_multi_item = fail_multi_item
+    order: list[str] = []
+
+    class Stream:
+        def synchronize(self) -> None:
+            order.append("stream-sync")
+
+    class Completion:
+        def __init__(self) -> None:
+            self.index = sum(value.startswith("record") for value in order)
+
+        def record(self, stream: Stream) -> None:
+            assert stream is service.stream
+            order.append(f"record-{self.index}")
+
+        def synchronize(self) -> None:
+            order.append(f"sync-{self.index}")
+
+    service.stream = Stream()
+    monkeypatch.setattr(service, "batch_context", contextlib.nullcontext)
+    monkeypatch.setattr(torch.cuda, "Event", Completion)
+    entries = [
+        QueueEntry(
+            item=make_item(fingerprint=f"pipeline-{i}", fill=float(i)),
+            future=concurrent.futures.Future(),
+        )
+        for i in range(2)
+    ]
+    for entry in entries:
+        service.queue.put(entry)
+    service.queue.put(QueueSignal.SHUTDOWN)
+    service.worker()
+    for i, entry in enumerate(entries):
+        actual = entry.future.result(timeout=1)
+        torch.testing.assert_close(
+            actual, torch.full((TOKENS, HIDDEN_SIZE), float(i + 1))
+        )
+        torch.testing.assert_close(cached_entry(service, f"pipeline-{i}"), actual)
+    if fail_multi_item:
+        assert model.encode_calls == 3
+    else:
+        assert order.index("record-1") < order.index("sync-0") < order.index("sync-1")
+    assert service.worker_error is None
+
+
+@pytest.mark.accelerator
+@requires_cuda
+def test_pipelined_cuda_encoder_retains_outputs_and_host_cache() -> None:
+    """Real stream completion must fence request results and asynchronous cache copies."""
+    service = WhisperPreLMEncoderService(
+        cuda_model(),
+        cache_namespace=NAMESPACE,
+        encoder_token_count=TOKENS,
+        max_batch_size=1,
+        pipeline_batches=True,
+    )
+    SERVICES.append(service)
+    items = [
+        make_item(fingerprint=f"cuda-pipeline-{i}", fill=float(i)) for i in range(4)
+    ]
+    futures = [service.submit(item) for item in items]
+    for i, future in enumerate(futures):
+        actual = future.result(timeout=30)
+        expected = torch.full_like(actual, float(i + 1))
+        assert actual.is_cuda
+        torch.testing.assert_close(actual, expected)
+        cached = cached_entry(service, f"cuda-pipeline-{i}")
+        assert cached.device.type == "cpu"
+        torch.testing.assert_close(cached, expected.cpu())

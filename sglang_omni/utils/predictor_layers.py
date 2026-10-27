@@ -7,27 +7,31 @@ bf16, the kernel's reduction reproduced: one warp per row, lane t holding column
 sequential per-lane fold in (b, j) order, a butterfly with offsets 1, 2, 4, 8, 16, an
 approximate rsqrt, x * rstd * w rounded once); its equality test guards it.
 
-The fused layer, for plain bf16 weights on one rank on CUDA: three kernels, launched
-four times per decoder layer around sdpa. attention_inputs norms the rows, projects them
-to qkv, norms and rotates q and k, writes q to a buffer and k and v into the rows' cache
-slots. o_proj_add and down_add multiply by the projection and add the residual. mlp_up
-norms the residual, projects it to gate and up and applies silu(gate) * up. Every bf16
+The fused layer, for plain bf16 weights on one rank on CUDA: four kernels, launched
+five times per decoder layer. attention_inputs norms the rows, projects them to qkv,
+norms and rotates q and k, writes q to a buffer and k and v into the rows' cache slots.
+decode_attention attends each row's q over its cache slots up to its own position.
+o_proj_add and down_add multiply by the projection and add the residual. mlp_up norms
+the residual, projects it to gate and up and applies silu(gate) * up. Every bf16
 rounding sits where Qwen3-Omni's plain path rounds. Qwen3-TTS's plain path rounds later
 at two boundaries: its o_proj adds the residual before its one rounding, and its add-norm
 after down normalizes the fp32 sum of the residual and the projection while storing the
 sum in bf16, where the fused path normalizes the stored bf16 residual. Beyond those
 roundings, what differs is the GEMMs' fp32 accumulation order (K blocks on the tensor
 cores, fp32 split partials summed in index order, so deterministic), the norm's row scale
-applied to the accumulated product instead of to the input, and libdevice's exp in the
-activation. Rows never mix, so a row's result does not depend on the batch.
+applied to the accumulated product instead of to the input, the attention's softmax
+weights rounded to bf16 before their product with the values and normalized after it,
+and libdevice's exp in the softmax and the activation. Rows never mix, so a row's result
+does not depend on the batch.
 
 One program covers a launch's rows, so the launch reads each weight once, as the GEMM it
 replaces does. FusedPredictorLayers owns the launches' buffers, runs the layer loop, and
 covers passes of up to MAX_FUSED_ROWS rows; larger passes keep the plain path.
 
 On GPUs with programmatic dependent launch, each fused launch releases its dependents after
-its weight loop, and a fused launch that follows one starts early and waits for it before
-reading anything, so its launch latency hides under the predecessor's tail.
+its weight loop (decode_attention after its store), and a fused launch that follows one
+starts early and waits for it before reading anything, so its launch latency hides under
+the predecessor's tail.
 
 The module imports where Triton is unavailable; the resolvers then keep the plain path.
 """
@@ -43,6 +47,7 @@ from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.runtime_context import get_exec
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 
 try:  # keep the module importable where Triton is unavailable
     import triton
@@ -75,7 +80,12 @@ MIN_BLOCK_M = 16
 # note (ratish): above 64 rows the qkv launch's fp32 accumulators, the rows' square and
 # their head, exceed 255 registers per thread; a second program rereads the weights.
 MAX_FUSED_ROWS = 64
+# note (ratish): one MMA m-tile holds a row group's tokens by a kv head's q heads, so the
+# attention runs fused where the opening pair's two tokens by that group fit in it.
+ATTENTION_ROWS = 16
 NUM_WARPS = 4
+# note (ratish): the 16-row block runs faster on two warps; wider blocks spill there.
+QKV_SMALL_BLOCK_WARPS = 2
 NUM_STAGES = 3
 
 
@@ -323,6 +333,69 @@ if HAS_TRITON:
             pass
 
     @triton.jit
+    def decode_attention_kernel(
+        Q,
+        K_CACHE,
+        V_CACHE,
+        cache_stride_row,
+        cache_stride_slot,
+        cache_stride_head,
+        OUT,
+        end,
+        scale,
+        T: tl.constexpr,
+        HEAD_DIM: tl.constexpr,
+        NUM_Q_HEADS: tl.constexpr,
+        NUM_KV_HEADS: tl.constexpr,
+        BLOCK_Q: tl.constexpr,
+        BLOCK_S: tl.constexpr,
+        USE_GDC: tl.constexpr,
+    ):
+        """One program per row group and kv head: the group's T tokens by the kv head's
+        q heads as the rows of one MMA tile against its cache slots, the token t seeing
+        the slots below end - T + t + 1; scores and softmax in fp32, the unnormalized
+        weights rounded to bf16 for the product with the values, then divided by their
+        fp32 sum; OUT laid out as Q."""
+        row_group = tl.program_id(0)
+        kv_head = tl.program_id(1)
+        GROUP: tl.constexpr = NUM_Q_HEADS // NUM_KV_HEADS
+        if USE_GDC:
+            gdc_wait()
+        else:
+            pass
+        rq = tl.arange(0, BLOCK_Q)
+        rs = tl.arange(0, BLOCK_S)
+        rd = tl.arange(0, HEAD_DIM)
+        token = rq // GROUP
+        is_query = rq < T * GROUP
+        q_offsets = (
+            (row_group * T + token)[:, None] * (NUM_Q_HEADS * HEAD_DIM)
+            + (kv_head * GROUP + rq % GROUP)[:, None] * HEAD_DIM
+            + rd[None, :]
+        )
+        cache_offsets = (
+            row_group * cache_stride_row
+            + kv_head * cache_stride_head
+            + rs[:, None] * cache_stride_slot
+            + rd[None, :]
+        )
+        q = tl.load(Q + q_offsets, mask=is_query[:, None], other=0.0)
+        k = tl.load(K_CACHE + cache_offsets, mask=(rs < end)[:, None], other=0.0)
+        v = tl.load(V_CACHE + cache_offsets, mask=(rs < end)[:, None], other=0.0)
+        scores = tl.dot(q, tl.trans(k)) * scale
+        visible = rs[None, :] < end - T + token[:, None] + 1
+        scores = tl.where(visible, scores, float("-inf"))
+        weights = libdevice.exp(scores - tl.max(scores, 1)[:, None])
+        attended = tl.dot(weights.to(tl.bfloat16), v) / tl.sum(weights, 1)[:, None]
+        tl.store(OUT + q_offsets, attended.to(tl.bfloat16), mask=is_query[:, None])
+        # note (ratish): released after the store, so o_proj's waiting programs do not hold
+        # the SM slots the attention's later waves need.
+        if USE_GDC:
+            gdc_launch_dependents()
+        else:
+            pass
+
+    @triton.jit
     def gemv_add_kernel(
         X,
         x_stride_row,
@@ -426,8 +499,8 @@ if HAS_TRITON:
         USE_GDC: tl.constexpr,
     ):
         """One program per activation tile: the weighted input against the tile's gate
-        and up rows with the rows' sum of squares alongside, the norm scale applied to
-        both products, both rounded, then silu(gate) * up rounded once."""
+        and up rows in one dot with the rows' sum of squares alongside, the norm scale
+        applied to both products, both rounded, then silu(gate) * up rounded once."""
         if USE_GDC:
             gdc_wait()
         else:
@@ -435,13 +508,17 @@ if HAS_TRITON:
         pid = tl.program_id(0)
         rm = tl.arange(0, BLOCK_M)
         rk = tl.arange(0, BLOCK_K)
+        rn = tl.arange(0, 2 * BLOCK_N)
         row_mask = rm < rows
         rows_off = row_offsets(x_stride_row, x_stride_t, T, BLOCK_M)
         gate_cols = pid * BLOCK_N + tl.arange(0, BLOCK_N)
-        up_cols = INTERMEDIATE + gate_cols
+        # note (ratish): the tile's gate rows then its up rows as one weight tile, so the
+        # scaled input feeds a single dot; the pinned Triton rebuilds an operand per dot.
+        stacked_cols = pid * BLOCK_N + tl.where(
+            rn < BLOCK_N, rn, INTERMEDIATE - BLOCK_N + rn
+        )
         square = tl.zeros([BLOCK_M, BLOCK_M], dtype=tl.float32)
-        acc_gate = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        acc_up = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, 2 * BLOCK_N], dtype=tl.float32)
         for block in range(0, K // BLOCK_K):
             k0 = block * BLOCK_K
             x = tl.load(
@@ -451,19 +528,18 @@ if HAS_TRITON:
             )
             square = tl.dot(x, tl.trans(x), square)
             scaled = scaled_tile(x, NORM_W, k0, BLOCK_K)
-            acc_gate = tl.dot(
-                scaled, tl.trans(weight_tile(W, gate_cols, k0, K, BLOCK_K)), acc_gate
-            )
-            acc_up = tl.dot(
-                scaled, tl.trans(weight_tile(W, up_cols, k0, K, BLOCK_K)), acc_up
+            acc = tl.dot(
+                scaled, tl.trans(weight_tile(W, stacked_cols, k0, K, BLOCK_K)), acc
             )
         if USE_GDC:
             gdc_launch_dependents()
         else:
             pass
         rstd = libdevice.rsqrt(diagonal(square) / K + norm_eps)
-        gate = (acc_gate * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
-        up = (acc_up * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
+        products = (acc * rstd[:, None]).to(tl.bfloat16).to(tl.float32)
+        gate, up = tl.split(
+            tl.permute(tl.reshape(products, [BLOCK_M, 2, BLOCK_N]), [0, 2, 1])
+        )
         activated = gate / (1.0 + libdevice.exp(-gate)) * up
         offsets = rm[:, None] * INTERMEDIATE + gate_cols[None, :]
         tl.store(OUT + offsets, activated.to(tl.bfloat16), mask=row_mask[:, None])
@@ -566,7 +642,7 @@ def is_plain_bf16_linear(linear: torch.nn.Module) -> bool:
         isinstance(linear.quant_method, UnquantizedLinearMethod)
         and linear.bias is None
         and linear.weight.dtype == torch.bfloat16
-        and linear.tp_size == 1
+        and get_group_rank_size(linear.tp_group)[1] == 1
     )
 
 
@@ -597,6 +673,7 @@ def resolve_predictor_layer_shape(
         and hidden_size % MLP_BLOCK_K == 0
         and intermediate_size % BLOCK_K == 0
         and intermediate_size % BLOCK_N == 0
+        and 2 * (attention.num_heads // attention.num_kv_heads) <= ATTENTION_ROWS
     )
     if not dims_divide:
         return None
@@ -691,6 +768,7 @@ def attention_inputs(
     into the caches at each row's position. x is (rows, hidden) with unit column stride;
     the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
     rows = x.shape[0]
+    block_m = block_rows(rows)
     heads = shape.num_q_heads + 2 * shape.num_kv_heads
     use_gdc = is_arch_support_pdl()
     norm_qkv_rope_store_kernel[(heads, shape.split_qkv)](
@@ -721,11 +799,47 @@ def attention_inputs(
         NUM_Q_HEADS=shape.num_q_heads,
         NUM_KV_HEADS=shape.num_kv_heads,
         SPLIT=shape.split_qkv,
-        BLOCK_M=block_rows(rows),
+        BLOCK_M=block_m,
         BLOCK_K=BLOCK_K,
         USE_GDC=use_gdc,
-        num_warps=NUM_WARPS,
+        num_warps=QKV_SMALL_BLOCK_WARPS if block_m == MIN_BLOCK_M else NUM_WARPS,
         num_stages=NUM_STAGES,
+        launch_pdl=use_gdc,
+    )
+
+
+def decode_attention(
+    *,
+    q: torch.Tensor,
+    tokens_per_row: int,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    end: int,
+    attention_output: torch.Tensor,
+    shape: PredictorLayerShape,
+) -> None:
+    """attention_output = softmax(q k^T / sqrt(head dim)) v over each row's slots up to
+    its position, causal within a row group. q and attention_output are (rows, q heads *
+    head dim); the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
+    use_gdc = is_arch_support_pdl()
+    decode_attention_kernel[(q.shape[0] // tokens_per_row, shape.num_kv_heads)](
+        q,
+        k_cache,
+        v_cache,
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        attention_output,
+        end,
+        shape.head_dim**-0.5,
+        T=tokens_per_row,
+        HEAD_DIM=shape.head_dim,
+        NUM_Q_HEADS=shape.num_q_heads,
+        NUM_KV_HEADS=shape.num_kv_heads,
+        BLOCK_Q=ATTENTION_ROWS,
+        BLOCK_S=triton.next_power_of_2(k_cache.shape[1]),
+        USE_GDC=use_gdc,
+        num_warps=NUM_WARPS,
         launch_pdl=use_gdc,
     )
 
@@ -745,6 +859,7 @@ def o_proj_add(
     attention output in its (row group, head, token, head dim) layout and residual_in
     with its own row stride."""
     rows = residual_out.shape[0]
+    use_gdc = is_arch_support_pdl()
     gemv_add_kernel[(shape.hidden_size // BLOCK_N, shape.split_hidden)](
         attention_output,
         attention_output.stride(0),
@@ -765,11 +880,10 @@ def o_proj_add(
         BLOCK_M=block_rows(rows),
         BLOCK_N=BLOCK_N,
         BLOCK_K=BLOCK_K,
-        # note (ratish): it releases mlp_up but launches as usual: a dependent launch
-        # after sdpa, which never releases its dependents, costs time.
-        USE_GDC=is_arch_support_pdl(),
+        USE_GDC=use_gdc,
         num_warps=NUM_WARPS,
         num_stages=NUM_STAGES,
+        launch_pdl=use_gdc,
     )
 
 
@@ -880,8 +994,9 @@ def codebook_step(
 
 
 class FusedPredictorLayers:
-    """The predictor's decoder layers as the four fused launches per layer around SDPA,
-    with q, the residual stream and the MLP activation in buffers of max_rows rows."""
+    """The predictor's decoder layers as five fused launches per layer, with q, the
+    attention output, the residual stream and the MLP activation in buffers of max_rows
+    rows."""
 
     def __init__(
         self,
@@ -895,6 +1010,7 @@ class FusedPredictorLayers:
         self.q = torch.zeros(
             max_rows, shape.num_q_heads * shape.head_dim, device=device, dtype=dtype
         )
+        self.attention_output = torch.zeros_like(self.q)
         self.residual = torch.zeros(
             max_rows, shape.hidden_size, device=device, dtype=dtype
         )
@@ -930,6 +1046,7 @@ class FusedPredictorLayers:
         hidden = token_embeds.reshape(rows, hidden_size)
         residual = self.residual[:rows]
         q_out = self.q[:rows]
+        attention_output = self.attention_output[:rows]
         activated = self.activated[:rows]
         for layer_idx, layer in enumerate(layers):
             attention = layer.self_attn
@@ -949,17 +1066,19 @@ class FusedPredictorLayers:
                 counters=self.counters,
                 shape=shape,
             )
-            attention_output = torch.nn.functional.scaled_dot_product_attention(
-                q_out.view(
-                    batch_size, num_tokens, shape.num_q_heads, shape.head_dim
-                ).transpose(1, 2),
-                layer_k_cache[:, :end].transpose(1, 2),
-                layer_v_cache[:, :end].transpose(1, 2),
-                is_causal=num_tokens > 1,
-                enable_gqa=shape.num_q_heads != shape.num_kv_heads,
+            decode_attention(
+                q=q_out,
+                tokens_per_row=num_tokens,
+                k_cache=layer_k_cache,
+                v_cache=layer_v_cache,
+                end=end,
+                attention_output=attention_output,
+                shape=shape,
             )
             o_proj_add(
-                attention_output=attention_output,
+                attention_output=attention_output.view(
+                    batch_size, num_tokens, shape.num_q_heads, shape.head_dim
+                ).transpose(1, 2),
                 tokens_per_row=num_tokens,
                 weight=attention.o_proj.weight,
                 residual_in=hidden,

@@ -137,6 +137,51 @@ A session whose state exceeds `max_state_bytes_per_session` after an append
 is ended alone. An exception raised by `append_batch` ends every session in
 that call. Sessions outside the failed call continue.
 
+### UMMController
+
+`UMMController` serves interleaved (UMM) requests that alternate between model
+phases, such as understanding, generation, and inspection of the generated
+media, until the model's adapter completes them. It is the scheduler of the
+entry stage, which loops through ordinary phase stages on main's stage graph:
+
+```text
+orchestrator -> reasoner -> orchestrator -> generator -> ... -> output
+```
+
+A model supplies a `UMMAdapter` with four callbacks. `start` and `advance`
+return a `UMMStep` that names the next phase and its request, or completes the
+request, together with the outputs accepted by that step. `usage` reports the
+bytes of the adapter's retained state, and `close` releases that state once
+per request. Phase names are the model's own: the orchestrator's
+`factory.phases` maps each one to a stage, and two phases may share a stage.
+Each dispatch carries a continuation in its request metadata, so phase stages
+only need to return the request they received. Every callback receives the
+request's `UMMContext`, whose `execution_id`, `request`, `deadline`,
+`remaining_dispatches`, `outputs`, and `shedding` the adapter only reads. An
+adapter that finds a request it cannot finish before its deadline, usually
+while it plans another one, calls `shed()` on that request's context. The
+controller's deadline sweep then fails it with the capacity error (HTTP 503,
+which tells the client to retry later), the pipeline aborts its queued and
+running phase work, and the request closes once with reason `shed`, just as a
+request that reaches its deadline fails with the `timeout_s` error (HTTP 500)
+and closes with reason `expired`.
+
+A step can also list phases in `dispatches` to run them at once, at most one per stage of a request. A step that starts no phase waits while others run, and `advance` reports each result as it returns, so an adapter whose phases finish out of order holds its outputs to publish them in model order.
+
+A pipeline config subclasses `UMMPipelineConfig` and declares an
+`orchestrator` stage (factory `create_umm_controller`, route_fn `route_umm`,
+stream_done_to_fn `umm_stream_done_targets`, `stream_to` and `next` naming
+`output`), an `output` stage in the same process (factory
+`create_umm_output_stage`, terminal, accepting streams before its payload),
+and the phase stages, each routing back to `orchestrator` without a
+`stream_to`. The orchestrator's factory arguments set the adapter factory
+path, the phase map, and the required bounds: `max_dispatches`,
+`max_outputs`, `max_active` (which also caps the coordinator, never above the
+running+queued capacity of an engine phase stage), `max_retained_bytes`, and
+`timeout_s`. The config rejects any other wiring, and a missing or
+non-positive bound, at load time. Accepted segments stream to the client in
+order through the output stage when the request streams.
+
 ### Code2WavScheduler
 
 `Code2WavScheduler` is a streaming vocoder scheduler. It handles:

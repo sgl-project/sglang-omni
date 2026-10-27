@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
@@ -27,9 +27,13 @@ from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -68,8 +72,15 @@ ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
 def create_encoder_executor(
-    encoder: nn.Module, *, stage_name: str
+    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    device_module = torch.get_device_module(encoder.device)
+    if encoder.device.type == "npu":
+        # note (guomangmang): encoder sync must not wait on AR graph updates.
+        encoder_stream = device_module.Stream(device=encoder.device)
+        encoder_stream.wait_stream(device_module.current_stream(encoder.device))
+    else:
+        encoder_stream = None
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
@@ -87,9 +98,19 @@ def create_encoder_executor(
         elif cached is not None:
             encoder_out = cached
         else:
-            with torch.no_grad():
+            stream_context = (
+                device_module.stream(encoder_stream)
+                if encoder_stream is not None
+                else nullcontext()
+            )
+            with stream_context, torch.no_grad():
                 encoder_out = encoder(**request.model_inputs)
-            cache.put(request.cache_key, encoder_out)
+                cache.put(request.cache_key, encoder_out)
+                if encoder_stream is not None:
+                    # note (guomangmang): downstream stages read on other streams.
+                    encoder_stream.synchronize()
+                else:
+                    pass
         state.encoder_outs[stage_name] = encoder_out
         payload.data = state.to_dict()
         return payload
@@ -123,6 +144,11 @@ def create_audio_encoder_executor(
     return create_encoder_executor(encoder, stage_name="audio_encoder")
 
 
+# note (0xtoward): the talker prefills unchunked, so no chunk bounds the capture;
+# forwards above this many tokens run eager.
+TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
+
+
 def create_sglang_talker_executor_from_config(
     model_path: str,
     *,
@@ -140,6 +166,14 @@ def create_sglang_talker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
+    if (
+        current_platform.is_cuda()
+        and current_platform.enable_talker_graph()
+        and not session_mode
+    ):
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
@@ -147,6 +181,10 @@ def create_sglang_talker_executor_from_config(
         # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
         enable_torch_compile=False,
         sampling_backend="pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+        ),
     )
     overrides.setdefault("trust_remote_code", False)
     if session_mode:
@@ -185,6 +223,9 @@ def create_sglang_talker_executor_from_config(
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         session_mode=session_mode,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "

@@ -49,6 +49,22 @@ jobs:
         if: ${{ github.event_name != 'push' }}
         run: pre-commit run --all-files --show-diff-on-failure
 
+  doc-style-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install documentation lint dependencies
+        run: python -m pip install -r scripts/requirements-doc-lint.txt pytest
+
+      - name: Test documentation emoji checker
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style.py -q
+
   playback-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -63,3 +79,9 @@ jobs:
 
       - name: Test realtime playback state
         run: node --test playground/qwen-omni/realtime/playback.test.js
+
+      - name: Test cascade demo heard text and settings
+        run: node --test playground/cascade/frontend/orb/*.test.mjs
+
+      - name: Test native realtime playback cadence and lifecycle
+        run: node --test playground/realtime/frontend/orb/*.test.mjs

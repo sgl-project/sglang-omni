@@ -112,10 +112,11 @@ def export(
             raise ValueError(f"Variant directory escapes run: {directory}")
         else:
             pass
-        # note (luojiaxuan): load_runs already required a legacy-protocol profile.
+        # note (luojiaxuan): load_runs already required a profile of the format's
+        # protocol; the turn-based protocols take their rate from that profile.
         profile_rate = (
             PROFILES[read_json(run / "manifest.json")["profile"]].output_sample_rate
-            if capture_format is TraceFormat.LEGACY_PCM16
+            if capture_format is not TraceFormat.PCM16
             else None
         )
         record, pcm, audio = analyze_variant(
@@ -126,10 +127,11 @@ def export(
             profile_rate=profile_rate,
         )
         reasons = record["window"]["reasons"]
-        # note (luojiaxuan): A legacy session that failed its protocol replay can
-        # be silent for protocol reasons, so silence is only valid after a pass.
+        # note (luojiaxuan): A legacy or turn-based session that failed its
+        # protocol replay can be silent for protocol reasons, so silence is only
+        # valid after a pass.
         if (
-            capture_format is TraceFormat.LEGACY_PCM16
+            capture_format is not TraceFormat.PCM16
             and state["protocol_verdict"] != "pass"
         ):
             reasons.append(

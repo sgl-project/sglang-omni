@@ -7,6 +7,51 @@ import IOKit.hidsystem
 
 @MainActor
 final class HotkeyManagerModifiersTests: HotkeyManagerTestCase {
+    func testRoutingSpecificityCountsOnlyKnownModifierBits() {
+        let modifiers: NSEvent.ModifierFlags = [.function, .shift, .control, .option, .command]
+        let sides: SidedModifierFlags = [.allShift, .allControl, .allOption, .allCommand]
+        let base = HotkeyPreference.Hotkey(
+            keyCode: HotkeyPreference.modifierOnlyKeyCode, modifiers: modifiers, sidedModifiers: sides
+        )
+        let extraBits = HotkeyPreference.Hotkey(
+            keyCode: HotkeyPreference.modifierOnlyKeyCode,
+            modifiers: modifiers.union([.capsLock, .numericPad]),
+            sidedModifiers: sides.union(SidedModifierFlags(rawValue: 1 << 20))
+        )
+        XCTAssertEqual(HotkeyModifierInterpreter.hotkeySpecificity(base), 58)
+        XCTAssertEqual(HotkeyModifierInterpreter.hotkeySpecificity(extraBits), 58)
+    }
+
+    func testRoutingSpecificityPrioritizesConcreteKeyboardAndMouseInputs() {
+        let keyboard = HotkeyPreference.Hotkey(keyCode: UInt16(kVK_Space), modifiers: [.function], sidedModifiers: [])
+        let mouse = HotkeyPreference.Hotkey(mouseButtonNumber: 2, modifiers: [.function])
+        XCTAssertEqual(HotkeyModifierInterpreter.hotkeySpecificity(keyboard), 110)
+        XCTAssertEqual(HotkeyModifierInterpreter.hotkeySpecificity(mouse), 110)
+    }
+
+    func testRoutingBehaviorPriorityKeepsDoubleTapBeforeLongPressAndTap() {
+        XCTAssertEqual(HotkeyModifierInterpreter.behaviorPriority(.doubleTap), 0)
+        XCTAssertEqual(HotkeyModifierInterpreter.behaviorPriority(.longPress), 1)
+        XCTAssertEqual(HotkeyModifierInterpreter.behaviorPriority(.tap), 2)
+    }
+
+    func testModifierSupersetPolicyRespectsOptionalSideDistinction() {
+        let base = HotkeyPreference.Hotkey(
+            keyCode: HotkeyPreference.modifierOnlyKeyCode, modifiers: [.shift], sidedModifiers: [.leftShift]
+        )
+        let extraSide = HotkeyPreference.Hotkey(
+            keyCode: HotkeyPreference.modifierOnlyKeyCode, modifiers: [.shift], sidedModifiers: [.allShift]
+        )
+        let wrongSide = HotkeyPreference.Hotkey(
+            keyCode: HotkeyPreference.modifierOnlyKeyCode, modifiers: [.shift, .control], sidedModifiers: [.rightShift]
+        )
+        XCTAssertFalse(HotkeyModifierInterpreter.modifierOnlyHotkey(base, isMoreSpecificThan: base, distinguishModifierSides: true))
+        XCTAssertTrue(HotkeyModifierInterpreter.modifierOnlyHotkey(extraSide, isMoreSpecificThan: base, distinguishModifierSides: true))
+        XCTAssertFalse(HotkeyModifierInterpreter.modifierOnlyHotkey(extraSide, isMoreSpecificThan: base, distinguishModifierSides: false))
+        XCTAssertFalse(HotkeyModifierInterpreter.modifierOnlyHotkey(wrongSide, isMoreSpecificThan: base, distinguishModifierSides: true))
+        XCTAssertTrue(HotkeyModifierInterpreter.modifierOnlyHotkey(wrongSide, isMoreSpecificThan: base, distinguishModifierSides: false))
+    }
+
     func testTapTranscriptionNonModifierDoesNotConsumeReleaseWithoutMatchingKeyDown() {
         let defaults = UserDefaults.standard
         defaults.set(HotkeyPreference.Preset.custom.rawValue, forKey: AppPreferenceKey.hotkeyPreset)

@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 from contextlib import aclosing, suppress
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
 
@@ -66,7 +66,13 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
-from sglang_omni.client.types import UNKNOWN_FINISH_REASON, UsageInfo
+from sglang_omni.client.types import (
+    UNKNOWN_FINISH_REASON,
+    UMMCompletionResult,
+    UMMCompletionStreamChunk,
+    UMMGenerateChunk,
+    UsageInfo,
+)
 from sglang_omni.config import (
     CustomVoiceConfig,
     RealtimeTranscriptionConfig,
@@ -79,6 +85,7 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -114,6 +121,7 @@ from sglang_omni.serve.protocol import (
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
+from sglang_omni.serve.session_wire import register_session_wire
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
@@ -234,6 +242,7 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    interleaved_output: bool = False,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -264,7 +273,8 @@ def create_app(
             other and unknown fields are refused before parsing. None accepts
             every protocol field and ignores unknown ones.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
-            endpoint (OpenAI Realtime API).
+            endpoint (OpenAI Realtime API) and the Session protocol on
+            ``/v1/session``.
         supports_realtime_audio_output: Whether the mounted realtime endpoint
             can request streamed audio from the configured pipeline.
         realtime_transcription: Pipeline-owned live-ASR strategy declaration.
@@ -278,6 +288,9 @@ def create_app(
             ``/v1/audio/speech/batch``.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
+        interleaved_output: Whether results are ordered interleaved (UMM)
+            segments, which ``/generate`` streams. Other pipelines refuse
+            ``stream=true`` on ``/generate``.
 
     Returns:
         Configured FastAPI application.
@@ -303,6 +316,7 @@ def create_app(
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
+    app.state.interleaved_output = interleaved_output
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
@@ -357,6 +371,14 @@ def create_app(
     register_translations(app)
     if enable_realtime or realtime_deployment is not None:
         register_realtime(app)
+        register_session_wire(
+            app,
+            limits=(
+                realtime_deployment.session_limits
+                if realtime_deployment is not None
+                else SessionLimits()
+            ),
+        )
     else:
         pass
 
@@ -373,6 +395,7 @@ def register_images(
         ImageGenerationsRequest,
         ImageResponse,
         ImageResponseData,
+        ImageUsage,
     )
 
     def build_image_request(
@@ -479,6 +502,10 @@ def register_images(
                 **options,
             }
         )
+        if source is not None and params.mode == "thinking":
+            raise ValueError("Thinking mode only supports text-to-image generation")
+        else:
+            pass
         return GenerateRequest(
             model=request.model,
             messages=[Message(role="user", content=request.prompt)],
@@ -525,7 +552,17 @@ def register_images(
             image = ImageResponseData(b64_json=result.image)
         else:
             image = ImageResponseData(url=f"data:image/png;base64,{result.image}")
-        return ImageResponse(id=request_id, data=[image])
+        if result.usage is None:
+            usage = None
+        else:
+            # Thinking mode counts both passes as completion tokens.
+            usage = ImageUsage(
+                prompt_tokens=result.usage.prompt_tokens,
+                completion_tokens=result.usage.completion_tokens,
+                total_tokens=result.usage.total_tokens,
+                reasoning_tokens=None,
+            )
+        return ImageResponse(id=request_id, data=[image], usage=usage)
 
     async def generations(
         request: ImageGenerationsRequest, http_request: Request
@@ -619,10 +656,14 @@ def register_voices(app: FastAPI) -> None:
     ) -> JSONResponse:
         voice_store: SpeakerSampleStore = app.state.speaker_sample_store
         try:
-            response = voice_store.upload(
+            audio_bytes = await read_voice_upload(audio_sample)
+            # note (Richard Wang): decoding and saving run off the event loop,
+            # so one upload never stalls the server's other routes.
+            response = await asyncio.to_thread(
+                voice_store.upload,
                 name=name,
                 consent=consent,
-                audio_bytes=await read_voice_upload(audio_sample),
+                audio_bytes=audio_bytes,
                 filename=audio_sample.filename,
                 content_type=audio_sample.content_type,
                 ref_text=ref_text,
@@ -1084,6 +1125,11 @@ async def chat_non_stream(
     else:
         pass
 
+    if isinstance(result, UMMCompletionResult):
+        message["segments"] = [segment.to_dict() for segment in result.segments]
+    else:
+        pass
+
     if "content" not in message and "audio" not in message:
         message["content"] = result.text
     else:
@@ -1218,7 +1264,10 @@ async def chat_stream_events(
                 pass
 
             delta = ChatCompletionStreamDelta()
-            emit = False
+            segment = (
+                chunk.segment if isinstance(chunk, UMMCompletionStreamChunk) else None
+            )
+            emit = segment is not None
 
             # Send role on first chunk
             if not role_sent:
@@ -1274,6 +1323,10 @@ async def chat_stream_events(
             data = stream_resp.model_dump(exclude_none=True)
             for choice in data.get("choices", []):
                 choice.setdefault("finish_reason", None)
+            if segment is not None:
+                data["choices"][0]["delta"]["segment"] = segment.to_dict()
+            else:
+                pass
             yield f"data: {json.dumps(data)}\n\n"
 
     # Finish chunk: empty delta + finish_reason.
@@ -1425,7 +1478,17 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     )
 
 
+ROLLOUT_ARTIFACT_FIELDS = (
+    "return_logprob",
+    "return_omni_rollout",
+    "return_routed_experts",
+    "return_indexer_topk",
+)
+
+
 def register_generate(app: FastAPI) -> None:
+    interleaved = app.state.interleaved_output
+
     @app.post("/generate")
     async def generate(req: RolloutGenerateRequest) -> Response:
         client: Client = app.state.client
@@ -1440,7 +1503,25 @@ def register_generate(app: FastAPI) -> None:
             )
         else:
             pass
-        if req.stream:
+        if interleaved:
+            # Interleaved results carry no rollout artifacts, so the default
+            # return_logprob=true is dropped and an explicit request refused.
+            requested = [
+                name
+                for name in ROLLOUT_ARTIFACT_FIELDS
+                if name in req.model_fields_set and getattr(req, name)
+            ]
+            if requested:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Interleaved /generate returns no logprobs or rollout "
+                        f"artifacts. Leave {', '.join(requested)} unset or false"
+                    ),
+                )
+            else:
+                req = req.model_copy(update={"return_logprob": False})
+        elif req.stream:
             raise HTTPException(
                 status_code=400,
                 detail="stream=true is not supported by /generate yet",
@@ -1453,6 +1534,13 @@ def register_generate(app: FastAPI) -> None:
 
         try:
             gen_req = build_rollout_generate_request(req)
+            if req.stream:
+                return _ClosableStreamingResponse(
+                    generate_stream(client, gen_req, request_id),
+                    media_type="text/event-stream",
+                )
+            else:
+                pass
             result = await client.completion(
                 gen_req,
                 request_id=request_id,
@@ -1470,8 +1558,63 @@ def register_generate(app: FastAPI) -> None:
                 status_code=generation_error_status_code(exc), detail=str(exc)
             ) from exc
 
-        response = build_generate_response(req, result, audio_format)
-        return JSONResponse(content=response.model_dump())
+        content = build_generate_response(req, result, audio_format).model_dump()
+        if isinstance(result, UMMCompletionResult):
+            content["segments"] = [segment.to_dict() for segment in result.segments]
+        else:
+            pass
+        return JSONResponse(content=content)
+
+
+async def generate_stream(
+    client: Client, request: GenerateRequest, request_id: str
+) -> AsyncIterator[str]:
+    """Stream an interleaved request as SSE.
+
+    Each accepted segment is one segment event with its data. The complete
+    event lists every segment by reference and carries the finish reason.
+    """
+    stream = client.generate(request, request_id=request_id)
+    try:
+        async with aclosing(stream):
+            async for chunk in stream:
+                if not isinstance(chunk, UMMGenerateChunk):
+                    raise TypeError("Streaming /generate serves interleaved results")
+                elif chunk.segment is not None:
+                    event, data = "segment", chunk.segment.to_dict()
+                elif chunk.finish_reason is not None:
+                    # Segment events already carried each segment's data.
+                    refs = [
+                        replace(segment, data=None) for segment in chunk.segments or []
+                    ]
+                    event = "complete"
+                    data = {
+                        "finish_reason": chunk.finish_reason,
+                        "segments": [segment.to_dict() for segment in refs],
+                    }
+                else:
+                    continue
+                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    except Exception as exc:
+        status = generation_error_status_code(exc)
+        # As in chat_stream, a traceback only for unexpected errors.
+        if status == 500:
+            logger.exception(f"Generate stream failed for request {request_id}")
+        else:
+            logger.warning(
+                f"Generate stream for request {request_id} failed with "
+                f"status {status}. {exc}"
+            )
+        data = {
+            "error": {
+                "message": str(exc),
+                "type": "invalid_request_error" if status < 500 else "server_error",
+                "code": status,
+            }
+        }
+        yield f"event: error\ndata: {json.dumps(data)}\n\n"
+        return
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 def rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
@@ -1634,8 +1777,8 @@ def realtime_unavailable_response(message: str) -> JSONResponse:
 
 def register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
+    from sglang_omni.audio.smart_turn import load_smart_turn
     from sglang_omni.serve.realtime import RealtimeSessionManager
-    from sglang_omni.serve.realtime.smart_turn import load_smart_turn
 
     client: Client = app.state.client
     model_name: str = app.state.model_name

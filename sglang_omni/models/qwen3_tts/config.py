@@ -14,12 +14,14 @@ from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
+    ProcessConfig,
     StageConfig,
 )
 from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.config.schema import stage_process_name
 from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
@@ -42,6 +44,7 @@ class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     initial_cuda_graph: bool
     followup_cuda_graph: bool
     async_decode: bool
+    running_stream_count: int
 
 
 class Qwen3TTSPipelineConfig(PipelineConfig):
@@ -112,6 +115,41 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         # loads its own prompt frontend and ships prepared tensors in the payload.
         if stage_name == "preprocessing" and self.preprocessing_in_own_process():
             kwargs["load_frontend"] = True
+        else:
+            pass
+        if stage_name == "vocoder":
+            engine_stage = self.stage_named("tts_engine")
+            # note (Haoling Pu): the overrides the engine factory receives, where
+            # engine.* and factory.server_args_overrides both land.
+            server_args_overrides = {
+                **resolve_stage_factory_kwargs(engine_stage, self).get(
+                    "server_args_overrides", {}
+                ),
+                **resolve_stage_typed_kwargs(engine_stage).get(
+                    "server_args_overrides", {}
+                ),
+            }
+            if "max_running_requests" in server_args_overrides:
+                running_request_count = int(
+                    server_args_overrides["max_running_requests"]
+                )
+            else:
+                running_request_count = type(self).generation_admission_defaults()[
+                    "max_running_requests"
+                ]
+            engine_process = stage_process_name(engine_stage)
+            if stage_process_name(self.stage_named(stage_name)) == engine_process:
+                # note (Haoling Pu): each replica of a shared process decodes the
+                # streams its own engine runs.
+                kwargs["running_stream_count"] = running_request_count
+            else:
+                # note (Haoling Pu): requests bind to vocoder replicas round-robin
+                # with no per-replica cap, so one replica may hold every stream
+                # the engine replicas run together.
+                kwargs["running_stream_count"] = (
+                    running_request_count
+                    * self.processes.get(engine_process, ProcessConfig()).num_replicas
+                )
         else:
             pass
         # The vocoder captures its decode graphs during the asynchronous decode

@@ -99,7 +99,8 @@ extension RemoteModelConfigurationStore {
         normalized.endpoint = runtimeClient.resolvedLLMEndpoint(
             provider: provider,
             endpoint: trimmedEndpoint,
-            model: configuration.model
+            model: configuration.model,
+            apiFormat: configuration.openAIAPIFormatValue
         )
         return normalized
     }

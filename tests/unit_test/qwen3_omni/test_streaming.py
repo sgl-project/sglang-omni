@@ -20,6 +20,7 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
     resolve_encoder_next_stages,
@@ -33,8 +34,10 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from tests.unit_test.fixtures.prompt_hidden import cuda_prompt_hidden_store
 from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
 
@@ -143,7 +146,9 @@ def test_qwen_thinker_stream_builder_sends_the_token_id_to_each_target(
     stream: bool,
     expected_targets: list[str],
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=speech_enabled)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=speech_enabled, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(output_modalities, stream=stream),
@@ -168,13 +173,48 @@ def test_qwen_thinker_stream_builder_emits_nothing_without_an_answer_token(
     token_id: int | None,
     inflight_middle_chunks: int,
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks),
         stage_payload=thinker_stage_payload(["text", "audio"]),
     )
 
     assert builder("req-1", req_data, SimpleNamespace(data=token_id)) == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned host rows need CUDA")
+def test_the_first_talker_chunk_carries_the_prompt_rows_once():
+    req_to_token = torch.tensor([[0, 6, 0, 0, 7]], dtype=torch.int32, device="cuda")
+    hidden_states = torch.arange(4.0, device="cuda").view(2, 2)
+    request = object.__new__(PromptHiddenRequest)
+    request.inflight_middle_chunks = 0
+    request.kv = SimpleNamespace(req_pool_idx=0)
+    request.prompt_hidden_positions = torch.tensor([1, 4])
+    req_data = SimpleNamespace(
+        req=request, stage_payload=thinker_stage_payload(["text", "audio"])
+    )
+
+    with cuda_prompt_hidden_store(slot_count=8, req_to_token=req_to_token) as store:
+        store.stage(torch.tensor([6, 7], device="cuda"), hidden_states)
+        builder = make_thinker_stream_output_builder(
+            speech_enabled=True, prompt_hidden_store=store
+        )
+        decode_message, talker_message = builder(
+            "req-1", req_data, SimpleNamespace(data=11)
+        )
+        later_messages = builder("req-1", req_data, SimpleNamespace(data=12))
+
+    assert decode_message.data.tolist() == [11]
+    assert decode_message.metadata == {"token_id": 11}
+    assert torch.equal(talker_message.data, hidden_states.cpu())
+    assert talker_message.metadata == {
+        "token_id": 11,
+        "prompt_hidden_positions": [1, 4],
+    }
+    assert [message.data.tolist() for message in later_messages] == [[12], [12]]
 
 
 class TokenMetadataOnlyChunk:
@@ -196,7 +236,9 @@ def text_projected(*token_ids: int) -> torch.Tensor:
 
 
 def test_qwen_talker_conditions_on_streamed_token_ids():
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(["audio"], stream=False),
@@ -318,11 +360,7 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     scheduler_output = SchedulerOutput(
         requests=[text_request, audio_request, default_request],
         batch_data=SimpleNamespace(
-            reqs=[
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-            ]
+            reqs=[SimpleNamespace(), SimpleNamespace(), SimpleNamespace()]
         ),
     )
 
@@ -617,6 +655,29 @@ def test_code2wav_done_without_audio_raises():
     sched.abort("req-1")
     assert "req-1" not in sched.stream_states
     assert "req-1" not in sched.stream_payloads
+
+
+def test_code2wav_done_without_audio_for_an_unspoken_reply_returns_empty_audio():
+    """A reply the talker did not speak ends with an empty waveform, not an error."""
+    sched = Code2WavScheduler(
+        model=FakeCode2Wav(),
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=0,
+    )
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={"stream": False}),
+        data={NO_SPEECH: True},
+    )
+    sched.stream_payloads["req-1"] = payload
+    state = sched.get_or_create_stream_state("req-1")
+    state.stream_enabled = False
+
+    sched.handle_stream_done("req-1")
+    results = [m for m in list(sched.outbox.queue) if m.type == "result"]
+    assert len(results) == 1
+    assert results[0].data.data["sample_rate"] == sched.sample_rate
 
 
 def bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:

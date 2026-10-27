@@ -305,7 +305,7 @@ def test_native_requests_follow_the_server_media_policy(
 
 def test_cosmos3_generation_stage_serves_and_settles_native_routes(monkeypatch):
     from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
-    from sglang_omni.models.cosmos3.stages import NativeGenerationScheduler
+    from sglang_omni.native_generation.stage import NativeGenerationScheduler
 
     config = Cosmos3PipelineConfig(model_path="checkpoint")
     assert config.stages[0].http_routes == list(ROUTE_PREFIXES)

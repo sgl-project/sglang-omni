@@ -259,7 +259,7 @@ def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> Non
     stats = runner.stats()
     assert stats["enabled"] is True
     assert stats["graph_contract"]["keys"] == [
-        {"batch_size": key.batch_size, "frames": key.frames}
+        {"batch_size": key.batch_size, "frames": key.frames, "decode": "window"}
         for key in DEFAULT_GRAPH_KEYS
     ]
     assert stats["build"]["published_graph_count"] == 4
@@ -908,8 +908,8 @@ def test_tier1_budget_violation_republishes_greedy_prefix() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 2, "frames": 10},
-        {"batch_size": 2, "frames": 20},
+        {"batch_size": 2, "frames": 10, "decode": "window"},
+        {"batch_size": 2, "frames": 20, "decode": "window"},
     ]
     assert backend.pool_calls == 2
     assert runner.available_batch_sizes(20) == (4, 1)
@@ -941,8 +941,8 @@ def test_tier1_oversized_first_key_drops_its_batch_class() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 4, "frames": 10},
-        {"batch_size": 4, "frames": 20},
+        {"batch_size": 4, "frames": 10, "decode": "window"},
+        {"batch_size": 4, "frames": 20, "decode": "window"},
     ]
     assert runner.available_batch_sizes(20) == (2, 1)
 
@@ -973,8 +973,8 @@ def test_combined_footprint_violation_drops_largest_batch_class() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 4, "frames": 10},
-        {"batch_size": 4, "frames": 20},
+        {"batch_size": 4, "frames": 10, "decode": "window"},
+        {"batch_size": 4, "frames": 20, "decode": "window"},
     ]
     assert backend.pool_calls == 2
     assert runner.available_batch_sizes(20) == (2, 1)

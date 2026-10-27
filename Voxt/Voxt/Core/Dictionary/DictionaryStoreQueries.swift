@@ -174,26 +174,6 @@ extension DictionaryStore {
         )
     }
 
-    func correctionContext(for text: String, activeGroupID: UUID?) -> DictionaryCorrectionResult? {
-        guard let matcher = makeMatcherIfEnabled(for: text, activeGroupID: activeGroupID) else { return nil }
-        return matcher.applyCorrections(
-            to: text,
-            automaticReplacementEnabled: defaults.bool(forKey: AppPreferenceKey.dictionaryHighConfidenceCorrectionEnabled)
-        )
-    }
-
-    func matchContext(for text: String, activeGroupID: UUID?) -> DictionaryCorrectionResult? {
-        guard let matcher = makeMatcherIfEnabled(for: text, activeGroupID: activeGroupID) else { return nil }
-        let candidates = matcher.recallCandidates(in: text)
-        guard !candidates.isEmpty else { return nil }
-        return DictionaryCorrectionResult(
-            text: text,
-            candidates: candidates,
-            correctedTerms: [],
-            correctionSnapshots: []
-        )
-    }
-
     func glossaryContext(for text: String, activeGroupID: UUID?) -> DictionaryPromptContext? {
         guard let matcher = makeMatcherIfEnabled(for: text, activeGroupID: activeGroupID) else { return nil }
         let context = matcher.promptContext(for: text)

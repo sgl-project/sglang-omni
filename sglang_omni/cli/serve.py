@@ -17,10 +17,12 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.realtime.types import RuntimeLimits
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import exit_without_teardown
@@ -122,6 +124,17 @@ def normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
             part.strip().lower() for part in value.split(",") if part.strip()
         )
     return domains
+
+
+def validate_realtime_timeout(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    else:
+        try:
+            RuntimeLimits(idle_timeout_s=timeout_seconds)
+        except ValueError as error:
+            raise typer.BadParameter(str(error)) from error
+        return timeout_seconds
 
 
 def validate_tts_batch_max_items(value: int) -> int:
@@ -304,6 +317,42 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def parse_stage_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    else:
+        pass
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--stage-offload-components must not be empty")
+    else:
+        pass
+    return components
+
+
+def apply_stage_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_offload_components: str | None,
+) -> PipelineConfig:
+    components = parse_stage_offload_components(stage_offload_components)
+    if not components:
+        return pipeline_config
+    else:
+        pass
+
+    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+        raise typer.BadParameter(
+            "--stage-offload-components is not supported by this pipeline"
+        )
+    else:
+        pass
+
+    return pipeline_config.with_serial_offload(components)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -396,6 +445,17 @@ def serve(
             ),
         ),
     ] = None,
+    stage_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--stage-offload-components",
+            "--stage_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs."
+            ),
+        ),
+    ] = None,
     log_level: Annotated[
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
@@ -416,6 +476,30 @@ def serve(
             help="Report ready without sending the pipeline's warmup requests first.",
         ),
     ] = False,
+    realtime_session_update_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-session-update-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the timeout for the first session.update, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
+    realtime_idle_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-idle-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the idle timeout for shared sessions, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline.
 
@@ -515,6 +599,10 @@ def serve(
         validate_colocate_config(merged_config)
     else:
         pass
+    merged_config = apply_stage_offload_cli_overrides(
+        merged_config,
+        stage_offload_components=stage_offload_components,
+    )
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):
@@ -529,6 +617,8 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        realtime_session_update_timeout_s=realtime_session_update_timeout_s,
+        realtime_idle_timeout_s=realtime_idle_timeout_s,
         allowed_local_media_path=validate_allowed_local_media_path(
             allowed_local_media_path
         ),

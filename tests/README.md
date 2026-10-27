@@ -41,7 +41,8 @@ tests/
     │   └── qwen_fakes.py
     ├── utils/
     │   ├── test_audio.py
-    │   └── test_g711.py
+    │   ├── test_g711.py
+    │   └── test_managed_workers.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -216,9 +217,6 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
-    ├── router/
-    │   ├── test_app.py
-    │   └── test_core.py
     ├── profiler/
     │   ├── test_event_recorder.py
     │   ├── test_stop_run_id.py
@@ -448,8 +446,8 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
   GitHub CI runs the Omni stage with `run-omni-ci` or `run-all-ci`. The
-  mutually exclusive `run-omni-qwen3-omni-30b-a3b-instruct` and
-  `run-omni-minicpm-o-4.5` labels select the model; without either, the stage
+  mutually exclusive `run-qwen3-omni-30b-a3b-instruct` and
+  `run-minicpm-o-4.5` labels select the model; without either, the stage
   draws one at random. A manual dispatch takes the same labels through its
   `ci_labels` input.
   Model selection does not imply calibrated performance or quality thresholds.
@@ -697,6 +695,14 @@ that happened to contain an older version of the test.
     ownership, first-flush, post-prefix window cadence, EOS removal, final-tail,
     and feedback-order contracts. Early Talker startup opt-in, chunk gates, and
     config forwarding are covered in `test_talker.py` and `test_config_manager.py`.
+  - the realtime Session route (`test_session_config.py`, `test_session_stage_graph.py`,
+    `test_session_input.py`, `test_session_preprocessing.py`, `test_session_encoders.py`,
+    `test_thinker_session.py`, `test_thinker_session_positions.py`, `test_talker_session.py`):
+    the profile's stage routes and graph, the dialog's turn cutting, frame cap, interrupt
+    and truncate forwarding over real coordinator routes, one prompt per turn with
+    retained media rows, the thinker's native-session history, refill of an interrupted
+    reply and rebuild after a truncate, M-RoPE positions over retained history against a
+    one-shot computation, and the talker's one request per reply.
   - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
     fire rules, sub-batch decomposition, output equivalence, and lifecycle.
     `test_code2wav_batching.py` also covers per-window batch ceilings,
@@ -839,12 +845,8 @@ that happened to contain an older version of the test.
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
     ownership, and async resolve contracts.
 
-- `unit_test/router/`: SGLang-Omni Router unit tests:
-  - router CLI/config behavior
-  - worker metadata and health-state contracts
-  - request routing, proxying, and streaming relay
-  - worker selection policy behavior
-  - managed launcher command construction and cleanup.
+- `unit_test/utils/test_managed_workers.py`: CI worker command construction, GPU placement, parallel readiness, and process-group cleanup for `tests/utils/managed_workers.py`.
+- `sglang_omni_router/tests/` (from the repository root): Rust router process, HTTP, media, WebSocket, and voice integration tests. Unit tests live next to the Rust implementation.
 
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
@@ -933,8 +935,15 @@ that happened to contain an older version of the test.
   channel, `audios` input, role prompt, voice resolution, `stage_params`),
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
-  filler values, seeds, stream chunks, context limit, input validation). CPU
-  only, no weights; runner and request tests need SGLang but start no engine.
+  filler values, seeds, stream chunks, context limit, input validation), and
+  full-duplex sessions (a session stepped unit by unit through the LM session
+  adapter matches one offline request row for row, frame for frame and word
+  for word, however the audio is cut into units; per-session Mimi encode and
+  batched decode on the offline decode slots; the prompt handed on once; stage
+  sizes and settings resolved through the session config; deployment and
+  session voice, role prompt and sampling; the `/v1/realtime` events, and a
+  session over the WebSocket against a scripted pipeline). CPU only, no
+  weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
@@ -998,7 +1007,20 @@ that happened to contain an older version of the test.
   accounting, exact binary chunk wire sizes and state cleanup without worker processes. Run the session suite with
   `python -m pytest tests/unit_test/pipeline/test_session_*.py tests/unit_test/scheduling/test_session.py -q`.
 
+- `unit_test/pipeline/test_session_graph_edges.py`: Graph edge semantics over spawned
+  stage owners: a preempting interrupt drops the turn's queued output and not the next
+  turn, input during an interrupt waits unfenced, `drop_oldest` edges between nodes and
+  on the client's input, a control edge passing a full data edge, a blocking edge
+  holding its producer, and a node failure failing the outputs and closing the graph.
 - `unit_test/pipeline/test_session_shutdown.py`: Deterministic thread and trace
   fences cover shutdown during abort/append hooks and the open/append window
   between the final hook check and owner unlock, requiring exactly-once cleanup
   after native work returns without blocking shutdown.
+
+### Streaming cascade
+
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
+
+```bash
+python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q
+```

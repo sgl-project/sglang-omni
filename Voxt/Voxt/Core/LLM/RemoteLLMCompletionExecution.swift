@@ -22,7 +22,7 @@ extension RemoteLLMRuntimeClient {
         let model = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? provider.suggestedModel
             : configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let endpoint = resolvedLLMEndpoint(provider: provider, endpoint: configuration.endpoint, model: model)
+        let endpoint = resolvedLLMEndpoint(provider: provider, endpoint: configuration.endpoint, model: model, apiFormat: configuration.openAIAPIFormatValue)
         let endpoints = resolvedEndpointCandidates(provider: provider, primaryEndpoint: endpoint)
         var lastError: Error?
         let shouldAttemptStreaming = onPartialText != nil && supportsStreaming(provider: provider, intent: intent)

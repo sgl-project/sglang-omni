@@ -13,6 +13,7 @@ import time
 import types
 from collections import deque
 from collections.abc import Iterable, Iterator
+from concurrent.futures import Future
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
@@ -21,11 +22,34 @@ from typing import Literal
 import numpy as np
 import pytest
 import torch
-from sglang.srt.runtime_context import get_context
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+from sglang.srt.runtime_context import get_context, override_platform
+from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.qwen3_omni.components.thinker_model import (
+    Qwen3OmniMoeThinkerTextAttention,
+)
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
+from sglang_omni.models.qwen3_tts import engine_builder as qwen3_engine_builder
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vocoder
@@ -50,7 +74,11 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     build_sglang_qwen3_tts_request,
     derive_qwen3_tts_sampling_seeds,
 )
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSPromptConstants,
+    Qwen3TTSTalker,
+)
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     IncrementalDecodePlan,
@@ -73,9 +101,18 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
+from sglang_omni.scheduling.engine_factory import GenerationDefaults
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
+    build_generation_batch_overrides,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
@@ -84,7 +121,10 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
+from sglang_omni.vendor.sglang.layers import RMSNorm
 from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+from tests.unit_test.pipeline.helpers import make_stage
 
 
 def placeholder_prompt_constants(
@@ -137,12 +177,16 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.extra_key = extra_key
             self.output_ids = []
-            self.prefix_indices = []
-            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
+            self.prefix_len = 0
+            self.extend_end = len(origin_input_ids)
+
+        @property
+        def extend_len(self) -> int:
+            return self.extend_end - self.prefix_len
 
         def reset_for_retract(self) -> None:
-            self.prefix_indices = []
-            self.extend_range = None
+            self.prefix_len = 0
+            self.extend_end = None
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -431,9 +475,12 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
         def warmup_now(self) -> None:
             pass
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            pass
+
     class FakeTalker:
         device = torch.device("cpu")
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = None
         speaker_encoder_graph_runner = None
 
@@ -572,6 +619,56 @@ def test_qwen3_tts_engine_probes_silence_ids_only_for_base(
 
 
 @pytest.mark.parametrize(
+    ("filename", "model_suffix", "mem_fraction_static"),
+    [
+        ("qwen3_tts_1_7b_npu.yaml", "1.7B-Base", 0.60),
+        ("qwen3_tts_0_6b_customvoice_npu.yaml", "0.6B-CustomVoice", 0.70),
+        ("qwen3_tts_1_7b_voicedesign_npu.yaml", "1.7B-VoiceDesign", 0.60),
+    ],
+)
+def test_qwen3_tts_npu_configs_use_graph_sdpa_baseline(
+    filename: str,
+    model_suffix: str,
+    mem_fraction_static: float,
+) -> None:
+    config_path = Path(__file__).parents[3] / "examples" / "configs" / filename
+    config = ConfigManager.from_file(str(config_path)).config
+    assert config is not None
+    stages = {stage.name: stage for stage in config.stages}
+
+    assert config.model_path.endswith(model_suffix)
+    assert stages["preprocessing"].factory.max_concurrency == 1
+    assert stages["tts_engine"].tp_size == 1
+    assert stages["tts_engine"].factory.attn_implementation == "sdpa"
+    assert stages["tts_engine"].engine.attention_backend == "ascend"
+    assert stages["tts_engine"].engine.disable_cuda_graph is False
+    assert stages["tts_engine"].engine.enable_torch_compile is False
+    assert stages["tts_engine"].engine.max_running_requests == 1
+    assert stages["tts_engine"].engine.max_queued_requests == 8
+    assert stages["tts_engine"].engine.mem_fraction_static == mem_fraction_static
+    assert stages["vocoder"].factory.attn_implementation == "sdpa"
+    assert stages["vocoder"].factory.async_decode is True
+    assert stages["vocoder"].factory.incremental_codec_cuda_graph is True
+
+
+def test_qwen3_tts_0_6b_base_npu_config_uses_conservative_vocoder_defaults() -> None:
+    config_path = Path(__file__).parents[3] / "examples/configs/qwen3_tts_0_6b_npu.yaml"
+    config = ConfigManager.from_file(str(config_path)).config
+    stages = {stage.name: stage for stage in config.stages}
+    engine = stages["tts_engine"].engine
+    vocoder = stages["vocoder"].factory
+
+    assert engine.disable_cuda_graph is False
+    assert engine.max_running_requests == 16
+    assert engine.max_queued_requests == 16
+    assert vocoder.max_batch_size == 8
+    assert vocoder.initial_max_batch_size == 1
+    assert vocoder.followup_max_batch_size == 1
+    assert vocoder.async_decode is True
+    assert vocoder.incremental_codec_cuda_graph is True
+
+
+@pytest.mark.parametrize(
     ("is_npu", "device", "requested", "expected"),
     [
         (True, "npu:0", None, "sdpa"),
@@ -629,17 +726,15 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
 
 def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     from sglang_omni.models.qwen3_tts import CAPABILITIES
-    from sglang_omni.models.qwen3_tts.engine_builder import (
-        QWEN3_TTS_PREFILL_CUDA_GRAPH_BS,
-        Qwen3TtsEngineBuilder,
-    )
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
     from sglang_omni.scheduling.generation_batch_policy import (
         CudaGraphBackend,
-        build_default_prefill_cuda_graph_bs,
+        build_generation_batch_overrides,
     )
 
     builder = Qwen3TtsEngineBuilder()
     defaults = builder.generation_defaults(dtype="bfloat16")
+    overrides = build_generation_batch_overrides(**defaults)
 
     assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
     assert (
@@ -651,17 +746,238 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
         type(builder).supports_full_prefill_cuda_graph
         is CAPABILITIES.supports_full_prefill_cuda_graph
     )
-    assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
-    assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
-    # A 1-token prefill is the only shape the shared ladder sends back to eager,
-    # so the 1 bucket is what this default adds; 2 and 3 replay inside bucket 4.
-    ladder = defaults["cuda_graph_bs_prefill"]
-    assert ladder[0] == 1
-    assert ladder[1:] == build_default_prefill_cuda_graph_bs(512)
-    assert all(
-        next(b for b in ladder if b >= tokens) <= 2 * tokens for tokens in (1, 2, 3, 4)
+    assert overrides["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
+    assert "cuda_graph_bs_prefill" not in overrides
+    assert "cuda_graph_max_bs_prefill" not in overrides
+    assert overrides["disable_cuda_graph"] is False
+
+
+@pytest.mark.parametrize("is_npu", [False, True])
+def test_allocator_preparation_uses_resolved_pool_and_request_limit(
+    monkeypatch: pytest.MonkeyPatch, is_npu: bool
+) -> None:
+    """Prepare allocator kernels before serving, only for the NPU runtime."""
+    allocator = SimpleNamespace(page_size=128)
+    prepared: list[tuple[SimpleNamespace, int, int]] = []
+
+    def prepare(
+        pool: SimpleNamespace, max_running_requests: int, vocab_size: int
+    ) -> None:
+        prepared.append((pool, max_running_requests, vocab_size))
+
+    monkeypatch.setattr(qwen3_engine_builder.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(
+        qwen3_engine_builder, "prepare_npu_kernels", prepare, raising=False
     )
-    assert defaults["disable_cuda_graph"] is False
+    monkeypatch.setattr(
+        qwen3_engine_builder,
+        "get_schedule",
+        lambda: SimpleNamespace(max_running_requests=17, mem_fraction_static=0.6),
+    )
+    monkeypatch.setattr(
+        qwen3_engine_builder, "get_model", lambda: SimpleNamespace(context_length=8192)
+    )
+    scheduler = SimpleNamespace(
+        token_to_kv_pool_allocator=allocator,
+        max_total_num_tokens=8192,
+        tp_worker=SimpleNamespace(
+            model_runner=SimpleNamespace(
+                model=SimpleNamespace(vocab_size=3072),
+                token_to_kv_pool=SimpleNamespace(
+                    get_kv_size_bytes=lambda: (1024, 1024)
+                ),
+            )
+        ),
+    )
+
+    Qwen3TtsEngineBuilder().post_scheduler_setup(scheduler, None)
+
+    assert prepared == ([(allocator, 17, 3072)] if is_npu else [])
+
+
+def resolved_qwen3_tts_server_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object]
+) -> ServerArgs:
+    monkeypatch.delenv("SGLANG_OMNI_TORCH_COMPILE_DEFAULT", raising=False)
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+    checkpoint = Path(write_mini_llama_checkpoint(tmp_path))
+    config_path = checkpoint / "config.json"
+    config = json.loads(config_path.read_text())
+    config["tts_model_type"] = "base"
+    config_path.write_text(json.dumps(config))
+    builder = Qwen3TtsEngineBuilder()
+    builder.device = "cuda:0"
+    builder.checkpoint_dir = str(checkpoint)
+    builder.server_args_overrides = {"attention_backend": "fa3", **overrides}
+    stage_overrides = build_generation_batch_overrides(
+        server_args_overrides=builder.server_args_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    builder.adjust_overrides(stage_overrides)
+    server_args = build_sglang_server_args(
+        str(checkpoint), context_length=8192, device="cuda", **stage_overrides
+    )
+    builder.customize_server_args(server_args)
+    return server_args
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_prefill_ladder_starts_at_one_and_reaches_the_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path, monkeypatch, {"cuda_graph_backend_prefill": backend}
+    )
+    resolved = resolved_view(server_args)
+    prefill = resolved.cuda_graph_config.prefill
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert prefill.max_bs == resolved.chunked_prefill_size
+    assert prefill.bs == [
+        1,
+        *generate_prefill_cuda_graph_batch_sizes(resolved.chunked_prefill_size),
+    ]
+    assert prefill.full_prefill_max_req is None
+
+
+@pytest.mark.parametrize(
+    ("hopper", "slot_override", "expected_slots"),
+    [(True, None, "running"), (False, None, None), (True, 8, 8)],
+)
+def test_qwen3_tts_full_prefill_on_hopper_runs_fa4_with_a_slot_per_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hopper: bool,
+    slot_override: int | None,
+    expected_slots: int | str | None,
+) -> None:
+    overrides: dict[str, object] = {
+        "attention_backend": None,
+        "decode_attention_backend": "fa3",
+    }
+    if slot_override is not None:
+        overrides["cuda_graph_config"] = {
+            "prefill": {"full_prefill_max_req": slot_override}
+        }
+    else:
+        pass
+    with override_platform(is_sm90=hopper, is_hopper_with_cuda_12_3=hopper):
+        server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+    resolved = resolved_view(server_args)
+
+    assert resolved.cuda_graph_config.prefill.backend == "full"
+    assert (attention_backends_of(resolved)[0] == "fa4") is hopper
+    assert resolved.cuda_graph_config.prefill.full_prefill_max_req == (
+        resolved.max_running_requests if expected_slots == "running" else expected_slots
+    )
+
+
+def test_qwen3_tts_fp8_kv_cache_keeps_the_default_prefill_attention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An FP8 KV cache on Hopper keeps the default prefill attention backend."""
+    with override_platform(is_sm90=True, is_hopper_with_cuda_12_3=True):
+        server_args = resolved_qwen3_tts_server_args(
+            tmp_path,
+            monkeypatch,
+            {
+                "attention_backend": None,
+                "decode_attention_backend": "fa3",
+                "kv_cache_dtype": "fp8_e4m3",
+            },
+        )
+    resolved = resolved_view(server_args)
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert attention_backends_of(resolved)[0] != "fa4"
+    assert resolved.cuda_graph_config.prefill.full_prefill_max_req is None
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_operator_prefill_cap_ladder_starts_at_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path,
+        monkeypatch,
+        {"cuda_graph_backend_prefill": backend, "cuda_graph_max_bs_prefill": 3000},
+    )
+
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [
+        1,
+        *build_default_prefill_cuda_graph_bs(3000),
+    ]
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+@pytest.mark.parametrize("declaration", ["flat", "nested"])
+def test_qwen3_tts_keeps_a_declared_prefill_ladder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, declaration: str
+) -> None:
+    """A ladder the operator declares is served without an added 1 bucket."""
+    overrides: dict[str, object] = (
+        {
+            "cuda_graph_backend_prefill": backend,
+            "cuda_graph_bs_prefill": [4, 8],
+            "cuda_graph_max_bs_prefill": 8,
+        }
+        if declaration == "flat"
+        else {
+            "cuda_graph_config": {
+                "prefill": {"backend": backend, "bs": [4, 8], "max_bs": 8}
+            }
+        }
+    )
+    server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [4, 8]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cuda_graph_backend_prefill": "disabled"},
+        {"cuda_graph_bs_prefill": []},
+    ],
+)
+def test_qwen3_tts_disabled_or_empty_prefill_ladder_stays_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object]
+) -> None:
+    server_args = resolved_qwen3_tts_server_args(tmp_path, monkeypatch, overrides)
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert 1 not in (resolved_view(server_args).cuda_graph_config.prefill.bs or [])
+
+
+@pytest.mark.parametrize("backend", ["breakable", "full"])
+def test_qwen3_tts_one_token_prefill_cap_stays_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """A one-token prefill cap resolves to a single 1 bucket and passes validation."""
+    server_args = resolved_qwen3_tts_server_args(
+        tmp_path,
+        monkeypatch,
+        {"cuda_graph_backend_prefill": backend, "cuda_graph_max_bs_prefill": 1},
+    )
+
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=server_args,
+        allowed_prefill_backends=("breakable", "full"),
+    )
+    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [1]
 
 
 def qwen3_tts_checkpoint(tmp_path: Path, model_type: str | None) -> str:
@@ -680,117 +996,124 @@ def test_qwen3_tts_full_prefill_is_scoped_to_base_and_custom_voice(
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
-    def backend(model_type: str | None) -> str:
+    def defaults(model_type: str | None) -> GenerationDefaults:
         builder = Qwen3TtsEngineBuilder()
         builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, model_type)
-        return builder.generation_defaults(dtype="bfloat16")[
-            "cuda_graph_backend_prefill"
-        ]
+        return builder.generation_defaults(dtype="bfloat16")
 
-    assert backend("custom_voice") is CudaGraphBackend.FULL
-    assert backend("base") is CudaGraphBackend.FULL
-    for model_type in ("voice_design", None):
-        assert backend(model_type) is CudaGraphBackend.BREAKABLE, model_type
+    for model_type, backend in (
+        ("custom_voice", CudaGraphBackend.FULL),
+        ("base", CudaGraphBackend.FULL),
+        ("voice_design", CudaGraphBackend.BREAKABLE),
+        (None, CudaGraphBackend.BREAKABLE),
+    ):
+        resolved = defaults(model_type)
+        assert resolved["cuda_graph_backend_prefill"] is backend, model_type
+        assert "cuda_graph_bs_prefill" not in resolved, model_type
 
 
-def test_qwen3_tts_base_prefill_covers_reference_prompts(tmp_path: Path) -> None:
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+def test_qwen3_tts_talker_config_rotates_as_text_rope() -> None:
+    qwen3_stages.register_qwen3_tts_hf_config()
+    from qwen_tts.core.models import Qwen3TTSConfig
 
-    builder = Qwen3TtsEngineBuilder()
-    builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, "base")
-    defaults = builder.generation_defaults(dtype="bfloat16")
-    assert max(defaults["cuda_graph_bs_prefill"]) == 1024
-    assert defaults["max_running_requests"] == 64
-    assert defaults["max_prefill_tokens"] == 8192
-    builder.checkpoint_dir = qwen3_tts_checkpoint(tmp_path, "custom_voice")
-    assert (
-        max(builder.generation_defaults(dtype="bfloat16")["cuda_graph_bs_prefill"])
-        == 512
+    config = Qwen3TTSConfig(
+        talker_config={
+            "rope_scaling": {
+                "interleaved": True,
+                "mrope_section": [24, 20, 20],
+                "rope_type": "default",
+                "type": "default",
+            },
+            "rope_theta": 1_000_000,
+        }
     )
 
+    assert config.text_config is config.talker_config
+    assert config.text_config.rope_scaling == {
+        "rope_type": "default",
+        "type": "default",
+    }
 
-def test_qwen3_tts_small_base_prefill_covers_maximum_token_budget(
-    tmp_path: Path,
+
+def test_qwen3_tts_default_config_builds_without_rope_parameters() -> None:
+    qwen3_stages.register_qwen3_tts_hf_config()
+    from qwen_tts.core.models import Qwen3TTSConfig
+
+    assert Qwen3TTSConfig().text_config.rope_parameters is None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("backend", [None, KernelBackend.TORCH], ids=["cuda", "torch"])
+def test_qwen3_tts_talker_text_rope_stores_kv_only_on_the_cuda_kernel(
+    backend: KernelBackend | None,
 ) -> None:
-    builder = Qwen3TtsEngineBuilder()
-    checkpoint = Path(qwen3_tts_checkpoint(tmp_path, "base"))
-    config_path = checkpoint / "config.json"
-    config = json.loads(config_path.read_text())
-    config["tts_model_size"] = "0b6"
-    config_path.write_text(json.dumps(config))
-    builder.checkpoint_dir = str(checkpoint)
-    defaults = builder.generation_defaults(dtype="bfloat16")
-    assert max(defaults["cuda_graph_bs_prefill"]) == defaults["max_prefill_tokens"]
-
-
-def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
-
-    batch = SimpleNamespace(
-        positions=torch.arange(7, dtype=torch.int64),
-        mrope_positions=None,
+    device = torch.device("cuda")
+    num_heads, num_kv_heads, head_dim = 16, 8, 128
+    torch.manual_seed(0)
+    attention = SimpleNamespace(
+        use_fused_qk_norm_rope=False,
+        q_size=num_heads * head_dim,
+        kv_size=num_kv_heads * head_dim,
+        head_dim=head_dim,
+        q_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        k_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        alt_stream=None,
+        rotary_emb=RotaryEmbedding(
+            head_dim, head_dim, 64, 1_000_000, True, torch.bfloat16
+        ).to(device),
+        compatible_with_fused_kv_buffer=True,
+        attn=SimpleNamespace(layer_id=0, k_scale=None, v_scale=None),
     )
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+    cache_slots = torch.tensor([3, 7], device=device)
+    batch = SimpleNamespace(out_cache_loc=cache_slots, dcp_kv_mask=None)
+    positions = torch.tensor([17, 43], device=device)
+    qkv = torch.randn(
+        2,
+        (num_heads + 2 * num_kv_heads) * head_dim,
+        device=device,
+        dtype=torch.bfloat16,
     )
-
-    assert batch.mrope_positions.shape == (3, 7)
-    assert torch.equal(batch.mrope_positions[0], batch.positions)
-    assert torch.equal(batch.mrope_positions[1], batch.positions)
-    assert torch.equal(batch.mrope_positions[2], batch.positions)
-
-
-def test_qwen3_tts_mrope_mirror_is_scoped_to_the_graphed_path() -> None:
-    """A 2-D positions tensor picks a different CUDA kernel.
-
-    ``MRotaryEmbedding.forward_cuda`` dispatches 1-D positions to
-    ``forward_native`` and 2-D positions to the fused ``forward_triton``, so
-    mirroring an eager prefill would move it to another kernel for no reason.
-    """
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
-
-    def make_batch():
-        return SimpleNamespace(
-            positions=torch.arange(7, dtype=torch.int64),
-            mrope_positions=None,
+    previous_backend = get_fused_op_backend()
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(prefill=PhaseConfig(backend=Backend.DISABLED))
+    ):
+        pool = MHATokenToKVPool(
+            size=32,
+            page_size=1,
+            dtype=torch.bfloat16,
+            head_num=num_kv_heads,
+            head_dim=head_dim,
+            layer_num=1,
+            device="cuda",
+            enable_memory_saver=False,
         )
+        k_before = pool.get_key_buffer(0).clone()
+        v_before = pool.get_value_buffer(0).clone()
+        set_fused_op_backend(backend)
+        try:
+            with forward_context(
+                ForwardContext(SimpleNamespace(token_to_kv_pool=pool))
+            ):
+                _, k, v = Qwen3OmniMoeThinkerTextAttention.apply_qk_norm_rope(
+                    attention, qkv, positions, batch
+                )
+        finally:
+            set_fused_op_backend(previous_backend)
 
-    # note (luojiaxuan): SGLang hands out an EagerRunner rather than None when
-    # prefill graphs are disabled, so the runner's own verdict is what scopes
-    # the mirror.
-    batch = make_batch()
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: False)
-    )
-    assert batch.mrope_positions is None
-
-    batch = make_batch()
-    ensure_mrope_positions(batch, prefill_graph_runner=None)
-    assert batch.mrope_positions is None
-
-    batch = make_batch()
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-    )
-    assert batch.mrope_positions is not None
-    assert batch.mrope_positions.shape == (3, 7)
-    assert torch.equal(batch.mrope_positions[0], batch.positions)
-
-
-def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
-    """A batch that already carries mrope positions owns them."""
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
-
-    supplied = torch.arange(21, dtype=torch.int64).reshape(3, 7)
-    batch = SimpleNamespace(
-        positions=torch.zeros(7, dtype=torch.int64),
-        mrope_positions=supplied,
-    )
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-    )
-
-    assert batch.mrope_positions is supplied
+    if backend is None:
+        assert attention.used_fused_set_kv_buffer_last_call is True
+        assert torch.equal(
+            pool.get_key_buffer(0)[cache_slots], k.reshape(2, num_kv_heads, head_dim)
+        )
+        assert torch.equal(
+            pool.get_value_buffer(0)[cache_slots],
+            v.reshape(2, num_kv_heads, head_dim),
+        )
+    else:
+        assert attention.used_fused_set_kv_buffer_last_call is False
+        assert torch.equal(pool.get_key_buffer(0), k_before)
+        assert torch.equal(pool.get_value_buffer(0), v_before)
 
 
 def test_qwen3_tts_factory_forwards_coalescing_params_to_builder(
@@ -889,7 +1212,7 @@ def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> Non
     assert state.ref_text == "reference"
     assert state.x_vector_only_mode is False
     assert state.non_streaming_mode is False
-    assert state.generation_kwargs == {"max_new_tokens": 2048}
+    assert state.generation_kwargs == {}
 
 
 def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
@@ -905,7 +1228,6 @@ def test_qwen3_tts_preserves_explicit_default_like_sampling_values() -> None:
     state = build_qwen3_tts_state(payload)
 
     assert state.generation_kwargs == {
-        "max_new_tokens": 2048,
         "temperature": 0.8,
         "top_p": 1.0,
         "top_k": 30,
@@ -937,16 +1259,12 @@ def test_qwen3_tts_forwards_tts_engine_stage_sampling_params() -> None:
     greedy_state = build_qwen3_tts_state(greedy_payload)
 
     assert sampled_state.generation_kwargs == {
-        "max_new_tokens": 2048,
         "subtalker_dosample": True,
         "subtalker_temperature": 0.7,
         "subtalker_top_p": 0.8,
         "subtalker_top_k": 40,
     }
-    assert greedy_state.generation_kwargs == {
-        "max_new_tokens": 2048,
-        "subtalker_dosample": False,
-    }
+    assert greedy_state.generation_kwargs == {"subtalker_dosample": False}
 
 
 def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
@@ -1047,7 +1365,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
             return [(np.zeros(32, dtype=np.float32), 24000)]
 
         def _tokenize_texts(self, texts):
-            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+            return [torch.arange(1, len(texts[0]) + 1, dtype=torch.long).unsqueeze(0)]
 
         def _build_assistant_text(self, text):
             return text
@@ -1060,8 +1378,9 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
@@ -1101,6 +1420,89 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     assert prepared.state.seed is None
 
 
+@pytest.mark.parametrize(
+    ("params", "max_new_tokens"),
+    [
+        ({}, qwen3_request_builders.text_length_budget(len("target"))),
+        ({"max_new_tokens": 256}, 256),
+    ],
+    ids=["default", "explicit"],
+)
+def test_qwen3_tts_budgets_generation_by_the_target_text(
+    params: dict[str, object], max_new_tokens: int
+) -> None:
+    """Without max_new_tokens a request could run to 2048 codec frames, 163.84 s of audio for a one-word text; the default now counts the target text's tokens, not the reference's."""
+
+    class FakeWrapper:
+        def _normalize_audio_inputs(self, ref_audio):
+            return [(np.zeros(32, dtype=np.float32), 24000)]
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        tts_model_type = "base"
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+        speech_tokenizer = fake_speech_tokenizer()
+        speaker_encoder_sample_rate = 24000
+
+        def extract_speaker_embedding(self, *, audio, sr):
+            return torch.ones(4)
+
+        def build_voice_clone_inputs(self, **kwargs):
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    prepared = qwen3_request_builders.prepare_qwen3_tts_request(
+        make_payload(
+            inputs="target",
+            params=params,
+            tts_params={
+                "ref_audio": "voice.wav",
+                "ref_text": "a much longer reference",
+            },
+        ),
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
+    )
+
+    assert prepared.gen_kwargs["max_new_tokens"] == max_new_tokens
+
+
+@pytest.mark.parametrize(
+    ("text_tokens", "frames"),
+    [(1, 45), (3, 64), (30, 328), (200, 1985), (300, 2048)],
+)
+def test_the_text_length_budget_is_twice_the_slowest_natural_stop(
+    text_tokens: int, frames: int
+) -> None:
+    assert qwen3_request_builders.text_length_budget(text_tokens) == frames
+
+
 def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1133,8 +1535,9 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -1249,8 +1652,9 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -1416,8 +1820,9 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
@@ -1735,6 +2140,84 @@ def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> 
     assert torch.equal(result.cpu(), torch.zeros((2, 2), dtype=torch.long))
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="requires two visible CUDA devices",
+)
+def test_qwen3_tts_preprocessing_pool_thread_stays_on_the_stream_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preprocessing pool thread stays on its stream's card after leaving the stream, so a stage on a second card opens no context on card 0."""
+
+    class FakeModel:
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+
+        def build_prompt_constants(self) -> Qwen3TTSPromptConstants:
+            return placeholder_prompt_constants()
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "get_qwen3_tts_adhoc_reference_service_locked",
+        lambda model, wrapper, *, graph_bucket_frames: None,
+    )
+    device = torch.device("cuda", 1)
+    stream = torch.cuda.Stream(device=device)
+
+    def leave_stream() -> int:
+        with torch.cuda.stream(stream):
+            pass
+        return torch.cuda.current_device()
+
+    qwen3_request_builders.set_qwen3_tts_preprocessing_context(
+        model=FakeModel(), wrapper=SimpleNamespace(), device=device
+    )
+    scheduler = qwen3_stages.create_preprocessing_executor("unused", max_concurrency=1)
+    try:
+        thread_device_index = scheduler.executor.submit(leave_stream).result(timeout=10)
+    finally:
+        scheduler.executor.shutdown(wait=True)
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    assert thread_device_index == 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="requires two visible CUDA devices",
+)
+def test_qwen3_tts_reference_code_batcher_thread_stays_on_the_encoder_card() -> None:
+    """The reference-code batcher thread stays on its encoder's card after leaving the encode stream, so a stage on a second card opens no context on card 0."""
+    device = torch.device("cuda", 1)
+    callback_added = threading.Event()
+
+    def encode(values: torch.Tensor) -> torch.Tensor:
+        callback_added.wait()
+        return torch.zeros(
+            (1, 2, values.shape[-1] // 8), dtype=torch.long, device=device
+        )
+
+    completing_thread_device_indices: list[int] = []
+
+    def record_completing_thread_device(completed_future: Future[torch.Tensor]) -> None:
+        completing_thread_device_indices.append(torch.cuda.current_device())
+
+    batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
+        fake_speech_tokenizer(encode, device=device),
+    )
+    try:
+        future = batcher.submit(np.zeros(16, dtype=np.float32), 24000)
+        future.add_done_callback(record_completing_thread_device)
+        callback_added.set()
+        future.result(timeout=10)
+    finally:
+        callback_added.set()
+        batcher.close()
+
+    assert completing_thread_device_indices == [1]
+
+
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1762,8 +2245,9 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -2136,8 +2620,50 @@ def test_qwen3_tts_predictor_codec_embeddings_use_talker_hidden_size(
 
     predictor = sglang_model.Qwen3TTSCodePredictor(talker_config)
 
-    assert predictor.model.codec_embedding[0].weight.shape == (2048, 2048)
+    assert predictor.model.codec_embedding.weight.shape == (15, 2048, 2048)
     assert predictor.small_to_mtp_projection.weight.shape == (1024, 2048)
+
+
+def test_qwen3_tts_codec_tables_embed_each_codebook_from_its_own_table() -> None:
+    codec_tables = Qwen3TTSCodecTables(3, 5, 4)
+    codes = torch.cat(
+        [torch.tensor([[0, 4, 4], [4, 0, 1]]), torch.randint(0, 5, (6, 3))]
+    )
+
+    rows = codec_tables(codes)
+
+    assert torch.equal(
+        rows,
+        torch.stack(
+            [
+                torch.nn.functional.embedding(codes[:, codebook_index], table)
+                for codebook_index, table in enumerate(codec_tables.weight)
+            ],
+            dim=1,
+        ),
+    )
+
+
+def test_qwen3_tts_talker_loads_each_codec_table_into_its_codebook() -> None:
+    talker = object.__new__(Qwen3TTSTalker)
+    torch.nn.Module.__init__(talker)
+    talker.code_predictor = torch.nn.Module()
+    talker.code_predictor.model = torch.nn.Module()
+    talker.code_predictor.model.codec_embedding = Qwen3TTSCodecTables(3, 5, 4)
+    talker.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(3)
+    talker.cached_params_dict = dict(talker.named_parameters())
+    talker.predictor_projected_embeddings = None
+    tables = [torch.randn(5, 4) for _ in range(3)]
+
+    talker.load_weights(
+        (f"talker.code_predictor.model.codec_embedding.{codebook_index}.weight", table)
+        for codebook_index, table in reversed(list(enumerate(tables)))
+    )
+
+    for codebook_index, table in enumerate(tables):
+        assert torch.equal(
+            talker.code_predictor.model.codec_embedding.weight[codebook_index], table
+        )
 
 
 def test_qwen3_tts_cpu_seeded_sampling_skips_npu_sampler(
@@ -2327,6 +2853,9 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            captured["running_stream_count"] = running_stream_count
+
     monkeypatch.setattr(
         qwen3_stages,
         "load_qwen3_tts_tokenizer",
@@ -2384,6 +2913,9 @@ def vocoder_factory_capture(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            captured["running_stream_count"] = running_stream_count
+
     monkeypatch.setattr(
         qwen3_stages,
         "load_qwen3_tts_tokenizer",
@@ -2404,6 +2936,115 @@ def vocoder_factory_capture(
     return captured
 
 
+@pytest.mark.parametrize(
+    (
+        "device",
+        "async_decode",
+        "codec_graph",
+        "deterministic",
+        "initial_internal_format",
+        "capture_internal_format",
+        "warmup_raises",
+    ),
+    [
+        ("npu", True, True, False, True, False, False),
+        ("npu", None, True, False, True, False, False),
+        ("npu", True, True, False, False, False, False),
+        ("npu", True, True, False, True, False, True),
+        ("npu", False, True, False, True, False, False),
+        ("npu", True, False, False, True, False, False),
+        ("npu", True, True, True, True, False, False),
+        ("cuda", True, True, False, True, True, False),
+        ("cpu", True, True, False, True, True, False),
+    ],
+)
+def test_vocoder_factory_scopes_npu_internal_format_to_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    async_decode: bool | None,
+    codec_graph: bool,
+    deterministic: bool,
+    initial_internal_format: bool,
+    capture_internal_format: bool,
+    warmup_raises: bool,
+) -> None:
+    """Codec capture must not leave internal formats disabled for the Talker."""
+    configuration = SimpleNamespace(allow_internal_format=initial_internal_format)
+    observed_internal_formats: list[bool] = []
+
+    class FakeScheduler:
+        def __init__(
+            self, tokenizer: None, **kwargs: str | int | float | bool | None
+        ) -> None:
+            observed_internal_formats.append(configuration.allow_internal_format)
+
+        def warmup_now(self) -> None:
+            observed_internal_formats.append(configuration.allow_internal_format)
+            if warmup_raises:
+                raise RuntimeError("capture failed")
+            else:
+                pass
+
+        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+            pass
+
+    def set_option(options: dict[str, str]) -> None:
+        configuration.allow_internal_format = (
+            options["ALLOW_INTERNAL_FORMAT"] == "enable"
+        )
+
+    monkeypatch.setattr(
+        qwen3_stages,
+        "torch_npu",
+        SimpleNamespace(
+            _C=SimpleNamespace(
+                _npu_getOption=lambda name: (
+                    b"enable" if configuration.allow_internal_format else b"disable"
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "torch",
+        SimpleNamespace(
+            device=lambda value: SimpleNamespace(type=value.partition(":")[0]),
+            npu=SimpleNamespace(config=configuration, set_option=set_option),
+        ),
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "resolve_concrete_device", lambda value, gpu_id: value
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "load_qwen3_tts_tokenizer", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "load_qwen3_tts_checkpoint_config", lambda path: {}
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "Qwen3TTSStreamingVocoderScheduler", FakeScheduler
+    )
+
+    with (
+        pytest.raises(RuntimeError, match="capture failed")
+        if warmup_raises
+        else contextlib.nullcontext()
+    ):
+        qwen3_stages.create_vocoder_executor(
+            "model",
+            device=device,
+            async_decode=async_decode,
+            incremental_codec_cuda_graph=codec_graph,
+            enable_deterministic_inference=deterministic,
+        )
+
+    assert observed_internal_formats == [
+        initial_internal_format,
+        capture_internal_format,
+    ]
+    assert configuration.allow_internal_format is initial_internal_format
+
+
 def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2419,7 +3060,12 @@ def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
         raising=False,
     )
 
-    assert config.stage_factory_kwargs("vocoder") == {"async_decode": False}
+    assert config.stage_factory_kwargs("vocoder") == {
+        "async_decode": False,
+        "running_stream_count": config.generation_admission_defaults()[
+            "max_running_requests"
+        ],
+    }
     assert config.stage_factory_kwargs("tts_engine") == {}
 
 
@@ -2434,7 +3080,11 @@ def test_qwen3_tts_config_leaves_a_measured_platform_alone(
         raising=False,
     )
 
-    assert config.stage_factory_kwargs("vocoder") == {}
+    assert config.stage_factory_kwargs("vocoder") == {
+        "running_stream_count": config.generation_admission_defaults()[
+            "max_running_requests"
+        ]
+    }
     assert config.stage_factory_kwargs("tts_engine") == {}
 
 
@@ -2516,9 +3166,15 @@ class FakeQwen3TTSSpeechTokenizer:
 class FakeIncrementalQwen3TTSDecoder:
     def __init__(self, decoder, *, fail_on_call: int | None = None) -> None:
         self.decoder = decoder
+        self.channels_last_weights = None
+        self.fused_transformer = None
         self.fail_on_call = fail_on_call
+        self.first_chunk_reach = 64
         self.decode_inputs: list[torch.Tensor] = []
         self.decode_positions: list[list[int]] = []
+
+    def first_chunk_reference_frames(self, emit_frames: int) -> int:
+        return self.first_chunk_reach
 
     def state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
         return Qwen3TTSIncrementalCodecStateSpec(
@@ -2531,7 +3187,7 @@ class FakeIncrementalQwen3TTSDecoder:
         )
 
     def init_state(
-        self, batch_size: int, *, device, dtype
+        self, batch_size: int, *, device, dtype, has_key_value_buffers: bool = True
     ) -> Qwen3TTSIncrementalCodecState:
         spec = self.state_spec()
         state = Qwen3TTSIncrementalCodecState(
@@ -2542,9 +3198,12 @@ class FakeIncrementalQwen3TTSDecoder:
             state.conv_histories[key] = torch.zeros(
                 batch_size, channels, length, device=device, dtype=dtype
             )
-        shape = (batch_size, spec.num_key_value_heads, spec.retained_context, 1)
-        state.transformer_keys[0] = torch.zeros(shape, device=device, dtype=dtype)
-        state.transformer_values[0] = torch.zeros(shape, device=device, dtype=dtype)
+        if has_key_value_buffers:
+            shape = (batch_size, spec.num_key_value_heads, spec.retained_context, 1)
+            state.transformer_keys[0] = torch.zeros(shape, device=device, dtype=dtype)
+            state.transformer_values[0] = torch.zeros(shape, device=device, dtype=dtype)
+        else:
+            pass
         return state
 
     def decode(
@@ -2913,6 +3572,34 @@ def test_qwen3_tts_reference_bootstraps_replay_windows_across_requests(
     assert long.emitted_generated_frames == 1
     assert short.emitted_generated_frames == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 0
+
+
+def test_qwen3_tts_long_reference_first_chunk_starts_at_its_reach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental, runner = windowed_scheduler(monkeypatch)
+    incremental.first_chunk_reach = 2
+    state = admit_reference_stream(
+        scheduler,
+        "request",
+        torch.tensor([[10, 1], [20, 2], [30, 3], [40, 4], [50, 5]], dtype=torch.long),
+        ref_code_len=4,
+    )
+
+    scheduler.run_initial_batch([("request", state)])
+
+    assert runner.calls == [
+        ((1, 2, 2), [state.codec_slot]),
+        ((1, 2, 1), [state.codec_slot]),
+    ]
+    assert incremental.decode_positions == [[2], [4]]
+    assert [item[:, 0].tolist() for item in incremental.decode_inputs] == [
+        [[30, 40]],
+        [[50]],
+    ]
+    assert int(scheduler.codec_arena.storage.frame_positions[state.codec_slot]) == 5
+    assert state.codec_frame_position == 5
+    assert state.emitted_generated_frames == 1
 
 
 def test_qwen3_tts_window_remainder_carries_the_emitted_frame(
@@ -4945,11 +5632,14 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
     assert len(scheduler.decoder.decode_inputs) == 2
 
 
-def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None:
+@pytest.mark.parametrize("ramp", [(2, 4, 8), (1, 2, 2, 2, 4, 4)])
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks(
+    ramp: tuple[int, ...],
+) -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),
         device="cpu",
-        stream_chunk_ramp=(2, 4, 8),
+        stream_chunk_ramp=ramp,
     )
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler.handle_streaming_new_request(payload.request_id, payload)
@@ -4974,20 +5664,14 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None
 
     # note (Junnan Li): each schedule point is locked behaviorally by feeding
     # one frame short of it (must not emit) and then the last frame (must).
-    feed(1)
-    assert emitted_frames == []
-    feed(1)
-    assert emitted_frames == [2]
-    feed(3)
-    assert emitted_frames == [2]
-    feed(1)
-    assert emitted_frames == [2, 4]
-    feed(7)
-    assert emitted_frames == [2, 4]
-    feed(1)
-    assert emitted_frames == [2, 4, 8]
+    for index, frames in enumerate(ramp):
+        if frames > 1:
+            feed(frames - 1)
+            assert emitted_frames == list(ramp[:index])
+        feed(1)
+        assert emitted_frames == list(ramp[: index + 1])
     feed(8)
-    assert emitted_frames == [2, 4, 8, 8], "past the ramp the steady stride rules"
+    assert emitted_frames == [*ramp, 8], "past the ramp the steady stride rules"
 
 
 def test_decode_graph_frame_counts_cover_startup_and_steady() -> None:
@@ -5367,11 +6051,26 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     assert payload.request_id not in scheduler.stream_states
 
 
-def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
+@pytest.mark.parametrize(
+    "device_type",
+    [
+        "cpu",
+        pytest.param("cuda", marks=pytest.mark.accelerator),
+        pytest.param("npu", marks=pytest.mark.accelerator),
+    ],
+)
+def test_qwen3_tts_stream_output_prepends_reference_once(device_type: str) -> None:
     from sglang_omni.models.qwen3_tts.request_builders import (
         make_qwen3_tts_scheduler_adapters,
     )
 
+    if device_type == "npu":
+        pytest.importorskip("torch_npu")
+    elif device_type == "cuda" and not (torch.version.cuda or torch.version.hip):
+        pytest.skip("CUDA/ROCm is unavailable")
+    device_module = torch.get_device_module(device_type)
+    if device_type != "cpu" and not device_module.is_available():
+        pytest.skip(f"{device_type} is unavailable")
     payload = make_payload(inputs="target", params={"stream": True})
     _, _, stream_output_builder = make_qwen3_tts_scheduler_adapters(
         model=None,
@@ -5379,22 +6078,41 @@ def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
     )
     data = Qwen3TTSSGLangRequestData(
         ref_code=torch.tensor([[10, 11], [12, 13]]),
-        latest_stream_code_chunk=torch.tensor([1, 2]),
+        latest_stream_code_chunk=torch.tensor([1, 2], device=device_type),
         stream_codec_output=True,
         stage_payload=payload,
     )
 
+    previous_event = None
+    if device_type != "cpu":
+        previous_event = device_module.Event()
+        previous_event.record()
+        data.codes_ready_event = previous_event
     first = stream_output_builder(payload.request_id, data, None)
     assert len(first) == 1
-    assert first[0].data.tolist() == [[10, 11], [12, 13], [1, 2]]
-    assert first[0].data.device.type == "cpu"
+    if device_type != "cpu":
+        ready = first[0].metadata["codes_ready_event"]
+        assert ready is not previous_event
+        consumer = device_module.Stream()
+        with device_module.stream(consumer):
+            consumer.wait_event(ready)
+            actual = first[0].data.cpu().tolist()
+    else:
+        actual = first[0].data.tolist()
+    assert actual == [[10, 11], [12, 13], [1, 2]]
+    assert first[0].data.device.type == device_type
     assert first[0].metadata["ref_code_len"] == 2
     assert first[0].metadata["num_quantizers"] == 2
 
-    data.latest_stream_code_chunk = torch.tensor([3, 4])
+    data.latest_stream_code_chunk = torch.tensor([3, 4], device=device_type)
+    if device_type != "cpu":
+        data.codes_ready_event = device_module.Event()
+        data.codes_ready_event.record()
     second = stream_output_builder(payload.request_id, data, None)
     assert second[0].data.tolist() == [[3, 4]]
     assert "ref_code_len" not in second[0].metadata
+    if device_type != "cpu":
+        assert second[0].metadata["codes_ready_event"] is data.codes_ready_event
 
 
 def test_qwen3_tts_stream_output_marks_bootstrap_silence_suppression() -> None:
@@ -6218,6 +6936,68 @@ def test_qwen3_tts_async_followup_batches_ready_requests() -> None:
         int(codes.shape[0]) for codes in tokenizer.model.decoder.decode_inputs
     ]
     assert batch_sizes == [1, 1, 2]
+
+
+def test_qwen3_tts_async_worker_binds_accelerator_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    device = SimpleNamespace(type="npu", index=3)
+    scheduler.device = device
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_tts.streaming_vocoder.current_platform.set_device",
+        lambda device: calls.append(("device", device)),
+    )
+
+    scheduler.activate_decode_worker(None)
+
+    assert calls == [("device", device)]
+
+
+def test_qwen3_tts_async_worker_keeps_cuda_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    scheduler.device = SimpleNamespace(type="cuda", index=0)
+    stream = object()
+    calls: list[object] = []
+    scheduler.device_module = SimpleNamespace(set_stream=calls.append)
+
+    scheduler.activate_decode_worker(stream)
+
+    assert calls == [stream]
+
+
+@pytest.mark.parametrize("worker", ["initial", "followup"])
+def test_qwen3_tts_async_worker_entry_activates_device(
+    monkeypatch: pytest.MonkeyPatch,
+    worker: str,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(scheduler, "activate_decode_worker", calls.append)
+
+    if worker == "initial":
+        scheduler.initial_queue.put(None)
+        scheduler.run_initial_worker()
+    else:
+        scheduler.followup_queue.put((float("inf"), 0, "", None))
+        scheduler.run_followup_worker()
+
+    assert calls == [None]
 
 
 def test_qwen3_tts_followup_queue_prioritizes_playback_deadline() -> None:
@@ -7143,7 +7923,7 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
 
     class FakeModel:
         tts_model_type = "custom_voice"
-        model = SimpleNamespace(feedback_buffer=torch.zeros(4, 4))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(4, 4))
 
         def build_custom_voice_inputs(self, **kwargs):
             calls.append(("custom", kwargs))
@@ -7197,7 +7977,7 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
 
     class FakeModel:
         tts_model_type = "voice_design"
-        model = SimpleNamespace(feedback_buffer=torch.zeros(4, 4))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(4, 4))
 
         def build_voice_design_inputs(self, **kwargs):
             calls.append(kwargs)
@@ -7432,23 +8212,16 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
-    # note (luojiaxuan): the runner accepts this batch, so the mirror applies.
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(
-            prefill_cuda_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-        )
-    )
     runner.build_prefill_input_embeds = (
         lambda forward_batch, requests: calls.append("embeds") or input_embeds
     )
     mm_inputs = [object()]
-    positions = torch.arange(3)
     forward_batch = SimpleNamespace(
         input_ids=torch.zeros(3, dtype=torch.long),
         input_embeds=None,
         replace_embeds=None,
         mm_inputs=mm_inputs,
-        positions=positions,
+        positions=torch.arange(3),
         mrope_positions=None,
     )
 
@@ -7460,9 +8233,7 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     assert forward_batch.input_embeds is None
     assert forward_batch.mm_inputs is mm_inputs
     assert calls == ["prepare", "embeds"]
-    assert forward_batch.mrope_positions.shape == (3, 3)
-    for row in forward_batch.mrope_positions:
-        assert torch.equal(row, positions)
+    assert forward_batch.mrope_positions is None
 
 
 def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
@@ -7633,8 +8404,18 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
         positions=torch.tensor([3, 3], dtype=torch.long),
     )
     requests = [
-        SimpleNamespace(request_id="active", data=Qwen3TTSSGLangRequestData()),
-        SimpleNamespace(request_id="eos", data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(
+            request_id="active",
+            data=Qwen3TTSSGLangRequestData(
+                req=SimpleNamespace(inflight_middle_chunks=0)
+            ),
+        ),
+        SimpleNamespace(
+            request_id="eos",
+            data=Qwen3TTSSGLangRequestData(
+                req=SimpleNamespace(inflight_middle_chunks=0)
+            ),
+        ),
     ]
 
     runner.collect_codes(result, forward_batch, schedule_batch, requests)
@@ -7672,6 +8453,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
 
     fake_forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1]),
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
         positions=torch.tensor([0]),
         mrope_positions=None,
     )
@@ -7687,8 +8469,6 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
         config = SimpleNamespace(codec_eos_token_id=-1)
 
         def __init__(self) -> None:
-            self.feedback_buffer = torch.zeros(1, 4)
-            self.feedback_mask = torch.zeros(1, dtype=torch.bool)
             self.decode_feedback_embedding = torch.nn.Embedding(1, 4)
             self.output_codes = torch.ones(1, 2)
             self.output_embeds = torch.ones(1, 4)
@@ -7732,11 +8512,15 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     runner.tp_worker = FakeTPWorker()
     runner.output_processor = FakeOutputProcessor()
     runner.device = torch.device("cpu")
+    runner.row_ids_cache = None
     runner.model = runner.tp_worker.model_runner.model
     runner.bind_execution_bridge(FakeExecutionBridge())
 
     data = SimpleNamespace(
-        req=SimpleNamespace(sampling_params=SimpleNamespace(repetition_penalty=1.0)),
+        req=SimpleNamespace(
+            sampling_params=SimpleNamespace(repetition_penalty=1.0),
+            inflight_middle_chunks=0,
+        ),
         output_codes=[],
         pending_feedback_queue=[torch.ones(4)],
         pending_text_queue=[torch.zeros(4)],
@@ -7774,10 +8558,7 @@ def test_qwen3_tts_decode_feedback_empty_batch_noops() -> None:
     assert forward_batch.input_ids.numel() == 0
 
 
-def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
+def layerless_qwen3_tts_text_model(decode_rows: int) -> torch.nn.Module:
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalkerTextModel
 
     class IdentityNorm(torch.nn.Module):
@@ -7793,10 +8574,16 @@ def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
     model.start_layer = 0
     model.end_layer = 0
     model.norm = IdentityNorm()
-    model.feedback_buffer = torch.full((1, 4), 5.0)
-    model.feedback_mask = torch.tensor([True])
-    model.decode_feedback_embedding = torch.nn.Embedding(1, 4)
+    model.decode_feedback_embedding = torch.nn.Embedding(decode_rows, 4)
     model.decode_feedback_embedding.weight.requires_grad_(False)
+    return model
+
+
+def test_qwen3_tts_decode_forward_reads_the_decode_feedback_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    model = layerless_qwen3_tts_text_model(decode_rows=1)
     with torch.no_grad():
         model.decode_feedback_embedding.weight[0].fill_(7.0)
 
@@ -7809,7 +8596,25 @@ def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
     )
 
     assert torch.equal(output, model.decode_feedback_embedding.weight[:1])
-    assert bool(model.feedback_mask[0]) is True
+
+
+def test_qwen3_tts_extend_forward_reads_its_input_embeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    model = layerless_qwen3_tts_text_model(decode_rows=1)
+    input_embeds = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+
+    output = model.forward(
+        input_ids=torch.tensor([3, 1, 4, 1, 5]),
+        positions=torch.arange(5),
+        forward_batch=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_decode=lambda: False),
+        ),
+        input_embeds=input_embeds,
+    )
+
+    assert torch.equal(output, input_embeds)
 
 
 def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
@@ -7831,6 +8636,8 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     talker.semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker.sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker.sub_do_sample_tensor = torch.empty(2, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     requests = [
         SimpleNamespace(
             data=Qwen3TTSSGLangRequestData(
@@ -7892,6 +8699,8 @@ def test_qwen3_tts_prepare_decode_buffers_stages_the_temperature_floor(
     talker.semantic_sampling_seed_tensor = torch.empty(batch_size, dtype=torch.long)
     talker.sub_sampling_seed_tensor = torch.empty(batch_size, dtype=torch.long)
     talker.sub_do_sample_tensor = torch.empty(batch_size, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     talker.sub_seed_offsets = torch.arange(1, 16, dtype=torch.long)
 
     def data(temperature: float, dosample: bool) -> Qwen3TTSSGLangRequestData:
@@ -8046,6 +8855,119 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     assert sampler_calls[1]["positions"].tolist() == [11, 11]
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_qwen3_tts_predictor_overwrites_reused_outputs(
+    monkeypatch: pytest.MonkeyPatch, dtype: torch.dtype
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker.predictor_k_cache = torch.empty(0, dtype=dtype)
+    talker.output_codes = torch.full((5, 4), -1, dtype=torch.long)
+    talker.output_embeds = torch.full((5, 8), float("nan"), dtype=dtype)
+    talker.predictor_projected_embeddings = None
+    talker.sub_has_sampled_rows = False
+    talker.sub_batch_size = 5
+    embeddings = [
+        torch.nn.Embedding.from_pretrained(
+            (torch.arange(64).reshape(8, 8) / 16 + group).to(dtype)
+        )
+        for group in range(4)
+    ]
+    projection_inputs = []
+
+    def project_input(hidden_states):
+        projection_inputs.append(hidden_states.clone())
+        return hidden_states * 2
+
+    def predictor_forward_tokens(*, token_embeds, batch_size, cache_len):
+        assert token_embeds.shape[0] == batch_size
+        assert cache_len in (0, 2, 3)
+        return token_embeds.clone()
+
+    class FixedHead:
+        def __init__(self, token: int) -> None:
+            self.token = token
+
+        def __call__(self, hidden_states):
+            logits = torch.zeros((*hidden_states.shape[:2], 8), dtype=dtype)
+            logits[..., self.token] = 1
+            return logits, None
+
+    talker.get_input_embeddings = lambda: embeddings[0]
+    talker.predictor_forward_tokens = predictor_forward_tokens
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(
+            codec_embedding=SimpleNamespace(
+                weight=torch.stack([embedding.weight for embedding in embeddings[1:]])
+            )
+        ),
+        lm_head=[FixedHead(token) for token in (1, 2, 3)],
+        project_input=project_input,
+    )
+    for step, batch_size in enumerate((3, 1, 4)):
+        layer0 = (torch.arange(batch_size) + step).remainder(8).unsqueeze(1)
+        expected_codes = torch.cat(
+            (layer0, torch.tensor([[1, 2, 3]]).expand(batch_size, -1)), dim=1
+        )
+        expected_embeds = embeddings[0](layer0[:, 0]).clone()
+        for group in range(1, 4):
+            expected_embeds.add_(embeddings[group](expected_codes[:, group]))
+        inactive_codes = talker.output_codes[batch_size:].clone()
+        inactive_embeds = talker.output_embeds[batch_size:].clone()
+        projection_inputs.clear()
+        actual_codes, actual_embeds = talker.code_predictor_forward_incremental(
+            layer0, torch.zeros((batch_size, 1, 8), dtype=dtype)
+        )
+        torch.testing.assert_close(actual_codes[..., 0], expected_codes, rtol=0, atol=0)
+        torch.testing.assert_close(actual_embeds[:, 0], expected_embeds, rtol=0, atol=0)
+        torch.testing.assert_close(talker.output_codes[batch_size:], inactive_codes)
+        torch.testing.assert_close(
+            talker.output_embeds[batch_size:], inactive_embeds, equal_nan=True
+        )
+        assert len(projection_inputs) == 3
+
+
+def test_qwen3_tts_npu_topp_sampling_stays_device_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sampling_kernels
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.is_npu():
+        pytest.skip("requires Ascend NPU")
+    else:
+        pass
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.sub_temperature_tensor = torch.tensor([1.0], device="npu")
+    talker.sub_top_p_tensor = torch.tensor([0.8], device="npu")
+    talker.sub_top_k_tensor = torch.tensor([-1], device="npu")
+    talker.sub_sampling_seed_tensor = torch.tensor([17], device="npu")
+    talker.sub_sampled_has_top_p = True
+    talker.sub_sampled_max_top_k = 0
+    talker.sub_sampled_has_unbounded_top_k = True
+
+    def fail_cpu_hash(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("NPU Top-P sampling must not call the CPU hash path")
+
+    monkeypatch.setattr(sampling_kernels, "murmur_hash32_pytorch_impl", fail_cpu_hash)
+    token = Qwen3TTSTalker.sample_subtalker_token_seeded(
+        talker,
+        torch.tensor([[2.0, 1.0, 0.0, -1.0]], device="npu"),
+        sub_positions=torch.tensor([10], device="npu"),
+    )
+    torch.npu.synchronize()
+
+    assert token.device.type == "npu"
+    assert 0 <= int(token.cpu()[0]) < 4
+
+
 def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8084,6 +9006,62 @@ def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
     assert token.item() == 1
 
 
+@pytest.mark.parametrize(
+    ("is_xpu", "device", "overrides", "expected"),
+    [
+        (True, "xpu:0", {}, {"attention_backend": "intel_xpu"}),
+        (
+            True,
+            "xpu:1",
+            {
+                "attention_backend": None,
+                "prefill_attention_backend": None,
+                "decode_attention_backend": None,
+            },
+            {
+                "attention_backend": "intel_xpu",
+                "prefill_attention_backend": None,
+                "decode_attention_backend": None,
+            },
+        ),
+        (True, "cpu", {}, {}),
+        (False, "xpu:0", {}, {}),
+        (
+            True,
+            "xpu:0",
+            {"attention_backend": "triton"},
+            {"attention_backend": "triton"},
+        ),
+        (
+            True,
+            "xpu:0",
+            {"prefill_attention_backend": "triton"},
+            {"prefill_attention_backend": "triton"},
+        ),
+        (
+            True,
+            "xpu:0",
+            {"decode_attention_backend": "triton"},
+            {"decode_attention_backend": "triton"},
+        ),
+    ],
+)
+def test_qwen3_tts_engine_selects_xpu_attention_only_without_an_override(
+    monkeypatch: pytest.MonkeyPatch,
+    is_xpu: bool,
+    device: str,
+    overrides: dict[str, str | None],
+    expected: dict[str, str | None],
+) -> None:
+    monkeypatch.setattr(qwen3_stages.current_platform, "is_xpu", lambda: is_xpu)
+    builder = Qwen3TtsEngineBuilder()
+    builder.device = device
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides == expected
+
+
 @pytest.mark.parametrize("value", [True, 1, "1", "true", " yes ", "on"])
 def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
@@ -8096,13 +9074,16 @@ def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
 def test_qwen3_tts_engine_accepts_disabled_torch_compile(value) -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
+    builder = Qwen3TtsEngineBuilder()
+    builder.device = "cpu"
+    builder.adjust_overrides({"enable_torch_compile": value})
 
 
 def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
+    monkeypatch.setattr("sglang_omni.platforms.current_platform.is_cpu", lambda: False)
     from transformers import AutoProcessor
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
     from transformers.utils import generic
@@ -8150,7 +9131,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     events: list[str] = []
 
     class FakeModel:
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        vocab_size = 3072
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speaker_encoder_graph_runner = None
 
         def build_prompt_constants(self):
@@ -8183,6 +9165,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
             init_graph_calls.append(True)
 
     class FakeWorker:
+        speculative_worker = None
+
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
@@ -8536,7 +9520,6 @@ def test_qwen3_tts_talker_forward_accepts_shared_prefill_request_ids(
     )
 
     assert received["input_embeds"] is input_embeds
-    assert Qwen3TTSTalker.is_mrope_enabled is True
     torch.testing.assert_close(
         result.next_token_logits,
         input_embeds[-1:] + 1,
@@ -8565,6 +9548,8 @@ def make_prep_talker(monkeypatch, device=None, max_batch=2):
     talker.sub_do_sample_tensor = torch.empty(
         max_batch, dtype=torch.bool, device=device
     )
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     return Qwen3TTSTalker, talker
 
 
@@ -8921,7 +9906,9 @@ def test_qwen3_tts_prepared_payload_round_trips_tensors_and_clears_fields() -> N
     assert stored.data["prepared_input_ids"] == [11, 12, 13, 14, 15]
 
     engine_model = SimpleNamespace(
-        model=SimpleNamespace(feedback_buffer=torch.zeros(1, 4, dtype=torch.bfloat16))
+        model=SimpleNamespace(
+            codec_embedding=torch.nn.Embedding(1, 4, dtype=torch.bfloat16)
+        )
     )
     loaded = qwen3_request_builders.load_prepared_qwen3_tts_request(
         stored, model=engine_model
@@ -8961,7 +9948,7 @@ def test_qwen3_tts_request_builder_consumes_prepared_payload(
         payload,
         model=SimpleNamespace(
             config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200),
-            model=SimpleNamespace(feedback_buffer=torch.zeros(1, 4)),
+            model=SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4)),
         ),
         wrapper=object(),
     )
@@ -8996,8 +9983,9 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
 
     class FakeModel:
         device = torch.device("cpu")
+        tts_model_type = "base"
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
         speech_tokenizer = object()
         speaker_encoder_sample_rate = 24000
 
@@ -9207,6 +10195,7 @@ def make_prompt_frontend() -> Qwen3TTSPromptFrontend:
     root = SimpleNamespace(
         talker_config=talker,
         tts_model_type="custom_voice",
+        speaker_encoder_config=SimpleNamespace(sample_rate=24000),
         tts_bos_token_id=0,
         tts_eos_token_id=1,
         tts_pad_token_id=2,
@@ -9256,8 +10245,8 @@ def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
     frontend = make_prompt_frontend()
     prompt_constants = frontend.build_prompt_constants()
     code_tables = [
-        frontend.get_input_embeddings(),
-        *frontend.code_predictor.model.codec_embedding,
+        frontend.get_input_embeddings().weight,
+        *frontend.code_predictor.model.codec_embedding.weight,
     ]
     input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
     ref_ids = [3, 4, 5, 10, 11, 9, 10]
@@ -9281,7 +10270,8 @@ def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
             prompt_constants=prompt_constants,
         )
         frame_rows = sum(
-            table(ref_code[:, group]) for group, table in enumerate(code_tables)
+            torch.nn.functional.embedding(ref_code[:, group], table)
+            for group, table in enumerate(code_tables)
         )
         expected = torch.cat(
             [
@@ -9323,13 +10313,17 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         num_code_groups=3,
         code_predictor_config=SimpleNamespace(vocab_size=5),
     )
-    root = SimpleNamespace(talker_config=talker, tts_model_type="custom_voice")
+    root = SimpleNamespace(
+        talker_config=talker,
+        tts_model_type="custom_voice",
+        speaker_encoder_config=SimpleNamespace(sample_rate=24000),
+    )
     frontend = prompt_frontend.Qwen3TTSPromptFrontend(
         root, device="cpu", dtype=torch.float32
     )
     assert frontend.speaker_encoder is None
     assert frontend.device.type == "cpu" and frontend.dtype == torch.float32
-    assert frontend.model.feedback_buffer.shape == (1, 4)
+    assert frontend.model.codec_embedding.weight.shape == (6, 4)
 
     names = frontend.checkpoint_weight_names()
     assert names == {
@@ -9342,9 +10336,12 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         "talker.code_predictor.model.codec_embedding.0.weight",
         "talker.code_predictor.model.codec_embedding.1.weight",
     }
+    params = dict(frontend.named_parameters())
     tensors = {
         name: torch.randn(
-            dict(frontend.named_parameters())[name[len("talker.") :]].shape
+            params[name[len("talker.") :]].shape
+            if name[len("talker.") :] in params
+            else frontend.code_predictor.model.codec_embedding.weight.shape[1:]
         )
         for name in names
     }
@@ -9356,10 +10353,13 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         frontend.model.text_embedding.weight,
         tensors["talker.model.text_embedding.weight"],
     )
-    assert torch.equal(
-        frontend.code_predictor.model.codec_embedding[1].weight,
-        tensors["talker.code_predictor.model.codec_embedding.1.weight"],
-    )
+    for codebook_index in range(2):
+        assert torch.equal(
+            frontend.code_predictor.model.codec_embedding.weight[codebook_index],
+            tensors[
+                f"talker.code_predictor.model.codec_embedding.{codebook_index}.weight"
+            ],
+        )
     hidden = torch.randn(1, 2, 3)
     fc1 = tensors["talker.text_projection.linear_fc1.weight"]
     fc2 = tensors["talker.text_projection.linear_fc2.weight"]
@@ -9372,12 +10372,14 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
     )
     assert torch.allclose(frontend.text_projection(hidden), expected)
 
-    with pytest.raises(RuntimeError, match="missing 1 weights"):
-        frontend.load_weights(
-            prompt_frontend.iter_checkpoint_tensors(
-                str(tmp_path), names - {"talker.model.text_embedding.weight"}
+    for absent in (
+        "talker.model.text_embedding.weight",
+        "talker.code_predictor.model.codec_embedding.1.weight",
+    ):
+        with pytest.raises(RuntimeError, match="missing 1 weights"):
+            frontend.load_weights(
+                prompt_frontend.iter_checkpoint_tensors(str(tmp_path), names - {absent})
             )
-        )
 
 
 def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock() -> (
@@ -9471,6 +10473,7 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
     monkeypatch.setattr(
         torch.Tensor, "device", property(lambda tensor: torch.device("cuda"))
     )
+    monkeypatch.setattr(torch, "get_device_module", lambda device: torch.cuda)
 
     ready = object()
     embeds = torch.zeros((3, 4))
@@ -9491,6 +10494,120 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
     assert waited == [ready]
     assert [stream for _, stream in recorded] == [scheduler_stream] * 4
     assert any(tensor is embeds for tensor, _ in recorded)
+
+
+@pytest.mark.parametrize(
+    ("running_stream_count", "warning_count"), [(None, 0), (64, 0), (65, 1)]
+)
+def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    running_stream_count: int | None,
+    warning_count: int,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(running_stream_count)
+
+    info_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ]
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert any(
+        message.startswith("Qwen3-TTS vocoder CUDA graphs: cold ")
+        and message.endswith("; Codec slots 64")
+        for message in info_messages
+    )
+    assert len(warning_messages) == warning_count
+    assert all(
+        message.endswith(f"to at least {running_stream_count}.")
+        for message in warning_messages
+    )
+
+
+def test_qwen3_tts_vocoder_lists_every_decode_graph_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    two_graphs = {
+        "enabled": True,
+        "disable_reason": None,
+        "build": {"captured_keys": [{"batch": 1}, {"batch": 2}]},
+    }
+    one_graph = {
+        "enabled": True,
+        "disable_reason": None,
+        "build": {"captured_keys": [{"batch": 4}]},
+    }
+    failed_capture = {
+        "enabled": False,
+        "disable_reason": "capture_failed: out of memory",
+        "build": {"captured_keys": []},
+    }
+    monkeypatch.setattr(
+        scheduler,
+        "codec_state_stats",
+        lambda: {
+            "enabled": True,
+            "slots": 8,
+            "cuda_graphs": {
+                "cold": two_graphs,
+                "window": {"enabled": False},
+                "tail": failed_capture,
+                "warm": [two_graphs, one_graph],
+            },
+        },
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(8)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Qwen3-TTS vocoder CUDA graphs: cold 2 captured, window off (not built), "
+        "tail off (capture_failed: out of memory), warm0 2 captured, "
+        "warm1 1 captured; Codec slots 8"
+    ]
+
+
+def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        enable_stateful_codec_decoder=False,
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
+        scheduler.log_cuda_graph_coverage(128)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream decodes on "
+        "the left-context path"
+    ]
+
+
+def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_running_stream_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        vocoder_factory_capture(monkeypatch, running_stream_count=96)[
+            "running_stream_count"
+        ]
+        == 96
+    )
+    assert vocoder_factory_capture(monkeypatch)["running_stream_count"] is None
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
@@ -9759,3 +10876,185 @@ def test_base_vocoder_policy_keeps_model_device_and_explicit_overrides(
     )
     assert overridden["max_batch_size"] == 6
     assert overridden["max_batch_wait_ms"] == 5
+
+
+def reference_graph_stats(
+    *, captured: list[int], disable_reason: str | None = None
+) -> dict[str, object]:
+    return {
+        "enabled": bool(captured),
+        "disable_reason": disable_reason,
+        "bucket_frames": [32, 64, 256],
+        "captured": captured,
+        "replays": 3,
+        "misses": 1,
+    }
+
+
+def test_qwen3_tts_reference_encoder_stats_read_the_encoders_preprocessing_uses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRefCodeBatcher:
+        def __init__(self, speech_tokenizer, *, graph_bucket_frames) -> None:
+            self.graph_runner = None
+
+        def close(self) -> None:
+            pass
+
+    class FakeModel:
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+        speech_tokenizer = object()
+        tts_model_type = "base"
+        speaker_encoder_graph_runner = None
+
+        def build_prompt_constants(self):
+            return placeholder_prompt_constants()
+
+    monkeypatch.setattr(
+        qwen3_request_builders, "Qwen3TTSRefCodeBatcher", FakeRefCodeBatcher
+    )
+    model, wrapper = FakeModel(), SimpleNamespace()
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    assert qwen3_request_builders.qwen3_tts_reference_encoder_stats() is None
+    qwen3_request_builders.set_qwen3_tts_preprocessing_context(
+        model=model, wrapper=wrapper
+    )
+    try:
+        assert qwen3_request_builders.qwen3_tts_reference_encoder_stats() == {
+            "codec": None,
+            "speaker": None,
+        }
+
+        codec_stats = reference_graph_stats(captured=[32, 64, 256])
+        speaker_stats = reference_graph_stats(
+            captured=[], disable_reason="capture_failed: RuntimeError: boom"
+        )
+        hook = qwen3_request_builders.get_qwen3_tts_adhoc_reference_service(
+            model, wrapper
+        ).hook
+        hook.ref_code_batcher.graph_runner = SimpleNamespace(stats=lambda: codec_stats)
+        model.speaker_encoder_graph_runner = SimpleNamespace(
+            stats=lambda: speaker_stats
+        )
+
+        assert qwen3_request_builders.qwen3_tts_reference_encoder_stats() == {
+            "codec": codec_stats,
+            "speaker": speaker_stats,
+        }
+
+        model.tts_model_type = "custom_voice"
+        assert qwen3_request_builders.qwen3_tts_reference_encoder_stats() is None
+    finally:
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+
+@pytest.mark.parametrize(
+    ("encoder_stats", "messages"),
+    [
+        (None, []),
+        (
+            {
+                "codec": reference_graph_stats(captured=[32, 64, 256]),
+                "speaker": reference_graph_stats(captured=[240, 480, 1920]),
+            },
+            [
+                "Qwen3-TTS reference encoder CUDA graphs: codec 3 graphs up to 256 "
+                "codec frames, speaker 3 graphs up to 1920 mel frames; longer "
+                "references and encoders without graphs run eagerly"
+            ],
+        ),
+        (
+            {
+                "codec": None,
+                "speaker": reference_graph_stats(
+                    captured=[], disable_reason="capture_failed: RuntimeError: boom"
+                ),
+            },
+            [
+                "Qwen3-TTS reference encoder CUDA graphs: codec off (not built), "
+                "speaker off (capture_failed: RuntimeError: boom); longer "
+                "references and encoders without graphs run eagerly"
+            ],
+        ),
+        (
+            {"codec": None, "speaker": reference_graph_stats(captured=[])},
+            [
+                "Qwen3-TTS reference encoder CUDA graphs: codec off (not built), "
+                "speaker off (not captured); longer references and encoders "
+                "without graphs run eagerly"
+            ],
+        ),
+    ],
+    ids=["no_base_context", "base", "speaker_capture_failed", "graphs_disabled"],
+)
+def test_qwen3_tts_preprocessing_logs_the_reference_encoder_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    encoder_stats: dict[str, object] | None,
+    messages: list[str],
+) -> None:
+    monkeypatch.setattr(
+        qwen3_stages, "qwen3_tts_reference_encoder_stats", lambda: encoder_stats
+    )
+    scheduler = qwen3_stages.create_preprocessing_executor("model")
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=qwen3_stages.logger.name):
+        scheduler.log_reference_encoder_coverage()
+
+    assert [record.getMessage() for record in caplog.records] == messages
+
+
+def test_qwen3_tts_preprocessing_stage_reports_ready_after_the_coverage_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preprocessing stage reported ready before it logged the reference
+    encoder coverage."""
+    stats_threads: list[str] = []
+    monkeypatch.setattr(
+        qwen3_stages,
+        "qwen3_tts_reference_encoder_stats",
+        lambda: stats_threads.append(threading.current_thread().name),
+    )
+    scheduler = qwen3_stages.create_preprocessing_executor("model")
+    # note (Haoling Pu): with no serving loop, only work done before the stage
+    # reports ready can read the stats.
+    monkeypatch.setattr(scheduler, "start", lambda: None)
+
+    async def run() -> None:
+        stage_obj = make_stage(name="preprocessing", scheduler=scheduler)
+        await stage_obj.start()
+        assert stats_threads == ["scheduler-preprocessing"]
+        await stage_obj.stop()
+
+    asyncio.run(run())
+
+
+def test_qwen3_tts_preprocessing_reference_encoders_reach_model_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoder_stats = {
+        "codec": reference_graph_stats(captured=[32, 64, 256]),
+        "speaker": None,
+    }
+    monkeypatch.setattr(
+        qwen3_stages, "qwen3_tts_reference_encoder_stats", lambda: encoder_stats
+    )
+    scheduler = qwen3_stages.create_preprocessing_executor("model")
+
+    model_info = scheduler.admin("model_info", {})
+    pause = scheduler.admin("pause_generation", {"mode": "abort"})
+
+    assert extract_model_info_stage_data(
+        {
+            "success": True,
+            "results": [{"stage": "preprocessing", "success": True, **model_info}],
+        }
+    ) == [
+        {
+            "reference_encoders": encoder_stats,
+            "stage": "preprocessing",
+            "success": True,
+        }
+    ]
+    assert pause["data"] == {"skipped": True, "unsupported": True}

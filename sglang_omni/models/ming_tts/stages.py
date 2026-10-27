@@ -49,11 +49,9 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
     from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 else:
     pass
@@ -92,9 +90,7 @@ def load_ming_tts_audio_vae(
 ) -> AudioVAE:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 
     if getattr(audio_config, "semantic_module_kwargs", None) is not None:
         raise ValueError(

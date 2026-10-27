@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, field
+from typing import Literal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,25 +24,20 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
     TurnFailure,
 )
-from sglang_omni.serve.realtime.schema import (
-    JsonObject,
-    JsonValue,
-    SessionConfiguration,
-)
-from sglang_omni.serve.realtime.types import (
-    Capabilities,
-    InteractionAdapter,
-    OutputSink,
-    RuntimeLimits,
-    Unit,
+from sglang_omni.serve.realtime.schema import JsonObject, JsonValue
+from sglang_omni.serve.realtime.types import Capabilities, RuntimeLimits
+from tests.unit_test.fixtures.realtime_fakes import (
+    MODEL_NAME,
+    HealthCoordinator,
+    ScriptedAdapter,
 )
 
-MODEL_NAME = "duplex-test"
 SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 HALF_UNIT_BYTES = UNIT_BYTES // 2
 HALF_UNIT_SAMPLES = HALF_UNIT_BYTES // 2
+CLEANUP_TIMEOUT_SECONDS = 0.05
 AUDIO_REPLY: list[OutputEvent] = [
     ResponseStarted("resp"),
     AudioDelta("resp", "item", b"\1\2"),
@@ -51,59 +46,6 @@ AUDIO_REPLY: list[OutputEvent] = [
     TextFinished("resp", "item", "hi"),
     ResponseFinished("resp", "item", "hi", True, "completed", "turn_complete"),
 ]
-
-
-class HealthCoordinator:
-    def __init__(self, is_running: bool) -> None:
-        self.is_running = is_running
-
-    def health(self) -> dict[str, bool]:
-        return {"running": self.is_running}
-
-
-@dataclass(kw_only=True)
-class ScriptedAdapter(InteractionAdapter):
-    """Records native units and emits a fixed reply while processing each one."""
-
-    reply: list[OutputEvent] = field(default_factory=list)
-    unconsumed_samples: int = 0
-    is_holding_input: bool = False
-    open_error: str | None = None
-    close_error: str | None = None
-    units: list[Unit] = field(default_factory=list)
-    held_samples: int = 0
-    output_sink: OutputSink | None = None
-    is_closed: bool = False
-
-    async def open(
-        self, session_id: str, config: SessionConfiguration, emit: OutputSink
-    ) -> None:
-        if self.open_error is not None:
-            raise RuntimeError(self.open_error)
-        else:
-            self.output_sink = emit
-
-    async def process(self, unit: Unit) -> int | tuple[int, int]:
-        assert self.output_sink is not None
-        self.units.append(unit)
-        for event in self.reply:
-            await self.output_sink(event)
-        if self.is_holding_input:
-            self.held_samples += unit.real_samples
-            return 0, 0
-        else:
-            return max(unit.real_samples - self.unconsumed_samples, 0)
-
-    async def clear(self) -> int:
-        held_samples, self.held_samples = self.held_samples, 0
-        return held_samples
-
-    async def close(self) -> None:
-        self.is_closed = True
-        if self.close_error is not None:
-            raise RuntimeError(self.close_error)
-        else:
-            pass
 
 
 def text_reply(text: str, *, is_finished: bool) -> list[OutputEvent]:
@@ -182,6 +124,13 @@ def open_session(websocket: WebSocketTestSession) -> JsonObject:
     assert websocket.receive_json()["type"] == "session.created"
     send_event(websocket, "session.update", session={})
     return receive_until(websocket, "session.updated")[-1]
+
+
+def receive_close_frame(websocket: WebSocketTestSession) -> tuple[int, str]:
+    """Expect the server to close the WebSocket next; return its close code and reason."""
+    with pytest.raises(WebSocketDisconnect) as close_exception:
+        websocket.receive_json()
+    return close_exception.value.code, close_exception.value.reason
 
 
 def events_of_type(events: list[JsonObject], event_type: str) -> list[JsonObject]:
@@ -450,6 +399,7 @@ def test_text_session_drops_ungranted_audio_output() -> None:
 
 
 def test_client_close_cancels_visible_response_then_closes_socket() -> None:
+    """Client-requested closure must include client_closed in the WebSocket close frame."""
     adapter = ScriptedAdapter(reply=text_reply("partial", is_finished=False))
     with build_test_client(adapter).websocket_connect("/v1/realtime") as websocket:
         open_session(websocket)
@@ -457,9 +407,9 @@ def test_client_close_cancels_visible_response_then_closes_socket() -> None:
         receive_until(websocket, "response.created")
         send_event(websocket, "session.close")
         events = receive_until(websocket, "session.closed")
-        with pytest.raises(WebSocketDisconnect):
-            websocket.receive_json()
+        close_frame = receive_close_frame(websocket)
 
+    assert close_frame == (1000, "client_closed")
     text_done = events_of_type(events, "response.output_text.done")[0]
     response_done = events_of_type(events, "response.done")[0]
     assert text_done["text"] == "partial"
@@ -530,44 +480,94 @@ def test_failed_admission_is_reported_and_releases_adapter() -> None:
 
 
 @pytest.mark.parametrize(
-    ("adapter", "code"),
+    ("adapter", "code", "close_code", "close_reason"),
     [
-        (ScriptedAdapter(unconsumed_samples=-1), "internal"),
+        (ScriptedAdapter(unconsumed_samples=-1), "internal", 1011, "internal"),
         (
             ScriptedAdapter(reply=[TurnFailure("server_error", "model_crash", "boom")]),
             "model_crash",
+            1011,
+            "model_crash",
+        ),
+        (
+            ScriptedAdapter(
+                reply=[TurnFailure("server_error", "context_exhausted", "context full")]
+            ),
+            "context_exhausted",
+            1008,
+            "context_exhausted",
+        ),
+        (
+            ScriptedAdapter(reply=[TurnFailure("server_error", "é" * 100, "boom")]),
+            "é" * 100,
+            1011,
+            "é" * 61,
         ),
     ],
 )
 def test_adapter_failure_closes_the_session_with_fatal_error(
-    adapter: ScriptedAdapter, code: str
+    adapter: ScriptedAdapter, code: str, close_code: int, close_reason: str
 ) -> None:
+    """Adapter failures must not close the socket with 1000 normal closure."""
     with build_test_client(adapter).websocket_connect("/v1/realtime") as websocket:
         open_session(websocket)
         append_audio(websocket, b"\1" * UNIT_BYTES, 0)
         events = receive_until(websocket, "session.closed", "sglang.unit.done")
+        close_frame = receive_close_frame(websocket)
 
     error = events_of_type(events, "error")[0]
     assert error["sglang"]["fatal"] is True
     assert error["error"]["code"] == code
     assert events[-1]["reason"] == code
+    assert close_frame == (close_code, close_reason)
 
 
-def test_adapter_cleanup_failure_replaces_closed_with_fatal_error() -> None:
-    adapter = ScriptedAdapter(close_error="release failed")
-    with build_test_client(adapter).websocket_connect("/v1/realtime") as websocket:
+@pytest.mark.parametrize(
+    ("close_reason", "should_stall_close"),
+    [("client_closed", False), ("context_exhausted", True)],
+    ids=["client-exception", "context-timeout"],
+)
+def test_adapter_cleanup_failure_replaces_closed_with_fatal_error(
+    close_reason: Literal["client_closed", "context_exhausted"],
+    should_stall_close: bool,
+) -> None:
+    """Cleanup failures must close the socket with 1011 and cleanup_timeout."""
+    adapter = ScriptedAdapter(
+        close_error="release failed", should_stall_close=should_stall_close
+    )
+    if close_reason == "context_exhausted":
+        adapter.reply = [
+            TurnFailure("server_error", "context_exhausted", "context full")
+        ]
+    else:
+        pass
+    limits = RuntimeLimits(cleanup_timeout_s=CLEANUP_TIMEOUT_SECONDS)
+    events: list[JsonObject] = []
+    with build_test_client(adapter, limits=limits).websocket_connect(
+        "/v1/realtime"
+    ) as websocket:
         open_session(websocket)
-        send_event(websocket, "session.close")
-        error = websocket.receive_json()
-        with pytest.raises(WebSocketDisconnect):
-            websocket.receive_json()
+        if close_reason == "context_exhausted":
+            append_audio(websocket, b"\1" * UNIT_BYTES, 0)
+        else:
+            send_event(websocket, "session.close")
+        with pytest.raises(WebSocketDisconnect) as close_exception:
+            while True:
+                events.append(websocket.receive_json())
 
+    error = events_of_type(events, "error")[-1]
     assert error["error"]["code"] == "cleanup_timeout"
     assert error["sglang"]["fatal"] is True
+    assert not events_of_type(events, "session.closed")
+    assert adapter.is_closed
+    assert (close_exception.value.code, close_exception.value.reason) == (
+        1011,
+        "cleanup_timeout",
+    )
 
 
 def test_capabilities_endpoint_reports_deployment_grant() -> None:
-    limits = RuntimeLimits(max_output_events=8)
+    limits = RuntimeLimits(max_output_bytes=8192)
     response = build_test_client(ScriptedAdapter(), limits=limits).get(
         "/v1/realtime/capabilities"
     )
@@ -576,7 +576,8 @@ def test_capabilities_endpoint_reports_deployment_grant() -> None:
     body = response.json()
     assert body["model"] == MODEL_NAME
     assert body["native_full_duplex"] is True
-    assert body["limits"]["max_output_events"] == 8
+    assert body["limits"]["max_output_bytes"] == 8192
+    assert "max_output_events" not in body["limits"]
 
 
 def test_capabilities_endpoint_is_unavailable_until_running() -> None:
@@ -623,6 +624,7 @@ def test_connections_over_capacity_are_denied_before_upgrade() -> None:
 def test_connection_that_never_opens_is_closed_and_frees_its_slot(
     first_update: JsonObject | None, codes: list[str]
 ) -> None:
+    """Sessions that never finish initial configuration must close with 1008 policy violation."""
     client = build_test_client(
         ScriptedAdapter(),
         limits=RuntimeLimits(session_update_timeout_s=0.1),
@@ -635,6 +637,7 @@ def test_connection_that_never_opens_is_closed_and_frees_its_slot(
         else:
             pass
         events = receive_until(websocket, "session.closed")
+        close_frame = receive_close_frame(websocket)
         with client.websocket_connect("/v1/realtime") as reopened_socket:
             reopened = reopened_socket.receive_json()
 
@@ -642,3 +645,4 @@ def test_connection_that_never_opens_is_closed_and_frees_its_slot(
     assert [error["error"]["code"] for error in errors] == codes
     assert errors[-1]["sglang"]["fatal"] is True
     assert reopened["type"] == "session.created"
+    assert close_frame == (1008, "session_update_timeout")

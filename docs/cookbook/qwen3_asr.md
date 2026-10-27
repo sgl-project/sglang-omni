@@ -6,7 +6,9 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
+or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
+then download the model:
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
@@ -17,7 +19,13 @@ MODEL_PATH="$(
 )"
 ```
 
-### Apple Silicon (Torch MPS)
+### Ascend NPU graph execution
+
+See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
+
+<a id="apple-silicon-torch-mps"></a>
+
+### Apple Silicon
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
 PyTorch with the MPS backend. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
@@ -43,7 +51,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.21 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.22 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -232,6 +240,7 @@ WebSocket session open for new audio.
   "type": "session.update",
   "session": {
     "language": "English",
+    "decode_interval_ms": 1000,
     "turn_detection": {
       "type": "server_vad",
       "threshold": 0.5,
@@ -241,6 +250,8 @@ WebSocket session open for new audio.
   }
 }
 ```
+
+`decode_interval_ms` is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and `null` restores the default. Like `language` and `turn_detection`, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.
 
 Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
 in the active segment. After the first two refreshes, the server rolls five
@@ -259,7 +270,8 @@ Partial results are full replacements, not append-only deltas:
   "audio_start_ms": 0,
   "audio_end_ms": 2000,
   "text": "hello wor",
-  "is_final": false
+  "is_final": false,
+  "language": "English"
 }
 ```
 
@@ -271,6 +283,8 @@ segment, including segments opened by the 30 second boundary, which have no
 `input_audio_buffer.speech_started` event. An event with
 `is_final=true` is immutable. `transcription.completed` contains the joined
 text from all final segments.
+
+`language` is the language the segment was transcribed in, as Qwen3-ASR names it (for example `English`): the detected language, or the `language` hint when the session set one. `transcription.completed` carries the language of its last non-empty final segment. Both fields are `null` when the language is unknown.
 
 Append events are not idempotent. After a transport failure, reconnect and
 restart the transcription rather than retrying packets on the old session.

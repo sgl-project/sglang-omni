@@ -2,7 +2,7 @@
 """Pinned inputs and settings shared by every FDB v1.5 and v1.0 step.
 
 Settings come from environment variables; see the Settings table in
-docs/developer_reference/full_duplex_bench.md.
+docs/developer_reference/full_duplex_guide.md.
 """
 
 from __future__ import annotations
@@ -54,6 +54,9 @@ JUDGE_NCCL_PORT_OFFSET = 1
 NCCL_PORT_END = NCCL_PORT_BASE + NCCL_PORT_SPAN
 # note (luojiaxuan): v1.0 artifacts of a repeat live under repeat-N/v10/.
 V10_DIR = "v10"
+# note (luojiaxuan): the per-reply listening metrics of a repeat live under
+# repeat-N/listening/.
+LISTENING_DIR = "listening"
 
 
 @dataclass(frozen=True)
@@ -442,6 +445,17 @@ def v10_command(settings: Settings, phase: str, *arguments: str) -> list[str]:
         str(settings.scoring_python),
         "-m",
         "benchmarks.eval.benchmark_duplex_v10",
+        phase,
+        *arguments,
+    ]
+
+
+def listening_command(python: Path, phase: str, *arguments: str) -> list[str]:
+    """A benchmark_duplex_listening phase, run with the given interpreter."""
+    return [
+        str(python),
+        "-m",
+        "benchmarks.eval.benchmark_duplex_listening",
         phase,
         *arguments,
     ]

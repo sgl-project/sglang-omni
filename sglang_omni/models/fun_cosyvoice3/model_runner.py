@@ -16,6 +16,10 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
@@ -78,7 +82,15 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> GenerationBatchResult | None:
         del schedule_batch
         input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
-        return self.forward_with_input_embeds(forward_batch, input_embeds)
+        if current_platform.is_cuda():
+            # note (ratish): the standard forward replays the prefill from its CUDA graph
+            # for the batch's token bucket and takes the embeddings as model inputs.
+            attach_omni_prefill_inputs(
+                forward_batch, OmniPrefillInputs(input_embeds=input_embeds)
+            )
+            return None
+        else:
+            return self.forward_with_input_embeds(forward_batch, input_embeds)
 
     def post_prefill(
         self,
@@ -524,8 +536,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         for sched_req in requests:
             data: CosyVoice3SGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             prompt_embeds = data.prompt_input_embeds
             if prompt_embeds is None:
                 raise RuntimeError(

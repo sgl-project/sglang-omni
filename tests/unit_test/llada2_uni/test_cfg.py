@@ -223,6 +223,7 @@ def test_attention_masks_local_and_cached_padding() -> None:
         seq_lens=torch.tensor([8, 8]),
         extend_prefix_lens=torch.tensor([4, 4]),
         req_pool_indices=torch.tensor([0, 1]),
+        kv_loc_plan=None,
     )
 
     backend.init_forward_metadata(batch)
@@ -316,6 +317,8 @@ def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) ->
             req_pool_indices=torch.arange(2, dtype=torch.int32, device=device),
             out_cache_loc=slots[:, prefix : prefix + block_size].flatten(),
         )
+        translator = backend.kv_index_translator
+        translator.own_plan(batch).bind(batch, translator)
         queries = torch.randn(
             2,
             block_size,

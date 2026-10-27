@@ -20,7 +20,7 @@ class Cosmos3PipelineConfig(PipelineConfig):
         StageConfig(
             name="generation",
             process="generation",
-            factory_path="sglang_omni.models.cosmos3.stages.create_generation_scheduler",
+            factory_path="sglang_omni.native_generation.stage.create_generation_scheduler",
             allow_child_processes=True,
             factory=FactoryArgs(),
             gpu=0,
@@ -58,4 +58,6 @@ class Cosmos3ReasonerPipelineConfig(Cosmos3PipelineConfig):
 Variants = {
     "text": Cosmos3ReasonerPipelineConfig,
     "generation": Cosmos3PipelineConfig,
+    # Imported only when selected, so other models load none of its modules.
+    "umm": "sglang_omni.models.cosmos3.umm_config:Cosmos3UMMPipelineConfig",
 }

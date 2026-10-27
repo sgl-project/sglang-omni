@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 
-from sglang_omni.models.cosmos3.stages import native_server_kwargs
+from sglang_omni.native_generation.stage import native_server_kwargs
 
 
 @pytest.mark.parametrize("timeout", [1, 600])

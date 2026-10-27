@@ -26,6 +26,8 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
 
 # note (Junnan Li): One 1 s unit of codec tokens plus one, as in the checkpoint's duplex TTS.
 TALKER_TOKENS_PER_UNIT = CODEC_CHUNK_SIZE + 1
+# note (luojiaxuan): The finish reason of a request that generated max_new_tokens without its stop token.
+FINISH_LENGTH = "length"
 
 
 @dataclass(kw_only=True)
@@ -76,6 +78,10 @@ class TalkerAdapter(ARSessionAdapter):
             state.is_reset_pending = True
         else:
             pass
+        # note (luojiaxuan): A turn that ends mid-reply on a unit the talker skips leaves no unit to reach the codec EOS in.
+        thinker_result["is_speech_cut"] = (
+            should_bypass_generation and is_turn_end and not state.is_turn_start
+        )
         return ARSessionPreparation(
             reset_history=should_reset_history,
             bypass_generation=should_bypass_generation,
@@ -112,6 +118,7 @@ class TalkerAdapter(ARSessionAdapter):
                 else TALKER_TOKENS_PER_UNIT
             ),
             temperature=payload.request.params["talker_temperature"],
+            # note (luojiaxuan): The official duplex loop samples codec tokens without top-p or top-k and penalizes repeats over the unit's own last 16 tokens, which the runner applies from rep_penalty.
             top_p=1.0,
             top_k=-1,
             repetition_penalty=1.0,
@@ -146,6 +153,10 @@ class TalkerAdapter(ARSessionAdapter):
     ) -> StagePayload:
         payload = request_data.stage_payload
         payload.data["codec_tokens"] = list(request_data.output_ids)
+        # note (luojiaxuan): A turn's last unit may stop at the codec EOS; spending its whole budget instead leaves the rest of the turn's text unspoken.
+        payload.data["is_speech_cut"] = (
+            payload.data["end_of_turn"] and request_data.finish_reason == FINISH_LENGTH
+        )
         state = self.states[session_identity]
         state.is_turn_start = False
         state.is_reset_pending = payload.data["end_of_turn"]

@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "moss_transcriber.h"
+#include "common/audio.h"
+#include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
 
 int main(int argc, char **argv) {
@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::ordered_json line = {
         {"file", file},
         {"text", result.text},

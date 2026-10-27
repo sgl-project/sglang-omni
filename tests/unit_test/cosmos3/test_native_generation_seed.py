@@ -5,7 +5,7 @@ import pytest
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, SamplingParams
-from sglang_omni.models.cosmos3.stages import build_sampling_params
+from sglang_omni.native_generation.stage import build_sampling_params
 from sglang_omni.proto import StagePayload
 
 

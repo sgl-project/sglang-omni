@@ -16,6 +16,7 @@ from sglang_omni.models.moss_tts.vocoder import (
     MossTTSVocoder,
     copy_valid_waveforms_to_cpu,
 )
+from sglang_omni.models.moss_tts.vocoder_graphs import MossVocoderSegmentGraphs
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
 )
@@ -569,3 +570,64 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         1.0,
         1.0,
     ]
+
+
+@pytest.mark.parametrize("segment_lengths", [[3], [3, 3], [8]])
+def test_segment_graph_preserves_batched_and_uncaptured_eager_paths(
+    monkeypatch: pytest.MonkeyPatch, segment_lengths: list[int]
+) -> None:
+    eager_calls = []
+    graph_calls = []
+    segments = [torch.ones(length, 2, dtype=torch.long) for length in segment_lengths]
+    vocoder = MossTTSVocoder.__new__(MossTTSVocoder)
+    vocoder.codec = nn.Linear(1, 1)
+    vocoder.device = "cpu"
+    vocoder.quantizer = SimpleNamespace(decode_codes=lambda codes: codes)
+    vocoder.nonstream_decoder = SimpleNamespace()
+    vocoder.compute_dtype = None
+    vocoder.max_segment_batch_size = 8
+
+    def replay(segment):
+        graph_calls.append(segment)
+        return torch.ones(1, segment.shape[0])
+
+    def eager(codes, **kwargs):
+        eager_calls.append(codes)
+        return [torch.ones(1, segment.shape[0]) for segment in codes]
+
+    vocoder.segment_graphs = SimpleNamespace(
+        covers=lambda segment: segment.shape[0] == 3,
+        replay=replay,
+    )
+    monkeypatch.setattr(vocoder_module, "decode_codes_batch", eager)
+    actual = vocoder.decode_segment_batches(segments)
+    assert [audio.numel() for audio in actual] == segment_lengths
+    use_graph = segment_lengths == [3]
+    assert bool(graph_calls) == use_graph
+    assert bool(eager_calls) != use_graph
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_segment_graph_replay_retains_lengths_and_independent_waveforms() -> None:
+    class Decoder(nn.ModuleList):
+        def output_lengths(self, lengths):
+            return lengths
+
+    class DecodeRow:
+        def __call__(self, codes, lengths, frames):
+            return codes.float().sum(dim=0).unsqueeze(1) + lengths.view(1, 1, 1)
+
+    graphs = MossVocoderSegmentGraphs(Decoder(), row_decode=DecodeRow())
+    graphs.capture([2, 4], n_vq=3, device=torch.device("cuda"))
+    assert len(graphs.graphs) == 2
+    retained = []
+    for frames in [2, 4, 2, 4]:
+        codes = torch.arange(frames * 3, device="cuda").reshape(frames, 3)
+        expected = codes.float().sum(dim=1).cpu().unsqueeze(0) + frames
+        actual = graphs.replay(codes)
+        retained.append((actual, expected))
+    for actual, expected in retained:
+        assert torch.equal(actual, expected)
+    assert not graphs.covers(torch.zeros(3, 3, dtype=torch.long))
+    assert not graphs.covers(torch.zeros(2, 4, dtype=torch.long))

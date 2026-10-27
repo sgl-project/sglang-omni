@@ -8,6 +8,7 @@ import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
@@ -15,6 +16,10 @@ from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     DuplexThinkerRunner,
     TalkerAdapter,
     ThinkerAdapter,
+)
+from sglang_omni.models.nemotron_voicechat.duplex_stages import (
+    TalkerBuilder,
+    ThinkerBuilder,
 )
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
@@ -140,13 +145,20 @@ def test_thinker_continuation_reuses_pending_token_position(
     assert reopened_request.input_ids.tolist() == [1, 2, 0]
 
 
+def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
+    talker = TalkerBuilder()
+    talker.gpu_id = 0
+    assert ThinkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+    assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+
+
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(
     thinker_adapter: ThinkerAdapter,
 ) -> None:
     session_identity = SessionIdentity("context-limit")
     thinker_adapter.open(session_identity, OmniRequest(None))
     chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
-    for unit_index in range(5):
+    for unit_index in range(4):
         request = thinker_adapter.build(
             session_identity,
             chunk,
@@ -158,7 +170,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
         request.extra_model_outputs = {"function_ids": [4]}
         thinker_adapter.result(session_identity, request)
     for attempt in range(2):
-        with pytest.raises(ValueError, match="context limit"):
+        with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
             thinker_adapter.build(
                 session_identity,
                 chunk,
@@ -369,3 +381,71 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
     assert torch.all(changed_codes >= 10)
     assert torch.all(changed_codes < 11)
     torch.testing.assert_close(first_codes, saved_codes, rtol=0, atol=0)
+
+
+def test_thinker_routes_tool_call_out_and_forces_response_in(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    start_of_call, call_body, end_of_call = 5, 7, 6
+    response_token_ids = [8, 9]
+    pieces = {
+        start_of_call: "<SPECIAL_20>",
+        call_body: '<TOOLCALL>[{"name": "f", "arguments": {"x": 1}}]</TOOLCALL>',
+        end_of_call: "<SPECIAL_21>",
+    }
+    tokenizer = thinker_adapter.tokenizer
+    tokenizer.decode.side_effect = lambda token_ids: "".join(
+        pieces[token_id] for token_id in token_ids
+    )
+    tokenizer.encode.return_value = response_token_ids
+    thinker_adapter.start_of_tool_call_id = start_of_call
+    thinker_adapter.end_of_tool_call_id = end_of_call
+    thinker_adapter.context_length = 64
+    session_identity = SessionIdentity("tool")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+
+    def frame(function_token_id: int) -> StagePayload:
+        request = thinker_adapter.build(
+            session_identity,
+            chunk,
+            StagePayload("frame", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+        )
+        request.output_ids = [0]
+        request.extra_model_outputs = {"function_ids": [function_token_id]}
+        return thinker_adapter.result(session_identity, request)
+
+    # note (Junnan Li): The pad id inside a call span is not part of the call text.
+    tool_calls = [
+        frame(token_id).data["tool_calls"]
+        for token_id in (start_of_call, call_body, 0, end_of_call)
+    ]
+    assert tool_calls == [[], [], [], [{"name": "f", "arguments": {"x": 1}}]]
+
+    framed = StagePayload(
+        "framed",
+        OmniRequest(None),
+        {
+            "acoustic": torch.ones(1, 4),
+            "tool_response": {
+                "responses": [{"id": "call_1_0", "name": "f", "response": {"y": 2}}]
+            },
+        },
+    )
+    assert not thinker_adapter.prepare_unit(
+        session_identity, chunk, framed
+    ).bypass_generation
+    assert "tool_response" not in framed.data
+    tokenizer.encode.assert_called_once_with(
+        '<TOOL_RESPONSE>[{"y": 2}]</TOOL_RESPONSE>', add_special_tokens=False
+    )
+    embeddings = thinker_adapter.runner.model.llm.get_input_embeddings().weight
+    state = thinker_adapter.states[session_identity]
+    # note (Junnan Li): The model's own prediction under a forced frame is ignored; 3 is not a call start.
+    for function_input, prediction in ((8, start_of_call), (9, 3), (3, 0)):
+        assert frame(prediction).data["tool_calls"] == []
+        torch.testing.assert_close(
+            state.fusion_rows[-1][0],
+            2 * torch.ones(4) + 3 * embeddings[0] + 5 * embeddings[function_input],
+        )
+    assert state.tool_call_token_ids is None

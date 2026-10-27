@@ -6,7 +6,7 @@ import pytest
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
-from sglang_omni.models.cosmos3.stages import native_server_kwargs
+from sglang_omni.native_generation.stage import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
@@ -102,7 +102,7 @@ def test_generation_factory_passes_resolved_device_to_native(
 ):
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
-    from sglang_omni.models.cosmos3.stages import create_generation_scheduler
+    from sglang_omni.native_generation.stage import create_generation_scheduler
     from sglang_omni.utils import device as device_utils
 
     monkeypatch.setattr(
@@ -130,7 +130,7 @@ def test_generation_factory_passes_resolved_device_to_native(
 
 
 def test_generation_factory_rejects_cpu_before_native_startup(monkeypatch):
-    from sglang_omni.models.cosmos3.stages import create_generation_scheduler
+    from sglang_omni.native_generation.stage import create_generation_scheduler
     from sglang_omni.utils import device as device_utils
 
     monkeypatch.setattr(
@@ -156,8 +156,7 @@ def test_generation_factory_selects_cooperative_cancellation(
     from sglang.multimodal_gen.runtime.platforms import plugins
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
-    from sglang_omni.models.cosmos3 import stages
-    from sglang_omni.native_generation import cancellation
+    from sglang_omni.native_generation import cancellation, stage
     from sglang_omni.utils import device as device_utils
 
     monkeypatch.setattr(
@@ -193,7 +192,7 @@ def test_generation_factory_selects_cooperative_cancellation(
 
     monkeypatch.setattr(ServerArgs, "from_kwargs", lambda **kwargs: kwargs)
     monkeypatch.setattr(DiffGenerator, "from_server_args", start_workers)
-    monkeypatch.setattr(stages, "model_request_fields", lambda server_args: frozenset())
+    monkeypatch.setattr(stage, "model_request_fields", lambda server_args: frozenset())
     monkeypatch.setattr(
         server_warmup,
         "should_run_synthetic_server_warmup",
@@ -214,8 +213,8 @@ def test_generation_factory_selects_cooperative_cancellation(
         raise RuntimeError("warmup request failed")
 
     monkeypatch.setattr(server_warmup, "run_sync_client_warmup", warm_up)
-    with caplog.at_level(logging.WARNING, logger="sglang_omni.models.cosmos3.stages"):
-        scheduler = stages.create_generation_scheduler(
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.native_generation.stage"):
+        scheduler = stage.create_generation_scheduler(
             "checkpoint",
             output_dir=str(tmp_path),
             runtime_gpu_ids=[0, 1] if case == "two_gpus" else None,
