@@ -99,13 +99,14 @@ class SessionGraphRunner(CoordinatorSessions):
         """An interrupt naming a turn first drops what the Session still holds of that turn on its way to the target and from it.
 
         The target's inbox and its node session's unsent appends lose the
-        turn's chunks from other nodes, and a later chunk of the turn no
-        longer enters the inbox; the target's pacer drops the turn's output,
-        the client's queue drops the turn's unread reply data, and the
-        target's readers are told how much of the turn's audio the
-        connection took. A preempting interrupt also names the turn's
-        appends already sent, and every owner of the target aborts them. The
-        client's own input stays.
+        turn's chunks from other nodes other than the controls about the
+        interruption, and a later chunk of the turn no longer enters the
+        inbox; the target's pacer drops the turn's output, the client's queue
+        drops the turn's unread reply data, and the target's readers are told
+        how much of the turn's audio the connection took. A preempting
+        interrupt also names the turn's appends already sent, other than those
+        controls, and every owner of the target aborts them. The client's own
+        input stays.
         """
         if control_type(event) == INTERRUPT and event.turn is not None:
             graph.interrupted_turns.setdefault(target, set()).add(event.turn)
@@ -113,7 +114,8 @@ class SessionGraphRunner(CoordinatorSessions):
             inbox.queued = deque(
                 item
                 for item in inbox.queued
-                if item[0] == GRAPH_INPUT or item[1].turn != event.turn
+                if item[0] == GRAPH_INPUT
+                or not is_interrupted_reply(item[1], event.turn)
             )
             inbox.counts = Counter(source for source, _, _ in inbox.queued)
             inbox.wake.set()
@@ -121,7 +123,7 @@ class SessionGraphRunner(CoordinatorSessions):
             kept = deque(
                 pending
                 for pending in node.pending
-                if pending.chunk.turn != event.turn
+                if not is_interrupted_reply(pending.chunk, event.turn)
                 or pending.chunk.seq in graph.client_sequences[target]
             )
             node.pending_count -= len(node.pending) - len(kept)
@@ -172,7 +174,7 @@ class SessionGraphRunner(CoordinatorSessions):
             preempted_request_ids = tuple(
                 request_id
                 for request_id, chunk in node.submitted_appends.items()
-                if chunk.turn == event.turn
+                if is_interrupted_reply(chunk, event.turn)
                 and chunk.seq not in graph.client_sequences[target]
             )
         else:

@@ -740,6 +740,7 @@ class SGLModelRunner(ModelRunner):
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
+            "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",

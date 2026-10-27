@@ -900,3 +900,25 @@ def test_talker_graph_stays_available_to_an_explicit_override(monkeypatch) -> No
     )
 
     assert overrides["disable_cuda_graph"] is False
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "overrides", "expected"),
+    [
+        (True, {"enable_torch_compile": True}, False),
+        (True, None, False),
+        (False, {"enable_torch_compile": True}, True),
+    ],
+)
+def test_torch_compile_is_disabled_on_npu(
+    monkeypatch,
+    is_npu: bool,
+    overrides: dict[str, object] | None,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_npu", lambda: is_npu)
+
+    result = qwen_stages.disable_torch_compile_on_npu(overrides)
+
+    assert result is not None
+    assert result["enable_torch_compile"] is expected

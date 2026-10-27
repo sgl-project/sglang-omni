@@ -23,6 +23,11 @@ Chat with text output only:
 python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only --port 8000
 ```
 
+## Ascend NPU
+
+See [Installation — Ascend NPU](../get_started/installation_npu.md#minicpm-o)
+for the NPU launch command, configuration, and validated versions.
+
 ## Normal Usage
 
 

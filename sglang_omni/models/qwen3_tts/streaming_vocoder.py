@@ -933,8 +933,26 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else bool(async_decode)
             )
         )
+        cold_frames = tuple(
+            int(frames)
+            for frames in (
+                incremental_codec_cuda_graph_cold_frames
+                if incremental_codec_cuda_graph_cold_frames is not None
+                else (
+                    (int(initial_chunk_frames), int(initial_chunk_frames) + 1)
+                    if self.suppress_bootstrap_silence
+                    else (int(initial_chunk_frames),)
+                )
+            )
+        )
         self.codec_arena = self.build_codec_arena(
-            int(codec_state_slots), dtype=codec_state_dtype
+            int(codec_state_slots),
+            dtype=codec_state_dtype,
+            # note (ratish): the widest cold and follow-up decodes, which graphs may compile, so
+            # each attends in place; compiled, the gathered step would copy every ring a decode.
+            in_place_frames=max(
+                (self.stream_followup_stride, *self.followup_stride_ramp, *cold_frames)
+            ),
         )
         (
             self.initial_incremental_decode_graphs,
@@ -949,15 +967,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             enabled=incremental_codec_cuda_graph,
             compile_kernels=bool(incremental_codec_compile)
             and self.device.type != "npu",
-            cold_frames=(
-                incremental_codec_cuda_graph_cold_frames
-                if incremental_codec_cuda_graph_cold_frames is not None
-                else (
-                    (int(initial_chunk_frames), int(initial_chunk_frames) + 1)
-                    if self.suppress_bootstrap_silence
-                    else (int(initial_chunk_frames),)
-                )
-            ),
+            cold_frames=cold_frames,
             window_frames=tuple(
                 (int(frames) for frames in incremental_codec_cuda_graph_window_frames)
             ),
@@ -1024,7 +1034,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
 
     def build_codec_arena(
-        self, num_slots: int, *, dtype: torch.dtype
+        self, num_slots: int, *, dtype: torch.dtype, in_place_frames: int
     ) -> Qwen3TTSCodecStateArena | None:
         if self.incremental_decoder is None:
             return None
@@ -1035,6 +1045,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             num_slots=num_slots,
             device=self.device,
             dtype=dtype,
+            in_place_frames=in_place_frames,
         )
         logger.info(
             "Qwen3-TTS incremental Codec state: %d slots, %.2f MiB per stream, %.1f MiB total (%s, %s)",

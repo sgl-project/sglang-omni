@@ -142,6 +142,7 @@ Supported Models
    cookbook/auk.md
    cookbook/zonos2.md
    cookbook/arkasr.md
+   cookbook/hy_simulmt.md
    cookbook/voxtral_tts.md
    cookbook/dots_tts.md
    cookbook/llada2_uni.md
