@@ -74,13 +74,17 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
                 enable_torch_compile=False,
             ),
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
             process="vocoder",
             gpu=0,
             factory_path=f"{PACKAGE}.vocoder.create_vocoder_executor",
-            factory=FactoryArgs(graph_latent_steps=384 if dense else 0),
+            factory=FactoryArgs(
+                graph_latent_steps=384 if dense else 0, stream_chunk_steps=8
+            ),
+            can_accept_stream_before_payload=True,
             terminal=True,
         ),
     ]

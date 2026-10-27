@@ -47,6 +47,7 @@ from sglang_omni.models.ming3_tts.model_runner import (
     Ming3TTSModelRunner,
     Ming3TTSRequestData,
     StopPolicy,
+    build_stream_output,
 )
 from sglang_omni.models.ming3_tts.sglang_model import (
     AGGREGATOR_WEIGHT_PREFIX,
@@ -636,6 +637,10 @@ def create_tts_engine_executor(
 
     def build_request(payload: StagePayload) -> Ming3TTSRequestData:
         parameters = payload.request.params
+        if dense and parameters.get("stream", False):
+            raise ValueError("Ming 3 0.5B streaming requires the companion dense PR")
+        else:
+            pass
         seed = parameters.get("seed")
         if dense:
             prompt = materialize_dense_prompt(tokenizer, payload.data)
@@ -711,8 +716,11 @@ def create_tts_engine_executor(
         # note (rsi): a finished request's latents are complete once its step
         # resolved, so the copy runs on a side stream instead of waiting for
         # the lookahead step already queued on the loop's stream.
-        with device_module.stream(result_stream):
-            latents = torch.stack(request.latents).float().cpu()
+        if not payload.request.params.get("stream", False):
+            with device_module.stream(result_stream):
+                latents = torch.stack(request.latents).float().cpu()
+        else:
+            latents = None
         payload.data = {
             "latents": latents,
             "finish_reason": request.finish_reason,
@@ -750,6 +758,7 @@ def create_tts_engine_executor(
         model_runner=model_runner,
         request_builder=build_request,
         result_adapter=build_result,
+        stream_output_builder=build_stream_output,
         # note (rsi): a decode step launches before the previous one's host
         # bookkeeping, which then runs while the GPU works.
         enable_async_decode=enable_async_decode,

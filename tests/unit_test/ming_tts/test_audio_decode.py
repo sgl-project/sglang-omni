@@ -11,20 +11,18 @@ import numpy as np
 import pytest
 import torch
 
-from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae import (
-    AudioVAEconfig,
-)
-from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
-from sglang_omni.models.ming_tts import audio_decode as audio_decode_module
-from sglang_omni.models.ming_tts.audio_decode import (
+from sglang_omni.models.ming_tts.audio_decode import decode_ming_tts_audio_payload
+from sglang_omni.models.ming_tts.payload_types import MingTTSState
+from sglang_omni.modules.ming_audio import audio_decode as audio_decode_module
+from sglang_omni.modules.ming_audio.audio_decode import (
     AudioVAEFixedStreamingOutput,
     AudioVAEFixedStreamingTransition,
     CapturedAudioVAEGraph,
     MingAudioDecoder,
     MingAudioStreamingRunner,
-    decode_ming_tts_audio_payload,
 )
-from sglang_omni.models.ming_tts.payload_types import MingTTSState
+from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
+from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
