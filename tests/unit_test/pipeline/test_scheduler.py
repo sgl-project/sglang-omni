@@ -22,7 +22,13 @@ import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ReqKvInfo
+from sglang.srt.managers.schedule_batch import (
+    FINISH_LENGTH,
+    Req,
+    ReqKvInfo,
+    ScheduleBatch,
+)
+from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
@@ -30,6 +36,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -2174,6 +2181,63 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     message = scheduler.request_kv_capacity_error(request(40))
     assert "16-token speculative decoding reserve" in message
     assert "Lower max_tokens" in message
+
+
+VERIFY_GRAPH_MAX_BATCH_SIZE = 8
+
+
+class FoldedAcceptDraftWorker:
+    """Publishes next sequence lengths as a view of its static verify buffer."""
+
+    def __init__(self, accepted_token_counts: list[int]) -> None:
+        self.accepted_token_counts = torch.tensor(accepted_token_counts)
+        self.sequence_lengths_buffer = torch.zeros(
+            VERIFY_GRAPH_MAX_BATCH_SIZE, dtype=torch.int64
+        )
+
+    def forward_batch_generation(self, batch: ScheduleBatch) -> GenerationBatchResult:
+        batch_size = len(batch.seq_lens)
+        self.sequence_lengths_buffer[:batch_size] = (
+            batch.seq_lens + self.accepted_token_counts
+        )
+        return GenerationBatchResult(
+            next_token_ids=torch.zeros(batch_size, dtype=torch.int64),
+            new_seq_lens=self.sequence_lengths_buffer[:batch_size],
+        )
+
+
+@pytest.mark.usefixtures("published_config")
+def test_speculative_step_lengths_survive_the_next_verify_replay() -> None:
+    """A batch that adopted a view of the worker's verify buffer saw its lengths move when the next verify replayed."""
+    sequence_lengths = [5, 9, 3]
+    accepted_token_counts = [3, 1, 2]
+    committed_sequence_lengths = [8, 10, 5]
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.device = "cpu"
+    scheduler.future_map = SimpleNamespace(spec_algo=SpeculativeAlgorithm.DSPARK)
+    draft_worker = FoldedAcceptDraftWorker(accepted_token_counts)
+    scheduler.draft_worker = draft_worker
+    scheduler.tp_worker = SimpleNamespace(
+        speculative_target_worker=SimpleNamespace(verify_requests=[])
+    )
+    scheduler.model_runner = SimpleNamespace(
+        after_speculative_step=lambda *args, **kwargs: None
+    )
+    batch = ScheduleBatch(
+        reqs=[],
+        device="cpu",
+        forward_mode=ForwardMode.DECODE,
+        spec_algorithm=SpeculativeAlgorithm.DSPARK,
+        seq_lens=torch.tensor(sequence_lengths),
+        seq_lens_cpu=torch.tensor(sequence_lengths),
+        seq_lens_sum=sum(sequence_lengths),
+    )
+
+    scheduler.run_speculative_batch(batch)
+    draft_worker.forward_batch_generation(batch)
+
+    assert batch.seq_lens.tolist() == committed_sequence_lengths, "seq_lens moved"
+    assert batch.seq_lens_cpu.tolist() == committed_sequence_lengths, "host copy moved"
 
 
 @pytest.mark.parametrize(

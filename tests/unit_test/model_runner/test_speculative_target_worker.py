@@ -59,3 +59,79 @@ def test_prefill_hands_the_draft_its_kv_location_plan(
     assert planned.kv_loc_plan is kv_location_plan
     assert unplanned.kv_loc_plan is None
     assert planned.next_token_ids.tolist() == [7, 8]
+
+
+class VerifyRunner:
+    def __init__(self, model_worker: SimpleNamespace) -> None:
+        self.tp_worker = model_worker
+        self.calls: list[tuple[list[SimpleNamespace], object]] = []
+
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: SimpleNamespace,
+        requests: list[SimpleNamespace],
+        rows_per_request: object,
+    ) -> None:
+        self.calls.append((requests, rows_per_request))
+
+
+def verify_target_worker(
+    logits_rows: int,
+) -> tuple[SpeculativeTargetWorker, VerifyRunner]:
+    forward_output = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(logits_rows, 4)),
+        can_run_graph=False,
+        expert_distribution_metrics=None,
+        routed_experts_output=None,
+        indexer_topk_output=None,
+    )
+    model_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(forward=lambda forward_batch: forward_output),
+        model_config=None,
+        device="cpu",
+        random_seed=0,
+    )
+    target_worker = SpeculativeTargetWorker(model_worker)
+    runner = VerifyRunner(model_worker)
+    target_worker.attach_runner(runner)
+    target_worker.verify_requests = [
+        SimpleNamespace(request_id="request-a"),
+        SimpleNamespace(request_id="request-b"),
+    ]
+    return target_worker, runner
+
+
+def verify_forward_batch(spec_info: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(
+        spec_info=spec_info,
+        kv_loc_plan=None,
+        apply_deprecated_skip_attn_backend_init=lambda skip: None,
+    )
+
+
+def test_a_uniform_verify_hands_the_hooks_an_even_row_split() -> None:
+    target_worker, runner = verify_target_worker(logits_rows=16)
+
+    target_worker.forward_batch_generation(
+        None, forward_batch=verify_forward_batch(SimpleNamespace()), is_verify=True
+    )
+
+    ((requests, rows_per_request),) = runner.calls
+    assert [request.request_id for request in requests] == ["request-a", "request-b"]
+    assert rows_per_request == 8
+
+
+def test_a_compact_verify_hands_the_hooks_its_layout_s_row_counts() -> None:
+    verify_lens = torch.tensor([3, 5], dtype=torch.int32)
+    # Eight packed rows padded to a 13-row tier: no even split exists.
+    target_worker, runner = verify_target_worker(logits_rows=13)
+    spec_info = SimpleNamespace(
+        ragged_verify_layout=SimpleNamespace(verify_lens=verify_lens)
+    )
+
+    target_worker.forward_batch_generation(
+        None, forward_batch=verify_forward_batch(spec_info), is_verify=True
+    )
+
+    ((_, rows_per_request),) = runner.calls
+    assert rows_per_request is verify_lens

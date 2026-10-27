@@ -117,6 +117,17 @@ def resolve_deferred_prefill_inputs(
     schedule_batch.prefill_input_ids_cpu = None
 
 
+def request_suppress_tokens(sched_req: SchedulerRequest) -> list[int] | None:
+    """The codec ids a request suppresses: the builder's list, else the one cached on its Req."""
+    suppress_tokens = sched_req.data.suppress_tokens
+    if suppress_tokens:
+        return suppress_tokens
+    else:
+        return getattr(
+            sched_req.data.req, "_codec_suppress_tokens", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+
+
 @dataclass
 class PendingStep:
     """One decode step launched on the GPU but not yet consumed on the host.
@@ -710,6 +721,58 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
 
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int | torch.Tensor,
+    ) -> None:
+        """Give every verify row the logits hooks its plain decode row would take.
+
+        Speculative verify samples outside sample_next_token_ids. The codec suppress
+        set and process_sampling_logits depend on the request but not the position,
+        so applying them to each of a request's rows is exact. A compact verify packs
+        each request's rows back to back, as many as rows_per_request holds for it on
+        the device, and pads the rest of its graph tier.
+        """
+        if not self.verify_rows_take_logits_hooks(requests):
+            return
+        elif isinstance(rows_per_request, torch.Tensor):
+            counts = rows_per_request.tolist()
+        else:
+            counts = [rows_per_request] * len(requests)
+        rows = [
+            request for request, count in zip(requests, counts) for _ in range(count)
+        ]
+        self.apply_codec_suppress_tokens(logits_output, rows)
+        self.process_sampling_logits(logits_output, rows)
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Whether the logits hooks change any verify row of these requests.
+
+        Reading a compact verify's per-request row counts costs a device sync, so a
+        runner whose hooks leave the batch alone says so here. The base hooks only
+        suppress codec tokens; a runner with more hooks extends this.
+        """
+        return any(request_suppress_tokens(request) for request in requests)
+
+    def after_speculative_step(
+        self,
+        batch: ScheduleBatch,
+        result: GenerationBatchResult,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: object | None = None,
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted.
+
+        verify_layout is the step's ragged verify layout under a compact verify, with
+        each request's rows packed back to back, and None when every request has
+        num_draft_tokens rows.
+        """
+        return None
+
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
@@ -1241,17 +1304,7 @@ class ModelRunner(Generic[RequestDataInput]):
         ] = {}
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            suppress_tokens = data.suppress_tokens
-            if not suppress_tokens:
-                req = data.req
-                try:
-                    suppress_tokens = (
-                        req._codec_suppress_tokens
-                    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                except AttributeError:
-                    suppress_tokens = None
-            else:
-                pass
+            suppress_tokens = request_suppress_tokens(sched_req)
             if not suppress_tokens:
                 continue
             else:

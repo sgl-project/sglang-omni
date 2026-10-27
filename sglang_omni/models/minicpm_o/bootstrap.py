@@ -166,7 +166,25 @@ def create_thinker_scheduler(
 
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
-    defer_cuda_graph_capture = want_cuda_graph and speech_enabled
+    speculative = cfg.speculative_algorithm is not None
+    if (
+        speech_enabled
+        and speculative
+        and (
+            cfg.speculative_algorithm not in ("EAGLE3", "DFLASH", "DSPARK")
+            or cfg.speculative_eagle_topk not in (None, 1)
+        )
+    ):
+        # note (0xtoward): the talker rows ride the drafts' layer-capture hooks, and a
+        # linear verify block commits its leading rows.
+        raise ValueError(
+            "speech output needs an EAGLE3 chain (topk 1), DFLASH or DSPARK draft, got "
+            f"{cfg.speculative_algorithm} topk={cfg.speculative_eagle_topk}"
+        )
+    else:
+        pass
+    # note (0xtoward): the deferral exists for the decode graphs, which verify replaces.
+    defer_cuda_graph_capture = want_cuda_graph and speech_enabled and not speculative
     if defer_cuda_graph_capture:
         saved_return_hidden_states = cfg.enable_return_hidden_states
         saved_return_hidden_states_mode = cfg.return_hidden_states_mode
@@ -188,6 +206,7 @@ def create_thinker_scheduler(
             model_arch_override="MiniCPMO",
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
+            supports_speculative_decoding=True,
         )
         if defer_cuda_graph_capture:
             init_sglang_cuda_graphs(infrastructure[0])

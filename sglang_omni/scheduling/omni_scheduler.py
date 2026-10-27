@@ -2266,26 +2266,49 @@ class OmniScheduler(Generic[RequestDataT]):
         diff the two on every SGLang upgrade. Tokens are emitted later by
         stream_output, once finishing trims them at the stop.
         """
-        if batch.forward_mode.is_extend():
+        is_prefill = batch.forward_mode.is_extend()
+        if is_prefill:
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self, batch, overlap=False
-        ):
-            result = self.draft_worker.forward_batch_generation(batch)
+        target_worker = self.tp_worker.speculative_target_worker
+        target_worker.verify_requests = [
+            SchedulerRequest(request_id=req.rid, data=req.omni_data)
+            for req in batch.reqs
+        ]
+        try:
+            with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self, batch, overlap=False
+            ):
+                result = self.draft_worker.forward_batch_generation(batch)
+        finally:
+            target_worker.verify_requests = []
+        self.model_runner.after_speculative_step(
+            batch,
+            result,
+            is_prefill=is_prefill,
+            num_draft_tokens=getattr(
+                self.draft_worker,
+                "speculative_num_draft_tokens",
+                get_spec().speculative_num_draft_tokens,
+            ),
+            # note (0xtoward): the worker leaves its verify input on the batch; a compact verify's layout rides on it.
+            verify_layout=getattr(batch.spec_info, "ragged_verify_layout", None),
+        )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
         if (
             new_sequence_lengths is not None
             and new_sequence_lengths is not batch.seq_lens
         ):
-            batch.seq_lens = new_sequence_lengths
+            # note (0xtoward): the worker may hand out a view of a buffer that its
+            # next verify rewrites mid-step (sglang#42465), so the batch keeps a copy.
+            batch.seq_lens = new_sequence_lengths.clone()
             if batch.seq_lens_cpu is not None:
-                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                batch.seq_lens_cpu = batch.seq_lens.to("cpu")
                 batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
             else:
                 pass
