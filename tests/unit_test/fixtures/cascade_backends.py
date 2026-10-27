@@ -117,13 +117,16 @@ def backends(request, backend_requests):
                 return
             elif "tools" in request and request["messages"][-1]["role"] != "tool":
                 # A reply that first calls the one offered tool, its arguments streamed in two pieces.
-                assert [tool["function"]["name"] for tool in request["tools"]] == [
-                    "lookup"
-                ]
+                name, pieces = (
+                    ("picture", ('{"prompt": "a c', 'at"}'))
+                    if scenario == "picture_tool"
+                    else ("lookup", ('{"city": "Par', 'is"}'))
+                )
+                assert [tool["function"]["name"] for tool in request["tools"]] == [name]
                 received_messages.append(request["messages"])
-                call = {"index": 0, "id": "call_1", "function": {"name": "lookup"}}
+                call = {"index": 0, "id": "call_1", "function": {"name": name}}
                 self.event({"delta": {"tool_calls": [call]}, "finish_reason": None})
-                for piece in ('{"city": "Par', 'is"}'):
+                for piece in pieces:
                     fragment = {"index": 0, "function": {"arguments": piece}}
                     self.event(
                         {"delta": {"tool_calls": [fragment]}, "finish_reason": None}
@@ -165,8 +168,9 @@ def backends(request, backend_requests):
     thread.start()
     settings = loopback_graph(
         f"http://127.0.0.1:{server.server_port}/v1",
-        with_tools=scenario in ("tool_call", "unawaited_tool"),
-        awaited=scenario != "unawaited_tool",
+        with_tools=scenario in ("tool_call", "unawaited_tool", "picture_tool"),
+        awaited=scenario not in ("unawaited_tool", "picture_tool"),
+        picture=scenario == "picture_tool",
     )
     try:
         yield settings, received_audio, received_words, received_messages
@@ -329,12 +333,21 @@ LOOKUP_FUNCTION = {
     "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
 }
 LOOKUP_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.echo"
+PICTURE_FUNCTION = {
+    "name": "picture",
+    "description": "Draw a picture.",
+    "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+}
+PICTURE_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.picture"
 
 
 def loopback_graph(
-    base_url: str, with_tools: bool = False, awaited: bool = True
+    base_url: str,
+    with_tools: bool = False,
+    awaited: bool = True,
+    picture: bool = False,
 ) -> StreamingCascadePipelineConfig:
-    """A commit-driven cascade of the OpenAI-compatible kinds, every one served at `base_url`; with_tools offers the chat the echoing lookup tool, awaited or not, and wires the tools node."""
+    """A commit-driven cascade of the OpenAI-compatible kinds, every one served at `base_url`; with_tools offers the chat the echoing lookup tool, or the picture tool whose images the dialog publishes, awaited or not, and wires the tools node."""
     declaration = yaml.safe_load(LOOPBACK_GRAPH.replace("URL", base_url))
     if with_tools:
         nodes = declaration["session_nodes"]
@@ -347,7 +360,13 @@ def loopback_graph(
                     "capacity": 1024,
                 }
             )
-        nodes["llm"]["tools"] = [LOOKUP_FUNCTION]
+        if picture:
+            nodes["llm"]["tools"] = [PICTURE_FUNCTION]
+            tools = {"picture": {"path": PICTURE_IMPLEMENTATION, "awaited": awaited}}
+            declaration["session_publish"]["dialog"] = ["session", "tool_image"]
+        else:
+            nodes["llm"]["tools"] = [LOOKUP_FUNCTION]
+            tools = {"lookup": {"path": LOOKUP_IMPLEMENTATION, "awaited": awaited}}
         nodes["tools"] = {
             "kind": "tools",
             "inputs": [
@@ -355,7 +374,7 @@ def loopback_graph(
                 "input:session",
                 {"kind": "control", "source": "dialog", "event": "interrupt"},
             ],
-            "tools": {"lookup": {"path": LOOKUP_IMPLEMENTATION, "awaited": awaited}},
+            "tools": tools,
         }
     else:
         pass

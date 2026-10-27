@@ -29,6 +29,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STOPPED,
     TEXT,
     TEXT_DELTA,
+    TOOL_IMAGE,
     TRANSCRIPT,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -45,6 +46,7 @@ from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
     InputTranscription,
+    OutputImage,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -280,6 +282,43 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     assert [event for event in h.published if isinstance(event, ResponseProgress)] == [
         ResponseProgress("resp_0", "item_0", 4, 500.0)
     ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_a_picture_a_tool_made_joins_the_response_of_its_turn():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=2)
+    h.client.emit(
+        IMAGE,
+        TOOL_IMAGE,
+        {
+            "call_id": "call_a",
+            "name": "draw",
+            "arguments": {"prompt": "a cat"},
+            "mime_type": "image/png",
+            "data": "AAAA",
+        },
+        turn=2,
+    )
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Here it is."}, turn=2)
+    h.client.control(TURN_DONE, turn=2)
+    await settle()
+    assert h.published[:3] == [
+        ResponseStarted("resp_0"),
+        OutputImage(
+            "resp_0",
+            "item_0",
+            "call_a",
+            "draw",
+            {"prompt": "a cat"},
+            "image/png",
+            "AAAA",
+        ),
+        TextDelta("resp_0", "item_0", "Here it is."),
+    ]
+    assert isinstance(h.published[-1], ResponseFinished)
     await h.bridge.close()
 
 

@@ -38,6 +38,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STOPPED,
     TEXT,
     TEXT_DELTA,
+    TOOL_IMAGE,
     TRANSCRIPT,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -56,6 +57,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     OutputEvent,
+    OutputImage,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -177,6 +179,7 @@ class SessionBridge(InteractionAdapter):
         ] = {
             (TRANSCRIPT, TRANSCRIPT_FORMAT): self.on_transcript,
             (TEXT, TEXT_DELTA): self.on_text_delta,
+            (IMAGE, TOOL_IMAGE): self.on_tool_image,
             (CONTROL, SESSION_CONTROL): self.on_control,
         }
         if ports.output is not None:
@@ -440,6 +443,22 @@ class SessionBridge(InteractionAdapter):
         text = output.payload["text"]
         self.response_text += text
         events.append(TextDelta(self.response_id, self.response_item_id, text))
+        return events
+
+    def on_tool_image(self, output: OutputChunk) -> list[OutputEvent]:
+        events = self.start_response(output.turn)
+        payload = output.payload
+        events.append(
+            OutputImage(
+                self.response_id,
+                self.response_item_id,
+                payload["call_id"],
+                payload["name"],
+                payload["arguments"],
+                payload["mime_type"],
+                payload["data"],
+            )
+        )
         return events
 
     def on_audio(self, output: OutputChunk) -> list[OutputEvent]:

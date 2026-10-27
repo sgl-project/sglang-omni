@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolSettings(BaseModel):
-    """One tool: `path` imports the Python function running it, which takes the call's arguments as a mapping and returns JSON data, synchronous or async. The reply that calls an `awaited` tool stays open until the result continues it; a call of an unawaited tool ends the reply, and its result opens a reply of its own once the dialog is idle. When the user interrupts the reply that made a call, `on_interrupt` cancels the call or retains it, and a retained call's result opens a reply of its own too."""
+    """One tool: `path` imports the Python function running it, which takes the call's arguments as a mapping and returns JSON data, or a `ToolResult` with images for the client beside the data, synchronous or async. The reply that calls an `awaited` tool stays open until the result continues it; a call of an unawaited tool ends the reply, and its result opens a reply of its own once the dialog is idle. When the user interrupts the reply that made a call, `on_interrupt` cancels the call or retains it, and a retained call's result opens a reply of its own too."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -119,8 +119,9 @@ class Tools(StreamComponent):
                     "error": f"{call.name} gave no answer within {self.config.timeout_s} s"
                 },
             )
+        images = f" with {len(response.images)} images" if response.images else ""
         logger.info(
-            f"tool {call.id} {call.name}({call.arguments}) -> {response.response} turn={turn}"
+            f"tool {call.id} {call.name}({call.arguments}) -> {response.response}{images} turn={turn}"
         )
         emit(tool_response_chunk([response], None))
 

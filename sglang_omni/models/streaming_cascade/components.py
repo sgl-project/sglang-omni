@@ -48,6 +48,7 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     TEXT_DELTA,
     TOOL_CALL,
+    TOOL_IMAGE,
     TOOL_RESPONSE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -188,7 +189,7 @@ COMPONENTS.register(
     consumes=frozenset(
         {TRANSCRIPT_FORMAT, TEXT_DELTA, TOOL_CALL, TOOL_RESPONSE, SESSION_CONTROL}
     ),
-    produces=frozenset({MESSAGES, SESSION_CONTROL}),
+    produces=frozenset({MESSAGES, SESSION_CONTROL, TOOL_IMAGE}),
     opens_turns=True,
     optional=frozenset({TOOL_CALL, TOOL_RESPONSE}),
 )

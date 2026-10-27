@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3.8-27b-vivian cascade with tools: Qwen3.8-27B is offered get_weather, which the reply awaits and continues with, and search_wikipedia, whose call ends the reply and whose result is reported in a turn of its own while the conversation goes on; the chat service parses the model's tool calls and a tools node runs them. The profile needs outbound HTTPS to the Open-Meteo and Wikipedia APIs, and `PYTHONPATH=.` from the repository root so the tools node imports `examples.streaming_cascade.tools`.
+# The qwen3-asr-qwen3.8-27b-vivian cascade with tools: Qwen3.8-27B is offered get_weather, which the reply awaits and continues with, search_wikipedia, whose call ends the reply and whose result is reported in a turn of its own while the conversation goes on, and generate_image, which draws with the Z-Image-Turbo service on GPU 1 beside ASR and TTS and whose picture the client receives as `sglang.response.image` when its turn reports it; the chat service parses the model's tool calls and a tools node runs them. The profile needs outbound HTTPS to the Open-Meteo and Wikipedia APIs, and `PYTHONPATH=.` from the repository root so the tools node imports `examples.streaming_cascade.tools`.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tools
 
@@ -14,6 +14,10 @@ services:
   - name: tts
     command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --port, "8005", --mem-fraction-static, "0.12"]
     port: 8005
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+  - name: image
+    command: [sglang, serve, --model-path, Tongyi-MAI/Z-Image-Turbo, --host, "127.0.0.1", --port, "8020"]
+    port: 8020
     env: {CUDA_VISIBLE_DEVICES: "1"}
 
 session_nodes:
@@ -37,7 +41,7 @@ session_nodes:
       - "input:session"
       - {kind: control, source: input, event: interrupt}
       - {kind: control, source: aligner, event: reply.progress}
-    system_prompt: You are a helpful voice assistant speaking aloud. Use get_weather when the user asks about the weather, and search_wikipedia when the user asks you to look something up. When you call a tool, first say in one short sentence what you are doing. Reply briefly, in the language the user speaks, without markdown or emoji.
+    system_prompt: You are a helpful voice assistant speaking aloud. Use get_weather when the user asks about the weather, search_wikipedia when the user asks you to look something up, and generate_image when the user asks for a picture, which the user sees as soon as it is ready. When you call a tool, first say in one short sentence what you are doing. Reply briefly, in the language the user speaks, without markdown or emoji.
   llm:
     kind: openai_chat
     inputs:
@@ -71,6 +75,16 @@ session_nodes:
               description: The Wikipedia language edition, such as en or zh; en unless the user speaks another language
           required:
           - query
+      - name: generate_image
+        description: Draw a picture from a description and show it to the user; it takes a few seconds.
+        parameters:
+          type: object
+          properties:
+            prompt:
+              type: string
+              description: What the picture shows, as one detailed sentence in English or Chinese
+          required:
+          - prompt
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
@@ -84,6 +98,10 @@ session_nodes:
       get_weather: examples.streaming_cascade.tools.get_weather
       search_wikipedia:
         path: examples.streaming_cascade.tools.search_wikipedia
+        awaited: false
+        on_interrupt: retain
+      generate_image:
+        path: examples.streaming_cascade.tools.generate_image
         awaited: false
         on_interrupt: retain
     timeout_s: 30
@@ -108,7 +126,7 @@ session_nodes:
 session_publish:
   vad: [session]
   asr: [transcript]
-  dialog: [session]
+  dialog: [session, tool_image]
   llm: [text_delta]
   tts: [pcm_f32le, session]
   aligner: [session]

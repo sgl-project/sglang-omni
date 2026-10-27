@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Example tool functions for the streaming cascade tool profile."""
 
+import os
 from collections.abc import Mapping
 from urllib.parse import quote
 
 import httpx
+
+from sglang_omni.proto.tools import ToolImage, ToolResult
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -17,6 +20,12 @@ WIKIPEDIA_HEADERS = {
     "User-Agent": "sglang-omni-example/1.0 (https://github.com/sgl-project/sglang-omni)"
 }
 REQUEST_TIMEOUT_S = 10.0
+# The OpenAI-compatible images API of an SGLang diffusion server, such as the profile's Z-Image-Turbo service.
+IMAGE_API_URL = os.environ.get("SGLANG_OMNI_IMAGE_API_URL", "http://127.0.0.1:8020/v1")
+IMAGE_SIZE = "1024x1024"
+# A JPEG of a 1024x1024 image is under 200 KB, within the Session's chunk limit; a PNG of it is over 1 MB.
+IMAGE_FORMAT = "jpeg"
+IMAGE_TIMEOUT_S = 60.0
 # The WMO weather interpretation codes Open-Meteo reports, as words the model can speak.
 WEATHER_CODES = {
     0: "clear sky",
@@ -111,3 +120,33 @@ async def search_wikipedia(arguments: Mapping[str, object]) -> dict[str, object]
         )
         summary.raise_for_status()
     return {"title": title, "summary": summary.json()["extract"]}
+
+
+async def generate_image(arguments: Mapping[str, object]) -> ToolResult:
+    """An image of the prompt in the arguments from the images API at IMAGE_API_URL, for the client as a JPEG while the model reads the prompt and the size; a failed request raises, which the tool runner answers to the model as an error."""
+    prompt = arguments.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("prompt must be a non-empty string")
+    else:
+        pass
+    async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT_S) as client:
+        generation = await client.post(
+            f"{IMAGE_API_URL}/images/generations",
+            json={
+                "prompt": prompt.strip(),
+                "n": 1,
+                "size": IMAGE_SIZE,
+                "response_format": "b64_json",
+                "output_format": IMAGE_FORMAT,
+            },
+        )
+        generation.raise_for_status()
+    return ToolResult(
+        response={"prompt": prompt.strip(), "size": IMAGE_SIZE},
+        images=[
+            ToolImage(
+                mime_type=f"image/{IMAGE_FORMAT}",
+                data=generation.json()["data"][0]["b64_json"],
+            )
+        ],
+    )

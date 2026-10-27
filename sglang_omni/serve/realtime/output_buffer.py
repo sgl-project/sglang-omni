@@ -12,6 +12,7 @@ from sglang_omni.serve.realtime.output import (
     ContextLimitError,
     InputTranscription,
     OutputEvent,
+    OutputImage,
     ResponseEvent,
     ResponseFinished,
     ResponseProgress,
@@ -40,6 +41,8 @@ def envelope_size_bytes(envelope: Envelope) -> int:
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
         return len(event.text.encode()) + ENVELOPE_BYTES
+    elif isinstance(event, OutputImage):
+        return len(event.data) + ENVELOPE_BYTES
     else:
         return ENVELOPE_BYTES
 
@@ -124,6 +127,7 @@ class OutputBuffer:
                 TextFinished,
                 AudioDelta,
                 ResponseProgress,
+                OutputImage,
                 AudioFinished,
                 ResponseFinished,
             ),

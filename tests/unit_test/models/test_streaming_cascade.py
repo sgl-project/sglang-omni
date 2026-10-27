@@ -58,6 +58,7 @@ from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
     CONFIGURE,
+    IMAGE,
     INTERRUPT,
     MESSAGES,
     PCM16,
@@ -70,6 +71,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STOPPED,
     TEXT_DELTA,
     TOOL_CALL,
+    TOOL_IMAGE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
     TURN_DONE,
@@ -82,6 +84,7 @@ from sglang_omni.proto.streams import (
 )
 from sglang_omni.proto.tools import (
     ToolCall,
+    ToolImage,
     ToolResponse,
     tool_call_chunk,
     tool_calls_of,
@@ -2726,28 +2729,42 @@ def test_tool_declaration_errors(nodes, message):
         declared(nodes=nodes)
 
 
-def test_the_tool_profile_offers_an_awaited_and_an_unawaited_tool():
+def test_the_tool_profile_offers_awaited_unawaited_and_drawing_tools():
     config = profile_config("qwen3-asr-qwen3.8-27b-vivian-tools")
     settings = config.component_graph()
     weather = "examples.streaming_cascade.tools.get_weather"
     wikipedia = "examples.streaming_cascade.tools.search_wikipedia"
+    image = "examples.streaming_cascade.tools.generate_image"
     assert [tool.name for tool in settings.node("llm").component.tools] == [
         "get_weather",
         "search_wikipedia",
+        "generate_image",
     ]
     assert settings.tool_settings("llm") == {
         "get_weather": ToolSettings(path=weather),
         "search_wikipedia": ToolSettings(
             path=wikipedia, awaited=False, on_interrupt="retain"
         ),
+        "generate_image": ToolSettings(
+            path=image, awaited=False, on_interrupt="retain"
+        ),
     }
-    assert callable(import_string(weather)) and callable(import_string(wikipedia))
+    assert all(callable(import_string(path)) for path in (weather, wikipedia, image))
     chat = next(service for service in config.services if service.name == "chat")
     assert "--tool-call-parser" in chat.command
+    drawing = next(service for service in config.services if service.name == "image")
+    assert drawing.port == 8020 and drawing.env == {"CUDA_VISIBLE_DEVICES": "1"}
+    assert drawing.command[:4] == [
+        "sglang",
+        "serve",
+        "--model-path",
+        "Tongyi-MAI/Z-Image-Turbo",
+    ]
     graph = config.session_graph()
     assert graph.nodes["dialog"].bound("tools").feedback
     assert graph.nodes["tools"].controls == (ControlEdge("dialog", INTERRUPT),)
     assert "tools" not in config.session_publish
+    assert config.session_publish["dialog"] == [SESSION_CONTROL, TOOL_IMAGE]
     tools_settings = config.stage_factory_kwargs("tools")["settings"]
     [tools_node] = [node for node in tools_settings["nodes"] if node["name"] == "tools"]
     assert tools_node["tools"]["get_weather"] == {
@@ -2764,6 +2781,13 @@ SEARCH_FUNCTION = {
     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
 }
 WAIT_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.wait_for_gate"
+DRAW_FUNCTION = {
+    "name": "draw",
+    "description": "Draw a picture.",
+    "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+}
+PICTURE_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.picture"
+DOT = ToolImage(mime_type="image/png", data=cascade_fakes.PNG_DOT)
 
 
 def search_call(call_id: str, query: str) -> ToolCall:
@@ -2776,27 +2800,55 @@ def search_response(call_id: str, response: object) -> TimedChunk:
     )
 
 
+def draw_call(call_id: str, prompt: str) -> ToolCall:
+    return ToolCall(id=call_id, name="draw", arguments={"prompt": prompt})
+
+
+def draw_response(call_id: str, prompt: str) -> TimedChunk:
+    """The response of a draw call: what it drew for the model, the picture for the client."""
+    return tool_response_chunk(
+        [
+            ToolResponse(
+                id=call_id, name="draw", response={"drew": prompt}, images=[DOT]
+            )
+        ],
+        None,
+    )
+
+
 def tool_settings_wiring(
-    lookup: dict | None = None, search: dict | None = None
+    lookup: dict | None = None, search: dict | None = None, draw: dict | None = None
 ) -> dict:
-    """The tool wiring with the chat offering lookup and search, run by the tools node with the given settings beside their path."""
+    """The tool wiring with the chat offering lookup and search, and draw when it has settings, run by the tools node with the given settings beside their path."""
     nodes = tool_wiring()
+    offered = {
+        "lookup": (LOOKUP_FUNCTION, LOOKUP_IMPLEMENTATION, lookup or {}),
+        "search": (SEARCH_FUNCTION, LOOKUP_IMPLEMENTATION, search or {}),
+        **({"draw": (DRAW_FUNCTION, PICTURE_IMPLEMENTATION, draw)} if draw else {}),
+    }
     return {
         **nodes,
-        "llm": {**nodes["llm"], "tools": [LOOKUP_FUNCTION, SEARCH_FUNCTION]},
+        "llm": {
+            **nodes["llm"],
+            "tools": [function for function, _, _ in offered.values()],
+        },
         "tools": {
             **nodes["tools"],
             "tools": {
-                "lookup": {"path": LOOKUP_IMPLEMENTATION, **(lookup or {})},
-                "search": {"path": LOOKUP_IMPLEMENTATION, **(search or {})},
+                name: {"path": path, **settings}
+                for name, (_, path, settings) in offered.items()
             },
         },
     }
 
 
-def placed_dialog(lookup: dict | None = None, search: dict | None = None):
+def placed_dialog(
+    lookup: dict | None = None, search: dict | None = None, draw: dict | None = None
+):
     """A dialog placed in the tool wiring, so it knows how the calls it reads live."""
-    settings = declared(nodes=tool_settings_wiring(lookup, search)).component_graph()
+    settings = declared(
+        nodes=tool_settings_wiring(lookup, search, draw)
+    ).component_graph()
     dialog = build({"kind": "dialog"})
     dialog.place(settings, "dialog")
     return dialog
@@ -3048,6 +3100,144 @@ async def test_an_interrupt_retains_or_cancels_the_calls_of_the_reply_it_ends(
         assert prompts(outputs)[1][0][1].endswith(PENDING_CALL_NOTE)
     assert CUT_REPLY_NOTE in prompts(outputs)[1][0][1]
     assert dialog.messages[2].tool_calls and dialog.messages[2].is_cut
+
+
+@pytest.mark.asyncio
+async def test_the_tools_node_answers_with_the_images_a_tool_made():
+    node = build(
+        {
+            "kind": "tools",
+            "tools": {"picture": PICTURE_IMPLEMENTATION, "echo": LOOKUP_IMPLEMENTATION},
+        }
+    )
+    outputs = await drain(
+        node,
+        [
+            tool_call_chunk(
+                [
+                    ToolCall(id="pic", name="picture", arguments={"prompt": "a cat"}),
+                    ToolCall(id="plain", name="echo", arguments={}),
+                ],
+                1,
+            )
+        ],
+    )
+    responses = {
+        response.id: response for o in outputs for response in tool_responses_of(o)
+    }
+    assert responses["pic"].response == {"drew": "a cat"}
+    assert responses["pic"].images == [DOT]
+    assert responses["plain"].images == []
+
+
+@pytest.mark.asyncio
+async def test_a_result_with_images_publishes_them_with_their_call_in_the_turn_that_reports_it():
+    dialog = placed_dialog(draw={"awaited": False})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("draw a cat", True),
+            text_chunk("Drawing.", 1),
+            tool_call_chunk([draw_call("call_a", "a cat")], 1),
+            control_chunk(TURN_DONE, turn=1),
+            draw_response("call_a", "a cat"),
+            text_chunk("Here it is.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert turn_events(outputs) == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (TOOL_IMAGE, 2),
+        (MESSAGES, 2),
+    ]
+    [picture] = [o for o in outputs if o.format == TOOL_IMAGE]
+    assert picture.modality == IMAGE and picture.payload == {
+        "call_id": "call_a",
+        "name": "draw",
+        "arguments": {"prompt": "a cat"},
+        "mime_type": "image/png",
+        "data": cascade_fakes.PNG_DOT,
+    }
+    assert prompts(outputs)[1][-1] == ("tool", '{"drew": "a cat"}')
+    assert cascade_fakes.PNG_DOT not in json.dumps(prompts(outputs))
+
+
+@pytest.mark.asyncio
+async def test_a_reply_continues_after_the_images_of_its_awaited_call_are_published():
+    dialog = placed_dialog(draw={"awaited": True})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("draw a cat", True),
+            text_chunk("Drawing.", 1),
+            tool_call_chunk([draw_call("call_a", "a cat")], 1),
+            draw_response("call_a", "a cat"),
+            text_chunk("Here it is.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert turn_events(outputs) == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (TOOL_IMAGE, 1),
+        (MESSAGES, 1),
+    ]
+    assert history(dialog)[1:] == [
+        ("user", "draw a cat"),
+        ("assistant", "Drawing."),
+        ("tool", '{"drew": "a cat"}'),
+        ("assistant", "Here it is."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_publishes_the_images_the_reply_already_had_and_drops_a_cancelled_calls():
+    dialog = placed_dialog(lookup={"awaited": True}, draw={"awaited": True})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("draw a cat and look Paris up", True),
+            tool_call_chunk(
+                [draw_call("call_a", "a cat"), lookup_call("call_b", "Paris")], 1
+            ),
+            draw_response("call_a", "a cat"),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            tool_response_chunk(
+                [
+                    ToolResponse(
+                        id="call_b", name="lookup", response="sunny", images=[DOT]
+                    )
+                ],
+                None,
+            ),
+            transcript_chunk("never mind", True),
+        ],
+    )
+    assert turn_events(outputs) == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (TOOL_IMAGE, 1),
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (MESSAGES, 2),
+    ]
+    assert prompts(outputs)[1][1:] == [
+        ("user", "draw a cat and look Paris up"),
+        ("assistant", ""),
+        ("tool", CANCELLED_RESULT),
+        ("tool", '{"drew": "a cat"}'),
+        ("user", "never mind"),
+    ]
 
 
 @pytest.mark.asyncio

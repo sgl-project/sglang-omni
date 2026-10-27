@@ -6,14 +6,24 @@ from collections.abc import Mapping
 
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
 from sglang_omni.proto.session import TimedChunk
+from sglang_omni.proto.tools import ToolImage, ToolResult
 
 QUIET = bytes(3200)
 # The gate the `wait_for_gate` tool waits at; a test opens it, or replaces it for a fresh event loop.
 GATE = asyncio.Event()
+# A transparent 1x1 PNG, the picture the `picture` tool makes.
+PNG_DOT = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 
 def echo(arguments: Mapping[str, object]) -> dict[str, object]:
     return {"echo": dict(arguments)}
+
+
+def picture(arguments: Mapping[str, object]) -> ToolResult:
+    return ToolResult(
+        response={"drew": arguments.get("prompt")},
+        images=[ToolImage(mime_type="image/png", data=PNG_DOT)],
+    )
 
 
 async def wait_for_gate(arguments: Mapping[str, object]) -> dict[str, object]:

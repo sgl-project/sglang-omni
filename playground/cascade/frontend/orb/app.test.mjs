@@ -88,6 +88,7 @@ function createApp(sessionOptions) {
     sockets,
     locks,
     panelOptions,
+    elements,
     connect: () => vm.runInContext("connect()", context),
     settled: () => vm.runInContext("eventChain", context),
   };
@@ -111,6 +112,19 @@ test("the page has every element and every session.js export the shared settings
   const session = await import("./session.js");
   assert.ok(importedNames.length > 0);
   assert.deepEqual(importedNames.filter((name) => typeof session[name] !== "function"), []);
+});
+
+test("the page shows the latest picture a tool made with the request it was made from", async () => {
+  const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null });
+  const { socket } = await firstSessionUpdate(app);
+  assert.equal(app.elements.get("picture").hidden, true);
+  socket.receive({ type: "response.created", response: { id: "resp_0" } });
+  socket.receive({ type: "sglang.response.image", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, call_id: "call_a", name: "draw", arguments: { prompt: "a cat" }, mime_type: "image/png", data: "AAAA" });
+  await app.settled();
+  assert.equal(app.elements.get("picture").hidden, false);
+  assert.equal(app.elements.get("pictureImg").src, "data:image/png;base64,AAAA");
+  assert.equal(app.elements.get("pictureImg").alt, "a cat");
+  assert.equal(app.elements.get("pictureCaption").textContent, "a cat");
 });
 
 test("the page offers no text-only replies, since its captions and truncate follow audio playback", () => {

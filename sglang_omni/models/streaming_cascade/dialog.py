@@ -5,7 +5,7 @@ import json
 import logging
 import math
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -47,6 +47,7 @@ from sglang_omni.proto.tools import (
     ToolCall,
     ToolResponse,
     tool_calls_of,
+    tool_image_chunk,
     tool_responses_of,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
@@ -192,7 +193,10 @@ class Dialog(StreamComponent):
     repeats the call nor waits for it. An interrupt of a reply keeps the
     responses its awaited calls already had and cancels or retains the
     calls still running, as their tools say; a response to a call the
-    dialog no longer awaits is dropped. The turn's whole text, before and
+    dialog no longer awaits is dropped. The images a result carries are
+    published as `tool_image` chunks, each with its call, in the turn that
+    takes the result into the history, before the prompt that reports it;
+    the model reads only the result's data. The turn's whole text, before and
     after the calls, is what the synthesizer's progress counts, so a cut
     of the reply applies to the text after its last calls, or to the
     entry that made them when nothing followed.
@@ -211,9 +215,9 @@ class Dialog(StreamComponent):
         # The open reply's tool calls, by call id, and the responses to the awaited ones so far.
         self.reply_calls: dict[str, ToolCall] = {}
         self.responses: dict[str, ToolResponse] = {}
-        # The calls of ended replies still running, whose results report in a turn of their own, and the results waiting for that turn.
+        # The calls of ended replies still running, whose results report in a turn of their own, and the results waiting for that turn, each with its call.
         self.running_calls: dict[str, ToolCall] = {}
-        self.arrived: list[ToolResponse] = []
+        self.arrived: list[tuple[ToolCall, ToolResponse]] = []
         # Each tool's settings, from the tools nodes answering the calls this dialog reads; a tool they lack is awaited and cancelled.
         self.tools: dict[str, ToolSettings] = {}
         self.turns = 0
@@ -275,7 +279,10 @@ class Dialog(StreamComponent):
         chars = sum(len(message.content) for message in self.messages)
         chars += sum(len(text) for _, text, _ in self.waiting)
         chars += sum(len(part) for part in self.reply or ())
-        return chars * 4
+        images = sum(
+            len(image.data) for _, response in self.arrived for image in response.images
+        )
+        return chars * 4 + images
 
     def is_reply(self, chunk: TimedChunk) -> bool:
         return self.reply is not None and chunk.turn == self.reply_turn
@@ -390,7 +397,7 @@ class Dialog(StreamComponent):
         self.responses = {}
 
     def record_responses(self, responses: list[ToolResponse]) -> None:
-        """Keep the responses the open reply awaits and, once every awaited call has one, append the tool entries in call order and continue the reply; the response of a call no reply awaits reports in a turn of its own, and one of a call the dialog forgot is dropped."""
+        """Keep the responses the open reply awaits and, once every awaited call has one, append the tool entries in call order, publish their images and continue the reply; the response of a call no reply awaits reports in a turn of its own, and one of a call the dialog forgot is dropped."""
         assert self.emit is not None
         for response in responses:
             if response.id in self.reply_calls and self.awaits(
@@ -403,8 +410,7 @@ class Dialog(StreamComponent):
                     if response.id in self.reply_calls
                     else self.running_calls
                 )
-                calls.pop(response.id)
-                self.arrived.append(response)
+                self.arrived.append((calls.pop(response.id), response))
             else:
                 logger.info(
                     f"tool response {response.id} of {response.name} dropped: no call awaits it"
@@ -413,9 +419,17 @@ class Dialog(StreamComponent):
             call_id for call_id, call in self.reply_calls.items() if self.awaits(call)
         ]
         if awaited and set(awaited) <= set(self.responses):
+            images = []
             for call_id in awaited:
-                self.messages.append(tool_message(self.responses.pop(call_id)))
-                self.reply_calls.pop(call_id)
+                response = self.responses.pop(call_id)
+                call = self.reply_calls.pop(call_id)
+                self.messages.append(tool_message(response))
+                images.extend(
+                    tool_image_chunk(call, image, self.reply_turn)
+                    for image in response.images
+                )
+            for output in images:
+                self.emit(output)
             self.emit(messages_chunk(self.prompt(), self.reply_turn, self.language))
         else:
             pass
@@ -444,7 +458,7 @@ class Dialog(StreamComponent):
         self.responses = {}
 
     def interrupt_reply(self) -> None:
-        """End the open reply; the history keeps none of it until the graph reports the audio it delivered or a truncate says what was heard. A reply without text, such as one interrupted as it opens, keeps nothing whatever was delivered, so the reply before it stays the one a later report cuts. The responses its awaited calls already had join the history, and each call still running is cancelled or retained as its tool says."""
+        """End the open reply; the history keeps none of it until the graph reports the audio it delivered or a truncate says what was heard. A reply without text, such as one interrupted as it opens, keeps nothing whatever was delivered, so the reply before it stays the one a later report cuts. The responses its awaited calls already had join the history, with their images published, and each call still running is cancelled or retained as its tool says."""
         assert self.emit is not None and self.reply is not None
         turn = self.reply_turn
         text = "".join(self.reply)
@@ -456,9 +470,14 @@ class Dialog(StreamComponent):
             entry_start = self.reply_start - len(self.messages[index].content)
         else:
             entry_start = self.reply_start
+        images = []
         for call_id, call in self.reply_calls.items():
             if call_id in self.responses:
                 self.messages.append(tool_message(self.responses[call_id]))
+                images.extend(
+                    tool_image_chunk(call, image, turn)
+                    for image in self.responses[call_id].images
+                )
             elif (
                 call.name in self.tools
                 and self.tools[call.name].on_interrupt == "retain"
@@ -485,6 +504,8 @@ class Dialog(StreamComponent):
         self.reply = None
         self.reply_calls = {}
         self.responses = {}
+        for output in images:
+            self.emit(output)
         self.emit(control_chunk(INTERRUPT, turn=turn))
         self.emit(control_chunk(TURN_INTERRUPTED, turn=turn))
 
@@ -599,14 +620,23 @@ class Dialog(StreamComponent):
             return self.open_reply(turn)
 
     def report(self, turn: int) -> list[TimedChunk]:
-        """Open the turn that reports the tool results arrived so far, which join the history in arrival order."""
+        """Open the turn that reports the tool results arrived so far, which join the history in arrival order, with their images published first."""
         assert self.arrived
-        self.messages.extend(tool_message(response) for response in self.arrived)
-        self.arrived = []
-        return self.open_reply(turn)
+        arrived, self.arrived = self.arrived, []
+        self.messages.extend(tool_message(response) for _, response in arrived)
+        return self.open_reply(
+            turn,
+            [
+                tool_image_chunk(call, image, turn)
+                for call, response in arrived
+                for image in response.images
+            ],
+        )
 
-    def open_reply(self, turn: int) -> list[TimedChunk]:
-        """Open the turn's reply to the history as it stands, which must leave room for the reply's text."""
+    def open_reply(
+        self, turn: int, images: Sequence[TimedChunk] = ()
+    ) -> list[TimedChunk]:
+        """Open the turn's reply to the history as it stands, which must leave room for the reply's text; the images go out between the turn's start and its prompt."""
         history_chars = sum(len(message.content) for message in self.messages)
         if history_chars + self.config.max_text_chars > self.config.max_history_chars:
             raise ValueError(
@@ -622,6 +652,7 @@ class Dialog(StreamComponent):
         self.progress = []
         return [
             control_chunk(TURN_STARTED, turn=turn),
+            *images,
             messages_chunk(self.prompt(), turn, self.language),
         ]
 
@@ -631,5 +662,5 @@ class Dialog(StreamComponent):
             self.messages,
             frozenset(self.reply_calls)
             | frozenset(self.running_calls)
-            | frozenset(response.id for response in self.arrived),
+            | frozenset(response.id for _, response in self.arrived),
         )

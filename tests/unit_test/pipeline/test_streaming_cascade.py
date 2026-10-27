@@ -16,6 +16,7 @@ from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
     CONFIGURE,
+    IMAGE,
     INTERRUPT,
     PCM16,
     PCM_F32,
@@ -23,6 +24,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STOPPED,
     TEXT_DELTA,
     TOOL,
+    TOOL_IMAGE,
     TRUNCATE,
     TURN_DONE,
     TURN_EMPTY,
@@ -31,6 +33,7 @@ from sglang_omni.proto.streams import (
     TURN_STARTED,
     control_type,
 )
+from tests.unit_test.fixtures.cascade_fakes import PNG_DOT
 
 
 @pytest.mark.asyncio
@@ -550,3 +553,48 @@ async def test_each_session_reports_only_its_own_tool_results(backends):
         finally:
             await second.close()
     assert sorted(words) == sorted(["Hello", "world."] * 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["picture_tool"], indirect=True)
+async def test_a_picture_a_tool_made_is_published_with_its_call_in_the_turn_that_reports_it(
+    backends,
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        [picture] = [o for o in session.outputs if o.modality == IMAGE]
+        assert picture.format == TOOL_IMAGE and picture.turn == 2
+        assert picture.payload == {
+            "call_id": "call_1",
+            "name": "picture",
+            "arguments": {"prompt": "a cat"},
+            "mime_type": "image/png",
+            "data": PNG_DOT,
+        }
+        events = [
+            (control_type(o) or o.format, o.turn)
+            for o in session.outputs
+            if o.kind == "data"
+            and (o.modality == IMAGE or control_type(o) in (TURN_STARTED, TURN_DONE))
+        ]
+        assert events == [
+            (TURN_STARTED, 1),
+            (TURN_DONE, 1),
+            (TURN_STARTED, 2),
+            (TOOL_IMAGE, 2),
+            (TURN_DONE, 2),
+        ]
+        assert messages[1][-1] == {
+            "role": "tool",
+            "content": '{"drew": "a cat"}',
+            "tool_call_id": "call_1",
+        }
+        assert session.error is None

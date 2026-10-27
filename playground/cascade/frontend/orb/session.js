@@ -6,6 +6,7 @@ export const DEFAULT_INPUT_RATE = 16000;
 export const PACKET_MS = 80;
 const MAX_UNITS_SHOWN = 200;
 const MAX_REPLIES_KEPT = 20;
+const MAX_PICTURES_KEPT = 20;
 
 export function bytesToBase64(bytes) {
   let binary = "";
@@ -100,9 +101,11 @@ export class DuplexSession {
     this.errors = [];
     this.drained = null;
     this.closeReason = null;
-    // Per response: its text, item, the server's sglang.response.progress points and how much of its audio has played.
+    // Per response: its text, item, the server's sglang.response.progress points, how much of its audio has played and the pictures its tools made.
     this.replies = new Map();
     this.lastReplyId = null;
+    // The pictures tools made, in arrival order, each with the call that asked for it.
+    this.pictures = [];
   }
 
   reply(responseId) {
@@ -313,7 +316,7 @@ export class DuplexSession {
       case "response.created":
         this.responseOpen = true;
         this.responseId = (event.response && event.response.id) || null;
-        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null });
+        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null, pictures: [] });
         this.lastReplyId = this.responseId;
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
@@ -343,6 +346,15 @@ export class DuplexSession {
         const reply = this.reply(event.response_id);
         if (reply) reply.keptEnd = event.text_end;
         this.emit("progress", event.response_id);
+        break;
+      }
+      case "sglang.response.image": {
+        const picture = { responseId: event.response_id, callId: event.call_id, name: event.name, arguments: event.arguments, mimeType: event.mime_type, data: event.data };
+        const reply = this.reply(event.response_id);
+        if (reply) reply.pictures.push(picture);
+        this.pictures.push(picture);
+        if (this.pictures.length > MAX_PICTURES_KEPT) this.pictures.splice(0, this.pictures.length - MAX_PICTURES_KEPT);
+        this.emit("picture", picture);
         break;
       }
       case "response.done": {
