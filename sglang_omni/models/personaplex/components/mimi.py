@@ -94,13 +94,14 @@ def select_stack_rows(state: SEANetState, rows: torch.Tensor) -> SEANetState:
         if isinstance(module_state, list):
             selected.append(select_stack_rows(module_state, rows))
         elif isinstance(module_state, ConvState):
-            # Note (nightdecode): has_started is one flag per state, not per row.
-            # Only replicate padding reads it and the decoder pads with zeros, so
-            # the selection shares the flag rather than copying it.
             selected.append(
                 ConvState(
                     previous=module_state.previous.index_select(0, rows),
-                    has_started=module_state.has_started,
+                    has_started=(
+                        module_state.has_started.index_select(0, rows)
+                        if module_state.has_started.ndim > 0
+                        else module_state.has_started
+                    ),
                 )
             )
         elif isinstance(module_state, ConvTransposeState):
@@ -120,6 +121,10 @@ def stack_row_tensors(state: SEANetState) -> list[torch.Tensor]:
             tensors.extend(stack_row_tensors(module_state))
         elif isinstance(module_state, ConvState):
             tensors.append(module_state.previous)
+            if module_state.has_started.ndim > 0:
+                tensors.append(module_state.has_started)
+            else:
+                pass
         elif isinstance(module_state, ConvTransposeState):
             tensors.append(module_state.partial)
         else:
@@ -314,6 +319,58 @@ class MimiEncodeState:
     encoder: SEANetState
     transformer: TransformerState
     downsample: ConvState
+
+    def reset(self) -> None:
+        """Reset every stream in place, preserving captured tensor addresses."""
+        reset_stack(self.encoder)
+        self.transformer.reset()
+        self.downsample.reset()
+
+    def reset_row(self, row: int) -> None:
+        """Reset one stream in place before its row is reused."""
+        for tensor in self.row_tensors():
+            tensor[row].zero_()
+
+    def select_rows(self, rows: torch.Tensor) -> MimiEncodeState:
+        """Gather streams in the requested order without advancing resident state."""
+        return MimiEncodeState(
+            encoder=select_stack_rows(self.encoder, rows),
+            transformer=TransformerState(
+                offset=self.transformer.offset.index_select(0, rows),
+                layers=[
+                    AttentionState(
+                        keys=layer.keys.index_select(0, rows),
+                        values=layer.values.index_select(0, rows),
+                    )
+                    for layer in self.transformer.layers
+                ],
+            ),
+            downsample=ConvState(
+                previous=self.downsample.previous.index_select(0, rows),
+                has_started=self.downsample.has_started.index_select(0, rows),
+            ),
+        )
+
+    def store_rows(self, rows: torch.Tensor, selected: MimiEncodeState) -> None:
+        """Scatter advanced streams back to their resident rows."""
+        for tensor, selected_tensor in zip(
+            self.row_tensors(), selected.row_tensors(), strict=True
+        ):
+            tensor.index_copy_(0, rows, selected_tensor)
+
+    def row_tensors(self) -> list[torch.Tensor]:
+        """Every tensor with one row per stream, in a fixed order."""
+        return [
+            *stack_row_tensors(self.encoder),
+            self.transformer.offset,
+            *(
+                tensor
+                for layer in self.transformer.layers
+                for tensor in (layer.keys, layer.values)
+            ),
+            self.downsample.previous,
+            self.downsample.has_started,
+        ]
 
 
 @dataclass

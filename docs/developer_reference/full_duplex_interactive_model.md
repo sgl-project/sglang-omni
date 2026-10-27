@@ -141,8 +141,11 @@ python -m sglang_omni.cli serve \
 | `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
 | `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |
 | `--code2wav.factory.max_graph_frames` | 2 | Mimi decode replays CUDA graphs for units of up to this many frames, for up to `max_sessions` conversations decoded together; `0` turns the graphs off |
-| `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
+| `--mimi_encode.factory.enable_cuda_graph` | true | Capture Mimi encode CUDA graphs for one 80 ms unit at every batch size through max_sessions; false keeps batched eager encode |
+| `--mimi_encode.factory.max_concurrency` | 1 | Retained for compatibility; Mimi encode runs one ready batch at a time |
 | `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
+
+Mimi encode batches ready conversations whose inputs have the same sample count, with one resident state row per open session. On CUDA, 80 ms units replay captured graphs; longer units run eagerly in 80 ms chunks, and other platforms use batched eager encode. Recorded voice prompts are encoded independently of caller streaming state.
 
 Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
 

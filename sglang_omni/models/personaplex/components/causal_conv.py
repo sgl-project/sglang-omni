@@ -139,7 +139,11 @@ class CausalConv1d(StreamingModule):
             previous=weight.new_zeros(
                 batch_size, self.conv.in_channels, self.padding_total
             ),
-            has_started=torch.zeros((), dtype=torch.bool, device=weight.device),
+            has_started=torch.zeros(
+                (batch_size, 1, 1) if self.pad_mode == "replicate" else (),
+                dtype=torch.bool,
+                device=weight.device,
+            ),
         )
 
     def step(self, x: torch.Tensor, state: ConvState) -> torch.Tensor:
