@@ -151,7 +151,7 @@ Current limits:
 - After an interruption, send `truncate` with the milliseconds of reply audio the listener heard (`conversation.item.truncate`); the model's history then keeps only that much of the reply. Without it, the whole reply generated so far stays in the history.
 - `instructions` cannot change after the first user turn is processed; open a new session instead.
 
-See [Session Graph](../developer_reference/full_duplex_interactive_model.md#session-graph) for the shared routing and delivery contracts.
+See [Session Graph](../developer_reference/full_duplex_guide.md#session-graph) for the shared routing and delivery contracts.
 
 ## Speculative Decoding
 

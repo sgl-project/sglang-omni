@@ -99,5 +99,5 @@ ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 
 ## Native full duplex
 
-See the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#browser-demo) to start
+See the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#browser-demo) to start
 microphone and camera chat with MiniCPM-o, including remote access from your browser.
