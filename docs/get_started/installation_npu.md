@@ -1,4 +1,4 @@
-# 🚀 Installation — Ascend NPU
+# Installation — Ascend NPU
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Verify the host installation before continuing:
 npu-smi info
 ```
 
-## 🐳 Option A: Docker (recommended)
+## Option A: Docker (recommended)
 
 The ARM64 image includes SGLang-Omni source, the SGLang/CANN/PyTorch runtime
 selected by [`pyproject_npu.toml`](../../pyproject_npu.toml), and common audio
@@ -28,26 +28,29 @@ Use an ARM64 Linux host with Docker and Ascend A3 devices.
 
 **1. Pull the image**
 
-Pull the image matching your hardware from
-[Docker Hub](https://hub.docker.com/r/lmsysorg/sglang-omni/tags):
+Pull the image matching your hardware from Huawei Cloud SWR:
 
 - **Release:** use `v<version>-cann9.0.0-a3` for deployments, replacing
-  `v<version>` with a published version tag from Docker Hub.
+  `v<version>` with a published version tag.
 - **Development:** use `main-cann9.0.0-a3` for the latest published development
   build. Scheduled or manual publications update this rolling tag.
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
 
 # Development (A3):
-IMAGE=lmsysorg/sglang-omni:main-cann9.0.0-a3
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-a3
 
 docker pull "$IMAGE"
 ```
 
 For reproducible deployments, set `IMAGE` to
-`lmsysorg/sglang-omni@sha256:<digest>`.
+`swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:<digest>`.
+
+If authentication is required, run
+`docker login swr.cn-southwest-2.myhuaweicloud.com` with credentials supplied
+by the registry administrator before pulling.
 
 **2. Start the container**
 
@@ -92,16 +95,16 @@ Use `v<version>-cann9.0.0-910b` for a release, or
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=lmsysorg/sglang-omni:v<version>-cann9.0.0-910b
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-910b
 
 # Development (A2 / 910B):
-IMAGE=lmsysorg/sglang-omni:main-cann9.0.0-910b
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-910b
 
 docker pull "$IMAGE"
 ```
 
 For reproducible deployments, set `IMAGE` to
-`lmsysorg/sglang-omni@sha256:<digest>`.
+`swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:<digest>`.
 
 **2. Start the container**
 
@@ -147,7 +150,7 @@ required. Model-specific inputs belong in the corresponding cookbook, such as
 the [Qwen3-TTS guide](../cookbook/qwen3_tts.md); GPU-specific configurations
 there should not be assumed to work unchanged on NPU.
 
-## 🛠️ Option B: Manual install
+## Option B: Manual install
 
 Install the Ascend software stack and NPU build of SGLang before installing
 `sglang-omni`. The helper script

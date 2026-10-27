@@ -6,7 +6,7 @@ pub(crate) mod voice;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderValue, Method, Request, Response, Version};
 
 use crate::config::{Config, HttpMediaRoute};
@@ -15,8 +15,8 @@ use crate::http_relay::{
     HttpRelay, OutgoingRequest, map_admission, map_dispatch, sanitize_response_headers,
 };
 use crate::metrics::ClassificationKind;
-use crate::request_id::CanonicalRequestId;
-use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
+use crate::request_id::{CanonicalRequestId, valid_request_id_bytes};
+use crate::worker_pool::{CapacityClass, RequestLease, TrustDomain, WorkerPool};
 
 use classify::Classified;
 use headers::RequestKind;
@@ -26,6 +26,8 @@ const SPEECH_PATH: &str = "/v1/audio/speech";
 const BATCH_PATH: &str = "/v1/audio/speech/batch";
 const TRANSCRIPTION_PATH: &str = "/v1/audio/transcriptions";
 const TRANSLATION_PATH: &str = "/v1/audio/translations";
+const WORKER_HEADER: &str = "x-sglang-omni-worker";
+const ROUTE_WORKER_HEADER: &str = "x-sglang-omni-route-worker";
 
 pub(crate) struct HttpMedia {
     pool: Arc<WorkerPool>,
@@ -110,6 +112,29 @@ impl HttpMedia {
     pub(crate) fn voice_routes_enabled(&self) -> bool {
         self.pool.voice_state_enabled()
     }
+
+    async fn relay(
+        &self,
+        outgoing: OutgoingRequest,
+        lease: RequestLease,
+        request_id: HeaderValue,
+        deadline: tokio::time::Instant,
+    ) -> Result<Response<Body>, HttpFault> {
+        // The caller echoes this id to reach the same worker for a follow-up lookup.
+        let worker =
+            HeaderValue::try_from(lease.worker_id()).map_err(|_| HttpFault::InternalError)?;
+        let mut response = Arc::clone(&self.relay)
+            .send(
+                outgoing,
+                lease,
+                request_id,
+                deadline,
+                sanitize_response_headers,
+            )
+            .await?;
+        response.headers_mut().insert(WORKER_HEADER, worker);
+        Ok(response)
+    }
 }
 
 pub(crate) async fn speech(
@@ -144,6 +169,25 @@ pub(crate) async fn translation(
     outcome(media, request, HttpMediaRoute::Translation, request_id).await
 }
 
+pub(crate) async fn speech_outcome(
+    State(media): State<Arc<HttpMedia>>,
+    Extension(request_id): Extension<CanonicalRequestId>,
+    Path(stream_request_id): Path<String>,
+    request: Request<Body>,
+) -> Response<Body> {
+    let handled = handle_outcome(
+        media,
+        request,
+        stream_request_id,
+        request_id.into_header_value(),
+    )
+    .await;
+    match handled {
+        Ok(response) => response,
+        Err(fault) => fault.into_response_with_allow(HeaderValue::from_static("GET")),
+    }
+}
+
 async fn outcome(
     media: Arc<HttpMedia>,
     request: Request<Body>,
@@ -154,6 +198,59 @@ async fn outcome(
         Ok(response) => response,
         Err(fault) => fault.into_response(),
     }
+}
+
+async fn handle_outcome(
+    media: Arc<HttpMedia>,
+    request: Request<Body>,
+    stream_request_id: String,
+    request_id: HeaderValue,
+) -> Result<Response<Body>, HttpFault> {
+    // Disabled sibling routes fall through to this parameter route and stay 404.
+    if stream_request_id == "batch" || stream_request_id == "stream" {
+        return Err(HttpFault::NotFound);
+    }
+    if request.method() != Method::GET {
+        return Err(HttpFault::MethodNotAllowed);
+    }
+    if request.version() != Version::HTTP_11 {
+        return Err(HttpFault::HttpVersionNotSupported);
+    }
+    if request.uri().query().is_some()
+        || !valid_request_id_bytes(stream_request_id.as_bytes())
+        || stream_request_id.contains('/')
+    {
+        return Err(HttpFault::MalformedRequest);
+    }
+    headers::validate_bodyless_request(request.headers())?;
+    let worker_id = headers::one_route_header(request.headers(), ROUTE_WORKER_HEADER)?
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(HttpFault::MalformedRequest)?;
+    let trust = media
+        .ordinary_trust
+        .as_ref()
+        .ok_or(HttpFault::InternalError)?;
+    let pinned = media
+        .pool
+        .pinned_worker(trust, worker_id)
+        .ok_or(HttpFault::NotFound)?;
+    let envelope = media.pool.try_admit_envelope().map_err(map_admission)?;
+    let lease = pinned.dispatch(envelope).map_err(map_dispatch)?;
+    let deadline = tokio::time::Instant::now() + media.request_timeout;
+    let outgoing = OutgoingRequest::control(
+        Method::GET,
+        vec![
+            String::from("v1"),
+            String::from("audio"),
+            String::from("speech"),
+            stream_request_id,
+        ],
+        None,
+        None,
+        None,
+    )?;
+    media.relay(outgoing, lease, request_id, deadline).await
 }
 
 async fn handle(
@@ -225,15 +322,7 @@ async fn handle(
             framing.content_length,
             media.streamed_max,
         );
-        return Arc::clone(&media.relay)
-            .send(
-                outgoing,
-                lease,
-                request_id,
-                deadline,
-                sanitize_response_headers,
-            )
-            .await;
+        return media.relay(outgoing, lease, request_id, deadline).await;
     }
     let upload = media
         .relay
@@ -286,15 +375,7 @@ async fn handle(
         .dispatch(admission, &classified.requirement)
         .map_err(map_dispatch)?;
     let outgoing = OutgoingRequest::buffered(route.path(), content_type, upload)?;
-    Arc::clone(&media.relay)
-        .send(
-            outgoing,
-            lease,
-            request_id,
-            deadline,
-            sanitize_response_headers,
-        )
-        .await
+    media.relay(outgoing, lease, request_id, deadline).await
 }
 
 fn classify(

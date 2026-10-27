@@ -17,7 +17,10 @@ from sglang_omni import platforms
 def build_on(monkeypatch, device: str) -> dict[str, Any]:
     """Run the shared builder against fakes and return the server-args kwargs."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: True)
 
@@ -86,7 +89,7 @@ def build_on(monkeypatch, device: str) -> dict[str, Any]:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             # A stage default that wants graphs: the CPU decision must beat it.
             return {
                 "max_running_requests": 4,
@@ -161,6 +164,8 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
             return False
 
     class FakeRunner:
+        sliding_window_size: int | None = None
+
         def alloc_memory_pool(self) -> None:
             events.append("alloc_memory_pool")
 
@@ -171,6 +176,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
             events.append("init_eager_runner")
 
     class FakeWorker:
+        speculative_worker = None
         enable_prefill_input_embeds = False
         model_config = SimpleNamespace(is_multimodal=False)
 
@@ -183,6 +189,10 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
     monkeypatch.setattr("sglang.srt.runtime_context.get_context", lambda: FakeContext())
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_spec",
+        lambda: SimpleNamespace(speculative_algorithm=None),
     )
     monkeypatch.setattr(
         bootstrap,

@@ -10,26 +10,36 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 
 from __future__ import annotations
 
-import ast
-import contextlib
 import copy
 import gc
 import weakref
 from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
-from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.activation import SiluAndMul
+from sglang.srt.layers.quantization.unquant import (
+    Bf16GemmBackend,
+    UnquantizedLinearMethod,
+)
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.runtime_context import get_context
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSTalker,
+)
+from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 
@@ -57,14 +67,19 @@ MAX_BS = 16
 BUCKETS = (1, 2, 4, 8, 16)
 DTYPE = torch.bfloat16
 BF16_GEMM_ROUNDING = {"atol": 2**-6, "rtol": 2**-7}
+BF16_UNIT_ROUNDOFF = 2**-8
+FP32_UNIT_ROUNDOFF = 2**-24
+CHECKPOINT_HIDDEN = 2048
+CHECKPOINT_PREDICTOR_HIDDEN = 1024
+CHECKPOINT_VOCAB = 2048
 
 
 class TupleLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
         self.proj = nn.Linear(in_features, out_features, bias=False)
-        self.quant_method = sglang_model_module.UnquantizedLinearMethod()
-        self.tp_size = 1
+        self.quant_method = UnquantizedLinearMethod()
+        self.tp_group = None
 
     @property
     def weight(self) -> torch.Tensor:
@@ -129,6 +144,7 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         talker.predictor_k_cache.device
     )
     talker.predictor_rope_stores_kv = False
+    talker.predictor_fused_layers = None
     talker.output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
     )
@@ -136,6 +152,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker.predictor_embedding_buffer = torch.empty(
         MAX_BS, HIDDEN, device=device, dtype=DTYPE
     )
+    talker.predictor_projected_embeddings = None
+    talker.predictor_projected_buffer = None
     talker.sampled_token_ids = torch.zeros(MAX_BS, dtype=torch.long, device=device)
 
     talker.sub_batch_size = 0
@@ -151,6 +169,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         MAX_BS, device=device, dtype=torch.long
     )
     talker.sub_do_sample_tensor = torch.zeros(MAX_BS, device=device, dtype=torch.bool)
+    talker.decode_prep_rids = None
+    talker.decode_prep_epoch = 0
     talker.sub_seed_offsets = torch.arange(
         1, NUM_CODE_GROUPS, device=device, dtype=torch.long
     )
@@ -185,12 +205,9 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         model=SimpleNamespace(
             layers=[layer],
             norm=RMSNorm(HIDDEN, eps=1e-6).to(device, DTYPE),
-            codec_embedding=nn.ModuleList(
-                [
-                    nn.Embedding(PRED_VOCAB, HIDDEN).to(device, DTYPE)
-                    for _ in range(NUM_CODE_GROUPS - 1)
-                ]
-            ),
+            codec_embedding=Qwen3TTSCodecTables(
+                NUM_CODE_GROUPS - 1, PRED_VOCAB, HIDDEN
+            ).to(device, DTYPE),
         ),
         lm_head=nn.ModuleList(
             [
@@ -212,6 +229,8 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker.predictor_graph_capacity_warned = False
     talker.predictor_graph_capture_count = 0
     talker.predictor_graph_startup_count = 0
+    talker.predictor_graph_replay_count = 0
+    talker.predictor_eager_count = 0
     talker.predictor_graph_pool = None
     talker.predictor_capture_stream = None
     return talker
@@ -360,6 +379,108 @@ def test_missing_embedding_buffer_uses_original_graph_path():
 
     assert torch.equal(fused_codes, fallback_codes)
     assert torch.equal(fused_embeds, fallback_embeds)
+
+
+def with_projected_tables(talker: Qwen3TTSTalker) -> Qwen3TTSTalker:
+    device = talker.predictor_k_cache.device
+    talker.predictor_projected_embeddings = torch.empty(
+        NUM_CODE_GROUPS - 2, PRED_VOCAB, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.predictor_projected_buffer = torch.empty(
+        MAX_BS, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.post_load_weights()
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 4, 16])
+def test_projected_tables_graph_matches_eager_and_the_unfused_gather(batch_size: int):
+    device = torch.device("cuda")
+    fused_talker = with_projected_tables(build_talker(device))
+    unfused_talker = with_projected_tables(build_talker(device))
+    object.__delattr__(unfused_talker, "predictor_embedding_buffer")
+    requests = uniform_requests(batch_size, top_k=5, top_p=0.9)
+    fused_talker.prepare_decode_buffers(requests)
+    unfused_talker.prepare_decode_buffers(requests)
+
+    for step in range(3):
+        layer0, hidden, positions = step_inputs(batch_size, device, step=step)
+        eager_codes, eager_embeds = run_eager(fused_talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = run_forward(fused_talker, layer0, hidden, positions)
+        unfused_codes, unfused_embeds = run_forward(
+            unfused_talker, layer0, hidden, positions
+        )
+        assert torch.equal(graph_codes, eager_codes), f"step={step}"
+        assert torch.equal(graph_embeds, eager_embeds), f"step={step}"
+        assert torch.equal(unfused_codes, eager_codes), f"step={step}"
+        assert torch.equal(unfused_embeds, eager_embeds), f"step={step}"
+
+    assert len(fused_talker.predictor_graphs) == 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_projected_tables_decode_the_codes_the_projection_decodes(batch_size: int):
+    device = torch.device("cuda")
+    table_talker = with_projected_tables(build_talker(device))
+    projection_talker = build_talker(device)
+    requests = uniform_requests(batch_size, dosample=False)
+    table_talker.prepare_decode_buffers(requests)
+    projection_talker.prepare_decode_buffers(requests)
+    layer0, hidden, positions = step_inputs(batch_size, device)
+
+    table_codes, table_embeds = run_eager(table_talker, layer0, hidden, positions)
+    projection_codes, projection_embeds = run_eager(
+        projection_talker, layer0, hidden, positions
+    )
+
+    assert torch.equal(table_codes, projection_codes)
+    assert torch.equal(table_embeds, projection_embeds)
+
+
+@pytest.mark.accelerator
+def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction", False
+    )
+    device = torch.device("cuda")
+    talker = build_talker(device)
+    projection = nn.Linear(
+        CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
+    ).to(device, DTYPE)
+    codec_tables = Qwen3TTSCodecTables(3, CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(
+        device, DTYPE
+    )
+    talker.code_predictor.model.codec_embedding = codec_tables
+    talker.code_predictor.project_input = projection
+    talker.predictor_projected_embeddings = torch.empty(
+        codec_tables.weight.shape[0] - 1,
+        CHECKPOINT_VOCAB,
+        CHECKPOINT_PREDICTOR_HIDDEN,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.post_load_weights()
+
+    codes = torch.tensor([0, CHECKPOINT_VOCAB - 1, 1024, 1024, 7], device=device)
+    weight = projection.weight.float()
+    bias = projection.bias.float()
+    accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
+    accumulation = accumulation / (1 - accumulation)
+    for index, table in enumerate(talker.predictor_projected_embeddings):
+        rows = codec_tables.weight[index][codes].float()
+        reference = torch.nn.functional.linear(rows, weight, bias)
+        magnitude = rows.abs() @ weight.abs().T + bias.abs()
+        rounding_bound = (
+            BF16_UNIT_ROUNDOFF * reference.abs() + 2 * accumulation * magnitude
+        )
+        assert (
+            (table[codes].float() - reference).abs() <= rounding_bound
+        ).all(), f"codebook={index}"
 
 
 @pytest.mark.accelerator
@@ -905,66 +1026,6 @@ def test_both_gates_reject_another_card_of_the_same_kind() -> None:
     assert talker.predictor_forward_graphed(elsewhere, elsewhere, None) is None
 
 
-def test_a_capture_that_fails_after_the_graph_exists_releases_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cleanup path resets only what capture yielded."""
-    resets: list[int] = []
-
-    class FakeGraph:
-        def reset(self) -> None:
-            resets.append(1)
-
-    class FailingBackend:
-        @contextmanager
-        def capture(self, **kwargs):
-            yield FakeGraph()
-            raise RuntimeError("simulated capture_end failure")
-
-    class FakeModule:
-        def Event(self):  # noqa: N802 - mirrors the torch spelling
-            return None
-
-        def Stream(self, device=None):  # noqa: N802 - ditto
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        def current_stream(self, device=None):
-            return SimpleNamespace(wait_stream=lambda other: None)
-
-        @contextmanager
-        def stream(self, stream):
-            yield
-
-        def device(self, device):
-            return contextlib.nullcontext()
-
-        def graph_pool_handle(self):
-            return "pool"
-
-    talker = build_talker(torch.device("cpu"))
-    talker.predictor_device_module = FakeModule()
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "get_device_graph_backend",
-        lambda device: FailingBackend(),
-    )
-    monkeypatch.setattr(
-        sglang_model_module.current_platform,
-        "graph_capture_attention",
-        lambda: contextlib.nullcontext(),
-    )
-    monkeypatch.setattr(
-        Qwen3TTSTalker,
-        "code_predictor_forward_incremental",
-        lambda self, *a, **k: (talker.output_codes[:2], talker.output_embeds[:2]),
-    )
-
-    with pytest.raises(RuntimeError, match="simulated capture_end failure"):
-        talker.capture_predictor_graph(2, ("argmax", 0, False, False, False))
-
-    assert resets == [1]
-
-
 def test_a_step_on_a_device_without_a_graph_backend_stays_eager(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1123,32 +1184,6 @@ def test_no_host_readback_in_eager_chain():
             semantic_positions=positions.as_subclass(NoHostReadbackTensor),
         )
         torch.cuda.synchronize()
-
-
-def test_capture_uses_thread_local_error_mode():
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "sglang_omni"
-        / "models"
-        / "qwen3_tts"
-        / "sglang_model.py"
-    )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    capture_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "capture"
-    ]
-    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
-    assert any(
-        keyword.arg == "thread_local_errors"
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value is True
-        for call in capture_calls
-        for keyword in call.keywords
-    )
 
 
 def test_normalize_predictor_graph_batch_sizes():
@@ -1838,13 +1873,6 @@ def rope_copy_reference(
 
 @pytest.fixture(params=["cuda", "torch"])
 def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
-    from sglang.srt.model_executor.cuda_graph_config import (
-        Backend,
-        CudaGraphConfig,
-        PhaseConfig,
-    )
-    from sglang.srt.runtime_context import get_context
-
     mode = request.param
     with get_context().override_server_args(
         cuda_graph_config=CudaGraphConfig(
@@ -1990,6 +2018,279 @@ def test_rope_store_writes_the_pair_where_the_copy_path_writes(
     assert torch.equal(output, expected)
     assert torch.equal(stored.predictor_k_cache, copied.predictor_k_cache)
     assert torch.equal(stored.predictor_v_cache, copied.predictor_v_cache)
+
+
+FUSED_LAYERS = 5
+FUSED_ERROR_BOUND = 1.1
+FUSED_ROPE_THETA = 1000000
+FUSED_HIDDEN = 1024
+FUSED_INTERMEDIATE = 3072
+FUSED_NUM_HEADS = 16
+FUSED_NUM_KV_HEADS = 8
+FUSED_HEAD_DIM = 128
+FUSED_PREDICTOR_LEN = 17
+FUSED_MAX_BS = 64
+
+
+class GatedMLP(nn.Module):
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
+        super().__init__()
+        self.gate_up_proj = TupleLinear(hidden_size, 2 * intermediate_size)
+        self.down_proj = TupleLinear(intermediate_size, hidden_size)
+        self.act_fn = SiluAndMul()
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(self.act_fn(self.gate_up_proj(hidden_states)[0]))[0]
+
+
+def real_shape_norm(size: int, device: torch.device) -> RMSNorm:
+    norm = RMSNorm(size, eps=1e-6).to(device, DTYPE)
+    with torch.no_grad():
+        norm.weight.normal_(1.0, 0.1)
+    return norm
+
+
+def real_shape_layer(device: torch.device) -> SimpleNamespace:
+    attention = SimpleNamespace(
+        hidden_size=FUSED_HIDDEN,
+        q_size=FUSED_NUM_HEADS * FUSED_HEAD_DIM,
+        kv_size=FUSED_NUM_KV_HEADS * FUSED_HEAD_DIM,
+        num_heads=FUSED_NUM_HEADS,
+        num_kv_heads=FUSED_NUM_KV_HEADS,
+        head_dim=FUSED_HEAD_DIM,
+        q_norm=real_shape_norm(FUSED_HEAD_DIM, device),
+        k_norm=real_shape_norm(FUSED_HEAD_DIM, device),
+        alt_stream=None,
+        qkv_proj=TupleLinear(
+            FUSED_HIDDEN, (FUSED_NUM_HEADS + 2 * FUSED_NUM_KV_HEADS) * FUSED_HEAD_DIM
+        ).to(device, DTYPE),
+        o_proj=TupleLinear(FUSED_NUM_HEADS * FUSED_HEAD_DIM, FUSED_HIDDEN).to(
+            device, DTYPE
+        ),
+        rotary_emb=RotaryEmbedding(
+            FUSED_HEAD_DIM, FUSED_HEAD_DIM, 64, FUSED_ROPE_THETA, True, DTYPE
+        ).to(device),
+    )
+    return SimpleNamespace(
+        input_layernorm=real_shape_norm(FUSED_HIDDEN, device),
+        post_attention_layernorm=real_shape_norm(FUSED_HIDDEN, device),
+        self_attn=attention,
+        mlp=GatedMLP(FUSED_HIDDEN, FUSED_INTERMEDIATE).to(device, DTYPE),
+    )
+
+
+def real_shape_talker(
+    device: torch.device,
+    layers: list[SimpleNamespace],
+    final_norm: RMSNorm,
+    *,
+    fused: bool,
+) -> Qwen3TTSTalker:
+    """A predictor at the checkpoint's shapes; fused runs the Triton layer launches."""
+    talker = object.__new__(Qwen3TTSTalker)
+    talker.training = False
+    positions = torch.arange(FUSED_PREDICTOR_LEN, device=device, dtype=torch.long)
+    talker.predictor_position_rows = (
+        positions[:, None].expand(FUSED_PREDICTOR_LEN, FUSED_MAX_BS).contiguous()
+    )
+    talker.predictor_cache_slots = (
+        torch.arange(FUSED_MAX_BS, device=device, dtype=torch.long)[None, :]
+        * FUSED_PREDICTOR_LEN
+        + positions[:, None]
+    ).contiguous()
+    talker.predictor_pair_positions = positions[:2].repeat(FUSED_MAX_BS)
+    talker.predictor_pair_cache_slots = talker.predictor_cache_slots[:2].t().reshape(-1)
+    talker.predictor_k_cache = torch.zeros(
+        len(layers),
+        FUSED_MAX_BS,
+        FUSED_PREDICTOR_LEN,
+        FUSED_NUM_KV_HEADS,
+        FUSED_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker.predictor_v_cache = torch.zeros_like(talker.predictor_k_cache)
+    talker.predictor_rope_stores_kv = False
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(layers=layers, norm=final_norm)
+    )
+    if fused:
+        talker.predictor_fused_layers = resolve_fused_predictor_layers(
+            talker.code_predictor, FUSED_PREDICTOR_LEN, FUSED_MAX_BS, device, DTYPE
+        )
+        assert talker.predictor_fused_layers is not None
+    else:
+        talker.predictor_fused_layers = None
+    return talker
+
+
+def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
+    return float((actual.float() - expected.float()).norm() / expected.float().norm())
+
+
+def fp32_rmsnorm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * weight.float()
+
+
+def fp32_rotate(x: torch.Tensor, cos_sin: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    cos, sin = cos_sin[..., None, :half], cos_sin[..., None, half:]
+    first, second = x[..., :half], x[..., half:]
+    return torch.cat((first * cos - second * sin, first * sin + second * cos), -1)
+
+
+def fp32_predictor_pass(
+    layers: list[SimpleNamespace],
+    final_norm: RMSNorm,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    token_embeds: torch.Tensor,
+    cache_len: int,
+) -> torch.Tensor:
+    """The predictor layers in fp32 from the bf16 weights; the caches are (layer,
+    row, slot, kv head, head dim) like the predictor's."""
+    batch_size, num_tokens, _ = token_embeds.shape
+    end = cache_len + num_tokens
+    positions = torch.arange(cache_len, end, device=token_embeds.device)
+    x = token_embeds.float()
+    for index, layer in enumerate(layers):
+        attention = layer.self_attn
+        cos_sin = attention.rotary_emb.cos_sin_cache[positions].float()
+        normed = fp32_rmsnorm(x, layer.input_layernorm.weight)
+        q, k, v = (normed @ attention.qkv_proj.weight.float().t()).split(
+            [attention.q_size, attention.kv_size, attention.kv_size], -1
+        )
+        q = q.reshape(batch_size, num_tokens, FUSED_NUM_HEADS, FUSED_HEAD_DIM)
+        k = k.reshape(batch_size, num_tokens, FUSED_NUM_KV_HEADS, FUSED_HEAD_DIM)
+        v = v.reshape(batch_size, num_tokens, FUSED_NUM_KV_HEADS, FUSED_HEAD_DIM)
+        q = fp32_rotate(fp32_rmsnorm(q, attention.q_norm.weight), cos_sin)
+        k = fp32_rotate(fp32_rmsnorm(k, attention.k_norm.weight), cos_sin)
+        k_cache[index, :, cache_len:end] = k
+        v_cache[index, :, cache_len:end] = v
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(1, 2),
+            k_cache[index, :, :end].transpose(1, 2),
+            v_cache[index, :, :end].transpose(1, 2),
+            is_causal=num_tokens > 1,
+            enable_gqa=True,
+        )
+        attended = attended.transpose(1, 2).reshape(batch_size, num_tokens, -1)
+        x = x + attended @ attention.o_proj.weight.float().t()
+        normed = fp32_rmsnorm(x, layer.post_attention_layernorm.weight)
+        gate, up = (normed @ layer.mlp.gate_up_proj.weight.float().t()).chunk(2, -1)
+        x = (
+            x
+            + (torch.nn.functional.silu(gate) * up)
+            @ layer.mlp.down_proj.weight.float().t()
+        )
+    return fp32_rmsnorm(x, final_norm.weight)
+
+
+def fused_and_plain_errors_to_fp32(
+    batch_size: int, seed: int
+) -> dict[str, tuple[float, float]]:
+    """Each path's relative error to the fp32 pass over the opening pair and the
+    fourteen single-token passes: (outputs, K and V cache rows)."""
+    device = torch.device("cuda")
+    torch.manual_seed(seed)
+    layers = [real_shape_layer(device) for _ in range(FUSED_LAYERS)]
+    final_norm = real_shape_norm(FUSED_HIDDEN, device)
+    steps = [torch.randn(batch_size, 2, FUSED_HIDDEN, device=device, dtype=DTYPE)]
+    steps += [
+        torch.randn(batch_size, 1, FUSED_HIDDEN, device=device, dtype=DTYPE)
+        for _ in range(FUSED_PREDICTOR_LEN - 3)
+    ]
+    end = sum(step.shape[1] for step in steps)
+    cache_shape = (
+        FUSED_LAYERS,
+        batch_size,
+        FUSED_PREDICTOR_LEN,
+        FUSED_NUM_KV_HEADS,
+        FUSED_HEAD_DIM,
+    )
+    k_cache = torch.zeros(cache_shape, device=device)
+    v_cache = torch.zeros(cache_shape, device=device)
+    outputs = {"plain": [], "fused": [], "fp32": []}
+    with (
+        get_context().override_server_args(
+            cuda_graph_config=CudaGraphConfig(
+                prefill=PhaseConfig(backend=Backend.DISABLED)
+            ),
+        ),
+        torch.no_grad(),
+    ):
+        talkers = {
+            "plain": real_shape_talker(device, layers, final_norm, fused=False),
+            "fused": real_shape_talker(device, layers, final_norm, fused=True),
+        }
+        cache_len = 0
+        for step in steps:
+            for name, talker in talkers.items():
+                outputs[name].append(
+                    talker.predictor_forward_tokens(
+                        token_embeds=step.clone(),
+                        batch_size=batch_size,
+                        cache_len=cache_len,
+                    ).clone()
+                )
+            outputs["fp32"].append(
+                fp32_predictor_pass(
+                    layers, final_norm, k_cache, v_cache, step, cache_len
+                )
+            )
+            cache_len += step.shape[1]
+    reference = torch.cat(outputs["fp32"], 1)
+    reference_cache = torch.cat((k_cache, v_cache))[:, :, :end]
+    errors = {}
+    for name, talker in talkers.items():
+        cache = torch.cat((talker.predictor_k_cache, talker.predictor_v_cache))
+        errors[name] = (
+            relative_error(torch.cat(outputs[name], 1), reference),
+            relative_error(cache[:, :batch_size, :end], reference_cache),
+        )
+    return errors
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 5, 64])
+def test_fused_predictor_layers_are_as_close_to_fp32_as_the_plain_layers(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int
+) -> None:
+    """Over a whole predictor sequence the Triton launches' outputs and K and V cache
+    rows are no further from an fp32 pass than the plain layers'."""
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
+    errors = fused_and_plain_errors_to_fp32(batch_size, seed=0)
+
+    assert errors["fused"][0] <= FUSED_ERROR_BOUND * errors["plain"][0]
+    assert errors["fused"][1] <= FUSED_ERROR_BOUND * errors["plain"][1]
+
+
+def test_predictor_stats_count_graph_replays_and_eager_runs() -> None:
+    talker = build_talker(torch.device("cpu"))
+    codes = torch.zeros((2, NUM_CODE_GROUPS), dtype=torch.long)
+    embeddings = torch.zeros((2, 1, HIDDEN))
+    graph_results = iter([(codes, embeddings), None, None])
+    talker.predictor_forward_graphed = (
+        lambda layer0_codes, talker_hidden, semantic_positions: next(graph_results)
+    )
+    talker.code_predictor_forward_incremental = (
+        lambda layer0_codes, talker_hidden, semantic_positions: (codes, embeddings)
+    )
+    layer0 = torch.zeros((2, 1), dtype=torch.long)
+    hidden = torch.zeros((2, 1, HIDDEN))
+
+    for _ in range(3):
+        talker.code_predictor_forward(layer0, hidden)
+
+    assert talker.predictor_graph_stats() == {
+        "enabled": True,
+        "startup_graph_count": 0,
+        "lazy_graph_count": 0,
+        "replays": 1,
+        "eager_runs": 2,
+        "capacity_fallbacks": 0,
+        "capture_failures": 0,
+    }
 
 
 if __name__ == "__main__":

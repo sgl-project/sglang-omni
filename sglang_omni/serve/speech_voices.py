@@ -10,10 +10,12 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Literal, Protocol, TypedDict
 
 import numpy as np
 
@@ -64,6 +66,47 @@ VOICE_UPLOAD_EXTENSION_MIME_TYPES = {
 }
 
 
+class OptionalVoiceResponse(TypedDict, total=False):
+    ref_text: str
+    speaker_description: str
+    warning: str
+
+
+class UploadedVoiceResponse(OptionalVoiceResponse):
+    name: str
+    consent: str
+    created_at: int
+    file_size: int
+    mime_type: str
+
+
+class VoiceListResponse(TypedDict):
+    voices: list[str]
+    uploaded_voices: list[UploadedVoiceResponse]
+    cache_stats: dict[str, int]
+
+
+class SafeTensorMetadata(Protocol):
+    def metadata(self) -> dict[str, str] | None: ...
+
+
+class SafeOpenMetadata(Protocol):
+    def __call__(
+        self, filename: str, /, *, framework: Literal["np"]
+    ) -> AbstractContextManager[SafeTensorMetadata]: ...
+
+
+class SaveVoiceFile(Protocol):
+    def __call__(
+        self,
+        tensor_dict: dict[str, np.ndarray[tuple[int, ...], np.dtype[np.float32]]],
+        filename: str,
+        /,
+        *,
+        metadata: dict[str, str],
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class UploadedVoice:
     """Persisted uploaded voice metadata."""
@@ -82,8 +125,8 @@ class UploadedVoice:
     ref_text: str | None = None
     speaker_description: str | None = None
 
-    def to_response_dict(self) -> dict[str, Any]:
-        response: dict[str, Any] = {
+    def to_response_dict(self) -> UploadedVoiceResponse:
+        response: UploadedVoiceResponse = {
             "name": self.name,
             "consent": self.consent,
             "created_at": self.created_at,
@@ -159,7 +202,7 @@ class SpeakerSampleStore:
         self.lock = RLock()
         self.restore()
 
-    def list_response(self) -> dict[str, Any]:
+    def list_response(self) -> VoiceListResponse:
         with self.lock:
             uploaded = sorted(self.voices.values(), key=lambda item: item.name.lower())
             voices = sorted(
@@ -194,7 +237,7 @@ class SpeakerSampleStore:
         content_type: str | None,
         ref_text: str | None = None,
         speaker_description: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> UploadedVoiceResponse:
         normalized_name = normalize_voice_name(name)
         if normalized_name in DEFAULT_VOICE_PRESETS:
             raise bad_request("name is reserved for a preset voice", param="name")
@@ -376,7 +419,9 @@ class SpeakerSampleStore:
             self.last_upload_timestamp = timestamp
             return timestamp
 
-    def load_samples(self, voice: UploadedVoice) -> tuple[np.ndarray, int]:
+    def load_samples(
+        self, voice: UploadedVoice
+    ) -> tuple[np.ndarray[tuple[int, ...], np.dtype[np.float32]], int]:
         try:
             load_file = safetensors_load_file()
             tensors = load_file(str(voice.file_path))
@@ -477,13 +522,28 @@ def resolve_upload_mime_type(filename: str | None, content_type: str | None) -> 
     return mime_type
 
 
-def decode_reference_audio(audio_bytes: bytes) -> tuple[np.ndarray, int]:
+def decode_reference_audio(
+    audio_bytes: bytes,
+) -> tuple[np.ndarray[tuple[int, ...], np.dtype[np.float32]], int]:
     try:
-        from sglang_omni.preprocessing.audio import AudioMediaIO
-
-        samples, sample_rate = AudioMediaIO(target_sr=DEFAULT_SAMPLE_RATE).load_bytes(
-            audio_bytes
+        from sglang_omni.preprocessing.audio import (
+            AudioTooLongError,
+            decode_audio_bytes,
+            resample_linear,
         )
+
+        # note (Richard Wang): the decode stops at the reference limit, so a
+        # short but very long compressed upload never decodes in full.
+        audio, source_rate = decode_audio_bytes(
+            audio_bytes, max_seconds=MAX_REFERENCE_AUDIO_SECONDS
+        )
+        samples = resample_linear(audio, source_rate, DEFAULT_SAMPLE_RATE)
+        sample_rate = DEFAULT_SAMPLE_RATE
+    except AudioTooLongError as exc:
+        raise bad_request(
+            f"audio_sample must be at most {MAX_REFERENCE_AUDIO_SECONDS:.1f}s",
+            param="audio_sample",
+        ) from exc
     except Exception as exc:
         logger.debug("Failed to decode uploaded voice sample", exc_info=True)
         raise bad_request(
@@ -568,7 +628,7 @@ def replace_voice_file(temp_path: Path, path: Path) -> None:
         raise internal_error("Failed to save uploaded voice") from exc
 
 
-def safetensors_safe_open() -> Any:
+def safetensors_safe_open() -> SafeOpenMetadata:
     try:
         from safetensors import safe_open
     except ImportError as exc:
@@ -576,7 +636,10 @@ def safetensors_safe_open() -> Any:
     return safe_open
 
 
-def safetensors_load_file() -> Any:
+def safetensors_load_file() -> Callable[
+    [str | os.PathLike[str] | os.PathLike[bytes]],
+    dict[str, np.ndarray[tuple[int, ...], np.dtype[np.generic]]],
+]:
     try:
         from safetensors.numpy import load_file
     except ImportError as exc:
@@ -584,7 +647,7 @@ def safetensors_load_file() -> Any:
     return load_file
 
 
-def safetensors_save_file() -> Any:
+def safetensors_save_file() -> SaveVoiceFile:
     try:
         from safetensors.numpy import save_file
     except ImportError as exc:
@@ -601,7 +664,7 @@ def voice_from_metadata(metadata: dict[str, str], path: Path) -> UploadedVoice:
         raise bad_request("voice metadata is missing name")
     else:
         pass
-    values: dict[str, Any] = dict(metadata)
+    values: dict[str, str | int] = dict(metadata)
     try:
         for key in VOICE_METADATA_INT_FIELDS:
             if key in values:

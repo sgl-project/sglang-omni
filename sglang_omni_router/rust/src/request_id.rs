@@ -142,7 +142,10 @@ pub(crate) async fn canonicalize(
 }
 
 fn valid(value: &HeaderValue) -> bool {
-    let bytes = value.as_bytes();
+    valid_request_id_bytes(value.as_bytes())
+}
+
+pub(crate) fn valid_request_id_bytes(bytes: &[u8]) -> bool {
     !bytes.is_empty()
         && bytes.len() <= MAX_REQUEST_ID_BYTES
         && bytes.iter().all(|byte| matches!(byte, 0x21..=0x7e))

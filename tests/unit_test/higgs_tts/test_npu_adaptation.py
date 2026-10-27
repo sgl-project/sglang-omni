@@ -11,10 +11,10 @@ import torch
 
 import sglang_omni.platforms as platforms_mod
 import sglang_omni.utils.device as device_mod
+from sglang_omni.models.higgs_tts import config as higgs_config
 from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
-from sglang_omni.platforms import current_platform
 
 
 class FakePlatform:
@@ -25,7 +25,7 @@ class FakePlatform:
     def is_npu(self) -> bool:
         return self.npu
 
-    def enable_code2wav_graph(self) -> bool:
+    def enable_codec_decode_graph(self) -> bool:
         return not self.npu
 
 
@@ -98,27 +98,25 @@ def test_batched_sampler_works_with_torch_renorm_fallback(monkeypatch) -> None:
     assert torch.equal(codes[0], logits[0].argmax(dim=-1))
 
 
-def test_stage_devices_resolve_from_platform_type() -> None:
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(True, tuple(range(1, 151))), (False, ())],
+)
+def test_vocoder_decode_graph_domain_follows_platform_capability(
+    monkeypatch, enabled, expected
+) -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="unused")
 
-    for stage in config.stages:
-        if stage.factory.device is not None:
-            assert stage.factory.device == current_platform.device_type
-
-
-def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
-    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-
-    config = HiggsTtsPipelineConfig(model_path="unused")
+    monkeypatch.setattr(
+        higgs_config,
+        "current_platform",
+        SimpleNamespace(enable_codec_decode_graph=lambda: enabled),
+    )
     vocoder_kwargs = config.stage_factory_kwargs("vocoder")
 
-    counts = vocoder_kwargs["decode_cuda_graph_frame_counts"]
-    if current_platform.enable_code2wav_graph():
-        assert counts == tuple(range(1, 151))
-    else:
-        assert counts == ()
+    assert vocoder_kwargs["decode_cuda_graph_frame_counts"] == expected
 
 
 class FakeTokenizer:

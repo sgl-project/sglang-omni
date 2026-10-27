@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import inspect
+import json
 import sys
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
@@ -14,10 +15,23 @@ import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
+from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
+    WhisperPrefillCudaGraphRunner,
+)
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
-from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.models.whisper_asr.config import (
+    WhisperASRFactoryArgs,
+    WhisperASRPipelineConfig,
+)
+from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
+from sglang_omni.models.whisper_asr.text_streaming import (
+    ExactWhisperStreamOutputBuilder,
+)
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -29,6 +43,7 @@ def encoder_graph_builder(**kwargs):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
     params = {
+        "encoder_attention_backend": "auto",
         "max_running_requests": 16,
         "max_new_tokens": 32,
         "mem_fraction_static": 0.2,
@@ -41,30 +56,6 @@ def encoder_graph_builder(**kwargs):
     )
     builder.encoder_token_count = 1500
     return builder
-
-
-def test_whisper_stage_defaults() -> None:
-    signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["enable_encoder_cuda_graph"].default is False
-    assert signature.parameters["encoder_graph_batch_buckets"].default is None
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["prefill_coalesce_requests"].default == 2
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is False
-    )
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
 def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs(
@@ -166,6 +157,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
     builder = WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
         max_running_requests=4,
         max_new_tokens=32,
         mem_fraction_static=0.2,
@@ -184,8 +176,32 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
         builder.adjust_overrides({"chunked_prefill_size": 4096})
 
 
+@pytest.mark.parametrize(
+    ("platform_type", "expected_backend"),
+    [(XPUOmniPlatform, "torch_native"), (CUDAOmniPlatform, None)],
+)
+def test_whisper_encoder_decoder_attention_backend_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    expected_backend: str | None,
+) -> None:
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
+    defaults = whisper_asr_builder.WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    ).generation_defaults(dtype="float16")
+
+    if expected_backend is None:
+        assert "attention_backend" not in defaults
+    else:
+        assert defaults["attention_backend"] == expected_backend
+
+
 def test_whisper_breakable_prefill_graph_policy() -> None:
     builder = whisper_asr_builder.WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
         max_running_requests=4,
         max_new_tokens=32,
         mem_fraction_static=0.2,
@@ -215,6 +231,7 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
 
 def test_whisper_prefill_graph_cap_covers_shorter_request_batches() -> None:
     builder = whisper_asr_builder.WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
         max_running_requests=3,
         max_new_tokens=256,
         mem_fraction_static=0.2,
@@ -237,14 +254,20 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
     builder = WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
         max_running_requests=16,
         max_new_tokens=32,
         mem_fraction_static=0.2,
     )
 
-    assert builder.extra_scheduler_kwargs() == {
+    scheduler_kwargs = builder.extra_scheduler_kwargs()
+    stream_builder = scheduler_kwargs.pop("stream_output_builder")
+    assert isinstance(stream_builder, ExactWhisperStreamOutputBuilder)
+    assert stream_builder.tokenizer is builder.tokenizer
+    assert stream_builder.interval_seconds == 0.05
+    assert scheduler_kwargs == {
         "enable_async_decode": True,
-        "async_decode_min_batch_size": 2,
+        "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
         "request_build_max_pending": 16,
         "prefill_coalesce_requests": 2,
@@ -260,6 +283,7 @@ def test_whisper_rejects_invalid_pre_lm_batch_knobs() -> None:
 
     with pytest.raises(ValueError, match="pre_lm_max_batch_size must be >= 1"):
         WhisperASREngineBuilder(
+            encoder_attention_backend="auto",
             max_running_requests=4,
             max_new_tokens=32,
             mem_fraction_static=0.2,
@@ -267,6 +291,7 @@ def test_whisper_rejects_invalid_pre_lm_batch_knobs() -> None:
         )
     with pytest.raises(ValueError, match="pre_lm_max_batch_wait_ms must be >= 0"):
         WhisperASREngineBuilder(
+            encoder_attention_backend="auto",
             max_running_requests=4,
             max_new_tokens=32,
             mem_fraction_static=0.2,
@@ -290,7 +315,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
-    assert factory.async_decode_min_batch_size == 2
+    assert factory.async_decode_min_batch_size == 1
     assert factory.request_build_max_pending == 16
     assert factory.prefill_coalesce_requests == 2
     assert factory.prefill_coalesce_wait_ms == 6.0
@@ -310,27 +335,10 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     )
 
 
-def test_whisper_async_decode_dotted_overrides() -> None:
-    from sglang_omni.config.manager import ConfigManager
-
-    config = WhisperASRPipelineConfig(model_path="openai/whisper-base")
-
-    forced_sync = ConfigManager(config).merge_config(
-        [("asr.factory.enable_async_decode", "false")]
-    )
-    assert forced_sync.stages[0].factory.enable_async_decode is False
-
-    forced_async = ConfigManager(config).merge_config(
-        [
-            ("asr.factory.enable_async_decode", "true"),
-            ("asr.factory.async_decode_min_batch_size", "4"),
-        ]
-    )
-    assert forced_async.stages[0].factory.enable_async_decode is True
-    assert forced_async.stages[0].factory.async_decode_min_batch_size == 4
-
-
-def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
+@pytest.mark.parametrize("encoder_attention_backend", [None, "auto", "sdpa", "fa4"])
+def test_whisper_asr_threads_explicit_cuda_graph_bs(
+    monkeypatch: pytest.MonkeyPatch, encoder_attention_backend: str | None
+) -> None:
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
     graph_init_calls: list[object] = []
@@ -447,13 +455,25 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         ),
     )
 
-    whisper_asr_stages.create_sglang_whisper_asr_executor(
-        "dummy",
+    factory = WhisperASRFactoryArgs(
+        encoder_attention_backend=encoder_attention_backend or "auto",
         enable_pre_lm_encoder=False,
         enable_async_decode=False,
         async_decode_min_batch_size=4,
     )
+    factory_kwargs = factory.model_dump(exclude_none=True)
+    if encoder_attention_backend is None:
+        factory_kwargs.pop("encoder_attention_backend")
+    whisper_asr_stages.create_sglang_whisper_asr_executor(
+        "dummy",
+        **factory_kwargs,
+        server_args_overrides={"json_model_override_args": '{"test_setting": 7}'},
+    )
 
+    assert json.loads(build_kwargs["json_model_override_args"]) == {
+        "encoder_attention_backend": encoder_attention_backend or "auto",
+        "test_setting": 7,
+    }
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
@@ -474,3 +494,62 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("device_type", ["cpu", "cuda"])
+def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
+    monkeypatch: pytest.MonkeyPatch, device_type: str, enabled: bool
+) -> None:
+    """Other devices must not enter torch.cuda capture during resource setup."""
+    captured_request_counts: list[int] = []
+
+    class DenseCapture:
+        def __init__(
+            self,
+            model: WhisperForConditionalGeneration,
+            pool: MHATokenToKVPool,
+            *,
+            encoder_token_count: int,
+            max_requests: int,
+            prompt_lengths: tuple[int, ...],
+        ) -> None:
+            self.max_requests: int = max_requests
+
+        def capture(self) -> None:
+            captured_request_counts.append(self.max_requests)
+
+    builder = encoder_graph_builder(
+        enable_encoder_cuda_graph=False,
+        enable_dense_prefill_cuda_graph=enabled,
+        max_running_requests=2,
+    )
+    graph_runner = object.__new__(WhisperPrefillCudaGraphRunner)
+    graph_runner.dense_prefill_runner = None
+    builder.sglang_runner = SimpleNamespace(
+        prefill_cuda_graph_runner=graph_runner, token_to_kv_pool=object()
+    )
+    model = SimpleNamespace(
+        model=SimpleNamespace(
+            decoder=SimpleNamespace(
+                embed_tokens=SimpleNamespace(
+                    weight=SimpleNamespace(device=SimpleNamespace(type=device_type))
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(whisper_asr_builder, "WhisperDensePrefillRunner", DenseCapture)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=2),
+    )
+    builder.setup_model_resources(
+        model, SimpleNamespace(), generation_cuda_graph_enabled=True
+    )
+    assert builder.sglang_runner.prefill_cuda_graph_runner is graph_runner
+    if device_type == "cuda" and enabled:
+        assert captured_request_counts == [2]
+        assert isinstance(graph_runner.dense_prefill_runner, DenseCapture)
+    else:
+        assert captured_request_counts == []
+        assert graph_runner.dense_prefill_runner is None

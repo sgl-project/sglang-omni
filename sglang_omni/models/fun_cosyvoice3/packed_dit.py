@@ -5,31 +5,41 @@ along the sequence for every per token module, attention within each row."""
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
-from typing import Protocol
+from itertools import accumulate, pairwise
 
 import torch
 import torch._dynamo as dynamo
 import torch.nn.functional as F
-from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
+from sglang.kernels.ops.attention.flash_attention import (
+    flash_attn_varlen_func,
+    flash_attn_with_kvcache,
+)
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.srt.utils.common import is_pin_memory_available
+from sglang.srt.utils.custom_op import register_custom_op
+
+from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
 
 logger = logging.getLogger(__name__)
 
+# Note (Jiaxin Deng): each positional conv has kernel 31, so it reads the 30
+# frames before its input frame.
+CONV_CONTEXT_FRAMES = 30
 # note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
 FA3_PAGE_SIZE = 1
 FA3_DTYPES = (torch.float16, torch.bfloat16)
-PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {"emulate_precision_casts": True}
+# note(ratish): the first call benchmark runs at a warmup shape, not a serving one,
+# so its pick can change between boots; the heuristic config is the same on every boot.
+DIT_INDUCTOR_OPTIONS: dict[str, bool] = {"triton.autotune_pointwise": False}
+PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
+    **DIT_INDUCTOR_OPTIONS,
+    "emulate_precision_casts": True,
+}
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::packed_fa3",
-    mutates_args=(),
-    device_types="cuda",
-)
-def packed_fa3(
+def ragged_fa3(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
@@ -37,8 +47,8 @@ def packed_fa3(
     page_table: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     max_seqlen_q: int,
+    num_splits: int = 0,
 ) -> torch.Tensor:
-    """Alias-free FA3 boundary for the compiled PackedDiT path."""
     return flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
@@ -48,92 +58,90 @@ def packed_fa3(
         cu_seqlens_q=cu_seqlens_q,
         max_seqlen_q=max_seqlen_q,
         causal=False,
+        num_splits=num_splits,
     )
 
 
-@packed_fa3.register_fake
-def fake_packed_fa3(
+# note(ratish): the compiled forward calls FA3 through this alias-free op;
+# eager calls ragged_fa3 directly and skips the custom op dispatch per block.
+packed_fa3 = register_custom_op(
+    ragged_fa3, op_name="fun_cosyvoice3_packed_fa3", mutates_args=[], out_shape="q"
+)
+
+
+def whole_row_fa3(
     q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    page_table: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    max_seqlen_q: int,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
 ) -> torch.Tensor:
-    return torch.empty_like(q)
+    return flash_attn_varlen_func(
+        q=q,
+        k=k,
+        v=v,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=max_seqlen,
+        max_seqlen_k=max_seqlen,
+        causal=False,
+    )
 
 
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_mish",
-    mutates_args=(),
-    device_types="cuda",
+packed_whole_row_fa3 = register_custom_op(
+    whole_row_fa3,
+    op_name="fun_cosyvoice3_whole_row_fa3",
+    mutates_args=[],
+    out_shape="q",
 )
-def native_mish(x: torch.Tensor) -> torch.Tensor:
-    """Preserve eager CUDA Mish arithmetic across the Inductor boundary."""
-    return F.mish(x)
-
-
-@native_mish.register_fake
-def fake_native_mish(x: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(x)
-
-
-@torch.library.custom_op(
-    "sglang_omni_fun_cosyvoice3::native_layer_norm",
-    mutates_args=(),
-    device_types="cuda",
-)
-def native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    """Keep CUDA autocast's eager FP32 LayerNorm contract."""
-    return F.layer_norm(x.float(), (normalized_size,), None, None, eps)
-
-
-@native_layer_norm.register_fake
-def fake_native_layer_norm(
-    x: torch.Tensor,
-    normalized_size: int,
-    eps: float,
-) -> torch.Tensor:
-    return torch.empty_like(x, dtype=torch.float32)
 
 
 @dataclass(frozen=True)
 class PackedRows:
     lengths: tuple[int, ...]
     starts_host: torch.Tensor
+    starts: torch.Tensor
     row_ids: torch.Tensor
     positions: torch.Tensor
+    # note (ratish): the positional convs read the packed frames with CONV_CONTEXT_FRAMES
+    # zero frames before every row. Index 0 is the zero frame, 1 + i packed frame i.
+    conv_input_index: torch.Tensor
+    conv_output_index: torch.Tensor
+    width: int
 
     @property
     def total(self) -> int:
         return sum(self.lengths)
 
-    @property
-    def width(self) -> int:
-        return max(self.lengths)
-
 
 def pack_rows(lengths: Sequence[int], device: torch.device) -> PackedRows:
     lengths = tuple(int(length) for length in lengths)
-    starts_host = F.pad(torch.tensor(lengths, dtype=torch.int64).cumsum(0), (1, 0))
-    starts = starts_host.to(device)
+    pin_memory = is_pin_memory_available(device)
+    starts_host = torch.tensor(
+        (0, *accumulate(lengths)), dtype=torch.int64, pin_memory=pin_memory
+    )
+    starts = starts_host.to(device, non_blocking=True)
     total = int(starts_host[-1])
     row_ids = torch.repeat_interleave(
         torch.arange(len(lengths), device=device),
-        torch.tensor(lengths, dtype=torch.int64, device=device),
+        torch.tensor(lengths, dtype=torch.int64, pin_memory=pin_memory).to(
+            device, non_blocking=True
+        ),
         output_size=total,
     )
-    positions = torch.arange(total, device=device) - starts[row_ids]
+    frames = torch.arange(total, device=device)
+    conv_output_index = frames + CONV_CONTEXT_FRAMES * row_ids
+    conv_input_index = frames.new_zeros(total + CONV_CONTEXT_FRAMES * len(lengths))
+    conv_input_index[conv_output_index + CONV_CONTEXT_FRAMES] = frames + 1
     return PackedRows(
         lengths=lengths,
         starts_host=starts_host.to(torch.int32),
+        starts=starts.to(torch.int32),
         row_ids=row_ids,
-        positions=positions,
+        positions=frames - starts[row_ids],
+        conv_input_index=conv_input_index,
+        conv_output_index=conv_output_index,
+        width=max(lengths),
     )
 
 
@@ -148,10 +156,10 @@ def gather_rows(padded: torch.Tensor, rows: PackedRows) -> torch.Tensor:
 def scatter_rows(packed: torch.Tensor, rows: PackedRows, width: int) -> torch.Tensor:
     """(1, total, channels) -> (rows, width, channels), zero past each row's
     length."""
-    channels = packed.shape[2]
-    flat = packed.new_zeros(len(rows.lengths) * width, channels)
+    row_count, channels = len(rows.lengths), packed.shape[2]
+    flat = packed.new_zeros(row_count * width, channels)
     flat[rows.row_ids * width + rows.positions] = packed[0]
-    return flat.view(len(rows.lengths), width, channels)
+    return flat.view(row_count, width, channels)
 
 
 def chunk_causal_mask(
@@ -165,18 +173,17 @@ def chunk_causal_mask(
 
 
 def chunk_segments(
-    lengths: Sequence[int], chunk_size: int | None
+    lengths: Sequence[int], chunk_size: int
 ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     """One query segment per (row, chunk), reading that row's frames
-    [0, chunk end). Without a chunk size a row is one segment."""
+    [0, chunk end)."""
     segment_rows: list[int] = []
     segment_ends: list[int] = []
     offsets: list[int] = [0]
     for row, length in enumerate(lengths):
-        span = length if chunk_size is None else chunk_size
         frame = 0
         while frame < length:
-            end = min((frame // span + 1) * span, length)
+            end = min((frame // chunk_size + 1) * chunk_size, length)
             segment_rows.append(row)
             segment_ends.append(end)
             offsets.append(offsets[-1] + end - frame)
@@ -196,7 +203,9 @@ class RowAttention:
         self.heads = heads
         width = rows.width
         device = rows.row_ids.device
-        lengths = torch.tensor(rows.lengths, device=device)
+        lengths = torch.tensor(
+            rows.lengths, pin_memory=is_pin_memory_available(device)
+        ).to(device, non_blocking=True)
         keys = torch.arange(width, device=device).unsqueeze(0) < lengths.unsqueeze(1)
         if chunk_size is None:
             mask = keys.unsqueeze(1).expand(-1, width, -1)
@@ -220,13 +229,14 @@ class RowAttention:
 
 
 class RaggedRowAttention:
-    """Row attention on the packed sequence via FA3 paged KV, no pad-to-widest."""
+    """Chunk causal row attention on the packed sequence via FA3 paged KV, no
+    pad-to-widest."""
 
     def __init__(
         self,
         rows: PackedRows,
         *,
-        chunk_size: int | None,
+        chunk_size: int,
         heads: int,
         head_dim: int,
     ) -> None:
@@ -234,12 +244,20 @@ class RaggedRowAttention:
         self.head_dim = head_dim
         device = rows.row_ids.device
         segment_rows, segment_ends, offsets = chunk_segments(rows.lengths, chunk_size)
+        row_starts = rows.starts_host.tolist()
+        pin_memory = is_pin_memory_available(device)
         self.cache_seqlens = torch.tensor(
-            segment_ends, dtype=torch.int32, device=device
-        )
-        self.cu_seqlens_q = torch.tensor(offsets, dtype=torch.int32, device=device)
+            segment_ends, dtype=torch.int32, pin_memory=pin_memory
+        ).to(device, non_blocking=True)
+        self.cu_seqlens_q = torch.tensor(
+            offsets, dtype=torch.int32, pin_memory=pin_memory
+        ).to(device, non_blocking=True)
         self.max_seqlen_q = max(end - start for start, end in pairwise(offsets))
-        starts = rows.starts_host[list(segment_rows)].to(device)
+        starts = torch.tensor(
+            [row_starts[row] for row in segment_rows],
+            dtype=torch.int32,
+            pin_memory=pin_memory,
+        ).to(device, non_blocking=True)
         # note (ratish): FA3 page ids must land inside the packed keys; pad with page 0.
         page = torch.arange(max(segment_ends), dtype=torch.int32, device=device)
         self.page_table = torch.where(
@@ -254,60 +272,101 @@ class RaggedRowAttention:
         """query, key, value: (1, total, heads * head_dim). Returns the same
         shape."""
         page_shape = (-1, FA3_PAGE_SIZE, self.heads, self.head_dim)
-        out = flash_attn_with_kvcache(
-            q=query[0].reshape(-1, self.heads, self.head_dim),
-            k_cache=key[0].reshape(page_shape),
-            v_cache=value[0].reshape(page_shape),
-            cache_seqlens=self.cache_seqlens,
-            page_table=self.page_table,
-            cu_seqlens_q=self.cu_seqlens_q,
-            max_seqlen_q=self.max_seqlen_q,
-            causal=False,
+        if torch.compiler.is_compiling():
+            fa3 = packed_fa3
+        else:
+            fa3 = ragged_fa3
+        out = fa3(
+            query[0].reshape(-1, self.heads, self.head_dim),
+            key[0].reshape(page_shape),
+            value[0].reshape(page_shape),
+            self.cache_seqlens,
+            self.page_table,
+            self.cu_seqlens_q,
+            self.max_seqlen_q,
         )
         return out.reshape(1, -1, self.heads * self.head_dim)
 
 
-PackedRowAttention = RowAttention | RaggedRowAttention
+class WholeRowAttention:
+    """Bidirectional attention within each whole row of the packed sequence via
+    FA3 varlen. max_frames bounds the widest row."""
 
-
-class CompiledPackedForward(Protocol):
-    """One compiled PackedDiT contract: causal or full-context."""
+    def __init__(
+        self, rows: PackedRows, *, heads: int, head_dim: int, max_frames: int
+    ) -> None:
+        self.heads = heads
+        self.head_dim = head_dim
+        self.cu_seqlens = rows.starts
+        self.max_frames = max_frames
 
     def __call__(
-        self,
-        x: torch.Tensor,
-        mu: torch.Tensor,
-        spks: torch.Tensor,
-        cond: torch.Tensor,
-        t: torch.Tensor,
-        rows: PackedRows,
-        attention: RaggedRowAttention,
-    ) -> torch.Tensor: ...
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """query, key, value: (1, total, heads * head_dim). Returns the same
+        shape."""
+        if torch.compiler.is_compiling():
+            fa3 = packed_whole_row_fa3
+        else:
+            fa3 = whole_row_fa3
+        head_shape = (-1, self.heads, self.head_dim)
+        out = fa3(
+            query[0].reshape(head_shape),
+            key[0].reshape(head_shape),
+            value[0].reshape(head_shape),
+            self.cu_seqlens,
+            self.max_frames,
+        )
+        return out.reshape(1, -1, self.heads * self.head_dim)
 
 
-def mark_packed_compile_metadata(
-    rows: PackedRows, attention: RaggedRowAttention
-) -> None:
-    dynamo.mark_dynamic(attention.page_table, (0, 1))
-    dynamo.mark_dynamic(attention.cu_seqlens_q, 0)
-    dynamo.mark_dynamic(attention.cache_seqlens, 0)
-    dynamo.mark_dynamic(rows.starts_host, 0)
-    dynamo.mark_dynamic(rows.row_ids, 0)
-    dynamo.mark_dynamic(rows.positions, 0)
+PackedRowAttention = RowAttention | RaggedRowAttention | WholeRowAttention
 
 
 class PackedDiT:
     """DiT.forward over a packed sequence with the same modules in the same
-    order; conv pos-emb stays padded, attention is ragged on FA3 half-precision
-    CUDA and padded elsewhere.
+    order. Attention is ragged on FA3 half-precision CUDA and padded elsewhere.
     """
+
+    block_modulations: tuple[tuple[torch.nn.Parameter, ...], ...]
+    final_modulations: tuple[torch.nn.Parameter, ...]
 
     def __init__(self, dit: torch.nn.Module, *, device: str | torch.device) -> None:
         self.dit = dit
         device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
-        self.compiled_causal_forward: CompiledPackedForward | None = None
-        self.compiled_full_forward: CompiledPackedForward | None = None
+        self.is_compiled = False
+        # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
+        # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
+        # must already hold its serving dtype.
+        qkv_weights: list[torch.nn.Parameter] = []
+        qkv_biases: list[torch.nn.Parameter] = []
+        with torch.no_grad():
+            for block in dit.transformer_blocks:
+                attention = block.attn
+                projections = (attention.to_q, attention.to_k, attention.to_v)
+                qkv_weight = torch.nn.Parameter(
+                    torch.cat([projection.weight for projection in projections]),
+                    requires_grad=False,
+                )
+                qkv_bias = torch.nn.Parameter(
+                    torch.cat([projection.bias for projection in projections]),
+                    requires_grad=False,
+                )
+                for index, projection in enumerate(projections):
+                    rows = slice(
+                        index * attention.inner_dim, (index + 1) * attention.inner_dim
+                    )
+                    projection.weight = torch.nn.Parameter(
+                        qkv_weight[rows], requires_grad=False
+                    )
+                    projection.bias = torch.nn.Parameter(
+                        qkv_bias[rows], requires_grad=False
+                    )
+                qkv_weights.append(qkv_weight)
+                qkv_biases.append(qkv_bias)
+        self.qkv_weights = tuple(qkv_weights)
+        self.qkv_biases = tuple(qkv_biases)
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
@@ -318,30 +377,76 @@ class PackedDiT:
     def chunk_size(self) -> int:
         return int(self.dit.static_chunk_size)
 
+    def build_modulations(self, time_span: torch.Tensor, dtype: torch.dtype) -> None:
+        """Every block's and the final layer's AdaLN modulation at each Euler step,
+        once: they read only the step's time, and every solve takes the same steps."""
+        dit = self.dit
+        flow_time = torch.zeros(1, device=time_span.device, dtype=dtype)
+        block_modulations: list[tuple[torch.nn.Parameter, ...]] = []
+        final_modulations: list[torch.nn.Parameter] = []
+        for t, _ in euler_step_times(time_span):
+            flow_time[:] = t
+            time_embedding = dit.time_embed(flow_time)
+            # note (ratish): a Parameter per block, as qkv_weights; a stacked table's rows
+            # compile to one LayerNorm kernel each, and a plain tensor's width to a symbol.
+            block_modulations.append(
+                tuple(
+                    torch.nn.Parameter(
+                        block.attn_norm.linear(block.attn_norm.silu(time_embedding)),
+                        requires_grad=False,
+                    )
+                    for block in dit.transformer_blocks
+                )
+            )
+            final_modulations.append(
+                torch.nn.Parameter(
+                    dit.norm_out.linear(dit.norm_out.silu(time_embedding)),
+                    requires_grad=False,
+                )
+            )
+        self.block_modulations = tuple(block_modulations)
+        self.final_modulations = tuple(final_modulations)
+
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
     ) -> PackedRowAttention:
         attention = self.dit.transformer_blocks[0].attn
-        chunk_size = self.chunk_size if streaming else None
-        if self.is_ragged and dtype in FA3_DTYPES:
-            attention = RaggedRowAttention(
-                rows,
-                chunk_size=chunk_size,
-                heads=attention.heads,
-                head_dim=attention.inner_dim // attention.heads,
+        heads = attention.heads
+        head_dim = attention.inner_dim // heads
+        row_attention: RaggedRowAttention | WholeRowAttention
+        if not self.is_ragged or dtype not in FA3_DTYPES:
+            return RowAttention(
+                rows, chunk_size=self.chunk_size if streaming else None, heads=heads
             )
-            if self.compiled_causal_forward is not None:
-                assert self.compiled_full_forward is not None
-                mark_packed_compile_metadata(rows, attention)
-            else:
-                assert self.compiled_full_forward is None
-            return attention
+        elif streaming:
+            row_attention = RaggedRowAttention(
+                rows, chunk_size=self.chunk_size, heads=heads, head_dim=head_dim
+            )
+            dynamic_dims = [
+                (row_attention.page_table, (0, 1)),
+                (row_attention.cu_seqlens_q, 0),
+                (row_attention.cache_seqlens, 0),
+            ]
+        else:
+            row_attention = WholeRowAttention(
+                rows, heads=heads, head_dim=head_dim, max_frames=rows.width
+            )
+            dynamic_dims = [(row_attention.cu_seqlens, 0)]
+        if self.is_compiled:
+            # note(ratish): hints, not constraints; they share x's total frames,
+            # which the first call specializes, so mark_dynamic would fail.
+            for tensor, dims in dynamic_dims + [
+                (rows.row_ids, 0),
+                (rows.positions, 0),
+                (rows.conv_input_index, 0),
+                (rows.conv_output_index, 0),
+            ]:
+                dynamo.maybe_mark_dynamic(tensor, dims)
         else:
             pass
-        return RowAttention(rows, chunk_size=chunk_size, heads=attention.heads)
+        return row_attention
 
     def compile(self, dtype: torch.dtype | None) -> bool:
-        """Install the two exact dynamic Inductor PackedDiT contracts."""
         if not self.is_ragged or dtype not in FA3_DTYPES:
             logger.debug(
                 f"Skipping PackedDiT torch.compile (ragged={self.is_ragged}, dtype={dtype})"
@@ -349,99 +454,20 @@ class PackedDiT:
             return False
         else:
             pass
-        if self.compiled_causal_forward is not None:
-            assert self.compiled_full_forward is not None
-            return True
-        else:
-            assert self.compiled_full_forward is None
-
-        try:
-            self.compiled_causal_forward = torch.compile(
-                self.forward_causal,
-                backend="inductor",
-                dynamic=True,
-                fullgraph=True,
-                options=dict(PACKED_INDUCTOR_OPTIONS),
-            )
-            self.compiled_full_forward = torch.compile(
-                self.forward_full,
-                backend="inductor",
-                dynamic=True,
-                fullgraph=True,
-                options=dict(PACKED_INDUCTOR_OPTIONS),
-            )
-        except Exception:
-            self.disable_compile()
-            raise
+        # note(ratish): not dynamic=True, which makes the head count and size symbolic;
+        # the reshape into FA3's layout then copies query and key in every block.
+        self.forward = torch.compile(
+            self.forward,
+            backend="inductor",
+            fullgraph=True,
+            options=dict(PACKED_INDUCTOR_OPTIONS),
+        )
+        self.is_compiled = True
         logger.info(
-            "Compiled eligible Fun-CosyVoice3 PackedDiT causal/full contracts "
-            f"(dynamic=True, fullgraph=True, emulate_precision_casts=True, dtype={dtype})"
+            "Compiled the Fun-CosyVoice3 PackedDiT forward "
+            f"(fullgraph=True, emulate_precision_casts=True, dtype={dtype})"
         )
         return True
-
-    def disable_compile(self) -> None:
-        self.compiled_causal_forward = None
-        self.compiled_full_forward = None
-
-    def forward_for_mode(
-        self, streaming: bool, *, attention: PackedRowAttention
-    ) -> CompiledPackedForward:
-        if not isinstance(attention, RaggedRowAttention):
-            return self.forward
-        else:
-            assert (self.compiled_causal_forward is None) == (
-                self.compiled_full_forward is None
-            )
-            compiled = (
-                self.compiled_causal_forward
-                if streaming
-                else self.compiled_full_forward
-            )
-            return self.forward if compiled is None else compiled
-
-    def forward_causal(
-        self,
-        x: torch.Tensor,
-        mu: torch.Tensor,
-        spks: torch.Tensor,
-        cond: torch.Tensor,
-        t: torch.Tensor,
-        rows: PackedRows,
-        attention: RaggedRowAttention,
-    ) -> torch.Tensor:
-        return forward_packed_tensor_geometry(
-            self,
-            x,
-            mu,
-            spks,
-            cond,
-            t,
-            rows,
-            attention,
-            max_seqlen_q=attention.max_seqlen_q,
-        )
-
-    def forward_full(
-        self,
-        x: torch.Tensor,
-        mu: torch.Tensor,
-        spks: torch.Tensor,
-        cond: torch.Tensor,
-        t: torch.Tensor,
-        rows: PackedRows,
-        attention: RaggedRowAttention,
-    ) -> torch.Tensor:
-        return forward_packed_tensor_geometry(
-            self,
-            x,
-            mu,
-            spks,
-            cond,
-            t,
-            rows,
-            attention,
-            max_seqlen_q=attention.page_table.shape[1],
-        )
 
     def forward(
         self,
@@ -449,22 +475,30 @@ class PackedDiT:
         mu: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        t: torch.Tensor,
+        block_modulations: tuple[torch.Tensor, ...],
+        final_modulation: torch.Tensor,
         rows: PackedRows,
         attention: PackedRowAttention,
+        rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        """x, mu, cond, spks: (1, total, channels); t: (1,). Returns
-        (1, total, out_channels)."""
+        """x, mu, cond, spks: (1, total, channels); block_modulations: each block's
+        (1, 6 * hidden) at the Euler step, final_modulation: (1, 2 * hidden);
+        rope: rope(rows). Returns (1, total, out_channels)."""
         dit = self.dit
-        t = dit.time_embed(t)
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
         h = self.conv_pos_embed(h, rows) + h
-        rope = self.rope(rows)
         residual = h
-        for block in dit.transformer_blocks:
-            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
+        for block_index, block in enumerate(dit.transformer_blocks):
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulate_block(
+                block.attn_norm.norm, h, block_modulations[block_index]
+            )
             h = h + gate_msa.unsqueeze(1) * self.attend(
-                block.attn, norm, rope, attention
+                block.attn,
+                norm,
+                rope,
+                attention,
+                self.qkv_weights[block_index],
+                self.qkv_biases[block_index],
             )
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
@@ -472,19 +506,41 @@ class PackedDiT:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:
             pass
-        h = dit.norm_out(h, t)
+        h = modulate_final(dit.norm_out.norm, h, final_modulation)
         return dit.proj_out(h)
 
     def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
-        padded = scatter_rows(h, rows, rows.width)
-        return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
+        # note (ratish): the padded call zero pads conv2's input, not conv1's output,
+        # so conv2's gaps are gathered again.
+        first_input = torch.cat((h.new_zeros(1, h.shape[2]), h[0]))[
+            rows.conv_input_index
+        ]
+        first_output = self.positional_conv(first_input, 0)
+        second_input = torch.cat(
+            (
+                first_output.new_zeros(1, first_output.shape[1]),
+                first_output[rows.conv_output_index],
+            )
+        )[rows.conv_input_index]
+        second_output = self.positional_conv(second_input, 1)
+        return second_output[rows.conv_output_index].unsqueeze(0)
 
-    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
-        """cos and sin, (1, total, rotary dims) each, in float32."""
-        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+    def positional_conv(self, x: torch.Tensor, conv_index: int) -> torch.Tensor:
+        """Positional conv conv_index and its Mish over x: (frames, channels), each
+        output frame reading the CONV_CONTEXT_FRAMES frames before it."""
+        conv_pos_embed = self.dit.input_embed.conv_pos_embed
+        if isinstance(conv_pos_embed, FusedConvPositionEmbedding):
+            return conv_pos_embed.conv(x.unsqueeze(0), conv_index)[0]
+        else:
+            conv = (conv_pos_embed.conv1, conv_pos_embed.conv2)[conv_index]
+            return conv(x.T.unsqueeze(0))[0].T
+
+    def rope_angles(self, frame_count: int) -> torch.Tensor:
+        """RoPE angles of positions [0, frame_count), (1, frame_count, rotary
+        dims), in float32."""
+        angles, scale = self.dit.rotary_embed.forward_from_seq_len(frame_count)
         assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-        freqs = freqs[:, rows.positions]
-        return freqs.cos(), freqs.sin()
+        return angles
 
     @staticmethod
     def attend(
@@ -492,174 +548,18 @@ class PackedDiT:
         x: torch.Tensor,
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
+        qkv_weight: torch.Tensor,
+        qkv_bias: torch.Tensor,
     ) -> torch.Tensor:
-        # note (ratish): under autocast to_q, to_k and to_v would each cast the
-        # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
-        query = attn.to_q(x)
-        key = attn.to_k(x)
-        value = attn.to_v(x)
-        rotate_in_place(query, *rope)
-        rotate_in_place(key, *rope)
+        query, key, value = F.linear(x, qkv_weight, qkv_bias).chunk(3, dim=-1)
+        if torch.compiler.is_compiling():
+            query = rotated(query, *rope)
+            key = rotated(key, *rope)
+        else:
+            rotate_in_place(query, *rope)
+            rotate_in_place(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
-
-
-def gather_rows_tensor_geometry(padded: torch.Tensor, rows: PackedRows) -> torch.Tensor:
-    width = padded.shape[1]
-    flat = padded.reshape(padded.shape[0] * width, padded.shape[2])
-    return flat[rows.row_ids * width + rows.positions].unsqueeze(0)
-
-
-def scatter_rows_tensor_geometry(
-    packed: torch.Tensor, rows: PackedRows, row_count: int, width: int
-) -> torch.Tensor:
-    channels = packed.shape[2]
-    flat = packed.new_zeros(row_count * width, channels)
-    flat[rows.row_ids * width + rows.positions] = packed[0]
-    return flat.view(row_count, width, channels)
-
-
-def conv_pos_embed_tensor_geometry(
-    estimator: PackedDiT,
-    h: torch.Tensor,
-    rows: PackedRows,
-    attention: RaggedRowAttention,
-) -> torch.Tensor:
-    row_count = rows.starts_host.shape[0] - 1
-    width = attention.page_table.shape[1]
-    padded = scatter_rows_tensor_geometry(h, rows, row_count, width)
-    module = estimator.dit.input_embed.conv_pos_embed
-    embedded = padded.permute(0, 2, 1)
-    embedded = F.pad(embedded, (module.kernel_size - 1, 0, 0, 0))
-    embedded = module.conv1[0](embedded)
-    embedded = native_mish(embedded)
-    embedded = F.pad(embedded, (module.kernel_size - 1, 0, 0, 0))
-    embedded = module.conv2[0](embedded)
-    embedded = native_mish(embedded)
-    embedded = embedded.permute(0, 2, 1)
-    return gather_rows_tensor_geometry(embedded, rows)
-
-
-def rope_tensor_geometry(
-    estimator: PackedDiT,
-    rows: PackedRows,
-    attention: RaggedRowAttention,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    width = attention.page_table.shape[1]
-    freqs, scale = estimator.dit.rotary_embed.forward_from_seq_len(width)
-    assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
-    freqs = freqs[:, rows.positions]
-    return freqs.cos(), freqs.sin()
-
-
-def ragged_attention_tensor_geometry(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention: RaggedRowAttention,
-    max_seqlen_q: int,
-) -> torch.Tensor:
-    page_shape = (-1, FA3_PAGE_SIZE, attention.heads, attention.head_dim)
-    output = packed_fa3(
-        query[0].reshape(-1, attention.heads, attention.head_dim),
-        key[0].reshape(page_shape),
-        value[0].reshape(page_shape),
-        attention.cache_seqlens,
-        attention.page_table,
-        attention.cu_seqlens_q,
-        max_seqlen_q,
-    )
-    return output.reshape(1, -1, attention.heads * attention.head_dim)
-
-
-def attend_tensor_geometry(
-    attn: torch.nn.Module,
-    x: torch.Tensor,
-    rope: tuple[torch.Tensor, torch.Tensor],
-    attention: RaggedRowAttention,
-    max_seqlen_q: int,
-) -> torch.Tensor:
-    # note (ratish): under autocast to_q, to_k and to_v would each cast the
-    # float32 norm output again.
-    x = x.to(attn.to_q.weight.dtype)
-    query = attn.to_q(x)
-    key = attn.to_k(x)
-    value = attn.to_v(x)
-    rotate_in_place(query, *rope)
-    rotate_in_place(key, *rope)
-    output = ragged_attention_tensor_geometry(
-        query, key, value, attention, max_seqlen_q
-    ).to(query.dtype)
-    return attn.to_out[1](attn.to_out[0](output))
-
-
-def layer_norm_preserving_eager(
-    layer_norm: torch.nn.LayerNorm, x: torch.Tensor
-) -> torch.Tensor:
-    normalized_size = int(layer_norm.normalized_shape[0])
-    return native_layer_norm(x, normalized_size, float(layer_norm.eps))
-
-
-def attn_norm_preserving_eager(
-    block: torch.nn.Module,
-    h: torch.Tensor,
-    time_embedding: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    modulation = block.attn_norm.linear(block.attn_norm.silu(time_embedding))
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
-        modulation, 6, dim=1
-    )
-    normalized = layer_norm_preserving_eager(block.attn_norm.norm, h)
-    normalized = normalized * (1 + scale_msa[:, None]) + shift_msa[:, None]
-    return normalized, gate_msa, shift_mlp, scale_mlp, gate_mlp
-
-
-def final_norm_preserving_eager(
-    norm_out: torch.nn.Module,
-    h: torch.Tensor,
-    time_embedding: torch.Tensor,
-) -> torch.Tensor:
-    modulation = norm_out.linear(norm_out.silu(time_embedding))
-    scale, shift = torch.chunk(modulation, 2, dim=1)
-    normalized = layer_norm_preserving_eager(norm_out.norm, h)
-    return normalized * (1 + scale)[:, None, :] + shift[:, None, :]
-
-
-def forward_packed_tensor_geometry(
-    estimator: PackedDiT,
-    x: torch.Tensor,
-    mu: torch.Tensor,
-    spks: torch.Tensor,
-    cond: torch.Tensor,
-    t: torch.Tensor,
-    rows: PackedRows,
-    attention: RaggedRowAttention,
-    *,
-    max_seqlen_q: int,
-) -> torch.Tensor:
-    dit = estimator.dit
-    t = dit.time_embed(t)
-    h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
-    h = conv_pos_embed_tensor_geometry(estimator, h, rows, attention) + h
-    rope = rope_tensor_geometry(estimator, rows, attention)
-    residual = h
-    for block in dit.transformer_blocks:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = attn_norm_preserving_eager(
-            block, h, t
-        )
-        h = h + gate_msa.unsqueeze(1) * attend_tensor_geometry(
-            block.attn, norm, rope, attention, max_seqlen_q
-        )
-        ff_norm = layer_norm_preserving_eager(block.ff_norm, h)
-        ff_norm = ff_norm * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-        h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
-    if dit.long_skip_connection is not None:
-        h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
-    else:
-        pass
-    h = final_norm_preserving_eager(dit.norm_out, h, t)
-    return dit.proj_out(h)
 
 
 def rotate_in_place(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
@@ -672,6 +572,52 @@ def rotate_in_place(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> No
     rotary.copy_(rotary * cos + half * sin)
 
 
+def rotated(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    # note(ratish): the same values as rotate_in_place; compiled, its in-place write
+    # becomes a full copy of x before FA3, while this where is one kernel.
+    rotary_dims, width = cos.shape[-1], x.shape[-1]
+    cos = F.pad(cos, (0, width - rotary_dims))
+    sin = F.pad(sin, (0, width - rotary_dims))
+    half = torch.stack((-x[..., 1::2], x[..., ::2]), dim=-1).flatten(-2)
+    turned = (x * cos + half * sin).to(x.dtype)
+    is_rotary = torch.arange(width, device=x.device) < rotary_dims
+    return torch.where(is_rotary, turned, x)
+
+
+def euler_step_times(
+    time_span: torch.Tensor,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Each Euler step's time and size, the time accumulated over the steps
+    rather than read from time_span."""
+    t, dt = time_span[0], time_span[1] - time_span[0]
+    for step in range(1, len(time_span)):
+        yield t, dt
+        t = t + dt
+        if step < len(time_span) - 1:
+            dt = time_span[step + 1] - t
+        else:
+            pass
+
+
+def modulate_block(
+    layer_norm: torch.nn.LayerNorm, x: torch.Tensor, modulation: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """A DiT block's AdaLayerNormZero given its modulation, (1, 6 * hidden)."""
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation.chunk(
+        6, dim=1
+    )
+    x = layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+    return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+
+def modulate_final(
+    layer_norm: torch.nn.LayerNorm, x: torch.Tensor, modulation: torch.Tensor
+) -> torch.Tensor:
+    """The DiT's AdaLayerNormZero_Final given its modulation, (1, 2 * hidden)."""
+    scale, shift = modulation.chunk(2, dim=1)
+    return layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+
+
 def solve_flow_euler_packed(
     estimator: PackedDiT,
     noise: torch.Tensor,
@@ -679,43 +625,38 @@ def solve_flow_euler_packed(
     mu: torch.Tensor,
     spks: torch.Tensor,
     cond: torch.Tensor,
-    rows: PackedRows,
+    twin_rows: PackedRows,
+    attention: PackedRowAttention,
+    angles: torch.Tensor,
     *,
     cfg_rate: float,
-    streaming: bool,
 ) -> torch.Tensor:
-    """Euler steps over a packed sequence with classifier free guidance: the
-    conditional rows and their unconditional twins share one DiT call."""
+    """Euler steps with classifier free guidance, the rows and their twins in one
+    DiT call. noise, mu, cond: (1, total, channels), spks: (rows, channels),
+    twin_rows the rows then their twins, angles covering the widest row."""
     total = noise.shape[1]
-    twin_rows = pack_rows(rows.lengths * 2, noise.device)
-    attention = estimator.row_attention(
-        twin_rows, streaming=streaming, dtype=spks.dtype
-    )
     mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)
     spks_cfg = torch.cat((spks, torch.zeros_like(spks)), dim=0)
     spks_cfg = spks_cfg[twin_rows.row_ids].unsqueeze(0)
-    flow_time = torch.zeros(1, device=noise.device, dtype=spks.dtype)
-    forward = estimator.forward_for_mode(streaming, attention=attention)
+    # note(ratish): once per solve and outside the compiled forward,
+    # whose graph would otherwise hold RoPE's autocast region and miss the AOT cache.
+    angles = angles[:, twin_rows.positions]
+    rope = (angles.cos(), angles.sin())
     x = noise
-    t, dt = time_span[0], time_span[1] - time_span[0]
-    for step in range(1, len(time_span)):
-        flow_time[:] = t
-        vector_field = forward(
+    for step, (_, dt) in enumerate(euler_step_times(time_span)):
+        vector_field = estimator.forward(
             torch.cat((x, x), dim=1),
             mu_cfg,
             spks_cfg,
             cond_cfg,
-            flow_time,
+            estimator.block_modulations[step],
+            estimator.final_modulations[step],
             twin_rows,
             attention,
+            rope,
         )
         conditional = vector_field[:, :total]
         unconditional = vector_field[:, total:]
         x = x + dt * ((1.0 + cfg_rate) * conditional - cfg_rate * unconditional)
-        t = t + dt
-        if step < len(time_span) - 1:
-            dt = time_span[step + 1] - t
-        else:
-            pass
     return x.float()

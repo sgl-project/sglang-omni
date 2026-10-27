@@ -8,10 +8,10 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping, MutableMapping
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import WebSocket
@@ -79,6 +79,16 @@ ClientRelayOutcome = Literal[
     "message_too_large",
     "upstream_closed_while_sending",
 ]
+
+
+class UpstreamWebSocket(Protocol):
+    """Relay operations shared by modern and legacy websockets clients."""
+
+    def __aiter__(self) -> AsyncIterator[str | bytes]: ...
+
+    async def send(self, message: str | bytes, /) -> None: ...
+
+    async def close(self, *, code: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -222,7 +232,7 @@ class TTSWebSocketProxy:
     async def receive_initial_message(
         self,
         websocket: WebSocket,
-    ) -> dict[str, Any] | SessionResult:
+    ) -> MutableMapping[str, object] | SessionResult:
         message = await asyncio.wait_for(
             websocket.receive(),
             timeout=SPEECH_WS_CONFIG_TIMEOUT_S,
@@ -250,7 +260,7 @@ class TTSWebSocketProxy:
         self,
         websocket: WebSocket,
         worker: Worker,
-        first_message: dict[str, Any],
+        first_message: Mapping[str, object],
     ) -> SessionResult:
         connect_options = {
             _WEBSOCKET_HEADERS_ARGUMENT: forward_headers(websocket),
@@ -364,7 +374,7 @@ class TTSWebSocketProxy:
         )
 
 
-def session_route_facts(message: dict[str, Any]) -> SpeechRouteFacts:
+def session_route_facts(message: Mapping[str, object]) -> SpeechRouteFacts:
     text = message.get("text")
     if not isinstance(text, str):
         return extract_speech_route_facts({}, RouteKind.SPEECH)
@@ -446,7 +456,7 @@ def connection_failure_result(exc: Exception) -> SessionResult:
 
 async def relay(
     websocket: WebSocket,
-    upstream: Any,
+    upstream: UpstreamWebSocket,
     *,
     max_client_message_bytes: int,
 ) -> RelayOutcome:
@@ -471,7 +481,7 @@ async def relay(
 
 async def coordinate_relay(
     websocket: WebSocket,
-    upstream: Any,
+    upstream: UpstreamWebSocket,
     *,
     client_task: asyncio.Task[ClientRelayOutcome],
     upstream_task: asyncio.Task[RelayOutcome],
@@ -513,7 +523,9 @@ async def coordinate_relay(
     return outcome
 
 
-def raise_completed_task_error(tasks: set[asyncio.Task[Any]]) -> None:
+def raise_completed_task_error(
+    tasks: set[asyncio.Task[ClientRelayOutcome] | asyncio.Task[RelayOutcome]],
+) -> None:
     for task in tasks:
         if task.cancelled():
             continue
@@ -522,14 +534,16 @@ def raise_completed_task_error(tasks: set[asyncio.Task[Any]]) -> None:
             raise error
 
 
-async def close_upstream(upstream: Any, *, code: int) -> None:
+async def close_upstream(upstream: UpstreamWebSocket, *, code: int) -> None:
     try:
         await upstream.close(code=code)
     except (WebSocketException, OSError, asyncio.TimeoutError):
         pass
 
 
-async def cancel_relay_tasks(*tasks: asyncio.Task[Any]) -> None:
+async def cancel_relay_tasks(
+    *tasks: asyncio.Task[ClientRelayOutcome | RelayOutcome],
+) -> None:
     for task in tasks:
         if not task.done():
             task.cancel()
@@ -548,7 +562,7 @@ async def cancel_relay_tasks(*tasks: asyncio.Task[Any]) -> None:
 
 async def client_to_upstream(
     websocket: WebSocket,
-    upstream: Any,
+    upstream: UpstreamWebSocket,
     *,
     max_message_bytes: int,
 ) -> ClientRelayOutcome:
@@ -569,7 +583,7 @@ async def client_to_upstream(
 
 
 async def upstream_to_client(
-    upstream: Any,
+    upstream: UpstreamWebSocket,
     websocket: WebSocket,
 ) -> RelayOutcome:
     protocol = TTSProtocolState()
@@ -693,7 +707,9 @@ def is_application_close(exc: ConnectionClosed) -> bool:
     )
 
 
-async def send_upstream(upstream: Any, message: dict[str, Any]) -> None:
+async def send_upstream(
+    upstream: UpstreamWebSocket, message: Mapping[str, object]
+) -> None:
     if message.get("type") != "websocket.receive":
         return
     text = message.get("text")
@@ -756,7 +772,7 @@ def safe_close_code(code: int) -> int:
     return code if 1000 <= code < 5000 else 1011
 
 
-def message_size(message: dict[str, Any]) -> int:
+def message_size(message: Mapping[str, object]) -> int:
     text = message.get("text")
     if isinstance(text, str):
         return len(text.encode("utf-8"))

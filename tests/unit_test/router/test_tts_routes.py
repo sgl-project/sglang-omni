@@ -686,6 +686,56 @@ def test_tts_http_routes_preserve_batch_identity_and_uploaded_voice_owner() -> N
     }
 
 
+def test_speech_outcome_lookup_is_pinned_to_the_echoed_worker() -> None:
+    seen: list[tuple[str, str, bool]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        seen.append(
+            (
+                request_netloc(request),
+                request.url.path,
+                "x-sglang-omni-route-worker" in request.headers,
+            )
+        )
+        return httpx.Response(
+            200, json={"finish_reason": "length", "usage": None}, request=request
+        )
+
+    app = create_app(
+        router_config(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    worker_b = worker_id_from_url("http://worker-b:8102")
+    with TestClient(app) as client:
+        wait_for_router_ready(client)
+        pinned = [
+            client.get(
+                "/v1/audio/speech/speech-1",
+                headers={"x-sglang-omni-route-worker": worker_b},
+            )
+            for _ in range(2)
+        ]
+        missing = client.get("/v1/audio/speech/speech-1")
+        unknown = client.get(
+            "/v1/audio/speech/speech-1",
+            headers={"x-sglang-omni-route-worker": "nope"},
+        )
+
+    # Round robin would alternate workers; the echoed id pins both lookups.
+    assert [response.status_code for response in pinned] == [200, 200]
+    assert pinned[0].json()["finish_reason"] == "length"
+    assert pinned[0].headers["x-sglang-omni-worker"] == worker_b
+    assert seen == [("worker-b:8102", "/v1/audio/speech/speech-1", False)] * 2
+    assert missing.status_code == 400
+    assert "x-sglang-omni-route-worker" in missing.json()["error"]["message"]
+    assert unknown.status_code == 404
+    assert app.state.workers[1].to_dict()["routed_requests_by_class"] == {
+        "speech_outcome": 2
+    }
+
+
 @pytest.mark.parametrize(
     ("path", "payload"),
     [

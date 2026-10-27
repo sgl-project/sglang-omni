@@ -6,7 +6,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any
 
 import numpy as np
 
@@ -44,7 +43,7 @@ class SpeakerArtifactCache:
         self.delete_invalidation_counter = 0
         self.lock = RLock()
 
-    def get(self, key: SpeakerCacheKey) -> Any | None:
+    def get(self, key: SpeakerCacheKey) -> object | None:
         with self.lock:
             value = self.cache.get(encode_key(key))
             if value is None:
@@ -55,7 +54,7 @@ class SpeakerArtifactCache:
             self.hit_count += 1
             return value
 
-    def put(self, key: SpeakerCacheKey, value: Any) -> None:
+    def put(self, key: SpeakerCacheKey, value: object) -> None:
         with self.lock:
             self.cache.put(encode_key(key), value)
 
@@ -84,7 +83,7 @@ class SpeakerArtifactCache:
             }
 
 
-def estimate_cache_bytes(value: Any) -> int:
+def estimate_cache_bytes(value: object) -> int:
     """Estimate memory held by common artifact containers."""
 
     if value is None:

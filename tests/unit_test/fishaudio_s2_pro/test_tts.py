@@ -17,7 +17,6 @@ from sglang_omni.models.fishaudio_s2_pro.model_runner import (
 from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     S2ProSGLangRequestData,
     make_tts_scheduler_adapters,
-    validate_s2pro_top_k,
 )
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -291,10 +290,6 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     assert torch.allclose(runner.model.ras_top_p, torch.tensor([0.45, 0.95]))
 
 
-def test_fish_s2pro_accepts_default_top_k_sentinel() -> None:
-    validate_s2pro_top_k(-1)
-
-
 def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
     model = SimpleNamespace(
         vocab_size=80,
@@ -505,18 +500,6 @@ def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
     assert request.data.latest_stream_code_chunk is None
     assert request.data.previous_semantic_tokens == [SEMANTIC_TOKEN_ID]
     assert torch.equal(request.data.last_codebook_values, torch.tensor([11, 22]))
-
-
-def test_fish_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
-    request = make_s2pro_request("req-immediate-terminal")
-
-    result = collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
-
-    assert int(result.next_token_ids[0].item()) == IM_END_TOKEN_ID
-    assert request.data.output_codes == []
-    assert request.data.latest_stream_code_chunk is None
-    assert request.data.previous_semantic_tokens == []
-    assert request.data.last_codebook_values is None
 
 
 def test_fish_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:

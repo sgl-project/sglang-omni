@@ -207,6 +207,7 @@ def launch_qwen_text_server(args: argparse.Namespace) -> None:
         port=args.port,
         model_name=args.model_name,
         enable_realtime=args.enable_realtime,
+        skip_server_warmup=args.skip_server_warmup,
     )
 
 
@@ -266,10 +267,10 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
     target.add_argument(
         "--thinker-max-seq-len",
         type=int,
-        default=8192,
+        default=None,
         help=(
-            "Context length for the thinker stage, preprocessing, and talker "
-            "context guards."
+            "Context length for preprocessing and the thinker stage. Defaults to "
+            "the checkpoint's thinker context."
         ),
     )
     target.add_argument(
@@ -277,8 +278,8 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Context length for the talker_ar KV pool. Uses the pipeline "
-            "default when omitted."
+            "Context length for the talker_ar stage. Defaults to the checkpoint's "
+            "context."
         ),
     )
     _add_qwen_speech_mem_args(target)
@@ -464,6 +465,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
         port=args.port,
         model_name=args.model_name,
         enable_realtime=args.enable_realtime,
+        skip_server_warmup=args.skip_server_warmup,
     )
 
 

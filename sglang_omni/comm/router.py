@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any
 
 import torch
 
@@ -12,6 +12,7 @@ from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.relay.base import Relay, create_relay
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class CommRouter:
         gpu_stage_names: set[str] | None,
         stage_gpu_ids: dict[str, tuple[int, ...]] | None = None,
         remote_stage_names: set[str] | None = None,
-        comm_config: dict[str, Any] | None = None,
+        comm_config: Mapping[str, int | float | str | None] | None = None,
         injected_relay: Relay | None = None,
     ) -> None:
         self.stage_name = stage_name
@@ -288,7 +289,7 @@ class CommRouter:
         return kind, self.relay(kind)
 
     def relay_for_payload(
-        self, target: str, payload: Any
+        self, target: str, payload: StagePayload
     ) -> tuple[TransportKind, Relay]:
         kind = self.outbound_payload(target, payload)
         if kind is TransportKind.LOCAL_OBJECT:
@@ -297,7 +298,7 @@ class CommRouter:
             pass
         return kind, self.relay(kind)
 
-    def outbound_payload(self, target: str, payload: Any) -> TransportKind:
+    def outbound_payload(self, target: str, payload: object) -> TransportKind:
         if target in self.remote_stage_names:
             kind = TransportKind.MOONCAKE
         else:
@@ -424,7 +425,7 @@ class CommRouter:
         return list(self.relays.values())
 
 
-def tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
+def tensor_devices(obj: object, seen: set[int] | None = None) -> set[str]:
     if obj is None:
         return set()
     else:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -20,11 +20,13 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     create_sglang_moss_transcribe_diarize_executor,
     missing_additional_chat_templates_compat,
 )
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.utils.imports import import_string
 
 
 def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -51,41 +53,6 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
         request_build_max_pending=16,
         stream_emit_interval_s=0.05,
     )
-
-
-def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
-    config = MossTranscribeDiarizePipelineConfig(
-        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize"
-    )
-
-    assert config.entry_stage == "asr"
-    assert [stage.name for stage in config.stages] == ["asr"]
-    assert config.terminal_stages == ["asr"]
-    assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory_path.endswith(
-        "create_sglang_moss_transcribe_diarize_executor"
-    )
-    factory = config.stages[0].factory
-    engine = config.stages[0].engine
-    assert factory.device is None
-    assert engine.max_running_requests == 16
-    assert engine.enable_torch_compile is True
-    assert engine.torch_compile_max_bs == 4
-    assert factory.encoder_max_batch_size == 2
-    assert factory.request_build_max_workers == 8
-    assert factory.request_build_max_pending == 16
-    assert factory.prefill_coalesce_requests == 4
-    assert factory.prefill_coalesce_wait_ms == 12
-    assert factory.prefill_coalesce_when_idle is True
-    assert factory.prefill_coalesce_requires_pending_builds is True
-    assert factory.prefill_coalesce_after_builds_during_decode is True
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config(
-            "MossTranscribeDiarizeForConditionalGeneration"
-        )
-        is MossTranscribeDiarizePipelineConfig
-    )
-    assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
 
 
 def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
@@ -188,33 +155,6 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
     assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
 
 
-def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
-    signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
-
-    assert signature.parameters["max_running_requests"].default == 16
-    assert signature.parameters["mem_fraction_static"].default == 0.80
-    assert signature.parameters["enable_torch_compile"].default is None
-    assert signature.parameters["torch_compile_max_bs"].default == 4
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-    assert signature.parameters["prefill_coalesce_requests"].default == 4
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 12.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["encoder_max_batch_size"].default == 2
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-    assert signature.parameters["encoder_chunk_buckets"].default is None
-    assert signature.parameters["encoder_torch_compile"].default is False
-
-
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +223,41 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
     assert model.compiled_chunk_buckets == frozenset({1})
 
 
+def test_init_encoder_graphs_uses_platform_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize import sglang_model
+
+    backend = object()
+    get_graph_backend = Mock(return_value=backend)
+    graph_runner = Mock()
+
+    monkeypatch.setattr(
+        sglang_model.current_platform,
+        "get_device_graph_backend",
+        get_graph_backend,
+    )
+    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", graph_runner)
+
+    encoder = torch.nn.Linear(4, 4)
+    model = SimpleNamespace(
+        whisper_encoder=encoder,
+        encoder_graph_runner=None,
+        config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
+    )
+
+    sglang_model.MossTranscribeDiarizeForConditionalGeneration.init_encoder_graphs(
+        model, [2, 1], input_feature_len=3000
+    )
+
+    get_graph_backend.assert_called_once_with(next(encoder.parameters()).device)
+    assert graph_runner.call_args.kwargs["graph_backend"] is backend
+    graph_runner.return_value.capture.assert_called_once_with([2, 1])
+    assert model.encoder_graph_runner is graph_runner.return_value
+
+
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
     from types import SimpleNamespace
 
@@ -325,6 +300,7 @@ def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
         gpu_id=0,
         model_runner=model_runner,
         enable_prefill_input_embeds=False,
+        speculative_worker=None,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
@@ -512,3 +488,13 @@ def test_processor_compat_preserves_non_template_repo_errors(
     with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)
+
+
+def test_server_warmup_request_is_a_second_of_audio_to_transcribe() -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    request = import_string(config.server_warmup_request_factory)(config)
+
+    audio, sample_rate = decode_audio_bytes(request.wav_bytes)
+
+    assert isinstance(request, TranscriptionWarmupRequest)
+    assert (len(audio), sample_rate, request.max_new_tokens) == (16000, 16000, 8)

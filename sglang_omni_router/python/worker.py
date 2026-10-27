@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterator, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from sglang_omni_router.python.config import Capability, WorkerConfig
 
@@ -18,6 +18,7 @@ ServiceClass = Literal[
     "generation",
     "speech_http",
     "speech_batch",
+    "speech_outcome",
     "voice_control",
     "tts_websocket",
     "transcription",
@@ -285,6 +286,14 @@ class Worker:
 
 def build_workers(configs: list[WorkerConfig]) -> list[Worker]:
     return [Worker(config=config) for config in configs]
+
+
+def find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
+    decoded = unquote(worker_id)
+    for worker in workers:
+        if worker.worker_id == worker_id or worker.url == decoded:
+            return worker
+    return None
 
 
 def increment_counter(counters: dict[str, int], key: str) -> None:

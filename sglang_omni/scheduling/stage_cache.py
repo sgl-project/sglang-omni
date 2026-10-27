@@ -6,16 +6,17 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Generic
 
 import torch
+from typing_extensions import TypeVar
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CacheEntry:
-    data: Any
+    data: object
     size_bytes: int
 
 
@@ -30,8 +31,8 @@ def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
 
 
 def detach_value(
-    value: Any, *, device: torch.device | None, pin_memory: bool = False
-) -> Any:
+    value: object, *, device: torch.device | None, pin_memory: bool = False
+) -> object:
     if isinstance(value, torch.Tensor):
         value = value.detach()
         if device is not None:
@@ -68,7 +69,7 @@ def detach_value(
     return value
 
 
-def value_size_bytes(value: Any) -> int:
+def value_size_bytes(value: object) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
     else:
@@ -88,7 +89,10 @@ def value_size_bytes(value: Any) -> int:
     return 0
 
 
-class StageOutputCache:
+CacheInput = TypeVar("CacheInput", default=object)
+
+
+class StageOutputCache(Generic[CacheInput]):
     """Small in-memory LRU cache for non-AR stage outputs."""
 
     def __init__(
@@ -96,7 +100,7 @@ class StageOutputCache:
         max_size: int | None = None,
         max_bytes: int | None = None,
         cache_device: torch.device | str | None = None,
-        size_fn: Callable[[Any], int] | None = None,
+        size_fn: Callable[[CacheInput], int] | None = None,
         pin_memory: bool = False,
     ) -> None:
         if max_size is not None and max_size < 0:
@@ -127,7 +131,7 @@ class StageOutputCache:
         self.size_fn = size_fn or value_size_bytes
         self.lock = threading.Lock()
 
-    def get(self, key: str | None) -> Any | None:
+    def get(self, key: str | None) -> object | None:
         if key is None:
             return None
         else:
@@ -142,7 +146,7 @@ class StageOutputCache:
             self.cache.move_to_end(key)
             return entry.data
 
-    def put(self, key: str | None, data: Any) -> None:
+    def put(self, key: str | None, data: CacheInput) -> None:
         if key is None:
             return
         else:
@@ -174,7 +178,7 @@ class StageOutputCache:
             self.cache.clear()
             self.current_bytes = 0
 
-    def remove_if_same(self, key: str | None, expected_data: Any) -> bool:
+    def remove_if_same(self, key: str | None, expected_data: object) -> bool:
         """Remove a key only if it still holds the observed object."""
         if key is None:
             return False

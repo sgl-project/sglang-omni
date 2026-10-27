@@ -25,8 +25,9 @@ import base64
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 import torchaudio.functional as F_audio
@@ -69,6 +70,12 @@ from sglang_omni.scheduling.speaker_cache import (
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
+if TYPE_CHECKING:
+    from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,8 +96,22 @@ _CONSUMED_REFERENCE_INPUT_KEYS = frozenset(
     {"reference_audio", "references", "reference_codes"}
 )
 
+# note (ratish): measured on SeedTTS EN, top_k 50 without top_p raises WER,
+# and top_k 50 with top_p 0.8 matches these values.
+SPEECH_SAMPLING_DEFAULTS: dict[str, float | int] = {
+    "temperature": 0.8,
+    "top_p": 0.8,
+    "top_k": 30,
+}
+# note (ratish): rollouts sample the full vocabulary, the distribution their logprobs report.
+OTHER_SAMPLING_DEFAULTS: dict[str, float | int] = {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": -1,
+}
 
-def reference_audio_cache_key(reference_audio: Any) -> str | None:
+
+def reference_audio_cache_key(reference_audio: object) -> str | None:
     """Safe source key for preprocessing waveform-cache lookup."""
     if isinstance(reference_audio, (str, Path)):
         return _reference_path_cache_key(reference_audio)
@@ -123,7 +144,7 @@ def reference_audio_cache_key(reference_audio: Any) -> str | None:
     return hash_media_item(raw)
 
 
-def without_consumed_reference_media(inputs: Any) -> Any:
+def without_consumed_reference_media(inputs: object) -> object:
     """Return inputs with the reference media preprocessing already consumed."""
     if not isinstance(inputs, dict):
         return inputs
@@ -150,7 +171,7 @@ def reference_code_cache_key_from_waveform(
 
 
 def uploaded_voice_cache_key(
-    reference_audio: Any,
+    reference_audio: object,
     *,
     artifact_kind: str,
 ) -> SpeakerCacheKey | None:
@@ -199,7 +220,15 @@ class HiggsReferenceInput:
         self.content_key = content_key
 
 
-class HiggsReferenceEncodeHook(TensorReferenceEncodeHook[HiggsReferenceInput]):
+class ReferenceAudioCodec(Protocol):
+    def encode_reference(
+        self, waveform: torch.Tensor, /, *, sample_rate: int
+    ) -> torch.Tensor: ...
+
+
+class HiggsReferenceEncodeHook(
+    TensorReferenceEncodeHook[HiggsReferenceInput, HiggsReferenceInput]
+):
     """Encode delayed 24 kHz reference codes keyed by waveform content."""
 
     model_revision = ""
@@ -208,7 +237,9 @@ class HiggsReferenceEncodeHook(TensorReferenceEncodeHook[HiggsReferenceInput]):
     storage_dtype = torch.int32
     output_dtype = torch.long
 
-    def __init__(self, codec: Any, *, num_codebooks: int, model_identity: str):
+    def __init__(
+        self, codec: ReferenceAudioCodec, *, num_codebooks: int, model_identity: str
+    ) -> None:
         self.codec = codec
         self.num_codebooks = int(num_codebooks)
         self.model_id = str(model_identity)
@@ -237,7 +268,7 @@ def create_preprocessing_executor(
     num_codebooks: int = 8,
     codebook_size: int = 1026,
     max_concurrency: int = 16,
-):
+) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
     """CPU stage: text tokenize + optional ref-audio file IO.
 
     Builds the full prompt + delays the codes when the client supplied
@@ -266,6 +297,11 @@ def create_preprocessing_executor(
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
         params = payload.request.params or {}
+        sampling_defaults = (
+            SPEECH_SAMPLING_DEFAULTS
+            if (payload.request.metadata or {}).get("task") == "tts"
+            else OTHER_SAMPLING_DEFAULTS
+        )
         if isinstance(inputs, str):
             inputs = {"text": inputs}
         else:
@@ -407,9 +443,11 @@ def create_preprocessing_executor(
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             max_new_tokens=int(params.get("max_new_tokens", 2048)),
-            temperature=float(params.get("temperature", 1.0)),
-            top_p=params.get("top_p"),
-            top_k=params.get("top_k"),
+            temperature=float(
+                params.get("temperature", sampling_defaults["temperature"])
+            ),
+            top_p=params.get("top_p", sampling_defaults["top_p"]),
+            top_k=params.get("top_k", sampling_defaults["top_k"]),
             seed=params.get("seed"),
             return_logprob=bool(params.get("return_logprob", False)),
             return_omni_rollout=bool(params.get("return_omni_rollout", False)),
@@ -430,7 +468,7 @@ def create_audio_encoder_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
-):
+) -> SimpleScheduler[StagePayload, StagePayload]:
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
     No-op when preprocessing already produced ``reference_codes_delayed`` (the
@@ -527,16 +565,16 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     enable_async_decode: bool = False,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     total_gpu_memory_fraction: float | None = None,
-):
+) -> OmniScheduler[HiggsSGLangRequestData]:
     """sglang-backed AR engine for Higgs TTS."""
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
 
@@ -575,7 +613,7 @@ def create_vocoder_executor(
     stream_holdback_tokens: int = 4,
     compile_decode: bool = False,
     decode_cuda_graph_frame_counts: tuple[int, ...] = (),
-):
+) -> HiggsStreamingVocoderScheduler:
     """Decode Higgs delayed codes to a mono 24 kHz waveform.
 
     Codec weights are extracted from the TTS checkpoint itself.
@@ -643,15 +681,11 @@ def create_vocoder_executor(
             )
             codec.model.decode = eager_decode
     elif decode_cuda_graph_frame_counts:
-        # This is an explicitly selected performance contract. Failing startup
-        # is preferable to silently serving through the eager path and
-        # discovering the regression only in a latency/throughput CI job.
-        if not current_platform.enable_code2wav_graph():
+        if not current_platform.enable_codec_decode_graph():
             logger.warning(
-                "decode_cuda_graph_frame_counts was requested but the current "
-                "platform (%s) does not support Higgs codec CUDA graphs; "
-                "falling back to eager vocoder decode",
-                current_platform.device_type,
+                f"decode_cuda_graph_frame_counts was requested but the current "
+                f"platform ({current_platform.device_type}) does not opt into "
+                f"Higgs codec decode graphs; falling back to eager vocoder decode"
             )
         else:
             codec.capture_decode_cuda_graphs(

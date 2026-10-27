@@ -14,7 +14,6 @@ import logging
 import shutil
 import struct
 from functools import cache
-from typing import Any
 
 import numpy as np
 
@@ -119,7 +118,9 @@ def audio_encoding_unavailable_reason(response_format: str) -> str | None:
     return None
 
 
-def to_numpy(audio: Any) -> np.ndarray:
+def to_numpy(
+    audio: object,
+) -> np.ndarray:
     """Convert audio data to a numpy float32 array.
 
     Accepts:
@@ -331,7 +332,7 @@ def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
 
 
 def select_audio_delta(
-    audio_data: Any,
+    audio_data: object,
     *,
     emitted_samples: int,
     is_terminal: bool,
@@ -365,7 +366,7 @@ def select_audio_delta(
 
 
 def encode_audio(
-    audio: Any,
+    audio: object,
     *,
     response_format: str = "wav",
     sample_rate: int = DEFAULT_SAMPLE_RATE,
@@ -517,7 +518,7 @@ def encode_audio(
 
 
 def audio_to_base64(
-    audio: Any,
+    audio: object,
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     output_format: str = "wav",

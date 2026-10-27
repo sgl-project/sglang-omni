@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import inspect
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 
 import pytest
 import torch
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
     NpuDeviceGraphBackend,
     XpuDeviceGraphBackend,
 )
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
 def recording_module(graph_attr: str) -> SimpleNamespace:
@@ -115,15 +117,15 @@ def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
     [CudaDeviceGraphBackend(), XpuDeviceGraphBackend(), NpuDeviceGraphBackend()],
 )
 def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) -> None:
-    """The graph context must exit on the body's exception, not swallow it."""
-    exited: list[bool] = []
+    """The graph context must see the body's exception, and must not swallow it."""
+    seen: list[tuple] = []
 
     class Ctx:
         def __enter__(self):
             return None
 
         def __exit__(self, *args):
-            exited.append(True)
+            seen.append(args)
             return False
 
     module = recording_module("CUDAGraph")
@@ -134,8 +136,141 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
     monkeypatch.setattr(torch, "xpu", module)
     monkeypatch.setattr(torch, "npu", module, raising=False)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="capture body failed"):
         with backend.capture():
             raise ValueError("capture body failed")
 
-    assert exited == [True]
+    assert len(seen) == 1
+    exc_type, exc_value, traceback = seen[0]
+    assert exc_type is ValueError
+    assert str(exc_value) == "capture body failed"
+    assert traceback is not None
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [CudaDeviceGraphBackend(), XpuDeviceGraphBackend(), NpuDeviceGraphBackend()],
+)
+def test_a_graph_context_that_suppresses_is_honored(backend, monkeypatch) -> None:
+    """A context that reports the exception handled leaves the caller running."""
+
+    class Ctx:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *args):
+            return True
+
+    module = recording_module("CUDAGraph")
+    module.graph = lambda **kwargs: Ctx()
+    module.XPUGraph = module.CUDAGraph
+    module.NPUGraph = module.CUDAGraph
+    monkeypatch.setattr(torch, "cuda", module)
+    monkeypatch.setattr(torch, "xpu", module)
+    monkeypatch.setattr(torch, "npu", module, raising=False)
+
+    with backend.capture():
+        raise ValueError("capture body failed")
+
+
+@pytest.mark.parametrize(
+    "backend, graph_attr, module_name",
+    [
+        (CudaDeviceGraphBackend(), "CUDAGraph", "cuda"),
+        (NpuDeviceGraphBackend(), "NPUGraph", "npu"),
+        (XpuDeviceGraphBackend(), "XPUGraph", "xpu"),
+    ],
+)
+def test_each_backend_pools_through_its_own_module(
+    backend, graph_attr, module_name, monkeypatch
+) -> None:
+    """The pool must come from the runtime that records the graph: MUSA records
+    through torch.cuda while answering streams from its own module."""
+    handle = (7, 11)
+    module = recording_module(graph_attr)
+    module.graph_pool_handle = lambda: handle
+    monkeypatch.setattr(torch, module_name, module, raising=False)
+
+    assert backend.graph_pool_handle() is handle
+
+
+@pytest.mark.parametrize(
+    "backend, graph_attr, module_name",
+    [
+        (NpuDeviceGraphBackend(), "NPUGraph", "npu"),
+        (XpuDeviceGraphBackend(), "XPUGraph", "xpu"),
+    ],
+)
+@pytest.mark.parametrize("inference_mode_enabled", [False, True])
+def test_backend_opens_the_capture_outside_inference_mode(
+    backend: NpuDeviceGraphBackend | XpuDeviceGraphBackend,
+    graph_attr: str,
+    module_name: str,
+    inference_mode_enabled: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capture setup must leave cached tensors mutable outside inference mode."""
+    begin_modes: list[bool] = []
+
+    class CaptureContext:
+        def __enter__(self) -> None:
+            begin_modes.append(torch.is_inference_mode_enabled())
+            return None
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> bool:
+            return False
+
+    module = recording_module(graph_attr)
+    module.graph = lambda **kwargs: CaptureContext()
+    monkeypatch.setattr(torch, module_name, module, raising=False)
+
+    with torch.inference_mode(inference_mode_enabled):
+        with backend.capture():
+            body_mode = torch.is_inference_mode_enabled()
+        assert torch.is_inference_mode_enabled() is inference_mode_enabled
+
+    assert begin_modes == [False]
+    assert body_mode is inference_mode_enabled
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("model_owned_first", [True, False], ids=["model", "engine"])
+def test_captures_in_either_mode_leave_later_captures_working(
+    model_owned_first: bool,
+) -> None:
+    """Model-owned runners capture under inference mode and SGLang captures under
+    no_grad, in whichever order a stage happens to build them. Neither may leave
+    the device unable to open the next capture."""
+    device = require_device_streams()
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    static = torch.zeros(8, device=device)
+    with torch.inference_mode():
+        for _ in range(2):
+            static.sin().sum()
+            static.cos().sum()
+
+    if model_owned_first:
+        modes = [torch.inference_mode(), torch.no_grad()]
+    else:
+        modes = [torch.no_grad(), torch.inference_mode()]
+
+    outputs = []
+    graphs = []
+    for mode in modes:
+        with mode, backend.capture() as graph:
+            outputs.append(static.cos().sum())
+        graphs.append(graph)
+
+    static.fill_(0.0)
+    for graph in graphs:
+        graph.replay()
+    torch.get_device_module(device).synchronize(device)
+
+    for output in outputs:
+        assert float(output) == pytest.approx(8.0, abs=1e-4)

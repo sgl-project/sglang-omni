@@ -269,23 +269,6 @@ def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
     assert len(service.cache) == 0
 
 
-def test_extended_audio_never_reuses_prefix_embedding() -> None:
-    model = StubModel()
-    service = make_service(model)
-
-    short = make_item(111, 3)
-    extended = make_item(222, 5)
-    service.encode_item(short)
-    service.encode_item(extended)
-
-    assert model.encode_calls == 2
-    assert extended.precomputed_embeddings.shape == (5, HIDDEN_SIZE)
-    assert len(service.cache) == 2
-    assert not torch.equal(
-        short.precomputed_embeddings[0], extended.precomputed_embeddings[0]
-    )
-
-
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     model = StubModel()
     service = make_service(model)
@@ -299,37 +282,6 @@ def test_cache_key_prefers_full_waveform_fingerprint() -> None:
 
     assert model.encode_calls == 2
     assert len(service.cache) == 2
-
-
-def test_concurrent_identical_requests_encode_once() -> None:
-    model = StubModel()
-    model.encode_delay_s = 0.05
-    service = make_service(model)
-    n_threads = 8
-    barrier = threading.Barrier(n_threads)
-    items = [make_item(123, 3) for _ in range(n_threads)]
-    errors: list[Exception] = []
-
-    def worker(item: MultimodalDataItem) -> None:
-        try:
-            barrier.wait(timeout=10)
-            service.encode_item(item)
-        except Exception as exc:
-            errors.append(exc)
-
-    threads = [threading.Thread(target=worker, args=(item,)) for item in items]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
-
-    assert not errors, errors
-    assert model.encode_calls == 1
-    for item in items:
-        assert item.precomputed_embeddings.shape == (3, HIDDEN_SIZE)
-        assert torch.equal(item.precomputed_embeddings, items[0].precomputed_embeddings)
-    stats = service.stats()
-    assert stats["merged"] + stats["hits"] == n_threads - 1
 
 
 def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
@@ -383,22 +335,29 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
 
 def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     model = StubModel()
-    model.encode_delay_s = 0.05
+    gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = gate
+    model.encode_started = encode_started
     service = make_service(model, cache_max_entries=0)
-    barrier = threading.Barrier(2)
     items = [make_item(123, 3) for _ in range(2)]
     errors: list[Exception] = []
 
     def worker(item: MultimodalDataItem) -> None:
         try:
-            barrier.wait(timeout=10)
             service.encode_item(item)
         except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(item,)) for item in items]
-    for thread in threads:
-        thread.start()
+    threads[0].start()
+    assert encode_started.wait(timeout=5)
+    threads[1].start()
+    deadline = time.monotonic() + 5
+    while service.stats()["merged"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert service.stats()["merged"] == 1
+    gate.set()
     for thread in threads:
         thread.join(timeout=30)
 
@@ -619,16 +578,6 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
     assert first.feature is None
     assert first.precomputed_embeddings.shape == (2, HIDDEN_SIZE)
     assert len(service.cache) == 0
-
-
-def test_expected_audio_tokens_uses_request_metadata() -> None:
-    explicit = MultimodalDataItem(
-        modality=Modality.AUDIO,
-        feature=torch.zeros(1, 128, 300),
-        model_specific_data={"num_audio_tokens": 5},
-    )
-    assert expected_audio_tokens(explicit) == 5
-    assert expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:

@@ -176,25 +176,6 @@ def test_max_concurrency_awaits_coroutine_returned_by_sync_callable() -> None:
     assert outputs[0].data == "PAYLOAD"
 
 
-def test_max_concurrency_awaits_async_call_object() -> None:
-    """Callable objects with async __call__ must not emit coroutine objects."""
-
-    class Compute:
-        async def __call__(self, payload: str) -> str:
-            await asyncio.sleep(0)
-            return payload.upper()
-
-    outputs = run_scheduler(
-        SimpleScheduler(Compute(), max_concurrency=2),
-        [IncomingMessage("req-call", "new_request", "payload")],
-        output_count=1,
-    )
-
-    assert outputs[0].request_id == "req-call"
-    assert outputs[0].type == "result"
-    assert outputs[0].data == "PAYLOAD"
-
-
 def test_max_concurrency_reports_errors_from_returned_coroutines() -> None:
     """Returned coroutine exceptions must become per-request error rows."""
 

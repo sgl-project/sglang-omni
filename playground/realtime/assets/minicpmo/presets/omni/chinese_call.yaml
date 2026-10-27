@@ -1,0 +1,6 @@
+id: chinese_call
+order: 1
+name: "中文通话"
+description: "中文语音助手"
+system_prompt: "Streaming Omni Conversation."
+ref_audio_path: "assets/minicpmo/ref_audio/ref_minicpm_signature.wav"

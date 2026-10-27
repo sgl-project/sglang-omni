@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Mapping
 
 import torch
 
@@ -90,7 +90,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         self,
         request_id: str,
         state: HiggsStreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -134,7 +134,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
             return
         else:
             pass
-        metadata: Mapping[str, Any] = source
+        metadata: Mapping[str, object] = source
         missing = [
             key for key in ("num_codebooks", "codebook_size") if key not in metadata
         ]
@@ -280,7 +280,9 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         )
         return delta
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform,
@@ -297,9 +299,9 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: HiggsStreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         del request_id, state
-        final_data: dict[str, Any] = {
+        final_data: dict[str, object] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
@@ -320,8 +322,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         request_id: str,
         state: HiggsStreamState,
         *,
-        num_codebooks: Any,
-        codebook_size: Any,
+        num_codebooks: object,
+        codebook_size: object,
         source: str,
     ) -> None:
         try:
@@ -360,7 +362,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         self,
         request_id: str,
         state: HiggsStreamState,
-        params: Mapping[str, Any] | None,
+        params: Mapping[str, object] | None,
     ) -> None:
         num_codebooks, _ = self.require_stream_contract(state, request_id)
         steady_codec_frames = max(1, self.stream_stride - num_codebooks + 1)
@@ -450,11 +452,13 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         state: HiggsTtsState,
         waveform: torch.Tensor | None,
     ) -> StagePayload:
-        data = audio_waveform_payload(
-            waveform if waveform is not None else [],
-            sample_rate=self.sample_rate,
-            modality="audio",
-            source_hint="Higgs TTS vocoder",
+        data: dict[str, object] = dict(
+            audio_waveform_payload(
+                waveform if waveform is not None else [],
+                sample_rate=self.sample_rate,
+                modality="audio",
+                source_hint="Higgs TTS vocoder",
+            )
         )
         usage = build_usage(state)
         if usage is not None:
