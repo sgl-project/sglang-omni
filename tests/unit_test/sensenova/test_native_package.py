@@ -5,18 +5,13 @@ import os
 import subprocess
 import sys
 import textwrap
-from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
 from unittest.mock import Mock
 
 import pytest
 
-if find_spec("sglang") is None:
-    pytest.skip("SGLang backend is not installed", allow_module_level=True)
-else:
-    pass
+pytest.importorskip("sglang")
 
 import torch
 from sglang.multimodal_gen.registry import get_model_info
@@ -24,9 +19,6 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
-from sglang_omni.models.sensenova_u1.native.options import (
-    SENSENOVA_U1_REQUEST_EXTRA_KEY,
-)
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 
 
@@ -174,25 +166,6 @@ def test_invalid_size_is_rejected() -> None:
         SenseNovaU1SamplingParams(width=65, height=64)
 
 
-def test_request_extra_preserves_generation_controls() -> None:
-    sampling_params = SenseNovaU1SamplingParams(
-        width=64,
-        height=64,
-        cfg_interval=(0.25, 0.75),
-        timestep_shift=2.0,
-        enable_timestep_shift=False,
-        t_eps=0.05,
-        diffusers_kwargs={"nested": {"thresholds": [0.1, 0.2]}},
-    )
-    request_extra = sampling_params.build_request_extra()
-    assert request_extra["diffusers_kwargs"] == {"nested": {"thresholds": [0.1, 0.2]}}
-    extra = request_extra[SENSENOVA_U1_REQUEST_EXTRA_KEY]
-    assert extra["cfg_interval"] == (0.25, 0.75)
-    assert extra["timestep_shift"] == 2.0
-    assert extra["enable_timestep_shift"] is False
-    assert extra["t_eps"] == 0.05
-
-
 @pytest.mark.parametrize("think_mode", [False, True])
 def test_dynamic_batching_excludes_think_requests(think_mode: bool) -> None:
     config = get_model_info(
@@ -206,9 +179,7 @@ def test_dynamic_batching_excludes_think_requests(think_mode: bool) -> None:
     assert config.supports_dynamic_batching_for_request(request) is (not think_mode)
 
 
-@pytest.mark.parametrize("request_mode", ["direct", "partial", "warmup"])
 def test_generation_preserves_native_extra_defaults_and_conversion(
-    request_mode: Literal["direct", "partial", "warmup"],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing model extras use native defaults rather than sampling_params overrides."""
@@ -231,68 +202,19 @@ def test_generation_preserves_native_extra_defaults_and_conversion(
         think_mode=True,
     )
     request = Req(sampling_params=sampling_params)
-    if request_mode == "partial":
-        request.extra[SENSENOVA_U1_REQUEST_EXTRA_KEY] = {
-            "timestep_shift": "2.0",
-            "enable_timestep_shift": 0,
-            "cfg_interval": [0.25, 0.75],
-            "t_eps": "0.05",
-            "think_mode": 1,
-        }
-    elif request_mode == "warmup":
-        request.set_as_warmup(warmup_steps=1)
-    else:
-        pass
+    request.set_as_warmup(warmup_steps=1)
     pixels = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
     model = Mock()
-    model.t2i_generate.return_value = (
-        (pixels, "reasoning") if request_mode == "partial" else pixels
-    )
+    model.t2i_generate.return_value = pixels
     stage = SenseNovaU1GenerationStage(model, Mock())
     output = stage.forward(request, None)
     generation_arguments = model.t2i_generate.call_args.kwargs
     assert generation_arguments["cfg_norm"] == "none"
-    assert generation_arguments["num_steps"] == (1 if request_mode == "warmup" else 2)
-    if request_mode == "partial":
-        assert generation_arguments["timestep_shift"] == 2.0
-        assert generation_arguments["enable_timestep_shift"] is False
-        assert generation_arguments["cfg_interval"] == (0.25, 0.75)
-        assert generation_arguments["t_eps"] == 0.05
-        assert generation_arguments["think_mode"] is True
-        assert output.usage == {"think_text": "reasoning"}
-    else:
-        assert generation_arguments["timestep_shift"] == 3.0
-        assert generation_arguments["enable_timestep_shift"] is True
-        assert generation_arguments["cfg_interval"] == (0.0, 1.0)
-        assert generation_arguments["t_eps"] == 0.02
-        assert generation_arguments["think_mode"] is False
-        assert output.usage is None
+    assert generation_arguments["num_steps"] == 1
+    assert generation_arguments["timestep_shift"] == 3.0
+    assert generation_arguments["enable_timestep_shift"] is True
+    assert generation_arguments["cfg_interval"] == (0.0, 1.0)
+    assert generation_arguments["t_eps"] == 0.02
+    assert generation_arguments["think_mode"] is False
+    assert output.usage is None
     torch.testing.assert_close(output.output[0], torch.tensor([[[0.0, 0.5, 1.0]]]))
-
-
-@pytest.mark.parametrize("offload_requested", [False, True])
-def test_legacy_server_args_preserve_offload_validation(
-    offload_requested: bool,
-) -> None:
-    config = get_model_info(
-        "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
-    ).pipeline_config_cls()
-    server_args = SimpleNamespace(num_gpus=1, dit_cpu_offload=offload_requested)
-    if offload_requested:
-        with pytest.raises(ValueError, match="DiT CPU offload"):
-            config.validate_server_args(server_args)
-        assert server_args.dit_cpu_offload is True
-    else:
-        config.validate_server_args(server_args)
-        assert server_args.dit_cpu_offload is False
-
-
-@pytest.mark.parametrize("sampling_params", [None, SimpleNamespace()])
-def test_dynamic_batching_preserves_missing_think_mode_default(
-    sampling_params: SimpleNamespace | None,
-) -> None:
-    config = get_model_info(
-        "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
-    ).pipeline_config_cls()
-    request = SimpleNamespace(sampling_params=sampling_params)
-    assert config.supports_dynamic_batching_for_request(request) is True

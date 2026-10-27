@@ -40,15 +40,6 @@ def is_runtime_option_requested(
         return True
 
 
-def is_arg_explicitly_set(server_args: ServerArgs, option_name: str) -> bool:
-    """Preserve validation for argument objects without explicit-option tracking."""
-    explicit_option_checker = getattr(server_args, "is_arg_explicitly_set", None)
-    if callable(explicit_option_checker):
-        return explicit_option_checker(option_name)
-    else:
-        return is_runtime_option_requested(getattr(server_args, option_name, None))
-
-
 def component_residency_requests_offload(
     component_residency: str | dict[str, str] | list[str] | None,
 ) -> bool:
@@ -97,7 +88,7 @@ def set_compatible_runtime_defaults(server_args: ServerArgs) -> None:
         "attention_backend_config": None,
     }
     for option_name, option_value in compatible_defaults.items():
-        if not is_arg_explicitly_set(server_args, option_name):
+        if not server_args.is_arg_explicitly_set(option_name):
             setattr(server_args, option_name, option_value)
         else:
             pass
@@ -116,7 +107,7 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
         return True
 
     def supports_dynamic_batching_for_request(self, batch: Req) -> bool:
-        sampling_params = getattr(batch, "sampling_params", None)
+        sampling_params = batch.sampling_params
         return not bool(getattr(sampling_params, "think_mode", DEFAULT_THINK_MODE))
 
     def estimate_request_cost(self, batch: Req) -> float:
@@ -145,14 +136,14 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
             )
         else:
             pass
-        if getattr(server_args, "enable_torch_compile", False):
+        if server_args.enable_torch_compile:
             raise ValueError(
                 "SenseNovaU1Pipeline does not support torch.compile yet. "
                 "Please omit --enable-torch-compile."
             )
         else:
             pass
-        if getattr(server_args, "lora_path", None):
+        if server_args.lora_path:
             raise ValueError(
                 "SenseNovaU1Pipeline does not support LoRA adapters yet. "
                 "Please omit --lora-path."
@@ -160,11 +151,9 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
         else:
             pass
         set_compatible_runtime_defaults(server_args)
-        if is_arg_explicitly_set(
-            server_args, "component_residency"
-        ) and component_residency_requests_offload(
-            getattr(server_args, "component_residency", None)
-        ):
+        if server_args.is_arg_explicitly_set(
+            "component_residency"
+        ) and component_residency_requests_offload(server_args.component_residency):
             raise ValueError(
                 "SenseNovaU1Pipeline does not support component residency "
                 "offload modes yet. Please omit --component-residency."
@@ -191,42 +180,36 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
             "component_precisions": "component precision overrides",
         }
         for option_name, option_description in unsupported_runtime_options.items():
-            if is_arg_explicitly_set(
-                server_args, option_name
-            ) and is_runtime_option_requested(getattr(server_args, option_name, None)):
+            if server_args.is_arg_explicitly_set(
+                option_name
+            ) and is_runtime_option_requested(getattr(server_args, option_name)):
                 raise ValueError(
                     f"SenseNovaU1Pipeline does not support {option_description} yet. "
                     f"Please omit --{option_name.replace('_', '-')}."
                 )
             else:
                 pass
-        if is_arg_explicitly_set(
-            server_args, "attention_backend"
-        ) and is_runtime_option_requested(
-            getattr(server_args, "attention_backend", None)
-        ):
+        if server_args.is_arg_explicitly_set(
+            "attention_backend"
+        ) and is_runtime_option_requested(server_args.attention_backend):
             raise ValueError(
                 "SenseNovaU1Pipeline does not support custom attention backends yet. "
                 "Please omit --attention-backend."
             )
         else:
             pass
-        if is_arg_explicitly_set(
-            server_args, "component_attention_backends"
-        ) and is_runtime_option_requested(
-            getattr(server_args, "component_attention_backends", None)
-        ):
+        if server_args.is_arg_explicitly_set(
+            "component_attention_backends"
+        ) and is_runtime_option_requested(server_args.component_attention_backends):
             raise ValueError(
                 "SenseNovaU1Pipeline does not support component attention backends yet. "
                 "Please omit --component-attention-backends."
             )
         else:
             pass
-        if is_arg_explicitly_set(
-            server_args, "attention_backend_config"
-        ) and is_runtime_option_requested(
-            getattr(server_args, "attention_backend_config", None)
-        ):
+        if server_args.is_arg_explicitly_set(
+            "attention_backend_config"
+        ) and is_runtime_option_requested(server_args.attention_backend_config):
             raise ValueError(
                 "SenseNovaU1Pipeline does not support attention backend config yet. "
                 "Please omit --attention-backend-config."

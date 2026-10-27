@@ -19,17 +19,3 @@ sglang generate \
 ```
 
 The external package replaces the in-tree SenseNova pipeline registration while both implementations coexist. The package registers the model classes shipped under `sglang_omni.vendor.sensenova_u1`; it does not import SGLang's SenseNova model implementation. Keep the environment variable set for the launcher and all worker processes.
-
-## Scope
-
-This first migration preserves native single-GPU T2I execution and sequential multi-output generation. Image editing, native tensor parallelism and Cache-DiT integration are separate follow-ups. Existing native restrictions on parallelism, LoRA and offload remain in place.
-
-The package has been tested with Omni's shared native generation stage using an explicit pipeline configuration. Automatic `--model-path` selection for native generation depends on Omni support.
-
-## Tests
-
-```bash
-python -m pytest tests/unit_test/sensenova/test_native_package.py -q
-```
-
-The unit tests cover fresh-process registration, local checkpoint discovery, discovery with in-tree SenseNova model and pipeline imports blocked, generation parameter/output conversion and unsupported parallelism. SGLang still eagerly imports its built-in configuration modules during registry initialization; their removal belongs to the corresponding SGLang cleanup. GPU qualification compares decoded image pixels against the in-tree pipeline with identical model weights, seeds, dimensions and sampling parameters.
