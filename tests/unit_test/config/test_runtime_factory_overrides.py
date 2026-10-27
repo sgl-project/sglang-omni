@@ -23,10 +23,11 @@ def stage_with(engine: EngineArgs | None, **factory_extra: object) -> EngineStag
 
 
 def test_factory_block_survives_a_populated_engine_group() -> None:
+    factory_overrides = {"attention_backend": "torch_native"}
     kwargs = resolve_stage_typed_kwargs(
         stage_with(
             EngineArgs(max_running_requests=1, mm_attention_backend="sdpa"),
-            server_args_overrides={"attention_backend": "torch_native"},
+            server_args_overrides=factory_overrides,
         )
     )
     assert kwargs["server_args_overrides"] == {
@@ -34,6 +35,7 @@ def test_factory_block_survives_a_populated_engine_group() -> None:
         "max_running_requests": 1,
         "mm_attention_backend": "sdpa",
     }
+    assert factory_overrides == {"attention_backend": "torch_native"}
 
 
 def test_engine_group_wins_when_both_set_the_same_key() -> None:

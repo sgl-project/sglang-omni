@@ -82,9 +82,8 @@ def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, object]:
     if stage_cfg.engine is not None:
         server_args_overrides = stage_cfg.engine.overrides()
         if server_args_overrides:
-            # A free-form `factory.server_args_overrides` block is the other way
-            # into the same kwarg, so merge per key instead of dropping it: the
-            # `engine.*` group still wins for every key it sets.
+            # A free-form factory.server_args_overrides mapping feeds the same
+            # kwarg, so merge per key and let the engine group win on collision.
             merged = dict(out.get("server_args_overrides") or {})
             merged.update(server_args_overrides)
             out["server_args_overrides"] = merged
