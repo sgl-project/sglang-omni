@@ -31,6 +31,7 @@ class MossTDFactoryArgs(FactoryArgs):
 
     encoder_cache_size_bytes: int | None = Field(default=None, ge=0)
     encoder_max_batch_size: int | None = Field(default=None, ge=1)
+    enable_trimmed_fbank: bool = True
 
 
 class MossTDStageConfig(EngineStageConfig):
