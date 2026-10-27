@@ -50,8 +50,8 @@
     .orb:focus-visible { outline-offset: 8px; }
 
     /* Top bar */
-    .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: max(18px, env(safe-area-inset-top)) 24px 8px; }
-    .brand { font-size: .95rem; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
+    .topbar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: max(18px, env(safe-area-inset-top)) 24px 8px; }
+    .brand { min-width: 0; font-size: .95rem; font-weight: 600; letter-spacing: 0; overflow-wrap: anywhere; }
     .brand span { color: var(--faint); font-weight: 450; margin-left: 6px; }
     .brand .brand-name { color: var(--text); font-weight: 600; margin-left: 0; }
     .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -92,7 +92,7 @@
     }
 
     /* Dock */
-    .dock-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 16px max(28px, env(safe-area-inset-bottom)); }
+    .dock-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 0; padding: 8px 16px max(28px, env(safe-area-inset-bottom)); }
     .dock { display: flex; align-items: center; gap: 16px; }
     .dock-btn { width: 52px; height: 52px; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--btn); color: var(--text); cursor: pointer; transition: background 150ms, transform 150ms, opacity 150ms; touch-action: manipulation; }
     .dock-btn svg { width: 20px; height: 20px; }
@@ -106,6 +106,18 @@
     .start-btn:disabled { opacity: .35; cursor: not-allowed; }
     .note { max-width: 440px; margin: 0; color: var(--faint); font-size: .76rem; line-height: 1.55; text-align: center; }
     .hint { color: var(--faint); font-size: .76rem; min-height: 1em; }
+    .image-tools { display: flex; align-items: center; justify-content: center; gap: 12px; width: min(480px, 100%); min-height: 80px; }
+    .image-tools > * { flex: none; }
+    /* The upload button, label, clear button and gaps take about 240px of a narrow screen. */
+    .image-gallery { display: flex; gap: 6px; max-width: min(280px, calc(100vw - 240px)); overflow-x: auto; }
+    .image-preview { flex: none; width: 64px; height: 48px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
+    .image-preview[data-status="Sending"] { opacity: .5; }
+    .image-preview[data-status="Rejected"] { border-color: #b83f46; }
+    .image-label { flex: 0 1 220px; min-width: 0; max-width: 220px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+    .image-label span { display: block; overflow: hidden; text-overflow: ellipsis; }
+    .image-status { color: var(--accent); min-height: 1.2em; }
+    .question-btn[aria-pressed="true"] { background: #b83f46; color: white; }
+    .question-btn svg { width: 20px; height: 20px; }
 
     /* Settings panel */
     .panel {
@@ -147,7 +159,7 @@
     .transcript .empty { color: var(--faint); }
     .transcript p { margin: 0 0 12px; }
     @media (max-width: 480px) {
-      .topbar { padding-left: 16px; padding-right: 12px; }
+      .topbar { grid-template-columns: minmax(0, 1fr) auto auto; padding-left: 16px; padding-right: 12px; gap: 8px; }
       .brand span:not(.brand-name) { display: none; }
       .dock { gap: 12px; }
     }
@@ -183,10 +195,18 @@
   </main>
 
   <footer class="dock-wrap">
+    <div id="imageTools" class="image-tools" hidden>
+      <input id="imageFile" type="file" accept="image/jpeg,image/png" multiple hidden>
+      <button id="imageUpload" class="dock-btn" type="button" title="Upload images" aria-label="Upload images"><i data-lucide="image-plus"></i></button>
+      <div id="imageGallery" class="image-gallery" role="list" aria-label="Uploaded images" hidden></div>
+      <div class="image-label"><span id="imageName"></span><span id="imageStatus" class="image-status" role="status"></span></div>
+      <button id="imageRemove" class="icon-btn" type="button" title="Clear images" aria-label="Clear images" hidden><i data-lucide="x"></i></button>
+    </div>
     <button id="startBtn" class="start-btn" type="button">
       Start talking
     </button>
     <div id="dock" class="dock" role="group" aria-label="Call controls" hidden>
+      <button id="questionBtn" class="dock-btn question-btn" type="button" title="Record question" aria-label="Record question" aria-pressed="false" hidden><span id="questionMic"><i data-lucide="mic"></i></span><span id="questionStop" hidden><i data-lucide="square"></i></span></button>
       <button id="muteBtn" class="dock-btn" type="button" aria-pressed="false" title="Mute microphone" aria-label="Mute microphone">
         <svg id="micOn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
         <svg id="micOff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M15 10V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5 2.2M5 11a7 7 0 0 0 11.6 5.3M19 11a7 7 0 0 1-.5 2.6M12 18v3M3 3l18 18"/></svg>
@@ -251,6 +271,7 @@
   </section>
 
   <script src="config.js"></script>
+  <script type="module" src="icons.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -131,6 +131,7 @@ def published_audio_port(ports: Iterable[AudioPort]) -> AudioPort | None:
 @dataclass(frozen=True)
 class ImagePort:
     format: str
+    max_frames_per_unit: int = 1
 
 
 @dataclass(frozen=True)

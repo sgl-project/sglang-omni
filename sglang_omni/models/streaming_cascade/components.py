@@ -38,6 +38,7 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizerConfig,
 )
 from sglang_omni.proto.streams import (
+    IMAGE_FRAME,
     MESSAGES,
     PCM16,
     PCM_F32,
@@ -182,9 +183,10 @@ COMPONENTS.register(
 COMPONENTS.register(
     DialogConfig,
     Dialog,
-    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}),
+    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL, IMAGE_FRAME}),
     produces=frozenset({MESSAGES, SESSION_CONTROL}),
     opens_turns=True,
+    optional=frozenset({IMAGE_FRAME}),
 )
 COMPONENTS.register(
     OpenAIChatGeneratorConfig,

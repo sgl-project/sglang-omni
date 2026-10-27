@@ -2,10 +2,12 @@
 """Per-unit image protocol contracts and audio wire compatibility."""
 
 import base64
+import io
 import json
 from dataclasses import replace
 
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 from starlette.testclient import WebSocketTestSession
 
@@ -31,6 +33,30 @@ from tests.unit_test.serve.test_realtime_duplex_session import (
 
 JPEG = b"\xff\xd8frame"
 PNG = b"\x89PNGtest"
+
+
+def test_decoded_image_validation_rejects_corruption_without_breaking_the_next_question() -> (
+    None
+):
+    adapter = ScriptedAdapter()
+    valid = io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(valid, format="PNG")
+    oversized = io.BytesIO()
+    Image.new("RGB", (4096, 2048), "blue").save(oversized, format="PNG")
+    with image_websocket(
+        adapter, validate_images=True, max_image_bytes=100000
+    ) as websocket:
+        open_session(websocket)
+        for image in (JPEG, oversized.getvalue()):
+            websocket.send_json(image_event(image=image))
+            error = websocket.receive_json()
+            assert error["error"]["code"] == "invalid_request"
+            assert error["sglang"]["fatal"] is False
+        websocket.send_json(image_event(image=valid.getvalue()))
+        assert websocket.receive_json()["type"] == "sglang.input_image.accepted"
+        append_audio(websocket, b"\0" * UNIT_BYTES, 0)
+        receive_until(websocket, "sglang.unit.done")
+    assert adapter.units[0].images == (valid.getvalue(),)
 
 
 def image_websocket(
@@ -77,6 +103,7 @@ def test_frame_binding_missing_frame_and_accounting() -> None:
         send_event(websocket, "sglang.input_audio.end")
         drained = receive_until(websocket, "sglang.input_audio.drained")[-1]
     assert [unit.images for unit in adapter.units] == [(), (JPEG,), ()]
+    assert [unit.image_timestamps_ms for unit in adapter.units] == [(), (39.999,), ()]
     assert [
         drained[key]
         for key in ("accepted_end_ms", "consumed_ms", "discarded_ms", "padding_ms")

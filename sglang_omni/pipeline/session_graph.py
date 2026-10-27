@@ -44,6 +44,7 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    TRANSCRIPT_FORMAT,
     TURN_DONE,
     TURN_EMPTY,
     TURN_INTERRUPTED,
@@ -669,7 +670,10 @@ class SessionGraphRunner(CoordinatorSessions):
         elif event == TURN_INTERRUPTED:
             graph.output_end_ms = input_end_ms
             start = input_end_ms
-        elif event in (SPEECH_STARTED, SPEECH_STOPPED):
+        elif output.format == TRANSCRIPT_FORMAT or event in (
+            SPEECH_STARTED,
+            SPEECH_STOPPED,
+        ):
             return output
         else:
             start = input_end_ms

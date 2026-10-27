@@ -120,6 +120,17 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         native_unit_ms=ports.unit_ms,
         tail_policy="flush",
         input_modalities=ports.input_modalities,
+        validate_images="image" in ports.input_modalities,
+        image_frames_per_unit=(
+            max(
+                (
+                    port.max_frames_per_unit
+                    for port in ports.input
+                    if isinstance(port, ImagePort)
+                ),
+                default=1,
+            ),
+        ),
         sampling_parameters=ports.sampling_parameters,
         supports_instruction_updates="instructions" in ports.hot_settings,
         supports_sampling_updates="sampling" in ports.hot_settings,
@@ -262,11 +273,16 @@ class SessionBridge(InteractionAdapter):
         self.input_done = asyncio.get_running_loop().create_future()
         try:
             async with self.append_lock:
-                for image in unit.images:
+                image_timestamps_ms = unit.image_timestamps_ms or (t_ms,) * len(
+                    unit.images
+                )
+                for image, image_timestamp_ms in zip(
+                    unit.images, image_timestamps_ms, strict=True
+                ):
                     await self.append_chunk(
                         TimedChunk(
                             IMAGE,
-                            t_ms,
+                            image_timestamp_ms,
                             0,
                             self.next_input_sequence,
                             image,

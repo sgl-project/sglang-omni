@@ -1,0 +1,78 @@
+config_cls: StreamingCascadePipelineConfig
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-vl-tts-base
+timeout_s: 180
+max_sessions: 2
+
+services:
+  - name: vlm
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3-VL-4B-Instruct, --revision, ebb281ec70b05090aa6165b016eac8ec08e71b17, --served-model-name, Qwen/Qwen3-VL-4B-Instruct, --host, "127.0.0.1", --port, "18010", --mem-fraction-static, "0.35", --context-length, "40960", --disable-cuda-graph]
+    env: {CUDA_VISIBLE_DEVICES: "0"}
+    port: 18010
+  - name: asr
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-ASR-1.7B, --host, "127.0.0.1", --port, "18012", --asr.engine.mem_fraction_static, "0.08", --asr.engine.disable_cuda_graph, "true", --asr.engine.enable_torch_compile, "false"]
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+    port: 18012
+  - name: tts
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --host, "127.0.0.1", --port, "18015", --tts_engine.engine.mem_fraction_static, "0.12", --tts_engine.engine.disable_cuda_graph, "true", --vocoder.factory.initial_cuda_graph, "false", --vocoder.factory.followup_cuda_graph, "false", --vocoder.factory.incremental_codec_compile, "false", --vocoder.factory.incremental_codec_cuda_graph, "false"]
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+    port: 18015
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: ["input:pcm16", "input:session"]
+  asr:
+    kind: openai_transcription
+    inputs: ["input:pcm16", "input:session", "vad:session"]
+    wait_for_speech: true
+    base_url: "http://127.0.0.1:18012/v1"
+    model: Qwen/Qwen3-ASR-1.7B
+  dialog:
+    kind: dialog
+    inputs:
+      - asr
+      - "input:image_frame"
+      - "input:session"
+      - "vad:session"
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: tts, event: reply.progress}
+    system_prompt: You are a helpful visual voice assistant. Answer the spoken question in a full sentence using the attached images and conversation history; images from earlier questions stay visible after new ones arrive. If no image is available, say so when the question needs one. Answer concisely in the user's language, without markdown or emoji.
+    max_history_images: 8
+    max_history_image_bytes: 4194304
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:18010/v1"
+    model: Qwen/Qwen3-VL-4B-Instruct
+    supports_images: true
+    max_tokens: 256
+    temperature: 0
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:18015/v1"
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    language: auto
+    reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+
+session_publish:
+  vad: [session]
+  asr: [transcript]
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]
+
+stages:
+  vad:
+    factory:
+      prefix_padding_ms: 0
+      silence_duration_ms: 800

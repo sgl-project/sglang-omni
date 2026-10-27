@@ -73,6 +73,7 @@ class Capabilities:
     partial_style: PartialStyle = "append_only"
     input_modalities: tuple[str, ...] = ("audio",)
     max_image_bytes: int = 512 * 1024
+    validate_images: bool = False
     sampling_parameters: tuple[str, ...] = ()
     supports_reference_audio: bool = False
     voices: tuple[str, ...] = ()
@@ -178,6 +179,7 @@ class Unit:
     output_modalities: tuple[str, ...] | None = None
     images: tuple[bytes, ...] = ()
     ready_observation: SessionUnitReadyObservation | None = None
+    image_timestamps_ms: tuple[float, ...] = ()
 
     @property
     def unit_id(self) -> str:

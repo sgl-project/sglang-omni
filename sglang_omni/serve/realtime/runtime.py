@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 
 from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.preprocessing.image import validate_upload_image
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -394,6 +395,15 @@ class SessionRuntime:
             elif pending_unit_offset > pending_units + MAX_FRAME_LOOKAHEAD_UNITS:
                 raise ProtocolError("buffer_overflow", "frame exceeds lookahead budget")
             else:
+                if self.capabilities.validate_images:
+                    try:
+                        validate_upload_image(image, self.capabilities.max_image_bytes)
+                    except ValueError as error:
+                        raise ProtocolError(
+                            "invalid_request", str(error), "image"
+                        ) from error
+                else:
+                    pass
                 self.pending_frames.setdefault(unit_index, []).append((t_ms, image))
                 self.notify(ImageAccepted(f"unit_{unit_index}", event_id))
                 self.mark_activity()
@@ -505,6 +515,10 @@ class SessionRuntime:
                 self.ready_observations = None
             else:
                 pass
+        frames = sorted(
+            self.pending_frames.pop(self.next_unit_index, []),
+            key=lambda frame: frame[0],
+        )
         unit = Unit(
             self.next_unit_index,
             start_sample,
@@ -512,14 +526,9 @@ class SessionRuntime:
             real_samples,
             self.is_input_ended and not self.pending_pcm,
             tuple(self.granted["output_modalities"]),
-            images=tuple(
-                image
-                for _, image in sorted(
-                    self.pending_frames.pop(self.next_unit_index, []),
-                    key=lambda frame: frame[0],
-                )
-            ),
+            images=tuple(image for _, image in frames),
             ready_observation=ready_observation,
+            image_timestamps_ms=tuple(timestamp_ms for timestamp_ms, _ in frames),
         )
         self.next_unit_index += 1
         return unit

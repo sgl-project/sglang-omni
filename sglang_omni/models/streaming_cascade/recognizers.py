@@ -5,9 +5,9 @@ import asyncio
 import base64
 import json
 import re
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from typing import ClassVar, Literal
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, replace
+from typing import ClassVar, Literal, Protocol
 from urllib.parse import urlencode
 
 import httpx
@@ -38,30 +38,54 @@ from sglang_omni.proto.streams import SESSION_INPUT_SAMPLE_RATE_HZ
 from sglang_omni.scheduling.session import ChunkEmitter
 
 
+class UtteranceTranscriber(Protocol):
+    def __call__(
+        self, audio: AsyncIterator[TimedChunk]
+    ) -> AsyncIterator[TimedChunk]: ...
+
+
 class OpenUtterance:
-    """One utterance's audio flowing through a recognizer's `utterance()`."""
+    """One utterance's audio and timestamps flowing through its recognizer."""
 
     def __init__(
         self,
-        transcribe: Callable[[AsyncIterator[TimedChunk]], AsyncIterator[TimedChunk]],
+        transcribe: UtteranceTranscriber,
         emit: ChunkEmitter,
     ) -> None:
         self.audio: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
-        self.task = asyncio.ensure_future(self.pump(transcribe, emit))
+        self.utterance_start_ms: float | None = None
+        self.utterance_end_ms: float = 0.0
+        self.task: asyncio.Task[None] = asyncio.create_task(self.pump(transcribe, emit))
 
     async def pump(
         self,
-        transcribe: Callable[[AsyncIterator[TimedChunk]], AsyncIterator[TimedChunk]],
+        transcribe: UtteranceTranscriber,
         emit: ChunkEmitter,
     ) -> None:
         async for transcript in transcribe(iterate(self.audio)):
-            emit(transcript)
+            utterance_start_ms = (
+                self.utterance_start_ms
+                if self.utterance_start_ms is not None
+                else self.utterance_end_ms
+            )
+            emit(
+                replace(
+                    transcript,
+                    t_start_ms=utterance_start_ms,
+                    duration_ms=self.utterance_end_ms - utterance_start_ms,
+                )
+            )
 
     def feed(self, chunk: TimedChunk) -> None:
         if self.task.done():
             self.task.result()
             raise RuntimeError("the recognizer ended before its utterance")
         else:
+            if self.utterance_start_ms is None:
+                self.utterance_start_ms = chunk.t_start_ms
+            else:
+                pass
+            self.utterance_end_ms = chunk.t_start_ms + chunk.duration_ms
             self.audio.put_nowait(chunk)
 
     async def finish(self) -> None:
@@ -81,8 +105,10 @@ class UtteranceRecognizer(StreamComponent):
     transcript, so the dialog answers it with turn.empty.
     """
 
-    def __init__(self) -> None:
-        self.segmenter = UtteranceSegmenter()
+    def __init__(self, *, wait_for_speech: bool = False) -> None:
+        self.segmenter: UtteranceSegmenter = UtteranceSegmenter(
+            uses_speech_events=wait_for_speech, should_crop_audio=True
+        )
 
     def utterance(self, audio: AsyncIterator[TimedChunk]) -> AsyncIterator[TimedChunk]:
         raise NotImplementedError
@@ -143,6 +169,7 @@ class OpenAITranscriptionRecognizerConfig(ComponentConfig):
     language: str = ""
     response_format: Literal["json", "verbose_json"] = "verbose_json"
     api_key_env: str = "OPENAI_API_KEY"
+    wait_for_speech: bool = False
 
 
 class TranscriptionResult(BaseModel):
@@ -206,9 +233,9 @@ class OpenAITranscriptionRecognizer(UtteranceRecognizer):
     """Buffers each utterance and transcribes it once the utterance ends."""
 
     def __init__(self, config: OpenAITranscriptionRecognizerConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.client = httpx.AsyncClient(
+        super().__init__(wait_for_speech=config.wait_for_speech)
+        self.config: OpenAITranscriptionRecognizerConfig = config
+        self.client: httpx.AsyncClient = httpx.AsyncClient(
             timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
         )
 
@@ -238,6 +265,16 @@ class OpenAITranscriptionRecognizer(UtteranceRecognizer):
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    def adopt(self, previous: StreamComponent) -> None:
+        super().adopt(previous)
+        if (
+            isinstance(previous, OpenAITranscriptionRecognizer)
+            and previous.config.wait_for_speech != self.config.wait_for_speech
+        ):
+            self.segmenter.uses_speech_events = self.config.wait_for_speech
+        else:
+            pass
 
 
 class RealtimeTextDelta(BaseModel):

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generator kinds: reply text from the conversation."""
 
+import base64
 from collections.abc import AsyncIterator
 from typing import Literal
 
 import httpx
+from openai.types.chat import ChatCompletionContentPartParam, ChatCompletionMessageParam
 from pydantic import BaseModel, Field, field_validator
 
 from sglang_omni.models.streaming_cascade.base import (
@@ -14,7 +16,6 @@ from sglang_omni.models.streaming_cascade.base import (
     Replies,
     bearer_headers,
     control_chunk,
-    message_dict,
     messages_of,
     probe_openai_service,
     replying,
@@ -29,12 +30,14 @@ CHAT_REQUEST_FIELDS = frozenset(
     {"model", "messages", "stream", "max_tokens", "temperature"}
 )
 WARM_UP_MESSAGES = [ChatMessage(role="user", content="Hi")]
+NO_IMAGE_INSTRUCTIONS = "No image is attached to this conversation. Never guess the contents of a missing image; ask the user to upload it. Answer questions that do not require an image normally."
 
 
 class OpenAIChatGeneratorConfig(ComponentConfig):
     kind: Literal["openai_chat"] = "openai_chat"
     base_url: str = Field(pattern=r"^https?://[^/]+")
     model: str
+    supports_images: bool = False
     max_tokens: int = Field(default=512, gt=0)
     temperature: float | None = Field(default=None, ge=0, le=2)
     api_key_env: str = "OPENAI_API_KEY"
@@ -69,8 +72,8 @@ class OpenAIChatGenerator(Replier):
 
     def __init__(self, config: OpenAIChatGeneratorConfig) -> None:
         super().__init__()
-        self.config = config
-        self.client = httpx.AsyncClient(
+        self.config: OpenAIChatGeneratorConfig = config
+        self.client: httpx.AsyncClient = httpx.AsyncClient(
             timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
         )
 
@@ -108,9 +111,61 @@ class OpenAIChatGenerator(Replier):
         emit(control_chunk(TURN_DONE, turn=turn))
 
     def request_body(self, messages: list[ChatMessage]) -> dict[str, object]:
+        has_images = any(message.images for message in messages)
+        if has_images and not self.config.supports_images:
+            raise ValueError("this openai_chat configuration does not support images")
+        else:
+            pass
+        completion_messages: list[ChatCompletionMessageParam] = []
+        for message in messages:
+            if not message.images:
+                completion_messages.append(
+                    {"role": message.role, "content": message.content}
+                )
+            elif message.role != "user":
+                raise ValueError("images belong to user messages")
+            else:
+                # note (Yuhao Chen): Each image precedes the utterance it was uploaded for; a merged turn with its images after all its text was answered from the first image.
+                content_parts: list[ChatCompletionContentPartParam] = []
+                text_start = 0
+                for image in message.images:
+                    if image.content_offset > text_start:
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": message.content[
+                                    text_start : image.content_offset
+                                ].strip(),
+                            }
+                        )
+                        text_start = image.content_offset
+                    else:
+                        pass
+                    encoded_image = base64.b64encode(image.image_bytes).decode("ascii")
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image.media_type};base64,{encoded_image}"
+                            },
+                        }
+                    )
+                if message.content[text_start:].strip():
+                    content_parts.append(
+                        {"type": "text", "text": message.content[text_start:].strip()}
+                    )
+                else:
+                    pass
+                completion_messages.append({"role": "user", "content": content_parts})
+        if self.config.supports_images and not has_images:
+            completion_messages.insert(
+                0, {"role": "system", "content": NO_IMAGE_INSTRUCTIONS}
+            )
+        else:
+            pass
         body: dict[str, object] = {
             "model": self.config.model,
-            "messages": [message_dict(message) for message in messages],
+            "messages": completion_messages,
             "stream": True,
             "max_tokens": self.config.max_tokens,
         }

@@ -76,6 +76,16 @@ class StreamComponent:
         return 0
 
 
+class ChatImage(BaseModel):
+    """An encoded image retained in one user turn; content_offset is the character of the turn's text that begins the utterance it was uploaded for."""
+
+    model_config = ConfigDict(frozen=True)
+
+    media_type: Literal["image/jpeg", "image/png"]
+    image_bytes: bytes
+    content_offset: int = 0
+
+
 class ChatMessage(BaseModel):
     """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, and is_cut an assistant reply the listener cut before its end. Neither field goes into the request; is_cut changes how the prompt shows the reply."""
 
@@ -83,6 +93,7 @@ class ChatMessage(BaseModel):
     content: str = ""
     uncertain: bool = False
     is_cut: bool = False
+    images: tuple[ChatImage, ...] = ()
 
 
 def control_chunk(
@@ -151,7 +162,10 @@ def messages_chunk(
 
 
 def message_dict(message: ChatMessage) -> dict[str, object]:
-    return message.model_dump(exclude_none=True, exclude={"uncertain", "is_cut"})
+    excluded_fields: set[str] = (
+        {"uncertain", "is_cut"} if message.images else {"uncertain", "is_cut", "images"}
+    )
+    return message.model_dump(exclude_none=True, exclude=excluded_fields)
 
 
 def audio_chunk(samples: np.ndarray, sample_rate_hz: int, turn: int) -> TimedChunk:

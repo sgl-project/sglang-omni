@@ -103,6 +103,7 @@ export class DuplexSession {
     // Per response: its text, item, the server's sglang.response.progress points and how much of its audio has played.
     this.replies = new Map();
     this.lastReplyId = null;
+    this.imageRequests = new Map();
   }
 
   reply(responseId) {
@@ -159,6 +160,11 @@ export class DuplexSession {
 
   get turnBased() {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
+  }
+
+  get manualImageTurns() {
+    return Boolean(this.granted) && (this.granted.input_modalities || []).includes("image")
+      && this.granted.client_commit && !(this.granted.turn_control || []).some(Boolean);
   }
 
   // Input PCM rate the server granted; the microphone is resampled to it.
@@ -229,6 +235,42 @@ export class DuplexSession {
       packet.eventId = event.event_id;
       packet.sendMs = this.now();
     }
+  }
+
+  sendImage(bytes) {
+    if (this.state !== "ready" || !(this.granted.input_modalities || []).includes("image")) {
+      return Promise.reject(new Error("Image input is not available"));
+    }
+    if (bytes.byteLength > this.granted.input_image_format.max_bytes) {
+      return Promise.reject(new Error("Image exceeds the upload limit"));
+    }
+    if (this.pending.length) {
+      this.queuePacket(this.pending);
+      this.pending = new Int16Array(0);
+    }
+    this.pump();
+    const event = this.send("sglang.input_image.append", {
+      image: bytesToBase64(bytes),
+      sglang: { t_ms: this.sentSamples * 1000 / this.inputRate },
+    });
+    return new Promise((resolve, reject) => {
+      this.imageRequests.set(event.event_id, { resolve, reject });
+    });
+  }
+
+  commitQuestion() {
+    if (this.state !== "ready" || !this.granted.client_commit) return;
+    if (this.pending.length) {
+      this.queuePacket(this.pending);
+      this.pending = new Int16Array(0);
+    }
+    this.pump();
+    this.send("input_audio_buffer.commit");
+  }
+
+  rejectPendingImages(message) {
+    for (const request of this.imageRequests.values()) request.reject(new Error(message));
+    this.imageRequests.clear();
   }
 
   endInput() {
@@ -306,9 +348,19 @@ export class DuplexSession {
         }
         break;
       }
+      case "sglang.input_image.accepted": {
+        const request = this.imageRequests.get(event.client_event_id);
+        if (request) {
+          this.imageRequests.delete(event.client_event_id);
+          request.resolve(event);
+        }
+        this.emit("image", event);
+        break;
+      }
       case "input_audio_buffer.speech_started":
       case "input_audio_buffer.speech_stopped":
         this.userSpeaking = event.type === "input_audio_buffer.speech_started";
+        this.emit("speech", { started: this.userSpeaking });
         break;
       case "response.created":
         this.responseOpen = true;
@@ -369,6 +421,7 @@ export class DuplexSession {
         this.handleError(event);
         break;
       case "session.closed":
+        this.rejectPendingImages("Session closed before the image was received");
         this.state = "closed";
         this.closeReason = event.reason || "unknown";
         this.emit("state", this.state);
@@ -417,6 +470,11 @@ export class DuplexSession {
   handleError(event) {
     const error = event.error || {};
     const extension = event.sglang || {};
+    const imageRequest = this.imageRequests.get(error.event_id);
+    if (imageRequest) {
+      this.imageRequests.delete(error.event_id);
+      imageRequest.reject(new Error(error.message || "Image rejected"));
+    }
     if (!extension.fatal && error.event_id && this.abandoned.has(error.event_id)) return;
     const packet = error.event_id ? this.packetFor(error.event_id) : null;
     if (!extension.fatal && packet && error.code === "buffer_overflow") {
@@ -436,6 +494,7 @@ export class DuplexSession {
     }
     this.errors.push(error);
     if (extension.fatal) {
+      this.rejectPendingImages(error.message || "Session failed before the image was received");
       this.state = "error";
       this.emit("state", this.state);
     }

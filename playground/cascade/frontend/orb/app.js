@@ -21,7 +21,16 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = [
+  "brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning",
+  "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff",
+  "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript",
+  "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt",
+  "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName",
+  "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness",
+  "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset",
+  "imageTools", "imageFile", "imageUpload", "imageGallery", "imageName", "imageStatus", "imageRemove", "questionBtn", "questionMic", "questionStop",
+];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -66,6 +75,11 @@ let lastSpokeAt = 0;
 let lastModelLoudAt = -Infinity;
 let lastMicLoudAt = -Infinity;
 let warnTimer = null;
+// Picked images, oldest first, as { bytes, name, preview, session (the session that accepted or is receiving it), status }.
+let images = [];
+let preparingQuestion = false;
+let waitingForQuestion = false;
+let selectingImage = 0;
 const orb = new Orb(ui.orbCanvas);
 const capabilitiesUrl = window.DEMO_CAPABILITIES_URL || (window.DEMO_WS_URL || "").replace(/^ws/, "http").replace(/\/v1\/realtime.*$/, "/v1/realtime/capabilities");
 // Note (ruoyu): an empty field is not sent, so a fresh page sends only output_modalities and the profile's prompt and
@@ -114,13 +128,33 @@ function setButtons() {
   ui.caption.hidden = !call;
   ui.startBtn.disabled = remoteBusy || serverUp === false;
   ui.orb.setAttribute("aria-label", call ? "Show transcript" : "Start conversation");
-  ui.muteBtn.disabled = !captureStream;
+  ui.muteBtn.disabled = !isReady() || startingMic || preparingQuestion;
   ui.muteBtn.setAttribute("aria-pressed", String(muted));
   ui.muteBtn.setAttribute("aria-label", muted ? "Unmute microphone" : "Mute microphone");
   ui.muteBtn.title = muted ? "Unmute microphone" : "Mute microphone";
   ui.micOn.hidden = muted;
   ui.micOff.hidden = !muted;
   settings.lock(call);
+  const capabilities = session && session.granted || settings.capabilities;
+  const imageMode = Boolean(capabilities && (capabilities.input_modalities || []).includes("image"));
+  const manualImages = session && session.granted ? session.manualImageTurns : imageMode && capabilities.client_commit && !(capabilities.turn_control || []).some(Boolean);
+  ui.imageTools.hidden = !imageMode;
+  ui.note.hidden = call || imageMode;
+  ui.hint.hidden = imageMode;
+  ui.startBtn.textContent = imageMode ? "Start session" : "Start talking";
+  ui.questionBtn.hidden = !manualImages;
+  ui.muteBtn.hidden = Boolean(manualImages);
+  if (!captureStream && isReady()) {
+    ui.muteBtn.title = "Start microphone";
+    ui.muteBtn.setAttribute("aria-label", ui.muteBtn.title);
+  }
+  ui.questionBtn.disabled = !isReady() || startingMic || preparingQuestion || waitingForQuestion;
+  const recording = Boolean(captureStream);
+  ui.questionBtn.setAttribute("aria-pressed", String(recording));
+  ui.questionBtn.title = recording ? "Submit question" : "Record question";
+  ui.questionBtn.setAttribute("aria-label", ui.questionBtn.title);
+  ui.questionMic.hidden = recording;
+  ui.questionStop.hidden = !recording;
 }
 
 // Level (0..1) from an analyser's current time-domain window.
@@ -345,7 +379,13 @@ function sessionListeners() {
       await ensurePlayback(session.outputRate);
       setButtons();
       // One tap starts everything: the microphone follows the grant.
-      startMic().catch((error) => warn(`Microphone: ${error.message}`, true));
+      if (!session.manualImageTurns) startListening().catch((error) => warn(`Microphone: ${error.message}`, true));
+    },
+    speech: ({ started }) => {
+      if (started && session.turnBased && playbackNode) {
+        mutedResponse = true;
+        playbackNode.port.postMessage({ type: "clear" });
+      }
     },
     audio: ({ bytes, responseId }) => {
       if (!playbackNode) return;
@@ -363,6 +403,7 @@ function sessionListeners() {
       playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
     },
     response: ({ open, id, status }) => {
+      if (!open) waitingForQuestion = false;
       if (open) mutedResponse = false;
       awaitingAudio = open;
       setButtons();
@@ -382,6 +423,12 @@ async function connect() {
   if (connecting || isOpen()) return;
   if (!window.DEMO_WS_URL) throw new Error("This page is not configured with a server address.");
   connecting = true;
+  waitingForQuestion = false;
+  for (const image of images) {
+    image.session = null;
+    image.status = "Ready";
+  }
+  renderImages();
   await stopInput();
   sessionStart = null;
   muted = false;
@@ -430,6 +477,9 @@ async function connect() {
       if (socket !== activeSocket) return;
       connecting = false;
       socket = null;
+      activeSession.rejectPendingImages("Connection closed before the image was received");
+      preparingQuestion = false;
+      waitingForQuestion = false;
       await stopInput();
       if (CLOSE_MESSAGES[event.code]) warn(CLOSE_MESSAGES[event.code], true);
       if (event.code === 4429) remoteBusy = true;
@@ -528,15 +578,145 @@ function interrupt() {
   setButtons();
 }
 
+const IMAGE_STATUS_ORDER = ["Rejected", "Sending", "Ready", "Received"];
+
+function renderImages() {
+  ui.imageGallery.replaceChildren(...images.map((image, index) => {
+    const thumbnail = document.createElement("img");
+    thumbnail.className = "image-preview";
+    thumbnail.src = image.preview;
+    thumbnail.alt = `Image ${index + 1}: ${image.name}`;
+    thumbnail.title = `${image.name}: ${image.status}`;
+    thumbnail.dataset.status = image.status;
+    return thumbnail;
+  }));
+  ui.imageGallery.hidden = !images.length;
+  ui.imageRemove.hidden = !images.length;
+  ui.imageName.textContent = images.length === 1 ? images[0].name : images.length ? `${images.length} images` : "";
+  ui.imageStatus.textContent = IMAGE_STATUS_ORDER.find((status) => images.some((image) => image.status === status)) || "";
+}
+
+// Sends the given images in order; each stays marked as sent to activeSession only once the server accepts it.
+async function submitImages(activeSession, pending) {
+  if (!pending.length) return;
+  for (const image of pending) {
+    image.session = activeSession;
+    image.status = "Sending";
+  }
+  renderImages();
+  const results = await Promise.allSettled(pending.map((image) => activeSession.sendImage(image.bytes)));
+  results.forEach((result, index) => {
+    const image = pending[index];
+    if (result.status === "fulfilled") image.status = "Received";
+    else {
+      image.session = null;
+      image.status = "Rejected";
+    }
+  });
+  renderImages();
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
+}
+
+async function startListening() {
+  if (!isReady() || preparingQuestion || captureStream || startingMic) return;
+  const activeSession = session;
+  const pending = images.filter((image) => image.session !== activeSession);
+  preparingQuestion = true;
+  setButtons();
+  try {
+    await submitImages(activeSession, pending);
+    if (session === activeSession && isReady()) await startMic();
+  } catch (error) {
+    if (session === activeSession && isReady() && !captureStream) {
+      activeSession.send("input_audio_buffer.clear");
+      for (const image of pending) {
+        if (image.session === activeSession) {
+          image.session = null;
+          image.status = "Ready";
+        }
+      }
+      renderImages();
+    }
+    throw error;
+  } finally {
+    preparingQuestion = false;
+    setButtons();
+  }
+}
+
 const start = () => connect().catch((error) => warn(error.message, true));
+ui.imageUpload.addEventListener("click", () => ui.imageFile.click());
+ui.imageFile.addEventListener("change", async () => {
+  const generation = ++selectingImage;
+  const files = Array.from(ui.imageFile.files);
+  ui.imageFile.value = "";
+  if (!files.length) return;
+  const capabilities = session && session.granted || settings.capabilities;
+  const { max_bytes: byteLimit, max_frames_per_unit: imageLimit } = capabilities.input_image_format;
+  const picked = [];
+  for (const file of files) {
+    try {
+      if (file.size > byteLimit) throw new Error(`${file.name} exceeds ${Math.round(byteLimit / 1024)} KB`);
+      if (!["image/jpeg", "image/png"].includes(file.type)) throw new Error(`${file.name} is not a JPEG or PNG image`);
+      const bitmap = await createImageBitmap(file);
+      const pixels = bitmap.width * bitmap.height;
+      bitmap.close();
+      if (pixels > 4 * 1024 * 1024) throw new Error(`${file.name} exceeds 4 megapixels`);
+      picked.push({ bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, preview: URL.createObjectURL(file), session: null, status: "Ready" });
+    } catch (error) {
+      if (generation === selectingImage) warn(error.message);
+    }
+  }
+  if (generation !== selectingImage) {
+    for (const image of picked) URL.revokeObjectURL(image.preview);
+    return;
+  }
+  images.push(...picked);
+  // note (Yuhao Chen): The model keeps only its newest images, so the tray shows the same window.
+  if (images.length > imageLimit) {
+    for (const image of images.splice(0, images.length - imageLimit)) URL.revokeObjectURL(image.preview);
+    if (picked.length > imageLimit) warn(`Only the last ${imageLimit} images are kept`);
+  }
+  renderImages();
+  if (isReady() && !session.manualImageTurns) {
+    const activeSession = session;
+    await submitImages(activeSession, images.filter((image) => image.session !== activeSession)).catch((error) => warn(error.message));
+  }
+});
+ui.imageRemove.addEventListener("click", () => {
+  selectingImage += 1;
+  for (const image of images) URL.revokeObjectURL(image.preview);
+  images = [];
+  renderImages();
+});
+ui.questionBtn.addEventListener("click", async () => {
+  if (!isReady() || preparingQuestion || waitingForQuestion) return;
+  const activeSession = session;
+  if (captureStream) {
+    waitingForQuestion = true;
+    await stopInput();
+    activeSession.commitQuestion();
+  } else {
+    try {
+      await startListening();
+    } catch (error) {
+      warn(error.message);
+    }
+  }
+  setButtons();
+});
 ui.startBtn.addEventListener("click", start);
 ui.orb.addEventListener("click", () => {
   if (inCall()) setSheet(!ui.transcriptBtn.hidden && ui.sheet.dataset.open !== "true");
   else if (!ui.startBtn.disabled) start();
 });
 ui.muteBtn.addEventListener("click", () => {
-  muted = !muted;
-  setButtons();
+  if (!captureStream) startListening().catch((error) => warn(`Microphone: ${error.message}`, true));
+  else {
+    muted = !muted;
+    setButtons();
+  }
 });
 ui.interruptBtn.addEventListener("click", interrupt);
 ui.endBtn.addEventListener("click", () => closeNow().catch((error) => warn(error.message)));
@@ -576,7 +756,7 @@ pollStatus();
 setButtons();
 tick();
 requestAnimationFrame(render);
-settings.init().catch((error) => warn(`Settings: ${error.message}`));
+settings.init().then(setButtons).catch((error) => warn(`Settings: ${error.message}`));
 
 ui.traceBtn.addEventListener("click", () => {
   if (!lastSession) return;

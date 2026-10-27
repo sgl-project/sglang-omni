@@ -22,6 +22,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
+    TRANSCRIPT_FORMAT,
     TRUNCATE,
     TURN_DONE,
     TURN_EMPTY,
@@ -178,6 +179,49 @@ async def test_eos_flushes_uncommitted_audio_and_history(backends):
         assert (TURN_EMPTY, 2) in events
         assert (TURN_DONE, 3) in events
         assert session.outputs[-1].eos and session.outputs[-1].kind == "input_done"
+
+
+@pytest.mark.asyncio
+async def test_published_transcript_preserves_the_utterance_time(backends) -> None:
+    """The shared reply clock moved transcripts past images uploaded during speech."""
+    async with conversation(backends[0]) as session:
+        await session.command(SPEECH_STARTED, t_ms=0)
+        await session.audio()
+        await session.audio()
+        await session.command(SPEECH_STOPPED, t_ms=40)
+        await session.until(
+            lambda: any(
+                output.format == TRANSCRIPT_FORMAT for output in session.outputs
+            )
+        )
+        transcript = next(
+            output for output in session.outputs if output.format == TRANSCRIPT_FORMAT
+        )
+        assert (transcript.t_start_ms, transcript.duration_ms) == (0, 40)
+        assert transcript.payload["text"] == "test question"
+
+
+@pytest.mark.asyncio
+async def test_idle_microphone_does_not_block_switching_to_manual_turns(
+    backends,
+) -> None:
+    """Idle PCM was marked as speech and rejected turn-detection changes."""
+    async with conversation(backends[0]) as session:
+        await session.command(CONFIGURE, turn_detection={"type": "server_vad"})
+        await session.audio()
+        await session.command(CONFIGURE, turn_detection=None)
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                output.format == TRANSCRIPT_FORMAT for output in session.outputs
+            )
+        )
+        transcript = next(
+            output for output in session.outputs if output.format == TRANSCRIPT_FORMAT
+        )
+        assert (transcript.t_start_ms, transcript.duration_ms) == (20, 20)
+        assert transcript.payload["text"] == "test question"
 
 
 @pytest.mark.asyncio

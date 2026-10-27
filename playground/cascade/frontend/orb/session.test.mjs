@@ -9,6 +9,62 @@ const PROGRESS = [
   { textEnd: 9, audioMs: 1500 },
 ];
 
+test("image acknowledgments gate recording, errors reject only the upload, and uploads and commits flush pending audio", async () => {
+  const sent = [];
+  const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
+  session.handle({ type: "session.created", session: { id: "image-session" } });
+  session.handle({ type: "session.updated", session: { sglang: { granted: { input_modalities: ["audio", "image"], input_audio_format: { rate: 16000 }, input_image_format: { max_bytes: 100 }, client_commit: true } } } });
+  const bytes = Uint8Array.from([137, 80, 78, 71]);
+  let received = false;
+  const accepted = session.sendImage(bytes).then(() => { received = true; });
+  const first = sent.at(-1);
+  assert.equal(first.sglang.t_ms, 0);
+  assert.deepEqual(Array.from(Buffer.from(first.image, "base64")), Array.from(bytes));
+  await Promise.resolve();
+  assert.equal(received, false);
+  session.handle({ type: "sglang.input_image.accepted", client_event_id: first.event_id, unit_id: "unit_0" });
+  await accepted;
+  assert.equal(received, true);
+  session.pushInput(new Int16Array(100));
+  session.commitQuestion();
+  assert.deepEqual(sent.slice(-2).map((event) => event.type), ["input_audio_buffer.append", "input_audio_buffer.commit"]);
+  const rejected = session.sendImage(bytes);
+  const second = sent.at(-1);
+  assert.equal(second.sglang.t_ms, 6.25);
+  session.handle({ type: "error", error: { event_id: second.event_id, code: "invalid_request", message: "invalid image" }, sglang: { fatal: false } });
+  await assert.rejects(rejected, /invalid image/);
+  assert.equal(session.state, "ready");
+  session.pushInput(new Int16Array(100));
+  const pending = session.sendImage(bytes);
+  assert.deepEqual(sent.slice(-2).map((event) => event.type), ["input_audio_buffer.append", "sglang.input_image.append"]);
+  assert.equal(sent.at(-1).sglang.t_ms, 12.5);
+  assert.equal(Buffer.from(sent.at(-2).audio, "base64").byteLength, 200);
+  session.commitQuestion();
+  assert.equal(sent.at(-2).type, "sglang.input_image.append");
+  assert.equal(sent.at(-1).type, "input_audio_buffer.commit");
+  session.rejectPendingImages("Connection closed");
+  await assert.rejects(pending, /Connection closed/);
+});
+
+for (const closingEvent of [
+  { type: "session.closed", reason: "client_close" },
+  { type: "error", error: { code: "internal_error", message: "Session failed" }, sglang: { fatal: true } },
+]) {
+  test(`pending image uploads settle when receiving ${closingEvent.type}`, async () => {
+    const sent = [];
+    const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
+    session.handle({ type: "session.created", session: { id: "image-session" } });
+    session.handle({ type: "session.updated", session: { sglang: { granted: {
+      input_modalities: ["audio", "image"], input_audio_format: { rate: 16000 }, input_image_format: { max_bytes: 100 },
+    } } } });
+    const firstUpload = session.sendImage(Uint8Array.from([137, 80, 78, 71]));
+    const secondUpload = session.sendImage(Uint8Array.from([137, 80, 78, 71]));
+    session.handle(closingEvent);
+    await assert.rejects(firstUpload, /Session/);
+    await assert.rejects(secondUpload, /Session/);
+  });
+}
+
 test("the heard text is the largest text_end whose audio has played, stepwise", () => {
   assert.deepEqual(
     [0, 399, 400, 899, 900, 1499, 1500, 9000].map((playedMs) => heardTextEnd(PROGRESS, playedMs)),

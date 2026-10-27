@@ -5,20 +5,24 @@ import logging
 import math
 from collections import deque
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
 from sglang_omni.models.streaming_cascade.base import (
+    ChatImage,
     ChatMessage,
     ComponentConfig,
     StreamComponent,
     control_chunk,
     messages_chunk,
 )
+from sglang_omni.preprocessing.image import validate_upload_image
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     COMMIT,
+    IMAGE_FRAME,
     INTERRUPT,
     MAX_HISTORY_CHARS,
     REPLY_DELIVERED,
@@ -45,6 +49,7 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
+MAX_UTF8_BYTES_PER_CHARACTER = 4
 
 
 def heard_prefix(
@@ -97,6 +102,26 @@ class DialogConfig(ComponentConfig):
     system_prompt: str = "You are a helpful voice assistant. Answer concisely."
     max_history_chars: int = Field(default=MAX_HISTORY_CHARS, gt=0)
     max_text_chars: int = Field(default=16000, gt=0)
+    max_history_images: int = Field(default=8, gt=0)
+    max_history_image_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
+
+
+@dataclass(kw_only=True)
+class QueuedUtterance:
+    """A recognized question waiting for the preceding reply to finish."""
+
+    turn_number: int
+    transcript_text: str
+    language: str | None
+    images: tuple[ChatImage, ...]
+
+
+@dataclass(kw_only=True)
+class ImageUpload:
+    """An uploaded image awaiting a question at or after its media timestamp."""
+
+    timestamp_ms: float
+    image: ChatImage
 
 
 class Dialog(StreamComponent):
@@ -129,34 +154,41 @@ class Dialog(StreamComponent):
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
+
+    A nonempty transcript takes every image uploaded at or before its start,
+    in upload order, and the history keeps the newest images that fit
+    max_history_images and max_history_image_bytes, so follow-ups still see
+    earlier pictures.
     """
 
     def __init__(self, config: DialogConfig) -> None:
-        self.config = config
+        self.config: DialogConfig = config
         self.emit: ChunkEmitter | None = None
-        self.messages = [ChatMessage(role="system", content=config.system_prompt)]
-        # Waiting utterances as (turn, transcript, language the recognizer heard).
-        self.waiting: deque[tuple[int, str, str | None]] = deque()
+        self.messages: list[ChatMessage] = [
+            ChatMessage(role="system", content=config.system_prompt)
+        ]
+        self.queued_utterances: deque[QueuedUtterance] = deque()
+        self.pending_image_uploads: deque[ImageUpload] = deque()
         self.reply: list[str] | None = None
-        self.reply_turn = 0
-        self.turns = 0
+        self.reply_turn: int = 0
+        self.turns: int = 0
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
         self.progress: list[tuple[int, float]] = []
         # note (luojiaxuan): The ended reply a truncate, its delivered audio or its progress may still cut, as (turn, history index), until a later reply ends, other than one interrupted before its first text, or its entry leaves the history.
         self.truncatable: tuple[int, int] | None = None
         # Note (Junnan Li): The ended reply's full text, the reply audio the graph delivered (unknown, or all of it once the reply is done) and the last truncate's heard position, so progress that arrives later re-cuts it.
-        self.truncatable_text = ""
+        self.truncatable_text: str = ""
         # note (Haoling Pu): an interrupted reply was cut even when the listener heard all the text it had produced.
-        self.is_truncatable_interrupted = False
+        self.is_truncatable_interrupted: bool = False
         # note (luojiaxuan): The ended reply's progress, which keeps arriving while the next reply runs.
         self.truncatable_progress: list[tuple[int, float]] = []
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
         # note (luojiaxuan): From a speech.started to the speech.stopped or commit that ends the utterance; the node that reports speech also stops it at the end of the input.
-        self.is_user_speaking = False
+        self.is_user_speaking: bool = False
         # note (luojiaxuan): Whether the graph reports the audio it delivered of a reply this dialog interrupts; a graph without audio does not.
-        self.awaits_delivery = True
+        self.awaits_delivery: bool = True
 
     def place(self, settings: "ComponentGraphConfig", name: str) -> None:
         self.awaits_delivery = bool(settings.delivery_reporters(name))
@@ -165,7 +197,7 @@ class Dialog(StreamComponent):
         if isinstance(previous, Dialog):
             self.emit = previous.emit
             self.messages = [self.messages[0], *previous.messages[1:]]
-            self.waiting = previous.waiting
+            self.queued_utterances = previous.queued_utterances
             self.reply = previous.reply
             self.reply_turn = previous.reply_turn
             self.turns = previous.turns
@@ -178,14 +210,30 @@ class Dialog(StreamComponent):
             self.heard_ms = previous.heard_ms
             self.language = previous.language
             self.is_user_speaking = previous.is_user_speaking
+            self.pending_image_uploads = previous.pending_image_uploads
         else:
             pass
 
     def state_bytes(self) -> int:
-        chars = sum(len(message.content) for message in self.messages)
-        chars += sum(len(text) for _, text, _ in self.waiting)
-        chars += sum(len(part) for part in self.reply or ())
-        return chars * 4
+        text_character_count = sum(len(message.content) for message in self.messages)
+        text_character_count += sum(
+            len(utterance.transcript_text) for utterance in self.queued_utterances
+        )
+        text_character_count += sum(len(text_delta) for text_delta in self.reply or ())
+        image_byte_count = sum(
+            len(image.image_bytes)
+            for message in self.messages
+            for image in message.images
+        )
+        image_byte_count += sum(
+            len(image.image_bytes)
+            for utterance in self.queued_utterances
+            for image in utterance.images
+        )
+        image_byte_count += sum(
+            len(upload.image.image_bytes) for upload in self.pending_image_uploads
+        )
+        return text_character_count * MAX_UTF8_BYTES_PER_CHARACTER + image_byte_count
 
     def is_reply(self, chunk: TimedChunk) -> bool:
         return self.reply is not None and chunk.turn == self.reply_turn
@@ -219,13 +267,44 @@ class Dialog(StreamComponent):
 
     def handle(self, chunk: TimedChunk) -> None:
         assert self.emit is not None
-        if chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
+        if chunk.format == IMAGE_FRAME:
+            image = ChatImage(
+                media_type=validate_upload_image(chunk.payload),
+                image_bytes=chunk.payload,
+            )
+            self.pending_image_uploads.append(
+                ImageUpload(timestamp_ms=chunk.t_start_ms, image=image)
+            )
+            while (
+                len(self.pending_image_uploads) > self.config.max_history_images
+                or sum(
+                    len(upload.image.image_bytes)
+                    for upload in self.pending_image_uploads
+                )
+                > self.config.max_history_image_bytes
+            ):
+                evicted_upload = self.pending_image_uploads.popleft()
+                logger.warning(
+                    f"dropping the image uploaded at {evicted_upload.timestamp_ms:.0f} ms: pending images exceed the image history budget"
+                )
+        elif chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
+            transcript_text = str(chunk.payload["text"]).strip()
+            images: tuple[ChatImage, ...] = ()
+            if transcript_text:
+                while (
+                    self.pending_image_uploads
+                    and self.pending_image_uploads[0].timestamp_ms <= chunk.t_start_ms
+                ):
+                    images = (*images, self.pending_image_uploads.popleft().image)
+            else:
+                pass
             self.turns += 1
-            self.waiting.append(
-                (
-                    self.turns,
-                    str(chunk.payload["text"]).strip(),
-                    chunk_language(chunk),
+            self.queued_utterances.append(
+                QueuedUtterance(
+                    turn_number=self.turns,
+                    transcript_text=transcript_text,
+                    language=chunk_language(chunk),
+                    images=images,
                 )
             )
             self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
@@ -300,14 +379,20 @@ class Dialog(StreamComponent):
         # note (luojiaxuan): The next prompt shows the interrupted reply's cut, which has no bound until the graph reports the audio it delivered or a truncate arrives.
         while (
             self.reply is None
-            and self.waiting
+            and self.queued_utterances
             and (
                 not self.awaits_delivery
                 or self.delivered_ms is not None
                 or self.heard_ms is not None
             )
         ):
-            for output in self.respond(*self.waiting.popleft()):
+            utterance = self.queued_utterances.popleft()
+            for output in self.respond(
+                utterance.turn_number,
+                utterance.transcript_text,
+                utterance.language,
+                utterance.images,
+            ):
                 self.emit(output)
             if self.reply is not None and self.is_user_speaking:
                 self.interrupt_reply()
@@ -361,6 +446,19 @@ class Dialog(StreamComponent):
         self.messages[index - 1] = ChatMessage(
             role="user",
             content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
+            images=(
+                *self.messages[index - 1].images,
+                *(
+                    image.model_copy(
+                        update={
+                            "content_offset": image.content_offset
+                            + len(self.messages[index - 1].content)
+                            + 1
+                        }
+                    )
+                    for image in self.messages[index + 1].images
+                ),
+            ),
         )
         del self.messages[index : index + 2]
         if self.truncatable is not None and self.truncatable[1] == index:
@@ -368,7 +466,13 @@ class Dialog(StreamComponent):
         else:
             pass
 
-    def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
+    def respond(
+        self,
+        turn: int,
+        text: str,
+        language: str | None,
+        images: tuple[ChatImage, ...] = (),
+    ) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
         if not text:
             return [control_chunk(TURN_EMPTY, turn=turn)]
@@ -382,11 +486,34 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            self.messages.append(ChatMessage(role="user", content=text))
+            self.messages.append(ChatMessage(role="user", content=text, images=images))
             if self.messages[-2].role == "assistant" and not self.messages[-2].content:
                 self.join_around(len(self.messages) - 2)
             else:
                 pass
+            # note (Yuhao Chen): Evict single images, oldest first, so the newest pictures stay visible to follow-up questions.
+            retained_image_count = 0
+            retained_image_byte_count = 0
+            for index in range(len(self.messages) - 1, 0, -1):
+                message = self.messages[index]
+                retained_images: list[ChatImage] = []
+                for image in reversed(message.images):
+                    if (
+                        retained_image_count < self.config.max_history_images
+                        and retained_image_byte_count + len(image.image_bytes)
+                        <= self.config.max_history_image_bytes
+                    ):
+                        retained_images.insert(0, image)
+                        retained_image_count += 1
+                        retained_image_byte_count += len(image.image_bytes)
+                    else:
+                        pass
+                if len(retained_images) != len(message.images):
+                    self.messages[index] = message.model_copy(
+                        update={"images": tuple(retained_images)}
+                    )
+                else:
+                    pass
             if language is not None:
                 self.language = language
             else:

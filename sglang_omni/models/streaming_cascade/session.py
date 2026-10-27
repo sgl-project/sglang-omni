@@ -11,6 +11,7 @@ from dataclasses import replace
 from sglang_omni.models.streaming_cascade.base import control_chunk
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
 from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+from sglang_omni.models.streaming_cascade.recognizers import UtteranceRecognizer
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -131,6 +132,10 @@ class ComponentSession:
                 self.is_input_ended = True
                 await self.queue.put(None)
                 await self.task
+            else:
+                pass
+            if isinstance(self.component, UtteranceRecognizer):
+                self.is_speaking = self.component.segmenter.is_open
             else:
                 pass
             await self.apply_pending()

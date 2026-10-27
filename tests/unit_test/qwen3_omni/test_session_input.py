@@ -218,6 +218,31 @@ def test_camera_frames_between_utterances_are_kept_only_within_reach(dialog) -> 
     assert unit.payload["images"] == [b"frame 5600", b"frame 5800"]
 
 
+def test_speech_onset_keeps_the_frame_attached_to_its_audio_packet(
+    dialog: tuple[QwenInputHooks, list[TimedChunk], SessionContext],
+) -> None:
+    """Cropping the onset packet discarded its attached camera frame from the model input."""
+    hooks, outputs, context = dialog
+    append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=0))
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(SPEECH_STOPPED, t_ms=20))
+    append(hooks, context, control_chunk(TURN_DONE, turn=1))
+    append(hooks, context, audio(1000))
+    append(
+        hooks,
+        context,
+        TimedChunk(IMAGE, 1020, 0, 0, b"camera frame", format=IMAGE_FRAME),
+    )
+    onset_audio = audio(1020)
+    append(hooks, context, onset_audio)
+    append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=1032))
+    append(hooks, context, control_chunk(SPEECH_STOPPED, t_ms=1040))
+    utterance = outputs[-1]
+    assert utterance.format == UNIT_FORMAT and utterance.turn == 2
+    assert utterance.payload["images"] == [b"camera frame"]
+    assert utterance.payload["pcm"] == onset_audio.payload
+
+
 def test_an_utterance_interrupted_before_its_reply_is_asked_again_with_the_next(
     dialog,
 ) -> None:

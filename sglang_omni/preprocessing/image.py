@@ -8,6 +8,7 @@ import base64
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 
 import torch
 from PIL import Image, UnidentifiedImageError
@@ -17,6 +18,35 @@ from sglang_omni.preprocessing.resource_connector import MultiModalResourceConne
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup
+
+MAX_UPLOAD_IMAGE_BYTES = 512 * 1024
+MAX_UPLOAD_IMAGE_PIXELS = 4 * 1024 * 1024
+
+
+def validate_upload_image(
+    image_bytes: bytes, max_image_bytes: int = MAX_UPLOAD_IMAGE_BYTES
+) -> Literal["image/jpeg", "image/png"]:
+    """Validate a bounded, single-frame JPEG or PNG upload."""
+    if len(image_bytes) > max_image_bytes:
+        raise ValueError("image exceeds max_image_bytes")
+    else:
+        pass
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            if image.format not in ("JPEG", "PNG"):
+                raise ValueError("image must be JPEG or PNG")
+            elif image.width * image.height > MAX_UPLOAD_IMAGE_PIXELS:
+                raise ValueError("image exceeds max_image_pixels")
+            elif image.format == "PNG" and image.n_frames != 1:
+                raise ValueError("animated images are not supported")
+            else:
+                media_type = "image/jpeg" if image.format == "JPEG" else "image/png"
+                image.verify()
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.load()
+        return media_type
+    except (OSError, SyntaxError, Image.DecompressionBombError) as error:
+        raise ValueError("invalid JPEG or PNG image") from error
 
 
 def load_image_path(path: str | Path) -> Image.Image:

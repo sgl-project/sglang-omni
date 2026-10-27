@@ -506,23 +506,32 @@ def test_an_image_port_grants_image_input_and_audio_only_ports_do_not():
 
 
 @pytest.mark.asyncio
-async def test_a_unit_s_camera_frames_are_appended_before_its_audio_at_its_time():
-    h = Harness(replace(PORTS, input=(*PORTS.input, ImagePort(IMAGE_FRAME))))
-    await h.open()
-    await h.bridge.process(unit(0))
-    frames = (b"\xff\xd8one", b"\x89PNGtwo")
-    await h.bridge.process(replace(unit(1), images=frames))
+@pytest.mark.parametrize("image_timestamps_ms", [(), (208.5, 399.9)])
+async def test_image_frames_preserve_upload_timestamps_and_precede_unit_audio(
+    image_timestamps_ms: tuple[float, ...],
+) -> None:
+    """Unit rounding moved images uploaded after speech onset before that onset."""
+    harness = Harness(replace(PORTS, input=(*PORTS.input, ImagePort(IMAGE_FRAME))))
+    await harness.open()
+    await harness.bridge.process(unit(0))
+    image_frames = (b"\xff\xd8one", b"\x89PNGtwo")
+    await harness.bridge.process(
+        replace(unit(1), images=image_frames, image_timestamps_ms=image_timestamps_ms)
+    )
+    first_image_ms, second_image_ms = image_timestamps_ms or (200.0, 200.0)
     assert [
-        (c.modality, c.format, c.t_start_ms, c.duration_ms, c.seq)
-        for c in h.client.appended
+        (chunk.modality, chunk.format, chunk.t_start_ms, chunk.duration_ms, chunk.seq)
+        for chunk in harness.client.appended
     ] == [
         (AUDIO, PCM16, 0.0, 200.0, 0),
-        (IMAGE, IMAGE_FRAME, 200.0, 0, 1),
-        (IMAGE, IMAGE_FRAME, 200.0, 0, 2),
+        (IMAGE, IMAGE_FRAME, first_image_ms, 0, 1),
+        (IMAGE, IMAGE_FRAME, second_image_ms, 0, 2),
         (AUDIO, PCM16, 200.0, 200.0, 3),
     ]
-    assert tuple(c.payload for c in h.client.appended[1:3]) == frames
-    await h.bridge.close()
+    assert (
+        tuple(chunk.payload for chunk in harness.client.appended[1:3]) == image_frames
+    )
+    await harness.bridge.close()
 
 
 @pytest.mark.asyncio

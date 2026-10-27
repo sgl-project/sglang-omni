@@ -26,6 +26,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.dialog import DialogConfig
+from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -40,7 +42,9 @@ from sglang_omni.proto.streams import (
     AUDIO_FORMATS,
     COMMIT,
     CONFIGURE,
+    IMAGE_FRAME,
     INTERRUPT,
+    MESSAGES,
     PCM16,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
@@ -48,6 +52,7 @@ from sglang_omni.proto.streams import (
     SESSION_INPUT_SAMPLE_RATE_HZ,
     TRUNCATE,
     AudioPort,
+    ImagePort,
     SessionPorts,
     published_audio_port,
 )
@@ -55,7 +60,7 @@ from sglang_omni.scheduling.session import NODE_STAGE_MAX_OPEN_SESSIONS
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 NODE_FIELDS = frozenset({"name", "inputs"})
-INPUT_FORMATS = frozenset({PCM16, SESSION_CONTROL})
+INPUT_FORMATS = frozenset({PCM16, SESSION_CONTROL, IMAGE_FRAME})
 INSTRUCTIONS_FIELD = "system_prompt"
 SAMPLING_FIELDS = {
     "temperature": "temperature",
@@ -159,6 +164,10 @@ class NodeSettings(BaseModel):
         for entry in self.data_inputs:
             source, format = parse_input(entry)
             formats = self.consumes if format is None else frozenset({format})
+            if source == GRAPH_INPUT and format is None:
+                formats = formats - {IMAGE_FRAME}
+            else:
+                pass
             edges[source] = edges.get(source, frozenset()) | (formats & self.consumes)
         return edges
 
@@ -231,6 +240,25 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        for node in self.nodes:
+            if IMAGE_FRAME in node.edges().get(GRAPH_INPUT, ()):
+                generators = [
+                    generator
+                    for generator in self.nodes
+                    if MESSAGES in generator.edges().get(node.name, ())
+                ]
+                if not generators or any(
+                    not isinstance(generator.component, OpenAIChatGeneratorConfig)
+                    or not generator.component.supports_images
+                    for generator in generators
+                ):
+                    raise ValueError(
+                        "image input requires an openai_chat consumer with supports_images=true"
+                    )
+                else:
+                    pass
+            else:
+                pass
         return self
 
     def check_names(self) -> None:
@@ -472,6 +500,10 @@ class ComponentGraphConfig(BaseModel):
             values[INSTRUCTIONS_FIELD] = instructions
         else:
             pass
+        if "turn_detection" in update:
+            values["wait_for_speech"] = update["turn_detection"] is not None
+        else:
+            pass
         options = [
             (node.name, {k: v for k, v in values.items() if node.has_option(k)})
             for node in self.nodes
@@ -496,8 +528,33 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        input_ports: list[AudioPort | ImagePort] = [
+            AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ)
+        ]
+        image_components = [
+            node.component
+            for node in self.nodes
+            if IMAGE_FRAME in node.edges().get(GRAPH_INPUT, ())
+        ]
+        if image_components:
+            # note (Yuhao Chen): Images picked together share one audio unit, so a unit takes as many as the dialog keeps.
+            input_ports.append(
+                ImagePort(
+                    IMAGE_FRAME,
+                    max_frames_per_unit=min(
+                        (
+                            component.max_history_images
+                            for component in image_components
+                            if isinstance(component, DialogConfig)
+                        ),
+                        default=1,
+                    ),
+                )
+            )
+        else:
+            pass
         return SessionPorts(
-            input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
+            input=tuple(input_ports),
             output=published_audio_port(self.published_audio_ports()),
             unit_ms=unit_ms,
             controls=controls,
@@ -616,11 +673,20 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                     source, format = parse_input(
                         entry if isinstance(entry, str) else entry.source
                     )
-                formats = (
-                    (format,) if format else (sorted(consumes) if consumes else (None,))
-                )
-                for accepted in formats:
-                    selected = source if accepted is None else f"{source}:{accepted}"
+                if format is not None:
+                    accepted_formats = (format,)
+                elif consumes is None:
+                    accepted_formats = (None,)
+                elif source == GRAPH_INPUT:
+                    accepted_formats = tuple(sorted(consumes - {IMAGE_FRAME}))
+                else:
+                    accepted_formats = tuple(sorted(consumes))
+                for accepted_format in accepted_formats:
+                    selected = (
+                        source
+                        if accepted_format is None
+                        else f"{source}:{accepted_format}"
+                    )
                     inputs.append(
                         selected
                         if isinstance(entry, str)
