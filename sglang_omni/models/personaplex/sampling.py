@@ -227,9 +227,7 @@ def create_audio_token_sampler(
     runs: list[SamplingRun], codebook_count: int
 ) -> AudioTokenSampler:
     """Build one frame sampler, fusing counter noise across codebooks."""
-    counter_run = next(
-        (run for run in runs if run.counter_seeds is not None), None
-    )
+    counter_run = next((run for run in runs if run.counter_seeds is not None), None)
     codebook_position = 0
     counter_noises: torch.Tensor | None = None
 

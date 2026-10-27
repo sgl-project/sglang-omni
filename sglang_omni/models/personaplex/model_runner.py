@@ -290,9 +290,7 @@ class PersonaPlexModelRunner(ModelRunner):
                     sampling=sampling,
                     generators=generators,
                     counter_seeds=(
-                        counter_seeds
-                        if is_seeded and not sampling.greedy
-                        else None
+                        counter_seeds if is_seeded and not sampling.greedy else None
                     ),
                     counter_frame_positions=(
                         counter_frame_positions
