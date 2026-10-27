@@ -917,7 +917,6 @@ class Qwen3OmniTalker(nn.Module):
             predictor_attention.num_heads,
             predictor_attention.num_kv_heads,
             self.predictor_k_cache.dtype,
-            device,
         )
         self.sampled_token_ids = torch.zeros(
             max_batch_size,

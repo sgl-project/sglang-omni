@@ -607,13 +607,12 @@ def supports_exact_add_rmsnorm(
 
 
 def supports_decode_attention(
-    num_q_heads: int, num_kv_heads: int, dtype: torch.dtype, device: torch.device
+    num_q_heads: int, num_kv_heads: int, dtype: torch.dtype
 ) -> bool:
     """decode_attention runs with Triton on CUDA over bf16 caches, where the opening pair's
     two tokens by a kv head's q heads fit its attention tile."""
     return (
         HAS_TRITON
-        and device.type == "cuda"
         and current_platform.is_cuda()
         and dtype == torch.bfloat16
         and 2 * (num_q_heads // num_kv_heads) <= ATTENTION_ROWS

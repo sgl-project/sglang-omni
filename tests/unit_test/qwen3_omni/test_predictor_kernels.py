@@ -159,7 +159,7 @@ def build_talker(
     talker.predictor_rope_stores_kv = False
     talker.predictor_exact_add_norm = True
     talker.predictor_triton_attention = supports_decode_attention(
-        NUM_HEADS, NUM_KV_HEADS, DTYPE, device
+        NUM_HEADS, NUM_KV_HEADS, DTYPE
     )
     talker.predictor_fused_layers = None
     return talker
@@ -652,17 +652,13 @@ def test_exact_add_rmsnorm_applies_to_the_predictor_shape_only(
 def test_decode_attention_applies_to_bf16_caches_on_cuda_where_the_pair_fits_a_tile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cuda = torch.device("cuda")
     monkeypatch.setattr(predictor_layers, "HAS_TRITON", True)
     monkeypatch.setattr(predictor_layers, "current_platform", ROCMOmniPlatform())
-    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE, cuda)
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
     monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
-    assert supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE, cuda)
-    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, torch.float16, cuda)
-    assert not supports_decode_attention(NUM_HEADS, 1, DTYPE, cuda)
-    assert not supports_decode_attention(
-        NUM_HEADS, NUM_KV_HEADS, DTYPE, torch.device("cpu")
-    )
+    assert supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, torch.float16)
+    assert not supports_decode_attention(NUM_HEADS, 1, DTYPE)
 
 
 @accelerator
