@@ -431,21 +431,24 @@ def prompts(outputs: list[TimedChunk]) -> list[list[tuple[str, str]]]:
 
 
 SECOND_REPLY = "Sure. Here it is."
+# note (luojiaxuan): What the history keeps of REPLY interrupted after its first two sentence ends with 2300 ms of its audio delivered.
+HEARD = "One two.\nThree four."
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "during, after, second",
+    "during, after, first, second",
     [
-        ([control_chunk(TRUNCATE, turn=1, t_ms=1200)], [], SECOND_REPLY),
-        ([], [control_chunk(TRUNCATE, turn=1, t_ms=200)], SECOND_REPLY),
-        ([], [control_chunk(TRUNCATE, turn=2, t_ms=1000)] * 2, "Sure."),
-        ([], [control_chunk(TRUNCATE, turn=2, t_ms=60000)], SECOND_REPLY),
-        ([], [control_chunk(TRUNCATE, t_ms=1000)], "Sure."),
+        ([control_chunk(TRUNCATE, turn=1, t_ms=1200)], [], "One two.", SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=1, t_ms=200)], HEARD, SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=1000)] * 2, HEARD, "Sure."),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=60000)], HEARD, SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, t_ms=1000)], HEARD, "Sure."),
+        ([control_chunk(TRUNCATE, t_ms=1200)], [], HEARD, SECOND_REPLY),
     ],
-    ids=["late", "stale", "repeated", "past-the-end", "unnamed"],
+    ids=["late", "stale", "repeated", "past-the-end", "unnamed", "unnamed-during"],
 )
-async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, second):
+async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, first, second):
     """A truncate cut whichever ended reply the dialog still held, so one for an earlier reply cut the next one."""
     dialog, inputs = interrupted_dialog(
         control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
@@ -463,9 +466,116 @@ async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, second)
         *after,
     )
     await drain(dialog, inputs)
-    assert [message.content for message in dialog.messages[2::2]] == [
-        "One two.\nThree four.",
-        second,
+    assert [message.content for message in dialog.messages[2::2]] == [first, second]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interrupt, heard_ms, heard_end, is_cut_in_last_prompt, last_prompt",
+    [
+        (
+            INTERRUPT,
+            1500,
+            8,
+            True,
+            [
+                ("user", "question"),
+                ("assistant", "One two.…"),
+                ("user", "next"),
+                ("assistant", SECOND_REPLY),
+                ("user", "third"),
+            ],
+        ),
+        (
+            SPEECH_STARTED,
+            1500,
+            8,
+            True,
+            [("user", "question"), ("assistant", "One two.…"), ("user", "next third")],
+        ),
+        (
+            INTERRUPT,
+            500,
+            0,
+            False,
+            [("user", "question next"), ("assistant", SECOND_REPLY), ("user", "third")],
+        ),
+    ],
+    ids=["interrupt", "speech", "nothing-heard"],
+)
+async def test_an_utterance_waiting_when_its_reply_is_interrupted_hears_what_was_delivered(
+    interrupt, heard_ms, heard_end, is_cut_in_last_prompt, last_prompt
+):
+    """An utterance that arrived during a reply got its own reply the moment that reply was interrupted, so its prompt kept nothing of the interrupted reply and joined the two questions, and the delivered audio and the client's truncate that came next were ignored."""
+    dialog = build({"kind": "dialog"})
+    progress = [
+        lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
+        )
+        for text_end, audio_ms in REPLY_PROGRESS_POINTS[:2]
+    ]
+    if interrupt == INTERRUPT:
+        stop = [lambda: dialog.control(control_chunk(INTERRUPT))]
+        second = [
+            text_chunk(SECOND_REPLY, 2),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=17, audio_ms=1200)
+            ),
+        ]
+        rest = [control_chunk(TURN_DONE, turn=2)]
+    else:
+        # note (luojiaxuan): The user is still speaking when the second reply begins, so it ends before its first text.
+        stop = [control_chunk(SPEECH_STARTED)]
+        second = [control_chunk(REPLY_DELIVERED, turn=2, audio_ms=0)]
+        rest = [control_chunk(SPEECH_STOPPED)]
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            *progress,
+            transcript_chunk("next", True),
+            *stop,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+            *second,
+            control_chunk(TRUNCATE, turn=1, t_ms=heard_ms),
+            *rest,
+            transcript_chunk("third", True),
+        ],
+    )
+    system = ("system", dialog.config.system_prompt)
+    cut_system = ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}")
+    assert prompts(outputs) == [
+        [system, ("user", "question")],
+        [
+            cut_system,
+            ("user", "question"),
+            ("assistant", f"{HEARD}…"),
+            ("user", "next"),
+        ],
+        [cut_system if is_cut_in_last_prompt else system, *last_prompt],
+    ]
+    assert [
+        (o.turn, o.payload["text_end"])
+        for o in outputs
+        if control_type(o) == REPLY_HEARD
+    ] == [(1, heard_end)]
+
+
+@pytest.mark.asyncio
+async def test_a_late_truncate_of_a_reply_that_left_no_entry_changes_nothing():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=600),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+        control_chunk(TRUNCATE, turn=1, t_ms=1500),
+        text_chunk(SECOND_REPLY, 2),
+        control_chunk(TURN_DONE, turn=2),
+    )
+    await drain(dialog, inputs)
+    assert history(dialog)[1:] == [
+        ("user", "question wait, what?"),
+        ("assistant", SECOND_REPLY),
     ]
 
 
@@ -781,7 +891,12 @@ async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_repl
     speech = control_chunk(SPEECH_STARTED, t_ms=1800)
     reply = {
         "before_the_reply_opens": [speech, question],
-        "before_its_audio": [question, text_chunk(REPLY, 1), speech],
+        "before_its_audio": [
+            question,
+            text_chunk(REPLY, 1),
+            speech,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+        ],
         "after_its_first_sentence": [
             question,
             text_chunk(REPLY, 1),
@@ -888,6 +1003,8 @@ DECLARATION_ERRORS = r"""
 - [{publish: {llm: [session]}}, turns end twice]
 - [{publish: {dialog: []}}, open turns]
 - [{nodes: {extra: {kind: tool, inputs: [llm], tools: {}}}}, unknown component kind]
+- [{nodes: {tts: {kind: openai_speech, base_url: "http://127.0.0.1:8000/v1", model: test-model, inputs: [llm, "input:session"]}}}, waits for reply.delivered]
+- [{nodes: {dialog: {kind: dialog, inputs: [asr, {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}, "vad:session", "input:session", {kind: control, source: input, event: interrupt}, {kind: control, source: aligner, event: reply.progress}]}}}, waits for reply.delivered]
 """
 
 
@@ -942,6 +1059,40 @@ nodes:
   - {name: llm, kind: openai_chat, base_url: "http://127.0.0.1:8000/v1", model: test-model, inputs: [dialog]}
 publish: {dialog: [session], llm: [text_delta, session]}
 """
+
+
+TEXT_ONLY_STOPPABLE = TEXT_ONLY.replace(
+    "inputs: [asr, llm]}",
+    "inputs: [asr, llm, {kind: control, source: input, event: interrupt}]}",
+)
+
+
+@pytest.mark.asyncio
+async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancelled_reply():
+    """A graph that sends no audio never reports reply.delivered, so the next reply must not wait for it."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    assert settings.delivery_reporters("dialog") == []
+    dialog = build({"kind": "dialog"})
+    dialog.place(settings, "dialog")
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            lambda: dialog.control(control_chunk(INTERRUPT)),
+            transcript_chunk("next", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question next"),
+    ]
+
+
+def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
+    assert profile_config(
+        "qwen3-asr-qwen3.8-27b-vivian"
+    ).component_graph().delivery_reporters("dialog") == ["tts"]
 
 
 def test_profile_graph_turns_formats_and_ports():

@@ -7,7 +7,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from functools import partial
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import httpx
 import numpy as np
@@ -29,6 +29,11 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
+
+if TYPE_CHECKING:
+    from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+else:
+    pass
 
 SPEECH_SAMPLE_RATE_HZ = 24000
 PROBE_TIMEOUT_S = 10.0
@@ -63,6 +68,9 @@ class StreamComponent:
     def can_replace(self) -> bool:
         """Whether replacing this component would discard work in progress."""
         return True
+
+    def place(self, settings: "ComponentGraphConfig", name: str) -> None:
+        """Learn what the graph around this node, named `name`, provides; a kind that needs nothing of it ignores it."""
 
     def state_bytes(self) -> int:
         return 0
