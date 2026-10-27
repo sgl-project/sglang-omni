@@ -1,10 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Direct component tests; graph integration uses the real coordinator."""
 
+import asyncio
+from collections.abc import Mapping
+
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
 from sglang_omni.proto.session import TimedChunk
 
 QUIET = bytes(3200)
+# The gate the `wait_for_gate` tool waits at; a test opens it, or replaces it for a fresh event loop.
+GATE = asyncio.Event()
+
+
+def echo(arguments: Mapping[str, object]) -> dict[str, object]:
+    return {"echo": dict(arguments)}
+
+
+async def wait_for_gate(arguments: Mapping[str, object]) -> dict[str, object]:
+    await GATE.wait()
+    return {"waited": dict(arguments)}
 
 
 async def drain(component, inputs: list) -> list[TimedChunk]:
@@ -25,3 +39,8 @@ async def drain(component, inputs: list) -> list[TimedChunk]:
 
 def build(spec: dict):
     return COMPONENTS.build(COMPONENTS.parse(spec))
+
+
+async def wait_forever(arguments: Mapping[str, object]) -> dict[str, object]:
+    await asyncio.Event().wait()
+    return {"never": dict(arguments)}

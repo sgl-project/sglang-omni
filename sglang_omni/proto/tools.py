@@ -31,7 +31,7 @@ def tool_call_chunk(calls: list[ToolCall], turn: int) -> TimedChunk:
     )
 
 
-def tool_response_chunk(responses: list[ToolResponse], turn: int) -> TimedChunk:
+def tool_response_chunk(responses: list[ToolResponse], turn: int | None) -> TimedChunk:
     return TimedChunk(
         TOOL,
         0,

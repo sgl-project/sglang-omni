@@ -115,6 +115,22 @@ def backends(request, backend_requests):
                 self.event({"delta": {}, "finish_reason": finish_reason})
                 self.wfile.write(b"data: [DONE]\n\n")
                 return
+            elif "tools" in request and request["messages"][-1]["role"] != "tool":
+                # A reply that first calls the one offered tool, its arguments streamed in two pieces.
+                assert [tool["function"]["name"] for tool in request["tools"]] == [
+                    "lookup"
+                ]
+                received_messages.append(request["messages"])
+                call = {"index": 0, "id": "call_1", "function": {"name": "lookup"}}
+                self.event({"delta": {"tool_calls": [call]}, "finish_reason": None})
+                for piece in ('{"city": "Par', 'is"}'):
+                    fragment = {"index": 0, "function": {"arguments": piece}}
+                    self.event(
+                        {"delta": {"tool_calls": [fragment]}, "finish_reason": None}
+                    )
+                self.event({"delta": {}, "finish_reason": "tool_calls"})
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
             else:
                 received_messages.append(request["messages"])
             deltas = [{"content": text} for text in ("Hel", "lo ", "world.")]
@@ -147,7 +163,11 @@ def backends(request, backend_requests):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    settings = loopback_graph(f"http://127.0.0.1:{server.server_port}/v1")
+    settings = loopback_graph(
+        f"http://127.0.0.1:{server.server_port}/v1",
+        with_tools=scenario in ("tool_call", "unawaited_tool"),
+        awaited=scenario != "unawaited_tool",
+    )
     try:
         yield settings, received_audio, received_words, received_messages
     finally:
@@ -303,11 +323,42 @@ session_nodes:
 session_publish:
   {asr: [transcript], dialog: [session], llm: [text_delta], tts: [pcm_f32le, session]}
 """
+LOOKUP_FUNCTION = {
+    "name": "lookup",
+    "description": "Look a city up.",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+LOOKUP_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.echo"
 
 
-def loopback_graph(base_url: str) -> StreamingCascadePipelineConfig:
-    """A commit-driven cascade of the OpenAI-compatible kinds, every one served at `base_url`."""
+def loopback_graph(
+    base_url: str, with_tools: bool = False, awaited: bool = True
+) -> StreamingCascadePipelineConfig:
+    """A commit-driven cascade of the OpenAI-compatible kinds, every one served at `base_url`; with_tools offers the chat the echoing lookup tool, awaited or not, and wires the tools node."""
     declaration = yaml.safe_load(LOOPBACK_GRAPH.replace("URL", base_url))
+    if with_tools:
+        nodes = declaration["session_nodes"]
+        for source in ("llm:tool_call", "tools:tool_response"):
+            nodes["dialog"]["inputs"].append(
+                {
+                    "source": source,
+                    "feedback": True,
+                    "overflow": "drop_oldest",
+                    "capacity": 1024,
+                }
+            )
+        nodes["llm"]["tools"] = [LOOKUP_FUNCTION]
+        nodes["tools"] = {
+            "kind": "tools",
+            "inputs": [
+                "llm:tool_call",
+                "input:session",
+                {"kind": "control", "source": "dialog", "event": "interrupt"},
+            ],
+            "tools": {"lookup": {"path": LOOKUP_IMPLEMENTATION, "awaited": awaited}},
+        }
+    else:
+        pass
     return StreamingCascadePipelineConfig(
         model_path="loopback", timeout_s=5, **declaration
     )

@@ -24,6 +24,7 @@ from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
     Replies,
     audio_chunk,
+    message_dict,
     messages_chunk,
     messages_of,
     sentence_end,
@@ -36,7 +37,13 @@ from sglang_omni.models.streaming_cascade.config import (
     ComponentGraphConfig,
     StreamingCascadePipelineConfig,
 )
-from sglang_omni.models.streaming_cascade.dialog import CUT_REPLY_NOTE, heard_prefix
+from sglang_omni.models.streaming_cascade.dialog import (
+    CANCELLED_RESULT,
+    CUT_REPLY_NOTE,
+    PENDING_CALL_NOTE,
+    RUNNING_RESULT,
+    heard_prefix,
+)
 from sglang_omni.models.streaming_cascade.generators import ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
@@ -44,8 +51,9 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.tools import ToolSettings
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.session import ControlEdge, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -61,6 +69,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
+    TOOL_CALL,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
     TURN_DONE,
@@ -71,8 +80,21 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.proto.tools import (
+    ToolCall,
+    ToolResponse,
+    tool_call_chunk,
+    tool_calls_of,
+    tool_response_chunk,
+    tool_responses_of,
+)
 from sglang_omni.utils.imports import import_string
-from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
+from tests.unit_test.fixtures import cascade_fakes
+from tests.unit_test.fixtures.cascade_backends import (
+    CHAT_MODEL,
+    LOOKUP_FUNCTION,
+    LOOKUP_IMPLEMENTATION,
+)
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
 
@@ -82,6 +104,7 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3.8-27b-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian-tools",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -2340,3 +2363,798 @@ def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
     finally:
         for session in sessions:
             dialog.close_session(session, dialog.open_sessions[session])
+
+
+def lookup_call(call_id: str, city: str) -> ToolCall:
+    return ToolCall(id=call_id, name="lookup", arguments={"city": city})
+
+
+def lookup_response(call_id: str, response: object) -> TimedChunk:
+    """A tools node's answer to one call: one response, without a turn."""
+    return tool_response_chunk(
+        [ToolResponse(id=call_id, name="lookup", response=response)], None
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_generator_joins_streamed_tool_call_fragments_into_one_tool_call_chunk():
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        deltas = [
+            {"content": "Let me check."},
+            {
+                "tool_calls": [
+                    {"index": 0, "id": "call_a", "function": {"name": "lookup"}}
+                ]
+            },
+            {"tool_calls": [{"index": 0, "function": {"arguments": '{"city": "Pa'}}]},
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "function": {"name": "lookup", "arguments": "not json"},
+                    },
+                    {"index": 0, "function": {"arguments": 'ris"}'}},
+                ]
+            },
+        ]
+        events = [
+            {"choices": [{"delta": delta, "finish_reason": None}]} for delta in deltas
+        ]
+        events.append({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return httpx.Response(200, text=f"{stream}data: [DONE]\n\n")
+
+    generator = build(
+        {"kind": "openai_chat", **HTTP_SERVICE, "tools": [LOOKUP_FUNCTION]}
+    )
+    generator.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        generator,
+        [messages_chunk([ChatMessage(role="user", content="weather?")], 1)],
+    )
+    assert [(o.format, o.turn, o.payload.get("text")) for o in outputs] == [
+        (TEXT_DELTA, 1, "Let me check."),
+        (TOOL_CALL, 1, None),
+    ]
+    assert tool_calls_of(outputs[1]) == [
+        lookup_call("call_a", "Paris"),
+        ToolCall(id="call_b", name="lookup", arguments="not json"),
+    ]
+    assert bodies[0]["tools"] == [{"type": "function", "function": LOOKUP_FUNCTION}]
+
+
+@pytest.mark.asyncio
+async def test_the_dialog_continues_the_reply_once_every_call_has_its_response():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("weather in Paris and Rome?", True),
+            text_chunk("Let me check.", 1),
+            tool_call_chunk(
+                [lookup_call("call_a", "Paris"), lookup_call("call_b", "Rome")], 1
+            ),
+            lookup_response("call_b", {"temperature_c": 18}),
+            lookup_response("ghost", "nobody asked"),
+        ],
+    )
+    assert [control_type(o) or o.format for o in outputs] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        MESSAGES,
+    ]
+    outputs = await drain(
+        dialog,
+        [
+            lookup_response("call_a", "sunny"),
+            text_chunk("Paris is sunny, Rome has 18 degrees.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    [follow_up] = outputs
+    assert follow_up.format == MESSAGES and follow_up.turn == 1
+    assert [message_dict(m) for m in messages_of(follow_up)[1:]] == [
+        {"role": "user", "content": "weather in Paris and Rome?"},
+        {
+            "role": "assistant",
+            "content": "Let me check.",
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+                },
+                {
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Rome"}'},
+                },
+            ],
+        },
+        {"role": "tool", "content": "sunny", "tool_call_id": "call_a"},
+        {"role": "tool", "content": '{"temperature_c": 18}', "tool_call_id": "call_b"},
+    ]
+    assert history(dialog)[-1] == ("assistant", "Paris is sunny, Rome has 18 degrees.")
+    assert len(dialog.messages) == 6
+
+
+@pytest.mark.asyncio
+async def test_a_response_to_an_interrupted_reply_does_not_continue_it():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("weather?", True),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            control_chunk(SPEECH_STARTED),
+            lookup_response("call_a", "sunny"),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("never mind", True),
+        ],
+    )
+    assert [o.turn for o in outputs if o.format == MESSAGES] == [1, 2]
+    second = messages_of([o for o in outputs if o.format == MESSAGES][1])
+    assert [(m.role, m.content) for m in second[1:]] == [
+        ("user", "weather?"),
+        ("assistant", ""),
+        ("tool", CANCELLED_RESULT),
+        ("user", "never mind"),
+    ]
+    assert [call.id for call in second[2].tool_calls] == ["call_a"]
+    assert second[0].content.endswith(PENDING_CALL_NOTE)
+    assert history(dialog)[1:] == [
+        ("user", "weather?"),
+        ("assistant", ""),
+        ("user", "never mind"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_after_a_tool_turn_cuts_the_answer_after_the_calls():
+    dialog = build({"kind": "dialog"})
+    progress = [
+        lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
+        )
+        for text_end, audio_ms in ((13, 1000), (28, 2000), (41, 3000))
+    ]
+    await drain(
+        dialog,
+        [
+            transcript_chunk("weather?", True),
+            text_chunk("Let me check.", 1),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            lookup_response("call_a", "sunny"),
+            text_chunk("Paris is sunny. Rome is wet.", 1),
+            *progress,
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TRUNCATE, t_ms=2500),
+        ],
+    )
+    assert history(dialog)[2:] == [
+        ("assistant", "Let me check."),
+        ("tool", "sunny"),
+        ("assistant", "Paris is sunny."),
+    ]
+    assert dialog.messages[-1].is_cut and dialog.messages[2].tool_calls
+
+
+@pytest.mark.asyncio
+async def test_a_tool_turn_truncated_to_nothing_after_its_calls_keeps_the_calls():
+    dialog = build({"kind": "dialog"})
+    progress = [
+        lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
+        )
+        for text_end, audio_ms in ((13, 1000), (28, 2000), (41, 3000))
+    ]
+    await drain(
+        dialog,
+        [
+            transcript_chunk("weather?", True),
+            text_chunk("Let me check.", 1),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            lookup_response("call_a", "sunny"),
+            text_chunk("Paris is sunny. Rome is wet.", 1),
+            *progress,
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("and Rome?", True),
+            control_chunk(TRUNCATE, turn=1, t_ms=1500),
+        ],
+    )
+    assert history(dialog)[2:] == [
+        ("assistant", "Let me check."),
+        ("tool", "sunny"),
+        ("user", "and Rome?"),
+    ]
+    assert dialog.messages[2].tool_calls
+
+
+TOOL_IMPLEMENTATIONS = {
+    "echo": LOOKUP_IMPLEMENTATION,
+    "wait": "tests.unit_test.fixtures.cascade_fakes.wait_for_gate",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_interrupted", [False, True])
+async def test_the_tools_node_answers_calls_as_they_complete_and_cancels_the_interrupted_turn(
+    is_interrupted,
+):
+    cascade_fakes.GATE = asyncio.Event()
+    node = build({"kind": "tools", "tools": TOOL_IMPLEMENTATIONS})
+
+    async def settle_then_release() -> None:
+        while len(node.running) > 1:
+            await asyncio.sleep(0)
+        if is_interrupted:
+            await node.control(control_chunk(INTERRUPT, turn=1))
+        else:
+            cascade_fakes.GATE.set()
+
+    outputs = await drain(
+        node,
+        [
+            tool_call_chunk(
+                [
+                    ToolCall(id="slow", name="wait", arguments={"n": 1}),
+                    ToolCall(id="fast", name="echo", arguments={"n": 2}),
+                    ToolCall(id="bad", name="ghost", arguments={}),
+                ],
+                1,
+            ),
+            tool_call_chunk([ToolCall(id="other", name="echo", arguments={"n": 3})], 2),
+            settle_then_release,
+        ],
+    )
+    responses = {
+        response.id: response.response
+        for o in outputs
+        for response in tool_responses_of(o)
+    }
+    expected = {
+        "fast": {"echo": {"n": 2}},
+        "bad": {"error": "unknown tool ghost"},
+        "other": {"echo": {"n": 3}},
+    }
+    if not is_interrupted:
+        expected["slow"] = {"waited": {"n": 1}}
+    else:
+        pass
+    assert responses == expected
+    assert {o.turn for o in outputs} == {None} and not node.running
+
+
+def tool_wiring(**nodes) -> dict:
+    """The HTTP profile's nodes with the chat offering `lookup`, a tools node running it and the dialog reading both, each replaceable."""
+    data = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]
+    dialog = {
+        **data["dialog"],
+        "inputs": [
+            *data["dialog"]["inputs"],
+            *(
+                {
+                    "source": source,
+                    "feedback": True,
+                    "overflow": "drop_oldest",
+                    "capacity": 1024,
+                }
+                for source in ("llm:tool_call", "tools:tool_response")
+            ),
+        ],
+    }
+    tools = {
+        "kind": "tools",
+        "inputs": [
+            "llm:tool_call",
+            "input:session",
+            {"kind": "control", "source": "dialog", "event": INTERRUPT},
+        ],
+        "tools": {"lookup": LOOKUP_IMPLEMENTATION},
+    }
+    return {
+        "llm": {**data["llm"], "tools": [LOOKUP_FUNCTION]},
+        "tools": tools,
+        "dialog": dialog,
+        **nodes,
+    }
+
+
+def test_the_tool_wiring_validates_and_round_trips():
+    settings = declared(nodes=tool_wiring()).component_graph()
+    assert [tool.name for tool in settings.node("llm").component.tools] == ["lookup"]
+    assert settings.tool_settings("llm") == {
+        "lookup": ToolSettings(path=LOOKUP_IMPLEMENTATION)
+    }
+    assert settings.tool_settings("dialog") == {}
+    assert settings.node("tools").controls == (ControlEdge("dialog", INTERRUPT),)
+    assert (
+        ComponentGraphConfig.model_validate_json(settings.model_dump_json()) == settings
+    )
+
+
+@pytest.mark.parametrize(
+    "nodes, message",
+    [
+        ({"llm": tool_wiring()["llm"]}, "no tools node reads llm:tool_call"),
+        (
+            tool_wiring(
+                tools={
+                    **tool_wiring()["tools"],
+                    "tools": {"other": LOOKUP_IMPLEMENTATION},
+                }
+            ),
+            r"implements \['lookup'\]",
+        ),
+        (
+            {name: node for name, node in tool_wiring().items() if name != "dialog"},
+            "no node that opens turns reads llm:tool_call",
+        ),
+        (
+            tool_wiring(
+                dialog={
+                    **tool_wiring()["dialog"],
+                    "inputs": tool_wiring()["dialog"]["inputs"][:-1],
+                }
+            ),
+            r"must read \['tools:tool_response'\]",
+        ),
+        (
+            tool_wiring(llm={**tool_wiring()["llm"], "tools": [LOOKUP_FUNCTION] * 2}),
+            "distinct names",
+        ),
+        (tool_wiring(tools={**tool_wiring()["tools"], "tools": {}}), "at least 1"),
+        (
+            tool_wiring(
+                tools={
+                    **tool_wiring()["tools"],
+                    "tools": {
+                        "lookup": {"path": LOOKUP_IMPLEMENTATION, "mode": "async"}
+                    },
+                }
+            ),
+            "Extra inputs are not permitted",
+        ),
+    ],
+)
+def test_tool_declaration_errors(nodes, message):
+    with pytest.raises(ValueError, match=message):
+        declared(nodes=nodes)
+
+
+def test_the_tool_profile_offers_an_awaited_and_an_unawaited_tool():
+    config = profile_config("qwen3-asr-qwen3.8-27b-vivian-tools")
+    settings = config.component_graph()
+    weather = "examples.streaming_cascade.tools.get_weather"
+    wikipedia = "examples.streaming_cascade.tools.search_wikipedia"
+    assert [tool.name for tool in settings.node("llm").component.tools] == [
+        "get_weather",
+        "search_wikipedia",
+    ]
+    assert settings.tool_settings("llm") == {
+        "get_weather": ToolSettings(path=weather),
+        "search_wikipedia": ToolSettings(
+            path=wikipedia, awaited=False, on_interrupt="retain"
+        ),
+    }
+    assert callable(import_string(weather)) and callable(import_string(wikipedia))
+    chat = next(service for service in config.services if service.name == "chat")
+    assert "--tool-call-parser" in chat.command
+    graph = config.session_graph()
+    assert graph.nodes["dialog"].bound("tools").feedback
+    assert graph.nodes["tools"].controls == (ControlEdge("dialog", INTERRUPT),)
+    assert "tools" not in config.session_publish
+    tools_settings = config.stage_factory_kwargs("tools")["settings"]
+    [tools_node] = [node for node in tools_settings["nodes"] if node["name"] == "tools"]
+    assert tools_node["tools"]["get_weather"] == {
+        "path": weather,
+        "awaited": True,
+        "on_interrupt": "cancel",
+    }
+    assert tools_node["timeout_s"] == 30
+
+
+SEARCH_FUNCTION = {
+    "name": "search",
+    "description": "Look a topic up.",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+}
+WAIT_IMPLEMENTATION = "tests.unit_test.fixtures.cascade_fakes.wait_for_gate"
+
+
+def search_call(call_id: str, query: str) -> ToolCall:
+    return ToolCall(id=call_id, name="search", arguments={"query": query})
+
+
+def search_response(call_id: str, response: object) -> TimedChunk:
+    return tool_response_chunk(
+        [ToolResponse(id=call_id, name="search", response=response)], None
+    )
+
+
+def tool_settings_wiring(
+    lookup: dict | None = None, search: dict | None = None
+) -> dict:
+    """The tool wiring with the chat offering lookup and search, run by the tools node with the given settings beside their path."""
+    nodes = tool_wiring()
+    return {
+        **nodes,
+        "llm": {**nodes["llm"], "tools": [LOOKUP_FUNCTION, SEARCH_FUNCTION]},
+        "tools": {
+            **nodes["tools"],
+            "tools": {
+                "lookup": {"path": LOOKUP_IMPLEMENTATION, **(lookup or {})},
+                "search": {"path": LOOKUP_IMPLEMENTATION, **(search or {})},
+            },
+        },
+    }
+
+
+def placed_dialog(lookup: dict | None = None, search: dict | None = None):
+    """A dialog placed in the tool wiring, so it knows how the calls it reads live."""
+    settings = declared(nodes=tool_settings_wiring(lookup, search)).component_graph()
+    dialog = build({"kind": "dialog"})
+    dialog.place(settings, "dialog")
+    return dialog
+
+
+def turn_events(outputs: list[TimedChunk]) -> list[tuple[str, int | None]]:
+    return [(control_type(o) or o.format, o.turn) for o in outputs]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("awaited", [True, False])
+async def test_the_generator_ends_the_turn_after_calling_only_tools_the_reply_does_not_await(
+    awaited,
+):
+    def answer(request: httpx.Request) -> httpx.Response:
+        call = {
+            "index": 0,
+            "id": "call_a",
+            "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+        }
+        events = [
+            {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return httpx.Response(200, text=f"{stream}data: [DONE]\n\n")
+
+    settings = declared(
+        nodes=tool_settings_wiring(lookup={"awaited": awaited})
+    ).component_graph()
+    generator = COMPONENTS.build(settings.node("llm").component)
+    generator.place(settings, "llm")
+    generator.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        generator,
+        [messages_chunk([ChatMessage(role="user", content="weather?")], 1)],
+    )
+    assert turn_events(outputs) == [
+        (TOOL_CALL, 1),
+        *([] if awaited else [(TURN_DONE, 1)]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unawaited_call_ends_the_reply_and_each_result_reports_in_a_turn_of_its_own():
+    dialog = placed_dialog(lookup={"awaited": False})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("weather in Paris and Rome?", True),
+            text_chunk("Let me look.", 1),
+            tool_call_chunk(
+                [lookup_call("call_a", "Paris"), lookup_call("call_b", "Rome")], 1
+            ),
+            control_chunk(TURN_DONE, turn=1),
+            lookup_response("call_b", "wet"),
+            lookup_response("call_a", "sunny"),
+            text_chunk("Rome is wet.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert turn_events(outputs) == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (MESSAGES, 2),
+        (TURN_QUEUED, 3),
+        (TURN_STARTED, 3),
+        (MESSAGES, 3),
+    ]
+    second, third = prompts(outputs)[1:]
+    assert second[1:] == [
+        ("user", "weather in Paris and Rome?"),
+        ("assistant", "Let me look."),
+        ("tool", RUNNING_RESULT),
+        ("tool", "wet"),
+    ]
+    assert second[0][1].endswith(PENDING_CALL_NOTE)
+    assert third[1:] == [
+        ("user", "weather in Paris and Rome?"),
+        ("assistant", "Let me look."),
+        ("tool", "wet"),
+        ("assistant", "Rome is wet."),
+        ("tool", "sunny"),
+    ]
+    assert PENDING_CALL_NOTE not in third[0][1]
+    assert [call.id for call in dialog.messages[2].tool_calls] == ["call_a", "call_b"]
+    assert [m.tool_call_id for m in dialog.messages if m.role == "tool"] == [
+        "call_b",
+        "call_a",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_utterance_during_an_unawaited_call_is_answered_with_its_running_status_before_the_result_reports():
+    dialog = placed_dialog(lookup={"awaited": False})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("look Paris up", True),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("any news?", True),
+            lookup_response("call_a", "sunny"),
+            text_chunk("Still looking.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert [event for event in turn_events(outputs) if event[0] != MESSAGES] == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (TURN_QUEUED, 3),
+        (TURN_STARTED, 3),
+    ]
+    second, third = prompts(outputs)[1:]
+    assert second[1:] == [
+        ("user", "look Paris up"),
+        ("assistant", ""),
+        ("tool", RUNNING_RESULT),
+        ("user", "any news?"),
+    ]
+    assert second[0][1].endswith(PENDING_CALL_NOTE)
+    assert (
+        third[1:]
+        == history(dialog)[1:]
+        == [
+            ("user", "look Paris up"),
+            ("assistant", ""),
+            ("user", "any news?"),
+            ("assistant", "Still looking."),
+            ("tool", "sunny"),
+        ]
+    )
+    assert dialog.messages[2].tool_calls
+
+
+@pytest.mark.asyncio
+async def test_a_result_reports_after_the_utterance_that_waited_before_it():
+    dialog = placed_dialog(lookup={"awaited": False})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("look Paris up", True),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            transcript_chunk("and Rome?", True),
+            lookup_response("call_a", "sunny"),
+            control_chunk(TURN_DONE, turn=1),
+            text_chunk("Rome too.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert [event for event in turn_events(outputs) if event[0] != MESSAGES] == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (TURN_QUEUED, 3),
+        (TURN_STARTED, 3),
+    ]
+    assert prompts(outputs)[1][-2:] == [("tool", RUNNING_RESULT), ("user", "and Rome?")]
+    assert prompts(outputs)[2][-2:] == [("assistant", "Rome too."), ("tool", "sunny")]
+
+
+@pytest.mark.asyncio
+async def test_a_result_reports_once_the_user_stopped_speaking():
+    dialog = placed_dialog(lookup={"awaited": False})
+
+    async def held_while_speaking() -> None:
+        assert dialog.reply is None and dialog.arrived
+
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("look Paris up", True),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(SPEECH_STARTED),
+            lookup_response("call_a", "sunny"),
+            held_while_speaking,
+            control_chunk(SPEECH_STOPPED),
+        ],
+    )
+    assert turn_events(outputs)[3:] == [
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (MESSAGES, 2),
+    ]
+    assert prompts(outputs)[1][-1] == ("tool", "sunny")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "awaited, on_interrupt, is_reported",
+    [(True, "retain", True), (False, "retain", True), (False, "cancel", False)],
+)
+async def test_an_interrupt_retains_or_cancels_the_calls_of_the_reply_it_ends(
+    awaited, on_interrupt, is_reported
+):
+    dialog = placed_dialog(lookup={"awaited": awaited, "on_interrupt": on_interrupt})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("look Paris up", True),
+            text_chunk("Let me look.", 1),
+            tool_call_chunk([lookup_call("call_a", "Paris")], 1),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+            lookup_response("call_a", "sunny"),
+            control_chunk(SPEECH_STOPPED),
+            text_chunk("Paris is sunny.", 2),
+            control_chunk(TURN_DONE, turn=2),
+            transcript_chunk("never mind", True),
+        ],
+    )
+    events = turn_events(outputs)
+    assert events[:5] == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+    ]
+    if is_reported:
+        assert events[5:] == [
+            (TURN_QUEUED, 2),
+            (TURN_STARTED, 2),
+            (MESSAGES, 2),
+            (TURN_QUEUED, 3),
+            (TURN_STARTED, 3),
+            (MESSAGES, 3),
+        ]
+        assert prompts(outputs)[1][1:] == [
+            ("user", "look Paris up"),
+            ("assistant", "…"),
+            ("tool", "sunny"),
+        ]
+    else:
+        assert events[5:] == [(TURN_QUEUED, 2), (TURN_STARTED, 2), (MESSAGES, 2)]
+        assert prompts(outputs)[1][1:] == [
+            ("user", "look Paris up"),
+            ("assistant", "…"),
+            ("tool", CANCELLED_RESULT),
+            ("user", "never mind"),
+        ]
+        assert prompts(outputs)[1][0][1].endswith(PENDING_CALL_NOTE)
+    assert CUT_REPLY_NOTE in prompts(outputs)[1][0][1]
+    assert dialog.messages[2].tool_calls and dialog.messages[2].is_cut
+
+
+@pytest.mark.asyncio
+async def test_a_reply_awaits_only_its_awaited_calls_and_the_others_report_later():
+    dialog = placed_dialog(search={"awaited": False})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("weather in Paris, and look the tower up", True),
+            text_chunk("Checking both.", 1),
+            tool_call_chunk(
+                [lookup_call("call_a", "Paris"), search_call("call_s", "tower")], 1
+            ),
+            lookup_response("call_a", "sunny"),
+            text_chunk("Paris is sunny.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            search_response("call_s", "tall"),
+        ],
+    )
+    assert turn_events(outputs) == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (MESSAGES, 1),
+        (MESSAGES, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (MESSAGES, 2),
+    ]
+    continuation, report = prompts(outputs)[1:]
+    assert continuation[1:] == [
+        ("user", "weather in Paris, and look the tower up"),
+        ("assistant", "Checking both."),
+        ("tool", RUNNING_RESULT),
+        ("tool", "sunny"),
+    ]
+    assert continuation[0][1].endswith(PENDING_CALL_NOTE)
+    assert report[1:] == [
+        ("user", "weather in Paris, and look the tower up"),
+        ("assistant", "Checking both."),
+        ("tool", "sunny"),
+        ("assistant", "Paris is sunny."),
+        ("tool", "tall"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_tools_node_keeps_a_retained_call_through_the_interrupt_and_times_out_a_stalled_one():
+    cascade_fakes.GATE = asyncio.Event()
+    node = build(
+        {
+            "kind": "tools",
+            "timeout_s": 0.2,
+            "tools": {
+                "retained": {"path": WAIT_IMPLEMENTATION, "on_interrupt": "retain"},
+                "cancelled": WAIT_IMPLEMENTATION,
+                "stalled": {
+                    "path": "tests.unit_test.fixtures.cascade_fakes.wait_forever",
+                    "on_interrupt": "retain",
+                },
+            },
+        }
+    )
+
+    async def interrupt_then_release() -> None:
+        await node.control(control_chunk(INTERRUPT, turn=1))
+        cascade_fakes.GATE.set()
+
+    outputs = await drain(
+        node,
+        [
+            tool_call_chunk(
+                [
+                    ToolCall(id="keep", name="retained", arguments={}),
+                    ToolCall(id="drop", name="cancelled", arguments={}),
+                    ToolCall(id="stall", name="stalled", arguments={}),
+                ],
+                1,
+            ),
+            interrupt_then_release,
+        ],
+    )
+    responses = {
+        response.id: response.response
+        for o in outputs
+        for response in tool_responses_of(o)
+    }
+    assert responses == {
+        "keep": {"waited": {}},
+        "stall": {"error": "stalled gave no answer within 0.2 s"},
+    }
+    assert not node.running
+
+
+@pytest.mark.asyncio
+async def test_closing_the_tools_node_cancels_its_running_calls_without_answering_them():
+    cascade_fakes.GATE = asyncio.Event()
+    node = build({"kind": "tools", "tools": {"wait": WAIT_IMPLEMENTATION}})
+    outputs: list[TimedChunk] = []
+    input_open = asyncio.Event()
+
+    async def inputs():
+        yield tool_call_chunk([ToolCall(id="slow", name="wait", arguments={})], 1)
+        await input_open.wait()
+
+    task = asyncio.ensure_future(node.process(inputs(), outputs.append))
+    while not node.running:
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.wait({task})
+    assert task.cancelled() and not node.running and outputs == []

@@ -22,6 +22,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
+    TOOL,
     TRUNCATE,
     TURN_DONE,
     TURN_EMPTY,
@@ -178,6 +179,54 @@ async def test_eos_flushes_uncommitted_audio_and_history(backends):
         assert (TURN_EMPTY, 2) in events
         assert (TURN_DONE, 3) in events
         assert session.outputs[-1].eos and session.outputs[-1].kind == "input_done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["tool_call"], indirect=True)
+async def test_a_tool_call_continues_the_reply_with_the_tool_result(backends):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.audio(eos=True)
+        # The eos flushes the trailing audio as a second turn, which calls the tool again.
+        assert words == ["Hello", "world."] * 2
+        assert len(messages) == 4
+        call_entry = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        }
+        result_entry = {
+            "role": "tool",
+            "content": '{"echo": {"city": "Paris"}}',
+            "tool_call_id": "call_1",
+        }
+        assert messages[1][-2:] == [call_entry, result_entry]
+        assert messages[2][-4:] == [
+            call_entry,
+            result_entry,
+            {"role": "assistant", "content": "Hello world."},
+            {"role": "user", "content": "test question"},
+        ]
+        events = [
+            (control_type(o), o.turn) for o in session.outputs if o.kind == "data"
+        ]
+        # The second turn queues while the first waits for its tool, so compare per turn.
+        for turn in (1, 2):
+            assert [e for e in events if e[0] is not None and e[1] == turn] == [
+                (TURN_QUEUED, turn),
+                (TURN_STARTED, turn),
+                (TURN_DONE, turn),
+            ]
+        assert not any(o.modality == TOOL for o in session.outputs)
+        assert session.error is None
 
 
 @pytest.mark.asyncio
@@ -406,3 +455,98 @@ async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
         assert done.t_start_ms == pytest.approx(
             audio[-1].t_start_ms + audio[-1].duration_ms
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["unawaited_tool"], indirect=True)
+async def test_an_unawaited_tool_call_ends_the_reply_and_its_result_reports_in_its_own_turn(
+    backends,
+):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        await session.audio(eos=True)
+        assert words == ["Hello", "world."] * 2
+        assert len(messages) == 4
+        call_entry = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        }
+        result_entry = {
+            "role": "tool",
+            "content": '{"echo": {"city": "Paris"}}',
+            "tool_call_id": "call_1",
+        }
+        assert messages[1][-2:] == [call_entry, result_entry]
+        assert messages[2][-4:] == [
+            call_entry,
+            result_entry,
+            {"role": "assistant", "content": "Hello world."},
+            {"role": "user", "content": "test question"},
+        ]
+        assert messages[3][-2:] == [call_entry, result_entry]
+        events = [
+            (control_type(o), o.turn) for o in session.outputs if o.kind == "data"
+        ]
+        for turn in (1, 2, 3, 4):
+            assert [e for e in events if e[0] is not None and e[1] == turn] == [
+                (TURN_QUEUED, turn),
+                (TURN_STARTED, turn),
+                (TURN_DONE, turn),
+            ]
+        assert not any(o.modality == TOOL for o in session.outputs)
+        assert session.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["unawaited_tool"], indirect=True)
+async def test_each_session_reports_only_its_own_tool_results(backends):
+    config, _, words, _ = backends
+    async with conversation(config) as first:
+        identity = await first.coordinator.open_session(
+            OmniRequest(None), limits=SessionLimits(operation_timeout_s=10)
+        )
+        second = Conversation(first.coordinator, identity)
+        try:
+            for session in (first, second):
+                await session.audio()
+                await session.command(COMMIT)
+            for session in (first, second):
+                await session.until(
+                    lambda: [
+                        control_type(o) for o in session.outputs if o.kind == "data"
+                    ].count(TURN_DONE)
+                    == 2
+                )
+                events = [
+                    (control_type(o), o.turn)
+                    for o in session.outputs
+                    if o.kind == "data"
+                    and control_type(o) in (TURN_QUEUED, TURN_STARTED, TURN_DONE)
+                ]
+                assert events == [
+                    (TURN_QUEUED, 1),
+                    (TURN_STARTED, 1),
+                    (TURN_DONE, 1),
+                    (TURN_QUEUED, 2),
+                    (TURN_STARTED, 2),
+                    (TURN_DONE, 2),
+                ]
+                assert session.error is None
+        finally:
+            await second.close()
+    assert sorted(words) == sorted(["Hello", "world."] * 2)
