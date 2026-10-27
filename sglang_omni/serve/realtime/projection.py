@@ -23,6 +23,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     OutputEvent,
+    OutputImage,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -133,6 +134,11 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    call_id: str
+    name: str
+    arguments: object
+    mime_type: str
+    data: str
 
 
 def project_output(
@@ -225,6 +231,19 @@ def project_output(
             output_index=0,
             content_index=0,
             text_end=event.text_end,
+        )
+    elif isinstance(event, OutputImage):
+        return dict(
+            type="sglang.response.image",
+            response_id=event.response_id,
+            item_id=event.item_id,
+            output_index=0,
+            content_index=0,
+            call_id=event.call_id,
+            name=event.name,
+            arguments=event.arguments,
+            mime_type=event.mime_type,
+            data=event.data,
         )
     elif isinstance(event, TurnFailure):
         return dict(

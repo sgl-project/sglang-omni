@@ -85,6 +85,10 @@
     .caption[data-below="true"] { --below: 1.2em; }
     .caption[data-fade="true"] { opacity: .3; }
     .caption .pending { color: var(--faint); }
+    .picture { flex: none; width: min(300px, 70vw, 32dvh); margin: 0; }
+    .picture img, .shot img { display: block; width: 100%; border-radius: 14px; box-shadow: var(--shadow); }
+    .picture figcaption, .shot figcaption { margin-top: 6px; color: var(--muted); font-size: .8rem; line-height: 1.4; text-align: center; }
+    .shot { width: min(300px, 100%); margin: 0 auto 12px; }
     .warning {
       position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 32px));
       padding: 10px 14px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--border);
@@ -180,6 +184,10 @@
     </button>
     <div id="statusLine" class="status-line" aria-live="polite"></div>
     <p id="caption" class="caption" aria-live="polite"></p>
+    <figure id="picture" class="picture" hidden>
+      <img id="pictureImg" alt="">
+      <figcaption id="pictureCaption"></figcaption>
+    </figure>
   </main>
 
   <footer class="dock-wrap">

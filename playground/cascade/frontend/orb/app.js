@@ -21,7 +21,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "picture", "pictureImg", "pictureCaption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -227,7 +227,37 @@ async function pollStatus() {
   setButtons();
 }
 
+// What a picture was asked for: the prompt of the call that made it, or its whole arguments.
+function requestOf(picture) {
+  const prompt = picture.arguments && picture.arguments.prompt;
+  return typeof prompt === "string" ? prompt : JSON.stringify(picture.arguments);
+}
+
+function figureOf(picture) {
+  const figure = document.createElement("figure");
+  figure.className = "shot";
+  const image = document.createElement("img");
+  image.src = `data:${picture.mimeType};base64,${picture.data}`;
+  image.alt = requestOf(picture);
+  const caption = document.createElement("figcaption");
+  caption.textContent = requestOf(picture);
+  figure.append(image, caption);
+  return figure;
+}
+
+// The stage shows the latest picture a tool made with the request it was made from, until the next picture or the end of the call.
+function renderPicture() {
+  const pictures = session ? session.pictures : [];
+  ui.picture.hidden = !pictures.length;
+  if (!pictures.length) return;
+  const latest = pictures.at(-1);
+  ui.pictureImg.src = `data:${latest.mimeType};base64,${latest.data}`;
+  ui.pictureImg.alt = requestOf(latest);
+  ui.pictureCaption.textContent = requestOf(latest);
+}
+
 function renderTranscript() {
+  renderPicture();
   const text = session ? session.transcript : "";
   const paragraphs = text.split("\n").filter((line) => line.trim());
   // Audio-only models never send text; the transcript control appears with the first words.
@@ -242,7 +272,7 @@ function renderTranscript() {
     const paragraph = document.createElement("p");
     paragraph.textContent = line;
     return paragraph;
-  }));
+  }), ...session.pictures.map(figureOf));
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
   renderHeard();
 }
@@ -371,6 +401,7 @@ function sessionListeners() {
       renderTranscript();
     },
     text: renderTranscript,
+    picture: renderTranscript,
     progress: renderHeard,
     played: renderHeard,
     drained: () => {},

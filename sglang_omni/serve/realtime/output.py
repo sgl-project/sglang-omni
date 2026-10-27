@@ -52,6 +52,18 @@ class ResponseHeard(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class OutputImage(ResponseEvent):
+    """An image a tool of the reply made, as base64 of mime_type, with the call that asked for it."""
+
+    item_id: str
+    call_id: str
+    name: str
+    arguments: object
+    mime_type: str
+    data: str
+
+
+@dataclass(frozen=True)
 class AudioFinished(ResponseEvent):
     item_id: str
 
@@ -103,6 +115,7 @@ OutputEvent = (
     | AudioDelta
     | ResponseProgress
     | ResponseHeard
+    | OutputImage
     | AudioFinished
     | ResponseFinished
     | TurnFailure

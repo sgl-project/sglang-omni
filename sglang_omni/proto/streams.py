@@ -33,8 +33,10 @@ RUNNING_TEXT = "text"
 TRANSCRIPT_FORMAT = "transcript"
 # {"calls": [{"id": str, "name": str, "arguments": object}, ...]}
 TOOL_CALL = "tool_call"
-# {"responses": [{"id": str, "name": str, "response": object}, ...]}
+# {"responses": [{"id": str, "name": str, "response": object, "images": [{"mime_type": str, "data": str}, ...]}, ...]}
 TOOL_RESPONSE = "tool_response"
+# {"call_id": str, "name": str, "arguments": object, "mime_type": str, "data": str}; one image a tool made, as base64, with the call that asked for it
+TOOL_IMAGE = "tool_image"
 SESSION_CONTROL = "session"  # {"type": <control type>, ...}
 # `turn_detection.type` of a realtime session: speech boundaries end turns, or an end-of-turn model holds a turn across a pause
 SERVER_VAD = "server_vad"
