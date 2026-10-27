@@ -44,6 +44,7 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.speech_text import speech_span
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -57,6 +58,7 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_SPEECH,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -1033,7 +1035,9 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         control_chunk(TURN_DONE, turn=2),
     ]
     outputs = await drain(build({**tts, "max_sentence_words": 24}), inputs)
-    outputs = [o for o in outputs if control_type(o) != REPLY_PROGRESS]
+    outputs = [
+        o for o in outputs if control_type(o) not in (REPLY_PROGRESS, REPLY_SPEECH)
+    ]
     assert spoken == ["Hello world.", "Second sentence here", "Again"]
     labels = [control_type(o) or o.format for o in outputs]
     runs = [label for i, label in enumerate(labels) if i == 0 or labels[i - 1] != label]
@@ -1043,6 +1047,52 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO
     ]
     assert np.concatenate(samples).tolist() == [0.0, 0.5, -0.5] * 3
+
+
+@pytest.mark.parametrize(
+    "source, spoken, heard, prefix",
+    [
+        (
+            "Read [docs](https://example.com) now.",
+            "Read docs now.",
+            "Read docs",
+            "Read [docs](https://example.com)",
+        ),
+        ("**go** go **go**", "go go go", "go go", "**go** go"),
+        ("A\r\n**B** C", "A B C", "A B", "A\r\n**B**"),
+        ("中文**重点**😀继续", "中文重点继续", "中文重点", "中文**重点**😀"),
+        (
+            r"Use a*b, snake_case and \*.",
+            "Use a*b, snake_case and *.",
+            "Use a*b",
+            "Use a*b",
+        ),
+        (
+            "Use `pip install` now.",
+            "Use pip install now.",
+            "Use pip install",
+            "Use `pip install`",
+        ),
+        (
+            "**strong and *nested*** end",
+            "strong and nested end",
+            "strong and nested",
+            "**strong and *nested***",
+        ),
+        ("a**b**", "ab", "a", "a"),
+    ],
+)
+def test_speech_cleanup_maps_heard_text_to_the_original_reply(
+    source: str, spoken: str, heard: str, prefix: str
+) -> None:
+    """Deleted link targets and repeated words must not move the heard original prefix."""
+    start_chars = 7
+    span = speech_span(source, start_chars)
+    assert span.text == spoken
+    assert source[: span.original_ends_chars[len(heard) - 1] - start_chars] == prefix
+    assert len(span.original_ends_chars) == len(span.text)
+    assert span.original_ends_chars == sorted(span.original_ends_chars)
+    assert span.source_end_chars == start_chars + len(source)
 
 
 @pytest.mark.asyncio
@@ -1616,6 +1666,85 @@ async def forced_aligner(handler, **options) -> object:
     await node.client.aclose()
     node.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return node
+
+
+@pytest.mark.asyncio
+async def test_tts_and_forced_alignment_share_clean_text_and_reply_offsets(backends):
+    """The worker previously aligned an unspoken link target and lost the following words."""
+    settings, _, spoken, _ = backends
+    reply = "Earlier. Read [docs](https://example.com) costs **350** dollars."
+    tts = settings.component_graph().node("tts").component.model_dump()
+    tts["max_sentence_words"] = 24
+    outputs = await drain(
+        build(tts), [text_chunk(reply, 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content)["text"])
+        return worker_reply(request)
+
+    aligned = await drain(
+        await forced_aligner(handler), [text_chunk(reply, 1), *outputs]
+    )
+    assert spoken == ["Earlier.", "Read docs costs 350 dollars."]
+    assert [text.strip() for text in requests] == spoken
+    prefixes = [reply[:end_chars] for end_chars, _ in spoken_progress(aligned)]
+    assert "Earlier. Read [docs](https://example.com)" in prefixes
+    assert "Earlier. Read [docs](https://example.com) costs **350**" in prefixes
+    assert reply in prefixes
+    assert all(control_type(chunk) == REPLY_PROGRESS for chunk in aligned)
+    reply_start = next(
+        index
+        for index, chunk in enumerate(outputs)
+        if control_type(chunk) == REPLY_SPEECH
+    )
+    audio_start = next(
+        index for index, chunk in enumerate(outputs) if chunk.format == PCM_F32
+    )
+    assert reply_start < audio_start
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_complete", [False, True])
+@pytest.mark.parametrize(
+    "transcript, prefix",
+    [
+        ("Read docs", "Read [docs](https://example.com)"),
+        ("Read docs costs three hundred", "Read [docs](https://example.com) costs"),
+        (
+            "Read docs costs three hundred fifty",
+            "Read [docs](https://example.com) costs **350**",
+        ),
+    ],
+)
+async def test_heard_asr_maps_both_inflight_and_finished_speech_to_original_text(
+    is_complete: bool, transcript: str, prefix: str
+) -> None:
+    """Interruption before sentence completion needs the same cleanup map as finished audio."""
+    earlier = "Earlier. "
+    source = "Read [docs](https://example.com) costs **350** dollars."
+    span = speech_span(source, len(earlier)).model_copy(update={"language": "English"})
+    inputs = [
+        text_chunk(earlier + source, 1, "English"),
+        control_chunk(REPLY_PROGRESS, turn=1, text_end=len(earlier), audio_ms=0),
+        control_chunk(REPLY_SPEECH, turn=1, speech=span.model_dump()),
+        speech(),
+        speech(),
+    ]
+    if is_complete:
+        inputs.append(
+            control_chunk(
+                REPLY_PROGRESS, turn=1, text_end=len(earlier + source), audio_ms=1000
+            )
+        )
+    else:
+        pass
+    inputs.append(control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500))
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing(transcript, [])), inputs
+    )
+    assert spoken_progress(outputs)[-1] == (len(earlier + prefix), 500)
 
 
 @pytest.mark.asyncio

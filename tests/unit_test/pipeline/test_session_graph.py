@@ -38,6 +38,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    REPLY_SPEECH,
 )
 from sglang_omni.scheduling.session import (
     ChunkEmitter,
@@ -1066,6 +1067,19 @@ async def test_an_interrupt_drops_the_turn_output_the_client_has_not_taken():
     ]
     assert graph.output_bytes == 0
     await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_speech_mapping_reaches_the_listener_but_not_the_client():
+    """Speech preparation is an internal control, not a new client protocol event."""
+    prepared = reply_output("session", {"type": REPLY_SPEECH, "speech": {}}, 1)
+    runner = NodeOutputsRunner([prepared])
+    graph = paced_speaker_runtime(runner)
+    await runner.route_graph_outputs(graph, "speaker")
+    assert graph.outputs.empty()
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["listener"].queued
+    ] == [("speaker", prepared.payload)]
 
 
 QUEUED_AUDIO_OF_TURN_1 = (speaker_audio(1, 0), 0, "speaker")

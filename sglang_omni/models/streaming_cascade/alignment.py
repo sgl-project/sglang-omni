@@ -36,11 +36,13 @@ from sglang_omni.models.streaming_cascade.recognizers import (
     TranscriptionResult,
     request_transcription,
 )
+from sglang_omni.models.streaming_cascade.speech_text import SpeechSpan
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_SPEECH,
     TEXT_DELTA,
     TRUNCATE,
     chunk_language,
@@ -167,7 +169,7 @@ async def probe_alignment_worker(config: AlignmentConfig) -> None:
 
 @dataclass(frozen=True)
 class SentenceAudio:
-    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the reply's, None while unknown."""
+    """Sentence text and audio for alignment; speech maps cleaned text to original reply offsets when present."""
 
     turn: int
     text: str
@@ -175,11 +177,12 @@ class SentenceAudio:
     start_ms: float
     samples: np.ndarray
     language: str | None = None
+    speech: SpeechSpan | None = None
 
 
 @dataclass(frozen=True)
 class HeardAudio:
-    """The audio of one sentence of `turn` from its start to the cut at `audio_ms`, for the transcription service; `text` is the sentence's text from character `start` of the reply on."""
+    """Sentence audio through the playback cut; speech maps the recognized text prefix back to the original reply."""
 
     turn: int
     text: str
@@ -187,6 +190,7 @@ class HeardAudio:
     audio_ms: float
     samples: np.ndarray
     language: str | None = None
+    speech: SpeechSpan | None = None
 
 
 @dataclass
@@ -209,6 +213,7 @@ class SpokenReply:
     client_ms: float | None = None
     delivered_ms: float | None = None
     heard_ms: float | None = None
+    speech: SpeechSpan | None = None
 
 
 class Alignment(StreamComponent):
@@ -243,6 +248,14 @@ class Alignment(StreamComponent):
                 len(self.reply.text) * 4
                 + sum(samples.nbytes for samples in self.reply.samples)
                 + sum(sentence.samples.nbytes for sentence in self.reply.sentences)
+                + sum(
+                    len(speech.text) * 4 + len(speech.original_ends_chars) * 8
+                    for speech in [
+                        self.reply.speech,
+                        *(sentence.speech for sentence in self.reply.sentences),
+                    ]
+                    if speech is not None
+                )
             )
 
     def reply_of(self, turn: int) -> SpokenReply:
@@ -290,6 +303,10 @@ class Alignment(StreamComponent):
                 reply.language = language
             else:
                 pass
+        elif event == REPLY_SPEECH and self.keeps_audio():
+            self.reply_of(chunk.turn).speech = SpeechSpan.model_validate(
+                chunk.payload["speech"]
+            )
         elif chunk.format == PCM_F32 and self.keeps_audio():
             self.reply_of(chunk.turn).samples.append(
                 np.frombuffer(chunk.payload, dtype="<f4")
@@ -330,16 +347,21 @@ class Alignment(StreamComponent):
         sentences: asyncio.Queue[SentenceAudio | HeardAudio | None],
     ) -> None:
         span = reply.text[reply.start : text_end]
-        text = span.strip()
+        text = reply.speech.text if reply.speech is not None else span.strip()
         progress(emit, reply.turn, text_end, audio_ms)
         if self.keeps_audio() and text and reply.samples:
             sentence = SentenceAudio(
                 reply.turn,
                 text,
-                reply.start + len(span) - len(span.lstrip()),
+                (
+                    reply.speech.source_start_chars
+                    if reply.speech is not None
+                    else reply.start + len(span) - len(span.lstrip())
+                ),
                 reply.start_ms,
                 np.concatenate(reply.samples),
-                reply.language,
+                reply.speech.language if reply.speech is not None else reply.language,
+                reply.speech,
             )
             if self.config.method == "forced":
                 sentences.put_nowait(sentence)
@@ -352,6 +374,7 @@ class Alignment(StreamComponent):
         else:
             pass
         reply.start, reply.start_ms, reply.samples = text_end, audio_ms, []
+        reply.speech = None
 
     def cut(
         self,
@@ -382,7 +405,11 @@ class Alignment(StreamComponent):
                     progress(
                         emit,
                         sentence.turn,
-                        sentence.start + text_end,
+                        (
+                            sentence.speech.original_ends_chars[text_end - 1]
+                            if sentence.speech is not None
+                            else sentence.start + text_end
+                        ),
                         sentence.audio_ms,
                     )
                 else:
@@ -501,7 +528,11 @@ class Alignment(StreamComponent):
         else:
             return [
                 (
-                    sentence.start + end,
+                    (
+                        sentence.speech.original_ends_chars[end - 1]
+                        if sentence.speech is not None
+                        else sentence.start + end
+                    ),
                     sentence.start_ms + sample * 1000 / SPEECH_SAMPLE_RATE_HZ,
                 )
                 for end, sample in zip(ends, samples)
@@ -551,15 +582,23 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
             sentence.start_ms,
             sentence.samples,
         )
+        speech = sentence.speech
+        language = sentence.language
     elif reply.samples and cut_ms > reply.start_ms:
         span = reply.text[reply.start :]
-        text = span.strip()
-        start = reply.start + len(span) - len(span.lstrip())
+        speech = reply.speech
+        text = speech.text if speech is not None else span.strip()
+        start = (
+            speech.source_start_chars
+            if speech is not None
+            else reply.start + len(span) - len(span.lstrip())
+        )
+        language = speech.language if speech is not None else reply.language
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)
     else:
         return None
     cut = samples[: round((cut_ms - start_ms) * SPEECH_SAMPLE_RATE_HZ / 1000)]
     if text and len(cut):
-        return HeardAudio(reply.turn, text, start, cut_ms, cut, reply.language)
+        return HeardAudio(reply.turn, text, start, cut_ms, cut, language, speech)
     else:
         return None

@@ -45,6 +45,7 @@ dependencies = [
     "mooncake-transfer-engine-cuda13>=0.3.10; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
     "logger",
     "httpx",
+    "marko==2.2.4",
     "xxhash>=3.0.0",
     # Note: (Jiaxin Deng) the documented install line for the Qwen3-TTS model
     # package is `--no-deps qwen-tts==0.1.1`, and --no-deps is exactly what drops

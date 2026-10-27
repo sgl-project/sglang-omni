@@ -21,24 +21,21 @@ from sglang_omni.models.streaming_cascade.base import (
     control_chunk,
     iterate,
     replying,
+    sentence_end,
     sentences,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
+from sglang_omni.models.streaming_cascade.speech_text import SpeechSpan, speech_span
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
+    REPLY_SPEECH,
     TEXT_DELTA,
     TURN_DONE,
     chunk_language,
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
-
-# Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
-MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-UNSPOKEN_SYMBOLS = re.compile(
-    "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
-)
 
 
 def has_chinese_characters(sentence: str) -> bool:
@@ -228,23 +225,51 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
-        text_end = 0
         audio_ms = 0.0
-        async for span in sentences(
-            self.follow_language(deltas), self.config.max_sentence_words
+        source_start_chars = 0
+        async for sentence in sentences(
+            self.follow_language(deltas),
+            self.config.max_sentence_words,
         ):
-            sentence = " ".join(
-                UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span)).split()
-            )
-            # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
-            if re.search(r"\w", sentence):
-                async for samples in self.speak(sentence):
-                    audio_ms += len(samples) * 1000 / self.sample_rate_hz
-                    emit(audio_chunk(samples, self.sample_rate_hz, turn))
+            span = speech_span(sentence, source_start_chars)
+            start_chars = 0
+            source_start_chars = span.source_start_chars
+            while start_chars < len(span.text):
+                end_chars = start_chars + sentence_end(
+                    span.text[start_chars:],
+                    self.config.max_sentence_words,
+                    is_complete=True,
+                )
+                speech = SpeechSpan(
+                    text=span.text[start_chars:end_chars],
+                    source_start_chars=source_start_chars,
+                    source_end_chars=(
+                        span.source_end_chars
+                        if end_chars == len(span.text)
+                        else span.original_ends_chars[end_chars - 1]
+                    ),
+                    original_ends_chars=span.original_ends_chars[start_chars:end_chars],
+                    language=(
+                        self.sentence_language(span.text[start_chars:end_chars])
+                        if self.config.language
+                        else self.session_language
+                    ),
+                )
+                emit(control_chunk(REPLY_SPEECH, turn=turn, speech=speech.model_dump()))
+                if re.search(r"\w", speech.text):
+                    async for samples in self.speak(speech.text.strip()):
+                        audio_ms += len(samples) * 1000 / self.sample_rate_hz
+                        emit(audio_chunk(samples, self.sample_rate_hz, turn))
+                else:
+                    pass
+                self.progress(emit, turn, speech.source_end_chars, audio_ms)
+                start_chars = end_chars
+                source_start_chars = speech.source_end_chars
+            if source_start_chars < span.source_end_chars:
+                self.progress(emit, turn, span.source_end_chars, audio_ms)
+                source_start_chars = span.source_end_chars
             else:
                 pass
-            text_end += len(span)
-            self.progress(emit, turn, text_end, audio_ms)
 
     async def close(self) -> None:
         await self.client.aclose()

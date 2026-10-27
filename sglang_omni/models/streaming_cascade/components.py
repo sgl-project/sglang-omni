@@ -41,6 +41,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_SPEECH,
     RUNNING_TEXT,
     SESSION_CONTROL,
     TEXT_DELTA,
@@ -200,5 +201,5 @@ COMPONENTS.register(
     consumes=frozenset({TEXT_DELTA, PCM_F32, SESSION_CONTROL}),
     produces=frozenset({SESSION_CONTROL}),
     probe=probe_alignment_worker,
-    reads_events=frozenset({REPLY_PROGRESS, REPLY_DELIVERED, TRUNCATE}),
+    reads_events=frozenset({REPLY_PROGRESS, REPLY_SPEECH, REPLY_DELIVERED, TRUNCATE}),
 )
