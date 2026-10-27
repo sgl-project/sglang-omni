@@ -35,7 +35,7 @@ def adapter_request(ids: list[int]) -> Req:
 
 def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
     identity = SessionIdentity("talker")
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=4096)
     scheduler.model_config.vocab_size = 64
 
     def create_req(tokenized, tokenizer, vocab_size, eos_token_ids):
@@ -47,9 +47,9 @@ def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
         )
 
     scheduler.session_controller.get.return_value = SimpleNamespace(
-        session_id="native", create_req=create_req
+        session_id="native", create_req=create_req, req_nodes={}
     )
-    bridge = ARSessionBridge(scheduler, Mock())
+    bridge = ARSessionBridge(scheduler, Mock(**{"plan_history_cut.return_value": None}))
     chunk = TimedChunk("text", 0, 0, 0, {"text": "hi"}, format="text_delta")
     unit = SessionUnit(
         request_id="unit-1", session_identity=identity, stages=("talker",), chunk=chunk

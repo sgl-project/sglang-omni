@@ -5,6 +5,7 @@ from array import array
 from dataclasses import dataclass, field
 
 import torch
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
@@ -20,6 +21,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
 from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexSampling,
+    MiniCPMODuplexWindow,
 )
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
@@ -40,10 +42,17 @@ from sglang_omni.proto.streams import (
     TRUNCATE,
     control_type,
 )
+from sglang_omni.scheduling.history_policies import (
+    HistoryUnit,
+    UnitDropPolicy,
+    load_drop_policy,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
+    RetainedKeys,
 )
+from sglang_omni.scheduling.sglang_backend.history_cut import HistoryCut
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.manager import (
@@ -76,9 +85,23 @@ def keep_through_unit_of(event: TimedChunk) -> int | None:
 
 
 class ThinkerAdapter(ARSessionAdapter):
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> None:
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        vocab_size: int,
+        *,
+        window: MiniCPMODuplexWindow,
+        rotary_embedding: RotaryEmbedding,
+    ) -> None:
+        assert (
+            rotary_embedding.is_neox_style
+            and rotary_embedding.rotary_dim == rotary_embedding.head_size
+        ), "the thinker window shifts keys with full-width neox RoPE"
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
         self.vocab_size: int = vocab_size
+        self.window: MiniCPMODuplexWindow = window
+        self.drop_policy: UnitDropPolicy = load_drop_policy(window.drop_policy)
+        self.rotary_embedding: RotaryEmbedding = rotary_embedding
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
@@ -169,6 +192,12 @@ class ThinkerAdapter(ARSessionAdapter):
         state = self.states[session_identity]
         kept_token_count = state.kept_token_count
         state.kept_token_count = None
+        if kept_token_count is not None:
+            state.unit_starts = [
+                start for start in state.unit_starts if start < kept_token_count
+            ]
+        else:
+            pass
         return ARSessionPreparation(kept_token_count=kept_token_count)
 
     def finish_input(
@@ -265,6 +294,12 @@ class ThinkerAdapter(ARSessionAdapter):
             max_new_tokens=sampling.max_new_tokens_per_unit,
             stage_payload=payload,
             thinker_state=state,
+            # note (0xtoward): The last <unit> is the unit's own; a system prompt ahead of it may spell one.
+            unit_token_index=max(
+                index
+                for index, token_id in enumerate(token_ids)
+                if token_id == self.special.unit
+            ),
             unit_embedding_spans=spans,
             is_listen_forced=is_interrupted
             or state.is_listen_held
@@ -277,11 +312,81 @@ class ThinkerAdapter(ARSessionAdapter):
             generated_history_at_start=list(state.generated_history),
         )
 
+    def plan_history_cut(
+        self,
+        session_identity: SessionIdentity,
+        request_data: DuplexUnitRequestData,
+        history_length: int,
+        history_capacity: int,
+        retained_keys: RetainedKeys,
+    ) -> HistoryCut | None:
+        """The checkpoint's StreamDecoder.enforce_window: past the high watermark, units go in the drop policy's order until the low one.
+
+        It also cuts early when the next unit would not fit in the context. The newest protect_tokens go last, oldest first.
+        """
+        window = self.window
+        # note (0xtoward): The checkpoint checks its cache length after </unit>, which here comes with the next unit, so that length is the next <unit>'s position.
+        next_unit_start = history_length + request_data.unit_token_index
+        fitting_start = history_capacity + request_data.unit_token_index
+        if window.sliding_window_mode == "off" or (
+            next_unit_start <= window.basic_window_high_tokens
+            and next_unit_start <= fitting_start
+        ):
+            return None
+        else:
+            state = self.states[session_identity]
+            units = [
+                HistoryUnit(start, end)
+                for start, end in zip(state.unit_starts, state.unit_starts[1:])
+            ]
+            policy_order = (
+                self.drop_policy.drop_order(units, retained_keys) if units else []
+            )
+            assert sorted(policy_order) == list(
+                range(len(units))
+            ), f"drop policy order {policy_order} is not every unit once"
+            protected_start = next_unit_start - window.protect_tokens
+            return state.drop_units(
+                [
+                    *(
+                        index
+                        for index in policy_order
+                        if units[index].start < protected_start
+                    ),
+                    *(
+                        index
+                        for index, unit in enumerate(units)
+                        if unit.start >= protected_start
+                    ),
+                ],
+                next_unit_start,
+                min(window.basic_window_low_tokens, fitting_start),
+            )
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distances: torch.Tensor
+    ) -> torch.Tensor:
+        cosine, sine = (
+            self.rotary_embedding.cos_sin_cache[distances]
+            .to(torch.float32)
+            .unsqueeze(1)
+            .chunk(2, dim=-1)
+        )
+        first_half, second_half = keys.to(torch.float32).chunk(2, dim=-1)
+        return torch.cat(
+            (
+                first_half * cosine + second_half * sine,
+                second_half * cosine - first_half * sine,
+            ),
+            dim=-1,
+        ).to(keys.dtype)
+
     def result(
         self, session_identity: SessionIdentity, data: DuplexUnitRequestData
     ) -> StagePayload:
         state = self.states[session_identity]
         state.is_prefix_pending = False
+        state.unit_starts.append(data.session_history_length + data.unit_token_index)
         if data.is_interrupted:
             # note (ruoyu): Without the ended turn, the next sampled listen is rewritten into speech and the stopped reply resumes.
             state.is_turn_ended = True

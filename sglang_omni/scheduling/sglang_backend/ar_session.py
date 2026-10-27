@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import logging
 from array import array
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -16,7 +17,7 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
-from sglang.srt.session.session_controller import SessionController
+from sglang.srt.session.session_controller import Session, SessionController
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
@@ -30,6 +31,16 @@ from sglang_omni.proto.session import (
     find_session_operation,
 )
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.sglang_backend.history_cut import (
+    HistoryCut,
+    LayerKVCache,
+    RetainedKV,
+    SessionRows,
+    cut_retained_kv,
+    cut_token_ids,
+    read_retained_keys,
+    retained_history_length,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
@@ -39,13 +50,14 @@ from sglang_omni.scheduling.types import RequestOutput
 SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 
-class SessionKV(Protocol):
-    kv_allocated_len: int
-    kv_committed_len: int
+logger = logging.getLogger(__name__)
+
+
+class SessionKV(RetainedKV, Protocol):
     holds_kv: bool
 
 
-class SessionTreeCache(Protocol):
+class SessionTreeCache(SessionRows, Protocol):
     def session_records(self) -> Mapping[str, SessionKV]:
         pass
 
@@ -59,6 +71,9 @@ class RequestToTokenPool(Protocol):
 
 class TokenToKVPoolAllocator(Protocol):
     def available_size(self) -> int:
+        pass
+
+    def get_kvcache(self) -> LayerKVCache:
         pass
 
 
@@ -77,6 +92,7 @@ class BridgeScheduler(Protocol):
     waiting_queue: list[Req]
     chunked_req: Req | None
     max_running_requests: int
+    max_req_len: int
 
     def abort(self, request_id: str) -> None:
         pass
@@ -109,6 +125,32 @@ class ARSessionPreparation:
     bypass_generation: bool = False
     # note (ruoyu): The native tokens to keep before the unit is appended, a prefix of the last unit's prompt that ends between units; the tokens past it leave the session's arrays, spans and KV.
     kept_token_count: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetainedKeys:
+    """A session's cached keys, read only when a drop policy asks for them."""
+
+    tree_cache: SessionTreeCache
+    kv_cache: LayerKVCache
+    session_id: str
+    adapter: ARSessionAdapter
+
+    def read(self, start: int, end: int, layer_stride: int) -> Iterator[torch.Tensor]:
+        """Float32 keys of positions [start, end) rotated back to position zero, per layer_stride-th layer; none while the session holds no KV."""
+        record = self.tree_cache.session_records().get(self.session_id)
+        if record is None or not record.holds_kv:
+            return iter(())
+        else:
+            return read_retained_keys(
+                self.tree_cache,
+                self.kv_cache,
+                record,
+                start,
+                end,
+                layer_stride,
+                self.adapter.shift_key_positions,
+            )
 
 
 class ARSessionAdapter:
@@ -164,6 +206,26 @@ class ARSessionAdapter:
         chunk: TimedChunk,
         payload: StagePayload,
     ) -> SGLangARRequestData:
+        raise NotImplementedError
+
+    def plan_history_cut(
+        self,
+        session_identity: SessionIdentity,
+        request_data: SGLangARRequestData,
+        history_length: int,
+        history_capacity: int,
+        retained_keys: RetainedKeys,
+    ) -> HistoryCut | None:
+        """Choose whole units of retained history to drop before this unit joins the session.
+
+        history_length tokens come ahead of the unit now; it can still finish with at most history_capacity of them.
+        """
+        return None
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distances: torch.Tensor
+    ) -> torch.Tensor:
+        """Re-encode each cached key distances[i] positions earlier, in its dtype."""
         raise NotImplementedError
 
     def result(
@@ -424,6 +486,32 @@ class ARSessionBridge:
         native_session = self.bridge_scheduler.session_controller.get(
             unit.session_identity.id
         )
+        session = self.sessions[unit.session_identity.id]
+        history_length = retained_history_length(native_session)
+        # note (0xtoward): SGLang grants the whole max_new_tokens only while input plus output stays below max_req_len.
+        history_capacity = (
+            self.bridge_scheduler.max_req_len
+            - 1
+            - len(adapter_request.origin_input_ids)
+            - int(adapter_request.sampling_params.max_new_tokens or 0)
+        )
+        history_cut = self.adapter.plan_history_cut(
+            unit.session_identity,
+            request_data,
+            history_length,
+            history_capacity,
+            RetainedKeys(
+                tree_cache=self.bridge_scheduler.tree_cache,
+                kv_cache=self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
+                session_id=native_session.session_id,
+                adapter=self.adapter,
+            ),
+        )
+        if history_cut is not None:
+            self.drop_history(session, native_session, history_cut)
+            history_length -= history_cut.length
+        else:
+            pass
         tokenized_input = TokenizedGenerateReqInput(
             rid=adapter_request.rid,
             input_text=None,
@@ -466,8 +554,13 @@ class ARSessionBridge:
         offset = len(session_request.origin_input_ids) - len(
             adapter_request.origin_input_ids
         )
+        # note (0xtoward): A cut edits SGLang's session in place, so SGLang must put exactly the kept history ahead of the unit.
+        assert (
+            history_cut is None or offset == history_length
+        ), f"SGLang put {offset} history tokens ahead of the unit after a cut, not {history_length}"
         unit.native_offset = offset
         unit.prompt_length = len(adapter_request.origin_input_ids)
+        request_data.session_history_length = offset
         unit.embedding_spans = [
             EmbeddingSpan(
                 start=span.start + offset,
@@ -482,7 +575,6 @@ class ARSessionBridge:
             pass
         # note (Junnan Li): Placeholder ids under embedding spans do not identify their rows, so such a unit stays out of the radix tree.
         session_request.skip_radix_cache_insert = bool(unit.embedding_spans)
-        session = self.sessions[unit.session_identity.id]
         request_data.session_embedding_spans = [
             *session.embedding_spans,
             *unit.embedding_spans,
@@ -498,6 +590,42 @@ class ARSessionBridge:
             # Note (Junnan Li): An adapter that rewrote the unit's request keeps its payload; the stream builder reads the params from it.
             pass
         self.adapter.bind_request(unit.session_identity, request_data, unit)
+
+    def drop_history(
+        self, session: BridgeSession, native_session: Session, cut: HistoryCut
+    ) -> None:
+        """Drop the cut from an idle session's ids, KV and embedding spans; later positions move down."""
+        cut_token_ids(native_session, cut)
+        record = self.bridge_scheduler.tree_cache.session_records().get(
+            native_session.session_id
+        )
+        # note (0xtoward): After an abort the session holds no KV, and the next unit re-prefills the shortened ids.
+        if record is not None and record.holds_kv:
+            cut_retained_kv(
+                self.bridge_scheduler.tree_cache,
+                self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
+                record,
+                cut,
+                self.adapter.shift_key_positions,
+            )
+        else:
+            pass
+        session.embedding_spans = [
+            EmbeddingSpan(
+                start=cut.new_position(span.start),
+                end=cut.new_position(span.end),
+                input_embeds=span.input_embeds,
+            )
+            for span in session.embedding_spans
+            if not cut.drops(span.start, span.end)
+        ]
+        logger.info(
+            "Session %s: dropped %d history tokens in %d ranges, %d kept",
+            native_session.session_id,
+            cut.length,
+            len(cut.ranges),
+            native_session.committed_origin_len,
+        )
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)

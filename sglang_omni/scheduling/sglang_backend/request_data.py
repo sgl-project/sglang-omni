@@ -88,6 +88,7 @@ class SGLangARRequestData(ARRequestData):
     # note (Junnan Li): The bridge binds unit-relative spans to retained session history.
     unit_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     session_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
+    session_history_length: int = 0
     synced: bool = False
     generation_steps: int = 0
     # Output tokens already handed to the runner and stream builder under

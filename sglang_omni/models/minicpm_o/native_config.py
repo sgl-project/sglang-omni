@@ -3,7 +3,14 @@
 
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config import (
@@ -12,6 +19,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.scheduling.history_policies import load_drop_policy
 
 PKG = "sglang_omni.models.minicpm_o.native_stages"
 DEFAULT_MAX_SESSIONS = 2
@@ -128,6 +136,38 @@ class MiniCPMODuplexSpeech(BaseModel):
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
 
 
+class MiniCPMODuplexWindow(BaseModel):
+    """The checkpoint's DuplexWindowConfig for thinker history; of its modes, off and basic are served."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sliding_window_mode: Literal["off", "basic"] = "basic"
+    basic_window_high_tokens: int = Field(default=8000, ge=1)
+    basic_window_low_tokens: int = Field(default=6000, ge=1)
+    drop_policy: str = "oldest"
+    "Which units a cut drops first: oldest, keydiff, or package.module:ClassName."
+    protect_tokens: int = Field(default=2000, ge=0)
+    "The newest history tokens a cut drops last."
+
+    @field_validator("drop_policy")
+    @classmethod
+    def check_drop_policy(cls, drop_policy: str) -> str:
+        load_drop_policy(drop_policy)
+        return drop_policy
+
+    @model_validator(mode="after")
+    def check_watermarks(self) -> "MiniCPMODuplexWindow":
+        if self.basic_window_low_tokens >= self.basic_window_high_tokens:
+            raise ValueError(
+                "window.basic_window_low_tokens must be below window.basic_window_high_tokens"
+            )
+        else:
+            return self
+
+
+DEFAULT_WINDOW_SETTINGS = MiniCPMODuplexWindow()
+
+
 class MiniCPMODuplexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MiniCPMO"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -145,6 +185,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     sampling: MiniCPMODuplexSampling = Field(default_factory=MiniCPMODuplexSampling)
     vision: MiniCPMODuplexVision = Field(default_factory=MiniCPMODuplexVision)
     speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
+    window: MiniCPMODuplexWindow = Field(default_factory=MiniCPMODuplexWindow)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
 
@@ -181,7 +222,10 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 pass
             return kwargs
         elif stage_name == "thinker":
-            kwargs = {"server_args_overrides": {"max_running_requests": request_slots}}
+            kwargs = {
+                "server_args_overrides": {"max_running_requests": request_slots},
+                **self.window.model_dump(),
+            }
             stage = self.stage_named(stage_name)
             # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
             if (

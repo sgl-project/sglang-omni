@@ -43,12 +43,16 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py` | Default sampling when a session does not set its own; `--sampling.<field>` changes one, such as `--sampling.temperature 0.5` |
 | `vision` | `MiniCPMODuplexVision` in the same file | Camera-frame limits per unit (1 s of audio); `--vision.<field>` changes one, such as `--vision.max_frames_per_unit 2` |
+| `window.sliding_window_mode` | `basic` | The checkpoint's `DuplexWindowConfig` mode: `basic` drops the oldest units of a long conversation; `off` keeps every unit and closes the session when its history fills |
+| `window.basic_window_high_tokens` / `window.basic_window_low_tokens` | 8000 / 6000 | History length that starts a drop, and the length the drop goes down to |
+| `window.drop_policy` | `oldest` | Which units a drop takes first: `oldest`, as the checkpoint does; `keydiff`, the units whose cached keys sit closest to the mean key; or `package.module:ClassName`, a class with a `drop_order(units, keys)` method like those in `sglang_omni/scheduling/history_policies.py` |
+| `window.protect_tokens` | 2000 | The newest history tokens a drop takes last, whatever the policy |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them. `speech.enable_chunk_cuda_graph: false` turns them off.
 
 Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --speech.n_timesteps 10`. Stage settings use `--speech.factory.<field>` or `--speech.process`. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
 
-A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
+A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `basic` window, once the history passes `basic_window_high_tokens` the server drops the oldest one-second units until at most `basic_window_low_tokens` tokens remain, and it drops units early when the next unit would not fit; the system prompt and the reference audio always stay; `--window.drop_policy` changes which units go first. With `--window.sliding_window_mode off`, the server sends `context_exhausted` and closes the session when the history fills. A cut moves the retained KV in place, so the window needs the default bf16 or an fp8 KV cache; with an FP4 KV recipe or an HND KV layout, the server refuses to start unless the window is off.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
