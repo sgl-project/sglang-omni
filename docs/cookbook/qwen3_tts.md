@@ -695,7 +695,7 @@ Create a request template, for example `request.json`:
 }
 ```
 
-For Base, use a fixed `references` entry instead of a built-in voice. `--seedtts-samples` replaces the bundled cases with prompts that missed codec EOS on 0.6B Base in #1179.
+For Base, use a fixed `references` entry instead of a built-in voice. The probe sends four built-in short lines in English and Chinese; `--cases` takes a JSON list of your own, and `--seedtts-samples` probes the SeedTTS prompts that missed codec EOS on 0.6B Base in #1179.
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_generation_budget \
@@ -711,7 +711,7 @@ python -m benchmarks.eval.benchmark_tts_generation_budget \
 
 Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
 
-The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload the evidence.
+The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload `results.jsonl` with the audio of the pairs that failed.
 
 ## Known Limitations
 

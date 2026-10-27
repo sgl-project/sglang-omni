@@ -454,6 +454,41 @@ test("the stop button cancels only where granted, mutes every response id until 
   }
 });
 
+test("the muted line clears as soon as the user speaks after a stop, before the next reply's audio", async () => {
+  const speech = Buffer.alloc(48000, 32).toString("base64");
+  for (const [interaction, supportsCancel] of [["turn_based", true], ["native", true], ["native", false]]) {
+    const elements = new Map();
+    const app = createApp({ elements, microphone: true });
+    await app.connect();
+    const socket = app.sockets.at(-1);
+    socket.open();
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { interaction, native_unit_ms: 1000, input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 }, supports_cancel: supportsCancel } } } });
+    await app.settled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const capture = app.nodes.find((node) => node.name === "capture-processor");
+    const line = () => app.run("mood(0, 0, performance.now()).line");
+    socket.receive({ type: "response.created", response: { id: "first" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "first", delta: speech });
+    await app.settled();
+    app.advance(100);
+    elements.get("interruptBtn").listeners.click();
+    if (supportsCancel) {
+      socket.receive({ type: "response.done", response: { id: "first", status: "cancelled" } });
+      await app.settled();
+    }
+    app.advance(5000);
+    assert.equal(line(), "Muted until you speak");
+    if (interaction === "turn_based") {
+      socket.receive({ type: "input_audio_buffer.speech_started", item_id: "item_user_1", audio_start_ms: 9000 });
+    } else {
+      capture.port.onmessage({ data: { type: "frame", frame: new Int16Array(1280).buffer, rms: 0.3 } });
+    }
+    await app.settled();
+    assert.notEqual(line(), "Muted until you speak");
+    await socket.close();
+  }
+});
+
 test("a stop's mute does not carry into the next session", async () => {
   const speech = Buffer.alloc(48000, 32).toString("base64");
   const elements = new Map();

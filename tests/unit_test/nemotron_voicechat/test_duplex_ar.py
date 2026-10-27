@@ -146,8 +146,10 @@ def test_thinker_continuation_reuses_pending_token_position(
 
 
 def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
+    talker = TalkerBuilder()
+    talker.gpu_id = 0
     assert ThinkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
-    assert TalkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+    assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
 
 
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(

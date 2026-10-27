@@ -5,4 +5,5 @@ from tests.unit_test.fixtures.cascade_backends import backend_requests  # noqa: 
 from tests.unit_test.fixtures.cascade_backends import (  # noqa: F401
     backends,
     realtime_transcription_server,
+    transcription_session_server,
 )

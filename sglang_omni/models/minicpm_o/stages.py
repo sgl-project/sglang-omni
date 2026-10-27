@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
@@ -72,8 +72,15 @@ ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
 def create_encoder_executor(
-    encoder: nn.Module, *, stage_name: str
+    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    device_module = torch.get_device_module(encoder.device)
+    if encoder.device.type == "npu":
+        # note (guomangmang): encoder sync must not wait on AR graph updates.
+        encoder_stream = device_module.Stream(device=encoder.device)
+        encoder_stream.wait_stream(device_module.current_stream(encoder.device))
+    else:
+        encoder_stream = None
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
@@ -91,9 +98,19 @@ def create_encoder_executor(
         elif cached is not None:
             encoder_out = cached
         else:
-            with torch.no_grad():
+            stream_context = (
+                device_module.stream(encoder_stream)
+                if encoder_stream is not None
+                else nullcontext()
+            )
+            with stream_context, torch.no_grad():
                 encoder_out = encoder(**request.model_inputs)
-            cache.put(request.cache_key, encoder_out)
+                cache.put(request.cache_key, encoder_out)
+                if encoder_stream is not None:
+                    # note (guomangmang): downstream stages read on other streams.
+                    encoder_stream.synchronize()
+                else:
+                    pass
         state.encoder_outs[stage_name] = encoder_out
         payload.data = state.to_dict()
         return payload

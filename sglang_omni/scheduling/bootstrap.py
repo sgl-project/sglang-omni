@@ -181,6 +181,16 @@ def create_sglang_infrastructure(
             "stage does not support speculative decoding"
         )
     else:
+        if speculative_algorithm.is_dspark():
+            # note (wilsonzheng0327): SGLang's FA3 backend imports sgl_kernel, which
+            # an MPS or CPU install lacks, so only a DSpark build loads the shim.
+            from sglang_omni.vendor.sglang.flashattention_backend import (
+                install_fa3_draft_width,
+            )
+
+            install_fa3_draft_width()
+        else:
+            pass
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.
         target_worker = SpeculativeTargetWorker(model_worker, speculative_algorithm)

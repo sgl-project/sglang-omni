@@ -508,12 +508,12 @@ async def test_a_reply_without_a_turn_plays_when_nothing_was_cancelled() -> None
     ]
 
 
-def test_the_deployment_withholds_the_client_stop() -> None:
-    """The adapter ends the reply on response.cancel, but the model then continues the answer under its next turn, so the grant is withheld and a page treats its stop button as a local mute."""
+def test_the_deployment_grants_the_client_stop() -> None:
+    """The adapter ends the reply on response.cancel and the model listens until the user speaks again, so a page may offer its stop button as a real stop."""
     deployment = build_realtime_deployment(
         Client(VoiceCoordinator()), MiniCPMODuplexPipelineConfig(model_path="unused")
     )
-    assert deployment.capabilities.to_granted_capabilities()["supports_cancel"] is False
+    assert deployment.capabilities.to_granted_capabilities()["supports_cancel"] is True
 
 
 async def open_session_params(

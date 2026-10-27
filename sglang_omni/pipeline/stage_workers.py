@@ -12,6 +12,7 @@ import queue
 import re
 import sys
 import time
+import traceback
 from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
@@ -32,7 +33,7 @@ from sglang_omni.config.runtime import (
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
-from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.stage.runtime import ProcessFailureCallback, Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import (
     TPFollowerControlPlane,
@@ -195,6 +196,7 @@ class StageWorkerProcessSpec:
     startup_progress: Synchronized | None = field(
         default=None, repr=False, compare=False
     )
+    failure_event: Event | None = field(default=None, repr=False, compare=False)
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -359,6 +361,7 @@ class StageGroup:
         self._processes: list[BaseProcess] = (
             []
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.failure_events: list[Event] = []
         self.ready_events: list[Event] = []
         self.startup_error_channels: list[Queue[str]] = []
         self.startup_progress: list[Synchronized] = []
@@ -420,13 +423,16 @@ class StageGroup:
         """Spawn the OS process(es) owned by this group."""
         for spec in self.process_specs:
             event = ctx.Event()
+            failure_event = ctx.Event()
             startup_error_channel = ctx.Queue()
             progress = ctx.Value("q", 0)
             proc_name = process_name(spec)
             proc = ctx.Process(
                 target=stage_process_main,
                 args=(
-                    replace(spec, startup_progress=progress),
+                    replace(
+                        spec, startup_progress=progress, failure_event=failure_event
+                    ),
                     event,
                     startup_error_channel,
                 ),
@@ -450,6 +456,7 @@ class StageGroup:
             self._processes.append(
                 proc
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.failure_events.append(failure_event)
             self.ready_events.append(event)
             self.startup_error_channels.append(startup_error_channel)
             self.startup_progress.append(progress)
@@ -481,6 +488,26 @@ class StageGroup:
         reported = [False] * len(self.ready_events)
 
         while True:
+            failure_summary = self.failure_summary()
+            if failure_summary:
+                details = ""
+                for failure_event, startup_error_channel in zip(
+                    self.failure_events, self.startup_error_channels
+                ):
+                    if failure_event.is_set():
+                        try:
+                            traceback_text = startup_error_channel.get(timeout=0.2)
+                        except queue.Empty:
+                            pass
+                        else:
+                            details += f"\nStartup failure detail:\n{traceback_text}"
+                    else:
+                        pass
+                raise RuntimeError(
+                    f"Stage process failure during startup: {failure_summary}{details}"
+                )
+            else:
+                pass
             now = time.monotonic()
             pending: Event | None = None
             remaining = timeout
@@ -543,6 +570,16 @@ class StageGroup:
             else:
                 pass
             await loop.run_in_executor(None, pending.wait, min(remaining, 1.0))
+
+    def failure_summary(self) -> str:
+        """Identify workers that reported a fatal error before exiting."""
+        return ", ".join(
+            f"{spec.process_name} (pid={process.pid})"
+            for spec, process, failure_event in zip(
+                self.process_specs, self.processes, self.failure_events
+            )
+            if failure_event.is_set()
+        )
 
     def any_dead(self) -> bool:
         """Return True if any process in the group exited while runner is active."""
@@ -608,6 +645,7 @@ class StageGroup:
         finally:
             self.close_control_channels()
             self._processes.clear()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.failure_events.clear()
             self.ready_events.clear()
             self.startup_error_channels.clear()
             self.startup_progress.clear()
@@ -655,7 +693,7 @@ def stage_process_main(
             prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         prepare_weight_share_process_compat()
-        run_process(spec, ready_event, log)
+        run_process(spec, ready_event, log, startup_error_channel)
     except (KeyboardInterrupt, SystemExit) as exc:
         destroy_torch_distributed_process_group(log)
         reclaim_process_gpu_memory(
@@ -672,11 +710,17 @@ def stage_process_main(
         # interrupted child had.
         exit_without_teardown(1)
     except Exception as exc:
-        import traceback
-
         traceback_text = "".join(
             traceback.format_exception(type(exc), exc, exc.__traceback__)
         )
+        if startup_error_channel is not None:
+            startup_error_channel.put(traceback_text)
+        else:
+            pass
+        if spec.failure_event is not None:
+            spec.failure_event.set()
+        else:
+            pass
         with suppress(Exception):
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
@@ -686,10 +730,6 @@ def stage_process_main(
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
-        if startup_error_channel is not None:
-            startup_error_channel.put(traceback_text)
-        else:
-            pass
         sys.exit(1)
     # note (Richard Wang): tearing down every module and object of a stage that
     # held a model takes seconds after the stage stopped, and the server's stop
@@ -740,6 +780,7 @@ def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
     log: logging.Logger,
+    startup_error_channel: Queue[str] | None = None,
 ) -> None:
     """Construct and drive all stages owned by one OS process.
 
@@ -757,6 +798,24 @@ def run_process(
     """
     local_dispatcher = LocalStageDispatcher()
     stages: list[Stage] = []
+    failure_reported = False
+
+    def report_failure(exc: BaseException) -> None:
+        nonlocal failure_reported
+        # note (Richard Wang): an orderly SIGINT stop raises KeyboardInterrupt or asyncio cancellation here, so only an Exception is a stage failure.
+        if failure_reported or not isinstance(exc, Exception):
+            return
+        else:
+            pass
+        if startup_error_channel is not None:
+            startup_error_channel.put("".join(traceback.format_exception(exc)))
+        else:
+            pass
+        if spec.failure_event is not None:
+            spec.failure_event.set()
+        else:
+            pass
+        failure_reported = True
 
     # note (Richard Wang): each finished torch.compile frame counts as startup
     # progress, since a cold compile and autotune can run for many minutes.
@@ -780,6 +839,9 @@ def run_process(
             ready_event.set()
             tasks = [asyncio.create_task(stage.run()) for stage in stages]
             await asyncio.gather(*tasks)
+        except BaseException as exc:
+            report_failure(exc)
+            raise
         finally:
             for task in tasks:
                 task.cancel()
@@ -801,12 +863,18 @@ def run_process(
                     stage_spec,
                     log,
                     local_dispatcher=local_dispatcher,
+                    process_failure_callback=(
+                        spec.failure_event.set
+                        if spec.failure_event is not None
+                        else None
+                    ),
                 )
             )
             report_startup_progress(spec)
         local_dispatcher.register_many(stages)
         asyncio.run(_start_and_run())
-    except BaseException:
+    except BaseException as exc:
+        report_failure(exc)
         cleanup_constructed_stages(
             stages,
             log,
@@ -931,6 +999,7 @@ def construct_stage(
     spec: StageLaunchConfig,
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
+    process_failure_callback: ProcessFailureCallback | None = None,
 ) -> Stage:
     gpu_id = spec.gpu_id
     # A stage whose native engine owns subprocesses never computes in this
@@ -1113,6 +1182,7 @@ def construct_stage(
 
     # --- Construct Stage ---
     stage = Stage(
+        process_failure_callback=process_failure_callback,
         name=spec.stage_name,
         role=spec.role,
         get_next=get_next,

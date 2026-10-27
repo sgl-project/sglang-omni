@@ -42,6 +42,7 @@ class ComponentSession:
         self.name = name
         self.settings = settings
         self.component = COMPONENTS.build(settings.node(name).component)
+        self.component.place(settings, name)
         self.queue: asyncio.Queue[tuple[TimedChunk, asyncio.Future[None]] | None] = (
             asyncio.Queue(maxsize=1)
         )
@@ -161,6 +162,7 @@ class ComponentSession:
             != self.settings.node(self.name).component
         ):
             replacement = COMPONENTS.build(settings.node(self.name).component)
+            replacement.place(settings, self.name)
             replacement.adopt(self.component)
             previous, self.component = self.component, replacement
             self.task.cancel()

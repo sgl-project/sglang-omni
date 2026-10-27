@@ -179,7 +179,7 @@ def create_thinker_scheduler(
             tokenizer, model_config.vocab_size, thinker_config
         )
 
-    return OmniScheduler(
+    scheduler = OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -203,6 +203,11 @@ def create_thinker_scheduler(
         ),
         continuation_aware_admission=continuation_aware_admission,
     )
+    if session_adapter is not None:
+        session_adapter.outbox = scheduler.outbox
+    else:
+        pass
+    return scheduler
 
 
 def create_talker_scheduler(

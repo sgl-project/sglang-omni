@@ -19,6 +19,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     FusedIncrementalTransformer,
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
+    Qwen3TTSKVRings,
     incremental_causal_conv1d,
     incremental_causal_transconv1d,
     incremental_transformer,
@@ -168,8 +169,12 @@ class Transformer(nn.Module):
 
 
 class Quantizer(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("scale", torch.tensor(1 / 16))
+
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
-        return codes[:, :2].to(torch.float32) / 16.0
+        return codes[:, :2].to(self.scale.dtype) * self.scale
 
 
 class SnakeBeta(nn.Module):
@@ -595,6 +600,148 @@ def test_fused_transformer_tracks_fp32_as_closely_as_the_plain_step() -> None:
     assert relative_error(compiled_output, expected) <= 1.1 * relative_error(
         plain_output, expected
     )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_ring_steps_track_fp32_and_wide_ring_steps_equal_the_buffered_step() -> None:
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+
+    torch.manual_seed(7)
+    config = Qwen3TTSTokenizerV2DecoderConfig(
+        hidden_size=512,
+        latent_dim=1024,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        head_dim=64,
+        intermediate_size=1024,
+        num_hidden_layers=2,
+        max_position_embeddings=64,
+    )
+    reference = Qwen3TTSTokenizerV2DecoderTransformerModel(config).cuda().eval()
+    with torch.no_grad():
+        for layer in reference.layers:
+            layer.self_attn_layer_scale.scale.uniform_(0.3, 0.7)
+            layer.mlp_layer_scale.scale.uniform_(0.3, 0.7)
+            layer.input_layernorm.weight.uniform_(0.5, 1.5)
+            layer.post_attention_layernorm.weight.uniform_(0.5, 1.5)
+        reference.norm.weight.uniform_(0.5, 1.5)
+    plain = copy.deepcopy(reference).bfloat16()
+    fused = FusedIncrementalTransformer(copy.deepcopy(reference).bfloat16())
+    is_fa3_supported = fused.is_paged_attention
+    retained = int(reference.window_size) - 1
+    ring_frames = retained + 8
+    slots = torch.tensor([2, 0, 1], device="cuda")
+    starts = torch.tensor([0, 23, 150], device="cuda")
+
+    def buffered_state(dtype: torch.dtype) -> Qwen3TTSIncrementalCodecState:
+        shape = (3, config.num_key_value_heads, retained, config.head_dim)
+        return Qwen3TTSIncrementalCodecState(
+            frame_positions=starts.clone(),
+            transformer_keys={
+                index: torch.zeros(shape, device="cuda", dtype=dtype)
+                for index in range(config.num_hidden_layers)
+            },
+            transformer_values={
+                index: torch.zeros(shape, device="cuda", dtype=dtype)
+                for index in range(config.num_hidden_layers)
+            },
+        )
+
+    def ring_state() -> Qwen3TTSIncrementalCodecState:
+        width = config.num_key_value_heads * config.head_dim
+        keys = [
+            torch.zeros(4 * ring_frames, width, device="cuda", dtype=torch.bfloat16)
+            for _ in range(config.num_hidden_layers)
+        ]
+        return Qwen3TTSIncrementalCodecState(
+            frame_positions=starts.clone(),
+            kv_rings=Qwen3TTSKVRings(
+                keys=keys,
+                values=[torch.zeros_like(ring) for ring in keys],
+                ring_frames=ring_frames,
+                slot_rows=slots * ring_frames,
+                trash_slot_row=3 * ring_frames,
+            ),
+        )
+
+    def advance(
+        state: Qwen3TTSIncrementalCodecState, width: int, valid: torch.Tensor | None
+    ) -> None:
+        state.frame_positions = state.frame_positions + (
+            width if valid is None else valid
+        )
+
+    wide_steps = [(64, None), (17, torch.tensor([17, 14, 9])), (12, None)]
+    states = {"buffered": buffered_state(torch.bfloat16), "ring": ring_state()}
+    with torch.no_grad():
+        for width, valid_frames in wide_steps:
+            inputs = torch.randn(3, width, 1024, device="cuda").bfloat16()
+            valid = None if valid_frames is None else valid_frames.cuda()
+            assert torch.equal(
+                fused(inputs, states["ring"], valid),
+                fused(inputs, states["buffered"], valid),
+            )
+            for state in states.values():
+                advance(state, width, valid)
+
+    mixed_steps = [
+        (5, None),
+        (64, None),
+        (1, None),
+        (17, torch.tensor([17, 14, 9])),
+        (8, None),
+    ]
+    for is_paged_attention in (True, False) if is_fa3_supported else (False,):
+        fused.is_paged_attention = is_paged_attention
+        states = {
+            "reference": buffered_state(torch.float32),
+            "plain": buffered_state(torch.bfloat16),
+            "ring": ring_state(),
+        }
+        with torch.no_grad():
+            for width, valid_frames in mixed_steps:
+                inputs = torch.randn(3, width, 1024, device="cuda")
+                valid = None if valid_frames is None else valid_frames.cuda()
+                expected = incremental_transformer(
+                    reference, inputs, states["reference"], valid
+                )
+                plain_output = incremental_transformer(
+                    plain, inputs.bfloat16(), states["plain"], valid
+                )
+                ring_output = fused(inputs.bfloat16(), states["ring"], valid)
+                assert relative_error(ring_output, expected) <= 1.1 * relative_error(
+                    plain_output, expected
+                ), (is_paged_attention, width)
+                for state in states.values():
+                    advance(state, width, valid)
+
+    fused.is_paged_attention = is_fa3_supported
+    compiled = torch.compile(fused.__call__, dynamic=False, fullgraph=True)
+    states = {
+        "reference": buffered_state(torch.float32),
+        "plain": buffered_state(torch.bfloat16),
+        "ring": ring_state(),
+    }
+    with torch.no_grad():
+        for width in (8, 12, 8):
+            inputs = torch.randn(3, width, 1024, device="cuda")
+            expected = incremental_transformer(reference, inputs, states["reference"])
+            plain_output = incremental_transformer(
+                plain, inputs.bfloat16(), states["plain"]
+            )
+            compiled_output = compiled(inputs.bfloat16(), states["ring"])
+            assert relative_error(compiled_output, expected) <= 1.1 * relative_error(
+                plain_output, expected
+            ), width
+            for state in states.values():
+                advance(state, width, None)
 
 
 def test_incremental_codec_state_clone_owns_tensor_storage() -> None:
@@ -1432,6 +1579,107 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
 
 
 @pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> None:
+    """A stream continues exactly as it would alone while other cohorts decode at other slots, eagerly and through padded graph replays."""
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+
+    torch.manual_seed(31)
+    device = torch.device("cuda", torch.cuda.current_device())
+    decoder = Decoder(block_channels=(16, 8))
+    decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
+        Qwen3TTSTokenizerV2DecoderConfig(
+            hidden_size=512,
+            latent_dim=2,
+            num_attention_heads=16,
+            num_key_value_heads=16,
+            head_dim=64,
+            intermediate_size=1024,
+            num_hidden_layers=2,
+        )
+    )
+    incremental = Qwen3TTSIncrementalDecoder(decoder.to(device).bfloat16().eval())
+    arenas = []
+    runners = []
+    for _ in range(2):
+        arena = Qwen3TTSCodecStateArena(
+            incremental,
+            num_slots=4,
+            device=device,
+            dtype=torch.bfloat16,
+            in_place_frames=8,
+        )
+        assert arena.key_rings
+        assert [arena.acquire() for _ in range(4)] == [0, 1, 2, 3]
+        runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
+            incremental,
+            device=device,
+            dtype=torch.bfloat16,
+            num_quantizers=2,
+            mode="warm",
+            fresh_frames=(8,),
+            batch_sizes=(2,),
+            min_free_gb=0.0,
+            arena=arena,
+            graph_pool=IncrementalCodecGraphPool(stream_priority=0),
+        )
+        runner.capture()
+        arenas.append(arena)
+        runners.append(runner)
+    solo_arena, shared_arena = arenas
+    solo_runner, shared_runner = runners
+    stream_codes = torch.randint(0, 16, (1, 2, 44), device=device)
+
+    def eager_step(
+        arena: Qwen3TTSCodecStateArena, slots: list[int], codes: torch.Tensor
+    ) -> torch.Tensor:
+        state = arena.gather(slots)
+        waveform = incremental.decode(codes, state).clone()
+        arena.scatter(slots, state)
+        return waveform
+
+    with torch.inference_mode():
+        assert torch.equal(
+            eager_step(solo_arena, [3], stream_codes[..., :12]),
+            eager_step(shared_arena, [3], stream_codes[..., :12]),
+        )
+        eager_step(
+            shared_arena, [1, 0], torch.randint(0, 16, (2, 2, 64), device=device)
+        )
+        eager_step(shared_arena, [1, 0], torch.randint(0, 16, (2, 2, 8), device=device))
+        assert torch.equal(
+            eager_step(shared_arena, [3], stream_codes[..., 12:20]),
+            eager_step(solo_arena, [3], stream_codes[..., 12:20]),
+        )
+        for start_frame in (20, 28, 36):
+            shared_runner.decode_slots(
+                torch.randint(0, 16, (2, 2, 8), device=device), [0, 1]
+            )
+            shared_runner.decode_slots(
+                torch.randint(0, 16, (1, 2, 8), device=device), [1]
+            )
+            codes = stream_codes[..., start_frame : start_frame + 8]
+            actual = shared_runner.decode_slots(codes, [3])
+            assert actual is not None
+            actual = actual.clone()
+            expected = solo_runner.decode_slots(codes, [3])
+            assert expected is not None
+            torch.cuda.synchronize()
+            assert torch.equal(actual, expected), start_frame
+    untouched_ring_rows = [
+        ring.view(-1, shared_arena.ring_frames, ring.shape[1])[2]
+        for ring in (*shared_arena.key_rings, *shared_arena.value_rings)
+    ]
+    assert not any(rows.any() for rows in untouched_ring_rows)
+
+
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
 )
@@ -1755,3 +2003,71 @@ def test_real_tts_fused_decoder_pcm_equal_and_streaming_pcm_tracks_fp32() -> Non
     assert relative_error(fused_pcm, reference_pcm) < relative_error(
         expected[1], reference_pcm
     )
+
+
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_real_tts_arena_rings_start_reused_slots_cold_and_keep_rows_apart() -> None:
+    checkpoint = os.environ.get("QWEN3_TTS_TOKENIZER_PATH")
+    if checkpoint is None:
+        pytest.skip("Set QWEN3_TTS_TOKENIZER_PATH to run the real checkpoint gate")
+    else:
+        pass
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts import Qwen3TTSTokenizer
+
+    tokenizer = Qwen3TTSTokenizer.from_pretrained(
+        checkpoint,
+        device_map="cuda:0",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+    )
+    decoder = tokenizer.model.decoder.eval()
+    snake_beta.fuse_vocoder_decoder(decoder)
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    arena = Qwen3TTSCodecStateArena(
+        incremental,
+        num_slots=2,
+        device=torch.device("cuda:0"),
+        dtype=torch.bfloat16,
+        in_place_frames=4,
+    )
+    assert arena.key_rings
+    generator = torch.Generator(device="cuda:0").manual_seed(11)
+    streams = {
+        name: torch.randint(
+            decoder.config.codebook_size,
+            (1, decoder.config.num_quantizers, 100),
+            device="cuda:0",
+            generator=generator,
+        )
+        for name in ("a", "b", "c")
+    }
+
+    def decode_pair(first: str, second: str) -> torch.Tensor:
+        slots = [arena.acquire(), arena.acquire()]
+        arena.start_slot(slots[0], 30)
+        waveforms = []
+        offset = 0
+        for width in (12, *([4] * 22)):
+            codes = torch.cat(
+                (
+                    streams[first][..., offset : offset + width],
+                    streams[second][..., offset : offset + width],
+                )
+            )
+            state = arena.gather(slots)
+            waveforms.append(incremental.decode(codes, state))
+            arena.scatter(slots, state)
+            offset += width
+        for slot in slots:
+            arena.release(slot)
+        return torch.cat(waveforms, dim=-1)
+
+    with torch.inference_mode():
+        first_pair = decode_pair("a", "b")
+        other_partner = decode_pair("c", "b")
+        reused_slots = decode_pair("a", "b")
+    assert torch.equal(reused_slots, first_pair)
+    assert torch.equal(other_partner[1], first_pair[1])

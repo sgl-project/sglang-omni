@@ -620,6 +620,7 @@ def build_realtime_deployment(
             tail_policy="pad",
             supports_reference_audio=True,
             supports_truncate=True,
+            supports_cancel=True,
             sampling_parameters=tuple(MiniCPMODuplexSampling.model_fields),
         ),
         factory,

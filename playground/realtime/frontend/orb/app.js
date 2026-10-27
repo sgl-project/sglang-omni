@@ -158,6 +158,10 @@ function levelOfRms(rms) {
   return Math.min(1, Math.max(0, (rms - LEVEL_FLOOR) * LEVEL_GAIN) ** 0.7);
 }
 
+function spokeSinceMute(activeSession) {
+  return activeSession.turnBased ? activeSession.lastSpeechStartedAt > mutedAt : lastInputSpeechAt > mutedAt;
+}
+
 // What the orb and the status line show, derived every frame.
 function mood(micLevel, modelLevel, now) {
   if (session && session.state === "error") return { mood: "error", level: 0, line: "Something went wrong" };
@@ -170,7 +174,7 @@ function mood(micLevel, modelLevel, now) {
   if (session.stopPending) return { mood: "thinking", level: 0, line: "Stopping…" };
   if (now - stoppedAt < STOPPED_HOLD_MS) return { mood: "listening", level: micLevel, line: "Stopped" };
   // Nothing of the model is heard while the stop button's mute lasts, so the line says what lifts it.
-  if (mutedResponse) return { mood: "listening", level: micLevel, line: "Muted until you speak" };
+  if (mutedResponse && !spokeSinceMute(session)) return { mood: "listening", level: micLevel, line: "Muted until you speak" };
   if (session.turnBased) return turnMood(micLevel, modelLevel, now);
   if (now - lastModelLoudAt < MODEL_HOLD_MS) return { mood: "speaking", level: modelLevel, line: "" };
   if (muted) return { mood: "idle", level: 0, line: "Microphone muted" };
@@ -401,8 +405,7 @@ function sessionListeners(activeSession) {
       const samples = pcm16ToFloat(bytes, activeSession.outputRate, playbackContext.sampleRate);
       if (mutedResponse) {
         // Note (ruoyu): A new response id is no proof of a new answer, a stopped model can continue the old one under it; only the user's next utterance lifts the mute, the server's speech_started where it has turn detection, the microphone's own level on a native model.
-        const spokeSince = activeSession.turnBased ? activeSession.lastSpeechStartedAt > mutedAt : lastInputSpeechAt > mutedAt;
-        if (!spokeSince) return;
+        if (!spokeSinceMute(activeSession)) return;
         mutedResponse = false;
       }
       playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);

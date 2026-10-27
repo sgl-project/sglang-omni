@@ -60,7 +60,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 ## Native Full-Duplex Ability
 
-PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-personaplex).
+PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
 
 ## Request parameters
 

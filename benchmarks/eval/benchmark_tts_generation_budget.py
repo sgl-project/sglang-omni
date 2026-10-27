@@ -25,13 +25,6 @@ from sglang_omni.serve.protocol import (
     SpeechStreamOutcome,
 )
 
-DEFAULT_CASES_PATH = (
-    Path(__file__).resolve().parents[1] / "dataset/tts_generation_budget.json"
-)
-SEEDTTS_RUNAWAY_SAMPLES_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "dataset/tts_generation_budget_seedtts_en.json"
-)
 SEEDTTS_SPLIT_LANGUAGES = {"en": "English", "zh": "Chinese"}
 PCM_SAMPLE_RATE_HZ = 24000
 PCM_SAMPLE_BYTES = 2
@@ -45,6 +38,39 @@ class GenerationProbeCase(BaseModel):
     language: str
     instructions: str | None = None
     references: list[SpeechReference] | None = None
+
+
+# note (luojiaxuan): Ordinary short lines in both languages, for checking that the default budget leaves normal speech whole.
+PROBE_CASES = (
+    GenerationProbeCase(
+        id="short_en", input="Hello! How can I help you?", language="English"
+    ),
+    GenerationProbeCase(
+        id="short_zh", input="你好，有什么可以帮你的吗？", language="Chinese"
+    ),
+    GenerationProbeCase(
+        id="numbers_en",
+        input="Your verification code is 102938. The total is $12.50.",
+        language="English",
+    ),
+    GenerationProbeCase(
+        id="mixed_zh",
+        input="今天下午三点开会，请带上显卡测试结果。",
+        language="Chinese",
+    ),
+)
+# note (luojiaxuan): SeedTTS EN prompts that never emitted codec EOS on 0.6B Base in #1179.
+SEEDTTS_RUNAWAY_SAMPLE_IDS = (
+    "common_voice_en_17879420-common_voice_en_17879418",
+    "common_voice_en_25572984-common_voice_en_25572982",
+    "common_voice_en_581024-common_voice_en_581027",
+    "common_voice_en_652024-common_voice_en_652023",
+    "common_voice_en_20918607-common_voice_en_20918611",
+    "common_voice_en_25014861-common_voice_en_25014863",
+    "common_voice_en_27099623-common_voice_en_27099624",
+    "common_voice_en_27099623-common_voice_en_27099625",
+    "common_voice_en_96260-common_voice_en_96263",
+)
 
 
 class GenerationProbeResult(BaseModel):
@@ -194,9 +220,10 @@ async def run_generation_probe(
     output_dir: Path,
     *,
     include_baseline: bool = True,
+    keep_passing_audio: bool = True,
     request_timeout_seconds: float = PROBE_REQUEST_TIMEOUT_SECONDS,
 ) -> list[GenerationProbeResult]:
-    """Compare the same inputs and seeds; save partial audio even when a request fails."""
+    """Compare the same inputs and seeds; save partial audio even when a request fails, and without keep_passing_audio keep only the audio of pairs with an error."""
     if not cases or not seeds or request_timeout_seconds <= 0:
         raise ValueError("Cases, seeds, and a positive request timeout are required")
     elif (
@@ -218,6 +245,7 @@ async def run_generation_probe(
         for case in cases:
             for seed in seeds:
                 baseline: GenerationProbeResult | None = None
+                pair_start = len(results)
                 for policy in policies:
                     request = request_template.model_copy(
                         update={
@@ -278,6 +306,18 @@ async def run_generation_probe(
                     results.append(result)
                     report.write(result.model_dump_json() + "\n")
                     report.flush()
+                if not keep_passing_audio and not any(
+                    result.errors for result in results[pair_start:]
+                ):
+                    for index in range(pair_start, len(results)):
+                        audio_path = output_dir / f"{index:05d}.wav"
+                        audio_path.unlink()
+                        if stream:
+                            audio_path.with_suffix(".pcm").unlink()
+                        else:
+                            pass
+                else:
+                    pass
     return results
 
 
@@ -292,15 +332,18 @@ def main() -> None:
         required=True,
         help="Speech request JSON with model and voice/reference settings",
     )
-    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        help="JSON list of probe cases that replaces the built-in short lines",
+    )
     parser.add_argument(
         "--seedtts-samples",
-        type=Path,
-        nargs="?",
-        const=SEEDTTS_RUNAWAY_SAMPLES_PATH,
+        action="store_true",
         help=(
-            "JSON list of SeedTTS sample ids that replaces --cases. Each case keeps "
-            "its own reference clip, staged on this server."
+            "Probe the SeedTTS prompts that never emitted codec EOS on 0.6B Base "
+            "(#1179) instead. Each case keeps its own reference clip, staged on "
+            "this server."
         ),
     )
     parser.add_argument("--seedtts-split", choices=("en", "zh"), default="en")
@@ -321,15 +364,16 @@ def main() -> None:
     else:
         pass
     request = CreateSpeechRequest.model_validate_json(arguments.request.read_text())
-    if arguments.seedtts_samples is not None:
+    if arguments.seedtts_samples:
         cases = seedtts_probe_cases(
-            TypeAdapter(list[str]).validate_json(arguments.seedtts_samples.read_text()),
-            arguments.seedtts_split,
+            list(SEEDTTS_RUNAWAY_SAMPLE_IDS), arguments.seedtts_split
         )
-    else:
+    elif arguments.cases is not None:
         cases = TypeAdapter(list[GenerationProbeCase]).validate_json(
             arguments.cases.read_text()
         )
+    else:
+        cases = list(PROBE_CASES)
     api_key = os.environ.get(arguments.api_key_env)
 
     async def run() -> list[GenerationProbeResult]:
