@@ -1006,7 +1006,7 @@ class Teardown:
         with open(marker, "a") as fh:
             fh.write("teardown,")
 
-def run_process(spec, ready_event, log):
+def run_process(spec, ready_event, log, startup_error_channel=None):
     threading.Thread(target=lambda: (time.sleep(0.2), note("thread,"))).start()
     atexit.register(note, "atexit,")
     sys.stdout.write("unflushed")

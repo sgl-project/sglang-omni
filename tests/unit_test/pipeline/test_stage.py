@@ -272,15 +272,18 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
     async def run() -> None:
         scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        reported = threading.Event()
         stage_obj = make_stage(
             scheduler=scheduler,
             control_plane=CloseAwareControlPlane(),
+            process_failure_callback=reported.set,
         )
 
         with pytest.raises(RuntimeError, match="Scheduler thread"):
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+        assert reported.is_set()
 
     asyncio.run(run())
 
