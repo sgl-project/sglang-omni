@@ -84,7 +84,9 @@ def base_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     checkpoint_dir = tmp_path_factory.mktemp("drama3-checkpoint")
     write_checkpoint(checkpoint_dir)
     # The server runs offline, so fetch the pinned codec into the Hub cache first.
-    resolve_codec_directory(DEFAULT_CODEC_PATH)
+    resolve_codec_directory(
+        DEFAULT_CODEC_PATH, download_timeout_seconds=STARTUP_TIMEOUT_S
+    )
     port = find_available_port()
     server = start_server_from_cmd(
         [

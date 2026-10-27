@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic import Field, PositiveInt
@@ -81,7 +82,10 @@ class Drama3EngineStageConfig(EngineStageConfig):
 class Drama3VocoderFactoryArgs(FactoryArgs):
     """Codec path (shared with preprocessing) and the streaming window schedule, in frames."""
 
-    codec_path: str = DEFAULT_CODEC_PATH
+    codec_path: str | None = None
+    codec_download_timeout_seconds: float = Field(
+        default=120.0, gt=0, allow_inf_nan=False
+    )
     stream_stride: int = Field(default=DEFAULT_STREAM_STRIDE, ge=1)
     stream_followup_stride_ramp: tuple[PositiveInt, ...] = (
         DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP
@@ -170,6 +174,7 @@ class Drama3PipelineConfig(PipelineConfig):
         for field_name, owner in (
             ("max_prompt_rows", "tts_engine"),
             ("codec_path", "vocoder"),
+            ("codec_download_timeout_seconds", "vocoder"),
         ):
             if field_name in preprocessing_extra:
                 raise ValueError(
@@ -197,15 +202,26 @@ class Drama3PipelineConfig(PipelineConfig):
 
     def stage_factory_kwargs(
         self, stage_name: str
-    ) -> dict[str, int | str | tuple[int, ...]]:
+    ) -> dict[str, float | int | str | tuple[int, ...]]:
         engine_factory = self.stage_named("tts_engine").factory
         vocoder_factory = self.stage_named("vocoder").factory
         assert isinstance(engine_factory, Drama3EngineFactoryArgs)
         assert isinstance(vocoder_factory, Drama3VocoderFactoryArgs)
+        codec_path = vocoder_factory.codec_path
+        if codec_path is None:
+            local_codec_path = Path(self.model_path) / "codec.pth"
+            codec_path = (
+                str(local_codec_path)
+                if local_codec_path.is_file()
+                else DEFAULT_CODEC_PATH
+            )
+        else:
+            pass
         if stage_name == "preprocessing":
             return {
                 "max_prompt_rows": engine_factory.max_prompt_rows,
-                "codec_path": vocoder_factory.codec_path,
+                "codec_path": codec_path,
+                "codec_download_timeout_seconds": vocoder_factory.codec_download_timeout_seconds,
             }
         elif stage_name == "tts_engine":
             return {
@@ -214,7 +230,11 @@ class Drama3PipelineConfig(PipelineConfig):
                 "stream_followup_stride": vocoder_factory.stream_followup_stride,
             }
         elif stage_name == "vocoder":
-            return {"max_new_tokens": engine_factory.max_new_tokens}
+            return {
+                "max_new_tokens": engine_factory.max_new_tokens,
+                "codec_path": codec_path,
+                "codec_download_timeout_seconds": vocoder_factory.codec_download_timeout_seconds,
+            }
         else:
             return {}
 
