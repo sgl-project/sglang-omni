@@ -141,6 +141,18 @@ def events_of_type(events: list[JsonObject], event_type: str) -> list[JsonObject
     return [event for event in events if event["type"] == event_type]
 
 
+def realtime_failure_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    """Warning and error records of the realtime layer, so that the info records of a session opening or closing do not count whatever level the process logs at."""
+    return [
+        record
+        for record in caplog.records
+        if record.name.startswith(REALTIME_LOGGER_PREFIX)
+        and record.levelno >= logging.WARNING
+    ]
+
+
 def drained_media(drained: JsonObject) -> tuple[float, float, float, float]:
     return (
         drained["accepted_end_ms"],
@@ -496,11 +508,7 @@ def test_full_admission_queue_releases_adapter_and_allows_retry(
     assert updated["session"]["id"] == created["session"]["id"]
     assert closed["reason"] == "client_closed"
     assert adapter.is_closed is True
-    assert not [
-        record
-        for record in caplog.records
-        if record.name.startswith(REALTIME_LOGGER_PREFIX)
-    ]
+    assert not realtime_failure_records(caplog)
 
 
 def test_backend_open_failure_is_fatal_and_keeps_its_message(
@@ -523,14 +531,10 @@ def test_backend_open_failure_is_fatal_and_keeps_its_message(
     assert errors[0]["error"]["event_id"] == "failed_update"
     assert events[-1]["reason"] == "internal"
     assert adapter.is_closed is True
-    failure_records = [
-        record
-        for record in caplog.records
-        if record.name.startswith(REALTIME_LOGGER_PREFIX)
-    ]
+    failure_records = realtime_failure_records(caplog)
     assert len(failure_records) == 1
     assert failure_records[0].levelno == logging.ERROR
-    assert failure_records[0].exc_info is not None
+    assert failure_records[0].exc_info
 
 
 @pytest.mark.parametrize(
@@ -566,11 +570,7 @@ def test_open_timeout_is_fatal_and_has_a_message(
     assert errors[0]["error"]["event_id"] == "timed_out_update"
     assert events[-1]["reason"] == "session_open_timeout"
     assert adapter.is_closed is True
-    failure_records = [
-        record
-        for record in caplog.records
-        if record.name.startswith(REALTIME_LOGGER_PREFIX)
-    ]
+    failure_records = realtime_failure_records(caplog)
     assert len(failure_records) == 1
     assert failure_records[0].levelno == logging.ERROR
     assert not failure_records[0].exc_info
