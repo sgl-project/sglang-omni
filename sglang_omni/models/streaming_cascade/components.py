@@ -37,6 +37,8 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizer,
     OpenAISpeechSynthesizerConfig,
 )
+from sglang_omni.models.streaming_cascade.tools import Tools, ToolsConfig, probe_tools
+from sglang_omni.models.streaming_cascade.video import OpenAIVideo, OpenAIVideoConfig
 from sglang_omni.proto.streams import (
     MESSAGES,
     PCM16,
@@ -46,8 +48,13 @@ from sglang_omni.proto.streams import (
     RUNNING_TEXT,
     SESSION_CONTROL,
     TEXT_DELTA,
+    TOOL_CALL,
+    TOOL_IMAGE,
+    TOOL_RESPONSE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
 )
 from sglang_omni.utils.imports import import_string
 
@@ -182,17 +189,34 @@ COMPONENTS.register(
 COMPONENTS.register(
     DialogConfig,
     Dialog,
-    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}),
-    produces=frozenset({MESSAGES, SESSION_CONTROL}),
+    consumes=frozenset(
+        {TRANSCRIPT_FORMAT, TEXT_DELTA, TOOL_CALL, TOOL_RESPONSE, SESSION_CONTROL}
+    ),
+    produces=frozenset({MESSAGES, SESSION_CONTROL, TOOL_IMAGE}),
     opens_turns=True,
+    optional=frozenset({TOOL_CALL, TOOL_RESPONSE}),
 )
 COMPONENTS.register(
     OpenAIChatGeneratorConfig,
     OpenAIChatGenerator,
     consumes=frozenset({MESSAGES}),
-    produces=frozenset({TEXT_DELTA, SESSION_CONTROL}),
+    produces=frozenset({TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
     ends_turns=True,
     probe=probe_chat_service,
+)
+COMPONENTS.register(
+    ToolsConfig,
+    Tools,
+    consumes=frozenset({TOOL_CALL}),
+    produces=frozenset({TOOL_RESPONSE}),
+    probe=probe_tools,
+)
+COMPONENTS.register(
+    OpenAIVideoConfig,
+    OpenAIVideo,
+    consumes=frozenset({TOOL_CALL}),
+    produces=frozenset({TOOL_RESPONSE, VIDEO_CLIP, VIDEO_PROGRESS}),
+    probe=probe_openai_service,
 )
 COMPONENTS.register(
     OpenAISpeechSynthesizerConfig,

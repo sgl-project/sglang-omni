@@ -29,6 +29,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STOPPED,
     TEXT,
     TEXT_DELTA,
+    TOOL_IMAGE,
     TRANSCRIPT,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
@@ -37,6 +38,9 @@ from sglang_omni.proto.streams import (
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
     AudioPort,
     ImagePort,
     SessionPorts,
@@ -45,6 +49,7 @@ from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
     InputTranscription,
+    OutputImage,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -54,6 +59,8 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
     TurnFailure,
+    VideoPiece,
+    VideoProgress,
 )
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
@@ -279,6 +286,79 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     await settle()
     assert [event for event in h.published if isinstance(event, ResponseProgress)] == [
         ResponseProgress("resp_0", "item_0", 4, 500.0)
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_a_picture_a_tool_made_joins_the_response_of_its_turn():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=2)
+    h.client.emit(
+        IMAGE,
+        TOOL_IMAGE,
+        {
+            "call_id": "call_a",
+            "name": "draw",
+            "arguments": {"prompt": "a cat"},
+            "mime_type": "image/png",
+            "data": "AAAA",
+        },
+        turn=2,
+    )
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Here it is."}, turn=2)
+    h.client.control(TURN_DONE, turn=2)
+    await settle()
+    assert h.published[:3] == [
+        ResponseStarted("resp_0"),
+        OutputImage(
+            "resp_0",
+            "item_0",
+            "call_a",
+            "draw",
+            {"prompt": "a cat"},
+            "image/png",
+            "AAAA",
+        ),
+        TextDelta("resp_0", "item_0", "Here it is."),
+    ]
+    assert isinstance(h.published[-1], ResponseFinished)
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_video_pieces_and_progress_belong_to_the_session_not_to_a_response():
+    h = Harness()
+    await h.open()
+    h.client.emit(
+        VIDEO,
+        VIDEO_PROGRESS,
+        {"call_id": "call_a", "clip": 1, "status": "generating", "percent": 40},
+    )
+    h.client.emit(
+        VIDEO,
+        VIDEO_CLIP,
+        {
+            "call_id": "call_a",
+            "clip": 1,
+            "piece": 0,
+            "pieces": 1,
+            "mime_type": "video/mp4",
+            "data": b"\x00\x01",
+            "duration_s": 4.0,
+            "width": 896,
+            "height": 512,
+            "fps": 24.0,
+            "prompt": "a beach",
+        },
+    )
+    await settle()
+    assert h.published == [
+        VideoProgress("call_a", 1, "generating", 40),
+        VideoPiece(
+            "call_a", 1, 0, 1, "video/mp4", b"\x00\x01", 4.0, 896, 512, 24.0, "a beach"
+        ),
     ]
     await h.bridge.close()
 

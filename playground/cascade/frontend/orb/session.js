@@ -6,6 +6,8 @@ export const DEFAULT_INPUT_RATE = 16000;
 export const PACKET_MS = 80;
 const MAX_UNITS_SHOWN = 200;
 const MAX_REPLIES_KEPT = 20;
+const MAX_PICTURES_KEPT = 20;
+const MAX_CLIPS_KEPT = 10;
 
 export function bytesToBase64(bytes) {
   let binary = "";
@@ -100,9 +102,14 @@ export class DuplexSession {
     this.errors = [];
     this.drained = null;
     this.closeReason = null;
-    // Per response: its text, item, the server's sglang.response.progress points and how much of its audio has played.
+    // Per response: its text, item, the server's sglang.response.progress points, how much of its audio has played and the pictures its tools made.
     this.replies = new Map();
     this.lastReplyId = null;
+    // The pictures tools made, in arrival order, each with the call that asked for it.
+    this.pictures = [];
+    // The scene a video node shoots: its clips, each assembled from its pieces, in arrival order, and how far the clip in generation is.
+    this.clips = [];
+    this.sceneProgress = null;
   }
 
   reply(responseId) {
@@ -313,7 +320,7 @@ export class DuplexSession {
       case "response.created":
         this.responseOpen = true;
         this.responseId = (event.response && event.response.id) || null;
-        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null });
+        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null, pictures: [] });
         this.lastReplyId = this.responseId;
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
@@ -343,6 +350,43 @@ export class DuplexSession {
         const reply = this.reply(event.response_id);
         if (reply) reply.keptEnd = event.text_end;
         this.emit("progress", event.response_id);
+        break;
+      }
+      case "sglang.response.image": {
+        const picture = { responseId: event.response_id, callId: event.call_id, name: event.name, arguments: event.arguments, mimeType: event.mime_type, data: event.data };
+        const reply = this.reply(event.response_id);
+        if (reply) reply.pictures.push(picture);
+        this.pictures.push(picture);
+        if (this.pictures.length > MAX_PICTURES_KEPT) this.pictures.splice(0, this.pictures.length - MAX_PICTURES_KEPT);
+        this.emit("picture", picture);
+        break;
+      }
+      case "sglang.video.progress":
+        this.sceneProgress = { callId: event.call_id, clip: event.clip, status: event.status, percent: event.percent };
+        this.emit("scene", this.sceneProgress);
+        break;
+      case "sglang.video.delta": {
+        let clip = this.clips.find((entry) => entry.callId === event.call_id);
+        if (!clip) {
+          clip = { callId: event.call_id, clip: event.clip, mimeType: event.mime_type, pieces: new Array(event.pieces).fill(null), received: 0, durationS: event.duration_s, width: event.width, height: event.height, fps: event.fps, prompt: event.prompt, bytes: null };
+          this.clips.push(clip);
+          if (this.clips.length > MAX_CLIPS_KEPT) this.clips.shift();
+        }
+        if (event.piece < clip.pieces.length && clip.pieces[event.piece] === null) {
+          clip.pieces[event.piece] = base64ToBytes(event.data || "");
+          clip.received += 1;
+        }
+        if (clip.bytes === null && clip.received === clip.pieces.length) {
+          const bytes = new Uint8Array(clip.pieces.reduce((total, piece) => total + piece.byteLength, 0));
+          let offset = 0;
+          for (const piece of clip.pieces) {
+            bytes.set(piece, offset);
+            offset += piece.byteLength;
+          }
+          clip.bytes = bytes;
+          clip.pieces = [];
+          this.emit("clip", clip);
+        }
         break;
       }
       case "response.done": {

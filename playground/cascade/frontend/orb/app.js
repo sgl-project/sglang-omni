@@ -21,7 +21,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "picture", "pictureImg", "pictureCaption", "scene", "sceneVideo", "sceneLine", "sceneSound", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -227,7 +227,73 @@ async function pollStatus() {
   setButtons();
 }
 
+// What a picture was asked for: the prompt of the call that made it, or its whole arguments.
+function requestOf(picture) {
+  const prompt = picture.arguments && picture.arguments.prompt;
+  return typeof prompt === "string" ? prompt : JSON.stringify(picture.arguments);
+}
+
+function figureOf(picture) {
+  const figure = document.createElement("figure");
+  figure.className = "shot";
+  const image = document.createElement("img");
+  image.src = `data:${picture.mimeType};base64,${picture.data}`;
+  image.alt = requestOf(picture);
+  const caption = document.createElement("figcaption");
+  caption.textContent = requestOf(picture);
+  figure.append(image, caption);
+  return figure;
+}
+
+// The stage shows the latest picture a tool made with the request it was made from, until the next picture or the end of the call.
+function renderPicture() {
+  const pictures = session ? session.pictures : [];
+  ui.picture.hidden = !pictures.length;
+  if (!pictures.length) return;
+  const latest = pictures.at(-1);
+  ui.pictureImg.src = `data:${latest.mimeType};base64,${latest.data}`;
+  ui.pictureImg.alt = requestOf(latest);
+  ui.pictureCaption.textContent = requestOf(latest);
+}
+
+// The clips of the scene play back to back as they arrive; the line under the video says which clip is being shot.
+const playlist = [];
+let playingClip = null;
+
+function sceneLine() {
+  const progress = session ? session.sceneProgress : null;
+  const shooting = progress && (progress.status === "queued" || progress.status === "generating")
+    ? `Shooting scene ${progress.clip}${progress.status === "generating" ? ` (${progress.percent}%)` : ", queued"}`
+    : progress && progress.status === "failed" ? `Scene ${progress.clip} failed` : "";
+  const playing = playingClip ? `Scene ${playingClip.clip}: ${playingClip.prompt}` : "";
+  return [playing, shooting].filter(Boolean).join(" · ");
+}
+
+function renderScene() {
+  const clips = session ? session.clips : [];
+  ui.scene.hidden = !clips.length && !(session && session.sceneProgress);
+  ui.sceneLine.textContent = sceneLine();
+}
+
+function playNextClip() {
+  if (playingClip || !playlist.length) return;
+  playingClip = playlist.shift();
+  const url = URL.createObjectURL(new Blob([playingClip.bytes], { type: playingClip.mimeType }));
+  ui.sceneVideo.src = url;
+  ui.sceneVideo.onended = () => {
+    URL.revokeObjectURL(url);
+    playingClip = null;
+    renderScene();
+    playNextClip();
+  };
+  const started = ui.sceneVideo.play();
+  if (started && started.catch) started.catch(() => warn("The browser did not start the clip; click the video to play it."));
+  renderScene();
+}
+
 function renderTranscript() {
+  renderPicture();
+  renderScene();
   const text = session ? session.transcript : "";
   const paragraphs = text.split("\n").filter((line) => line.trim());
   // Audio-only models never send text; the transcript control appears with the first words.
@@ -242,7 +308,7 @@ function renderTranscript() {
     const paragraph = document.createElement("p");
     paragraph.textContent = line;
     return paragraph;
-  }));
+  }), ...session.pictures.map(figureOf));
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
   renderHeard();
 }
@@ -371,6 +437,12 @@ function sessionListeners() {
       renderTranscript();
     },
     text: renderTranscript,
+    picture: renderTranscript,
+    scene: renderScene,
+    clip: (clip) => {
+      playlist.push(clip);
+      playNextClip();
+    },
     progress: renderHeard,
     played: renderHeard,
     drained: () => {},
@@ -386,6 +458,8 @@ async function connect() {
   sessionStart = null;
   muted = false;
   session = null;
+  playlist.length = 0;
+  playingClip = null;
   renderTranscript();
   warn("");
   if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
@@ -539,6 +613,11 @@ ui.muteBtn.addEventListener("click", () => {
   setButtons();
 });
 ui.interruptBtn.addEventListener("click", interrupt);
+// Clips play without their soundtrack unless asked, so the conversation stays audible.
+ui.sceneSound.addEventListener("click", () => {
+  ui.sceneVideo.muted = !ui.sceneVideo.muted;
+  ui.sceneSound.setAttribute("aria-pressed", String(!ui.sceneVideo.muted));
+});
 ui.endBtn.addEventListener("click", () => closeNow().catch((error) => warn(error.message)));
 ui.transcriptBtn.addEventListener("click", () => setSheet(ui.sheet.dataset.open !== "true"));
 ui.sheetClose.addEventListener("click", () => setSheet(false));

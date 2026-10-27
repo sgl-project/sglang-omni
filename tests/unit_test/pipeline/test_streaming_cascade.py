@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
+import json
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -16,20 +17,27 @@ from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
     CONFIGURE,
+    IMAGE,
     INTERRUPT,
     PCM16,
     PCM_F32,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
+    TOOL,
+    TOOL_IMAGE,
     TRUNCATE,
     TURN_DONE,
     TURN_EMPTY,
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
+    VIDEO_CLIP,
+    VIDEO_PROGRESS,
     control_type,
 )
+from tests.unit_test.fixtures.cascade_fakes import PNG_DOT, tiny_mp4
 
 
 @pytest.mark.asyncio
@@ -178,6 +186,54 @@ async def test_eos_flushes_uncommitted_audio_and_history(backends):
         assert (TURN_EMPTY, 2) in events
         assert (TURN_DONE, 3) in events
         assert session.outputs[-1].eos and session.outputs[-1].kind == "input_done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["tool_call"], indirect=True)
+async def test_a_tool_call_continues_the_reply_with_the_tool_result(backends):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.audio(eos=True)
+        # The eos flushes the trailing audio as a second turn, which calls the tool again.
+        assert words == ["Hello", "world."] * 2
+        assert len(messages) == 4
+        call_entry = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        }
+        result_entry = {
+            "role": "tool",
+            "content": '{"echo": {"city": "Paris"}}',
+            "tool_call_id": "call_1",
+        }
+        assert messages[1][-2:] == [call_entry, result_entry]
+        assert messages[2][-4:] == [
+            call_entry,
+            result_entry,
+            {"role": "assistant", "content": "Hello world."},
+            {"role": "user", "content": "test question"},
+        ]
+        events = [
+            (control_type(o), o.turn) for o in session.outputs if o.kind == "data"
+        ]
+        # The second turn queues while the first waits for its tool, so compare per turn.
+        for turn in (1, 2):
+            assert [e for e in events if e[0] is not None and e[1] == turn] == [
+                (TURN_QUEUED, turn),
+                (TURN_STARTED, turn),
+                (TURN_DONE, turn),
+            ]
+        assert not any(o.modality == TOOL for o in session.outputs)
+        assert session.error is None
 
 
 @pytest.mark.asyncio
@@ -406,3 +462,198 @@ async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
         assert done.t_start_ms == pytest.approx(
             audio[-1].t_start_ms + audio[-1].duration_ms
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["unawaited_tool"], indirect=True)
+async def test_an_unawaited_tool_call_ends_the_reply_and_its_result_reports_in_its_own_turn(
+    backends,
+):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        await session.audio(eos=True)
+        assert words == ["Hello", "world."] * 2
+        assert len(messages) == 4
+        call_entry = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        }
+        result_entry = {
+            "role": "tool",
+            "content": '{"echo": {"city": "Paris"}}',
+            "tool_call_id": "call_1",
+        }
+        assert messages[1][-2:] == [call_entry, result_entry]
+        assert messages[2][-4:] == [
+            call_entry,
+            result_entry,
+            {"role": "assistant", "content": "Hello world."},
+            {"role": "user", "content": "test question"},
+        ]
+        assert messages[3][-2:] == [call_entry, result_entry]
+        events = [
+            (control_type(o), o.turn) for o in session.outputs if o.kind == "data"
+        ]
+        for turn in (1, 2, 3, 4):
+            assert [e for e in events if e[0] is not None and e[1] == turn] == [
+                (TURN_QUEUED, turn),
+                (TURN_STARTED, turn),
+                (TURN_DONE, turn),
+            ]
+        assert not any(o.modality == TOOL for o in session.outputs)
+        assert session.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["unawaited_tool"], indirect=True)
+async def test_each_session_reports_only_its_own_tool_results(backends):
+    config, _, words, _ = backends
+    async with conversation(config) as first:
+        identity = await first.coordinator.open_session(
+            OmniRequest(None), limits=SessionLimits(operation_timeout_s=10)
+        )
+        second = Conversation(first.coordinator, identity)
+        try:
+            for session in (first, second):
+                await session.audio()
+                await session.command(COMMIT)
+            for session in (first, second):
+                await session.until(
+                    lambda: [
+                        control_type(o) for o in session.outputs if o.kind == "data"
+                    ].count(TURN_DONE)
+                    == 2
+                )
+                events = [
+                    (control_type(o), o.turn)
+                    for o in session.outputs
+                    if o.kind == "data"
+                    and control_type(o) in (TURN_QUEUED, TURN_STARTED, TURN_DONE)
+                ]
+                assert events == [
+                    (TURN_QUEUED, 1),
+                    (TURN_STARTED, 1),
+                    (TURN_DONE, 1),
+                    (TURN_QUEUED, 2),
+                    (TURN_STARTED, 2),
+                    (TURN_DONE, 2),
+                ]
+                assert session.error is None
+        finally:
+            await second.close()
+    assert sorted(words) == sorted(["Hello", "world."] * 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["picture_tool"], indirect=True)
+async def test_a_picture_a_tool_made_is_published_with_its_call_in_the_turn_that_reports_it(
+    backends,
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        [picture] = [o for o in session.outputs if o.modality == IMAGE]
+        assert picture.format == TOOL_IMAGE and picture.turn == 2
+        assert picture.payload == {
+            "call_id": "call_1",
+            "name": "picture",
+            "arguments": {"prompt": "a cat"},
+            "mime_type": "image/png",
+            "data": PNG_DOT,
+        }
+        events = [
+            (control_type(o) or o.format, o.turn)
+            for o in session.outputs
+            if o.kind == "data"
+            and (o.modality == IMAGE or control_type(o) in (TURN_STARTED, TURN_DONE))
+        ]
+        assert events == [
+            (TURN_STARTED, 1),
+            (TURN_DONE, 1),
+            (TURN_STARTED, 2),
+            (TOOL_IMAGE, 2),
+            (TURN_DONE, 2),
+        ]
+        assert messages[1][-1] == {
+            "role": "tool",
+            "content": '{"drew": "a cat"}',
+            "tool_call_id": "call_1",
+        }
+        assert session.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["video_tool"], indirect=True)
+async def test_a_clip_a_video_node_shoots_reaches_the_client_in_pieces_before_its_turn_reports_it(
+    backends, backend_requests
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: [
+                control_type(o) for o in session.outputs if o.kind == "data"
+            ].count(TURN_DONE)
+            == 2
+        )
+        progress = [
+            (o.payload["clip"], o.payload["status"])
+            for o in session.outputs
+            if o.format == VIDEO_PROGRESS
+        ]
+        assert progress[0] == (1, "queued") and progress[-1] == (1, "done")
+        assert {status for _, status in progress[1:-1]} == {"generating"}
+        pieces = [o for o in session.outputs if o.format == VIDEO_CLIP]
+        assert [o.payload["piece"] for o in pieces] == list(range(len(pieces)))
+        assert all(o.modality == VIDEO and o.turn is None for o in pieces)
+        assert b"".join(o.payload["data"] for o in pieces) == tiny_mp4()
+        assert pieces[0].payload["pieces"] == len(pieces)
+        assert (
+            pieces[0].payload["width"] == 32
+            and pieces[0].payload["prompt"] == "a beach"
+        )
+        order = [
+            (control_type(o) or o.format)
+            for o in session.outputs
+            if o.kind == "data"
+            and (o.format == VIDEO_CLIP or control_type(o) in (TURN_STARTED, TURN_DONE))
+        ]
+        assert order == [
+            TURN_STARTED,
+            TURN_DONE,
+            *([VIDEO_CLIP] * len(pieces)),
+            TURN_STARTED,
+            TURN_DONE,
+        ]
+        [job] = [request for request in backend_requests if "task" in request]
+        assert (
+            job["task"] == "t2va" and job["conditions"] == [] and job["model"] == "h3"
+        )
+        result = json.loads(messages[1][-1]["content"])
+        assert messages[1][-1]["tool_call_id"] == "call_1"
+        assert result["clip"] == 1 and result["prompt"] == "a beach"
+        assert result["continues"] is False
+        assert session.error is None

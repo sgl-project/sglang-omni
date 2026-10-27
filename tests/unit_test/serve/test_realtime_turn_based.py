@@ -11,17 +11,22 @@ import pytest
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
     InputTranscription,
+    OutputImage,
     ResponseHeard,
     ResponseProgress,
     SpeechStarted,
     SpeechStopped,
+    VideoPiece,
+    VideoProgress,
 )
+from sglang_omni.serve.realtime.output_buffer import ENVELOPE_BYTES, envelope_size_bytes
 from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.session_bridge import capabilities_of
 from sglang_omni.serve.realtime.types import (
     Capabilities,
+    Envelope,
     InteractionAdapter,
     OutputSink,
     ProtocolError,
@@ -197,6 +202,53 @@ def test_reply_heard_projects_to_a_response_event():
         "output_index": 0,
         "content_index": 0,
         "text_end": 3,
+    }
+
+
+def test_a_picture_projects_to_a_response_event_and_counts_its_data():
+    picture = OutputImage(
+        "resp_0", "item_0", "call_a", "draw", {"prompt": "a cat"}, "image/png", "AAAA"
+    )
+    assert project_output(picture) == {
+        "type": "sglang.response.image",
+        "response_id": "resp_0",
+        "item_id": "item_0",
+        "output_index": 0,
+        "content_index": 0,
+        "call_id": "call_a",
+        "name": "draw",
+        "arguments": {"prompt": "a cat"},
+        "mime_type": "image/png",
+        "data": "AAAA",
+    }
+    assert envelope_size_bytes(Envelope(event=picture)) == len("AAAA") + ENVELOPE_BYTES
+
+
+def test_video_pieces_and_progress_project_to_session_events():
+    piece = VideoPiece(
+        "call_a", 2, 0, 3, "video/mp4", b"\x00\x01\x02", 4.5, 896, 512, 24.0, "a beach"
+    )
+    assert project_output(piece) == {
+        "type": "sglang.video.delta",
+        "call_id": "call_a",
+        "clip": 2,
+        "piece": 0,
+        "pieces": 3,
+        "mime_type": "video/mp4",
+        "data": "AAEC",
+        "duration_s": 4.5,
+        "width": 896,
+        "height": 512,
+        "fps": 24.0,
+        "prompt": "a beach",
+    }
+    assert envelope_size_bytes(Envelope(event=piece)) == 4 + ENVELOPE_BYTES
+    assert project_output(VideoProgress("call_a", 2, "generating", 40)) == {
+        "type": "sglang.video.progress",
+        "call_id": "call_a",
+        "clip": 2,
+        "status": "generating",
+        "percent": 40,
     }
 
 

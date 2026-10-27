@@ -52,6 +52,18 @@ class ResponseHeard(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class OutputImage(ResponseEvent):
+    """An image a tool of the reply made, as base64 of mime_type, with the call that asked for it."""
+
+    item_id: str
+    call_id: str
+    name: str
+    arguments: object
+    mime_type: str
+    data: str
+
+
+@dataclass(frozen=True)
 class AudioFinished(ResponseEvent):
     item_id: str
 
@@ -64,6 +76,33 @@ class ResponseFinished(ResponseEvent):
     status: ResponseStatus
     reason: str
     usage: dict[str, int | float | None] | None = None
+
+
+@dataclass(frozen=True)
+class VideoPiece:
+    """One piece of the file of one clip of the scene a video node shoots, with the call that asked for the clip; the pieces of a clip arrive in order."""
+
+    call_id: str
+    clip: int
+    piece: int
+    pieces: int
+    mime_type: str
+    data: bytes
+    duration_s: float
+    width: int
+    height: int
+    fps: float
+    prompt: str
+
+
+@dataclass(frozen=True)
+class VideoProgress:
+    """How far the clip of a call is: queued, generating with a percentage, done or failed."""
+
+    call_id: str
+    clip: int
+    status: str
+    percent: int
 
 
 @dataclass(frozen=True)
@@ -103,8 +142,11 @@ OutputEvent = (
     | AudioDelta
     | ResponseProgress
     | ResponseHeard
+    | OutputImage
     | AudioFinished
     | ResponseFinished
+    | VideoPiece
+    | VideoProgress
     | TurnFailure
     | SpeechStarted
     | SpeechStopped

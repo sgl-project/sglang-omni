@@ -6,7 +6,7 @@ import inspect
 import logging
 from collections.abc import Callable, Mapping
 
-from sglang_omni.proto.tools import ToolCall, ToolResponse
+from sglang_omni.proto.tools import ToolCall, ToolResponse, ToolResult
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ ToolFunction = Callable[[Mapping[str, object]], object]
 
 
 class ToolRunner:
-    """Answers each tool call; an unknown tool, arguments that are not an object or an exception from the tool become `{"error": str}` responses, so the model answers them instead of the Session failing."""
+    """Answers each tool call with the JSON data the tool returns, or with the data and the images of the `ToolResult` it returns; an unknown tool, arguments that are not an object or an exception from the tool become `{"error": str}` responses, so the model answers them instead of the Session failing."""
 
     def __init__(self, tools: dict[str, ToolFunction]) -> None:
         self.tools = tools
@@ -27,19 +27,27 @@ class ToolRunner:
     async def respond(self, call: ToolCall) -> ToolResponse:
         tool = self.tools.get(call.name)
         if tool is None:
-            response: object = {"error": f"unknown tool {call.name}"}
+            result: object = {"error": f"unknown tool {call.name}"}
         elif not isinstance(call.arguments, dict):
-            response = {"error": "arguments must be an object"}
+            result = {"error": "arguments must be an object"}
         else:
             try:
                 if inspect.iscoroutinefunction(tool):
-                    response = await tool(call.arguments)
+                    result = await tool(call.arguments)
                 else:
-                    response = await asyncio.to_thread(tool, call.arguments)
+                    result = await asyncio.to_thread(tool, call.arguments)
             except Exception as error:
                 logger.warning(f"tool {call.name} failed", exc_info=error)
-                response = {"error": str(error)}
-        return ToolResponse(id=call.id, name=call.name, response=response)
+                result = {"error": str(error)}
+        if isinstance(result, ToolResult):
+            return ToolResponse(
+                id=call.id,
+                name=call.name,
+                response=result.response,
+                images=result.images,
+            )
+        else:
+            return ToolResponse(id=call.id, name=call.name, response=result)
 
     async def respond_all(self, calls: list[ToolCall]) -> list[ToolResponse]:
         return [await self.respond(call) for call in calls]

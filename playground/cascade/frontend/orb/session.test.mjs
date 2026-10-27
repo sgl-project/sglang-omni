@@ -65,6 +65,36 @@ function openSession(text = "One, two, three.", progress = PROGRESS) {
   return { session, sent };
 }
 
+test("a picture a tool made joins its reply and the session's pictures with the request that asked for it", () => {
+  const announced = [];
+  const session = new DuplexSession({ transport: () => {}, now: () => 0, listeners: { picture: (picture) => announced.push(picture) } });
+  session.handle({ type: "response.created", response: { id: "resp_0" } });
+  session.handle({ type: "sglang.response.image", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, call_id: "call_a", name: "draw", arguments: { prompt: "a cat" }, mime_type: "image/png", data: "AAAA" });
+  const picture = { responseId: "resp_0", callId: "call_a", name: "draw", arguments: { prompt: "a cat" }, mimeType: "image/png", data: "AAAA" };
+  assert.deepEqual(session.reply("resp_0").pictures, [picture]);
+  assert.deepEqual(session.pictures, [picture]);
+  assert.deepEqual(announced, [picture]);
+});
+
+test("a clip arrives in pieces and is announced once whole, with the scene's progress kept", () => {
+  const clips = [];
+  const scenes = [];
+  const session = new DuplexSession({ transport: () => {}, now: () => 0, listeners: { clip: (clip) => clips.push(clip), scene: (progress) => scenes.push(progress) } });
+  session.handle({ type: "sglang.video.progress", call_id: "call_a", clip: 1, status: "generating", percent: 40 });
+  assert.deepEqual(session.sceneProgress, { callId: "call_a", clip: 1, status: "generating", percent: 40 });
+  assert.equal(scenes.length, 1);
+  const piece = (index, data) => ({ type: "sglang.video.delta", call_id: "call_a", clip: 1, piece: index, pieces: 2, mime_type: "video/mp4", data, duration_s: 4.5, width: 896, height: 512, fps: 24, prompt: "a beach" });
+  session.handle(piece(1, "AwQ="));
+  assert.equal(clips.length, 0);
+  session.handle(piece(0, "AQI="));
+  session.handle(piece(0, "AQI="));
+  assert.equal(clips.length, 1);
+  assert.deepEqual([...clips[0].bytes], [1, 2, 3, 4]);
+  assert.equal(clips[0].prompt, "a beach");
+  assert.equal(clips[0].mimeType, "video/mp4");
+  assert.equal(session.clips.length, 1);
+});
+
 test("an interruption freezes the heard text where the truncate cuts the reply", () => {
   const { session, sent } = openSession();
   session.played("resp_0", 600, false);

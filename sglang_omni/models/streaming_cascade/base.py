@@ -76,11 +76,26 @@ class StreamComponent:
         return 0
 
 
-class ChatMessage(BaseModel):
-    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, and is_cut an assistant reply the listener cut before its end. Neither field goes into the request; is_cut changes how the prompt shows the reply."""
+class FunctionCall(BaseModel):
+    """The function of an assistant tool call as the chat API carries it: the arguments are the JSON text the model wrote."""
 
-    role: Literal["system", "user", "assistant"]
+    name: str
+    arguments: str
+
+
+class AssistantToolCall(BaseModel):
+    id: str
+    type: Literal["function"] = "function"
+    function: FunctionCall
+
+
+class ChatMessage(BaseModel):
+    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, and is_cut an assistant reply the listener cut before its end. Neither field goes into the request; is_cut changes how the prompt shows the reply. An assistant entry that called tools carries them in tool_calls, and a tool entry answers the call named by tool_call_id."""
+
+    role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
+    tool_calls: list[AssistantToolCall] | None = None
+    tool_call_id: str | None = None
     uncertain: bool = False
     is_cut: bool = False
 
