@@ -4,7 +4,7 @@ model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian
 
 services:
   - name: chat
-    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3.8-27B, --port, "8003", --mem-fraction-static, "0.85"]
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3.8-27B, --reasoning-parser, qwen3, --port, "8003", --mem-fraction-static, "0.85"]
     port: 8003
     env: {CUDA_VISIBLE_DEVICES: "0"}
   - name: asr
