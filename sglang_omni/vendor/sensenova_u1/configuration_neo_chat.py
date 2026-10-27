@@ -193,11 +193,6 @@ class NEOChatConfig(PretrainedConfig):
         self.template = template
         self.tie_word_embeddings = self.llm_config.tie_word_embeddings
 
-    @property
-    def is_moe_llm(self) -> bool:
-        """Convenience flag so callers can switch between dense / MoE LLM."""
-        return isinstance(self.llm_config, NEOMoELLMConfig)
-
     def to_dict(self):
         """
         Serializes this instance to a Python dictionary. Override the default [`~PretrainedConfig.to_dict`].

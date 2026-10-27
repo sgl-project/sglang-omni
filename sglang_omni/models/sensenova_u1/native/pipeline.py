@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 import torch
-from sglang.multimodal_gen.runtime.disaggregation.roles import RoleType
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
@@ -29,15 +28,6 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
     sampling_params_cls: type[SenseNovaU1SamplingParams] = SenseNovaU1SamplingParams
     _required_config_modules: list[str] = []
 
-    def validate_disagg_role(self, role: RoleType) -> None:
-        if role != RoleType.MONOLITHIC:
-            raise ValueError(
-                "SenseNovaU1Pipeline only supports monolithic deployment; "
-                f"disaggregation role {role.value!r} is not supported"
-            )
-        else:
-            pass
-
     def load_modules(
         self,
         server_args: ServerArgs,
@@ -50,13 +40,6 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
         else:
             pass
 
-        if server_args.num_gpus != 1:
-            raise ValueError(
-                "SenseNovaU1Pipeline currently supports num_gpus=1. "
-                "Native tensor/pipeline parallelism is not implemented yet."
-            )
-        else:
-            pass
         modules = load_model_and_tokenizer(self.model_path, server_args)
         logger.info(f"Loaded SenseNova-U1 model from {self.model_path}")
         return modules

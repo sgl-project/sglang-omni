@@ -17,30 +17,20 @@ def load_model_and_tokenizer(
     model_dtype = PRECISION_TO_TYPE.get(
         server_args.pipeline_config.model_precision, torch.bfloat16
     )
-    model_load_options: dict[str, str | bool | torch.dtype] = {
-        "torch_dtype": model_dtype
-    }
+    load_options: dict[str, str | bool] = {}
     if server_args.trust_remote_code:
-        model_load_options["trust_remote_code"] = True
+        load_options["trust_remote_code"] = True
     else:
         pass
     if server_args.revision is not None:
-        model_load_options["revision"] = server_args.revision
+        load_options["revision"] = server_args.revision
     else:
         pass
 
-    tokenizer_load_options: dict[str, str | bool] = {}
-    if server_args.trust_remote_code:
-        tokenizer_load_options["trust_remote_code"] = True
-    else:
-        pass
-    if server_args.revision is not None:
-        tokenizer_load_options["revision"] = server_args.revision
-    else:
-        pass
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, **tokenizer_load_options)
-    model = AutoModel.from_pretrained(model_path, **model_load_options).eval()
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **load_options)
+    model = AutoModel.from_pretrained(
+        model_path, torch_dtype=model_dtype, **load_options
+    ).eval()
     model_device = get_local_torch_device()
     current_platform.set_device(model_device)
     model = model.to(model_device)

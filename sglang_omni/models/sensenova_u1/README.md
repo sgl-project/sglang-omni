@@ -4,7 +4,7 @@ This package registers SenseNova-U1.5 with SGLang's native multimodal generation
 
 ## Run
 
-Use a source installation of Omni and a SGLang version with `register_pipeline` and `SGLANG_EXTERNAL_MODEL_PACKAGE` support. The extraction baseline is SGLang commit `e4d4a9a7de5454cd8b854b21af723c2155a55a3d`.
+Use a source installation of Omni and a SGLang version with `register_pipeline` and `SGLANG_EXTERNAL_MODEL_PACKAGE` support.
 
 ```bash
 export SGLANG_EXTERNAL_MODEL_PACKAGE=sglang_omni.models.sensenova_u1.native

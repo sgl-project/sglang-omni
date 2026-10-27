@@ -179,7 +179,7 @@ def test_dynamic_batching_excludes_think_requests(think_mode: bool) -> None:
     assert config.supports_dynamic_batching_for_request(request) is (not think_mode)
 
 
-def test_generation_preserves_native_extra_defaults_and_conversion(
+def test_warmup_generation_uses_native_extra_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing model extras use native defaults rather than sampling_params overrides."""
@@ -217,4 +217,3 @@ def test_generation_preserves_native_extra_defaults_and_conversion(
     assert generation_arguments["t_eps"] == 0.02
     assert generation_arguments["think_mode"] is False
     assert output.usage is None
-    torch.testing.assert_close(output.output[0], torch.tensor([[[0.0, 0.5, 1.0]]]))

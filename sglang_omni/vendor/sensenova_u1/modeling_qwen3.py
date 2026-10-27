@@ -24,12 +24,8 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
-
-from .transformers_compat import (
-    causal_mask_kwargs,
-    model_input_compat,
-    tied_weights_keys,
-)
+from transformers.utils.generic import merge_with_config_defaults
+from transformers.utils.output_capturing import capture_outputs
 
 try:
     from flash_attn import flash_attn_func  # type: ignore
@@ -40,55 +36,8 @@ except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash 
     _HAS_FLASH_ATTN = False
 
 
-# Attention backend dispatch.
-#
-# Set via :func:`set_attn_backend`. Three modes are accepted:
-#   * ``"auto"``  - use flash-attn if available, otherwise SDPA (default).
-#   * ``"flash"`` - force flash-attn; raise if ``flash_attn`` is not installed.
-#   * ``"sdpa"``  - force torch SDPA (useful for reproducibility tests and
-#                    debugging, even when flash-attn is available).
-_VALID_ATTN_BACKENDS = ("auto", "flash", "sdpa")
-_ATTN_BACKEND: str = "auto"
-
-
 def npu_fia_available() -> bool:
     return hasattr(torch.ops.npu, "npu_fused_infer_attention_score")
-
-
-def set_attn_backend(backend: str) -> str:
-    """Choose the attention kernel used by the Qwen3 layers at runtime.
-
-    Returns the backend string that was set. Raises ``ValueError`` for an
-    unknown name and ``RuntimeError`` if ``flash`` is requested but the
-    ``flash_attn`` package isn't importable.
-    """
-    global _ATTN_BACKEND
-    backend = backend.lower()
-    if backend not in _VALID_ATTN_BACKENDS:
-        raise ValueError(
-            f"Unknown attention backend {backend!r}. "
-            f"Expected one of {_VALID_ATTN_BACKENDS}."
-        )
-    if backend == "flash" and not _HAS_FLASH_ATTN:
-        raise RuntimeError(
-            "Requested attn_backend='flash' but `flash_attn` is not installed. "
-            "Install it (e.g. `uv pip install <flash_attn-*.whl>`) or use "
-            "'auto' / 'sdpa'."
-        )
-    _ATTN_BACKEND = backend
-    return _ATTN_BACKEND
-
-
-def get_attn_backend() -> str:
-    """Return the currently active attention backend name."""
-    return _ATTN_BACKEND
-
-
-def effective_attn_backend() -> str:
-    """Resolve ``'auto'`` to the kernel that will actually run."""
-    if _ATTN_BACKEND != "auto":
-        return _ATTN_BACKEND
-    return "flash" if _HAS_FLASH_ATTN else "sdpa"
 
 
 def _sdpa_attn_func(
@@ -173,7 +122,7 @@ def _flash_or_sdpa(
     kv_padding_size: Optional[torch.Tensor] = None,
     input_layout: str = "BSND",
 ):
-    backend = effective_attn_backend()
+    backend = "flash" if _HAS_FLASH_ATTN else "sdpa"
     if (
         q.device.type == "npu"
         and not causal
@@ -265,10 +214,7 @@ def _flash_or_sdpa(
                 )
             )
         return torch.cat(outputs, dim=0)
-    # flash-attn ships CUDA kernels only. On XPU / CPU we transparently fall
-    # back to SDPA even if the user asked for ``flash`` — the alternative
-    # (crashing on first forward) is worse, and ``set_attn_backend('flash')``
-    # already guarded against the "package missing" case.
+    # flash-attn ships CUDA kernels only, so other devices fall back to SDPA.
     if backend == "flash" and q.device.type == "cuda" and attention_mask is None:
         return flash_attn_func(
             q, k, v, dropout_p=dropout_p, softmax_scale=softmax_scale, causal=causal
@@ -1334,7 +1280,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @model_input_compat
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -1390,20 +1337,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # It may already have been prepared by e.g. `generate`
         if not isinstance(causal_mask_mapping := attention_mask, dict):
-            # Prepare mask arguments
             if input_ids is not None:
-                mask_kwargs = causal_mask_kwargs(
-                    create_causal_mask,
-                    config=self.config,
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    cache_position=cache_position,
-                    past_key_values=past_key_values,
-                    position_ids=position_ids,
-                )
                 # Create the masks
                 causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
+                    "full_attention": create_causal_mask(
+                        config=self.config,
+                        inputs_embeds=inputs_embeds,
+                        attention_mask=attention_mask,
+                        past_key_values=past_key_values,
+                        position_ids=position_ids,
+                    ),
                 }
                 self.current_index += 1
                 indexes = torch.LongTensor([[self.current_index], [0], [0]]).to(
@@ -1461,9 +1404,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
 class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     _model_cls = Qwen3Model
-    _tied_weights_keys = tied_weights_keys(
-        "lm_head.weight", "model.embed_tokens.weight"
-    )
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 

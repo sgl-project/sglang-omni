@@ -25,8 +25,6 @@ from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
 @dataclass(frozen=True)
 class SenseNovaU1GenerationOptions:
-    """Resolve model extras independently of sampling-parameter overrides."""
-
     cfg_norm: ClassifierFreeGuidanceNormalization = DEFAULT_CFG_NORM
     timestep_shift: float = DEFAULT_TIMESTEP_SHIFT
     enable_timestep_shift: bool = DEFAULT_ENABLE_TIMESTEP_SHIFT

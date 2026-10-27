@@ -3,7 +3,7 @@
 
 import json
 import os
-from typing import Literal
+from typing import Literal, get_args
 
 ClassifierFreeGuidanceNormalization = Literal[
     "none", "global", "channel", "cfg_zero_star"
@@ -11,15 +11,8 @@ ClassifierFreeGuidanceNormalization = Literal[
 
 SENSENOVA_U1_REQUEST_EXTRA_KEY: str = "sensenova_u1"
 
-SENSENOVA_U1_MODEL_IDS: set[str] = {
-    "sensenova/sensenova-u1.5-8b-mot",
-}
-
 SENSENOVA_U1_CFG_NORM_CHOICES: tuple[ClassifierFreeGuidanceNormalization, ...] = (
-    "none",
-    "global",
-    "channel",
-    "cfg_zero_star",
+    get_args(ClassifierFreeGuidanceNormalization)
 )
 RESOLUTION_ALIGNMENT: int = 32
 
@@ -32,7 +25,7 @@ DEFAULT_THINK_MODE: bool = False
 
 
 def is_sensenova_u1_model(model_path: str) -> bool:
-    """Identify SenseNova-U1 Hub IDs and local base checkpoints."""
+    """Identify local SenseNova-U1 base checkpoints."""
     if os.path.isdir(model_path):
         checkpoint_config_path = os.path.join(model_path, "config.json")
         try:
@@ -52,6 +45,4 @@ def is_sensenova_u1_model(model_path: str) -> bool:
             and "NEOChatModel" in model_architectures
         )
     else:
-        pass
-
-    return model_path.rstrip("/").lower() in SENSENOVA_U1_MODEL_IDS
+        return False

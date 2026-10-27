@@ -5,7 +5,6 @@ import math
 from typing import List, Optional, Tuple, Union
 
 import torch.utils.checkpoint
-import transformers
 from torch import nn
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
@@ -13,7 +12,7 @@ from transformers.utils import logging
 
 from .configuration_neo_chat import NEOChatConfig, NEOMoELLMConfig
 from .conversation import get_conv_template
-from .modeling_fm_modules import ConvDecoder, FlowMatchingHead, TimestepEmbedder
+from .modeling_fm_modules import ConvDecoder, TimestepEmbedder
 from .modeling_neo_vit import NEOVisionModel
 from .modeling_qwen3 import (
     Qwen3ForCausalLM,
@@ -24,15 +23,6 @@ from .modeling_qwen3_moe import Qwen3MoeForCausalLM
 from .utils import SYSTEM_MESSAGE_FOR_GEN
 
 logger = logging.get_logger(__name__)
-
-
-def version_cmp(v1, v2, op="eq"):
-    import operator
-
-    from packaging import version
-
-    op_func = getattr(operator, op)
-    return op_func(version.parse(v1), version.parse(v2))
 
 
 def _copy_right_aligned_prefix_bnsd(destination, source, lengths):
@@ -254,7 +244,6 @@ class NEOChatModel(PreTrainedModel):
     ):
         super().__init__(config)
 
-        assert version_cmp(transformers.__version__, "4.37.0", "ge")
         patch_size = config.vision_config.patch_size
         self.patch_size = patch_size
         self.template = config.template
@@ -281,22 +270,16 @@ class NEOChatModel(PreTrainedModel):
         merge_size = int(1 / self.downsample_ratio)
         output_dim = 3 * (patch_size * merge_size) ** 2
         llm_hidden_size = self.config.llm_config.hidden_size
-        self.use_deep_fm_head = self.config.fm_head_layers > 2
         self.use_pixel_head = self.config.use_pixel_head
-        if self.use_deep_fm_head:
-            fm_head = FlowMatchingHead(
-                llm_hidden_size,
-                output_dim,
-                dim=self.config.fm_head_dim,
-                layers=self.config.fm_head_layers,
-                mlp_ratio=self.config.fm_head_mlp_ratio,
+        if self.config.fm_head_layers > 2:
+            raise ValueError(
+                f"SenseNova fm_head_layers={self.config.fm_head_layers} needs the deep flow-matching head, which this package omits"
             )
-        else:
-            fm_head = nn.Sequential(
-                nn.Linear(llm_hidden_size, 4096, bias=True),
-                nn.GELU(),
-                nn.Linear(4096, output_dim, bias=True),
-            )
+        fm_head = nn.Sequential(
+            nn.Linear(llm_hidden_size, 4096, bias=True),
+            nn.GELU(),
+            nn.Linear(4096, output_dim, bias=True),
+        )
 
         timestep_embedder = TimestepEmbedder(llm_hidden_size)
         self.fm_modules = nn.ModuleDict(
@@ -316,12 +299,6 @@ class NEOChatModel(PreTrainedModel):
         self.noise_scale_base_image_seq_len = config.noise_scale_base_image_seq_len
         self.add_noise_scale_embedding = config.add_noise_scale_embedding
         self.noise_scale_max_value = config.noise_scale_max_value
-        self.time_schedule = config.time_schedule
-        self.time_shift_type = config.time_shift_type
-        self.base_shift = config.base_shift
-        self.max_shift = config.max_shift
-        self.base_image_seq_len = config.base_image_seq_len
-        self.max_image_seq_len = config.max_image_seq_len
 
         if self.add_noise_scale_embedding:
             noise_scale_embedder = TimestepEmbedder(llm_hidden_size)
@@ -336,11 +313,6 @@ class NEOChatModel(PreTrainedModel):
         # real checkpoint reaches the final loading pass with that metadata
         # missing, even though the nested language model initialized it.
         self.post_init()
-
-    def _notify_layer_offload_phase(self, phase: str) -> None:
-        callback = getattr(self, "_layer_offload_phase_callback", None)
-        if callback is not None:
-            callback(phase)
 
     def forward(
         self,
@@ -397,36 +369,12 @@ class NEOChatModel(PreTrainedModel):
         images = x.reshape(shape=(x.shape[0], 3, h * patch_size, w * patch_size))
         return images
 
-    def _calculate_dynamic_mu(self, image_seq_len: int) -> float:
-        denom = self.max_image_seq_len - self.base_image_seq_len
-        if denom == 0:
-            return float(self.base_shift)
-        m = (self.max_shift - self.base_shift) / denom
-        b = self.base_shift - m * self.base_image_seq_len
-        return float(image_seq_len) * m + b
-
     def _apply_time_schedule(
-        self, t: torch.Tensor, image_seq_len: int, timestep_shift: float
+        self, t: torch.Tensor, timestep_shift: float
     ) -> torch.Tensor:
-        self.time_schedule = "standard"
         sigma = 1 - t
-        if timestep_shift != 1:
-            self.time_schedule = "standard"
-        if self.time_schedule == "standard":
-            shift = timestep_shift
-            sigma = shift * sigma / (1 + (shift - 1) * sigma)
-        elif self.time_schedule == "dynamic":
-            mu = self._calculate_dynamic_mu(image_seq_len)
-            mu_t = t.new_tensor(mu)
-            if self.time_shift_type == "exponential":
-                shift = torch.exp(mu_t)
-                sigma = shift * sigma / (1 + (shift - 1) * sigma)
-            elif self.time_shift_type == "linear":
-                sigma = mu_t / (mu_t + (1 / sigma - 1))
-            else:
-                raise ValueError(f"Unsupported time_shift_type: {self.time_shift_type}")
-        else:
-            raise ValueError(f"Unsupported time_schedule: {self.time_schedule}")
+        shift = timestep_shift
+        sigma = shift * sigma / (1 + (shift - 1) * sigma)
         return 1 - sigma
 
     def _build_t2i_query(self, prompt_text, system_message=None, append_text=None):
@@ -659,15 +607,9 @@ class NEOChatModel(PreTrainedModel):
             )
             x_pred = out_1d
         else:
-            if self.use_deep_fm_head:
-                x_pred = self.fm_modules["fm_head"](
-                    outputs.last_hidden_state[:, -image_token_num:].view(B * L, -1),
-                    t.repeat(B * L),
-                ).view(B, L, -1)
-            else:
-                x_pred = self.fm_modules["fm_head"](
-                    outputs.last_hidden_state[:, -image_token_num:].view(B, L, -1)
-                ).view(B, L, -1)
+            x_pred = self.fm_modules["fm_head"](
+                outputs.last_hidden_state[:, -image_token_num:].view(B, L, -1)
+            ).view(B, L, -1)
 
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.config.t_eps)
         return v_pred
@@ -708,7 +650,6 @@ class NEOChatModel(PreTrainedModel):
             raise ValueError(
                 "batched SenseNova-U1 generation does not support think_mode"
             )
-        self._notify_layer_offload_phase("prefix")
         merge_size = int(1 / self.downsample_ratio)
 
         self.config.t_eps = t_eps
@@ -828,7 +769,6 @@ class NEOChatModel(PreTrainedModel):
                 indexes_uncondition,
                 attention_mask_uncondition_prefix,
             )
-        self._notify_layer_offload_phase("denoise")
 
         for layer_idx in range(len(past_key_values_condition.layers)):
             past_key_values_condition.layers[
@@ -912,9 +852,7 @@ class NEOChatModel(PreTrainedModel):
 
         timesteps = torch.linspace(0.0, 1.0, num_steps + 1, device=device)
         if enable_timestep_shift:
-            timesteps = self._apply_time_schedule(
-                timesteps, token_h * token_w, timestep_shift
-            )
+            timesteps = self._apply_time_schedule(timesteps, timestep_shift)
         denoise_embeddings = None
         if device.type == "npu":
             denoise_embeddings = self.fm_modules["timestep_embedder"](timesteps[:-1])

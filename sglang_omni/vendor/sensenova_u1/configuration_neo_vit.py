@@ -1,14 +1,9 @@
 # Modified for SGLang; see this directory's README.md for upstream source.
 
-import os
 from collections.abc import Sequence
-from typing import Union
 
 from pydantic import JsonValue
 from transformers.configuration_utils import PretrainedConfig
-from transformers.utils import logging
-
-logger = logging.get_logger(__name__)
 
 
 def _as_singleton_tuple(
@@ -48,26 +43,3 @@ class NEOVisionConfig(PretrainedConfig):
         self.patch_size = patch_size
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
-
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
-    ) -> "PretrainedConfig":
-        config_dict, kwargs = cls.get_config_dict(
-            pretrained_model_name_or_path, **kwargs
-        )
-
-        if "vision_config" in config_dict:
-            config_dict = config_dict["vision_config"]
-
-        if (
-            "model_type" in config_dict
-            and hasattr(cls, "model_type")
-            and config_dict["model_type"] != cls.model_type
-        ):
-            logger.warning(
-                f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
-                f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
-            )
-
-        return cls.from_dict(config_dict, **kwargs)

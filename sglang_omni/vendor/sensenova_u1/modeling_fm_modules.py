@@ -7,12 +7,6 @@ import torch
 import torch.nn as nn
 
 
-def modulate(x, shift, scale=None):
-    if shift is None:
-        return x * (1 + scale)
-    return x * (1 + scale) + shift
-
-
 @lru_cache(maxsize=8)
 def _timestep_freqs(half: int, max_period: float, device: torch.device):
     # host-built as before, uploaded once per device
@@ -61,96 +55,6 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq.to(self.mlp[0].weight.dtype))
         return t_emb
-
-
-class ResBlock(nn.Module):
-    def __init__(self, channels, mlp_ratio=1.0):
-        super().__init__()
-        self.channels = channels
-        self.intermediate_size = int(channels * mlp_ratio)
-
-        self.in_ln = nn.LayerNorm(self.channels, eps=1e-6)
-        self.mlp = nn.Sequential(
-            nn.Linear(self.channels, self.intermediate_size),
-            nn.SiLU(),
-            nn.Linear(self.intermediate_size, self.channels),
-        )
-
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(channels, 3 * channels, bias=True)
-        )
-
-    def forward(self, x, y):
-        shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(y).chunk(3, dim=-1)
-        h = modulate(self.in_ln(x), shift_mlp, scale_mlp)
-        h = self.mlp(h)
-        return x + gate_mlp * h
-
-
-class FlowMatchingHead(nn.Module):
-    def __init__(self, input_dim, out_dim, dim=1536, layers=12, mlp_ratio=1.0):
-        super(FlowMatchingHead, self).__init__()
-        self.net = SimpleMLPAdaLN(
-            input_dim=input_dim,
-            out_dim=out_dim,
-            dim=dim,
-            layers=layers,
-            mlp_ratio=mlp_ratio,
-        )
-
-    @property
-    def dtype(self):
-        return self.net.input_proj.weight.dtype
-
-    @property
-    def device(self):
-        return self.net.input_proj.weight.device
-
-    def forward(self, x, t):
-        x = self.net(x, t)
-        return x
-
-
-class SimpleMLPAdaLN(nn.Module):
-    """Timestep-conditioned MLP that maps LLM hidden states to flow-matching targets."""
-
-    def __init__(self, input_dim, out_dim, dim=1536, layers=12, mlp_ratio=1.0):
-        super().__init__()
-        self.time_embed = TimestepEmbedder(dim)
-        self.input_proj = nn.Linear(input_dim, dim)
-        self.res_blocks = nn.ModuleList(
-            [ResBlock(dim, mlp_ratio) for _ in range(layers)]
-        )
-        self.final_layer = FinalLayer(dim, out_dim)
-
-    def forward(self, x, t):
-        # x: (N, input_dim), t: (N,)
-        x = self.input_proj(x)
-        y = self.time_embed(t)
-        for block in self.res_blocks:
-            x = block(x, y)
-        return self.final_layer(x, y)
-
-
-class FinalLayer(nn.Module):
-    """
-    The final layer adopted from DiT.
-    """
-
-    def __init__(self, model_channels, out_channels):
-        super().__init__()
-        self.norm_final = nn.LayerNorm(
-            model_channels, elementwise_affine=False, eps=1e-6
-        )
-        self.linear = nn.Linear(model_channels, out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(model_channels, 2 * model_channels, bias=True)
-        )
-
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
-        x = modulate(self.norm_final(x), shift, scale)
-        return self.linear(x)
 
 
 class ConvDecoder(nn.Module):
