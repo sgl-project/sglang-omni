@@ -134,10 +134,7 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        # note (chaijiacheng888): internal-format convolutions lower to aclop, which
-        # cannot run during capture; disabling the option selects aclnn. Restore
-        # the caller's value: the option is process-global, and Qwen3-TTS already
-        # disables it around its whole warmup.
+        # note (chaijiacheng888): capture rejects aclop, which internal formats select.
         previous_internal_format = torch_npu._C._npu_getOption(
             "ALLOW_INTERNAL_FORMAT"
         ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.

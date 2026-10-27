@@ -110,7 +110,9 @@ def test_xpu_backend_records_into_an_xpu_graph_without_error_mode(monkeypatch) -
 @pytest.mark.parametrize("thread_local_errors", [False, True])
 @pytest.mark.parametrize("initial_internal_format", [True, False])
 def test_npu_backend_records_into_an_npu_graph(
-    monkeypatch, thread_local_errors, initial_internal_format
+    monkeypatch: pytest.MonkeyPatch,
+    thread_local_errors: bool,
+    initial_internal_format: bool,
 ) -> None:
     module = recording_module("NPUGraph")
     install_npu_internal_format(monkeypatch, module, initial=initial_internal_format)
@@ -135,7 +137,7 @@ def test_npu_backend_records_into_an_npu_graph(
 
 @pytest.mark.parametrize("initial_internal_format", [True, False])
 def test_npu_backend_restores_internal_formats_after_a_failed_capture(
-    monkeypatch, initial_internal_format
+    monkeypatch: pytest.MonkeyPatch, initial_internal_format: bool
 ) -> None:
     module = recording_module("NPUGraph")
     install_npu_internal_format(monkeypatch, module, initial=initial_internal_format)

@@ -33,11 +33,7 @@ class NPUOmniPlatform(OmniPlatform):
         return False
 
     def enable_mimi_decode_graph(self) -> bool:
-        """Capture PersonaPlex's Mimi streaming decode in NPU graphs.
-
-        Only Mimi opts in; the Higgs TTS codec keeps the eager NPU vocoder
-        policy from #1721.
-        """
+        """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
         return True
 
     def enable_tts_predictor_graph(self) -> bool:
