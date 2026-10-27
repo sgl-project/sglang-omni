@@ -53,6 +53,7 @@ COUNT_TO_TWENTY = COUNT_WORDS.split(", twenty-one")[0]
 COUNT_TO_THIRTY = (
     f"{COUNT_WORDS}, twenty-six, twenty-seven, twenty-eight, twenty-nine, thirty."
 )
+STOP_AT_SEVEN = SpokenEvent(role="stop", start_s=7.0, end_s=7.5)
 GREETING_EVENTS = [
     SpokenEvent(role="greeting", start_s=2.0, end_s=2.42),
     SpokenEvent(role="greeting", start_s=10.0, end_s=10.42),
@@ -108,8 +109,8 @@ def test_counted_to_follows_the_count_in_order(
             StopScore(
                 status="kept",
                 counted_to_thirty=False,
-                reply_end_after_stop_unit_s=0.0,
-                delivered_end_after_stop_s=2.5,
+                reply_end_after_window_start_s=-1.0,
+                delivered_end_after_stop_onset_s=2.5,
             ),
         ),
         (
@@ -117,13 +118,15 @@ def test_counted_to_follows_the_count_in_order(
             StopScore(
                 status="past twenty",
                 counted_to_thirty=False,
-                reply_end_after_stop_unit_s=0.0,
+                reply_end_after_window_start_s=-1.0,
             ),
         ),
         (
             [reply({3: COUNT_TO_TWENTY, 7: ", twenty-one"})],
             StopScore(
-                status="kept", counted_to_thirty=False, reply_end_after_stop_unit_s=0.0
+                status="kept",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=-1.0,
             ),
         ),
         (
@@ -131,7 +134,7 @@ def test_counted_to_follows_the_count_in_order(
             StopScore(
                 status="ended before stop",
                 counted_to_thirty=False,
-                reply_end_after_stop_unit_s=-1.0,
+                reply_end_after_window_start_s=-2.0,
             ),
         ),
         (
@@ -140,7 +143,9 @@ def test_counted_to_follows_the_count_in_order(
                 reply({3: "Okay, one, two,", 7: " three,", 8: " four."}),
             ],
             StopScore(
-                status="kept", counted_to_thirty=False, reply_end_after_stop_unit_s=1.0
+                status="kept",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=0.0,
             ),
         ),
         (
@@ -148,7 +153,7 @@ def test_counted_to_follows_the_count_in_order(
             StopScore(
                 status="started after stop",
                 counted_to_thirty=False,
-                reply_end_after_stop_unit_s=1.0,
+                reply_end_after_window_start_s=0.0,
             ),
         ),
         (
@@ -161,16 +166,58 @@ def test_score_stop_scores_the_counting_reply_against_a_stop_at_seven_seconds(
     replies: list[Reply], expected_score: StopScore
 ) -> None:
     """A reply that only answered the stop counted as a stop, and a backchannel before the count excluded the run."""
-    assert score_stop(7.0, replies) == expected_score
+    assert score_stop(STOP_AT_SEVEN, replies) == expected_score
 
 
-@pytest.mark.parametrize("stop_s", [7.0, 7.25, 7.5, 7.75])
-def test_score_stop_gives_every_offset_in_a_unit_the_same_window(stop_s: float) -> None:
-    """Timing the window from the stop's onset left a stop late in its unit less time to take effect."""
-    assert score_stop(
-        stop_s, [reply({3: "One, two,", 7: " three,", 10: " four."})]
-    ) == StopScore(
-        status="kept", counted_to_thirty=False, reply_end_after_stop_unit_s=3.0
+@pytest.mark.parametrize(
+    ("stop_length_s", "replies", "expected_score"),
+    [
+        (
+            0.54,
+            [reply({3: COUNT_TO_TWENTY, 7: ", twenty-one,", 10: " twenty-two."})],
+            StopScore(
+                status="kept",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=2.0,
+            ),
+        ),
+        (
+            3.44,
+            [reply({3: COUNT_TO_TWENTY, 7: ", twenty-one,", 10: " twenty-two."})],
+            StopScore(
+                status="kept",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=-1.0,
+            ),
+        ),
+        (
+            0.54,
+            [reply({7: "One,", 8: " two."})],
+            StopScore(
+                status="started after stop",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=0.0,
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("stop_offset_s", [0.0, 0.25, 0.5, 0.75])
+def test_score_stop_gives_every_offset_in_a_unit_the_same_score(
+    stop_offset_s: float,
+    stop_length_s: float,
+    replies: list[Reply],
+    expected_score: StopScore,
+) -> None:
+    """Timing the window from the end of the stop's onset unit closed it while a long stop was still being spoken, and the text of the stop's unit, said after the stop at every offset, counted toward the count at the stop and started a reply before it only when the onset was past the unit's start."""
+    stop_start_s = 7.0 + stop_offset_s
+    assert (
+        score_stop(
+            SpokenEvent(
+                role="stop", start_s=stop_start_s, end_s=stop_start_s + stop_length_s
+            ),
+            replies,
+        )
+        == expected_score
     )
 
 
@@ -183,6 +230,7 @@ def test_score_stop_without_a_stop_reads_only_the_count() -> None:
 def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_send(
     tmp_path: Path,
 ) -> None:
+    """The zero-length unit cut at the input end, which the official loop does not log, extended a reply still open there."""
     one_second = base64.b64encode(bytes(2 * OUTPUT_SAMPLE_RATE)).decode()
     half_second = base64.b64encode(bytes(OUTPUT_SAMPLE_RATE)).decode()
 
@@ -192,6 +240,7 @@ def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_s
         response_id: str,
         unit_start_s: float,
         delta_text: str,
+        unit_duration_s: float = 1.0,
     ) -> dict[str, JsonValue]:
         return {
             "direction": "receive",
@@ -208,7 +257,7 @@ def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_s
                 "sglang": {
                     "media_time": {
                         "t_start_ms": unit_start_s * 1000,
-                        "duration_ms": 1000.0,
+                        "duration_ms": unit_duration_s * 1000,
                     }
                 },
             },
@@ -226,6 +275,8 @@ def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_s
         delta(5.1, "audio", "response_a", 4.0, one_second),
         delta(11.0, "transcript", "response_b", 10.0, " Hi."),
         delta(11.0, "audio", "response_b", 10.0, half_second),
+        delta(30.1, "transcript", "response_b", 30.0, " Bye.", unit_duration_s=0.0),
+        delta(30.1, "audio", "response_b", 30.0, half_second, unit_duration_s=0.0),
     ]
     (tmp_path / "continuous.jsonl").write_text(
         "".join(json.dumps(trace_record) + "\n" for trace_record in trace)
@@ -251,7 +302,7 @@ def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_s
         ),
         Reply(
             units=(ReplyUnit(10.0, " Hi."),),
-            audio_end_s=pytest.approx(11.5),
+            audio_end_s=pytest.approx(30.6),
         ),
     ]
 
@@ -259,16 +310,18 @@ def test_sglang_replies_read_units_from_media_time_and_delivery_from_the_first_s
 def test_official_replies_stay_open_through_listen_units_until_an_end_of_turn(
     tmp_path: Path,
 ) -> None:
-    """Splitting at a listen unit ended a count that paused for one unit, and an empty unit opened a reply; the session does neither."""
+    """Splitting at a listen unit ended a count that paused for one unit, an empty unit opened or extended a reply, and a listen unit's end of turn was left out; the session's vocoder sends audio in every end-of-turn unit and nothing in other units without text."""
     units = [
         (2, True, "", False),
         (3, False, " One,", False),
         (4, True, "", False),
-        (5, False, " two.", False),
-        (6, False, "", True),
-        (7, True, "", False),
-        (8, False, " Hi.", True),
-        (9, False, "", True),
+        (5, False, "", False),
+        (6, False, " two.", False),
+        (7, False, "", True),
+        (8, True, "", False),
+        (9, False, " Hi.", False),
+        (10, True, "", True),
+        (11, False, "", True),
     ]
     log_path = tmp_path / "control_r1.jsonl"
     log_path.write_text(
@@ -286,8 +339,8 @@ def test_official_replies_stay_open_through_listen_units_until_an_end_of_turn(
         )
     )
     assert official_replies(log_path) == [
-        reply({3: " One,", 5: " two.", 6: ""}),
-        reply({8: " Hi."}),
+        reply({3: " One,", 6: " two.", 7: ""}),
+        reply({9: " Hi.", 10: ""}),
     ]
 
 
@@ -486,7 +539,8 @@ def test_tables_count_exclusions_and_runs_with_no_greeting_answered() -> None:
                         7: " three,",
                         8: " four,",
                         9: " five,",
-                        10: " six.",
+                        10: " six,",
+                        11: " seven.",
                     }
                 )
             ],
@@ -498,7 +552,7 @@ def test_tables_count_exclusions_and_runs_with_no_greeting_answered() -> None:
         ],
     }
     assert stop_table(trial_inputs, replies_by_trial).splitlines()[2] == (
-        "| short_o000 | 2 | 1 | 2 | 0 | 1.5 / 2.7 / 3.0 |  |"
+        "| short_o000 | 2 | 1 | 2 | 0 | 1.0 / 2.6 / 3.0 |  |"
     )
     assert greeting_table(trial_inputs, replies_by_trial).splitlines()[2] == (
         "| cold_soft_hi | 2 | 1/4 | 1 | 2/2 | 0.2 |"

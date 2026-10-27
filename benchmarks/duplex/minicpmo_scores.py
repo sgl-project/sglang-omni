@@ -25,7 +25,7 @@ UNIT_DURATION_S = PROFILES[PROFILE].native_unit_ms / 1000
 OUTPUT_SAMPLE_RATE = PROFILES[PROFILE].output_sample_rate
 PCM16_BYTES = 2
 COUNT_TARGET = 30
-# note (Jisen Li): #2895 reads a stop as working when the reply ends within about 3 s; the window starts when the stop's unit ends, so every offset gets the same time to react.
+# note (Jisen Li): #2895 reads a stop as working when the reply ends within about 3 s; the window starts at the end of the stop's onset unit plus the stop's length in whole units, so a long stop is heard out and every offset in a unit gets the same window.
 STOP_WITHIN_S = 3.0
 # note (Jisen Li): A count past twenty when the stop arrives ends on its own about as soon as a stop would end it.
 MAX_COUNT_AT_STOP = 20
@@ -75,8 +75,8 @@ class Reply:
 class StopScore:
     status: StopStatus
     counted_to_thirty: bool
-    reply_end_after_stop_unit_s: float | None = None
-    delivered_end_after_stop_s: float | None = None
+    reply_end_after_window_start_s: float | None = None
+    delivered_end_after_stop_onset_s: float | None = None
 
 
 def run_passed(run_dir: Path) -> bool:
@@ -105,9 +105,13 @@ def sglang_replies(run_dir: Path) -> list[Reply]:
         if event.type == AUDIO_DELTA:
             assert event.response_id is not None and event.delta is not None
             assert event.sglang.media_time is not None
-            texts_by_response.setdefault(event.response_id, {}).setdefault(
-                event.sglang.media_time.t_start_ms / 1000, ""
-            )
+            # note (Jisen Li): The zero-length unit cut at the input end holds no input, and the official loop logs no unit for it.
+            if event.sglang.media_time.duration_ms > 0:
+                texts_by_response.setdefault(event.response_id, {}).setdefault(
+                    event.sglang.media_time.t_start_ms / 1000, ""
+                )
+            else:
+                pass
             audio_arrivals_by_response.setdefault(event.response_id, []).append(
                 AudioArrival(
                     trace_record.time_s - first_send_s,
@@ -119,11 +123,16 @@ def sglang_replies(run_dir: Path) -> list[Reply]:
         elif event.type in TRANSCRIPT_DELTAS:
             assert event.response_id is not None and event.delta is not None
             assert event.sglang.media_time is not None
-            texts_by_unit_start_s = texts_by_response.setdefault(event.response_id, {})
-            unit_start_s = event.sglang.media_time.t_start_ms / 1000
-            texts_by_unit_start_s[unit_start_s] = (
-                texts_by_unit_start_s.get(unit_start_s, "") + event.delta
-            )
+            if event.sglang.media_time.duration_ms > 0:
+                texts_by_unit_start_s = texts_by_response.setdefault(
+                    event.response_id, {}
+                )
+                unit_start_s = event.sglang.media_time.t_start_ms / 1000
+                texts_by_unit_start_s[unit_start_s] = (
+                    texts_by_unit_start_s.get(unit_start_s, "") + event.delta
+                )
+            else:
+                pass
         else:
             pass
     replies = []
@@ -147,24 +156,22 @@ def sglang_replies(run_dir: Path) -> list[Reply]:
 def official_replies(log_path: Path) -> list[Reply]:
     """Replies of one official-loop log, split as the session splits responses.
 
-    A speaking unit with text opens a reply, any speaking unit joins the open one, a listen unit leaves it open, and an end of turn closes it.
+    A speaking unit with text opens a reply or joins the open one, an end of turn joins and closes the open one, and any other unit leaves it open.
     """
     replies: list[list[ReplyUnit]] = []
     is_reply_open = False
     for line in log_path.read_text().splitlines():
         unit = OfficialUnit.model_validate_json(line)
         unit_start_s = unit.unit_index * UNIT_DURATION_S
-        if unit.is_listen:
-            pass
-        elif is_reply_open:
+        is_speaking_text = not unit.is_listen and bool(unit.text)
+        # note (Jisen Li): The session's vocoder flushes a turn's last audio in its end-of-turn unit, listen or not, and sends nothing for any other unit without text.
+        if is_reply_open and (is_speaking_text or unit.end_of_turn):
             replies[-1].append(ReplyUnit(unit_start_s, unit.text))
-        elif unit.text:
+        elif is_speaking_text:
             replies.append([ReplyUnit(unit_start_s, unit.text)])
         else:
             pass
-        is_reply_open = (
-            is_reply_open or (not unit.is_listen and bool(unit.text))
-        ) and not unit.end_of_turn
+        is_reply_open = (is_reply_open or is_speaking_text) and not unit.end_of_turn
     return [Reply(units=tuple(units)) for units in replies]
 
 
@@ -204,8 +211,8 @@ def counted_to(transcript: str) -> int:
     return count
 
 
-def score_stop(stop_s: float | None, replies: list[Reply]) -> StopScore:
-    """Score the counting reply, the first that counts at least to one, against a stop whose onset is at stop_s, or without one."""
+def score_stop(stop: SpokenEvent | None, replies: list[Reply]) -> StopScore:
+    """Score the counting reply, the first that counts at least to one, against a spoken stop, or without one."""
     counting_reply = next(
         (reply for reply in replies if counted_to(reply_transcript(reply)) > 0),
         None,
@@ -215,19 +222,28 @@ def score_stop(stop_s: float | None, replies: list[Reply]) -> StopScore:
     else:
         pass
     counted_to_thirty = counted_to(reply_transcript(counting_reply)) >= COUNT_TARGET
-    if stop_s is None:
+    if stop is None:
         return StopScore(status="kept", counted_to_thirty=counted_to_thirty)
     else:
         pass
     reply_start_s = counting_reply.units[0].start_s
     reply_end_s = counting_reply.units[-1].start_s + UNIT_DURATION_S
-    stop_unit_end_s = (math.floor(stop_s / UNIT_DURATION_S) + 1) * UNIT_DURATION_S
+    window_start_s = (
+        math.floor(stop.start_s / UNIT_DURATION_S)
+        + 1
+        + math.ceil((stop.end_s - stop.start_s) / UNIT_DURATION_S)
+    ) * UNIT_DURATION_S
+    # note (Jisen Li): A unit's text comes after its whole input, so only units whose input ended by the stop's onset were said before it.
     count_at_stop = counted_to(
-        "".join(unit.text for unit in counting_reply.units if unit.start_s < stop_s)
+        "".join(
+            unit.text
+            for unit in counting_reply.units
+            if unit.start_s + UNIT_DURATION_S <= stop.start_s
+        )
     )
-    if reply_start_s >= stop_s:
+    if reply_start_s + UNIT_DURATION_S > stop.start_s:
         status = "started after stop"
-    elif reply_end_s <= stop_s:
+    elif reply_end_s <= stop.start_s:
         status = "ended before stop"
     elif count_at_stop > MAX_COUNT_AT_STOP:
         status = "past twenty"
@@ -236,9 +252,9 @@ def score_stop(stop_s: float | None, replies: list[Reply]) -> StopScore:
     return StopScore(
         status=status,
         counted_to_thirty=counted_to_thirty,
-        reply_end_after_stop_unit_s=reply_end_s - stop_unit_end_s,
-        delivered_end_after_stop_s=(
-            counting_reply.audio_end_s - stop_s
+        reply_end_after_window_start_s=reply_end_s - window_start_s,
+        delivered_end_after_stop_onset_s=(
+            counting_reply.audio_end_s - stop.start_s
             if counting_reply.audio_end_s is not None
             else None
         ),
@@ -284,44 +300,43 @@ def stop_table(
     trial_inputs: list[TrialInput], replies_by_trial: dict[str, list[list[Reply]]]
 ) -> str:
     rows = [
-        f"| Trial | Kept | Excluded | Stopped within {STOP_WITHIN_S:g} s of the stop's unit | Counted to {COUNT_TARGET} | "
-        "Reply end after the stop's unit p50 / p90 / max (s) | Delivered audio end after the stop p50 / p90 / max (s) |",
+        f"| Trial | Kept | Excluded | Stopped within {STOP_WITHIN_S:g} s of the window start | Counted to {COUNT_TARGET} | "
+        "Reply end after the window start p50 / p90 / max (s) | Delivered audio end after the stop's onset p50 / p90 / max (s) |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for trial_input in trial_inputs:
         roles = [event.role for event in trial_input.events]
         runs = replies_by_trial.get(trial_input.name, [])
         if "prompt" in roles and runs:
-            stop_s = next(
-                (event.start_s for event in trial_input.events if event.role == "stop"),
-                None,
+            stop = next(
+                (event for event in trial_input.events if event.role == "stop"), None
             )
-            stop_scores = [score_stop(stop_s, replies) for replies in runs]
+            stop_scores = [score_stop(stop, replies) for replies in runs]
             kept_scores = [score for score in stop_scores if score.status == "kept"]
-            reply_ends_after_stop_unit_s = [
-                score.reply_end_after_stop_unit_s
+            reply_ends_after_window_start_s = [
+                score.reply_end_after_window_start_s
                 for score in kept_scores
-                if score.reply_end_after_stop_unit_s is not None
+                if score.reply_end_after_window_start_s is not None
             ]
-            delivered_ends_after_stop_s = [
-                score.delivered_end_after_stop_s
+            delivered_ends_after_stop_onset_s = [
+                score.delivered_end_after_stop_onset_s
                 for score in kept_scores
-                if score.delivered_end_after_stop_s is not None
+                if score.delivered_end_after_stop_onset_s is not None
             ]
             stopped = (
                 str(
                     sum(
                         seconds <= STOP_WITHIN_S
-                        for seconds in reply_ends_after_stop_unit_s
+                        for seconds in reply_ends_after_window_start_s
                     )
                 )
-                if stop_s is not None
+                if stop is not None
                 else ""
             )
             rows.append(
                 f"| {trial_input.name} | {len(kept_scores)} | {len(stop_scores) - len(kept_scores)} | {stopped} | "
                 f"{sum(score.counted_to_thirty for score in kept_scores)} | "
-                f"{format_quantiles(reply_ends_after_stop_unit_s)} | {format_quantiles(delivered_ends_after_stop_s)} |"
+                f"{format_quantiles(reply_ends_after_window_start_s)} | {format_quantiles(delivered_ends_after_stop_onset_s)} |"
             )
         else:
             pass
