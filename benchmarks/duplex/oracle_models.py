@@ -66,6 +66,9 @@ class WireEvent(BaseModel):
     unit_id: Identifier | None = None
     content_index: int | None = None
     output_index: int | None = None
+    audio_end_ms: Nonnegative | None = None
+    text_end: Annotated[int, Field(ge=0)] | None = None
+    audio_ms: Nonnegative | None = None
     audio: str | None = None
     delta: str | None = None
     tail_policy: str | None = None
@@ -107,3 +110,5 @@ class ResponseState:
     audio_done: bool = False
     audio_seen: bool = False
     item_id: str | None = None
+    audio_bytes: int = 0
+    is_truncated: bool = False
