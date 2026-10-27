@@ -2650,7 +2650,9 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
             self.model = SimpleNamespace(
                 layers=[
                     SimpleNamespace(
-                        self_attn=SimpleNamespace(num_kv_heads=1, head_dim=2)
+                        self_attn=SimpleNamespace(
+                            num_heads=1, num_kv_heads=1, head_dim=2
+                        )
                     )
                 ]
             )

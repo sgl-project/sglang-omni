@@ -600,6 +600,20 @@ def supports_exact_add_rmsnorm(
     )
 
 
+def supports_decode_attention(
+    num_q_heads: int, num_kv_heads: int, dtype: torch.dtype, device: torch.device
+) -> bool:
+    """decode_attention runs with Triton on CUDA over bf16 caches, where the opening pair's
+    two tokens by a kv head's q heads fit its attention tile."""
+    return (
+        HAS_TRITON
+        and device.type == "cuda"
+        and current_platform.is_cuda()
+        and dtype == torch.bfloat16
+        and 2 * (num_q_heads // num_kv_heads) <= ATTENTION_ROWS
+    )
+
+
 def add_rmsnorm_rounded(
     x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, eps: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -816,13 +830,13 @@ def decode_attention(
     v_cache: torch.Tensor,
     end: int,
     attention_output: torch.Tensor,
-    shape: PredictorLayerShape,
 ) -> None:
     """attention_output = softmax(q k^T / sqrt(head dim)) v over each row's slots up to
     its position, causal within a row group. q and attention_output are (rows, q heads *
     head dim); the caches are (rows // tokens_per_row, slots, kv heads, head dim)."""
+    num_kv_heads, head_dim = k_cache.shape[2:]
     use_gdc = is_arch_support_pdl()
-    decode_attention_kernel[(q.shape[0] // tokens_per_row, shape.num_kv_heads)](
+    decode_attention_kernel[(q.shape[0] // tokens_per_row, num_kv_heads)](
         q,
         k_cache,
         v_cache,
@@ -831,11 +845,11 @@ def decode_attention(
         k_cache.stride(2),
         attention_output,
         end,
-        shape.head_dim**-0.5,
+        head_dim**-0.5,
         T=tokens_per_row,
-        HEAD_DIM=shape.head_dim,
-        NUM_Q_HEADS=shape.num_q_heads,
-        NUM_KV_HEADS=shape.num_kv_heads,
+        HEAD_DIM=head_dim,
+        NUM_Q_HEADS=q.shape[1] // head_dim,
+        NUM_KV_HEADS=num_kv_heads,
         BLOCK_Q=ATTENTION_ROWS,
         BLOCK_S=triton.next_power_of_2(k_cache.shape[1]),
         USE_GDC=use_gdc,
@@ -1073,7 +1087,6 @@ class FusedPredictorLayers:
                 v_cache=layer_v_cache,
                 end=end,
                 attention_output=attention_output,
-                shape=shape,
             )
             o_proj_add(
                 attention_output=attention_output.view(

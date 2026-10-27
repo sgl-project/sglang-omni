@@ -42,7 +42,9 @@ from sglang_omni.sampling.seed import (
 from sglang_omni.utils.predictor_layers import (
     add_rmsnorm_rounded,
     codebook_step,
+    decode_attention,
     resolve_fused_predictor_layers,
+    supports_decode_attention,
     supports_exact_add_rmsnorm,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -909,6 +911,13 @@ class Qwen3OmniTalker(nn.Module):
         # stay two launches.
         self.predictor_exact_add_norm = supports_exact_add_rmsnorm(
             hidden_size, self.model.codec_embedding.weight.dtype, device
+        )
+        # note (ratish): the plain path attends with the fused path's kernel where it runs, which gives every process one result where cuDNN's SDPA varies by process.
+        self.predictor_triton_attention = supports_decode_attention(
+            predictor_attention.num_heads,
+            predictor_attention.num_kv_heads,
+            self.predictor_k_cache.dtype,
+            device,
         )
         self.sampled_token_ids = torch.zeros(
             max_batch_size,
@@ -1884,23 +1893,40 @@ class Qwen3OmniTalker(nn.Module):
         else:
             pass
 
-        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(
-            1, 2
-        )
-        cached_k = self.predictor_k_cache[layer_idx, :batch_size, :end].transpose(1, 2)
-        cached_v = self.predictor_v_cache[layer_idx, :batch_size, :end].transpose(1, 2)
+        if self.predictor_triton_attention:
+            attn_output = q.new_empty(
+                batch_size * seq_len, attn.num_heads * attn.head_dim
+            )
+            decode_attention(
+                q=q.contiguous(),
+                tokens_per_row=seq_len,
+                k_cache=self.predictor_k_cache[layer_idx, :batch_size],
+                v_cache=self.predictor_v_cache[layer_idx, :batch_size],
+                end=end,
+                attention_output=attn_output,
+            )
+        else:
+            q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(
+                1, 2
+            )
+            cached_k = self.predictor_k_cache[layer_idx, :batch_size, :end].transpose(
+                1, 2
+            )
+            cached_v = self.predictor_v_cache[layer_idx, :batch_size, :end].transpose(
+                1, 2
+            )
 
-        # note (EdwardZhang1108): enable_gqa broadcasts KV heads in-kernel (#1145)
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q,
-            cached_k,
-            cached_v,
-            is_causal=seq_len > 1,
-            enable_gqa=attn.num_heads != attn.num_kv_heads,
-        )
-        attn_output = attn_output.transpose(1, 2).reshape(
-            batch_size * seq_len, attn.num_heads * attn.head_dim
-        )
+            # note (EdwardZhang1108): enable_gqa broadcasts KV heads in-kernel (#1145)
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                cached_k,
+                cached_v,
+                is_causal=seq_len > 1,
+                enable_gqa=attn.num_heads != attn.num_kv_heads,
+            )
+            attn_output = attn_output.transpose(1, 2).reshape(
+                batch_size * seq_len, attn.num_heads * attn.head_dim
+            )
         attn_output, _ = attn.o_proj(attn_output)
         return attn_output.reshape(batch_size, seq_len, hidden_size)
 
