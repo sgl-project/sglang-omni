@@ -210,6 +210,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_duplex_v10.py` | Full-Duplex-Bench v1.0 pause, turn-taking, interruption and backchannel takeover/latency | Nemotron VoiceChat | `/v1/realtime` (native) |
 | `eval/benchmark_minicpmo_baselines.py` | Spoken stop and greeting trials with unit-clock scores and serving timing | MiniCPM-o | `/v1/realtime` (native) |
 | `eval/benchmark_minicpmo_official_loop.py` | The same trials through the checkpoint's own duplex loop, text only | MiniCPM-o | none (in-process) |
+| `eval/benchmark_interruption_position.py` | A count cut by a spoken question about where it stopped: kept history and the answer against what played | Cascade profiles, Qwen3-Omni session | `/v1/realtime` (turn-based) |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -696,6 +697,43 @@ python -m benchmarks.eval.benchmark_minicpmo_baselines report \
 - A stop trial scores the first reply that counts at least to one; a reply stopped right after a preamble may have counted only "One". It counts as stopped when that reply ends within 3 s of the end of the unit that holds the stop's onset, so every offset gets the same time to react. Excluded are runs with no counting reply, a reply that started after the stop or ended before it, and a count already past twenty at the stop. The delivered audio end is when the last chunk reached the client plus its duration, without playback queueing.
 - A spoken event is answered when a reply's first unit ends after the event starts and begins within 4 s of its end. Each reply answers at most one event.
 - The serving table pools unit lag and first-audio latency over the sessions that passed the protocol check, as `benchmarks/duplex/serving.py` scores a session, and how far each packet send strayed from the 80 ms schedule. `report` lists the runs it skipped.
+
+## Interruption-position awareness
+
+`benchmark_interruption_position.py` checks what a turn-based session keeps of a reply it was interrupted in, and whether the model then knows where it stopped. It runs against a cascade profile or the Qwen3-Omni session graph.
+
+Each trial asks the count question at 1 s, then barges in at 9 s plus 0, 250, 500 or 750 ms with `position_question.wav` ("Wait, what was the last number you said?"), so cuts land at different points of a word. The clips are the ones in `duplex/assets/minicpmo_baseline_clips/`, made the same way.
+
+Every trial runs with two clients. Both play replies in simulation as the cascade playground does: playback starts once 300 ms of a reply is queued, runs at 1.0x and buffers again after running dry. The `truncating` client sends `conversation.item.truncate` for a cancelled reply with what its player had played. The `silent` client sends nothing, so the server keeps what it decided on its own.
+
+```bash
+python -m benchmarks.eval.benchmark_interruption_position inputs \
+    --output results/interruption-position/inputs
+python -m benchmarks.eval.benchmark_interruption_position record \
+    --inputs results/interruption-position/inputs \
+    --url ws://127.0.0.1:8000/v1/realtime \
+    --turn-detection '{"type": "server_vad"}' \
+    --server-revision "$SERVER_REVISION" \
+    --model "$MODEL" --model-revision "$MODEL_REVISION" \
+    --output results/interruption-position/runs --rounds 10
+python -m benchmarks.eval.benchmark_interruption_position transcribe \
+    --runs results/interruption-position/runs \
+    --output results/interruption-position/words --model large-v3 --device cuda
+python -m benchmarks.eval.benchmark_interruption_position report \
+    --inputs results/interruption-position/inputs \
+    --runs results/interruption-position/runs \
+    --words results/interruption-position/words
+```
+
+`record` keeps finished runs and records failed or cut-off ones again, as the MiniCPM-o baselines do. `transcribe` times the words of each counting reply with Whisper, so what was heard comes from the audio rather than from the server's own alignment. `report` scores each run whose counting reply, the first reply that counts at least to one, was cancelled:
+
+- Heard: the count up to the last word whose speech ended by the time the player stopped. Whisper ends each word where the next one starts, so a word's speech is taken as its 20 ms frames above -40 dBFS, the clips' own trim rule. A cut inside a word's speech leaves that number partly heard.
+- Kept: the count in the server's last `sglang.response.heard` prefix. The cascade reports it only after a client truncate, and the Qwen3-Omni session reports neither it nor progress, so those columns stay empty for the `silent` client and for Qwen3-Omni, and only the answer shows what was kept.
+- Progress-timed: the count up to the last `sglang.response.progress` point within what played, where the playground's caption stops. Progress is behind the cut when no point had reached the played position.
+- Answer: the first number in the next completed reply. One and thirty count only when no other number is said, as in "the last one" or "counting to thirty". `partly heard` is the number cut inside a word.
+- Unheard numbers delivered: how many more numbers the delivered audio held than had played. A server that kept everything it sent would keep these too.
+
+The played position is the simulated player's. Device output latency and acoustic playback are not measured.
 
 ## SocialOmni
 
