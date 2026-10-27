@@ -26,6 +26,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
+from sglang_omni.models.streaming_cascade.tools import ToolsConfig, ToolSettings
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -46,6 +48,8 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
+    TOOL_CALL,
+    TOOL_RESPONSE,
     TRUNCATE,
     AudioPort,
     SessionPorts,
@@ -231,6 +235,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_tools()
         return self
 
     def check_names(self) -> None:
@@ -399,6 +404,65 @@ class ComponentGraphConfig(BaseModel):
             if AUDIO_FORMATS & set(self.publish.get(other.name, ()))
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
+
+    def tool_settings(self, caller: str) -> dict[str, ToolSettings]:
+        """The settings of each tool the tools nodes run for the calls of node `caller`."""
+        return {
+            name: tool
+            for node in self.nodes
+            if isinstance(node.component, ToolsConfig)
+            and TOOL_CALL in node.edges().get(caller, ())
+            for name, tool in node.component.tools.items()
+        }
+
+    def check_tools(self) -> None:
+        """A generator that offers tools needs a tools node implementing them and the node that opens turns reading its calls and the tools node's responses, or a call would end nothing."""
+        for caller in self.nodes:
+            if not isinstance(caller.component, OpenAIChatGeneratorConfig):
+                continue
+            elif not caller.component.tools:
+                continue
+            else:
+                pass
+            executors = [
+                node
+                for node in self.nodes
+                if isinstance(node.component, ToolsConfig)
+                and TOOL_CALL in node.edges().get(caller.name, ())
+            ]
+            openers = [
+                node
+                for node in self.nodes
+                if node.opens_turns and TOOL_CALL in node.edges().get(caller.name, ())
+            ]
+            unimplemented = sorted(
+                {tool.name for tool in caller.component.tools}
+                - set().union(*(executor.component.tools for executor in executors))
+            )
+            unread = sorted(
+                f"{executor.name}:{TOOL_RESPONSE}"
+                for opener in openers
+                for executor in executors
+                if TOOL_RESPONSE not in opener.edges().get(executor.name, ())
+            )
+            if not executors:
+                raise ValueError(
+                    f"node {caller.name!r} calls tools, but no tools node reads {caller.name}:{TOOL_CALL}"
+                )
+            elif unimplemented:
+                raise ValueError(
+                    f"no tools node reading {caller.name!r} implements {unimplemented}"
+                )
+            elif not openers:
+                raise ValueError(
+                    f"node {caller.name!r} calls tools, but no node that opens turns reads {caller.name}:{TOOL_CALL}"
+                )
+            elif unread:
+                raise ValueError(
+                    f"the nodes that open turns must read {unread} to continue the replies of {caller.name!r}"
+                )
+            else:
+                pass
 
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)
