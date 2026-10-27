@@ -254,3 +254,40 @@ def test_depformer_cuda_graph_buckets_accept_dotted_cli(batch_sizes: list[int]) 
         ]
         == batch_sizes
     )
+
+
+def test_session_builder_uses_the_serving_thread_warmup_scheduler(monkeypatch):
+    scheduler = SimpleNamespace()
+    arguments = {}
+
+    def create_scheduler(**kwargs):
+        arguments.update(kwargs)
+        return scheduler
+
+    monkeypatch.setattr(
+        "sglang_omni.models.personaplex.engine_builder.PersonaPlexSessionScheduler",
+        create_scheduler,
+    )
+    builder = PersonaPlexSessionEngineBuilder(
+        tokenizer=SimpleNamespace(),
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[],
+        depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
+    )
+    runner = SimpleNamespace()
+    assert (
+        builder.make_scheduler(
+            model_worker=None,
+            tree_cache=None,
+            req_to_token_pool=None,
+            token_to_kv_pool_allocator=None,
+            server_args=None,
+            model_config=None,
+            model_runner=runner,
+            request_builder=None,
+            result_adapter=None,
+        )
+        is scheduler
+    )
+    assert arguments["model_runner"] is runner
+    assert isinstance(arguments["session_adapter"], PersonaPlexSessionAdapter)

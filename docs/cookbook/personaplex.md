@@ -62,6 +62,8 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-personaplex).
 
+Before reporting ready, the session LM runs a synthetic prompt prefill and a one-row extend through its runner, including the Depformer and default text/audio sampling both with and without a seed, at every batch size up to the configured LM capacity (`max_sessions + 1` by default). Startup logs report the warmup duration. Temporary requests and KV are released after device work completes, random-number generator state is restored, and a warmup failure fails startup.
+
 ## Request parameters
 
 | Parameter | Effect |

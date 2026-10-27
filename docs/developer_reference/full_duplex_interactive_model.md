@@ -144,7 +144,7 @@ python -m sglang_omni.cli serve \
 | `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
 | `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
 
-Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
+Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. Before the server reports ready, the session LM warms a synthetic prompt, one-row extend, Depformer and default sampling with and without a seed on its serving thread. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`, `"native_unit_ms":80` and the packaged voices under `voices`:
 
