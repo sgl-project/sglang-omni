@@ -533,11 +533,22 @@ def test_backend_open_failure_is_fatal_and_keeps_its_message(
     assert failure_records[0].exc_info is not None
 
 
+@pytest.mark.parametrize(
+    ("open_error", "is_holding_open", "expected_message"),
+    [
+        (None, True, "session open timed out"),
+        (TimeoutError("backend open timed out"), False, "backend open timed out"),
+        (TimeoutError(), False, "session open timed out"),
+    ],
+)
 def test_open_timeout_is_fatal_and_has_a_message(
     caplog: pytest.LogCaptureFixture,
+    open_error: TimeoutError | None,
+    is_holding_open: bool,
+    expected_message: str,
 ) -> None:
     """An opening timeout must not become a retryable rejection with no message."""
-    adapter = ScriptedAdapter(is_holding_open=True)
+    adapter = ScriptedAdapter(open_error=open_error, is_holding_open=is_holding_open)
     with build_test_client(
         adapter, limits=RuntimeLimits(cleanup_timeout_s=OPEN_TIMEOUT_SECONDS)
     ).websocket_connect("/v1/realtime") as websocket:
@@ -551,7 +562,7 @@ def test_open_timeout_is_fatal_and_has_a_message(
 
     errors = events_of_type(events, "error")
     assert len(errors) == 1
-    assert errors[0]["error"]["message"]
+    assert errors[0]["error"]["message"] == expected_message
     assert errors[0]["error"]["event_id"] == "timed_out_update"
     assert events[-1]["reason"] == "session_open_timeout"
     assert adapter.is_closed is True

@@ -271,7 +271,7 @@ class SessionRuntime:
         candidate: SessionConfiguration,
         event_id: str,
     ) -> bool:
-        """Open the adapter; return False if failed admission expires after cleanup, raise SessionOpenTimeoutError if the open outlasts cleanup_timeout_s."""
+        """Open the adapter and clean up if admission fails."""
         try:
             await asyncio.wait_for(
                 adapter.open(self.session_id, candidate, self.emit),
@@ -290,7 +290,8 @@ class SessionRuntime:
                 else:
                     raise ProtocolError("admission_rejected", str(exc)) from exc
             elif isinstance(exc, TimeoutError):
-                raise SessionOpenTimeoutError(self.limits.cleanup_timeout_s) from exc
+                message = str(exc) or "session open timed out"
+                raise SessionOpenTimeoutError(message) from exc
             else:
                 raise
 

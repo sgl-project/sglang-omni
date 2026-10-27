@@ -65,9 +65,6 @@ class OutputBudgetError(RuntimeError):
 class SessionOpenTimeoutError(TimeoutError):
     """The backend did not finish opening a realtime session in time."""
 
-    def __init__(self, open_timeout_s: float) -> None:
-        super().__init__(f"session open exceeded {open_timeout_s:g} s")
-
 
 def failure_code(exc: Exception) -> str:
     """Client-facing error code of a server-side session failure."""
