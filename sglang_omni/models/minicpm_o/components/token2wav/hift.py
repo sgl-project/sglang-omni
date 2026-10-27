@@ -27,6 +27,9 @@ from scipy.signal import get_window
 from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn.utils.parametrizations import weight_norm
 
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     ResBlock,
     SourceModuleHnNSF2,
@@ -208,6 +211,7 @@ class HiFTGenerator(nn.Module):
             ConvRNNF0Predictor() if f0_predictor is None else f0_predictor
         )
         self.noise_generator: torch.Generator | None = None
+        self.body_graph_runner: HiftBodyCudaGraphRunner | None = None
 
     def stft(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         with default_stream_for_cufft(x.device) as caller_stream:
@@ -247,7 +251,10 @@ class HiFTGenerator(nn.Module):
     def decode(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
-        magnitude, phase = self.decode_body(x, s_stft)
+        if self.body_graph_runner is None:
+            magnitude, phase = self.decode_body(x, s_stft)
+        else:
+            magnitude, phase = self.body_graph_runner.run(x, s_stft)
         x = self.istft(magnitude, phase)
         x = torch.clamp(x, -self.audio_limit, self.audio_limit)
         return x

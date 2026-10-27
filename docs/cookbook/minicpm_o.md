@@ -84,3 +84,9 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+### HiFT CUDA graphs
+
+Set the Code2Wav factory's `hift_cuda_graph_capture_shapes` to explicit `[batch_size, mel_frames]` pairs, for example `[[1, 64], [2, 64], [1, 128]]`, to capture HiFT's decode body at startup on CUDA. The default empty list disables capture. Shapes must match exactly: HiFT's noncausal convolutions make padding the time dimension change the waveform. Unlisted shapes use the original decode body; non-CUDA devices skip capture.
+
+This captures the convolution, upsampling and activation body, including its compiled form when `enable_hift_torch_compile` is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.
