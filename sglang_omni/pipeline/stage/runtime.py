@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, Protocol
 
 import torch
 
@@ -88,6 +88,11 @@ def error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+class ProcessFailureCallback(Protocol):
+    def __call__(self) -> None:
+        """Notify the owner before process cleanup can block."""
+
+
 class Stage:
     """IO shell for one pipeline stage.
 
@@ -138,7 +143,11 @@ class Stage:
         replica_topology: dict[str, list[str]] | None = None,
         allow_child_processes: bool = False,
         http_socket_path: str | None = None,
+        process_failure_callback: ProcessFailureCallback | None = None,
     ) -> None:
+        self.process_failure_callback: ProcessFailureCallback | None = (
+            process_failure_callback
+        )
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -297,6 +306,10 @@ class Stage:
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
+                    if self.process_failure_callback is not None:
+                        self.process_failure_callback()
+                    else:
+                        pass
                     self.running = False
                     loop = self.loop
                     if loop is not None and not loop.is_closed():
@@ -481,6 +494,10 @@ class Stage:
             pass
         except Exception:
             if self.scheduler_crash_error is None:
+                if self.process_failure_callback is not None:
+                    self.process_failure_callback()
+                else:
+                    pass
                 raise
             else:
                 pass
@@ -2619,6 +2636,10 @@ class Stage:
         )
         if self.background_task_error is None:
             self.background_task_error = exc
+        else:
+            pass
+        if self.process_failure_callback is not None:
+            self.process_failure_callback()
         else:
             pass
         self.running = False

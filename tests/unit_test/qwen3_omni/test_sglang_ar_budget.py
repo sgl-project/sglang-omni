@@ -507,6 +507,57 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     assert "encoder_mem_reserve=0.0" in caplog.text
 
 
+@pytest.mark.parametrize("speculative_algorithm", ["DFLASH", "EAGLE3"])
+def test_a_speech_thinker_refuses_a_speculative_draft(
+    monkeypatch, speculative_algorithm: str
+) -> None:
+    """The talker's prompt capture shares the layers a draft reads, so speech output
+    is refused before the draft loads."""
+    patch_thinker_startup(monkeypatch)
+
+    with pytest.raises(ValueError, match="does not support speech output"):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy",
+            speech_enabled=True,
+            server_args_overrides={
+                "speculative_algorithm": speculative_algorithm,
+                "speculative_draft_model_path": "draft",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("speculative_overrides", "message"),
+    [
+        ({"speculative_draft_model_path": "draft"}, "needs a speculative_algorithm"),
+        ({"speculative_algorithm": "DFLASH"}, "needs speculative_draft_model_path"),
+        ({"speculative_algorithm": "EAGLE3"}, "needs speculative_draft_model_path"),
+        (
+            {"speculative_algorithm": "NGRAM", "speculative_draft_model_path": "draft"},
+            "supports DFLASH and EAGLE3",
+        ),
+        (
+            {
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+            },
+            "supports DFLASH and EAGLE3",
+        ),
+    ],
+)
+def test_the_thinker_checks_the_speculative_algorithm_and_draft_together(
+    monkeypatch, speculative_overrides: dict[str, str], message: str
+) -> None:
+    """Speculation is on whenever an algorithm is set, so an algorithm without its
+    draft, or one the thinker does not serve, cannot skip the speculative guards."""
+    patch_thinker_startup(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy", server_args_overrides=speculative_overrides
+        )
+
+
 @pytest.mark.parametrize("continuation_aware_admission", [True, False])
 def test_session_thinker_hands_continuation_aware_admission_to_its_scheduler(
     monkeypatch, continuation_aware_admission: bool

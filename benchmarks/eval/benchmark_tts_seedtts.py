@@ -158,6 +158,16 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
     forward_sglang_engine=False,
 )
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
+    **{
+        checkpoint: _ModelBenchmarkProfile(max_new_tokens=None)
+        for checkpoint in (
+            "qwen3-tts-12hz-0.6b-base",
+            "qwen3-tts-12hz-0.6b-customvoice",
+            "qwen3-tts-12hz-1.7b-base",
+            "qwen3-tts-12hz-1.7b-customvoice",
+            "qwen3-tts-12hz-1.7b-voicedesign",
+        )
+    },
     "auk": _AUK_BENCHMARK_PROFILE,
     "auk-flash": _AUK_BENCHMARK_PROFILE,
     # note (Yucheng Hu): Fun-CosyVoice3 caps generation at min(2048, 20x target

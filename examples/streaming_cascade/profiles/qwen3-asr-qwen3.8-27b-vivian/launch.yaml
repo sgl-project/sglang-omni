@@ -72,3 +72,4 @@ session_publish:
   dialog: [session]
   llm: [text_delta]
   tts: [pcm_f32le, session]
+  aligner: [session]

@@ -963,6 +963,15 @@ def test_profile_graph_turns_formats_and_ports():
     assert settings.node("dialog").required == dialog_formats
 
 
+def test_a_dialog_without_the_input_interrupt_edge_grants_no_client_stop():
+    """A client response.cancel travels the control edges from the input, and a graph without one fails the control, so its ports must not offer it."""
+    dialog = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]["dialog"]
+    input_interrupt = {"kind": "control", "source": "input", "event": "interrupt"}
+    inputs = [entry for entry in dialog["inputs"] if entry != input_interrupt]
+    deaf = declared(nodes={"dialog": {**dialog, "inputs": inputs}})
+    assert INTERRUPT not in deaf.component_graph().ports(200).controls
+
+
 def test_segmenter_gates_on_speech_controls():
     segmenter = UtteranceSegmenter()
     first = TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM16)
@@ -1515,6 +1524,12 @@ def test_every_profile_takes_reply_progress_from_a_forced_aligner(profile):
         for edge in settings.node("dialog").controls
         if edge.event == REPLY_PROGRESS
     ] == ["aligner"]
+
+
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_every_profile_publishes_the_aligners_reply_progress(profile):
+    # note (luojiaxuan): the client's sglang.response.progress, which moves the caption with playback, comes only from a published node.
+    assert SESSION_CONTROL in profile_config(profile).session_publish["aligner"]
 
 
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():

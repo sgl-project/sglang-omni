@@ -1087,9 +1087,19 @@ class Qwen3TTSRefCodeBatcher:
             pass
         frames = -(-samples.numel() // self.hop)
         # note(ratish): whole frames, so every conv layer's own tail padding is
-        # zero and the eager encode has the shape the graphs capture.
+        # zero and the eager encode has the shape the graphs capture; past the ladder a new
+        # length costs cuDNN a plan per conv, so lengths round up to the largest bucket.
+        if (
+            current_platform.is_cuda()
+            and self.graph_runner is not None
+            and frames > self.graph_runner.bucket_frames[-1]
+        ):
+            largest_frames = self.graph_runner.bucket_frames[-1]
+            padded_frames = -(-frames // largest_frames) * largest_frames
+        else:
+            padded_frames = frames
         values = torch.zeros(
-            (1, 1, frames * self.hop),
+            (1, 1, padded_frames * self.hop),
             device=self.encoder_device,
             dtype=self.encoder_dtype,
         )

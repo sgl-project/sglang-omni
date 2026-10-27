@@ -5,15 +5,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+import anyio
 import pytest
+from starlette.types import Message
+from starlette.websockets import WebSocket
 
 import sglang_omni.serve.realtime.runtime as runtime_module
+from sglang_omni.client.client import Client
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve.realtime.control import (
@@ -22,6 +27,10 @@ from sglang_omni.serve.realtime.control import (
     Failure,
     UnitCompleted,
     Updated,
+)
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    RealtimeSessionManager,
 )
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
@@ -37,6 +46,8 @@ from sglang_omni.serve.realtime.output_buffer import (
     OutputBuffer,
     envelope_size_bytes,
 )
+from sglang_omni.serve.realtime.projection import ServerEvent
+from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import (
@@ -48,17 +59,31 @@ from sglang_omni.serve.realtime.types import (
     RuntimeLimits,
     Unit,
 )
+from tests.unit_test.fixtures.realtime_fakes import FakeClock, HealthCoordinator
 
 MODEL_NAME = "duplex-test"
 SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
-UPDATE_DEADLINE_S = 600.0
 CANCELLED_RESPONSE_ID = "resp_1"
 CANCELLED_ITEM_ID = "item_1"
+ACTIVITY_TIMEOUT_SECONDS = 0.5
+DEADLINE_EPSILON_SECONDS = ACTIVITY_TIMEOUT_SECONDS / 10
 TEST_WAIT_TIMEOUT_SECONDS = 5.0
-ADMISSION_CLEANUP_TIMEOUT_SECONDS = 0.5
+ACTIVITY_LIMITS = RuntimeLimits(
+    session_update_timeout_s=ACTIVITY_TIMEOUT_SECONDS,
+    idle_timeout_s=ACTIVITY_TIMEOUT_SECONDS,
+)
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """Drive the realtime runtime clock and asyncio.sleep from one fake clock."""
+    clock = FakeClock()
+    monkeypatch.setattr(runtime_module, "time", clock)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    return clock
 
 
 class GatedAdapter(InteractionAdapter):
@@ -90,7 +115,7 @@ class GatedAdapter(InteractionAdapter):
         self.close_call_count += 1
 
 
-class SlowAdmissionAdapter(GatedAdapter):
+class GatedAdmissionAdapter(GatedAdapter):
     """Reports when admission starts and holds it until released."""
 
     async def open(
@@ -101,25 +126,109 @@ class SlowAdmissionAdapter(GatedAdapter):
         await super().open(session_id, config, emit)
 
 
-@pytest.fixture
-def deadline_reached(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
-    """Holds the update deadline's sleep until the test sets the returned event."""
-    is_reached = asyncio.Event()
-    real_sleep = asyncio.sleep
+class GatedClearAdapter(GatedAdapter):
+    async def clear(self) -> int:
+        self.has_started.set()
+        await self.release.wait()
+        return 0
 
-    async def sleep_until_reached(delay_s: float) -> None:
-        if delay_s == UPDATE_DEADLINE_S:
-            await is_reached.wait()
+
+class GatedUpdateAdapter(GatedAdapter):
+    should_reject_update: bool = False
+
+    async def update(self, config: SessionConfiguration) -> None:
+        self.has_started.set()
+        await self.release.wait()
+        if self.should_reject_update:
+            raise ProtocolError("invalid_request", "hot update rejected")
         else:
-            await real_sleep(delay_s)
+            pass
 
-    monkeypatch.setattr(asyncio, "sleep", sleep_until_reached)
-    return is_reached
+
+class CommandAdapter(GatedAdapter):
+    """Supports turn commands and can pause commit until released."""
+
+    async def commit(self) -> None:
+        self.has_started.set()
+        await self.release.wait()
+
+    async def cancel(self) -> None:
+        pass
+
+    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
+        pass
+
+
+class RejectedOpenAdapter(GatedAdmissionAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.cleanup_started: asyncio.Event = asyncio.Event()
+        self.cleanup_release: asyncio.Event = asyncio.Event()
+
+    async def open(
+        self, session_id: str, config: SessionConfiguration, emit: OutputSink
+    ) -> None:
+        await super().open(session_id, config, emit)
+        raise RuntimeError("pipeline unavailable")
+
+    async def close(self) -> None:
+        self.cleanup_started.set()
+        await self.cleanup_release.wait()
+
+
+class GatedWebSocketTransport:
+    def __init__(self, gated_event_types: set[str]) -> None:
+        self.gated_event_types: set[str] = gated_event_types
+        self.sent_events: list[ServerEvent] = []
+        self.send_started: asyncio.Queue[ServerEvent] = asyncio.Queue()
+        self.send_releases: asyncio.Queue[None] = asyncio.Queue()
+        self.close_frame: tuple[int, str] | None = None
+        self.incoming_messages: asyncio.Queue[Message] = asyncio.Queue()
+        self.incoming_messages.put_nowait({"type": "websocket.connect"})
+
+    async def receive(self) -> Message:
+        return await self.incoming_messages.get()
+
+    async def send(self, message: Message) -> None:
+        if message["type"] == "websocket.send":
+            server_event: ServerEvent = json.loads(message["text"])
+            if server_event["type"] in self.gated_event_types:
+                self.send_started.put_nowait(server_event)
+                await self.send_releases.get()
+            else:
+                pass
+            self.sent_events.append(server_event)
+        elif message["type"] == "websocket.close":
+            if "websocket.close" in self.gated_event_types:
+                self.send_started.put_nowait({"type": "websocket.close"})
+                await self.send_releases.get()
+            else:
+                pass
+            self.close_frame = (message["code"], message["reason"])
+        else:
+            pass
+
+
+@asynccontextmanager
+async def sending_session(
+    runtime: SessionRuntime, gated_event_types: set[str]
+) -> AsyncIterator[tuple[GatedWebSocketTransport, asyncio.Task[None]]]:
+    transport = GatedWebSocketTransport(gated_event_types)
+    websocket = WebSocket(
+        {"type": "websocket"}, receive=transport.receive, send=transport.send
+    )
+    await websocket.accept()
+    sender = asyncio.create_task(SharedRealtimeSession(websocket, runtime).send())
+    try:
+        yield transport, sender
+    finally:
+        sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
 
 
 @asynccontextmanager
 async def running_runtime(runtime: SessionRuntime) -> AsyncIterator[SessionRuntime]:
-    runtime.notify_created()
+    runtime.start()
     try:
         yield runtime
     finally:
@@ -128,25 +237,39 @@ async def running_runtime(runtime: SessionRuntime) -> AsyncIterator[SessionRunti
         )
 
 
-async def open_runtime(adapter: GatedAdapter) -> SessionRuntime:
+@asynccontextmanager
+async def open_runtime(
+    adapter: GatedAdapter,
+    limits: RuntimeLimits | None = None,
+    capabilities: Capabilities | None = None,
+) -> AsyncIterator[SessionRuntime]:
     runtime = SessionRuntime(
-        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
+        MODEL_NAME,
+        capabilities or Capabilities(),
+        lambda: adapter,
+        limits or RuntimeLimits(),
     )
-    await runtime.update({}, "client_update")
-    return runtime
+    async with running_runtime(runtime):
+        await runtime.update({}, "client_update")
+        yield runtime
 
 
 async def receive_until(
     runtime: SessionRuntime, event_type: type[Drained | UnitCompleted | Closed]
 ) -> list[Envelope]:
     envelopes: list[Envelope] = []
-    async for envelope in runtime.outputs():
-        envelopes.append(envelope)
-        if isinstance(envelope.event, event_type):
-            break
-        else:
-            pass
-    return envelopes
+    loop = asyncio.get_running_loop()
+    deadline_seconds = loop.time() + TEST_WAIT_TIMEOUT_SECONDS
+    async with aclosing(runtime.outputs()) as outputs:
+        while True:
+            envelope = await asyncio.wait_for(
+                anext(outputs), deadline_seconds - loop.time()
+            )
+            envelopes.append(envelope)
+            if isinstance(envelope.event, event_type):
+                return envelopes
+            else:
+                pass
 
 
 def ready_observation(
@@ -158,19 +281,18 @@ def ready_observation(
 @pytest.mark.asyncio
 async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> None:
     adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    await runtime.append(b"\1" * UNIT_BYTES * 2, 1, None, "client_append_1")
-    await runtime.end("client_end")
+    async with open_runtime(adapter) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        await runtime.append(b"\1" * UNIT_BYTES * 2, 1, None, "client_append_1")
+        await runtime.end("client_end")
 
-    adapter.release.set()
-    drained = (await receive_until(runtime, Drained))[-1].event
-    await runtime.close("client_closed")
+        adapter.release.set()
+        drained = (await receive_until(runtime, Drained))[-1].event
 
-    assert [unit.eos for unit in adapter.units] == [False, False, True]
-    assert isinstance(drained, Drained)
-    assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
+        assert [unit.eos for unit in adapter.units] == [False, False, True]
+        assert isinstance(drained, Drained)
+        assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
 
 
 @pytest.mark.asyncio
@@ -181,18 +303,18 @@ async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) ->
     else:
         pass
     adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES * 2, 0, None, "client_append_0")
-    await adapter.has_started.wait()
+    async with open_runtime(adapter) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES * 2, 0, None, "client_append_0")
+        await adapter.has_started.wait()
 
-    recorder.start("run-a", str(tmp_path), "coordinator")
-    await runtime.end("client_end")
-    adapter.release.set()
-    await receive_until(runtime, Drained)
-    await runtime.close("client_closed")
-    recorder.stop()
+        recorder.start("run-a", str(tmp_path), "coordinator")
+        await runtime.end("client_end")
+        adapter.release.set()
+        await receive_until(runtime, Drained)
+        await runtime.close("client_closed")
+        recorder.stop()
 
-    assert [unit.ready_observation for unit in adapter.units] == [None, None]
+        assert [unit.ready_observation for unit in adapter.units] == [None, None]
 
 
 @pytest.mark.asyncio
@@ -206,16 +328,19 @@ async def test_multiple_units_from_one_append_share_ready_timestamp(
         lambda: next(ready_observations),
     )
     adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES * 2, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    await runtime.end("client_end")
+    async with open_runtime(adapter) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES * 2, 0, None, "client_append_0")
+        await adapter.has_started.wait()
+        await runtime.end("client_end")
 
-    adapter.release.set()
-    await receive_until(runtime, Drained)
-    await runtime.close("client_closed")
+        adapter.release.set()
+        await receive_until(runtime, Drained)
+        await runtime.close("client_closed")
 
-    assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [100, 100]
+        assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [
+            100,
+            100,
+        ]
 
 
 @pytest.mark.parametrize("has_empty_tail", [False, True])
@@ -230,24 +355,27 @@ async def test_eos_marks_terminal_units_ready_at_eos(
         lambda: next(ready_observations),
     )
     adapter = GatedAdapter([])
-    runtime = await open_runtime(adapter)
-    append_bytes = UNIT_BYTES if has_empty_tail else UNIT_BYTES + UNIT_BYTES // 2
-    await runtime.append(b"\1" * append_bytes, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    await runtime.end("client_end")
+    async with open_runtime(adapter) as runtime:
+        append_bytes = UNIT_BYTES if has_empty_tail else UNIT_BYTES + UNIT_BYTES // 2
+        await runtime.append(b"\1" * append_bytes, 0, None, "client_append_0")
+        await adapter.has_started.wait()
+        await runtime.end("client_end")
 
-    adapter.release.set()
-    await receive_until(runtime, Drained)
-    await runtime.close("client_closed")
+        adapter.release.set()
+        await receive_until(runtime, Drained)
+        await runtime.close("client_closed")
 
-    assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [100, 200]
-    if has_empty_tail:
-        assert [unit.real_samples for unit in adapter.units] == [
-            UNIT_BYTES // 2,
-            0,
+        assert [unit.ready_observation.timestamp_ns for unit in adapter.units] == [
+            100,
+            200,
         ]
-    else:
-        pass
+        if has_empty_tail:
+            assert [unit.real_samples for unit in adapter.units] == [
+                UNIT_BYTES // 2,
+                0,
+            ]
+        else:
+            pass
 
 
 @pytest.mark.asyncio
@@ -287,23 +415,23 @@ async def test_optional_image_does_not_delay_audio_ready_timestamp(
 @pytest.mark.asyncio
 async def test_close_finishes_only_responses_the_client_has_seen() -> None:
     adapter = GatedAdapter([ResponseStarted("seen"), ResponseStarted("unseen")])
-    runtime = await open_runtime(adapter)
-    await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
-    await adapter.has_started.wait()
-    adapter.release.set()
-    for envelope in await receive_until(runtime, UnitCompleted):
-        if envelope.event == ResponseStarted("seen"):
-            runtime.output_buffer.before_send(envelope)
-            runtime.output_buffer.sent(envelope)
-        else:
-            pass
+    async with open_runtime(adapter) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        adapter.release.set()
+        for envelope in await receive_until(runtime, UnitCompleted):
+            if envelope.event == ResponseStarted("seen"):
+                runtime.output_buffer.before_send(envelope)
+                runtime.output_buffer.sent(envelope)
+            else:
+                pass
 
-    await runtime.close("client_closed")
-    closing = [envelope.event for envelope in await receive_until(runtime, Closed)]
+        await runtime.close("client_closed")
+        closing = [envelope.event for envelope in await receive_until(runtime, Closed)]
 
-    finished = [event for event in closing if isinstance(event, ResponseFinished)]
-    assert [event.response_id for event in finished] == ["seen"]
-    assert finished[0].status == "cancelled"
+        finished = [event for event in closing if isinstance(event, ResponseFinished)]
+        assert [event.response_id for event in finished] == ["seen"]
+        assert finished[0].status == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -329,9 +457,9 @@ async def test_unit_failure_closes_session_and_logs_once(
             raise RuntimeError(failure_message)
 
     with caplog.at_level(logging.WARNING, logger=RUNTIME_LOGGER_NAME):
-        runtime = await open_runtime(FailingAdapter([]))
-        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
-        envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+        async with open_runtime(FailingAdapter([])) as runtime:
+            await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
+            envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert len(failures) == 1
     assert failures[0].code == failure_code
@@ -347,25 +475,26 @@ async def test_unit_failure_closes_session_and_logs_once(
 
 @pytest.mark.asyncio
 async def test_update_deadline_does_not_cut_off_an_admission_in_progress(
-    deadline_reached: asyncio.Event,
+    fake_clock: FakeClock,
 ) -> None:
-    adapter = SlowAdmissionAdapter([])
+    adapter = GatedAdmissionAdapter([])
     runtime = SessionRuntime(
         MODEL_NAME,
         Capabilities(),
         lambda: adapter,
-        RuntimeLimits(session_update_timeout_s=UPDATE_DEADLINE_S),
+        ACTIVITY_LIMITS,
     )
-    runtime.notify_created()
-    update_task = asyncio.create_task(runtime.update({}, "update"))
-    await adapter.has_started.wait()
-    deadline_reached.set()
-    await asyncio.sleep(0)
-    adapter.release.set()
-    await asyncio.wait_for(update_task, 5)
-    await asyncio.sleep(0)
-    await runtime.close("client_closed")
-    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "update"))
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 2)
+        assert not update_task.done()
+        assert runtime.state == "CREATED"
+        adapter.release.set()
+        await update_task
+        assert runtime.state == "OPEN"
+        await runtime.close("client_closed")
+        envelopes = await receive_until(runtime, Closed)
 
     assert [
         entry.event for entry in envelopes if isinstance(entry.event, Failure)
@@ -375,27 +504,32 @@ async def test_update_deadline_does_not_cut_off_an_admission_in_progress(
 
 @pytest.mark.asyncio
 async def test_update_after_the_deadline_is_rejected_without_admission(
-    deadline_reached: asyncio.Event,
+    fake_clock: FakeClock,
 ) -> None:
-    adapter = SlowAdmissionAdapter([])
+    adapter = GatedAdmissionAdapter([])
     adapter.release.set()
     runtime = SessionRuntime(
         MODEL_NAME,
         Capabilities(),
         lambda: adapter,
-        RuntimeLimits(session_update_timeout_s=UPDATE_DEADLINE_S),
+        ACTIVITY_LIMITS,
     )
-    runtime.notify_created()
-    deadline_reached.set()
-    await asyncio.sleep(0)
-
-    with pytest.raises(ProtocolError, match="closing"):
-        await runtime.update({}, "update")
-    envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
+    async with running_runtime(runtime):
+        await fake_clock.advance(0)
+        # note (Codex): Queue the command before waking the watchdog to exercise the admission fence.
+        update_task = asyncio.create_task(runtime.update({}, "update"))
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS + DEADLINE_EPSILON_SECONDS)
+        await update_task
+        envelopes = await receive_until(runtime, Closed)
 
     assert not adapter.has_started.is_set()
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert [failure.code for failure in failures] == ["session_update_timeout"]
+    assert closing_failure(envelopes) == (
+        "session_update_timeout",
+        "session_update_timeout",
+    )
+    assert runtime.state == "CLOSED"
 
 
 def test_an_audio_delta_is_sized_by_its_base64_audio_and_the_envelope() -> None:
@@ -472,15 +606,12 @@ def test_a_cancelled_response_drops_only_its_queued_audio() -> None:
 @pytest.mark.asyncio
 async def test_competing_closes_keep_initial_failure_reason() -> None:
     """Concurrent close requests must preserve the initial failure reported to clients."""
-    runtime = await open_runtime(GatedAdapter([]))
-    try:
+    async with open_runtime(GatedAdapter([])) as runtime:
         runtime.fail("context full", "context_exhausted")
         await asyncio.wait_for(
             asyncio.gather(runtime.close("disconnect"), runtime.close("client_closed")),
             TEST_WAIT_TIMEOUT_SECONDS,
         )
-    finally:
-        await asyncio.wait_for(runtime.close("disconnect"), TEST_WAIT_TIMEOUT_SECONDS)
 
     assert runtime.close_reason == "context_exhausted"
 
@@ -508,11 +639,7 @@ async def test_process_cancellation_releases_session_resources(
                 return unit.real_samples
 
     adapter = CancellableAdapter([])
-    runtime = SessionRuntime(
-        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
-    )
-    async with running_runtime(runtime):
-        await runtime.update({}, "client_update")
+    async with open_runtime(adapter) as runtime:
         await runtime.append(b"\1" * UNIT_BYTES, 0, None, "append")
         await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
         if termination == "cancelled_task":
@@ -523,9 +650,7 @@ async def test_process_cancellation_releases_session_resources(
         else:
             pass
 
-        envelopes = await asyncio.wait_for(
-            receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
-        )
+        envelopes = await receive_until(runtime, Closed)
         if termination == "client_close":
             assert envelopes[-1].event == Closed("client_closed")
             assert not any(
@@ -543,11 +668,11 @@ async def test_admission_finishing_after_close_releases_adapter_without_opening(
 ):
     """An admission that succeeds after the session started closing must release the adapter and never open the session."""
 
-    adapter = SlowAdmissionAdapter([])
+    adapter = GatedAdmissionAdapter([])
     runtime = SessionRuntime(
         MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
     )
-    runtime.notify_created()
+    runtime.start()
     update_task = asyncio.create_task(runtime.update({}, "open"))
     await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
     close_task = asyncio.create_task(runtime.close("client_closed"))
@@ -636,9 +761,7 @@ async def test_cancelled_admission_closes_resources_and_rejects_queued_update(
             with pytest.raises(ProtocolError, match="closing"):
                 await asyncio.wait_for(queued_update_task, TEST_WAIT_TIMEOUT_SECONDS)
 
-            envelopes = await asyncio.wait_for(
-                receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
-            )
+            envelopes = await receive_until(runtime, Closed)
             if should_close_first:
                 assert envelopes[-1].event == Closed("client_closed")
                 assert not any(
@@ -712,7 +835,7 @@ async def test_failed_admission_cleanup_rejects_queued_update_and_releases_resou
         MODEL_NAME,
         Capabilities(),
         create_adapter,
-        RuntimeLimits(cleanup_timeout_s=ADMISSION_CLEANUP_TIMEOUT_SECONDS),
+        RuntimeLimits(cleanup_timeout_s=ACTIVITY_TIMEOUT_SECONDS),
     )
     async with running_runtime(runtime):
         update_task = asyncio.create_task(runtime.update({}, "open"))
@@ -733,9 +856,7 @@ async def test_failed_admission_cleanup_rejects_queued_update_and_releases_resou
             with pytest.raises(ProtocolError, match="closing"):
                 await asyncio.wait_for(queued_update_task, TEST_WAIT_TIMEOUT_SECONDS)
 
-            envelopes = await asyncio.wait_for(
-                receive_until(runtime, Closed), TEST_WAIT_TIMEOUT_SECONDS
-            )
+            envelopes = await receive_until(runtime, Closed)
             assert closing_failure(envelopes) == ("internal", "internal")
             assert [
                 envelope.event.client_event_id
@@ -764,3 +885,673 @@ def closing_failure(envelopes: list[Envelope]) -> tuple[str, str]:
     closed = envelopes[-1].event
     assert len(failures) == 1 and failures[0].is_fatal and isinstance(closed, Closed)
     return failures[0].code, closed.reason
+
+
+async def assert_idle_closed(runtime: SessionRuntime) -> None:
+    envelopes = await receive_until(runtime, Closed)
+    assert closing_failure(envelopes) == ("idle_timeout", "idle_timeout")
+    assert runtime.state == "CLOSED"
+
+
+async def advance_past_deadline(
+    clock: FakeClock, runtime: SessionRuntime, deadline_seconds: float
+) -> None:
+    """Check the session is still open just before the deadline, then move past it."""
+    await clock.advance(deadline_seconds - DEADLINE_EPSILON_SECONDS)
+    assert runtime.state == "OPEN"
+    await clock.advance(2 * DEADLINE_EPSILON_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_slow_pipeline_open_is_not_a_session_update_timeout(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = GatedAdmissionAdapter([])
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, ACTIVITY_LIMITS
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "client_update"))
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 2)
+        assert not update_task.done()
+        adapter.release.set()
+        await update_task
+        assert runtime.state == "OPEN"
+        await advance_past_deadline(fake_clock, runtime, ACTIVITY_TIMEOUT_SECONDS)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize("cleanup_delay_seconds", [0, ACTIVITY_TIMEOUT_SECONDS * 1.25])
+@pytest.mark.asyncio
+async def test_failed_admission_after_deadline_closes_without_retry(
+    fake_clock: FakeClock,
+    cleanup_delay_seconds: float,
+) -> None:
+    """An admission that fails after the deadline must close the session instead of accepting a retry."""
+    adapter = RejectedOpenAdapter()
+    if cleanup_delay_seconds == 0:
+        adapter.cleanup_release.set()
+    else:
+        pass
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, ACTIVITY_LIMITS
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "client_update"))
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 2.5)
+        adapter.release.set()
+        await adapter.cleanup_started.wait()
+        await fake_clock.advance(cleanup_delay_seconds)
+        adapter.cleanup_release.set()
+        await update_task
+        with pytest.raises(ProtocolError, match="closing"):
+            await runtime.update({}, "client_retry")
+        envelopes = await receive_until(runtime, Closed)
+        assert closing_failure(envelopes) == (
+            "session_update_timeout",
+            "session_update_timeout",
+        )
+
+
+@pytest.mark.asyncio
+async def test_repeated_failed_admissions_keep_original_deadline(
+    fake_clock: FakeClock,
+) -> None:
+    """Failed admissions must not restart the deadline, so retries cannot keep an unadmitted session open."""
+
+    class RejectedAdapter(GatedAdapter):
+        async def open(
+            self, session_id: str, config: SessionConfiguration, emit: OutputSink
+        ) -> None:
+            raise RuntimeError("pipeline unavailable")
+
+    factory_call_count = 0
+
+    def create_adapter() -> InteractionAdapter:
+        nonlocal factory_call_count
+        factory_call_count += 1
+        return RejectedAdapter([])
+
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), create_adapter, ACTIVITY_LIMITS
+    )
+    async with running_runtime(runtime):
+        for attempt_index in range(3):
+            await fake_clock.advance(
+                ACTIVITY_TIMEOUT_SECONDS * 0.4 if attempt_index else 0
+            )
+            with pytest.raises(ProtocolError) as rejection:
+                await runtime.update({}, f"attempt_{attempt_index}")
+            assert rejection.value.code == "admission_rejected"
+        update_task = asyncio.create_task(runtime.update({}, "late_retry"))
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.4)
+        await update_task
+        with pytest.raises(ProtocolError, match="closing"):
+            await runtime.update({}, "after_close")
+
+        envelopes = await receive_until(runtime, Closed)
+        assert closing_failure(envelopes) == (
+            "session_update_timeout",
+            "session_update_timeout",
+        )
+        assert factory_call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_valid_image", [False, True])
+async def test_only_accepted_images_extend_idle_timeout(
+    fake_clock: FakeClock,
+    is_valid_image: bool,
+) -> None:
+    adapter = GatedAdapter([])
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(input_modalities=("audio", "image"))
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS / 2)
+        if is_valid_image:
+            await runtime.append_image(b"\xff\xd8frame", 0, "client_image")
+        else:
+            with pytest.raises(ProtocolError, match="image must be JPEG or PNG"):
+                await runtime.append_image(b"invalid", 0, "client_image")
+
+        await advance_past_deadline(fake_clock, runtime, ACTIVITY_TIMEOUT_SECONDS / 2)
+        if is_valid_image:
+            await advance_past_deadline(
+                fake_clock,
+                runtime,
+                ACTIVITY_TIMEOUT_SECONDS / 2 - DEADLINE_EPSILON_SECONDS,
+            )
+        else:
+            pass
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.asyncio
+async def test_steady_input_keeps_session_open_past_idle_timeout(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        # Note (Haiyang Luo): One sample updates input activity without a complete input unit.
+        for sequence in range(3):
+            await runtime.append(b"\1\0", sequence, None, f"client_append_{sequence}")
+            await fake_clock.advance(
+                ACTIVITY_TIMEOUT_SECONDS - DEADLINE_EPSILON_SECONDS
+            )
+            assert runtime.state == "OPEN"
+
+        assert runtime.state == "OPEN" and not adapter.units
+        await fake_clock.advance(2 * DEADLINE_EPSILON_SECONDS)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["commit", "cancel", "truncate"])
+async def test_client_commands_restart_idle_timeout(
+    fake_clock: FakeClock,
+    command: Literal["commit", "cancel", "truncate"],
+) -> None:
+    """Successful client turn commands keep an otherwise idle session open."""
+    adapter = CommandAdapter([])
+    adapter.release.set()
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(supports_client_commit=True)
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        if command == "commit":
+            await runtime.commit()
+        elif command == "cancel":
+            await runtime.cancel()
+        else:
+            await runtime.truncate("item_1", 0.0)
+        await fake_clock.advance(0)
+
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        assert runtime.state == "OPEN"
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize("is_slow_update", [False, True])
+@pytest.mark.asyncio
+async def test_successful_hot_update_restarts_idle_timeout(
+    fake_clock: FakeClock,
+    is_slow_update: bool,
+) -> None:
+    """An accepted hot update gets a fresh idle window after it finishes."""
+    adapter = GatedUpdateAdapter([])
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(supports_instruction_updates=True)
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        update_task = asyncio.create_task(
+            runtime.update({"instructions": "Updated instructions"}, "client_update")
+        )
+        await adapter.has_started.wait()
+        if is_slow_update:
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+            assert runtime.state == "OPEN"
+            assert not update_task.done()
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.25)
+        else:
+            pass
+        adapter.release.set()
+        await update_task
+        assert runtime.config["instructions"] == "Updated instructions"
+
+        await fake_clock.advance(
+            ACTIVITY_TIMEOUT_SECONDS * 0.75 + DEADLINE_EPSILON_SECONDS
+        )
+        assert runtime.state == "OPEN"
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.25)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize(
+    ("is_adapter_rejection", "error_message"),
+    [(False, "session field is frozen"), (True, "hot update rejected")],
+)
+@pytest.mark.asyncio
+async def test_rejected_hot_update_does_not_restart_idle_timeout(
+    fake_clock: FakeClock,
+    is_adapter_rejection: bool,
+    error_message: str,
+) -> None:
+    """An invalid hot update must not extend an otherwise idle session."""
+    adapter = GatedUpdateAdapter([])
+    adapter.should_reject_update = True
+    adapter.release.set()
+    async with open_runtime(
+        adapter,
+        ACTIVITY_LIMITS,
+        Capabilities(supports_instruction_updates=is_adapter_rejection),
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        with pytest.raises(ProtocolError, match=error_message):
+            await runtime.update({"instructions": "Rejected instructions"}, "rejected")
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize("command", ["commit", "end"])
+@pytest.mark.asyncio
+async def test_command_accepted_before_idle_deadline_reaches_adapter_when_watchdog_runs_first(
+    fake_clock: FakeClock,
+    command: Literal["commit", "end"],
+) -> None:
+    """An accepted commit or end of input must survive the old idle deadline while awaiting the pump."""
+    adapter = CommandAdapter([])
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(supports_client_commit=True)
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS - DEADLINE_EPSILON_SECONDS)
+        [(watchdog_deadline_seconds, watchdog_wakeup)] = fake_clock.sleepers
+        assert watchdog_deadline_seconds == ACTIVITY_TIMEOUT_SECONDS
+        # note (Codex): Queue the watchdog first to model a delay across the deadline.
+        watchdog_wakeup.set_result(None)
+        if command == "commit":
+            await runtime.commit()
+        else:
+            await runtime.end("end")
+        assert not adapter.has_started.is_set()
+
+        await fake_clock.advance(2 * DEADLINE_EPSILON_SECONDS)
+
+        assert runtime.state == "OPEN"
+        assert adapter.has_started.is_set()
+        adapter.release.set()
+        await fake_clock.advance(0)
+
+
+@pytest.mark.asyncio
+async def test_asynchronous_output_restarts_idle_timeout(fake_clock: FakeClock) -> None:
+    """Replies streaming after input stops keep the session open until output stops."""
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        assert adapter.output_sink is not None
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        await adapter.output_sink(ResponseStarted("response_0"))
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        assert runtime.state == "OPEN"
+
+        await adapter.output_sink(TextDelta("response_0", "item_0", "reply"))
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        assert runtime.state == "OPEN"
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.asyncio
+async def test_queued_audio_delivery_restarts_idle_timeout(
+    fake_clock: FakeClock,
+) -> None:
+    """Buffered audio must finish delivery when socket progress outlasts production."""
+    adapter = GatedAdapter([])
+    audio_chunks = [b"\1\2", b"\3\4", b"\5\6"]
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(output_modalities=("audio",))
+    ) as runtime:
+        assert adapter.output_sink is not None
+        await adapter.output_sink(ResponseStarted("response_0"))
+        for pcm in audio_chunks:
+            await adapter.output_sink(AudioDelta("response_0", "item_0", pcm))
+        await adapter.output_sink(AudioFinished("response_0", "item_0"))
+        await adapter.output_sink(
+            ResponseFinished("response_0", "item_0", "", True, "completed", "stop")
+        )
+
+        async with sending_session(runtime, {"response.output_audio.delta"}) as (
+            transport,
+            sender,
+        ):
+            for pcm in audio_chunks:
+                event = await asyncio.wait_for(
+                    transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+                )
+                assert base64.b64decode(event["delta"]) == pcm
+                await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+                assert runtime.state == "OPEN"
+                transport.send_releases.put_nowait(None)
+                await fake_clock.advance(0)
+
+            assert [
+                base64.b64decode(event["delta"])
+                for event in transport.sent_events
+                if event["type"] == "response.output_audio.delta"
+            ] == audio_chunks
+            assert [
+                event["type"]
+                for event in transport.sent_events
+                if event["type"].startswith("response.")
+            ] == [
+                "response.created",
+                "response.output_audio.delta",
+                "response.output_audio.delta",
+                "response.output_audio.delta",
+                "response.output_audio.done",
+                "response.done",
+            ]
+            assert transport.sent_events[-1]["response"]["status"] == "completed"
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+            assert runtime.state == "OPEN"
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+            await asyncio.wait_for(sender, TEST_WAIT_TIMEOUT_SECONDS)
+            assert transport.close_frame == (1008, "idle_timeout")
+
+
+@pytest.mark.asyncio
+async def test_stalled_audio_send_with_queued_output_still_expires(
+    fake_clock: FakeClock,
+) -> None:
+    """An unfinished socket send must not keep queued audio and adapter resources alive."""
+    adapter = GatedAdapter([])
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(output_modalities=("audio",))
+    ) as runtime:
+        assert adapter.output_sink is not None
+        await adapter.output_sink(ResponseStarted("response_0"))
+        await adapter.output_sink(AudioDelta("response_0", "item_0", b"\1\2"))
+        await adapter.output_sink(AudioDelta("response_0", "item_0", b"\3\4"))
+        async with sending_session(runtime, {"response.output_audio.delta"}) as (
+            transport,
+            sender,
+        ):
+            await asyncio.wait_for(
+                transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 1.25)
+
+            assert runtime.state == "CLOSED"
+            assert runtime.close_reason == "idle_timeout"
+            assert adapter.close_call_count == 1
+            assert not sender.done()
+
+            transport.send_releases.put_nowait(None)
+            await asyncio.wait_for(sender, TEST_WAIT_TIMEOUT_SECONDS)
+            assert [
+                base64.b64decode(event["delta"])
+                for event in transport.sent_events
+                if event["type"] == "response.output_audio.delta"
+            ] == [b"\1\2"]
+            assert transport.close_frame == (1008, "idle_timeout")
+
+
+@pytest.mark.asyncio
+async def test_error_delivery_does_not_restart_idle_timeout(
+    fake_clock: FakeClock,
+) -> None:
+    """Sending rejection errors must not extend an otherwise idle session."""
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        async with sending_session(runtime, {"error"}) as (transport, sender):
+            await fake_clock.advance(0)
+            for _ in range(2):
+                await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.25)
+                runtime.notify(Failure("invalid_request", "invalid command", False))
+                event = await asyncio.wait_for(
+                    transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+                )
+                assert event["error"]["code"] == "invalid_request"
+                transport.send_releases.put_nowait(None)
+                await fake_clock.advance(0)
+
+            await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+            assert runtime.state == "CLOSED"
+            event = await asyncio.wait_for(
+                transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            assert event["error"]["code"] == "idle_timeout"
+            transport.send_releases.put_nowait(None)
+            await asyncio.wait_for(sender, TEST_WAIT_TIMEOUT_SECONDS)
+            assert transport.close_frame == (1008, "idle_timeout")
+
+
+@pytest.mark.asyncio
+async def test_commit_in_progress_is_protected_and_completion_restarts_idle_window(
+    fake_clock: FakeClock,
+) -> None:
+    """A commit without audio stays active while blocked and gets a fresh idle window."""
+    adapter = CommandAdapter([])
+    async with open_runtime(
+        adapter, ACTIVITY_LIMITS, Capabilities(supports_client_commit=True)
+    ) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.75)
+        await runtime.commit()
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 1.5)
+        assert runtime.state == "OPEN"
+
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.5)
+        adapter.release.set()
+        await fake_clock.advance(0)
+        await fake_clock.advance(
+            ACTIVITY_TIMEOUT_SECONDS * 0.75 + DEADLINE_EPSILON_SECONDS
+        )
+        assert runtime.state == "OPEN"
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 0.25)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize(
+    "idle_timeout_seconds", [ACTIVITY_TIMEOUT_SECONDS / 2, ACTIVITY_TIMEOUT_SECONDS * 2]
+)
+@pytest.mark.asyncio
+async def test_clear_in_progress_is_protected_and_completion_restarts_idle_window(
+    fake_clock: FakeClock,
+    idle_timeout_seconds: float,
+) -> None:
+    adapter = GatedClearAdapter([])
+    async with open_runtime(
+        adapter,
+        RuntimeLimits(idle_timeout_s=idle_timeout_seconds),
+    ) as runtime:
+        await fake_clock.advance(idle_timeout_seconds * 0.75)
+        clear_task = asyncio.create_task(runtime.clear("client_clear"))
+        await adapter.has_started.wait()
+        # note (Haiyang Luo): The watchdog wakes at the old deadline, sees the held lock, and sleeps one more period.
+        await fake_clock.advance(idle_timeout_seconds * 0.5)
+        assert not clear_task.done()
+        assert runtime.state == "OPEN"
+
+        await fake_clock.advance(idle_timeout_seconds * 0.25)
+        adapter.release.set()
+        await clear_task
+        # note (Haiyang Luo): The watchdog wakes again here; only the clear completion keeps the session open.
+        await fake_clock.advance(idle_timeout_seconds * 0.75 + DEADLINE_EPSILON_SECONDS)
+        assert runtime.state == "OPEN"
+        await fake_clock.advance(idle_timeout_seconds * 0.25)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.asyncio
+async def test_unit_in_flight_is_not_idle_and_idle_resumes_after_it(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 3)
+        assert runtime.state == "OPEN"
+
+        adapter.release.set()
+        completed = (await receive_until(runtime, UnitCompleted))[-1].event
+        assert completed == UnitCompleted(adapter.units[0].unit_id)
+        await advance_past_deadline(fake_clock, runtime, ACTIVITY_TIMEOUT_SECONDS)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.asyncio
+async def test_unit_completing_as_idle_deadline_expires_keeps_session_open(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append_0")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        await fake_clock.advance(0)
+
+        # note (Codex): Releasing first queues completion ahead of the expired watchdog.
+        adapter.release.set()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 1.5)
+        completed = (await receive_until(runtime, UnitCompleted))[-1].event
+        assert completed == UnitCompleted(adapter.units[0].unit_id)
+
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS / 4)
+        assert runtime.state == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_shorter_than_admission_is_honored_after_open(
+    fake_clock: FakeClock,
+) -> None:
+    limits = RuntimeLimits(
+        session_update_timeout_s=ACTIVITY_TIMEOUT_SECONDS * 4,
+        idle_timeout_s=ACTIVITY_TIMEOUT_SECONDS,
+    )
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: GatedAdapter([]), limits
+    )
+    async with running_runtime(runtime):
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS / 8)
+        await runtime.update({}, "client_update")
+        await advance_past_deadline(fake_clock, runtime, ACTIVITY_TIMEOUT_SECONDS)
+        await assert_idle_closed(runtime)
+
+
+@pytest.mark.parametrize(
+    "blocked_event_type",
+    ["session.created", "response.output_audio.delta", "websocket.close"],
+)
+@pytest.mark.asyncio
+async def test_timeout_releases_connection_with_blocked_websocket_send(
+    fake_clock: FakeClock,
+    blocked_event_type: Literal[
+        "session.created", "response.output_audio.delta", "websocket.close"
+    ],
+) -> None:
+    """A blocked socket must release its connection slot after runtime cleanup."""
+    adapter = GatedAdapter([])
+    manager = RealtimeSessionManager(
+        deployment=RealtimeDeployment(
+            capabilities=Capabilities(output_modalities=("audio",)),
+            adapter_factory=lambda: adapter,
+            limits=RuntimeLimits(
+                idle_timeout_s=ACTIVITY_TIMEOUT_SECONDS,
+                session_update_timeout_s=ACTIVITY_TIMEOUT_SECONDS,
+                cleanup_timeout_s=ACTIVITY_TIMEOUT_SECONDS / 10,
+            ),
+            max_connections=1,
+        ),
+        client=Client(HealthCoordinator(True)),
+        model_name=MODEL_NAME,
+    )
+    transport = GatedWebSocketTransport({blocked_event_type})
+    websocket = WebSocket(
+        {"type": "websocket"}, receive=transport.receive, send=transport.send
+    )
+    await websocket.accept()
+    session = manager.open(websocket)
+    assert isinstance(session, SharedRealtimeSession)
+
+    async def run_connection() -> None:
+        try:
+            await session.run()
+        finally:
+            await manager.close(session.session_id)
+
+    connection_task = asyncio.create_task(run_connection())
+    try:
+        await fake_clock.advance(0)
+        if blocked_event_type == "session.created":
+            expected_reason = "session_update_timeout"
+        else:
+            expected_reason = "idle_timeout"
+            await session.runtime.update({}, "client_update")
+            if blocked_event_type == "response.output_audio.delta":
+                await session.runtime.emit(ResponseStarted("response_0"))
+                await session.runtime.emit(AudioDelta("response_0", "item_0", b"\1\2"))
+            else:
+                pass
+        if blocked_event_type != "websocket.close":
+            await asyncio.wait_for(
+                transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+        else:
+            pass
+
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 1.25)
+        assert session.runtime.state == "CLOSED"
+        assert session.runtime.close_reason == expected_reason
+        if blocked_event_type == "websocket.close":
+            await asyncio.wait_for(
+                transport.send_started.get(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+        else:
+            pass
+        await asyncio.wait_for(connection_task, TEST_WAIT_TIMEOUT_SECONDS)
+
+        assert manager.active_sessions() == []
+        assert adapter.close_call_count == (
+            0 if blocked_event_type == "session.created" else 1
+        )
+        assert session.runtime.watchdog_task is not None
+        assert session.runtime.watchdog_task.done()
+    finally:
+        connection_task.cancel()
+        await asyncio.gather(connection_task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("cancellation_kind", ["scope", "task"])
+@pytest.mark.asyncio
+async def test_cancellation_during_connection_cleanup_preserves_its_origin(
+    monkeypatch: pytest.MonkeyPatch, cancellation_kind: Literal["scope", "task"]
+) -> None:
+    """Closing a session must not replace the caller's cancellation with a child task's cancellation."""
+    adapter = GatedAdapter([])
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
+    )
+    transport = GatedWebSocketTransport({"session.created"})
+    websocket = WebSocket(
+        {"type": "websocket"}, receive=transport.receive, send=transport.send
+    )
+    await websocket.accept()
+    transport.incoming_messages.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {"type": "session.update", "event_id": "open", "session": {}}
+            ),
+        }
+    )
+    transport.incoming_messages.put_nowait(
+        {"type": "websocket.disconnect", "code": 1000}
+    )
+    close_runtime = runtime.close
+    connection_task = asyncio.current_task()
+    assert connection_task is not None
+    cancel_scope = anyio.CancelScope()
+
+    async def close_then_cancel(reason: str, event_id: str | None = None) -> None:
+        assert (await transport.send_started.get())["type"] == "session.created"
+        await close_runtime(reason, event_id)
+        if cancellation_kind == "scope":
+            cancel_scope.cancel()
+        else:
+            connection_task.cancel("connection cancelled")
+
+    monkeypatch.setattr(runtime, "close", close_then_cancel)
+    session = SharedRealtimeSession(websocket, runtime)
+    if cancellation_kind == "scope":
+        with cancel_scope:
+            await session.run()
+        assert cancel_scope.cancelled_caught
+    else:
+        with pytest.raises(asyncio.CancelledError, match="connection cancelled"):
+            await session.run()
+    assert runtime.state == "CLOSED"
+    assert adapter.close_call_count == 1

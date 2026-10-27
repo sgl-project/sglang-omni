@@ -251,6 +251,8 @@ Vocoder configuration controls batching, precision, and acceleration. The schedu
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
+On CUDA the TTS engine replays prompt prefills from full CUDA graphs captured on the prefill batch ladder, which starts at `1` because a prompt that is already cached prefills a single token. The graphs need the `fa3`, `fa4` or `flashinfer` attention backend, and with any other backend the default prefill runs in eager mode. Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. Declaring `cuda_graph_bs_prefill` keeps the declared list as is.
+
 ### torch.compile for the DiT backbone
 
 `torch.compile` is on by default. It reduces DiT kernel-launch overhead for supported TTS execution paths, including streaming PackedDiT. Startup warmup covers varying batch sizes and mel lengths before serving. Existing CUDA Graph behavior is unchanged. Pass `enable_dit_torch_compile=false` to run the DiT eager.
