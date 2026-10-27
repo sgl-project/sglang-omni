@@ -1356,7 +1356,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
-        SimpleNamespace,
+        lambda **kwargs: SimpleNamespace(outbox=Mock(), **kwargs),
     )
 
     session_runner = Mock()
@@ -1412,6 +1412,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         )
         assert scheduler.model_runner is session_runner.return_value
         assert scheduler.session_adapter is session_adapter.return_value
+        assert session_adapter.return_value.outbox is scheduler.outbox
 
 
 def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
