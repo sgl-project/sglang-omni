@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import struct
 import sys
@@ -365,3 +366,26 @@ def test_load_audio_decodes_the_8khz_telephony_fixtures() -> None:
     np.testing.assert_array_equal(from_raw, from_wav)
     correlation = np.corrcoef(from_raw, original)[0, 1]
     assert correlation > 0.98
+
+
+def test_models_decode_audio_files_through_the_shared_loader() -> None:
+    """torchaudio.load needs FFmpeg for TorchCodec; load_with_torchaudio falls back to soundfile."""
+    package = Path(audio.__file__).resolve().parents[1]
+    direct_loads = []
+    for path in sorted(package.rglob("*.py")):
+        if path == Path(audio.__file__).resolve():
+            continue
+        else:
+            pass
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "load"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "torchaudio"
+            ):
+                direct_loads.append(f"{path.relative_to(package.parent)}:{node.lineno}")
+            else:
+                pass
+    assert direct_loads == []

@@ -36,6 +36,7 @@ from sglang_omni.modules.ming_audio.flow.cfm import CFM, get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.dit import DiT
 from sglang_omni.modules.ming_audio.flow.execution import TalkerExecutionConfig
 from sglang_omni.platforms import current_platform
+from sglang_omni.utils.audio import load_with_torchaudio
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .configuration_bailing_talker import MingOmniTalkerConfig
@@ -1281,7 +1282,9 @@ class MingOmniTalker(nn.Module):
         speech_parts = []
         spk_emb_list = []
         for x in prompt_wav_path:
-            speech_tmp, sample_rate = torchaudio.load(x, backend="soundfile")
+            speech_tmp, sample_rate = load_with_torchaudio(
+                x, source_name="speaker prompt"
+            )
             speech_tmp1 = speech_tmp.clone()
             if sample_rate != audio_detokenizer.config.sample_rate:
                 speech_tmp = torchaudio.transforms.Resample(
