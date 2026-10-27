@@ -3,12 +3,21 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+import torch
+from sglang.srt.server_args import ServerArgs
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
+from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
+    WhisperPrefillCudaGraphRunner,
+)
+from sglang_omni.models.whisper_asr.dense_prefill import WhisperDensePrefillRunner
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
@@ -16,6 +25,9 @@ from sglang_omni.models.whisper_asr.encoder_service import (
 from sglang_omni.models.whisper_asr.request_builders import (
     MAX_PREV_CONTEXT_TOKENS,
     WhisperASRRequestData,
+)
+from sglang_omni.models.whisper_asr.text_streaming import (
+    ExactWhisperStreamOutputBuilder,
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
@@ -28,6 +40,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+from sglang_omni.utils.cpu import effective_cpu_count
 
 if TYPE_CHECKING:
 
@@ -40,6 +53,7 @@ else:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+WHISPER_DENSE_PREFILL_PROMPT_LENGTH = 4
 
 
 _TASK_PREFIX_SLACK_TOKENS = 8
@@ -182,10 +196,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     def __init__(
         self,
         *,
+        encoder_attention_backend: Literal["auto", "sdpa", "fa4"],
         max_running_requests: int,
         max_new_tokens: int,
+        stream_emit_interval_s: float = 0.05,
         mem_fraction_static: float,
         enable_encoder_cuda_graph: bool = False,
+        enable_dense_prefill_cuda_graph: bool = False,
+        cpu_intra_op_threads: int | None = None,
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
@@ -196,6 +214,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         prefill_coalesce_when_idle: bool = True,
         prefill_coalesce_requires_pending_builds: bool = True,
         prefill_coalesce_after_builds_during_decode: bool = False,
+        pre_lm_pipeline_batches: bool = False,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 1024,
         pre_lm_cache_size_bytes: int | None = None,
@@ -203,6 +222,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_cache_pin_host_memory: bool = True,
     ) -> None:
+        if encoder_attention_backend not in ("auto", "sdpa", "fa4"):
+            raise ValueError(
+                f"Unknown Whisper encoder attention backend: {encoder_attention_backend}"
+            )
+        else:
+            self.encoder_attention_backend = encoder_attention_backend
         if pre_lm_max_batch_size < 1:
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
@@ -217,8 +242,15 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             pass
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
+        self.stream_emit_interval_s = stream_emit_interval_s
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
+        self.enable_dense_prefill_cuda_graph = bool(enable_dense_prefill_cuda_graph)
+        self.cpu_intra_op_threads: int | None = cpu_intra_op_threads
+        if cpu_intra_op_threads is not None and cpu_intra_op_threads < 1:
+            raise ValueError("cpu_intra_op_threads must be positive")
+        else:
+            pass
         self.using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
         self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
@@ -236,6 +268,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.prefill_coalesce_after_builds_during_decode = (
             prefill_coalesce_after_builds_during_decode
         )
+        self.pre_lm_pipeline_batches = pre_lm_pipeline_batches
         self.enable_pre_lm_encoder = bool(enable_pre_lm_encoder)
         self.pre_lm_cache_max_entries = int(pre_lm_cache_max_entries)
         # None: derive the byte budget from the entry count (see encoder_service).
@@ -252,6 +285,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: WhisperPreLMEncoderService | None = None
+        self.sglang_runner: SGLModelRunner | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -272,6 +306,18 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             AutoConfig.from_pretrained(checkpoint_dir).max_target_positions or 448
         )
 
+    def setup_model(
+        self,
+        *,
+        model_worker: ModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        """Retain the model runner for post-capture resource setup."""
+        self.sglang_runner = model_worker.model_runner
+
     def setup_model_resources(
         self,
         model: WhisperForConditionalGeneration | None,
@@ -279,7 +325,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        if not self.enable_encoder_cuda_graph or not generation_cuda_graph_enabled:
+        if not generation_cuda_graph_enabled or (
+            not self.enable_encoder_cuda_graph
+            and not (
+                self.enable_dense_prefill_cuda_graph and self.enable_pre_lm_encoder
+            )
+        ):
             return
         else:
             pass
@@ -287,6 +338,42 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
 
         max_prefill_tokens = int(get_schedule().max_prefill_tokens)
         max_running_requests = int(get_schedule().max_running_requests)
+        if (
+            self.enable_dense_prefill_cuda_graph
+            and self.enable_pre_lm_encoder
+            and self.sglang_runner is not None
+            and max_prefill_tokens
+            >= self.encoder_token_count + WHISPER_DENSE_PREFILL_PROMPT_LENGTH
+        ):
+            prefill_graph_runner = self.sglang_runner.prefill_cuda_graph_runner
+            if (
+                isinstance(prefill_graph_runner, WhisperPrefillCudaGraphRunner)
+                and model.model.decoder.embed_tokens.weight.device.type == "cuda"
+            ):
+                dense_prefill_runner = WhisperDensePrefillRunner(
+                    model,
+                    self.sglang_runner.token_to_kv_pool,
+                    encoder_token_count=self.encoder_token_count,
+                    max_requests=min(
+                        max_running_requests,
+                        max_prefill_tokens
+                        // (
+                            self.encoder_token_count
+                            + WHISPER_DENSE_PREFILL_PROMPT_LENGTH
+                        ),
+                    ),
+                    prompt_lengths=(WHISPER_DENSE_PREFILL_PROMPT_LENGTH,),
+                )
+                dense_prefill_runner.capture()
+                prefill_graph_runner.dense_prefill_runner = dense_prefill_runner
+            else:
+                pass
+        else:
+            pass
+        if not self.enable_encoder_cuda_graph:
+            return
+        else:
+            pass
         resolved_buckets = resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,
@@ -319,6 +406,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self, model: WhisperForConditionalGeneration | None, server_args: object
     ) -> None:
         del server_args
+        if self.cpu_intra_op_threads is not None:
+            torch.set_num_threads(min(self.cpu_intra_op_threads, effective_cpu_count()))
+        else:
+            pass
         if not self.enable_pre_lm_encoder:
             return
         else:
@@ -337,6 +428,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             max_batch_size=self.pre_lm_max_batch_size,
             max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
             pin_host_memory=self.pre_lm_cache_pin_host_memory,
+            pipeline_batches=self.pre_lm_pipeline_batches,
         )
         service = self.audio_encoder_service
         logger.info(
@@ -353,6 +445,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         )
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        model_overrides = json.loads(overrides.get("json_model_override_args") or "{}")
+        model_overrides["encoder_attention_backend"] = self.encoder_attention_backend
+        overrides["json_model_override_args"] = json.dumps(model_overrides)
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
                 "Whisper ASR requires chunked_prefill_size=0 because its encoder "
@@ -424,6 +519,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[WhisperASRRequestData]:
         return {
+            "stream_output_builder": ExactWhisperStreamOutputBuilder(
+                self.tokenizer, self.stream_emit_interval_s
+            ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,

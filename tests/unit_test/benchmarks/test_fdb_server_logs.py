@@ -176,23 +176,6 @@ def test_server_handle_stops_the_step_with_the_log_tail_once_the_server_exited(
     )
 
 
-def test_server_handle_lets_a_live_server_pass(tmp_path: Path) -> None:
-    log_file = tmp_path / "judge-server.log"
-    with log_file.open("w") as log_handle:
-        process = subprocess.Popen(
-            [sys.executable, "-c", "import sys; sys.stdin.read()"],
-            stdin=subprocess.PIPE,
-            stdout=log_handle,
-        )
-    try:
-        RunningServer("judge server", process, log_file).ensure_alive(
-            "before the v1.5 Qwen judge"
-        )
-    finally:
-        process.stdin.close()
-        process.wait()
-
-
 def test_running_server_hands_out_its_process_and_streams_only_its_own_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -217,7 +200,7 @@ def test_running_server_hands_out_its_process_and_streams_only_its_own_log(
         "import time; print('server is ready', flush=True); time.sleep(60)",
     ]
     with servers_module.running_server(
-        "judge server", command, "0", 30000, log_file, "/v1/models", "qwen"
+        "judge server", command, "0", 30000, log_file, "/v1/models", "qwen", {}
     ) as server:
         wait_until(lambda: followed(caplog) == ["[judge-server] server is ready"])
         server.ensure_alive("during the v1.5 Qwen judge")

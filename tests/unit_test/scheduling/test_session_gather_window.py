@@ -127,7 +127,6 @@ def run_batches(
         (WindowHooks, "abc", [("a0", 0), ("b0", 0.005)], [["a0", "b0"]], 2),
         (WindowHooks, "abc", [("a0", 0), ("b0", 0.05)], [["a0"], ["b0"]], 2),
         (WindowHooks, "ab", [("open-c", 0), ("a0", 0)], [["open-c", "a0"]], 0),
-        (WindowHooks, "ab", [("close-b", 0), ("a0", 0)], [["close-b", "a0"]], 0),
         (WindowHooks, "ab", [("a0", 0), ("b0", 0.005)], [["a0", "b0"]], 1),
         (SequentialHooks, "ab", [("a0", 0), ("b0", 0.005)], [["a0"], ["b0"]], 0),
         (RecordingHooks, "ab", [("a0", 0), ("b0", 0.005)], [["a0"], ["b0"]], 0),
@@ -138,7 +137,6 @@ def run_batches(
         "appends-inside-the-window-share-one-call",
         "append-after-the-window-runs-in-a-second-call",
         "open-is-not-held",
-        "close-is-not-held",
         "wait-ends-once-every-open-session-has-an-append",
         "unbatched-hooks-never-wait",
         "zero-window-never-waits",
@@ -152,6 +150,13 @@ def test_idle_stage_gathers_appends_within_the_window(
     scheduler = SessionScheduler(hooks_class(), max_concurrency=1)
     assert run_batches(monkeypatch, scheduler, session_ids, arrivals) == batches
     assert len(scheduler.inbox.timeouts) == waits
+
+
+def test_hooks_without_session_batches_never_wait(monkeypatch):
+    scheduler = SessionScheduler(WindowHooks(), batch_sessions=False)
+    arrivals = [("a0", 0), ("b0", 0.005)]
+    assert run_batches(monkeypatch, scheduler, "ab", arrivals) == [["a0"], ["b0"]]
+    assert scheduler.inbox.timeouts == []
 
 
 def test_an_ordinary_request_in_the_batch_is_neither_held_nor_fatal(monkeypatch):

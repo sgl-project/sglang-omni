@@ -59,8 +59,15 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 request.data,
                 lambda token_ids: embed_tokens(token_ids.clamp(0, last_token_id)),
                 forward_batch.input_ids.device,
+                prefix_len=prefix_len,
+                extend_len=extend_len,
             )
-            for request in requests
+            for request, prefix_len, extend_len in zip(
+                requests,
+                forward_batch.extend_prefix_lens_cpu,
+                forward_batch.extend_seq_lens_cpu,
+                strict=True,
+            )
         ]
         attach_omni_prefill_inputs(
             forward_batch,

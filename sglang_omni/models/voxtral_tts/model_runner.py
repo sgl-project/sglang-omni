@@ -116,8 +116,8 @@ class VoxtralTTSModelRunner(ModelRunner):
         for sched_req in requests:
             data: VoxtralSGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             full_ids = data.input_ids
             current_ids = full_ids[prefix_len : prefix_len + req_len]
             audio_positions = (current_ids == int(data.audio_token_id)).nonzero(

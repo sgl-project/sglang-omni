@@ -63,15 +63,15 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
     sglang_request = request_data.req
     assert sglang_request is not None
     sequence_ids = list(sglang_request.full_untruncated_fill_ids)
-    extend_range = sglang_request.extend_range
     if (
-        extend_range is None
-        or extend_range.start != 0
-        or extend_range.end != len(sequence_ids)
+        sglang_request.extend_end is None
+        or sglang_request.prefix_len != 0
+        or sglang_request.extend_end != len(sequence_ids)
     ):
         raise RuntimeError(
             f"{sglang_request.rid}: a Drama 3 prefill must cover the whole sequence of "
-            f"{len(sequence_ids)} rows in one extend; got {extend_range}"
+            f"{len(sequence_ids)} rows in one extend; got "
+            f"[{sglang_request.prefix_len}, {sglang_request.extend_end})"
         )
     elif len(sequence_ids) < MINIMUM_PROMPT_ROWS:
         raise RuntimeError(

@@ -8,6 +8,9 @@ Run from the repository root with the sglang-omni venv active:
     python -m benchmarks.duplex.fdb judge --run-name smoke
     python -m benchmarks.duplex.fdb aggregate --run-name smoke
 
+`generate --all-stages` runs asr, judge and aggregate after it, so the four
+lines above become one.
+
 Each dataset has its own selection options; a count of 0 leaves it out.
 """
 
@@ -23,7 +26,7 @@ from types import FrameType
 
 from benchmarks.duplex.fdb.aggregate import aggregate
 from benchmarks.duplex.fdb.asr import asr
-from benchmarks.duplex.fdb.common import configure_logging, load_settings, log
+from benchmarks.duplex.fdb.common import Settings, configure_logging, load_settings, log
 from benchmarks.duplex.fdb.generate import generate
 from benchmarks.duplex.fdb.judge import judge
 from benchmarks.duplex.fdb.selection import (
@@ -132,8 +135,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-shards",
         type=int,
         default=1,
-        help="Parallel sessions against the one server; refused above the model "
-        "server's max_sessions (default: %(default)s)",
+        help="Parallel sessions, spread over the model servers; refused above "
+        "their max_sessions (default: %(default)s)",
+    )
+    generate_parser.add_argument(
+        "--gpus",
+        type=parse_gpus,
+        metavar="0,1,...",
+        help="One model server on each of these GPUs, shard i on the i-th mod "
+        "their count (default: the job GPU)",
+    )
+    generate_parser.add_argument(
+        "--all-stages",
+        action="store_true",
+        help="After recording, run asr, judge and aggregate; stops at the first "
+        "failing step",
     )
     for name, help_text in (
         ("asr", "Step 2: Parakeet ASR, v1.5 timing, v1.0 unified scoring"),
@@ -198,6 +214,38 @@ def sample_selection(
     return v15_selection, v10_selection
 
 
+def parse_gpus(text: str) -> tuple[str, ...]:
+    """Distinct GPU indices separated by commas, such as 0,1."""
+    gpus = tuple(part.strip() for part in text.split(","))
+    if not all(gpu.isdigit() for gpu in gpus) or len(set(gpus)) != len(gpus):
+        raise argparse.ArgumentTypeError(
+            f"expected distinct GPU indices such as 0,1, got {text!r}"
+        )
+    else:
+        return gpus
+
+
+def generate_stages(
+    settings: Settings,
+    repeat: int,
+    selection: SampleSelection,
+    v10_selection: SampleSelection,
+    num_shards: int,
+    gpus: tuple[str, ...],
+    all_stages: bool,
+) -> None:
+    """Step 1, and with all_stages steps 2 and 3 and aggregate after it. A failing
+    step stops the chain with its own message, which names the command that
+    continues it."""
+    generate(settings, repeat, selection, v10_selection, num_shards, gpus)
+    if all_stages:
+        asr(settings, repeat, retry_failed=False)
+        judge(settings, repeat, retry_failed=False)
+        aggregate(settings)
+    else:
+        pass
+
+
 def exit_on_sigterm(signal_number: int, frame: FrameType | None) -> None:
     # Raising here runs the finally blocks that stop a running server.
     sys.exit(SIGTERM_EXIT_CODE)
@@ -222,8 +270,13 @@ def main() -> None:
     if args.command == "setup":
         setup(settings)
     elif args.command == "generate":
-        generate(
-            settings, args.repeat, *sample_selection(parser, args), args.num_shards
+        generate_stages(
+            settings,
+            args.repeat,
+            *sample_selection(parser, args),
+            args.num_shards,
+            (settings.gpu,) if args.gpus is None else args.gpus,
+            args.all_stages,
         )
     elif args.command == "asr":
         asr(settings, args.repeat, args.retry_failed)

@@ -31,6 +31,10 @@ from sglang_omni.models.weight_loader import (
     default_weight_loader,
     load_weights_by_prefix,
 )
+from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
+from sglang_omni.modules.ming_audio.flow.cfm import CFM, get_epss_timesteps
+from sglang_omni.modules.ming_audio.flow.dit import DiT
+from sglang_omni.modules.ming_audio.flow.execution import TalkerExecutionConfig
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.audio_features import cached_fbank
 
@@ -39,10 +43,6 @@ from .device_runtime import TalkerDeviceRuntime
 from .front.number_en import normalize_numbers
 from .front.text_segment_cut import cut_text_by_semantic_length, is_chinese
 from .front.toolkit import tokenize_mixed_text_iterator
-from .talker_module.aggregator import Aggregator
-from .talker_module.cfm import CFM, get_epss_timesteps
-from .talker_module.dit import DiT
-from .talker_module.execution import TalkerExecutionConfig
 from .talker_module.packed_qkv import (
     PACKED_QKV_SHARD_IDS,
     PackedQKVLinear,

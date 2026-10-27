@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.server_args import ServerArgs
+    from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+
+    from sglang_omni.model_runner.speculative_target_worker import (
+        SpeculativeTargetWorker,
+    )
 else:
     pass
 
@@ -37,8 +42,6 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
-    mlx_model_path: str | None = None
-    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)
@@ -94,12 +97,16 @@ class ModelWorker:
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
+        # Set by create_sglang_infrastructure when speculative decoding is on.
+        self.speculative_target_worker: SpeculativeTargetWorker | None = None
+        self.speculative_worker: BaseSpecWorker | None = None
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
         from sglang.srt.distributed import bootstrap
         from sglang.srt.runtime_context import (
             SpawnRanks,
             get_device,
+            get_parallel,
             publish,
             spawn_world_rank,
         )
@@ -137,7 +144,7 @@ class ModelWorker:
         self.random_seed = broadcast_pyobj(
             [get_device().random_seed],
             self.tp_rank,
-            self.model_runner.tp_group.cpu_group,
+            get_parallel().tp_group.cpu_group,
         )[0]
         set_random_seed(self.random_seed)
 
@@ -305,13 +312,17 @@ class ModelWorker:
         )
 
     def get_tp_group(self):
-        return self.model_runner.tp_group
+        from sglang.srt.runtime_context import get_parallel
+
+        return get_parallel().tp_group
 
     def get_attention_tp_group(self):
-        return self.model_runner.attention_tp_group
+        from sglang.srt.runtime_context import get_parallel
+
+        return get_parallel().attn_tp_group
 
     def get_attention_tp_cpu_group(self):
-        return self.model_runner.attention_tp_group.cpu_group
+        return self.get_attention_tp_group().cpu_group
 
     def get_pad_input_ids_func(self):
         return getattr(self.model_runner.model, "pad_input_ids", None)

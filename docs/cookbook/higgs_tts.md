@@ -213,7 +213,9 @@ actual stream sample rate, channel count, and bit depth. Higgs defaults
 flushes the corresponding delayed-code rows at row 27. Clients can still set
 another value, including `0` to use the steady chunk size from the start. The
 producer and vocoder share the effective value, and it controls only the first
-chunk. Follow-up chunks return to the normal Higgs streaming window.
+chunk.
+
+After the first flush, both the producer and vocoder advance by `stream_followup_stride` delayed-code rows (75 by default). The default non-final flush positions are rows 27, 102, and 177. With four holdback frames, the corresponding audio chunks contain 20, 71, and 75 new codec frames; the second audio chunk is shorter because holdback starts after the first chunk. A final flush emits the remaining audio.
 
 2. Use Python
 
@@ -498,7 +500,7 @@ Reference output:
   <source src="../_static/audio/gaokao-listening.wav" type="audio/wav">
 </audio>
 
-#### Emotion
+**Emotion**
 
 | Token | Description |
 |---|---|
@@ -524,7 +526,7 @@ Reference output:
 | `<\|emotion:shame\|>` | Shame |
 | `<\|emotion:helplessness\|>` | Helplessness |
 
-#### Style
+**Style**
 
 | Token | Description |
 |---|---|
@@ -532,7 +534,7 @@ Reference output:
 | `<\|style:shouting\|>` | Shouting / projected voice |
 | `<\|style:whispering\|>` | Whisper |
 
-#### Sound Effects
+**Sound Effects**
 
 Pair each token with the matching onomatopoeia immediately after it.
 
@@ -548,7 +550,7 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `<\|sfx:sniff\|>` | Sniff | Sff |
 | `<\|sfx:sneeze\|>` | Sneeze | Achoo |
 
-#### Prosody
+**Prosody**
 
 | Token | Effect |
 |---|---|

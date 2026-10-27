@@ -17,7 +17,7 @@ def import_dots_tts() -> ModuleType:
 
     dots.tts refuses to import unless the torch and torchaudio distributions
     share a minor version (dots_tts/__init__.py, _check_torch_install, which
-    reads both through importlib.metadata.version). sglang pins torch 2.13.0
+    reads both through importlib.metadata.version). sglang pins torch 2.14.1
     with torchaudio 2.11.0, and omni pins the same pair: torchaudio
     2.11.0 is its last release, and its release note states it is compatible
     with torch 2.11 and with future torch versions. The check is stricter than

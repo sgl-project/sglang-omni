@@ -5,10 +5,10 @@
 #   docker build -f docker/xpu.Dockerfile -t sglang-omni:xpu .
 #   docker run -it --device /dev/dri --shm-size 32g sglang-omni:xpu
 
-FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
+FROM intel/deep-learning-essentials:2026.1.2-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.21
+ARG SGLANG_XPU_BRANCH=v0.5.22
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
@@ -23,8 +23,8 @@ ENV PIP_RETRIES=5
 # Level-Zero UMD + IGC, mirroring SGLang's image, which pins them because the rolling
 # PPA once faulted libze on B580 (sgl-kernel-xpu#296). Keep in lockstep with the host
 # xe KMD; override via --build-arg.
-ARG COMPUTE_RUNTIME_VERSION=26.18.38308.1
-ARG IGC_VERSION=2.34.4+21428
+ARG COMPUTE_RUNTIME_VERSION=26.27.39122.11
+ARG IGC_VERSION=2.38.2+22051
 ARG GMM_VERSION=22.10.0
 
 WORKDIR /workspace
@@ -73,10 +73,10 @@ RUN add-apt-repository -y ppa:kobuk-team/intel-graphics \
 
 # Minors differ on purpose: the XPU channel ships no torchaudio newer than 2.11+xpu.
 RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
-        torch==2.13.0+xpu \
-        torchvision==0.28.0+xpu \
+        torch==2.14.0+xpu \
+        torchvision==0.29.0+xpu \
         torchaudio==2.11.0+xpu \
-        torchcodec==0.13.0
+        torchcodec==0.17.0
 
 # SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
 # download torch again and compile Rust extensions this image never loads, so it

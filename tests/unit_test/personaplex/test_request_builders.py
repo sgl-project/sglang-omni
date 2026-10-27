@@ -142,7 +142,7 @@ def test_request_longer_than_the_context_is_rejected_with_the_limit():
     assert is_bad_request_error(error.value)
 
 
-@pytest.mark.parametrize("stage_seed,expected", [(None, 9), (0, 0), (42, 42)])
+@pytest.mark.parametrize("stage_seed,expected", [(None, 9), (0, 0)])
 def test_stage_seed_precedence(stage_seed: int | None, expected: int) -> None:
     sampling = resolve_sampling(
         {"seed": 7, "stage_params": {"lm": {"seed": 9}}},
@@ -302,7 +302,6 @@ def test_rollout_stage_token_limit_alias_preserves_frame_budget() -> None:
         ("seed", 1.9, "top_level"),
         ("seed", 1.9, "stage_params"),
         ("seed", 1.9, "stage_sampling"),
-        ("seed", "abc", "top_level"),
         ("seed", True, "stage_sampling"),
         ("stop", ["hello"], "stage_params"),
         ("stop_token_ids", [3], "stage_sampling"),

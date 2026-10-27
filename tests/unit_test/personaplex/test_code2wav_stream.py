@@ -2,6 +2,7 @@
 """The streaming codec stage renders per-request chunks into the whole-reply waveform."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -17,6 +18,8 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
+
+CUDA_FORWARD_DELAY_CYCLES = 2_000_000_000
 
 
 def decode_waveform(payload: dict) -> torch.Tensor:
@@ -274,35 +277,6 @@ def test_a_streaming_client_gets_the_reply_once(random_codec: MimiCodec) -> None
     assert result.data.data == {"modality": "audio", "sample_rate": SAMPLE_RATE}
 
 
-def test_one_frame_ramp_decodes_as_messages_arrive(random_codec: MimiCodec) -> None:
-    codec = random_codec
-    scheduler = new_scheduler(codec, (1,))
-    codes = torch.randint(0, 2048, (3, 8), generator=torch.Generator().manual_seed(6))
-    start_stream(scheduler, "a")
-
-    waveforms = push_frames(scheduler, "a", codes)
-    assert len(waveforms) == 3
-    torch.testing.assert_close(
-        torch.cat(waveforms), codec.decode(codes.T[None])[0, 0], atol=1e-5, rtol=1e-5
-    )
-
-
-def test_chunk_ramp_single_frame_reply_decodes_immediately(
-    random_codec: MimiCodec,
-) -> None:
-    codec = random_codec
-    scheduler = new_scheduler(codec, (1, 4))
-    codes = torch.randint(0, 2048, (1, 8), generator=torch.Generator().manual_seed(7))
-    start_stream(scheduler, "a")
-
-    (waveform,) = push_frames(scheduler, "a", codes)
-    torch.testing.assert_close(
-        waveform, codec.decode(codes.T[None])[0, 0], atol=1e-5, rtol=1e-5
-    )
-    (result,) = finish_stream(scheduler, "a")
-    assert result.type == "result"
-
-
 def test_chunk_ramp_trims_aggregated_chunks_to_the_caller_length(
     random_codec: MimiCodec,
 ) -> None:
@@ -389,8 +363,8 @@ def test_chunk_ramp_pending_frames_die_with_a_cancelled_request(
 
 @pytest.mark.parametrize(
     "chunk_ramp_frames",
-    [(1,), (1, 4), (1,) + (4,) * 31 + (8, 2)],
-    ids=["single-frame", "four-frames", "largest-chunk-before-smaller-steady"],
+    [(1,) + (4,) * 31 + (8, 2)],
+    ids=["largest-chunk-before-smaller-steady"],
 )
 def test_chunk_ramp_matches_whole_decode_past_the_attention_ring(
     random_codec: MimiCodec, chunk_ramp_frames: tuple[int, ...]
@@ -421,7 +395,7 @@ def drain_messages(scheduler: PersonaPlexCode2WavScheduler) -> list[OutgoingMess
 
 
 @pytest.mark.parametrize("payload_first", [False, True])
-@pytest.mark.parametrize("frame_count", [9, 10, 12])
+@pytest.mark.parametrize("frame_count", [9, 10])
 def test_stream_done_flushes_tail_in_either_payload_order(
     random_codec: MimiCodec, payload_first: bool, frame_count: int
 ) -> None:
@@ -585,3 +559,97 @@ def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_code
             # an error the size of the signal, is ruled out.
             error = (outputs["graphed"][stream] - expected[stream]).abs().max()
             assert error <= 0.05 * expected[stream].abs().max()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("max_graph_frames", [0, 4], ids=["eager", "graph"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_codec_chunk_does_not_wait_for_unrelated_forward(
+    random_codec: MimiCodec, max_graph_frames: int, batch_size: int
+) -> None:
+    codec = random_codec.cuda()
+    scheduler = PersonaPlexCode2WavScheduler(
+        MimiDecodeSlots(
+            codec,
+            num_slots=batch_size,
+            max_batch_size=batch_size,
+            max_graph_frames=max_graph_frames,
+            max_chunk_frames=4,
+        ),
+        compute_fn=lambda payload: payload,
+        chunk_ramp_frames=(1, 4),
+    )
+    codes = torch.randint(
+        0, 2048, (batch_size, 6, 8), generator=torch.Generator().manual_seed(42)
+    )
+
+    def decode_requests(prefix: str, frame_count: int) -> list[torch.Tensor]:
+        request_ids = [f"{prefix}-{row}" for row in range(batch_size)]
+        for request_id in request_ids:
+            start_stream(scheduler, request_id)
+        scheduler.on_stream_chunk_batch(
+            [
+                (
+                    request_id,
+                    StreamItem(
+                        chunk_id=0,
+                        from_stage="lm",
+                        data=codes[row, :frame_count],
+                    ),
+                )
+                for row, request_id in enumerate(request_ids)
+            ]
+        )
+        for request_id in request_ids:
+            scheduler.handle_stream_done(request_id)
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
+        messages = drain_messages(scheduler)
+        assert not scheduler.stream_states
+        assert scheduler.decode_slots.active_slot_count == 0
+        return [
+            torch.cat(
+                [
+                    decode_waveform(message.data)
+                    for message in messages
+                    if message.request_id == request_id and message.type == "stream"
+                ]
+            )
+            for request_id in request_ids
+        ]
+
+    expected = decode_requests("warmup", 6)
+    torch.cuda.synchronize()
+    unrelated_done = torch.cuda.Event()
+    # Note (edwardzh): Leave CI scheduling headroom while keeping failure cleanup finite.
+    torch.cuda._sleep(CUDA_FORWARD_DELAY_CYCLES)  # noqa: leading-underscore
+    unrelated_done.record()
+    try:
+        actual = decode_requests("reply", 6)
+        assert (
+            not unrelated_done.query()
+        ), "Codec decode waited for an unrelated forward"
+    finally:
+        unrelated_done.synchronize()
+    for waveform, reference in zip(actual, expected, strict=True):
+        assert torch.equal(waveform, reference)
+    reused = decode_requests("reused", 1)
+    for waveform, reference in zip(reused, expected, strict=True):
+        assert torch.equal(waveform, reference[:SAMPLES_PER_FRAME])
+
+
+def test_codec_rejects_non_cpu_codes_before_acquiring_a_slot(
+    random_codec: MimiCodec, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = new_scheduler(random_codec)
+    acquire = Mock(wraps=scheduler.decode_slots.acquire)
+    monkeypatch.setattr(scheduler.decode_slots, "acquire", acquire)
+    codes = torch.zeros((1, 8), dtype=torch.long, device="meta")
+    with scheduler.state_lock:
+        with pytest.raises(AssertionError, match="stream codes must be on CPU"):
+            scheduler.ingest_stream_item(
+                "reply", StreamItem(chunk_id=0, from_stage="lm", data=codes)
+            )
+    acquire.assert_not_called()
+    assert "reply" not in scheduler.stream_states

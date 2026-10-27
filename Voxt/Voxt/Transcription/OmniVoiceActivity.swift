@@ -27,9 +27,11 @@ nonisolated enum OmniVoiceActivityError: LocalizedError, Equatable {
 actor OmniVoiceActivityStream {
     private let session: URLSession
     private let socket: URLSessionWebSocketTask
+    private let responseTimeout: Duration
     private var tail: Task<Void, Never>?
 
-    init(endpoint: OmniServerEndpoint) {
+    init(endpoint: OmniServerEndpoint, responseTimeout: Duration = .seconds(2)) {
+        self.responseTimeout = responseTimeout
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
         session = URLSession(configuration: configuration)
@@ -42,22 +44,63 @@ actor OmniVoiceActivityStream {
         socket.resume()
     }
 
+    deinit {
+        socket.cancel(with: .goingAway, reason: nil)
+        session.invalidateAndCancel()
+    }
+
     /// Feeds 16 kHz samples; the probability of the last whole 512-sample
     /// chunk they completed, or nil when none completed.
     func probability(samples16k: [Float]) async throws -> Float? {
+        try Task.checkCancellation()
         let previous = tail
         let socket = socket
+        let session = session
+        let responseTimeout = responseTimeout
         // Note (Jiaxin Deng): replies arrive in order, so one exchange at a time per stream.
         let exchange = Task { () throws -> Float? in
             await previous?.value
-            try await socket.send(.data(Self.float32LittleEndian(samples16k)))
-            guard case .string(let text) = try await socket.receive() else {
-                throw OmniVoiceActivityError.malformedResponse
+            try Task.checkCancellation()
+            return try await withThrowingTaskGroup(of: Float?.self) { group in
+                group.addTask {
+                    try await withTaskCancellationHandler {
+                        try Task.checkCancellation()
+                        try await socket.send(.data(Self.float32LittleEndian(samples16k)))
+                        guard case .string(let text) = try await socket.receive() else {
+                            throw OmniVoiceActivityError.malformedResponse
+                        }
+                        return try Self.probability(fromReply: text)
+                    } onCancel: {
+                        // Note (Chenyang Zhao): receive() needs its socket closed to unblock.
+                        socket.cancel(with: .goingAway, reason: nil)
+                        session.invalidateAndCancel()
+                    }
+                }
+                group.addTask {
+                    try await Task.sleep(for: responseTimeout)
+                    throw URLError(.timedOut)
+                }
+                defer { group.cancelAll() }
+                guard let result = try await group.next() else { throw CancellationError() }
+                return result
             }
-            return try Self.probability(fromReply: text)
         }
         tail = Task { _ = try? await exchange.value }
-        return try await exchange.value
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await exchange.value
+                try Task.checkCancellation()
+                return result
+            } catch {
+                try Task.checkCancellation()
+                throw error
+            }
+        } onCancel: {
+            // Note (Chenyang Zhao): the unstructured exchange needs explicit caller cancellation.
+            exchange.cancel()
+            socket.cancel(with: .goingAway, reason: nil)
+            session.invalidateAndCancel()
+        }
     }
 
     func close() {

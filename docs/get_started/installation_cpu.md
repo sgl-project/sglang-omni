@@ -1,4 +1,4 @@
-# 🚀 Installation — Intel CPU
+# Installation — Intel CPU
 
 Installs `sglang-omni` for **CPU-only inference**. The default
 [installation](./installation.md) targets CUDA, so this path uses the separate
@@ -20,7 +20,7 @@ omits accelerator-only packages.
 - A CPU build of SGLang from the matching upstream release.
 - Standard audio runtime libraries such as `ffmpeg` and `libsndfile`.
 
-## 🐳 Option A: Docker
+## Option A: Docker
 
 ```bash
 # Clone the SGLang-omni repository
@@ -37,7 +37,7 @@ docker run -it --shm-size 32g --ipc host --network host sglang-omni:cpu
 The image installs upstream SGLang with its CPU pyproject, then installs `sglang-omni`
 with `pyproject_cpu.toml`. It sets `SGLANG_USE_CPU_ENGINE=1` for the runtime.
 
-## 🛠️ Option B: Manual install
+## Option B: Manual install
 
 Create and activate an environment first:
 
@@ -56,7 +56,7 @@ Install the matching CPU SGLang build:
 ```bash
 git clone https://github.com/sgl-project/sglang ../sglang
 cd ../sglang
-git checkout v0.5.21
+git checkout v0.5.22
 
 cd python
 cp pyproject_cpu.toml pyproject.toml

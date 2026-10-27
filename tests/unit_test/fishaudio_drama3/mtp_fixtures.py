@@ -387,7 +387,12 @@ def write_synthetic_checkpoint(
     torch.manual_seed(0)
     backbone = TransformersBackbone(
         TransformersTextConfig(
-            **{key: value for key, value in text_config.items() if key != "model_type"}
+            **{
+                key: value
+                for key, value in text_config.items()
+                if key not in ("model_type", "mlp_layer_types")
+            },
+            mlp_layer_types=["sparse"] * text_config["num_hidden_layers"],
         )
     )
     expert_width = int(text_config["moe_intermediate_size"])

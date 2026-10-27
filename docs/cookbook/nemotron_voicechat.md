@@ -22,6 +22,10 @@ If they are missing and the Hub is unreachable, start-up fails with an error nam
 
 The four stages share one GPU. Measured on one H200 (143.8 GB) with the offline example, the run peaks at about 129 GB: the talker engine reserves `mem_fraction_static=0.35` (about 47 GB, most of it KV pool) and the thinker takes what remains (about 73 GB, 17.7 GB of it bf16 weights). Lower `--talker.engine.mem_fraction_static` if the GPU is smaller or shared; the perception encoder and codec need only a few GB each.
 
+On CUDA the talker captures its decode step as a CUDA graph by default; the thinker, and the talker on other platforms, decode eagerly. On one H100 with the offline pipeline, the talker graph cuts end-to-end latency 1.66–1.76x on 8–44 s inputs and keeps the reply text identical. The reply audio stays within run-to-run variation but is not bit-identical to eager decode after about 7 s: past that context length the graph's attention reduces in a different order, and the code sampler breaks near-ties differently. Set `--talker.engine.disable_cuda_graph true` to decode the talker eagerly.
+
+`--thinker.engine.disable_cuda_graph false` captures the thinker as well, roughly halving its decode step and the time to first text. Greedy reply text can then change where two candidate tokens tie in bf16 (7 of 44 test clips), so it is off by default.
+
 ## Running the offline example
 
 ```bash
@@ -47,14 +51,21 @@ For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/instal
 ```bash
 python examples/run_nemotron_voicechat_duplex.py \
   --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
-  --serve --port 8097
+  --serve --port 8097 --max-sessions 1
 ```
 
 Open http://localhost:8097, click **Start**, and allow microphone access.
 If the server runs on a remote GPU host, forward port 8097 to your local machine first.
 Headphones help avoid acoustic feedback. The example uses the shared realtime
-playground and supports one session on one GPU, with a four-minute browser limit.
-It uses the checkpoint's default prompt and voice.
+playground with a four-minute browser limit. It defaults to one session and uses
+the checkpoint's default prompt and voice.
+
+`--max-sessions` controls concurrent conversations. The default remains one.
+Each admitted session owns independent perception, transformer KV, and codec
+state; the thinker and talker KV pools are sized for the session limit plus one
+incoming request row. Perception and codec execution remain serialized in this
+foundation, so benchmark the 80 ms unit deadline before raising the limit in a
+latency-sensitive deployment.
 
 ## Offline request parameters
 
@@ -65,11 +76,34 @@ It uses the checkpoint's default prompt and voice.
 
 Audio randomness is governed by the checkpoint's own settings, read from `config.json` (`inference_noise_scale`, `inference_top_p_or_k`): the talker samples its codes with Gumbel-max component selection and Gaussian noise inside the MoG head, so two runs on the same input produce different code sequences and slightly different audio even though the text is identical. There is no `seed` control yet.
 
+## Tool calling
+
+VoiceChat can call configured Python functions during a conversation and use their results in its spoken replies. Tool calling is optional; no tools are enabled by default.
+
+To try the random-number example, run this command from the repository root:
+
+```bash
+PYTHONPATH=. sgl-omni serve --config examples/nemotron_voicechat/tool.yaml --enable-realtime --port 8000
+```
+
+Connect your realtime client and ask, for example, "Give me a random number between one and fifty." The server executes the tool and returns its result to the model automatically; the client does not need to handle tool calls.
+
+To use your own tools, copy `examples/nemotron_voicechat/tool.yaml` and update:
+
+- `tools.<name>.function`: the OpenAI function schema, whose name must match the registry key.
+- `tools.<name>.implementation`: the importable Python function path.
+
+Each tool is declared once. Set `tool_names` to a list of registered names to offer a subset; otherwise all registered tools are offered.
+
+Each function accepts an argument dictionary and returns a JSON-serializable value. See `examples/nemotron_voicechat/tools.py` for an example. Make your tool module importable in the server environment, then launch with `--config` pointing to your configuration file.
+
+Keep the realtime audio stream running, including silence while waiting for a reply. Stopping audio input can prevent the model from finishing its response.
+
 ## Known limitations
 
-- The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API.
+- The offline pipeline handles one request at a time (`max_running_requests=1` for both engines), without a barge-in or interrupt API. Native duplex sessions have independent state but do not yet batch perception or codec work across conversations.
+- A conversation holds at most 6144 positions in the thinker and in the talker: the system prompt, then one per 80 ms frame, so about eight minutes; a duplex session that reaches it ends with `context_exhausted`. The checkpoint was trained on conversations of at most about two minutes, and context beyond that may not be retained reliably.
 - Single speaker (`Aria`, the checkpoint's baked-in prompt latents).
-- The `function_head` tool-call channel is decoded and carried through but nothing acts on it.
 - Classifier-free guidance is off (`guidance_scale=0`) although the checkpoint config enables it at 0.2.
 - Talker output is not bit-identical to NeMo's offline script even with deterministic sampling on both sides (about 82 % of quantizer cells and 63 of 150 frames agree on a 12 s fixture; transcripts and amplitude envelopes match). Known causes: the backbone and KV cache run in bfloat16 because SGLang's attention backends and `sgl_kernel`'s Gemma RMSNorm have no fp32 path, while NeMo runs the whole talker in fp32; NeMo's offline script enables classifier-free guidance by default; and NeMo's offline recipe walks the system-prompt region before frame 0 (realtime convention here; see `prompt_region_steps`). The thinker is frame-exact with NeMo.
 - NeMo decodes the perception encoder's flush row as a 151st frame; this pipeline computes it but does not decode it, so replies are one frame (80 ms) shorter.

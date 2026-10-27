@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 2: Parakeet ASR, v1.5 timing, and v1.0 unified scoring."""
+"""Step 2: Parakeet ASR, v1.5 timing, v1.0 unified scoring, and the listening
+quality of every reply."""
 
 from __future__ import annotations
 
 import shlex
+import sys
 from pathlib import Path
 
 from benchmarks.duplex.fdb.common import (
     ENGINE_LABEL,
+    LISTENING_DIR,
     PARAKEET_SHA256,
     Settings,
+    listening_command,
     log,
     reference_command,
     require_v10_export,
@@ -42,6 +46,41 @@ def v10_asr(settings: Settings, tree: Path) -> bool:
             PARAKEET_SHA256,
             "--device",
             "cuda",
+        ),
+        visible_gpus=settings.gpu,
+    )
+
+
+def listening(settings: Settings, manifests: list[Path], out: Path) -> bool:
+    """Cut and transcribe the replies in the scoring venv, then score them in
+    the serving venv, which holds the UTMOS and WavLM models."""
+    log(f"== Listening quality: reply transcripts (Parakeet on GPU {settings.gpu})")
+    is_transcribed = run_command(
+        listening_command(
+            settings.scoring_python,
+            "transcribe",
+            *(argument for path in manifests for argument in ("--manifest", str(path))),
+            "--out",
+            str(out),
+            "--nemo",
+            str(settings.parakeet_nemo),
+            "--nemo-sha256",
+            PARAKEET_SHA256,
+            "--device",
+            "cuda",
+        ),
+        visible_gpus=settings.gpu,
+    )
+    if not is_transcribed:
+        return False
+    else:
+        pass
+    log(
+        f"== Listening quality: UTMOS, voice consistency, omitted words (GPU {settings.gpu})"
+    )
+    return run_command(
+        listening_command(
+            Path(sys.executable), "score", "--out", str(out), "--device", "cuda"
         ),
         visible_gpus=settings.gpu,
     )
@@ -106,6 +145,11 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
         )
     else:
         pass
+    manifests = [
+        *([v15_manifest] if has_v15 else []),
+        *([v10_tree / "manifest.json"] if v10_tree is not None else []),
+    ]
+    is_listening_ok = listening(settings, manifests, repeat_dir / LISTENING_DIR)
 
     problems = []
     if not (is_asr_ok and is_timing_ok):
@@ -130,6 +174,14 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
             f'`CUDA_VISIBLE_DEVICES="" {shlex.quote(str(settings.scoring_python))} '
             "-m benchmarks.eval.benchmark_duplex_v10 unified-score "
             f"--tree {shlex.quote(str(v10_tree))}`."
+        )
+    else:
+        pass
+    if not is_listening_ok:
+        problems.append(
+            "WARNING: the listening-quality phase failed; its output is above. "
+            f"Rerun `{step_command('asr', settings, repeat)}`; it recomputes the "
+            "listening metrics in full."
         )
     else:
         pass

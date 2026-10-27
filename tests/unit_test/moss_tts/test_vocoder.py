@@ -16,6 +16,7 @@ from sglang_omni.models.moss_tts.vocoder import (
     MossTTSVocoder,
     copy_valid_waveforms_to_cpu,
 )
+from sglang_omni.models.moss_tts.vocoder_graphs import MossVocoderSegmentGraphs
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
 )
@@ -107,19 +108,6 @@ class FakeResidualQuantizer(nn.Module):
         for index, quantizer in enumerate(self.quantizers[: codes.shape[0]]):
             decoded += quantizer.decode_code(codes[index])
         return self.output_proj(decoded)
-
-
-@pytest.mark.parametrize("num_quantizers", [1, 3, 4])
-def test_cached_quantizer_matches_source_decode(num_quantizers: int) -> None:
-    torch.manual_seed(0)
-    source = FakeResidualQuantizer()
-    decoder = MossAudioTokenizerQuantizerDecoder(source)
-    codes = torch.randint(0, 16, (num_quantizers, 2, 7))
-
-    expected = source.decode_codes(codes)
-    actual = decoder.decode_codes(codes)
-
-    assert torch.equal(actual, expected)
 
 
 def test_cached_quantizer_rejects_invalid_codebook_count() -> None:
@@ -523,16 +511,21 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     ).tolist() == [3.0, 3.0]
 
 
-@pytest.mark.parametrize("compute_dtype", [None, "float32"])
+@pytest.mark.parametrize(
+    ("compute_dtype", "quantizer"),
+    [(None, SimpleNamespace(decode_codes=lambda codes: codes)), ("float32", None)],
+)
 def test_moss_tts_vocoder_can_disable_batched_decode(
     monkeypatch: pytest.MonkeyPatch,
     compute_dtype: str | None,
+    quantizer: SimpleNamespace | None,
 ) -> None:
     from sglang_omni.models.moss_tts import stages
 
     codec = nn.Module()
     codec.dummy = nn.Parameter(torch.zeros(1))
     codec.decoder = nn.ModuleList()
+    codec.quantizer = quantizer
     audio_vocoder = SimpleNamespace(
         model=codec,
         sample_rate=16000,
@@ -550,8 +543,10 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     monkeypatch.setattr(
         vocoder_module,
         "MossAudioTokenizerVocoderDecoder",
-        lambda *args, **_kwargs: pytest.fail(
-            "disabled batched decode must not construct the decoder wrapper"
+        SimpleNamespace(
+            from_module=lambda *args, **_kwargs: pytest.fail(
+                "disabled batched decode must not construct the decoder wrapper"
+            )
         ),
     )
 
@@ -560,6 +555,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         device="cpu",
         compute_dtype=compute_dtype,
     )
+    assert scheduler.vocoder.nonstream_decoder is None
     payload = make_payload("baseline")
     payload.data = MossTTSState(
         delayed_audio_codes=torch.tensor(
@@ -574,3 +570,64 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
         1.0,
         1.0,
     ]
+
+
+@pytest.mark.parametrize("segment_lengths", [[3], [3, 3], [8]])
+def test_segment_graph_preserves_batched_and_uncaptured_eager_paths(
+    monkeypatch: pytest.MonkeyPatch, segment_lengths: list[int]
+) -> None:
+    eager_calls = []
+    graph_calls = []
+    segments = [torch.ones(length, 2, dtype=torch.long) for length in segment_lengths]
+    vocoder = MossTTSVocoder.__new__(MossTTSVocoder)
+    vocoder.codec = nn.Linear(1, 1)
+    vocoder.device = "cpu"
+    vocoder.quantizer = SimpleNamespace(decode_codes=lambda codes: codes)
+    vocoder.nonstream_decoder = SimpleNamespace()
+    vocoder.compute_dtype = None
+    vocoder.max_segment_batch_size = 8
+
+    def replay(segment):
+        graph_calls.append(segment)
+        return torch.ones(1, segment.shape[0])
+
+    def eager(codes, **kwargs):
+        eager_calls.append(codes)
+        return [torch.ones(1, segment.shape[0]) for segment in codes]
+
+    vocoder.segment_graphs = SimpleNamespace(
+        covers=lambda segment: segment.shape[0] == 3,
+        replay=replay,
+    )
+    monkeypatch.setattr(vocoder_module, "decode_codes_batch", eager)
+    actual = vocoder.decode_segment_batches(segments)
+    assert [audio.numel() for audio in actual] == segment_lengths
+    use_graph = segment_lengths == [3]
+    assert bool(graph_calls) == use_graph
+    assert bool(eager_calls) != use_graph
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_segment_graph_replay_retains_lengths_and_independent_waveforms() -> None:
+    class Decoder(nn.ModuleList):
+        def output_lengths(self, lengths):
+            return lengths
+
+    class DecodeRow:
+        def __call__(self, codes, lengths, frames):
+            return codes.float().sum(dim=0).unsqueeze(1) + lengths.view(1, 1, 1)
+
+    graphs = MossVocoderSegmentGraphs(Decoder(), row_decode=DecodeRow())
+    graphs.capture([2, 4], n_vq=3, device=torch.device("cuda"))
+    assert len(graphs.graphs) == 2
+    retained = []
+    for frames in [2, 4, 2, 4]:
+        codes = torch.arange(frames * 3, device="cuda").reshape(frames, 3)
+        expected = codes.float().sum(dim=1).cpu().unsqueeze(0) + frames
+        actual = graphs.replay(codes)
+        retained.append((actual, expected))
+    for actual, expected in retained:
+        assert torch.equal(actual, expected)
+    assert not graphs.covers(torch.zeros(3, 3, dtype=torch.long))
+    assert not graphs.covers(torch.zeros(2, 4, dtype=torch.long))

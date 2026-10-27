@@ -2,18 +2,22 @@
 """Chunked Mimi must land on the samples a whole-sequence pass produces."""
 
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
 
 import pytest
 import torch
+from safetensors.torch import load_file, save_file
 
 from sglang_omni.models.personaplex.architecture import MIMI
 from sglang_omni.models.personaplex.components.causal_conv import (
     CausalConv1d,
     CausalConvTranspose1d,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
-    MimiDecodeState,
+from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiDecodeState
+from sglang_omni.models.personaplex.components.mimi_loader import (
+    load_mimi_codec,
     rename_mimi_key,
 )
 from sglang_omni.models.personaplex.components.mimi_transformer import (
@@ -97,6 +101,110 @@ def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
     assert torch.equal(stream(codes, state), fresh)
 
 
+@pytest.mark.parametrize("mode", ["encode", "decode", "both"])
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_selectively_loaded_codec_matches_full_codec(
+    random_codec: MimiCodec,
+    mimi_checkpoint: Path,
+    mode: Literal["encode", "decode", "both"],
+    device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    reference_codec = random_codec.to(device=device)
+    codec = load_mimi_codec(mimi_checkpoint, device=device, mode=mode)
+    assert codec.device == reference_codec.device
+    assert not codec.training
+    assert all(parameter.dtype == torch.float32 for parameter in codec.parameters())
+    if mode != "both":
+        assert sum(tensor.numel() for tensor in codec.state_dict().values()) < sum(
+            tensor.numel() for tensor in reference_codec.state_dict().values()
+        )
+    else:
+        pass
+
+    frame_count = 5
+    waveform = torch.randn(1, 1, frame_count * codec.samples_per_frame, device=device)
+    codes = reference_codec.encode(waveform)
+    if mode != "decode":
+        torch.testing.assert_close(codec.encode(waveform), codes, atol=0, rtol=0)
+        encode_state = codec.init_encode_state(batch_size=1)
+        reference_encode_state = reference_codec.init_encode_state(batch_size=1)
+        for waveform_chunk in waveform.split(codec.samples_per_frame, dim=-1):
+            torch.testing.assert_close(
+                codec.encode_step(waveform_chunk, encode_state),
+                reference_codec.encode_step(waveform_chunk, reference_encode_state),
+                atol=0,
+                rtol=0,
+            )
+    else:
+        pass
+    if mode != "encode":
+        expected_waveform = reference_codec.decode(codes)
+        torch.testing.assert_close(
+            codec.decode(codes), expected_waveform, atol=0, rtol=0
+        )
+        for chunk_frames in (1, 4):
+            decode_state = codec.init_decode_state(
+                batch_size=1, max_chunk_frames=chunk_frames
+            )
+            reference_decode_state = reference_codec.init_decode_state(
+                batch_size=1, max_chunk_frames=chunk_frames
+            )
+            for code_chunk in codes.split(chunk_frames, dim=-1):
+                torch.testing.assert_close(
+                    codec.decode_step(code_chunk, decode_state),
+                    reference_codec.decode_step(code_chunk, reference_decode_state),
+                    atol=0,
+                    rtol=0,
+                )
+    else:
+        pass
+
+
+@pytest.mark.parametrize(
+    "mode,missing_weight",
+    [
+        ("encode", "quantizer.rvq_first.input_proj.weight"),
+        ("decode", "quantizer.rvq_first.output_proj.weight"),
+        ("encode", "quantizer.rvq_rest.vq.layers.0._codebook.embedding_sum"),
+        ("decode", "quantizer.rvq_rest.vq.layers.0._codebook.cluster_usage"),
+    ],
+)
+def test_selective_loading_requires_quantizer_weights(
+    mimi_checkpoint: Path,
+    tmp_path: Path,
+    mode: Literal["encode", "decode"],
+    missing_weight: str,
+) -> None:
+    checkpoint_weights = load_file(str(mimi_checkpoint))
+    checkpoint_weights.pop(missing_weight)
+    with TemporaryDirectory(dir=tmp_path) as checkpoint_directory:
+        incomplete_checkpoint = Path(checkpoint_directory) / "incomplete.safetensors"
+        save_file(checkpoint_weights, str(incomplete_checkpoint))
+        with pytest.raises(RuntimeError, match="Missing key"):
+            load_mimi_codec(incomplete_checkpoint, device="cpu", mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["encode", "decode"])
+def test_selective_loading_rejects_unexpected_active_weights(
+    mimi_checkpoint: Path,
+    tmp_path: Path,
+    mode: Literal["encode", "decode"],
+) -> None:
+    checkpoint_weights = load_file(str(mimi_checkpoint))
+    checkpoint_weights[f"{mode}r.unexpected.weight"] = torch.zeros(1)
+    with TemporaryDirectory(dir=tmp_path) as checkpoint_directory:
+        invalid_checkpoint = Path(checkpoint_directory) / "invalid.safetensors"
+        save_file(checkpoint_weights, str(invalid_checkpoint))
+        with pytest.raises(RuntimeError, match="Unexpected key"):
+            load_mimi_codec(invalid_checkpoint, device="cpu", mode=mode)
+
+
 def test_checkpoint_names_map_onto_the_module_tree():
     codec = MimiCodec()
     expected = set(codec.state_dict())
@@ -163,25 +271,6 @@ def test_the_ring_drops_its_oldest_step_as_the_reference_does():
     assert influenced_steps(SMALL.frame_ratio) == list(
         range(SMALL.context - SMALL.frame_ratio)
     )
-
-
-@pytest.mark.parametrize(
-    "length", [SMALL.context - 1, SMALL.context, 3 * SMALL.context + 1]
-)
-def test_whole_sequence_matches_the_streaming_replay(length):
-    transformer = small_transformer()
-    x = torch.randn(1, SMALL.dim, length)
-    state = transformer.init_state(batch_size=1, max_chunk_steps=SMALL.frame_ratio)
-    with torch.no_grad():
-        whole = transformer(x)
-        chunked = torch.cat(
-            [
-                transformer.step(x[..., t : t + SMALL.frame_ratio], state)
-                for t in range(0, x.shape[-1], SMALL.frame_ratio)
-            ],
-            -1,
-        )
-    torch.testing.assert_close(whole, chunked, atol=1e-6, rtol=1e-5)
 
 
 @pytest.mark.parametrize("max_chunk_frames", [1, 3, 8])

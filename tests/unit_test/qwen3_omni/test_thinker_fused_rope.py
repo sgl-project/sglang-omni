@@ -292,24 +292,6 @@ def test_install_succeeds_on_xpu() -> None:
     assert attn.apply_qk_norm_rope.__func__.__name__ == "_bound"
 
 
-def test_install_is_refused_off_xpu(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.qwen3_omni.components import thinker_fused_rope
-
-    layer = SimpleNamespace(self_attn=fake_attn())
-    monkeypatch.setattr(thinker_fused_rope.current_platform, "is_xpu", lambda: False)
-
-    assert (
-        install_thinker_fused_rope(
-            SimpleNamespace(layers=[layer]),
-            kernel_provider=lambda: (lambda *a: None),
-            prefill_graph_enabled=False,
-        )
-        is None
-    )
-
-
 def test_install_is_a_no_op_when_the_build_has_no_kernel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -14,90 +14,7 @@ import torch
 
 from sglang_omni.models.ming_omni.thinker import BailingMoeV2Attention
 
-BOOTSTRAP_PATH = Path("sglang_omni/models/ming_omni/bootstrap.py")
-RUNNER_PATH = Path("sglang_omni/model_runner/ming_thinker_model_runner.py")
-MING_THINKER_PATH = Path("sglang_omni/models/ming_omni/thinker.py")
-MING_IMAGE_ENCODER_PATH = Path(
-    "sglang_omni/models/ming_omni/components/image_encoder.py"
-)
 MING_PREPROCESSOR_PATH = Path("sglang_omni/models/ming_omni/components/preprocessor.py")
-VENDOR_SGLANG_LAYERS_PATH = Path("sglang_omni/vendor/sglang/layers.py")
-
-
-def read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def test_ming_bootstrap_wires_ming_thinker_model_runner() -> None:
-    source = read(BOOTSTRAP_PATH)
-
-    assert "MingThinkerModelRunner" in source
-    assert "SGLangOutputProcessor" in source
-    assert "model_runner = MingThinkerModelRunner(model_worker, output_proc)" in source
-    assert "model_runner=model_runner" in source
-    assert 'model_arch_override="BailingMoeV2ForCausalLM"' in source
-
-
-def test_ming_thinker_runner_source_injects_multimodal_embeds() -> None:
-    source = read(RUNNER_PATH)
-
-    assert "class MingThinkerModelRunner(ModelRunner)" in source
-    assert "audio_embeds" in source
-    assert "image_embeds" in source
-    assert "resolve_match_id" in source
-    assert "validate_final_consumption" in source
-    assert "continue" in source
-    assert ".clamp(" in source
-    assert "self.embed_tokens.num_embeddings - 1" in source
-    assert "outer.model(" in source
-    assert "input_ids=None" in source
-    assert "input_embeds=input_embeds" in source
-    assert "outer.logits_processor(" in source
-    assert "GenerationBatchResult(" in source
-    assert "can_run_cuda_graph=False" in source
-    assert "req.omni_model_inputs = None" in source
-    assert "req._omni_consumed = None" in source
-
-
-def test_ming_thinker_runner_uses_ming_token_id_contract() -> None:
-    source = read(RUNNER_PATH)
-
-    assert "hf_config" in source
-    assert "llm_config" in source
-    assert "image_token_id" in source
-    assert "video_token_id" in source
-    assert "audio_token_id" in source
-    assert "image_patch_token" in source
-    assert "video_patch_token" in source
-    assert "thinker_config" not in source
-
-
-def test_ming_thinker_weight_loader_uses_qwen3_helper_path() -> None:
-    source = read(MING_THINKER_PATH)
-
-    assert "sglang_omni.models.qwen3_omni.thinker" not in source
-    assert "sglang_omni.models.qwen3_omni.components.thinker_model" in source
-    assert "extract_fused_experts" in source
-
-
-def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
-    source = read(MING_IMAGE_ENCODER_PATH)
-    init_body = source.split("    @staticmethod", 1)[0]
-
-    assert (
-        "init_sglang_tp(" in init_body
-    ), "TP context must be initialized in __init__, not deferred to forward"
-    assert "cleanup_sglang_tp()" not in init_body
-
-
-def test_ming_image_encoder_tp_init_requires_parallel_state() -> None:
-    source = read(MING_IMAGE_ENCODER_PATH)
-    init_fn = source.split("def init_sglang_tp", 1)[1].split(
-        "    @classmethod\n    def cleanup_sglang_tp", 1
-    )[0]
-
-    assert "parallel_state.model_parallel_is_initialized()" in init_fn
-    assert 'if getattr(dp, "_ATTN_TP_SIZE", None) is not None' not in init_fn
 
 
 def test_ming_thinker_attention_feeds_o_proj_one_row_per_token() -> None:
@@ -120,50 +37,6 @@ def test_ming_thinker_attention_feeds_o_proj_one_row_per_token() -> None:
     output = attention.forward_core(q, q, q, SimpleNamespace())
 
     assert torch.equal(output, q.flatten(1))
-
-
-def test_vendored_sglang_layers_do_not_import_removed_sampling_symbol() -> None:
-    source = read(VENDOR_SGLANG_LAYERS_PATH)
-
-    assert "top_k_top_p_sampling_from_probs" not in source
-
-
-def test_ming_vision_block_kwargs_include_head_size(
-    monkeypatch,
-) -> None:
-    weight_loader_module = ModuleType("sglang_omni.models.weight_loader")
-    weight_loader_module.default_weight_loader = lambda *args, **kwargs: None
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.weight_loader",
-        weight_loader_module,
-    )
-
-    from sglang_omni.models.ming_omni.components.vision_encoder import (
-        build_qwen3_vision_block_kwargs,
-    )
-
-    kwargs = build_qwen3_vision_block_kwargs(
-        dim=1152,
-        num_heads=16,
-        head_size=72,
-        intermediate_dim=4304,
-        hidden_act="gelu_pytorch_tanh",
-        norm_layer=None,
-        quant_config=None,
-        prefix="visual.blocks.0",
-    )
-
-    assert kwargs == {
-        "dim": 1152,
-        "num_heads": 16,
-        "head_size": 72,
-        "intermediate_dim": 4304,
-        "hidden_act": "gelu_pytorch_tanh",
-        "norm_layer": None,
-        "quant_config": None,
-        "prefix": "visual.blocks.0",
-    }
 
 
 def load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=None):

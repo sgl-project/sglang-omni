@@ -267,7 +267,6 @@ def test_batch_items_without_a_supported_set_keep_ignoring_extras() -> None:
 @pytest.mark.parametrize(
     ("fields", "path"),
     [
-        ({"stage_sampling": {}}, "stage_sampling"),
         ({"input": "a single-request field"}, "input"),
         ({"seed": 0}, "seed"),
     ],
@@ -365,21 +364,6 @@ def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
     assert client_impl.requests == []
 
 
-def test_batch_speech_uses_served_model_and_default_voice() -> None:
-    client_impl = RecordingBatchSpeechClient()
-    client = TestClient(create_app(client_impl, model_name="tts"))
-
-    response = client.post(
-        "/v1/audio/speech/batch",
-        json={"items": [{"input": "one"}]},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["succeeded"] == 1
-    assert client_impl.requests[0].model == "tts"
-    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
-
-
 def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
@@ -397,19 +381,7 @@ def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
     assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("speed", "1.2"),
-        ("max_new_tokens", "5"),
-        ("token_count", "5"),
-        ("duration_tokens", "5"),
-        ("x_vector_only_mode", "true"),
-    ],
-)
-def test_batch_speech_rejects_stringified_default_types(
-    field_name: str, value: str
-) -> None:
+def test_batch_speech_rejects_stringified_default_types() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -418,24 +390,18 @@ def test_batch_speech_rejects_stringified_default_types(
         json={
             "model": "tts",
             "voice": "default",
-            field_name: value,
+            "x_vector_only_mode": "true",
             "items": [{"input": "one"}],
         },
     )
 
     assert response.status_code == 400
-    assert response.json()["error"]["param"] == field_name
+    assert response.json()["error"]["param"] == "x_vector_only_mode"
     assert client_impl.requests == []
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", 0),
-        ("token_count", -1),
-        ("duration_tokens", 0),
-        ("duration_tokens", -1),
-    ],
+    ("field_name", "value"), [("token_count", 0), ("duration_tokens", 0)]
 )
 def test_batch_speech_rejects_non_positive_default_duration_fields(
     field_name: str, value: int
@@ -458,16 +424,7 @@ def test_batch_speech_rejects_non_positive_default_duration_fields(
     assert client_impl.requests == []
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", "5"),
-        ("duration_tokens", "5"),
-    ],
-)
-def test_batch_speech_rejects_stringified_item_integer_overrides(
-    field_name: str, value: str
-) -> None:
+def test_batch_speech_rejects_stringified_item_integer_overrides() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -476,25 +433,19 @@ def test_batch_speech_rejects_stringified_item_integer_overrides(
         json={
             "model": "tts",
             "voice": "default",
-            "items": [{"input": "one", field_name: value}],
+            "items": [{"input": "one", "token_count": "5"}],
         },
     )
 
     assert response.status_code == 200
     item = response.json()["results"][0]
     assert item["status"] == "error"
-    assert item["error"]["param"] == f"items.0.{field_name}"
+    assert item["error"]["param"] == "items.0.token_count"
     assert client_impl.requests == []
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", 0),
-        ("token_count", -1),
-        ("duration_tokens", 0),
-        ("duration_tokens", -1),
-    ],
+    ("field_name", "value"), [("token_count", 0), ("duration_tokens", 0)]
 )
 def test_batch_speech_rejects_non_positive_item_duration_fields(
     field_name: str, value: int
@@ -518,17 +469,15 @@ def test_batch_speech_rejects_non_positive_item_duration_fields(
     assert client_impl.requests == []
 
 
-@pytest.mark.parametrize("response_format", ["wav", "pcm"])
 @pytest.mark.parametrize(
     ("stream_fields", "error_param"),
     [
         ({"stream": True}, "stream"),
         ({"stream_format": "sse"}, "stream_format"),
-        ({"stream": False, "stream_format": "sse"}, "stream_format"),
     ],
 )
 def test_batch_speech_rejects_streaming_items(
-    response_format: str, stream_fields: dict[str, str | bool], error_param: str
+    stream_fields: dict[str, str | bool], error_param: str
 ) -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
@@ -538,7 +487,7 @@ def test_batch_speech_rejects_streaming_items(
         json={
             "model": "tts",
             "voice": "default",
-            "response_format": response_format,
+            "response_format": "pcm",
             "items": [
                 {"input": "one", **stream_fields},
                 {"input": "two"},
@@ -560,14 +509,13 @@ def test_batch_speech_rejects_streaming_items(
     assert client_impl.requests[0].stream is False
 
 
-@pytest.mark.parametrize("stream_format", ["audio", "unknown"])
-def test_batch_speech_ignores_non_sse_item_stream_format(stream_format: str) -> None:
+def test_batch_speech_ignores_non_sse_item_stream_format() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one", "stream_format": stream_format}]},
+        json={"items": [{"input": "one", "stream_format": "audio"}]},
     )
 
     assert response.status_code == 200

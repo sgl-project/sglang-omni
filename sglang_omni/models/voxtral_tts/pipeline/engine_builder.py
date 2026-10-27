@@ -25,7 +25,6 @@ from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 else:
@@ -90,14 +89,14 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
         # Note (Jiaxin Deng): eager, the 7-step flow-matching loop is launch bound
         # (~10 ms per decode step at any batch size); replay takes ~3.6 ms on H200.
         batch_sizes = get_decode_cuda_graph_bs(server_args)
-        if batch_sizes:
+        if batch_sizes and self.device.startswith("cuda"):
             model.init_acoustic_graphs(list(batch_sizes))
         else:
             pass
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> VoxtralTTSModelRunner:
         model_runner_mod = importlib.import_module(

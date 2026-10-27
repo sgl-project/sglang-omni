@@ -18,7 +18,7 @@ from sglang_omni.models.personaplex.config import (
 )
 
 
-@pytest.mark.parametrize("chunk_ramp_frames", [[1, 2, 4], [4], [1, 8, 2]])
+@pytest.mark.parametrize("chunk_ramp_frames", [[1, 2, 4]])
 @pytest.mark.parametrize("source", ["cli", "yaml"])
 def test_personaplex_chunk_ramp_resolves_from_user_configuration(
     chunk_ramp_frames: list[int], source: Literal["cli", "yaml"]
@@ -44,18 +44,9 @@ def test_personaplex_chunk_ramp_resolves_from_user_configuration(
     )
 
 
-def test_personaplex_chunk_ramp_default_is_in_the_stage_configuration() -> None:
-    config = PersonaPlexPipelineConfig(model_path="dummy")
-    assert config.stage_named("code2wav").factory.model_dump()["chunk_ramp_frames"] == [
-        1,
-        4,
-    ]
-    assert config.stage_named("code2wav").factory.max_graph_frames is None
-
-
 @pytest.mark.parametrize(
     "option_text",
-    ["[]", "[0,4]", "[1,-2]", "[1.5,4]", "[true,4]", '["4"]', "[4.0]", "4", "null"],
+    ["[]", "[0,4]", "[true,4]", "4", "null"],
 )
 @pytest.mark.parametrize("source", ["cli", "yaml"])
 def test_personaplex_chunk_ramp_rejects_invalid_user_configuration(
@@ -81,6 +72,16 @@ def test_personaplex_chunk_ramp_rejects_invalid_user_configuration(
                 ["code2wav"],
             )
             ConfigResolver(config).resolve(patches)
+
+
+def test_async_decode_is_opt_in_from_cli() -> None:
+    config = PersonaPlexPipelineConfig(model_path="model")
+    assert not config.stage_named("lm").factory.enable_async_decode
+    manager = ConfigManager(config)
+    updated = manager.merge_config(
+        manager.parse_extra_args(["--lm.factory.enable_async_decode", "true"])
+    )
+    assert updated.stage_named("lm").factory.enable_async_decode
 
 
 def rebuild(

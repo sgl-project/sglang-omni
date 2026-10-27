@@ -115,6 +115,127 @@ final class OmniPhase1LifecycleTests: XCTestCase {
 
     // MARK: - Faults
 
+    func testRepeatedLiveActivationsProducePreviewAcrossIdleUnloads() async throws {
+        let fixtures = try fixtures()
+        let manager = try await makeManager()
+        let records = try fixtures.output.map { try LifecycleRecords($0) }
+
+        for round in 1...fixtures.rounds {
+            let decider = RecordingVoiceActivityFrameDecider(mode: .automatic, useCase: .transcription, energyThreshold: 0.01)
+            let transcriber = MLXTranscriber(modelManager: manager)
+            let preview = expectation(description: "live preview for activation \(round)")
+            preview.assertForOverFulfill = false
+            transcriber.onPartialTranscription = { _ in preview.fulfill() }
+            transcriber.isRecording = true
+            transcriber.configureVoiceActivityFinalizationFiltering(enabled: true)
+            await transcriber.startNativeLiveSession(revision: 0).value
+            let stats = await feedLiveFixture(fixtures.short, transcriber: transcriber, decider: decider)
+            await fulfillment(of: [preview], timeout: 15)
+            XCTAssertFalse(transcriber.transcribedText.isEmpty, "Live activation \(round) produced no preview")
+            XCTAssertEqual(stats.fallbacks, 0, "Healthy Silero activation \(round) fell back to energy")
+            records?.write(["event": "live_round", "round": round, "preview_characters": transcriber.transcribedText.count,
+                            "vad_frames": stats.frames, "vad_fallbacks": stats.fallbacks])
+            transcriber.isRecording = false
+            transcriber.releaseNativeLiveSession(cancelSession: true)
+            let deadline = ContinuousClock.now + .seconds(5)
+            while manager.hasActiveUse, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(manager.hasActiveUse, "Live activation \(round) retained its model use")
+            if round.isMultiple(of: 10) {
+                manager.releaseLoadedModelIfIdle(reason: "live-activation-regression")
+            }
+        }
+
+        await manager.shutdownForApplicationTermination()
+        let gone = await ProcessTree.waitUntilNoDescendants(timeoutSeconds: 10)
+        XCTAssertTrue(gone)
+    }
+
+    /// The real live ASR must still receive speech when its upstream VAD accepts
+    /// audio but never replies. The next recording must try Silero again.
+    func testStalledVADFallsBackAndProducesRealASRPreview() async throws {
+        let fixtures = try fixtures()
+        let manager = try await makeManager()
+        let server = try VADTestWebSocketServer()
+        defer { server.stop() }
+        XCTAssertEqual(server.ready.wait(timeout: .now() + 5), .success)
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("voxt-stalled-vad-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let executable = scratch.appendingPathComponent("vad-server")
+        try """
+        #!/bin/sh
+        echo '{"event":"ready","host":"127.0.0.1","port":\(server.endpoint.port),"model_name":"silero","server_pid":'"$$"'}'
+        read -r command
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let configuration = OmniBackendConfiguration(runtimeExecutable: executable)
+        let runtime = OmniSharedModelRuntime(kind: .sileroVAD, configuration: { configuration })
+        let detector = ASRSileroStreamingVoiceActivityDetector(omniRuntime: runtime)
+        let decider = RecordingVoiceActivityFrameDecider(
+            mode: .automatic, useCase: .transcription, energyThreshold: 0.01, sileroDetector: detector
+        )
+
+        for round in 1...2 {
+            await decider.reset()
+            if round == 2 { server.respond(with: #"{"probability":0.875}"#) }
+            let transcriber = MLXTranscriber(modelManager: manager)
+            let preview = expectation(description: "preview after VAD stall, recording \(round)")
+            preview.assertForOverFulfill = false
+            transcriber.onPartialTranscription = { _ in preview.fulfill() }
+            transcriber.isRecording = true
+            transcriber.configureVoiceActivityFinalizationFiltering(enabled: true)
+            await transcriber.startNativeLiveSession(revision: 0).value
+            let beganFeeding = ContinuousClock.now
+            let requestsBefore = server.messageCount
+            let stats = await feedLiveFixture(fixtures.short, transcriber: transcriber, decider: decider)
+            XCTAssertLessThan(beganFeeding.duration(to: .now), .seconds(5))
+            if round == 1 {
+                XCTAssertEqual(server.messageCount - requestsBefore, 1, "A stalled VAD must not be retried on every frame")
+                XCTAssertEqual(stats.fallbacks, stats.frames)
+            } else {
+                XCTAssertEqual(stats.fallbacks, 0, "The next recording must retry Silero")
+                XCTAssertGreaterThan(server.messageCount - requestsBefore, 10)
+            }
+            await fulfillment(of: [preview], timeout: 15)
+            XCTAssertFalse(transcriber.transcribedText.isEmpty)
+            transcriber.isRecording = false
+            transcriber.releaseNativeLiveSession(cancelSession: true)
+        }
+        await decider.releaseResources()
+        await runtime.shutdownForApplicationTermination()
+        await manager.shutdownForApplicationTermination()
+        let gone = await ProcessTree.waitUntilNoDescendants(timeoutSeconds: 10)
+        XCTAssertTrue(gone)
+    }
+
+    private func feedLiveFixture(
+        _ fixture: (samples: [Float], sampleRate: Double),
+        transcriber: MLXTranscriber,
+        decider: RecordingVoiceActivityFrameDecider
+    ) async -> (frames: Int, fallbacks: Int) {
+        var segmenter = ASRVoiceActivitySegmenter(configuration: ASRVoiceActivityConfiguration.profile(for: .transcription))
+        var frames = 0
+        var fallbacks = 0
+        for start in stride(from: 0, to: fixture.samples.count, by: 1600) {
+            let end = min(start + 1600, fixture.samples.count)
+            let frame = ASRVoiceActivityAudioFrame(
+                samples: Array(fixture.samples[start..<end]), sampleRate: fixture.sampleRate,
+                startSeconds: Double(start) / fixture.sampleRate, endSeconds: Double(end) / fixture.sampleRate,
+                level: 0.5
+            )
+            guard let result = await decider.decision(for: frame) else {
+                XCTFail("VAD returned no frame decision")
+                continue
+            }
+            let resolved = segmenter.appendWithResolvedSpeechState(result.decision)
+            transcriber.appendVoiceActivityFinalizationFrame(frame, isSpeech: resolved.isSpeech)
+            frames += 1
+            if result.source == .fallbackEnergy { fallbacks += 1 }
+        }
+        return (frames, fallbacks)
+    }
+
     /// A server crash mid-Final fails that request, and the next load starts a
     /// fresh server that serves the next Final.
     func testServerKilledDuringFinalFailsThatRequestAndRecovers() async throws {
@@ -293,7 +414,7 @@ private final class LifecycleRecords {
 }
 
 /// Processes this test process started, directly or not.
-private enum ProcessTree {
+enum ProcessTree {
     static func descendants(of root: pid_t = getpid()) -> [pid_t] {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size = 0

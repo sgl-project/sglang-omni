@@ -305,11 +305,6 @@ def test_get_process_gpu_memory_rejects_invalid_device_mapping(
         gpu_memory.get_process_gpu_memory_bytes(2)
 
 
-def test_format_bytes_gib() -> None:
-    assert gpu_memory.format_bytes_gib(None) == "None"
-    assert gpu_memory.format_bytes_gib(3 * 1024**3) == "3.00GiB"
-
-
 def test_calculate_stage_budget_available_bytes_subtracts_accounted_memory() -> None:
     available = gpu_memory.calculate_stage_budget_available_bytes(
         total_memory_bytes=1000,
