@@ -222,10 +222,14 @@ def compose_trial(
     return samples.astype(np.int16)
 
 
-def write_inputs(clips_dir: Path, inputs_dir: Path) -> list[TrialInput]:
+def write_inputs(
+    clips_dir: Path, inputs_dir: Path, trials: tuple[Trial, ...] = TRIALS
+) -> list[TrialInput]:
     """Write every trial's input WAV and the trial list that record and report read."""
     clip_samples_by_name: dict[str, npt.NDArray[np.int16]] = {}
-    for clip_name in CLIPS:
+    for clip_name in dict.fromkeys(
+        placement.clip_name for trial in trials for placement in trial.placements
+    ):
         clip_path = clips_dir / f"{clip_name}.wav"
         clip_format = soundfile.info(str(clip_path))
         if (clip_format.samplerate, clip_format.channels, clip_format.subtype) != (
@@ -239,7 +243,7 @@ def write_inputs(clips_dir: Path, inputs_dir: Path) -> list[TrialInput]:
             clip_samples_by_name[clip_name] = clip_samples
     trial_inputs: list[TrialInput] = []
     trial_samples: list[npt.NDArray[np.int16]] = []
-    for trial in TRIALS:
+    for trial in trials:
         events = [
             SpokenEvent(
                 role=placement.role,
