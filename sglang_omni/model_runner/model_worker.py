@@ -25,9 +25,7 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
     from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
 
-    from sglang_omni.model_runner.speculative_target_worker import (
-        SpeculativeTargetWorker,
-    )
+    from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 else:
     pass
 

@@ -60,7 +60,6 @@ REQUIRED_CAPABILITIES = {
     "strict_order": True,
     "supports_server_interrupt": False,
     "supports_resume": False,
-    "supports_truncate": False,
 }
 
 TERMINAL_REASONS = {

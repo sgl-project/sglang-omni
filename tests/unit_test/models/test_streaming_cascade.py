@@ -6,6 +6,8 @@ import base64
 import io
 import json
 import re
+import threading
+import time
 import wave
 from dataclasses import replace
 from pathlib import Path
@@ -36,7 +38,12 @@ from sglang_omni.models.streaming_cascade.config import (
     ComponentGraphConfig,
     StreamingCascadePipelineConfig,
 )
-from sglang_omni.models.streaming_cascade.dialog import CUT_REPLY_NOTE, heard_prefix
+from sglang_omni.models.streaming_cascade.dialog import (
+    CUT_REPLY_NOTE,
+    Dialog,
+    DialogConfig,
+    heard_prefix,
+)
 from sglang_omni.models.streaming_cascade.generators import ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
@@ -44,6 +51,8 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -71,10 +80,16 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
+from tests.unit_test.fixtures.session_pipeline import (
+    compute_registered,
+    operation_metadata,
+)
 
 PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
@@ -1089,6 +1104,131 @@ async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancell
     ]
 
 
+def dialog_stage(identity):
+    """The text dialog under its session scheduler, a builder of the stage's operations, and a runner of one on its own thread."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    scheduler = SessionScheduler(
+        ComponentHooks("dialog", settings, timeout_s=5), max_concurrency=2
+    )
+
+    def operation(request_id, kind, chunk=None, *, should_preempt=False):
+        metadata = operation_metadata(
+            kind, identity, chunk, should_preempt=should_preempt
+        )
+        return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
+
+    def start(payload):
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+        message = scheduler.inbox.get_nowait()
+        thread = threading.Thread(target=scheduler.compute, args=(message.data,))
+        thread.start()
+        return thread
+
+    return scheduler, operation, start
+
+
+def streamed(scheduler):
+    """The request id and chunk of each stream message the stage sent so far."""
+    messages = []
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        if message.type == "stream":
+            messages.append((message.request_id, TimedChunk.from_dict(message.data)))
+        else:
+            pass
+    return messages
+
+
+def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
+    monkeypatch,
+):
+    """A client cancel preempts the dialog stage's in-flight appends; the dialog still takes the chunk and the session stays open."""
+    entered, release = threading.Event(), threading.Event()
+    handle = Dialog.handle
+
+    def held_handle(dialog, chunk):
+        if chunk.format == TRANSCRIPT_FORMAT and not release.is_set():
+            entered.set()
+            release.wait(5)
+        else:
+            pass
+        handle(dialog, chunk)
+
+    monkeypatch.setattr(Dialog, "handle", held_handle)
+    identity = SessionIdentity("session")
+    scheduler, operation, start = dialog_stage(identity)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    question = start(operation("question", "append", transcript_chunk("hi", True)))
+    assert entered.wait(5)
+    cancel = start(
+        operation("cancel", "control", control_chunk(INTERRUPT), should_preempt=True)
+    )
+    assert scheduler.append_cancel_events["question"].wait(5)
+    # note (luojiaxuan): the dialog takes the chunk only after the preempt has cancelled its append.
+    time.sleep(0.1)
+    release.set()
+    for thread in (question, cancel):
+        thread.join(10)
+    assert not question.is_alive() and not cancel.is_alive()
+    assert identity in scheduler.open_sessions
+    assert prompts([chunk for _, chunk in streamed(scheduler)]) == [
+        [("system", DialogConfig().system_prompt), ("user", "hi")]
+    ]
+    later = compute_registered(
+        scheduler, operation("later", "append", transcript_chunk("again", True))
+    )
+    assert later.data == {"accepted": True}
+    compute_registered(scheduler, operation("close", "close"))
+
+
+def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interrupt(
+    monkeypatch,
+):
+    """A client cancel that lands as the dialog cuts its reply for speech.started leaves the dialog's interrupt to reach the graph, since every dialog output goes out on the session's read."""
+    identity = SessionIdentity("session")
+    scheduler, operation, _ = dialog_stage(identity)
+    interrupt_reply = Dialog.interrupt_reply
+
+    def preempted_interrupt_reply(dialog):
+        scheduler.inbox.put(
+            IncomingMessage(
+                "cancel",
+                "new_request",
+                operation(
+                    "cancel", "control", control_chunk(INTERRUPT), should_preempt=True
+                ),
+            )
+        )
+        assert scheduler.append_cancel_events["speech"].is_set()
+        interrupt_reply(dialog)
+
+    monkeypatch.setattr(Dialog, "interrupt_reply", preempted_interrupt_reply)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    compute_registered(
+        scheduler, operation("question", "append", transcript_chunk("hi", True))
+    )
+    speech = compute_registered(
+        scheduler, operation("speech", "append", control_chunk(SPEECH_STARTED))
+    )
+    assert speech.data == {"accepted": True}
+    scheduler.compute(scheduler.inbox.get_nowait().data)
+    assert identity in scheduler.open_sessions
+    outputs = streamed(scheduler)
+    assert [
+        (control_type(chunk), chunk.turn)
+        for _, chunk in outputs
+        if control_type(chunk) in (INTERRUPT, TURN_INTERRUPTED)
+    ] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    assert {request_id for request_id, _ in outputs} == {"read"}
+    compute_registered(scheduler, operation("close", "close"))
+
+
 def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
     assert profile_config(
         "qwen3-asr-qwen3.8-27b-vivian"
@@ -1277,6 +1417,36 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
         ),
         pytest.param(
             "今天最高25℃，体感20°。", ["今天最高25℃，体感20°。"], id="unit_symbols_stay"
+        ),
+        pytest.param(
+            "## 睡眠小贴士\n- 保持规律的作息。\n> 睡前别看手机。",
+            ["睡眠小贴士", "保持规律的作息。", "睡前别看手机。"],
+            id="line_markers",
+        ),
+        pytest.param(
+            "| Feature | Python |\n|---|---|\n| Speed | Slow |",
+            ["Feature, Python", "Speed, Slow"],
+            id="table_rows",
+        ),
+        pytest.param(
+            "Visit `https://python.org` or https://www.python.org/downloads to get Python.",
+            ["Visit python.org or python.org to get Python."],
+            id="bare_url",
+        ),
+        pytest.param(
+            "Did you visit https://python.org? Try http://localhost:8000/v1.",
+            ["Did you visit python.org?", "Try localhost."],
+            id="bare_url_before_punctuation_and_with_port",
+        ),
+        pytest.param(
+            "访问https://www.python.org/downloads下载。",
+            ["访问python.org下载。"],
+            id="bare_url_between_chinese",
+        ),
+        pytest.param(
+            "两种都行 - 看需求。",
+            ["两种都行 - 看需求。"],
+            id="dash_inside_a_line_stays",
         ),
     ],
 )

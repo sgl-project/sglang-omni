@@ -1743,6 +1743,27 @@ def test_aborted_request_id_resubmit_fails_without_new_state() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("role", ["leader", "follower"])
+def test_tp_rank_runs_fanned_out_work_after_abort(role: str) -> None:
+    async def run() -> None:
+        scheduler = SimpleScheduler(lambda payload: payload)
+        stage = make_stage(role=role, scheduler=scheduler, tp_fanout=Mock())
+        payload = make_stage_payload(request_id="req-1")
+        if role == "leader":
+            await stage.execute(payload)
+            stage.on_abort("req-1")
+        else:
+            stage.on_abort("req-1")
+            await stage.execute(payload)
+        threading.Thread(target=scheduler.start, daemon=True).start()
+        try:
+            assert scheduler.outbox.get(timeout=5).request_id == "req-1"
+        finally:
+            scheduler.stop()
+
+    asyncio.run(run())
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
