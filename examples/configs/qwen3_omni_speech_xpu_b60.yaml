@@ -4,8 +4,9 @@
 #
 #   sgl-omni serve --config examples/configs/qwen3_omni_speech_xpu_b60.yaml
 #
-# TP=8 because the 30B-A3B thinker does not fit one 24 GB card, and at TP=4 its
-# per-rank weights leave the KV pool no room.
+# TP=4 so the talker and Code2Wav each get a card no thinker rank uses. A stage sharing a card
+# with a thinker rank is time-sliced against it, and every TP rank waits for the slowest, so
+# the shared card stalls the whole thinker and the talker together.
 
 config_cls: Qwen3OmniSpeechPipelineConfig
 name: qwen3-omni-speech-xpu-b60
@@ -18,18 +19,18 @@ stages:
     gpu: 0
 
   thinker:
-    gpu: [0, 1, 2, 3, 4, 5, 6, 7]
-    tp_size: 8
+    gpu: [0, 1, 2, 3]
+    tp_size: 4
     engine:
-      mem_fraction_static: 0.55
+      # 14.3 GB of weights per rank at TP=4.
+      mem_fraction_static: 0.80
 
-  # 0.55 + 0.35 reserves 0.90 of card 6, the tightest card here.
   talker_ar:
-    gpu: 6
+    gpu: 4
     engine:
       mem_fraction_static: 0.35
 
   code2wav:
-    gpu: 7
+    gpu: 5
     # 0.02 of a 24 GB card leaves less graph budget than the capture keys need.
     gpu_memory_fraction: 0.05
