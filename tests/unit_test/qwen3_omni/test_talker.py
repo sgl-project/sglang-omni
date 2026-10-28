@@ -2415,7 +2415,7 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     assert torch.equal(fake.suppress_mask, fresh.suppress_mask)
 
 
-SHARED_SUPPRESS = [1, 6, 7, 9, -2]
+SHARED_SUPPRESS_TOKEN_IDS = [1, 6, 7, 9, -2]
 
 
 @pytest.mark.parametrize(
@@ -2424,15 +2424,15 @@ SHARED_SUPPRESS = [1, 6, 7, 9, -2]
         pytest.param(
             [
                 [
-                    ("a", SHARED_SUPPRESS),
-                    ("b", SHARED_SUPPRESS),
-                    ("c", SHARED_SUPPRESS),
-                    ("d", SHARED_SUPPRESS),
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("c", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
                 ],
                 [
-                    ("e", SHARED_SUPPRESS),
-                    ("f", SHARED_SUPPRESS),
-                    ("g", SHARED_SUPPRESS),
+                    ("e", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("f", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("g", SHARED_SUPPRESS_TOKEN_IDS),
                 ],
             ],
             id="shared",
@@ -2440,19 +2440,19 @@ SHARED_SUPPRESS = [1, 6, 7, 9, -2]
         pytest.param(
             [
                 [
-                    ("a", SHARED_SUPPRESS),
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
                     ("b", [2, 3]),
                     ("c", None),
-                    ("d", SHARED_SUPPRESS),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
                 ],
-                [("e", [2, 3]), ("f", SHARED_SUPPRESS), ("g", [4])],
+                [("e", [2, 3]), ("f", SHARED_SUPPRESS_TOKEN_IDS), ("g", [4])],
             ],
             id="distinct",
         ),
         pytest.param(
             [
-                [("a", SHARED_SUPPRESS), ("b", [2, 3]), ("c", None)],
-                [("b", [2, 3]), ("d", [4]), ("a", SHARED_SUPPRESS)],
+                [("a", SHARED_SUPPRESS_TOKEN_IDS), ("b", [2, 3]), ("c", None)],
+                [("b", [2, 3]), ("d", [4]), ("a", SHARED_SUPPRESS_TOKEN_IDS)],
             ],
             id="kept-at-new-rows",
         ),
